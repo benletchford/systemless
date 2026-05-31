@@ -10,7 +10,9 @@ emulation.
 
 | Marathon | Escape Velocity |
 | -------- | --------------- |
-| [![Marathon running in Systemless](assets/screenshots/marathon.png)](https://systemless.rs/marathon) | [![Escape Velocity running in Systemless](assets/screenshots/escape-velocity.png)](https://systemless.rs/escape-velocity) |
+| [![Marathon running in Systemless](assets/screenshots/marathon.png)](https://systemless.letchford.cloud/marathon) | [![Escape Velocity running in Systemless](assets/screenshots/escape-velocity.png)](https://systemless.letchford.cloud/escape-velocity) |
+
+Browser demos are available at <https://systemless.letchford.cloud/>.
 
 ## Status
 
