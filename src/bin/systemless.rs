@@ -27,8 +27,10 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
+#[cfg(target_os = "macos")]
 use winit::platform::macos::WindowAttributesExtMacOS;
 use winit::window::Window;
+use winit::window::WindowAttributes;
 use winit::window::WindowId;
 
 /// Initial screen dimensions: 800x600 8bpp color mode by default.
@@ -42,6 +44,18 @@ const MAX_RENDER_HEADROOM: std::time::Duration = std::time::Duration::from_micro
 const RENDER_HEADROOM_MARGIN: std::time::Duration = std::time::Duration::from_micros(500);
 const CPU_BATCH_INSTRUCTIONS: usize = 100_000;
 const SOUND_CALLBACK_SLICE_INSTRUCTIONS: usize = 25_000;
+
+#[cfg(target_os = "macos")]
+fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
+    attrs
+        .with_disallow_hidpi(true)
+        .with_accepts_first_mouse(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
+    attrs
+}
 
 struct App {
     window: Option<Rc<Window>>,
@@ -468,9 +482,8 @@ impl ApplicationHandler for App {
                     INITIAL_SCREEN_WIDTH * SCALE,
                     INITIAL_SCREEN_HEIGHT * SCALE,
                 ))
-                .with_resizable(true)
-                .with_disallow_hidpi(true)
-                .with_accepts_first_mouse(true);
+                .with_resizable(true);
+            let window_attrs = platform_window_attrs(window_attrs);
 
             let window = Rc::new(
                 event_loop

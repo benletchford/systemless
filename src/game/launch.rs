@@ -38,9 +38,7 @@ pub fn new_runner() -> FixtureRunner {
 pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
     if file_data.starts_with(WEB_PACK_MAGIC) {
         load_web_pack(runner, file_data)
-    } else if file_data.len() >= 80
-        && (&file_data[0..4] == b"SIT!" || &file_data[0..7] == b"StuffIt")
-    {
+    } else if is_stuffit_archive(file_data) {
         load_stuffit(runner, file_data)
     } else {
         load_macbinary(runner, file_data)
@@ -98,6 +96,11 @@ pub fn load_game_from_path(
             if crate::runner::trace_load_enabled() {
                 eprintln!("[LOAD] Loading resource fork from {}", rsrc_path.display());
             }
+            let app_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("FixtureGen");
+            runner.dispatcher_mut().set_launched_app_path(app_name);
             let fork = ResourceFork::parse(&rsrc_data).ok_or("Failed to parse Resource Fork")?;
             return runner
                 .load_app(&fork)
@@ -196,6 +199,17 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
 
     if rsrc_start + rsrc_len > file_data.len() {
         return Err("MacBinary truncated".to_string());
+    }
+
+    let data_end = data_start
+        .checked_add(data_len)
+        .ok_or_else(|| "MacBinary data offset overflow".to_string())?;
+    let data_fork = &file_data[data_start..data_end];
+    if is_stuffit_archive(data_fork) {
+        if crate::runner::trace_load_enabled() {
+            eprintln!("[LOAD] MacBinary data fork contains StuffIt archive");
+        }
+        return load_stuffit(runner, data_fork);
     }
 
     if crate::runner::trace_load_enabled() {
@@ -361,6 +375,10 @@ fn maybe_select_executable(
 
 fn executable_name_override() -> Option<String> {
     std::env::var("SYSTEMLESS_LOAD_EXECUTABLE").ok().filter(|s| !s.is_empty())
+}
+
+fn is_stuffit_archive(bytes: &[u8]) -> bool {
+    bytes.len() >= 80 && (&bytes[0..4] == b"SIT!" || &bytes[0..7] == b"StuffIt")
 }
 
 fn log_vfs(runner: &FixtureRunner) {

@@ -106,6 +106,16 @@ cargo package
 The default `gui` feature enables the desktop runner dependencies: `winit`,
 `softbuffer`, and `cpal`. Disable default features for headless library builds.
 
+On Linux, the default GUI/audio build also needs ALSA development files for
+`cpal`'s ALSA backend. Install `pkg-config` plus your distribution's ALSA dev
+package before running `cargo build --release`; for example:
+
+```sh
+sudo apt install pkg-config libasound2-dev      # Debian/Ubuntu
+sudo dnf install pkgconf-pkg-config alsa-lib-devel  # Fedora/RHEL
+sudo pacman -S pkgconf alsa-lib                # Arch
+```
+
 ## Font Data
 
 Systemless does not load TTF files at runtime. The built-in DejaVu-derived glyph
