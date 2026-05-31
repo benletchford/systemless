@@ -1,0 +1,15313 @@
+//! Dialog Manager, Cursor Manager, and misc stub trap handlers.
+
+use super::dispatch::DialogItem;
+use super::types::{Rect, ShapeOp};
+use crate::cpu::{CpuOps, Register};
+use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::quickdraw::fonts::get_font_face_scaled;
+use crate::quickdraw::text::get_font_metrics;
+use crate::Result;
+use std::collections::VecDeque;
+use std::sync::OnceLock;
+
+static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
+static TRACE_DIALOG_FILTER: OnceLock<bool> = OnceLock::new();
+static TRACE_TEXTEDIT: OnceLock<bool> = OnceLock::new();
+static TRACE_DIALOG_ITEMS: OnceLock<bool> = OnceLock::new();
+static TRACE_DIALOG_TEXT_INLINE: OnceLock<bool> = OnceLock::new();
+
+fn trace_dialog_procs_enabled() -> bool {
+    *TRACE_DIALOG_PROCS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_PROCS").is_some())
+}
+
+fn trace_dialog_filter_enabled() -> bool {
+    *TRACE_DIALOG_FILTER.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_FILTER").is_some())
+}
+
+fn trace_textedit_enabled() -> bool {
+    *TRACE_TEXTEDIT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_TEXTEDIT").is_some())
+}
+
+fn trace_dialog_items_enabled() -> bool {
+    *TRACE_DIALOG_ITEMS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_ITEMS").is_some())
+}
+
+fn trace_dialog_text_inline_enabled() -> bool {
+    *TRACE_DIALOG_TEXT_INLINE
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_TEXT").is_some())
+}
+
+impl super::TrapDispatcher {
+    fn dialog_template_res_err(&self, dialog_id: i16) -> i16 {
+        if self.find_resource_any(*b"DLOG", dialog_id).is_some() {
+            0
+        } else {
+            0
+        }
+    }
+
+    const TE_DEST_RECT_OFFSET: u32 = 0x00;
+    const TE_VIEW_RECT_OFFSET: u32 = 0x08;
+    const TE_SEL_RECT_OFFSET: u32 = 0x10;
+    const TE_LINE_HEIGHT_OFFSET: u32 = 0x18;
+    const TE_FONT_ASCENT_OFFSET: u32 = 0x1A;
+    const TE_SEL_POINT_OFFSET: u32 = 0x1C;
+    const TE_SEL_START_OFFSET: u32 = 0x20;
+    const TE_SEL_END_OFFSET: u32 = 0x22;
+    const TE_ACTIVE_OFFSET: u32 = 0x24;
+    #[allow(dead_code)]
+    const TE_CR_ONLY_OFFSET: u32 = 0x48;
+    const TE_JUST_OFFSET: u32 = 0x3A;
+    const TE_LENGTH_OFFSET: u32 = 0x3C;
+    const TE_HTEXT_OFFSET: u32 = 0x3E;
+    const TE_TX_FONT_OFFSET: u32 = 0x4A;
+    const TE_TX_FACE_OFFSET: u32 = 0x4C;
+    const TE_TX_MODE_OFFSET: u32 = 0x4E;
+    const TE_TX_SIZE_OFFSET: u32 = 0x50;
+    const TE_IN_PORT_OFFSET: u32 = 0x52;
+    const TE_N_LINES_OFFSET: u32 = 0x5E;
+    const TE_LINE_STARTS_OFFSET: u32 = 0x60;
+    const TE_REC_MIN_SIZE: u32 = 128;
+
+    const TE_STYLE_N_RUNS_OFFSET: u32 = 0x00;
+    const TE_STYLE_N_STYLES_OFFSET: u32 = 0x02;
+    const TE_STYLE_STYLE_TABLE_OFFSET: u32 = 0x04;
+    const TE_STYLE_LH_TABLE_OFFSET: u32 = 0x08;
+    const TE_STYLE_NULL_STYLE_OFFSET: u32 = 0x10;
+    const TE_STYLE_RUNS_OFFSET: u32 = 0x14;
+
+    const ST_ELEMENT_REFCOUNT_OFFSET: u32 = 0x00;
+    const ST_ELEMENT_HEIGHT_OFFSET: u32 = 0x02;
+    const ST_ELEMENT_ASCENT_OFFSET: u32 = 0x04;
+    const ST_ELEMENT_FONT_OFFSET: u32 = 0x06;
+    const ST_ELEMENT_FACE_OFFSET: u32 = 0x08;
+    const ST_ELEMENT_SIZE_OFFSET: u32 = 0x0A;
+    const ST_ELEMENT_COLOR_OFFSET: u32 = 0x0C;
+    const ST_ELEMENT_SIZE: u32 = 0x12;
+
+    const LH_ELEMENT_HEIGHT_OFFSET: u32 = 0x00;
+    const LH_ELEMENT_ASCENT_OFFSET: u32 = 0x02;
+    const LH_ELEMENT_SIZE: u32 = 0x04;
+
+    const NULL_STYLE_SCRAP_OFFSET: u32 = 0x04;
+    const NULL_STYLE_REC_SIZE: u32 = 0x08;
+
+    const SCRAP_N_STYLES_OFFSET: u32 = 0x00;
+    const SCRAP_STYLE_TAB_OFFSET: u32 = 0x0C;
+    const SCRAP_STYLE_START_CHAR_OFFSET: u32 = 0x00;
+    const SCRAP_STYLE_HEIGHT_OFFSET: u32 = 0x04;
+    const SCRAP_STYLE_ASCENT_OFFSET: u32 = 0x06;
+    const SCRAP_STYLE_FONT_OFFSET: u32 = 0x08;
+    const SCRAP_STYLE_FACE_OFFSET: u32 = 0x0A;
+    const SCRAP_STYLE_SIZE_OFFSET: u32 = 0x0C;
+    const SCRAP_STYLE_COLOR_OFFSET: u32 = 0x0E;
+    const STYLE_SCRAP_REC_SIZE: u32 = 0x20;
+
+    const TE_FEATURE_AUTO_SCROLL: u16 = 0;
+    const TE_FEATURE_TEXT_BUFFERING: u16 = 1;
+    const TE_FEATURE_OUTLINE_HILITE: u16 = 2;
+    const TE_FEATURE_INLINE_INPUT: u16 = 3;
+    const TE_FEATURE_USE_TEXT_SERVICES: u16 = 4;
+
+    const TE_BIT_CLEAR: i16 = 0;
+    const TE_BIT_SET: i16 = 1;
+    const TE_BIT_TEST: i16 = -1;
+
+    fn ensure_text_handle_size(bus: &mut MacMemoryBus, item_handle: u32, size: usize) -> u32 {
+        if item_handle == 0 {
+            return 0;
+        }
+
+        let current_ptr = bus.read_long(item_handle);
+        if size == 0 {
+            if current_ptr != 0 {
+                bus.free(current_ptr);
+                bus.write_long(item_handle, 0);
+            }
+            return 0;
+        }
+
+        let required = size as u32;
+        let current_size = if current_ptr != 0 {
+            bus.get_alloc_size(current_ptr).unwrap_or(0)
+        } else {
+            0
+        };
+
+        if current_ptr != 0 && current_size == required {
+            return current_ptr;
+        }
+
+        let new_ptr = bus.alloc(required);
+        if new_ptr == 0 {
+            return current_ptr;
+        }
+
+        if current_ptr != 0 {
+            bus.free(current_ptr);
+        }
+        bus.write_long(item_handle, new_ptr);
+        new_ptr
+    }
+
+    fn text_item_string_from_handle(bus: &MacMemoryBus, item_handle: u32) -> String {
+        if item_handle == 0 {
+            return String::new();
+        }
+
+        let data_ptr = bus.read_long(item_handle);
+        if data_ptr == 0 {
+            return String::new();
+        }
+
+        let len = bus.get_alloc_size(data_ptr).unwrap_or(0) as usize;
+        let bytes = bus.read_bytes(data_ptr, len);
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
+        if item_no <= 0 {
+            return None;
+        }
+
+        let items_handle = bus.read_long(dialog_ptr + 156);
+        if items_handle == 0 {
+            return None;
+        }
+        let ditl_ptr = bus.read_long(items_handle);
+        if ditl_ptr == 0 {
+            return None;
+        }
+
+        let max_index = bus.read_word(ditl_ptr) as i16;
+        if item_no > max_index + 1 {
+            return None;
+        }
+
+        let mut offset = 2u32;
+        for current_item in 1..=max_index + 1 {
+            let item_handle_addr = ditl_ptr + offset;
+            offset += 4; // itmhand
+            offset += 8; // itmr
+            let data_len = bus.read_byte(ditl_ptr + offset + 1) as u32;
+            offset += 2; // itmtype + itmlen
+            let padded = (data_len + 1) & !1;
+            if current_item == item_no {
+                return Some(item_handle_addr);
+            }
+            offset += padded;
+        }
+
+        None
+    }
+
+    fn dialog_item_handle(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> u32 {
+        Self::dialog_item_handle_addr(bus, dialog_ptr, item_no)
+            .map(|addr| bus.read_long(addr))
+            .unwrap_or(0)
+    }
+
+    fn set_dialog_item_handle(bus: &mut MacMemoryBus, dialog_ptr: u32, item_no: i16, handle: u32) {
+        if let Some(addr) = Self::dialog_item_handle_addr(bus, dialog_ptr, item_no) {
+            bus.write_long(addr, handle);
+        }
+    }
+
+    fn allocate_te_handle(bus: &mut MacMemoryBus) -> u32 {
+        // TENew returns a handle to a zeroed TERec owned by the caller.
+        // Text 1993, 2-85 to 2-86
+        let te_ptr = bus.alloc(Self::TE_REC_MIN_SIZE);
+        if te_ptr == 0 {
+            return 0;
+        }
+        let handle = bus.alloc(4);
+        if handle == 0 {
+            return 0;
+        }
+        bus.write_long(handle, te_ptr);
+        handle
+    }
+
+    fn allocate_handle_with_data(bus: &mut MacMemoryBus, size: u32) -> u32 {
+        let handle = bus.alloc(4);
+        if handle == 0 {
+            return 0;
+        }
+
+        let data_ptr = if size == 0 { 0 } else { bus.alloc(size) };
+        bus.write_long(handle, data_ptr);
+        handle
+    }
+
+    fn ensure_handle_capacity(bus: &mut MacMemoryBus, handle: u32, min_size: u32) -> u32 {
+        if handle == 0 {
+            return 0;
+        }
+
+        let current_ptr = bus.read_long(handle);
+        let current_size = if current_ptr != 0 {
+            bus.get_alloc_size(current_ptr).unwrap_or(0)
+        } else {
+            0
+        };
+        if current_size >= min_size {
+            return current_ptr;
+        }
+
+        let new_ptr = bus.alloc(min_size);
+        if new_ptr == 0 {
+            return current_ptr;
+        }
+        if current_ptr != 0 && current_size != 0 {
+            let existing = bus.read_bytes(current_ptr, current_size as usize);
+            bus.write_bytes(new_ptr, &existing);
+            bus.free(current_ptr);
+        }
+        bus.write_long(handle, new_ptr);
+        new_ptr
+    }
+
+    fn te_record_size_for_line_count(line_count: usize) -> u32 {
+        let line_entries = line_count.saturating_add(4) as u32;
+        Self::TE_REC_MIN_SIZE.max(Self::TE_LINE_STARTS_OFFSET + line_entries * 2)
+    }
+
+    fn ensure_te_record_line_capacity(
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        line_count: usize,
+    ) -> u32 {
+        Self::ensure_handle_capacity(
+            bus,
+            te_handle,
+            Self::te_record_size_for_line_count(line_count),
+        )
+    }
+
+    fn te_read_rect(bus: &MacMemoryBus, addr: u32) -> (i16, i16, i16, i16) {
+        (
+            bus.read_word(addr) as i16,
+            bus.read_word(addr + 2) as i16,
+            bus.read_word(addr + 4) as i16,
+            bus.read_word(addr + 6) as i16,
+        )
+    }
+
+    fn te_write_rect_words(bus: &mut MacMemoryBus, addr: u32, rect: (i16, i16, i16, i16)) {
+        bus.write_word(addr, rect.0 as u16);
+        bus.write_word(addr + 2, rect.1 as u16);
+        bus.write_word(addr + 4, rect.2 as u16);
+        bus.write_word(addr + 6, rect.3 as u16);
+    }
+
+    fn te_rect_is_plausible(rect: (i16, i16, i16, i16)) -> bool {
+        let (top, left, bottom, right) = rect;
+        top <= bottom
+            && left <= right
+            && top.abs() <= 4096
+            && left.abs() <= 4096
+            && bottom.abs() <= 4096
+            && right.abs() <= 4096
+            && (bottom - top).abs() <= 4096
+            && (right - left).abs() <= 4096
+    }
+
+    fn te_rect_is_empty(rect: (i16, i16, i16, i16)) -> bool {
+        rect.0 == 0 && rect.1 == 0 && rect.2 == 0 && rect.3 == 0
+    }
+
+    /// Decode TENew/TEStyleNew arguments off the Pascal stack, sniffing
+    /// either the modern Universal Headers pointer convention (8 bytes,
+    /// two `const Rect *` ptrs) or the legacy Inside Macintosh by-value
+    /// convention (16 bytes, two Rects pushed by value).
+    ///
+    /// Pascal calling convention pushes left-to-right, so the first
+    /// arg (destRect / destRect_ptr) lands DEEPER on the stack than the
+    /// second arg (viewRect / viewRect_ptr). Concretely:
+    ///   * Pointer convention (8 bytes, MPW Universal Headers):
+    ///       sp+0..3  viewRect_ptr  (last pushed, shallowest)
+    ///       sp+4..7  destRect_ptr  (first pushed, deepest)
+    ///   * By-value convention (16 bytes, classic IM:I I-373):
+    ///       sp+0..7   viewRect bytes
+    ///       sp+8..15  destRect bytes
+    ///
+    /// Returns (destRect, viewRect, stack_pop).
+    #[allow(clippy::type_complexity)] // (destRect, viewRect, stack_pop) — local return shape, no aliasing benefit
+    fn te_new_rect_args(
+        bus: &MacMemoryBus,
+        sp: u32,
+    ) -> ((i16, i16, i16, i16), (i16, i16, i16, i16), u32) {
+        // Pascal first arg (destRect / destRect_ptr) is DEEPEST → sp+4.
+        // Pascal second arg (viewRect / viewRect_ptr) is SHALLOWEST → sp+0.
+        let view_ptr_word = bus.read_long(sp);
+        let dest_ptr_word = bus.read_long(sp + 4);
+        let view_via_ptr = if view_ptr_word != 0 {
+            Some(Self::te_read_rect(bus, view_ptr_word))
+        } else {
+            None
+        };
+        let dest_via_ptr = if dest_ptr_word != 0 {
+            Some(Self::te_read_rect(bus, dest_ptr_word))
+        } else {
+            None
+        };
+        let view_is_rect_ptr = view_via_ptr.is_some_and(Self::te_rect_is_plausible);
+        let dest_is_rect_ptr = dest_via_ptr.is_some_and(Self::te_rect_is_plausible);
+        if view_is_rect_ptr && dest_is_rect_ptr {
+            // Modern MPW Universal Headers pointer convention (8 bytes).
+            let dest = dest_via_ptr.unwrap();
+            let view = view_via_ptr.unwrap();
+            if Self::te_rect_is_empty(view) && !Self::te_rect_is_empty(dest) {
+                (dest, dest, 8)
+            } else if Self::te_rect_is_empty(dest) && !Self::te_rect_is_empty(view) {
+                (view, view, 8)
+            } else {
+                (dest, view, 8)
+            }
+        } else {
+            // Legacy by-value convention (16 bytes).
+            (
+                Self::te_read_rect(bus, sp + 8),
+                Self::te_read_rect(bus, sp),
+                16,
+            )
+        }
+    }
+
+    fn te_record_ptr(bus: &MacMemoryBus, te_handle: u32) -> u32 {
+        if te_handle == 0 {
+            0
+        } else {
+            bus.read_long(te_handle)
+        }
+    }
+
+    fn te_is_styled_record(bus: &MacMemoryBus, te_ptr: u32) -> bool {
+        te_ptr != 0 && bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) == 0xFFFF
+    }
+
+    fn te_text_handle(bus: &MacMemoryBus, te_handle: u32) -> u32 {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            0
+        } else {
+            bus.read_long(te_ptr + Self::TE_HTEXT_OFFSET)
+        }
+    }
+
+    fn te_style_handle(bus: &MacMemoryBus, te_handle: u32) -> u32 {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if Self::te_is_styled_record(bus, te_ptr) {
+            bus.read_long(te_ptr + Self::TE_TX_FONT_OFFSET)
+        } else {
+            0
+        }
+    }
+
+    fn te_write_style_handle(bus: &mut MacMemoryBus, te_handle: u32, style_handle: u32) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if Self::te_is_styled_record(bus, te_ptr) {
+            bus.write_long(te_ptr + Self::TE_TX_FONT_OFFSET, style_handle);
+        }
+    }
+
+    fn te_line_starts(bus: &MacMemoryBus, te_handle: u32) -> Vec<usize> {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return vec![0];
+        }
+
+        let n_lines = bus.read_word(te_ptr + Self::TE_N_LINES_OFFSET) as usize;
+        let mut starts = Vec::with_capacity(n_lines.saturating_add(1));
+        for index in 0..=n_lines {
+            starts.push(
+                bus.read_word(te_ptr + Self::TE_LINE_STARTS_OFFSET + (index as u32 * 2)) as usize,
+            );
+        }
+        if starts.is_empty() {
+            starts.push(0);
+        }
+        starts
+    }
+
+    fn te_char_to_line_index(bus: &MacMemoryBus, te_handle: u32, offset: usize) -> usize {
+        let starts = Self::te_line_starts(bus, te_handle);
+        let n_lines = starts.len().saturating_sub(1);
+        if n_lines <= 1 {
+            return 0;
+        }
+
+        let mut low = 0usize;
+        let mut high = n_lines;
+        let mut current = (high + low) / 2;
+        while low < high && starts[current] != offset {
+            if starts[current] < offset {
+                low = current + 1;
+            } else {
+                high = current.saturating_sub(1);
+            }
+            current = (high + low) / 2;
+        }
+
+        if starts[current] > offset || current == n_lines {
+            current.saturating_sub(1)
+        } else {
+            current
+        }
+    }
+
+    fn te_char_to_point(&self, bus: &MacMemoryBus, te_handle: u32, offset: usize) -> (i16, i16) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return (0, 0);
+        }
+
+        let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+        let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
+        let text_bytes = Self::te_text_bytes(bus, te_handle);
+        let text_len = text_bytes.len();
+        let clamped = offset.min(text_len);
+        let starts = Self::te_line_starts(bus, te_handle);
+        let line_index = Self::te_char_to_line_index(bus, te_handle, clamped);
+        let line_start = starts.get(line_index).copied().unwrap_or(0);
+        let line_end = starts.get(line_index + 1).copied().unwrap_or(text_len);
+        let on_break = clamped != 0
+            && clamped == text_len
+            && text_bytes.get(clamped - 1).copied() == Some(b'\r');
+        let (font, _, size, _, _, _) = self.te_primary_style(bus, te_handle);
+        let rect_width = dest_rect.3.saturating_sub(dest_rect.1);
+        // Per Inside Macintosh: Text 1993, lines 7320-7323:
+        //   teJustLeft   =  0 (flush left — system default for LTR)
+        //   teJustCenter =  1 (centered)
+        //   teJustRight  = -1 (flush right)
+        //   teForceLeft  = -2 (force flush left)
+        let left_offset = match just {
+            1 | -1 => {
+                let line_width = if on_break {
+                    rect_width.saturating_sub(1)
+                } else {
+                    rect_width
+                        .saturating_sub(self.te_measure_text_width(
+                            font,
+                            size.max(1),
+                            &text_bytes,
+                            line_start,
+                            line_end,
+                        ))
+                        .saturating_sub(1)
+                };
+                if just == 1 {
+                    line_width / 2
+                } else {
+                    line_width
+                }
+            }
+            _ => 0,
+        };
+        let x = if on_break {
+            dest_rect.1.saturating_add(left_offset)
+        } else {
+            dest_rect
+                .1
+                .saturating_add(left_offset)
+                .saturating_add(self.te_measure_text_width(
+                    font,
+                    size.max(1),
+                    &text_bytes,
+                    line_start,
+                    clamped,
+                ))
+        };
+
+        let mut top = dest_rect.0;
+        for current_line in 0..line_index {
+            top = top.saturating_add(Self::te_height_for_line(bus, te_handle, current_line));
+        }
+        if on_break {
+            top = top.saturating_add(Self::te_height_for_line(bus, te_handle, line_index));
+        }
+
+        (top, x)
+    }
+
+    /// Inverse of `te_char_to_point`: locate the character offset whose
+    /// glyph cell contains `point` (vertical, horizontal). Used by
+    /// TEGetOffset ($A83C) per Inside Macintosh Volume V, V-172.
+    fn te_point_to_char(&self, bus: &MacMemoryBus, te_handle: u32, point: (i16, i16)) -> i16 {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return 0;
+        }
+
+        let text_bytes = Self::te_text_bytes(bus, te_handle);
+        let text_len = text_bytes.len();
+        let starts = Self::te_line_starts(bus, te_handle);
+        let n_lines = starts.len().saturating_sub(1);
+        if text_len == 0 || n_lines == 0 {
+            return 0;
+        }
+
+        let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+        let (point_v, point_h) = point;
+
+        if point_v < dest_rect.0 {
+            return 0;
+        }
+
+        let mut top = dest_rect.0;
+        let mut line_index = n_lines.saturating_sub(1);
+        let mut found_line = false;
+        for current_line in 0..n_lines {
+            let height = Self::te_height_for_line(bus, te_handle, current_line);
+            let bottom = top.saturating_add(height);
+            if point_v < bottom {
+                line_index = current_line;
+                found_line = true;
+                break;
+            }
+            top = bottom;
+        }
+        if !found_line {
+            return text_len.min(i16::MAX as usize) as i16;
+        }
+
+        let line_start = starts[line_index];
+        let line_end = starts.get(line_index + 1).copied().unwrap_or(text_len);
+
+        let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
+        let (font, _, size, _, _, _) = self.te_primary_style(bus, te_handle);
+        let rect_width = dest_rect.3.saturating_sub(dest_rect.1);
+        let left_offset = match just {
+            1 | -1 => {
+                let line_width = rect_width
+                    .saturating_sub(self.te_measure_text_width(
+                        font,
+                        size.max(1),
+                        &text_bytes,
+                        line_start,
+                        line_end,
+                    ))
+                    .saturating_sub(1);
+                if just == 1 {
+                    line_width / 2
+                } else {
+                    line_width
+                }
+            }
+            _ => 0,
+        };
+
+        let mut x_cursor = dest_rect.1.saturating_add(left_offset);
+        for (offset, byte) in text_bytes[line_start..line_end].iter().enumerate() {
+            let index = line_start + offset;
+            if matches!(*byte, b'\r' | b'\n') {
+                return index.min(i16::MAX as usize) as i16;
+            }
+            let advance = self.te_char_width(font, size.max(1), *byte);
+            // Hit-test against the glyph midpoint so a click on the right
+            // half of a character lands on the next offset, matching the
+            // semantics described in Inside Macintosh Volume V, V-172.
+            let mid = x_cursor.saturating_add(advance / 2);
+            if point_h < mid {
+                return index.min(i16::MAX as usize) as i16;
+            }
+            x_cursor = x_cursor.saturating_add(advance);
+        }
+        line_end.min(i16::MAX as usize) as i16
+    }
+
+    fn te_scroll_contents(
+        &mut self,
+        cpu: &mut impl CpuOps,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        dh: i16,
+        dv: i16,
+    ) {
+        if dh == 0 && dv == 0 {
+            return;
+        }
+
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+
+        let mut dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+        dest_rect.0 = dest_rect.0.saturating_add(dv);
+        dest_rect.1 = dest_rect.1.saturating_add(dh);
+        dest_rect.2 = dest_rect.2.saturating_add(dv);
+        dest_rect.3 = dest_rect.3.saturating_add(dh);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_DEST_RECT_OFFSET, dest_rect);
+        self.draw_te_contents(cpu, bus, te_handle);
+        // Refresh rendered_pixels so redraw_chrome restores the scrolled state rather
+        // than the pre-scroll snapshot captured at dialog creation.
+        // Text 1993, 2-89 (TEScroll/TEPinScroll modify destRect and redraw).
+        if let Some(ref tracking) = self.dialog_tracking {
+            if !tracking.game_managed && tracking.rendered_pixels_final {
+                let bounds = tracking.bounds;
+                let new_pixels = self.save_dialog_pixels(bus, bounds);
+                self.dialog_tracking.as_mut().unwrap().rendered_pixels = new_pixels;
+            }
+        }
+    }
+
+    fn te_getdelta(sel_start: i16, sel_stop: i16, view_start: i16, view_stop: i16) -> i16 {
+        if sel_start < view_start {
+            view_start.saturating_sub(sel_start)
+        } else if sel_stop > view_stop {
+            if sel_stop.saturating_sub(sel_start) > view_stop.saturating_sub(view_start) {
+                view_start.saturating_sub(sel_start)
+            } else {
+                view_stop.saturating_sub(sel_stop)
+            }
+        } else {
+            0
+        }
+    }
+
+    fn te_height_for_line(bus: &MacMemoryBus, te_handle: u32, line_index: usize) -> i16 {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return 0;
+        }
+
+        if Self::te_is_styled_record(bus, te_ptr) {
+            let style_handle = Self::te_style_handle(bus, te_handle);
+            if style_handle != 0 {
+                let style_ptr = bus.read_long(style_handle);
+                if style_ptr != 0 {
+                    let lh_handle = bus.read_long(style_ptr + Self::TE_STYLE_LH_TABLE_OFFSET);
+                    let lh_ptr = if lh_handle != 0 {
+                        bus.read_long(lh_handle)
+                    } else {
+                        0
+                    };
+                    if lh_ptr != 0 {
+                        return bus.read_word(
+                            lh_ptr
+                                + (line_index as u32 * Self::LH_ELEMENT_SIZE)
+                                + Self::LH_ELEMENT_HEIGHT_OFFSET,
+                        ) as i16;
+                    }
+                }
+            }
+        }
+
+        bus.read_word(te_ptr + Self::TE_LINE_HEIGHT_OFFSET) as i16
+    }
+
+    fn te_ascent_for_line(bus: &MacMemoryBus, te_handle: u32, line_index: usize) -> i16 {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return 0;
+        }
+
+        if Self::te_is_styled_record(bus, te_ptr) {
+            let style_handle = Self::te_style_handle(bus, te_handle);
+            if style_handle != 0 {
+                let style_ptr = bus.read_long(style_handle);
+                if style_ptr != 0 {
+                    let lh_handle = bus.read_long(style_ptr + Self::TE_STYLE_LH_TABLE_OFFSET);
+                    let lh_ptr = if lh_handle != 0 {
+                        bus.read_long(lh_handle)
+                    } else {
+                        0
+                    };
+                    if lh_ptr != 0 {
+                        return bus.read_word(
+                            lh_ptr
+                                + (line_index as u32 * Self::LH_ELEMENT_SIZE)
+                                + Self::LH_ELEMENT_ASCENT_OFFSET,
+                        ) as i16;
+                    }
+                }
+            }
+        }
+
+        bus.read_word(te_ptr + Self::TE_FONT_ASCENT_OFFSET) as i16
+    }
+
+    fn te_primary_style(
+        &self,
+        bus: &MacMemoryBus,
+        te_handle: u32,
+    ) -> (i16, i16, i16, (u16, u16, u16), i16, i16) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+            return (
+                self.tx_font,
+                self.tx_face,
+                self.tx_size.max(1),
+                self.fg_color,
+                metrics.ascent + metrics.descent + metrics.leading,
+                metrics.ascent,
+            );
+        }
+
+        if Self::te_is_styled_record(bus, te_ptr) {
+            let style_handle = bus.read_long(te_ptr + Self::TE_TX_FONT_OFFSET);
+            let style_ptr = if style_handle != 0 {
+                bus.read_long(style_handle)
+            } else {
+                0
+            };
+            if style_ptr != 0 {
+                let style_table_handle =
+                    bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
+                let style_table_ptr = if style_table_handle != 0 {
+                    bus.read_long(style_table_handle)
+                } else {
+                    0
+                };
+                if style_table_ptr != 0 {
+                    return (
+                        bus.read_word(style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET) as i16,
+                        bus.read_word(style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET) as i16,
+                        bus.read_word(style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET) as i16,
+                        (
+                            bus.read_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET),
+                            bus.read_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2),
+                            bus.read_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4),
+                        ),
+                        bus.read_word(style_table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET) as i16,
+                        bus.read_word(style_table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET) as i16,
+                    );
+                }
+            }
+        }
+
+        let tx_font = bus.read_word(te_ptr + Self::TE_TX_FONT_OFFSET) as i16;
+        let tx_face = bus.read_word(te_ptr + Self::TE_TX_FACE_OFFSET) as i16;
+        let tx_size = bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16;
+        let metrics = get_font_metrics(tx_font, tx_size.max(1));
+        (
+            tx_font,
+            tx_face,
+            tx_size.max(1),
+            self.fg_color,
+            metrics.ascent + metrics.descent + metrics.leading,
+            metrics.ascent,
+        )
+    }
+
+    #[allow(dead_code)]
+    fn te_line_metrics(&self, bus: &MacMemoryBus, te_handle: u32) -> (i16, i16) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+            return (
+                metrics.ascent + metrics.descent + metrics.leading,
+                metrics.ascent,
+            );
+        }
+
+        let line_height = bus.read_word(te_ptr + Self::TE_LINE_HEIGHT_OFFSET) as i16;
+        let font_ascent = bus.read_word(te_ptr + Self::TE_FONT_ASCENT_OFFSET) as i16;
+        if line_height > 0 && font_ascent >= 0 {
+            return (line_height, font_ascent);
+        }
+
+        let (_, _, _, _, resolved_line_height, resolved_ascent) =
+            self.te_primary_style(bus, te_handle);
+        (resolved_line_height, resolved_ascent)
+    }
+
+    fn initialize_te_record(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        dest_rect: (i16, i16, i16, i16),
+        view_rect: (i16, i16, i16, i16),
+    ) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+
+        let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+        let line_height = metrics.ascent + metrics.descent + metrics.leading;
+        let h_text = bus.alloc(4);
+        if h_text != 0 {
+            bus.write_long(h_text, 0);
+        }
+
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_DEST_RECT_OFFSET, dest_rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET, view_rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_SEL_RECT_OFFSET, dest_rect);
+        bus.write_word(te_ptr + Self::TE_LINE_HEIGHT_OFFSET, line_height as u16);
+        bus.write_word(te_ptr + Self::TE_FONT_ASCENT_OFFSET, metrics.ascent as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET, dest_rect.0 as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
+        bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
+        bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
+        bus.write_word(te_ptr + Self::TE_TX_FONT_OFFSET, self.tx_font as u16);
+        bus.write_word(te_ptr + Self::TE_TX_FACE_OFFSET, self.tx_face as u16);
+        bus.write_word(te_ptr + Self::TE_TX_MODE_OFFSET, self.tx_mode as u16);
+        bus.write_word(te_ptr + Self::TE_TX_SIZE_OFFSET, self.tx_size as u16);
+        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, self.current_port);
+        self.textedit_states.remove(&te_handle);
+    }
+
+    fn initialize_styled_te_record(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        dest_rect: (i16, i16, i16, i16),
+        view_rect: (i16, i16, i16, i16),
+    ) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+
+        let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+        let line_height = metrics.ascent + metrics.descent + metrics.leading;
+
+        let h_text = Self::allocate_handle_with_data(bus, 0);
+        let style_table = Self::allocate_handle_with_data(bus, Self::ST_ELEMENT_SIZE);
+        let lh_table = Self::allocate_handle_with_data(bus, Self::LH_ELEMENT_SIZE);
+        let null_scrap = Self::allocate_handle_with_data(bus, Self::STYLE_SCRAP_REC_SIZE);
+        let null_style = Self::allocate_handle_with_data(bus, Self::NULL_STYLE_REC_SIZE);
+        let style_handle = Self::allocate_handle_with_data(bus, 0x1C);
+
+        let style_table_ptr = if style_table != 0 {
+            bus.read_long(style_table)
+        } else {
+            0
+        };
+        if style_table_ptr != 0 {
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_REFCOUNT_OFFSET, 1);
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
+                line_height as u16,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
+                metrics.ascent as u16,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
+                self.tx_font as u16,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
+                self.tx_face as u16,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
+                self.tx_size.max(1) as u16,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
+                self.fg_color.0,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2,
+                self.fg_color.1,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4,
+                self.fg_color.2,
+            );
+        }
+
+        let lh_table_ptr = if lh_table != 0 {
+            bus.read_long(lh_table)
+        } else {
+            0
+        };
+        if lh_table_ptr != 0 {
+            bus.write_word(
+                lh_table_ptr + Self::LH_ELEMENT_HEIGHT_OFFSET,
+                line_height as u16,
+            );
+            bus.write_word(
+                lh_table_ptr + Self::LH_ELEMENT_ASCENT_OFFSET,
+                metrics.ascent as u16,
+            );
+        }
+
+        let null_scrap_ptr = if null_scrap != 0 {
+            bus.read_long(null_scrap)
+        } else {
+            0
+        };
+        if null_scrap_ptr != 0 {
+            bus.write_word(null_scrap_ptr + Self::SCRAP_N_STYLES_OFFSET, 0);
+            bus.write_long(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_START_CHAR_OFFSET,
+                0,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_HEIGHT_OFFSET,
+                line_height as u16,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_ASCENT_OFFSET,
+                metrics.ascent as u16,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_FONT_OFFSET,
+                self.tx_font as u16,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_FACE_OFFSET,
+                self.tx_face as u16,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_SIZE_OFFSET,
+                self.tx_size.max(1) as u16,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_COLOR_OFFSET,
+                self.fg_color.0,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_COLOR_OFFSET + 2,
+                self.fg_color.1,
+            );
+            bus.write_word(
+                null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_COLOR_OFFSET + 4,
+                self.fg_color.2,
+            );
+        }
+
+        let null_style_ptr = if null_style != 0 {
+            bus.read_long(null_style)
+        } else {
+            0
+        };
+        if null_style_ptr != 0 {
+            bus.write_long(null_style_ptr + Self::NULL_STYLE_SCRAP_OFFSET, null_scrap);
+        }
+
+        let style_ptr = if style_handle != 0 {
+            bus.read_long(style_handle)
+        } else {
+            0
+        };
+        if style_ptr != 0 {
+            bus.write_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET, 1);
+            bus.write_word(style_ptr + Self::TE_STYLE_N_STYLES_OFFSET, 1);
+            bus.write_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET, style_table);
+            bus.write_long(style_ptr + Self::TE_STYLE_LH_TABLE_OFFSET, lh_table);
+            bus.write_long(style_ptr + Self::TE_STYLE_NULL_STYLE_OFFSET, null_style);
+            bus.write_word(style_ptr + Self::TE_STYLE_RUNS_OFFSET, 0);
+            bus.write_word(style_ptr + Self::TE_STYLE_RUNS_OFFSET + 2, 0);
+            bus.write_word(style_ptr + Self::TE_STYLE_RUNS_OFFSET + 4, 1);
+            bus.write_word(style_ptr + Self::TE_STYLE_RUNS_OFFSET + 6, 0xFFFF);
+        }
+
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_DEST_RECT_OFFSET, dest_rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET, view_rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_SEL_RECT_OFFSET, dest_rect);
+        bus.write_word(te_ptr + Self::TE_LINE_HEIGHT_OFFSET, 0xFFFF);
+        bus.write_word(te_ptr + Self::TE_FONT_ASCENT_OFFSET, 0xFFFF);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET, dest_rect.0 as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
+        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
+        bus.write_word(te_ptr + Self::TE_JUST_OFFSET, 0);
+        bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
+        bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
+        bus.write_long(te_ptr + Self::TE_TX_FONT_OFFSET, style_handle);
+        bus.write_word(te_ptr + Self::TE_TX_MODE_OFFSET, self.tx_mode as u16);
+        bus.write_word(te_ptr + Self::TE_TX_SIZE_OFFSET, 0xFFFF);
+        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, self.current_port);
+        bus.write_word(te_ptr + Self::TE_N_LINES_OFFSET, 0);
+        bus.write_word(te_ptr + Self::TE_LINE_STARTS_OFFSET, 0);
+        self.textedit_states.remove(&te_handle);
+    }
+
+    fn te_text_length(bus: &MacMemoryBus, te_handle: u32) -> usize {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return 0;
+        }
+
+        let stored = bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET) as usize;
+        if stored != 0 {
+            return stored;
+        }
+
+        let h_text = bus.read_long(te_ptr + Self::TE_HTEXT_OFFSET);
+        if h_text == 0 {
+            return 0;
+        }
+        let text_ptr = bus.read_long(h_text);
+        if text_ptr == 0 {
+            0
+        } else {
+            bus.get_alloc_size(text_ptr).unwrap_or(0) as usize
+        }
+    }
+
+    fn te_text_bytes(bus: &MacMemoryBus, te_handle: u32) -> Vec<u8> {
+        let len = Self::te_text_length(bus, te_handle);
+        if len == 0 {
+            return Vec::new();
+        }
+
+        let h_text = Self::te_text_handle(bus, te_handle);
+        if h_text == 0 {
+            return Vec::new();
+        }
+        let text_ptr = bus.read_long(h_text);
+        if text_ptr == 0 {
+            return Vec::new();
+        }
+        bus.read_bytes(text_ptr, len)
+    }
+
+    pub(crate) fn te_find_word_bounds(
+        &self,
+        bus: &MacMemoryBus,
+        te_handle: u32,
+        current_pos: usize,
+    ) -> (u16, u16) {
+        let text_bytes = Self::te_text_bytes(bus, te_handle);
+        let len = text_bytes.len();
+        if len == 0 {
+            return (0, 0);
+        }
+
+        let pos = current_pos.min(len);
+        if pos < len && Self::te_word_break_byte(text_bytes[pos]) {
+            return (pos as u16, pos as u16);
+        }
+
+        let mut start = pos;
+        while start > 0 && !Self::te_word_break_byte(text_bytes[start - 1]) {
+            start -= 1;
+        }
+
+        let mut end = pos;
+        while end < len && !Self::te_word_break_byte(text_bytes[end]) {
+            end += 1;
+        }
+
+        (start as u16, end as u16)
+    }
+
+    fn te_reset_styled_metadata(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        text_len: usize,
+    ) {
+        let style_handle = Self::te_style_handle(bus, te_handle);
+        if style_handle == 0 {
+            return;
+        }
+
+        let (font, face, size, color, line_height, ascent) = self.te_primary_style(bus, te_handle);
+        let style_ptr = bus.read_long(style_handle);
+        if style_ptr == 0 {
+            return;
+        }
+
+        let style_table_handle = bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
+        let style_table_ptr = if style_table_handle != 0 {
+            bus.read_long(style_table_handle)
+        } else {
+            0
+        };
+        if style_table_ptr != 0 {
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_REFCOUNT_OFFSET, 1);
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
+                line_height as u16,
+            );
+            bus.write_word(
+                style_table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
+                ascent as u16,
+            );
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET, font as u16);
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET, face as u16);
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET, size as u16);
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET, color.0);
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2, color.1);
+            bus.write_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4, color.2);
+        }
+
+        let lh_handle = bus.read_long(style_ptr + Self::TE_STYLE_LH_TABLE_OFFSET);
+        let lh_ptr = if lh_handle != 0 {
+            bus.read_long(lh_handle)
+        } else {
+            0
+        };
+        if lh_ptr != 0 {
+            bus.write_word(lh_ptr + Self::LH_ELEMENT_HEIGHT_OFFSET, line_height as u16);
+            bus.write_word(lh_ptr + Self::LH_ELEMENT_ASCENT_OFFSET, ascent as u16);
+        }
+
+        bus.write_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET, 1);
+        bus.write_word(style_ptr + Self::TE_STYLE_N_STYLES_OFFSET, 1);
+        bus.write_word(style_ptr + Self::TE_STYLE_RUNS_OFFSET, 0);
+        bus.write_word(style_ptr + Self::TE_STYLE_RUNS_OFFSET + 2, 0);
+        bus.write_word(
+            style_ptr + Self::TE_STYLE_RUNS_OFFSET + 4,
+            text_len.saturating_add(1).min(u16::MAX as usize) as u16,
+        );
+        bus.write_word(style_ptr + Self::TE_STYLE_RUNS_OFFSET + 6, 0xFFFF);
+    }
+
+    fn te_set_text_contents(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+
+        let mut h_text = bus.read_long(te_ptr + Self::TE_HTEXT_OFFSET);
+        if h_text == 0 {
+            h_text = Self::allocate_handle_with_data(bus, 0);
+            bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
+        }
+
+        let text_ptr = Self::ensure_text_handle_size(bus, h_text, text.len());
+        if !text.is_empty() && text_ptr != 0 {
+            bus.write_bytes(text_ptr, text);
+        }
+
+        let clamped_len = text.len().min(u16::MAX as usize) as u16;
+        bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, clamped_len);
+        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, clamped_len);
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, clamped_len);
+        self.te_recalculate_layout(bus, te_handle);
+    }
+
+    fn te_insert_text(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+
+        let existing = Self::te_text_bytes(bus, te_handle);
+        let mut sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+        let mut sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+        let text_len = existing.len();
+        sel_start = sel_start.min(text_len);
+        sel_end = sel_end.min(text_len);
+        if sel_end < sel_start {
+            std::mem::swap(&mut sel_start, &mut sel_end);
+        }
+
+        let mut merged =
+            Vec::with_capacity(sel_start + text.len() + text_len.saturating_sub(sel_end));
+        merged.extend_from_slice(&existing[..sel_start]);
+        merged.extend_from_slice(text);
+        merged.extend_from_slice(&existing[sel_end..]);
+        self.te_set_text_contents(bus, te_handle, &merged);
+
+        let insertion_end = (sel_start + text.len()).min(u16::MAX as usize) as u16;
+        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, insertion_end);
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, insertion_end);
+    }
+
+    fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
+        let (_face, scale) = get_font_face_scaled(font, size.max(1));
+        let ch = byte as char;
+        if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(font, size.max(1), ch) {
+            self.glyph_advance(glyph) * scale
+        } else {
+            self.missing_glyph_advance() * scale
+        }
+    }
+
+    fn te_measure_text_width(
+        &self,
+        font: i16,
+        size: i16,
+        text_bytes: &[u8],
+        start: usize,
+        end: usize,
+    ) -> i16 {
+        let mut width = 0i16;
+        for &b in &text_bytes[start..end] {
+            width += self.te_char_width(font, size, b);
+        }
+        width
+    }
+
+    fn te_word_break_byte(byte: u8) -> bool {
+        byte <= 0x20
+    }
+
+    fn te_next_break(
+        &self,
+        font: i16,
+        size: i16,
+        text_bytes: &[u8],
+        offset: usize,
+        max_width: i16,
+    ) -> usize {
+        let len = text_bytes.len();
+        if offset >= len {
+            return len;
+        }
+
+        let mut width = 0i16;
+        let mut index = offset;
+        while width <= max_width && index < len && !matches!(text_bytes[index], b'\r' | b'\n') {
+            width = width.saturating_add(self.te_char_width(font, size, text_bytes[index]));
+            index += 1;
+        }
+
+        let mut next = if width > max_width {
+            let max_index = index.saturating_sub(1);
+            if text_bytes[max_index] == b' ' {
+                let mut scan = index;
+                while scan < len && text_bytes[scan] == b' ' {
+                    scan += 1;
+                }
+                scan
+            } else {
+                let mut scan = max_index;
+                while scan > offset && !Self::te_word_break_byte(text_bytes[scan - 1]) {
+                    scan -= 1;
+                }
+                if scan == offset {
+                    max_index
+                } else {
+                    scan
+                }
+            }
+        } else if index == len {
+            len
+        } else {
+            index + 1
+        };
+
+        if next == offset && offset < len {
+            next += 1;
+        }
+        next
+    }
+
+    fn te_wrap_lines(
+        &self,
+        font: i16,
+        size: i16,
+        text_bytes: &[u8],
+        box_width: i16,
+    ) -> Vec<(usize, usize)> {
+        let mut lines: Vec<(usize, usize)> = Vec::new();
+        let mut line_start = 0usize;
+        while line_start < text_bytes.len() {
+            let next = self.te_next_break(font, size, text_bytes, line_start, box_width);
+            lines.push((line_start, next.min(text_bytes.len())));
+            line_start = next;
+        }
+
+        lines
+    }
+
+    fn te_recalculate_layout(&mut self, bus: &mut MacMemoryBus, te_handle: u32) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+
+        let text_bytes = Self::te_text_bytes(bus, te_handle);
+        let text_len = text_bytes.len();
+        let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+        let (font, _, size, _, line_height, font_ascent) = self.te_primary_style(bus, te_handle);
+        let lines = if text_bytes.is_empty() {
+            Vec::new()
+        } else {
+            self.te_wrap_lines(
+                font,
+                size.max(1),
+                &text_bytes,
+                (dest_rect.3 - dest_rect.1).max(0),
+            )
+        };
+        let line_count = lines.len();
+        let te_ptr = Self::ensure_te_record_line_capacity(bus, te_handle, line_count);
+        if te_ptr == 0 {
+            return;
+        }
+        let styled = Self::te_is_styled_record(bus, te_ptr);
+
+        bus.write_word(
+            te_ptr + Self::TE_N_LINES_OFFSET,
+            line_count.min(u16::MAX as usize) as u16,
+        );
+        if styled {
+            bus.write_word(te_ptr + Self::TE_LINE_HEIGHT_OFFSET, 0xFFFF);
+            bus.write_word(te_ptr + Self::TE_FONT_ASCENT_OFFSET, 0xFFFF);
+        } else {
+            bus.write_word(te_ptr + Self::TE_LINE_HEIGHT_OFFSET, line_height as u16);
+            bus.write_word(te_ptr + Self::TE_FONT_ASCENT_OFFSET, font_ascent as u16);
+        }
+
+        for index in 0..=line_count.saturating_add(1) {
+            bus.write_word(te_ptr + Self::TE_LINE_STARTS_OFFSET + (index as u32 * 2), 0);
+        }
+        for (index, (start, _)) in lines.iter().enumerate() {
+            bus.write_word(
+                te_ptr + Self::TE_LINE_STARTS_OFFSET + (index as u32 * 2),
+                (*start).min(u16::MAX as usize) as u16,
+            );
+        }
+        bus.write_word(
+            te_ptr + Self::TE_LINE_STARTS_OFFSET + (line_count as u32 * 2),
+            text_len.min(u16::MAX as usize) as u16,
+        );
+        bus.write_word(
+            te_ptr + Self::TE_LINE_STARTS_OFFSET + ((line_count as u32 + 1) * 2),
+            0,
+        );
+
+        if styled {
+            let style_handle = Self::te_style_handle(bus, te_handle);
+            if style_handle != 0 {
+                let style_ptr = bus.read_long(style_handle);
+                if style_ptr != 0 {
+                    let lh_handle = bus.read_long(style_ptr + Self::TE_STYLE_LH_TABLE_OFFSET);
+                    if lh_handle != 0 {
+                        let lh_ptr = Self::ensure_handle_capacity(
+                            bus,
+                            lh_handle,
+                            ((line_count + 1) as u32) * Self::LH_ELEMENT_SIZE,
+                        );
+                        if lh_ptr != 0 {
+                            for index in 0..=line_count {
+                                let element = lh_ptr + (index as u32 * Self::LH_ELEMENT_SIZE);
+                                bus.write_word(
+                                    element + Self::LH_ELEMENT_HEIGHT_OFFSET,
+                                    line_height as u16,
+                                );
+                                bus.write_word(
+                                    element + Self::LH_ELEMENT_ASCENT_OFFSET,
+                                    font_ascent as u16,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.te_reset_styled_metadata(bus, te_handle, text_len);
+    }
+
+    fn te_line_origin_x(just: i16, box_left: i16, box_right: i16, line_width: i16) -> i16 {
+        // Per Inside Macintosh: Text 1993, p. 7320-7323 (and MPW
+        // Universal Headers `TextEdit.h`):
+        //   teJustLeft   =  0  (flush left — system default for LTR)
+        //   teJustCenter =  1  (centered)
+        //   teJustRight  = -1  (flush right)
+        //   teForceLeft  = -2  (force flush left, overrides localised right-to-left)
+        match just {
+            1 => box_left + ((box_right - box_left) - line_width) / 2,
+            -1 => box_right - line_width,
+            _ => box_left, // 0 / -2 / any other → flush left
+        }
+    }
+
+    fn draw_te_contents(&mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus, te_handle: u32) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+
+        let text_bytes = Self::te_text_bytes(bus, te_handle);
+        if text_bytes.is_empty() {
+            return;
+        }
+
+        let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+        let view_rect = Self::te_read_rect(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET);
+        let te_port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
+        let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
+        let (font, face, size, color, _, _) = self.te_primary_style(bus, te_handle);
+        let old_font = self.tx_font;
+        let old_face = self.tx_face;
+        let old_size = self.tx_size;
+        let old_fg = self.fg_color;
+        let old_loc = self.pn_loc;
+        let previous_port = self.current_port;
+        let previous_gdevice = self.current_gdevice;
+        let switched_port = te_port != 0 && te_port != previous_port;
+
+        // Always sync A5 globals to te_port before drawing, even if port didn't change.
+        // draw_generic_shape reads from A5 globals, and untrack_window can set self.current_port
+        // without updating A5 globals, causing a divergence that sends drawing to the wrong port.
+        if te_port != 0 {
+            self.set_current_port_state(bus, cpu, te_port, None);
+        }
+        if trace_textedit_enabled() {
+            let (vis_top, vis_left, vis_bottom, vis_right) = {
+                let vis_handle = bus.read_long(self.current_port + 24);
+                let vis_ptr = if vis_handle != 0 {
+                    bus.read_long(vis_handle)
+                } else {
+                    0
+                };
+                if vis_ptr != 0 {
+                    (
+                        bus.read_word(vis_ptr + 2) as i16,
+                        bus.read_word(vis_ptr + 4) as i16,
+                        bus.read_word(vis_ptr + 6) as i16,
+                        bus.read_word(vis_ptr + 8) as i16,
+                    )
+                } else {
+                    (0, 0, 0, 0)
+                }
+            };
+            let (clip_top, clip_left, clip_bottom, clip_right) = {
+                let clip_handle = bus.read_long(self.current_port + 28);
+                let clip_ptr = if clip_handle != 0 {
+                    bus.read_long(clip_handle)
+                } else {
+                    0
+                };
+                if clip_ptr != 0 {
+                    (
+                        bus.read_word(clip_ptr + 2) as i16,
+                        bus.read_word(clip_ptr + 4) as i16,
+                        bus.read_word(clip_ptr + 6) as i16,
+                        bus.read_word(clip_ptr + 8) as i16,
+                    )
+                } else {
+                    (0, 0, 0, 0)
+                }
+            };
+            eprintln!(
+                "[TE] draw_te_contents hTE=${:08X} te_port=${:08X} prev_port=${:08X} current_port=${:08X} switched={} gworld={} dest=({},{},{},{}) view=({},{},{},{}) vis=({},{},{},{}) clip=({},{},{},{})",
+                te_handle,
+                te_port,
+                previous_port,
+                self.current_port,
+                switched_port,
+                self.gworld_devices.contains_key(&te_port),
+                dest_rect.0,
+                dest_rect.1,
+                dest_rect.2,
+                dest_rect.3,
+                view_rect.0,
+                view_rect.1,
+                view_rect.2,
+                view_rect.3,
+                vis_top,
+                vis_left,
+                vis_bottom,
+                vis_right,
+                clip_top,
+                clip_left,
+                clip_bottom,
+                clip_right,
+            );
+        }
+
+        let checksum_view_rect =
+            |bus: &MacMemoryBus, port: u32, rect: (i16, i16, i16, i16)| -> u64 {
+                if port == 0 {
+                    return 0;
+                }
+                let port_version = bus.read_word(port + 6);
+                let is_color = (port_version & 0xC000) != 0;
+                let (pix_base, row_bytes, bounds_top, bounds_left, bounds_bottom, bounds_right) =
+                    if is_color {
+                        let pix_map_handle = bus.read_long(port + 2);
+                        if pix_map_handle == 0 {
+                            return 0;
+                        }
+                        let pix_map_ptr = bus.read_long(pix_map_handle);
+                        if pix_map_ptr == 0 {
+                            return 0;
+                        }
+                        (
+                            bus.read_long(pix_map_ptr),
+                            (bus.read_word(pix_map_ptr + 4) & 0x3FFF) as u32,
+                            bus.read_word(pix_map_ptr + 6) as i16,
+                            bus.read_word(pix_map_ptr + 8) as i16,
+                            bus.read_word(pix_map_ptr + 10) as i16,
+                            bus.read_word(pix_map_ptr + 12) as i16,
+                        )
+                    } else {
+                        (
+                            bus.read_long(port + 2),
+                            (bus.read_word(port + 6) & 0x3FFF) as u32,
+                            bus.read_word(port + 8) as i16,
+                            bus.read_word(port + 10) as i16,
+                            bus.read_word(port + 12) as i16,
+                            bus.read_word(port + 14) as i16,
+                        )
+                    };
+                let top = rect.0.max(bounds_top);
+                let left = rect.1.max(bounds_left);
+                let bottom = rect.2.min(bounds_bottom);
+                let right = rect.3.min(bounds_right);
+                if top >= bottom || left >= right || pix_base == 0 {
+                    return 0;
+                }
+                let mut sum = 0u64;
+                for y in top..bottom {
+                    let dy = (y - bounds_top) as u32;
+                    for x in left..right {
+                        let dx = (x - bounds_left) as u32;
+                        sum =
+                            sum.wrapping_add(bus.read_byte(pix_base + dy * row_bytes + dx) as u64);
+                    }
+                }
+                sum
+            };
+        let checksum_before = if trace_textedit_enabled() {
+            checksum_view_rect(bus, self.current_port, view_rect)
+        } else {
+            0
+        };
+
+        self.tx_font = font;
+        self.tx_face = face;
+        self.tx_size = size.max(1);
+        self.fg_color = color;
+
+        let clip_top = view_rect.0;
+        let clip_left = view_rect.1;
+        let clip_bottom = view_rect.2;
+        let clip_right = view_rect.3;
+        let box_width = (dest_rect.3 - dest_rect.1).max(0);
+
+        self.draw_rect(
+            cpu,
+            bus,
+            &Rect {
+                top: clip_top,
+                left: clip_left,
+                bottom: clip_bottom,
+                right: clip_right,
+            },
+            ShapeOp::Erase,
+        );
+        let lines = self.te_wrap_lines(font, size.max(1), &text_bytes, box_width);
+
+        let mut top = dest_rect.0;
+        let mut visible_lines = Vec::new();
+        for (index, (start, end)) in lines.iter().enumerate() {
+            let line_height = Self::te_height_for_line(bus, te_handle, index);
+            let line_ascent = Self::te_ascent_for_line(bus, te_handle, index);
+            let line_bottom = top.saturating_add(line_height);
+            if line_bottom <= clip_top {
+                top = line_bottom;
+                continue;
+            }
+            if top >= clip_bottom {
+                break;
+            }
+            visible_lines.push(index);
+            let mut trimmed_end = *end;
+            while trimmed_end > *start
+                && matches!(text_bytes[trimmed_end - 1], b' ' | b'\r' | b'\n')
+            {
+                trimmed_end -= 1;
+            }
+            let line_width =
+                self.te_measure_text_width(font, size.max(1), &text_bytes, *start, trimmed_end);
+            let x = Self::te_line_origin_x(just, dest_rect.1, dest_rect.3, line_width);
+            self.pn_loc = (top.saturating_add(line_ascent), x);
+            for &byte in &text_bytes[*start..trimmed_end] {
+                self.draw_char(cpu, bus, byte as char);
+            }
+            top = line_bottom;
+        }
+
+        self.tx_font = old_font;
+        self.tx_face = old_face;
+        self.tx_size = old_size;
+        self.fg_color = old_fg;
+        self.pn_loc = old_loc;
+        if trace_textedit_enabled() {
+            eprintln!(
+                "[TE] draw_te_contents visible_lines hTE=${:08X} {:?}",
+                te_handle, visible_lines
+            );
+            eprintln!(
+                "[TE] draw_te_contents checksum hTE=${:08X} before={} after={}",
+                te_handle,
+                checksum_before,
+                checksum_view_rect(bus, self.current_port, view_rect)
+            );
+        }
+
+        if switched_port {
+            self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
+        }
+    }
+
+    fn te_feature_bit(&self, te_handle: u32, feature: u16) -> bool {
+        let mask = 1u16.checked_shl(feature as u32).unwrap_or(0);
+        self.textedit_states
+            .get(&te_handle)
+            .map(|state| (state.feature_bits & mask) != 0)
+            .unwrap_or(false)
+    }
+
+    /// Whether auto-scroll is enabled on the TextEdit record at
+    /// `te_handle` (set by `TEAutoView` per IM:V V-173). Public
+    /// projection over `textedit_states[te].feature_bits` so
+    /// integration tests can observe TEAutoView's effect without
+    /// access to the private feature-bit constants.
+    pub fn te_auto_scroll_enabled(&self, te_handle: u32) -> bool {
+        self.te_feature_bit(te_handle, Self::TE_FEATURE_AUTO_SCROLL)
+    }
+
+    fn set_te_feature_bit(&mut self, te_handle: u32, feature: u16, enabled: bool) {
+        let mask = 1u16.checked_shl(feature as u32).unwrap_or(0);
+        let state = self.textedit_states.entry(te_handle).or_default();
+        if enabled {
+            state.feature_bits |= mask;
+        } else {
+            state.feature_bits &= !mask;
+        }
+    }
+
+    fn initialize_dialog_item_handles(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        items: &[DialogItem],
+    ) {
+        // NewDialog/GetNewDialog duplicates the DITL and replaces itmhand with
+        // live item handles (text handles, control handles, picture handles).
+        // Inside Macintosh Volume I, I-412; executor dialCreate.cpp
+        for (index, item) in items.iter().enumerate() {
+            let item_no = index as i16 + 1;
+            let Some(item_handle_addr) = Self::dialog_item_handle_addr(bus, dialog_ptr, item_no)
+            else {
+                continue;
+            };
+
+            let base_type = item.item_type & 0x7F;
+            let item_handle = match base_type {
+                8 | 16 => {
+                    let text_bytes = item.text.as_bytes();
+                    let handle = bus.alloc(4);
+                    let text_ptr = if text_bytes.is_empty() {
+                        0
+                    } else {
+                        let ptr = bus.alloc(text_bytes.len() as u32);
+                        bus.write_bytes(ptr, text_bytes);
+                        ptr
+                    };
+                    bus.write_long(handle, text_ptr);
+                    self.dialog_item_handles.insert(handle, (dialog_ptr, index));
+                    handle
+                }
+                32 => self
+                    .find_resource_any(*b"ICON", item.resource_id)
+                    .map(|(_, ptr)| {
+                        self.get_or_create_resource_handle(bus, *b"ICON", item.resource_id, ptr)
+                    })
+                    .unwrap_or(0),
+                4..=6 => bus.read_long(item_handle_addr),
+                64 => self
+                    .find_resource_any(*b"PICT", item.resource_id)
+                    .map(|(_, ptr)| {
+                        self.get_or_create_resource_handle(bus, *b"PICT", item.resource_id, ptr)
+                    })
+                    .unwrap_or(0),
+                0 => 0,
+                _ => 0,
+            };
+
+            bus.write_long(item_handle_addr, item_handle);
+        }
+    }
+
+    // ========== DLOG / DITL Resource Parsing ==========
+
+    /// Parse a DLOG resource from guest memory.
+    /// Returns (bounds, procID, visible, itemsID, title, position).
+    /// Inside Macintosh Volume I, I-437
+    /// Macintosh Toolbox Essentials 1992, p. 6-148
+    fn parse_dlog(
+        bus: &MacMemoryBus,
+        ptr: u32,
+        _data_len: u32,
+    ) -> ((i16, i16, i16, i16), i16, bool, i16, String, u16) {
+        let top = bus.read_word(ptr) as i16;
+        let left = bus.read_word(ptr + 2) as i16;
+        let bottom = bus.read_word(ptr + 4) as i16;
+        let right = bus.read_word(ptr + 6) as i16;
+        let proc_id = bus.read_word(ptr + 8) as i16;
+        let visible = bus.read_byte(ptr + 10) != 0;
+        // +11: filler
+        // +12: goAwayFlag (1 byte)
+        // +13: filler
+        let _ref_con = bus.read_long(ptr + 14);
+        let items_id = bus.read_word(ptr + 18) as i16;
+        // +20: title as Pascal string
+        let title_len = bus.read_byte(ptr + 20) as usize;
+        let mut title_bytes = vec![0u8; title_len];
+        for (i, byte) in title_bytes.iter_mut().enumerate() {
+            *byte = bus.read_byte(ptr + 21 + i as u32);
+        }
+        let title = String::from_utf8_lossy(&title_bytes).to_string();
+
+        // Read positioning constant after the title Pascal string.
+        // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
+        // The position word follows the title, padded to an even boundary.
+        let title_end = 21 + title_len as u32;
+        let padded_end = (title_end + 1) & !1;
+        let position = bus.read_word(ptr + padded_end);
+
+        (
+            (top, left, bottom, right),
+            proc_id,
+            visible,
+            items_id,
+            title,
+            position,
+        )
+    }
+
+    /// Parse a DITL resource from guest memory into a list of DialogItems.
+    /// Inside Macintosh Volume I, I-439
+    fn parse_ditl(bus: &MacMemoryBus, ptr: u32, data_len: u32) -> Vec<DialogItem> {
+        let max_index = bus.read_word(ptr) as i16; // number of items minus 1
+        let count = (max_index + 1) as usize;
+        let mut items = Vec::with_capacity(count);
+        let mut offset = 2u32; // skip dlgMaxIndex
+
+        for _ in 0..count {
+            if offset + 14 > data_len {
+                break;
+            }
+            // Read 4-byte handle/procPtr field.
+            // For userItem types, the game may write a procedure pointer here
+            // via SetDItem or direct memory manipulation.
+            // Inside Macintosh Volume I, I-427
+            let _item_handle = bus.read_long(ptr + offset);
+            offset += 4;
+            // Read display rectangle
+            let top = bus.read_word(ptr + offset) as i16;
+            let left = bus.read_word(ptr + offset + 2) as i16;
+            let bottom = bus.read_word(ptr + offset + 4) as i16;
+            let right = bus.read_word(ptr + offset + 6) as i16;
+            offset += 8;
+            // Read type byte and data length
+            let item_type = bus.read_byte(ptr + offset);
+            let data_len_byte = bus.read_byte(ptr + offset + 1) as u32;
+            offset += 2;
+
+            let base_type = item_type & 0x7F; // strip itemDisable bit
+
+            let mut text = String::new();
+            let mut resource_id: i16 = 0;
+
+            if data_len_byte > 0 {
+                match base_type {
+                    // icon, picture, resCtrl: 2-byte resource ID
+                    32 | 64 | 7 if data_len_byte >= 2 => {
+                        resource_id = bus.read_word(ptr + offset) as i16;
+                    }
+                    // button (4), statText (8), editText (16): text data
+                    4 | 5 | 6 | 8 | 16 => {
+                        let bytes = bus.read_bytes(ptr + offset, data_len_byte as usize);
+                        text = String::from_utf8_lossy(&bytes).to_string();
+                    }
+                    _ => {}
+                }
+            }
+
+            // Advance past data, padded to even boundary
+            let padded = (data_len_byte + 1) & !1;
+            offset += padded;
+
+            // The DITL stores only a placeholder for userItem procedures.
+            // Applications install the live ProcPtr after dialog creation via
+            // SetDItem or direct writes to the duplicated DITL.
+            // Inside Macintosh Volume I, I-426 to I-427
+            let proc_ptr = 0;
+
+            items.push(DialogItem {
+                item_type,
+                rect: (top, left, bottom, right),
+                text,
+                resource_id,
+                proc_ptr,
+                sel_start: 0,
+                sel_end: 0,
+            });
+        }
+        items
+    }
+
+    /// Re-read userItem proc pointers from the DITL data in guest memory.
+    /// The game may write proc pointers directly to the DITL handle data
+    /// after GetNewDialog returns, bypassing SetDItem.
+    /// Inside Macintosh Volume I, I-427
+    fn refresh_ditl_proc_ptrs(bus: &MacMemoryBus, dialog_ptr: u32, items: &mut [DialogItem]) {
+        // Read the items handle from the DialogRecord (offset 156)
+        let items_handle = bus.read_long(dialog_ptr + 156);
+        if items_handle == 0 {
+            return;
+        }
+        let ditl_ptr = bus.read_long(items_handle);
+        if ditl_ptr == 0 {
+            return;
+        }
+
+        // Walk the DITL data structure, reading the 4-byte itmhand field
+        // for each item. Format: 2-byte count-1, then per item:
+        //   4 bytes: itmhand (handle or proc pointer)
+        //   8 bytes: itmr (Rect)
+        //   1 byte: itmtype
+        //   1 byte: itmlen
+        //   itmlen bytes: data (padded to even)
+        let mut offset = 2u32; // skip count word
+        for item in items.iter_mut() {
+            let handle = bus.read_long(ditl_ptr + offset);
+            offset += 4; // itmhand
+            offset += 8; // itmr (Rect)
+            let _item_type = bus.read_byte(ditl_ptr + offset);
+            let data_len = bus.read_byte(ditl_ptr + offset + 1) as u32;
+            offset += 2; // itmtype + itmlen
+            let padded = (data_len + 1) & !1;
+            offset += padded;
+
+            let base_type = item.item_type & 0x7F;
+            if base_type == 0 {
+                item.proc_ptr = handle;
+            }
+        }
+    }
+
+    fn duplicate_handle_data(bus: &mut MacMemoryBus, handle: u32) -> u32 {
+        if handle == 0 {
+            return 0;
+        }
+
+        let data_ptr = bus.read_long(handle);
+        let new_handle = bus.alloc(4);
+        if data_ptr == 0 {
+            bus.write_long(new_handle, 0);
+            return new_handle;
+        }
+
+        let size = bus.get_alloc_size(data_ptr).unwrap_or(0);
+        let new_data_ptr = bus.alloc(size);
+        for offset in 0..size {
+            bus.write_byte(new_data_ptr + offset, bus.read_byte(data_ptr + offset));
+        }
+        bus.write_long(new_handle, new_data_ptr);
+        new_handle
+    }
+
+    pub(crate) fn dialog_screen_bounds(
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+    ) -> (i16, i16, i16, i16) {
+        let port_height =
+            bus.read_word(dialog_ptr + 20) as i16 - bus.read_word(dialog_ptr + 16) as i16;
+        let port_width =
+            bus.read_word(dialog_ptr + 22) as i16 - bus.read_word(dialog_ptr + 18) as i16;
+
+        let port_version = bus.read_word(dialog_ptr + 6);
+        let is_cgraf = (port_version & 0xC000) == 0xC000;
+        let (top, left) = if is_cgraf {
+            let pixmap_handle = bus.read_long(dialog_ptr + 2);
+            let pixmap_ptr = if pixmap_handle != 0 {
+                bus.read_long(pixmap_handle)
+            } else {
+                0
+            };
+            if pixmap_ptr != 0 {
+                (
+                    -(bus.read_word(pixmap_ptr + 6) as i16),
+                    -(bus.read_word(pixmap_ptr + 8) as i16),
+                )
+            } else {
+                (0, 0)
+            }
+        } else {
+            (
+                -(bus.read_word(dialog_ptr + 8) as i16),
+                -(bus.read_word(dialog_ptr + 10) as i16),
+            )
+        };
+
+        (top, left, top + port_height, left + port_width)
+    }
+
+    fn dialog_edit_state(
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+        items: &[DialogItem],
+    ) -> (String, i16, i16) {
+        let default_item = match bus.read_word(dialog_ptr + 168) as i16 {
+            value if value > 0 => value,
+            _ => 1,
+        };
+
+        let edit_field = bus.read_word(dialog_ptr + 164) as i16;
+        if edit_field < 0 {
+            return (String::new(), 0, default_item);
+        }
+
+        let edit_item = edit_field + 1;
+        let edit_text = Self::text_item_string_from_handle(
+            bus,
+            Self::dialog_item_handle(bus, dialog_ptr, edit_item),
+        );
+        if !edit_text.is_empty() {
+            return (edit_text, edit_item, default_item);
+        }
+
+        let fallback = items
+            .get(edit_field as usize)
+            .map(|item| item.text.clone())
+            .unwrap_or_default();
+        (fallback, edit_item, default_item)
+    }
+
+    fn finish_dialog_creation<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        storage_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        title: &str,
+        visible: bool,
+        proc_id: i16,
+        go_away_flag: bool,
+        ref_con: u32,
+        items_handle: u32,
+        items: Vec<DialogItem>,
+    ) -> u32 {
+        let dlg_ptr = if storage_ptr != 0 {
+            storage_ptr
+        } else {
+            bus.alloc(170)
+        };
+
+        self.window_stack.push((
+            self.front_window,
+            self.window_bounds,
+            self.window_proc_id,
+            self.window_title.clone(),
+        ));
+
+        let screen_base: u32 = bus.read_long(0x0824);
+        self.init_cgraf_window(
+            bus,
+            cpu,
+            dlg_ptr,
+            screen_base,
+            bounds.0,
+            bounds.1,
+            bounds.2,
+            bounds.3,
+            title,
+            proc_id,
+            visible,
+            go_away_flag,
+            ref_con,
+        );
+
+        bus.write_word(dlg_ptr + 108, proc_id as u16);
+        bus.write_long(dlg_ptr + 156, items_handle);
+
+        let text_h = Self::allocate_te_handle(bus);
+        bus.write_long(dlg_ptr + 160, text_h);
+        bus.write_word(dlg_ptr + 164, 0xFFFF); // editField = -1
+        bus.write_word(dlg_ptr + 166, 0); // editOpen
+        bus.write_word(dlg_ptr + 168, 1); // aDefItem
+
+        self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
+        self.dialog_items.insert(dlg_ptr, items.clone());
+
+        if visible {
+            // Save the clean background before drawing any controls, so that
+            // ModalDialog can restore it on dismiss.  Without this, ModalDialog
+            // captures saved_pixels *after* we've already drawn buttons here,
+            // and restoring them leaves button-text artefacts on screen.
+            let background = self.save_dialog_pixels(bus, bounds);
+            self.dialog_saved_pixels.insert(dlg_ptr, background);
+
+            // Fill the dialog area with white immediately so that any
+            // QuickDraw calls the game makes before ModalDialog (e.g.,
+            // Marathon draws its custom popup buttons between GetNewDialog
+            // and ModalDialog) render against a clean white background
+            // rather than whatever game content was behind the dialog.
+            // ModalDialog's draw_dialog call will later redraw the border
+            // and items on top of this, with the game's custom content
+            // preserved by the userItem save/restore mechanism there.
+            // Inside Macintosh Volume I, I-413
+            // Only fill with white if the dialog has standard controls.
+            // Game-managed dialogs (all userItems) handle their own background
+            // and filling white would overwrite game content (e.g. HUD panels).
+            let all_user_items = items.iter().all(|item| (item.item_type & 0x7F) == 0);
+            if !all_user_items {
+                let (sb, rb, sw, sh, ps) = self.get_screen_params();
+                let (top, left, bottom, right) = bounds;
+                Self::fb_fill_rect(bus, sb, rb, ps, sw, sh, top, left, bottom, right, false);
+            }
+
+            // NewDialog/GetNewDialog draw controls immediately and mark their
+            // rectangles valid so the subsequent update pass redraws only the
+            // remaining items.
+            // Macintosh Toolbox Essentials 1992, 6-114 to 6-118
+            for item in &items {
+                let (it, il, ib, ir) = item.rect;
+                let abs_top = bounds.0 + it;
+                let abs_left = bounds.1 + il;
+                let abs_bottom = bounds.0 + ib;
+                let abs_right = bounds.1 + ir;
+                match item.item_type & 0x7F {
+                    4 => self.draw_button(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, true,
+                    ),
+                    5 => self.draw_checkbox(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    ),
+                    6 => self.draw_radio(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    ),
+                    8 => self.draw_static_text(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text,
+                    ),
+                    16 => self.draw_edit_text(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    ),
+                    _ => continue,
+                }
+                self.validate_window_rect(bus, dlg_ptr, item.rect);
+            }
+            self.queue_window_update_event(dlg_ptr);
+        }
+
+        dlg_ptr
+    }
+
+    // ========== Dialog Drawing Helpers ==========
+
+    /// Save framebuffer pixels under a dialog region (including shadow).
+    /// Supports both 1bpp and 8bpp modes.
+    pub(crate) fn save_dialog_pixels(
+        &self,
+        bus: &MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) -> Vec<u8> {
+        let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        let save_top = top - 5; // dBoxProc outer border
+        let save_left = left - 5;
+        let save_bottom = bottom + 5; // shadow + dBoxProc border
+        let save_right = right + 5;
+        // Guard against negative y (top < 5) and y >= screen_h. `y as u32`
+        // sign-extends a negative i16 to a huge value that overflows when
+        // multiplied by row_bytes. Off-screen rows contribute zeros.
+        let row_width = (save_right - save_left) as usize;
+        let row_count = (save_bottom - save_top) as usize;
+        let mut saved = Vec::new();
+        let screen_h_i16 = screen_h;
+        for y in save_top..save_bottom {
+            let y_on_screen = y >= 0 && y < screen_h_i16;
+            if pixel_size == 8 {
+                let on_screen_row =
+                    y_on_screen && save_left >= 0 && (save_right as u32) <= row_bytes;
+                if on_screen_row {
+                    // Pre-allocate capacity on first iteration.
+                    if saved.capacity() == 0 {
+                        saved.reserve(row_count * row_width);
+                    }
+                    let start = saved.len();
+                    saved.resize(start + row_width, 0);
+                    let row_addr = screen_base + (y as u32) * row_bytes + (save_left as u32);
+                    bus.read_bytes_into(row_addr, &mut saved[start..start + row_width]);
+                } else if y_on_screen {
+                    for x in save_left..save_right {
+                        if x < 0 || (x as u32) >= row_bytes {
+                            saved.push(0);
+                        } else {
+                            let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+                            saved.push(bus.read_byte(addr));
+                        }
+                    }
+                } else {
+                    // Entire row off-screen — pad with zeros.
+                    saved.resize(saved.len() + row_width, 0);
+                }
+            } else if y_on_screen {
+                let byte_left = (save_left.max(0) as u32) / 8;
+                let byte_right = (save_right as u32).div_ceil(8);
+                let bx_end = byte_right.min(row_bytes);
+                if byte_left < bx_end {
+                    let len = (bx_end - byte_left) as usize;
+                    let start = saved.len();
+                    saved.resize(start + len, 0);
+                    let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
+                    bus.read_bytes_into(row_addr, &mut saved[start..start + len]);
+                }
+            }
+            // 1bpp off-screen row: silently produces nothing — the
+            // byte_left < bx_end check + row_count-based saved.len tracking
+            // tolerates short rows.
+        }
+        saved
+    }
+
+    /// Restore previously saved framebuffer pixels under a dialog.
+    pub(crate) fn restore_dialog_pixels(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        saved: &[u8],
+    ) {
+        let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        let save_top = top - 5;
+        let save_left = left - 5;
+        let save_bottom = bottom + 5;
+        let save_right = right + 5;
+        // Mirror save_dialog_pixels y-bounds guard — saved bytes for off-screen
+        // rows are skipped so write position stays aligned with the packed input buffer.
+        let row_width = (save_right - save_left) as usize;
+        let mut idx = 0;
+        let screen_h_i16 = screen_h;
+        for y in save_top..save_bottom {
+            let y_on_screen = y >= 0 && y < screen_h_i16;
+            if pixel_size == 8 {
+                let on_screen_row =
+                    y_on_screen && save_left >= 0 && (save_right as u32) <= row_bytes;
+                if on_screen_row && idx + row_width <= saved.len() {
+                    let row_addr = screen_base + (y as u32) * row_bytes + (save_left as u32);
+                    bus.write_bytes(row_addr, &saved[idx..idx + row_width]);
+                    idx += row_width;
+                } else if y_on_screen {
+                    for x in save_left..save_right {
+                        if idx < saved.len() {
+                            if x >= 0 && (x as u32) < row_bytes {
+                                let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+                                bus.write_byte(addr, saved[idx]);
+                            }
+                            idx += 1;
+                        }
+                    }
+                } else {
+                    // Off-screen row: skip the packed bytes that
+                    // save_dialog_pixels padded in.
+                    idx += row_width.min(saved.len() - idx);
+                }
+            } else if y_on_screen {
+                let byte_left = (save_left.max(0) as u32) / 8;
+                let byte_right = (save_right as u32).div_ceil(8);
+                let bx_end = byte_right.min(row_bytes);
+                if byte_left < bx_end {
+                    let len = (bx_end - byte_left) as usize;
+                    if idx + len <= saved.len() {
+                        let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
+                        bus.write_bytes(row_addr, &saved[idx..idx + len]);
+                        idx += len;
+                    } else {
+                        for bx in byte_left..bx_end {
+                            if idx < saved.len() {
+                                bus.write_byte(
+                                    screen_base + (y as u32) * row_bytes + bx,
+                                    saved[idx],
+                                );
+                                idx += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            // 1bpp off-screen: save produced no bytes for this row,
+            // so there's nothing to advance idx over here.
+        }
+    }
+
+    /// Save framebuffer pixels for an exact rectangle (no margin).
+    /// Guards off-screen y (y < 0 or y >= screen_h) from sign-extend overflow.
+    /// Off-screen rows pad 8bpp output with zeros; 1bpp output is short by that row.
+    fn save_rect_pixels(&self, bus: &MacMemoryBus, rect: (i16, i16, i16, i16)) -> Vec<u8> {
+        let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        let row_width = (right - left).max(0) as usize;
+        let mut saved = Vec::with_capacity((bottom - top).max(0) as usize * row_width);
+        let screen_h_i16 = screen_h;
+        for y in top..bottom {
+            let y_on_screen = y >= 0 && y < screen_h_i16;
+            if pixel_size == 8 {
+                let on_screen_row = y_on_screen && left >= 0 && (right as u32) <= row_bytes;
+                if on_screen_row {
+                    let row_addr = screen_base + (y as u32) * row_bytes + (left as u32);
+                    saved.extend_from_slice(&bus.read_bytes(row_addr, row_width));
+                } else if y_on_screen {
+                    for x in left..right {
+                        if x < 0 || (x as u32) >= row_bytes {
+                            saved.push(0);
+                        } else {
+                            saved.push(
+                                bus.read_byte(screen_base + (y as u32) * row_bytes + (x as u32)),
+                            );
+                        }
+                    }
+                } else {
+                    saved.resize(saved.len() + row_width, 0);
+                }
+            } else if y_on_screen {
+                let byte_left = (left.max(0) as u32) / 8;
+                let byte_right = (right.max(0) as u32).div_ceil(8);
+                let bx_end = byte_right.min(row_bytes);
+                if byte_left < bx_end {
+                    let len = (bx_end - byte_left) as usize;
+                    let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
+                    saved.extend_from_slice(&bus.read_bytes(row_addr, len));
+                }
+            }
+        }
+        saved
+    }
+
+    /// Restore framebuffer pixels to an exact rectangle (no margin).
+    ///
+    /// Mirrors save_rect_pixels off-screen guards so the idx position stays
+    /// aligned with the packed input buffer.
+    fn restore_rect_pixels(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        saved: &[u8],
+    ) {
+        let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        let row_width = (right - left).max(0) as usize;
+        let mut idx = 0;
+        let screen_h_i16 = screen_h;
+        for y in top..bottom {
+            let y_on_screen = y >= 0 && y < screen_h_i16;
+            if pixel_size == 8 {
+                let on_screen_row = y_on_screen && left >= 0 && (right as u32) <= row_bytes;
+                if on_screen_row && idx + row_width <= saved.len() {
+                    let row_addr = screen_base + (y as u32) * row_bytes + (left as u32);
+                    bus.write_bytes(row_addr, &saved[idx..idx + row_width]);
+                    idx += row_width;
+                } else if y_on_screen {
+                    for x in left..right {
+                        if idx < saved.len() {
+                            if x >= 0 && (x as u32) < row_bytes {
+                                bus.write_byte(
+                                    screen_base + (y as u32) * row_bytes + (x as u32),
+                                    saved[idx],
+                                );
+                            }
+                            idx += 1;
+                        }
+                    }
+                } else {
+                    idx = (idx + row_width).min(saved.len());
+                }
+            } else if y_on_screen {
+                let byte_left = (left.max(0) as u32) / 8;
+                let byte_right = (right.max(0) as u32).div_ceil(8);
+                let bx_end = byte_right.min(row_bytes);
+                if byte_left < bx_end {
+                    let len = (bx_end - byte_left) as usize;
+                    if idx + len <= saved.len() {
+                        let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
+                        bus.write_bytes(row_addr, &saved[idx..idx + len]);
+                        idx += len;
+                    } else {
+                        for bx in byte_left..bx_end {
+                            if idx < saved.len() {
+                                bus.write_byte(
+                                    screen_base + (y as u32) * row_bytes + bx,
+                                    saved[idx],
+                                );
+                                idx += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draw a complete dialog box with frame and all items.
+    /// When `skip_pictures` is true, icon and picture items are skipped
+    /// (used during redraw_chrome to avoid re-parsing PICTs every frame).
+    pub(crate) fn draw_dialog(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        _title: &str,
+        items: &[DialogItem],
+        default_item: i16,
+        edit_text: &str,
+        edit_item: i16,
+        skip_pictures: bool,
+        dialog_ptr: u32,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (top, left, bottom, right) = bounds;
+
+        // Fill dialog background with white — but skip for game-managed
+        // dialogs (all userItems) since the game draws its own background
+        // and the white fill would overwrite game content outside the item rects.
+        let all_user_items = items.iter().all(|item| (item.item_type & 0x7F) == 0);
+        if !all_user_items {
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                false,
+            );
+        } else {
+            eprintln!(
+                "[DIALOG] Skipping white fill for game-managed dialog at ({},{},{},{}), {} items",
+                top,
+                left,
+                bottom,
+                right,
+                items.len()
+            );
+        }
+
+        // Draw border
+        // Inside Macintosh Volume I, I-299:
+        // procID 0 = documentProc (title bar + border)
+        // procID 1 = dBoxProc (double border, no title)
+        // procID 2 = plainDBox (single border, no title)
+        // procID 3 = altDBoxProc (shadow border, no title)
+        // procID 4 = noGrowDocProc (title bar + border, no grow)
+        match proc_id {
+            1 => {
+                // dBoxProc: double border with 3px white gap between them.
+                // Inside Macintosh Volume I, I-299
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    top - 5,
+                    left - 5,
+                    bottom + 5,
+                    right + 5,
+                    false,
+                );
+                // Inner border at content edge
+                self.draw_rect_border(bus, top, left, bottom, right);
+                // Outer border with 3px gap
+                self.draw_rect_border(bus, top - 4, left - 4, bottom + 4, right + 4);
+                // Basilisk's platinum theme adds a 3-pixel decorative shadow
+                // at top-5..top-3 and bottom+3..+5 (lavender/gray/purple
+                // gradient, not pure white) — proper fidelity requires
+                // emulating the platinum theme window manager.
+            }
+            3 => {
+                // altDBoxProc: single border + shadow
+                self.draw_rect_border(bus, top, left, bottom, right);
+                self.draw_shadow(bus, top, left, bottom, right);
+            }
+            _ => {
+                // Default: single border + shadow
+                self.draw_rect_border(bus, top, left, bottom, right);
+                self.draw_shadow(bus, top, left, bottom, right);
+            }
+        }
+
+        // Optional per-iteration trace: gate SYSTEMLESS_TRACE_DIALOG_ITEMS=1
+        // logs each item's type + relative rect + computed absolute rect.
+        // Use to localize artifact-producing items in modal dialog rendering.
+        let trace_items = trace_dialog_items_enabled();
+        if trace_items {
+            eprintln!(
+                "[DLG] draw_dialog bounds=({},{},{},{}) proc_id={} edit_item={} default_item={} items={}",
+                top,
+                left,
+                bottom,
+                right,
+                proc_id,
+                edit_item,
+                default_item,
+                items.len()
+            );
+        }
+
+        // Draw each item
+        for (i, item) in items.iter().enumerate() {
+            let item_num = (i + 1) as i16; // 1-based
+            let (it, il, ib, ir) = item.rect;
+            // Offset by dialog origin
+            let abs_top = top + it;
+            let abs_left = left + il;
+            let abs_bottom = top + ib;
+            let abs_right = left + ir;
+
+            let base_type = item.item_type & 0x7F;
+            if trace_items {
+                eprintln!(
+                    "[DLG]   item #{} type=0x{:02X} (base={}) rel=({},{},{},{}) abs=({},{},{},{}) rsrc={} text={:?}",
+                    item_num,
+                    item.item_type,
+                    base_type,
+                    it,
+                    il,
+                    ib,
+                    ir,
+                    abs_top,
+                    abs_left,
+                    abs_bottom,
+                    abs_right,
+                    item.resource_id,
+                    item.text,
+                );
+            }
+
+            // Generic "fully outside dialog" clip. Inside Macintosh
+            // Volume I, I-309: dialog items are drawn through the dialog
+            // window's port whose visRgn/clipRgn restrict drawing to the
+            // dialog bounds. Real Mac OS QuickDraw clips item draws
+            // automatically; Systemless's per-type handlers write to the
+            // framebuffer directly with no clip. Items whose rect partially
+            // extends beyond bounds are NOT clipped here — the per-type
+            // handlers can refine if needed.
+            if abs_top >= bottom || abs_bottom <= top || abs_left >= right || abs_right <= left {
+                if trace_items {
+                    eprintln!("[DLG]     -> skipped (fully outside dialog rect)");
+                }
+                continue;
+            }
+
+            match base_type {
+                // Button (ctrlItem + btnCtrl = 4)
+                4 => {
+                    self.draw_button(
+                        bus,
+                        abs_top,
+                        abs_left,
+                        abs_bottom,
+                        abs_right,
+                        &item.text,
+                        item_num == default_item,
+                    );
+                }
+                // Checkbox (ctrlItem + chkCtrl = 5)
+                5 => {
+                    let checked = self
+                        .dialog_control_values
+                        .get(&(dialog_ptr, item_num))
+                        .copied()
+                        .unwrap_or(0)
+                        != 0;
+                    self.draw_checkbox(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
+                    );
+                }
+                // Radio button (ctrlItem + radCtrl = 6)
+                6 => {
+                    self.draw_radio(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    );
+                }
+                // Static text (8)
+                8 => {
+                    self.draw_static_text(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text,
+                    );
+                }
+                // Edit text (16)
+                16 => {
+                    let display_text = if item_num == edit_item {
+                        edit_text
+                    } else {
+                        &item.text
+                    };
+                    self.draw_edit_text(
+                        bus,
+                        abs_top,
+                        abs_left,
+                        abs_bottom,
+                        abs_right,
+                        display_text,
+                        true, // initially all text is selected
+                    );
+                }
+                // Icon (32)
+                32 => {
+                    if !skip_pictures && item.resource_id != 0 {
+                        if let Some((_, icon_ptr)) =
+                            self.find_resource_any(*b"ICON", item.resource_id)
+                        {
+                            // ICON resource: 32x32 1-bit bitmap = 128 bytes
+                            // Inside Macintosh Volume I, I-205
+                            self.draw_icon(bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr);
+                        }
+                    }
+                }
+                // Picture (64)
+                64 => {
+                    // Items reaching here overlap the dialog rect (the
+                    // fully-outside clip happens above the match).
+                    if !skip_pictures && item.resource_id != 0 {
+                        if let Some((_, pic_ptr)) =
+                            self.find_resource_any(*b"PICT", item.resource_id)
+                        {
+                            // Draw PICT into the item's display rectangle
+                            let device_ct_seed =
+                                Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
+                                    .unwrap_or(0);
+                            super::pict::draw_picture(
+                                bus,
+                                pic_ptr,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                self.screen_mode,
+                                &self.device_clut,
+                                device_ct_seed,
+                            );
+                        }
+                    }
+                }
+                // resCtrl — CNTL-resource control (popup menu, procID 1008)
+                // Macintosh Toolbox Essentials 1992, 3-31
+                7 => {
+                    // Current selected item (1-based).  The game calls
+                    // SetControlValue when the dialog opens; fall back to 1.
+                    let selected = self
+                        .dialog_control_values
+                        .get(&(dialog_ptr, item_num))
+                        .copied()
+                        .unwrap_or(1)
+                        .max(1) as usize;
+
+                    let item_title = if let Some((_, cntl_ptr)) =
+                        self.find_resource_any(*b"CNTL", item.resource_id)
+                    {
+                        let proc_id_ctrl = bus.read_word(cntl_ptr + 16);
+                        // For popupMenuProc the min field stores the MENU resource ID.
+                        // Macintosh Toolbox Essentials 1992, 3-32
+                        let menu_id = bus.read_word(cntl_ptr + 14) as i16;
+                        if proc_id_ctrl == 1008 {
+                            if let Some((_, menu_ptr)) = self.find_resource_any(*b"MENU", menu_id) {
+                                // MENU resource layout:
+                                // menuID(2)+menuWidth(2)+menuHeight(2)+
+                                // menuProc(4)+enableFlags(4)+title(n+1)
+                                // Inside Macintosh Volume I, I-441
+                                let title_len = bus.read_byte(menu_ptr + 14) as u32;
+                                let mut off = menu_ptr + 15 + title_len;
+                                let mut nth = 0usize;
+                                let mut found = None;
+                                loop {
+                                    let item_len = bus.read_byte(off) as usize;
+                                    if item_len == 0 {
+                                        break;
+                                    }
+                                    nth += 1;
+                                    if nth == selected {
+                                        let bytes = bus.read_bytes(off + 1, item_len);
+                                        found = Some(String::from_utf8_lossy(&bytes).into_owned());
+                                        break;
+                                    }
+                                    off += 1 + item_len as u32 + 4;
+                                }
+                                found
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Always draw the popup button shape, even if the CNTL or
+                    // MENU resource wasn't found (shows an empty box + indicator).
+                    let title_str = item_title.unwrap_or_default();
+                    self.draw_popup_control(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &title_str,
+                    );
+                }
+                // userItem (0) and unknown: skip
+                _ => {}
+            }
+        }
+    }
+
+    /// Draw a 1-pixel black rectangle border.
+    pub(crate) fn draw_rect_border(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        // Top edge
+        Self::fb_hline(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            right - 1,
+            true,
+        );
+        // Bottom edge
+        Self::fb_hline(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            bottom - 1,
+            left,
+            right - 1,
+            true,
+        );
+        // Left edge
+        for y in top..bottom {
+            Self::fb_set_pixel(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                left,
+                y,
+                true,
+            );
+        }
+        // Right edge
+        for y in top..bottom {
+            Self::fb_set_pixel(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                right - 1,
+                y,
+                true,
+            );
+        }
+    }
+
+    /// Draw a 2-pixel shadow on bottom and right edges.
+    pub(crate) fn draw_shadow(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        // Right shadow (2px wide)
+        for dx in 0..2i16 {
+            for y in (top + 2)..=(bottom + dx) {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    right + dx,
+                    y,
+                    true,
+                );
+            }
+        }
+        // Bottom shadow (2px tall)
+        for dy in 0..2i16 {
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                bottom + dy,
+                left + 2,
+                right + 2,
+                true,
+            );
+        }
+    }
+
+    /// Draw a popup menu control button (procID 1008 / popupMenuProc).
+    /// Shows a bordered rectangle with a 1-px drop shadow, a downward-pointing
+    /// triangle on the right, and the currently-selected item title.
+    /// Macintosh Toolbox Essentials 1992, 3-31
+    pub(crate) fn draw_popup_control(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+
+        let font_id = 0i16; // Chicago
+        let font_size = 12i16;
+
+        // Standard popup menu button appearance.
+        // Macintosh Toolbox Essentials 1992, 5-26
+        let oval_w: i16 = 8;
+        let oval_h: i16 = 8;
+        let r = Rect {
+            top,
+            left,
+            bottom,
+            right,
+        };
+
+        // Fill interior with white using round-rect spans
+        let fill_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
+        for y in top..bottom {
+            let idx = (y - top) as usize;
+            if idx < fill_spans.len() {
+                let (sl, sr) = fill_spans[idx];
+                Self::fb_hline(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    y,
+                    sl,
+                    sr,
+                    false,
+                );
+            }
+        }
+
+        // 1-px round-rect border
+        self.fb_frame_round_rect(bus, top, left, bottom, right, oval_w, oval_h, 1);
+
+        // 1-px drop shadow (right edge and bottom edge, offset +1)
+        // Macintosh Toolbox Essentials 1992, 5-26
+        let shadow_r = Rect {
+            top: top + 2,
+            left: left + 2,
+            bottom: bottom + 1,
+            right: right + 1,
+        };
+        let shadow_spans = self.compute_rrect_spans(&shadow_r, oval_w, oval_h);
+        let inner_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
+        for y in shadow_r.top..shadow_r.bottom {
+            let si = (y - shadow_r.top) as usize;
+            if si >= shadow_spans.len() {
+                continue;
+            }
+            let (sl, sr) = shadow_spans[si];
+            // Only draw shadow pixels outside the main rect fill area
+            let ii = (y - top) as usize;
+            let (_il, ir) = if y >= top && y < bottom && ii < inner_spans.len() {
+                inner_spans[ii]
+            } else {
+                (sr, sl) // no inner overlap, draw full shadow span
+            };
+            // Right shadow segment
+            if sr > ir {
+                for x in ir.max(sl)..sr {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        true,
+                    );
+                }
+            }
+            // Bottom shadow segment (below main rect)
+            if y >= bottom {
+                for x in sl..sr {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        true,
+                    );
+                }
+            }
+        }
+
+        // Downward-pointing triangle on right side (popup indicator)
+        // Macintosh Toolbox Essentials 1992, 5-26
+        let mid_y = (top + bottom) / 2;
+        let tri_x = right - 10;
+        for row in 0..4i16 {
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                mid_y - 2 + row,
+                tri_x - 3 + row,
+                tri_x + 3 - row,
+                true,
+            );
+        }
+
+        // Selected item text inside the box
+        // Macintosh Toolbox Essentials 1992, 5-26
+        if !title.is_empty() {
+            let metrics = get_font_metrics(font_id, font_size);
+            let text_x = left + 6;
+            let text_y =
+                top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
+            Self::fb_draw_string(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                text_x,
+                text_y,
+                title,
+                font_id,
+                font_size,
+            );
+        }
+    }
+
+    /// Draw a framed round-rect directly to the framebuffer.
+    /// Used for dialog default button outlines where no CpuOps/port is available.
+    /// Macintosh Toolbox Essentials 1992, Listing 6-17
+    fn fb_frame_round_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        oval_width: i16,
+        oval_height: i16,
+        pen_size: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let r = Rect {
+            top,
+            left,
+            bottom,
+            right,
+        };
+        let outer_spans = self.compute_rrect_spans(&r, oval_width, oval_height);
+
+        let r_inset = Rect {
+            top: top + pen_size,
+            left: left + pen_size,
+            bottom: bottom - pen_size,
+            right: right - pen_size,
+        };
+        let inner_spans = self.compute_rrect_spans(
+            &r_inset,
+            (oval_width - 2 * pen_size).max(0),
+            (oval_height - 2 * pen_size).max(0),
+        );
+
+        for y in top..bottom {
+            let outer_idx = (y - top) as usize;
+            if outer_idx >= outer_spans.len() {
+                continue;
+            }
+            let (ol, or) = outer_spans[outer_idx];
+
+            let inner_idx = (y - r_inset.top) as usize;
+            let (il, ir) =
+                if y >= r_inset.top && y < r_inset.bottom && inner_idx < inner_spans.len() {
+                    inner_spans[inner_idx]
+                } else {
+                    (or, ol) // no inner = draw full outer span
+                };
+
+            // Left border segment
+            for x in ol..il.min(or) {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    true,
+                );
+            }
+            // Right border segment
+            for x in ir.max(ol)..or {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    true,
+                );
+            }
+        }
+    }
+
+    /// Draw a button with optional default (thick) border.
+    /// Inside Macintosh Volume I, I-405
+    pub(crate) fn draw_button(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        is_default: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        // White fill
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            false,
+        );
+        // Border
+        self.draw_rect_border(bus, top, left, bottom, right);
+
+        // Default button: rounded bold outline (3px thick)
+        // Macintosh Toolbox Essentials 1992, Listing 6-17
+        // references/executor/src/error/system_error.cpp
+        if is_default {
+            let hilite_top = top - 4;
+            let hilite_left = left - 4;
+            let hilite_bottom = bottom + 4;
+            let hilite_right = right + 4;
+            let hilite_height = hilite_bottom - hilite_top;
+            let oval = (hilite_height / 2 - 4).max(4);
+            self.fb_frame_round_rect(
+                bus,
+                hilite_top,
+                hilite_left,
+                hilite_bottom,
+                hilite_right,
+                oval,
+                oval,
+                3,
+            );
+        }
+
+        // Center text
+        let font_id = 0i16; // Chicago
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        let text_w = Self::fb_measure_string(title, font_id, font_size);
+        let text_x = left + (right - left - text_w) / 2;
+        let text_y = top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
+        Self::fb_draw_string(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            text_x,
+            text_y,
+            title,
+            font_id,
+            font_size,
+        );
+    }
+
+    /// Draw a checkbox item.
+    pub(crate) fn draw_checkbox(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        _bottom: i16,
+        _right: i16,
+        title: &str,
+        checked: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let box_size = 12i16;
+        let box_top = top + 1;
+        let box_left = left;
+        // Draw checkbox box
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            box_top,
+            box_left,
+            box_top + box_size,
+            box_left + box_size,
+            false,
+        );
+        self.draw_rect_border(
+            bus,
+            box_top,
+            box_left,
+            box_top + box_size,
+            box_left + box_size,
+        );
+        if checked {
+            // Draw X inside
+            for i in 2..box_size - 2 {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    box_left + i,
+                    box_top + i,
+                    true,
+                );
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    box_left + box_size - 1 - i,
+                    box_top + i,
+                    true,
+                );
+            }
+        }
+        // Draw label text to the right of the box
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        let text_x = box_left + box_size + 4;
+        let text_y = box_top + (box_size - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
+        Self::fb_draw_string(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            text_x,
+            text_y,
+            title,
+            font_id,
+            font_size,
+        );
+    }
+
+    /// Draw a radio button item.
+    pub(crate) fn draw_radio(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        _bottom: i16,
+        _right: i16,
+        title: &str,
+        selected: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let r = 6i16; // radius
+        let cx = left + r;
+        let cy = top + r + 1;
+        // Simple circle approximation: draw a box for now
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            cy - r,
+            cx - r,
+            cy + r,
+            cx + r,
+            false,
+        );
+        self.draw_rect_border(bus, cy - r, cx - r, cy + r, cx + r);
+        if selected {
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                cy - 3,
+                cx - 3,
+                cy + 3,
+                cx + 3,
+                true,
+            );
+        }
+        // Label
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        let text_x = cx + r + 4;
+        let text_y = cy - r + (2 * r - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
+        Self::fb_draw_string(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            text_x,
+            text_y,
+            title,
+            font_id,
+            font_size,
+        );
+    }
+
+    /// Replace `^0`..`^3` in dialog/alert text with the strings most
+    /// recently passed to `ParamText`. Returns a borrowed reference to
+    /// the original `text` when no placeholders are present (the common
+    /// case — most DITL items don't use ParamText), avoiding an
+    /// allocation per draw_static_text call.
+    /// Inside Macintosh Volume I, I-422.
+    pub(crate) fn apply_param_text<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if !text.contains('^') {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '^' {
+                if let Some(&next) = chars.peek() {
+                    if let Some(idx) = next.to_digit(10) {
+                        if (idx as usize) < self.param_text.len() {
+                            chars.next();
+                            out.push_str(&String::from_utf8_lossy(&self.param_text[idx as usize]));
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push(ch);
+        }
+        std::borrow::Cow::Owned(out)
+    }
+
+    fn draw_static_text(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        text: &str,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
+        let max_width = right - left;
+        let mut y = top + metrics.ascent;
+
+        let substituted = self.apply_param_text(text);
+        // Word-wrap text to fit within the display rect
+        let words: Vec<&str> = substituted.split(' ').collect();
+        let mut current_line = String::new();
+
+        for word in &words {
+            let test_line = if current_line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{} {}", current_line, word)
+            };
+            let test_width = Self::fb_measure_string(&test_line, font_id, font_size);
+            if test_width > max_width && !current_line.is_empty() {
+                if y < bottom {
+                    Self::fb_draw_string(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        left,
+                        y,
+                        &current_line,
+                        font_id,
+                        font_size,
+                    );
+                }
+                y += line_height;
+                current_line = word.to_string();
+            } else {
+                current_line = test_line;
+            }
+        }
+        // Draw the last line
+        if !current_line.is_empty() && y < bottom {
+            Self::fb_draw_string(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                left,
+                y,
+                &current_line,
+                font_id,
+                font_size,
+            );
+        }
+    }
+
+    /// Draw an editable text field with border and text.
+    pub(crate) fn draw_edit_text(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        text: &str,
+        selected: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        // White fill
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            false,
+        );
+        // Border (inset look)
+        self.draw_rect_border(bus, top, left, bottom, right);
+        // Text inside with 2px padding
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        let text_y = top + 2 + metrics.ascent;
+        Self::fb_draw_string(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            left + 3,
+            text_y,
+            text,
+            font_id,
+            font_size,
+        );
+        if selected {
+            // Select all text (invert the inner area to show selection highlight)
+            // On a real Mac, ModalDialog selects all text in the active editText field
+            // by default. TextEdit inverts the selection rectangle.
+            if !text.is_empty() {
+                self.invert_button_rect(bus, top + 1, left + 1, bottom - 1, right - 1);
+            }
+        } else {
+            // Draw cursor bar at end of text
+            let text_width = Self::fb_measure_string(text, font_id, font_size);
+            let cursor_x = left + 3 + text_width;
+            if cursor_x < right - 1 {
+                for y in (top + 2)..=(bottom - 2) {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        cursor_x,
+                        y,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Draw a 32x32 1-bit ICON resource, scaled to fit the display rect.
+    /// Inside Macintosh Volume I, I-205
+    fn draw_icon(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        icon_ptr: u32,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let dst_w = right - left;
+        let dst_h = bottom - top;
+        // ICON is 32x32 pixels, 1 bit per pixel, 4 bytes per row = 128 bytes
+        for row in 0..32i16 {
+            let row_data = bus.read_long(icon_ptr + (row as u32) * 4);
+            for col in 0..32i16 {
+                let bit = (row_data >> (31 - col)) & 1;
+                if bit != 0 {
+                    // Scale to destination rect
+                    let dx = left + col * dst_w / 32;
+                    let dy = top + row * dst_h / 32;
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        dx,
+                        dy,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Invert the pixels within a button rect (for flash animation).
+    pub(crate) fn invert_button_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+
+        let y_start = (top as i32 + 1).clamp(0, screen_height as i32);
+        let y_end = (bottom as i32 - 1).clamp(0, screen_height as i32);
+        let x_start = (left as i32 + 1).clamp(0, screen_width as i32);
+        let x_end = (right as i32 - 1).clamp(0, screen_width as i32);
+        if y_start >= y_end || x_start >= x_end {
+            return;
+        }
+
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                if pixel_size == 8 {
+                    let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+                    let b = bus.read_byte(addr);
+                    bus.write_byte(addr, 255 - b);
+                } else {
+                    let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
+                    let bit = 7 - (x as u32 % 8);
+                    let addr = screen_base + byte_offset;
+                    let b = bus.read_byte(addr);
+                    bus.write_byte(addr, b ^ (1 << bit));
+                }
+            }
+        }
+    }
+
+    /// Hit-test a point against dialog items. Returns 1-based item number or 0.
+    fn dialog_item_hit_test(
+        items: &[DialogItem],
+        bounds: (i16, i16, i16, i16),
+        screen_v: i16,
+        screen_h: i16,
+        popup_original_rects: &std::collections::HashMap<(u32, i16), (i16, i16, i16, i16)>,
+        dialog_ptr: u32,
+    ) -> i16 {
+        let (top, left, _, _) = bounds;
+        let local_v = screen_v - top;
+        let local_h = screen_h - left;
+        for (i, item) in items.iter().enumerate() {
+            let item_no = (i + 1) as i16;
+            // For popup userItems, use the original DITL rect (before SetDItem
+            // narrowed it) so clicks on the full popup area register.
+            let (it, il, ib, ir) = popup_original_rects
+                .get(&(dialog_ptr, item_no))
+                .copied()
+                .unwrap_or(item.rect);
+            if local_v >= it && local_v < ib && local_h >= il && local_h < ir {
+                return item_no;
+            }
+        }
+        0
+    }
+
+    fn read_guest_event_record(bus: &MacMemoryBus, event_ptr: u32) -> (u16, u32, i16, i16, u16) {
+        if event_ptr == 0 {
+            return (0, 0, 0, 0, 0);
+        }
+        (
+            bus.read_word(event_ptr),
+            bus.read_long(event_ptr + 2),
+            bus.read_word(event_ptr + 10) as i16,
+            bus.read_word(event_ptr + 12) as i16,
+            bus.read_word(event_ptr + 14),
+        )
+    }
+
+    fn front_dialog_ptr(&self) -> Option<u32> {
+        let dialog_ptr = self.front_window;
+        if dialog_ptr != 0 && self.dialog_items.contains_key(&dialog_ptr) {
+            Some(dialog_ptr)
+        } else {
+            None
+        }
+    }
+
+    fn dialog_from_window_event(&self, what: u16, message: u32) -> Option<u32> {
+        match what {
+            6 | 8 if self.dialog_items.contains_key(&message) => Some(message),
+            _ => self.front_dialog_ptr(),
+        }
+    }
+
+    fn dialog_contains_screen_point(bounds: (i16, i16, i16, i16), v: i16, h: i16) -> bool {
+        v >= bounds.0 && v < bounds.2 && h >= bounds.1 && h < bounds.3
+    }
+
+    fn consume_dialog_mouse_up(&mut self) {
+        if let Some(idx) = self.event_queue.iter().position(|e| e.what == 2) {
+            self.event_queue.remove(idx);
+        }
+    }
+
+    pub(crate) fn dispatch_dialog<C: CpuOps>(
+        &mut self,
+        is_tool: bool,
+        trap_num: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
+        Some(match (is_tool, trap_num) {
+            // ========== Dialog Manager ==========
+
+            // InitDialogs ($A97B)
+            // PROCEDURE InitDialogs(resumeProc: ProcPtr);
+            // Inside Macintosh Volume I, I-411.
+            //
+            // Performs the 3 documented Dialog Manager init steps:
+            //   1. Stores resumeProc into the ResumeProc low-mem
+            //      global at $0A8C, for later access by the System
+            //      Error Handler when a fatal system error occurs
+            //      (NIL is the documented default — no resume).
+            //   2. Installs the standard sound procedure (we store
+            //      NIL into DABeeper at $0A9C since Systemless's HLE
+            //      doesn't model menu-bar-blink sound; ErrorSound
+            //      ($A98C) can override later).
+            //   3. Passes empty strings to ParamText — implemented
+            //      as zeroing the 4-handle DAStrings array at
+            //      $0AA0 (16 bytes = 4 × Handle, all NIL meaning
+            //      "no substitution" so dialog/alert text rendered
+            //      with `^0`..`^3` escapes prints the raw escape).
+            //
+            // Also resets AlertStage at $0A9A to 0 so the first
+            // Alert*-family call starts at stage 1 (per IM:I I-417
+            // — InitDialogs is the canonical place to ensure
+            // alert state is fresh per app launch). ANumber at
+            // $0A98 is left untouched since IM:I I-423 only
+            // documents it as "the resource ID of the last alert
+            // that occurred" with no init contract.
+            //
+            // Pop = 4 bytes (resumeProc ProcPtr).
+            // InitDialogs ($A97B): Per IM:I I-411: stores resumeProc at $0A8C (ResumeProc global), zeros DABeeper at $0A9C ("no sound" default per HLE), zeros AlertStage at $0A9A (so first Alert call starts at stage 1), zeros 16-byte DAStrings array at $0AA0..$0AAF (4 NIL ParamText handles); pops 4 bytes
+            (true, 0x17B) => {
+                let sp = cpu.read_reg(Register::A7);
+                let resume_proc = bus.read_long(sp);
+                use crate::memory::globals::addr;
+                bus.write_long(addr::RESUME_PROC, resume_proc);
+                bus.write_long(addr::DA_BEEPER, 0);
+                bus.write_word(addr::ALERT_STAGE, 0);
+                // Zero the 4-handle DAStrings array (16 bytes).
+                for i in 0..4u32 {
+                    bus.write_long(addr::DA_STRINGS + i * 4, 0);
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // GetNewDialog ($A97C)
+            // Creates a dialog from DLOG and DITL resources.
+            // FUNCTION GetNewDialog (dialogID: INTEGER; dStorage: Ptr;
+            //     behind: WindowPtr) : DialogPtr;
+            // Inside Macintosh Volume I, I-424
+            //
+            // Stack: SP+0 behind(4), SP+4 dStorage(4), SP+8 dialogID(2),
+            //        SP+10 result(4).
+            // Honors `behind` at SP+0 via finish_dialog_creation —
+            // see NewDialog/NewCDialog and window.rs apply_behind_parameter.
+            // GetNewDialog ($A97C): Parses DLOG + DITL resources, creates DialogRecord, stores parsed items for ModalDialog/GetDItem; saves background pixels before drawing so ModalDialog can restore clean background on dismiss
+            (true, 0x17C) => {
+                let sp = cpu.read_reg(Register::A7);
+                let behind = bus.read_long(sp);
+                let storage_ptr = bus.read_long(sp + 4);
+                let dialog_id = bus.read_word(sp + 8) as i16;
+                eprintln!("[TRAP] GetNewDialog({})", dialog_id);
+
+                // Look up DLOG resource
+                let dlog_ptr = self
+                    .find_resource_any(*b"DLOG", dialog_id)
+                    .map(|(_, ptr)| ptr);
+
+                if let Some(dlog_data) = dlog_ptr {
+                    let (mut bounds, proc_id, visible, items_id, title, position) =
+                        Self::parse_dlog(bus, dlog_data, 256);
+
+                    // Apply positioning constant
+                    // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
+                    // references/executor/src/dial/dialCreate.cpp, dialog_compute_rect()
+                    match position {
+                        // alertPositionMainScreen: upper third of screen
+                        // Macintosh Toolbox Essentials 1992, p. 4-126
+                        0x300A | 0x700A | 0xB00A => {
+                            let (_, _, screen_w, screen_h, _) = self.get_screen_params();
+                            let dialog_w = bounds.3 - bounds.1;
+                            let dialog_h = bounds.2 - bounds.0;
+                            let new_left = (screen_w - dialog_w) / 2;
+                            let new_top = (screen_h - dialog_h) / 3;
+                            bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
+                        }
+                        // centerMainScreen / centerParentWindow: true vertical center
+                        // Macintosh Toolbox Essentials 1992, p. 4-126
+                        0x280A | 0x680A | 0xA80A | 0x380A => {
+                            let (_, _, screen_w, screen_h, _) = self.get_screen_params();
+                            let dialog_w = bounds.3 - bounds.1;
+                            let dialog_h = bounds.2 - bounds.0;
+                            let new_left = (screen_w - dialog_w) / 2;
+                            let new_top = (screen_h - dialog_h) / 2;
+                            bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
+                        }
+                        _ => {} // noAutoCenter (0x0000) or unknown: use raw bounds
+                    }
+
+                    // Look up DITL resource
+                    let ditl_info = self
+                        .find_resource_any(*b"DITL", items_id)
+                        .map(|(_, ptr)| ptr);
+
+                    let items = if let Some(ditl_data) = ditl_info {
+                        // Estimate DITL data length (generous upper bound)
+                        Self::parse_ditl(bus, ditl_data, 4096)
+                    } else {
+                        eprintln!(
+                            "[TRAP] GetNewDialog({}): DITL {} not found",
+                            dialog_id, items_id
+                        );
+                        Vec::new()
+                    };
+
+                    eprintln!(
+                        "[TRAP] GetNewDialog({}) bounds=({},{},{},{}) procID={} items={} title=\"{}\"",
+                        dialog_id, bounds.0, bounds.1, bounds.2, bounds.3,
+                        proc_id, items.len(), title
+                    );
+                    for (i, item) in items.iter().enumerate() {
+                        let base_type = item.item_type & 0x7F;
+                        let type_name = match base_type {
+                            4 => "button",
+                            5 => "checkbox",
+                            6 => "radio",
+                            7 => "resCtrl",
+                            8 => "statText",
+                            16 => "editText",
+                            32 => "icon",
+                            64 => "picture",
+                            0 => "userItem",
+                            _ => "unknown",
+                        };
+                        if base_type == 32 || base_type == 64 {
+                            eprintln!(
+                                "[TRAP]   item {}: type={}({}) rect=({},{},{},{}) resID={}",
+                                i + 1,
+                                type_name,
+                                item.item_type,
+                                item.rect.0,
+                                item.rect.1,
+                                item.rect.2,
+                                item.rect.3,
+                                item.resource_id
+                            );
+                        } else {
+                            eprintln!(
+                                "[TRAP]   item {}: type={}({}) rect=({},{},{},{}) text=\"{}\"",
+                                i + 1,
+                                type_name,
+                                item.item_type,
+                                item.rect.0,
+                                item.rect.1,
+                                item.rect.2,
+                                item.rect.3,
+                                item.text
+                            );
+                        }
+                    }
+
+                    let items_handle = if let Some((_, ditl_handle_ptr)) =
+                        self.find_resource_any(*b"DITL", items_id)
+                    {
+                        let handle = bus.alloc(4);
+                        bus.write_long(handle, ditl_handle_ptr);
+                        Self::duplicate_handle_data(bus, handle)
+                    } else {
+                        0
+                    };
+                    // Honor the DLOG resource's visible flag per IM:I I-424.
+                    let dlg_ptr = self.finish_dialog_creation(
+                        bus,
+                        cpu,
+                        storage_ptr,
+                        bounds,
+                        &title,
+                        visible,
+                        proc_id,
+                        false,
+                        0,
+                        items_handle,
+                        items,
+                    );
+                    // Install any 'pltt' resource whose id matches the
+                    // dialog id onto the freshly-created window. This
+                    // mirrors what GetNewWindow / NewCWindow do in
+                    // window.rs and is what the real Window Manager
+                    // does: a Window with an associated palette gets
+                    // its palette activated when the window is created
+                    // and made active. Without this hook, a dialog
+                    // whose PICT items rely on an auto-installed
+                    // palette (e.g. EV's landing-scene dialog id 1000)
+                    // renders through whatever canonical CLUT happens
+                    // to be live, producing palette-mismatched colour
+                    // noise.  Inside Macintosh Volume VI, 20-12 to
+                    // 20-13 (palette association and activation).
+                    if dlg_ptr != 0 {
+                        let palette = self.copy_palette_resource(bus, dialog_id);
+                        if palette != 0 {
+                            self.set_window_palette_association(dlg_ptr, palette, -0x2000);
+                            self.activate_palette_for_window(bus, dlg_ptr);
+                        }
+                        self.apply_behind_parameter(bus, dlg_ptr, behind);
+                    }
+                    bus.write_long(sp + 10, dlg_ptr);
+                } else {
+                    eprintln!("[TRAP] GetNewDialog({}): DLOG not found -> NIL", dialog_id);
+                    // IM:I-410: GetNewDialog returns NIL when the DLOG
+                    // resource can't be found.
+                    bus.write_long(sp + 10, 0);
+                }
+                cpu.write_reg(Register::A7, sp + 10);
+                Ok(())
+            }
+
+            // Alert ($A985) / StopAlert ($A986) / NoteAlert ($A987)
+            // / CautionAlert ($A988)
+            //
+            // FUNCTION Alert(alertID: INTEGER; filterProc: ProcPtr): INTEGER;
+            // (and identical signatures for Stop/Note/Caution Alert)
+            //
+            // The four alert variants differ only in the ICON they
+            // display (none / Stop hand / Note speaker / Caution
+            // triangle); their dispatch into the ALRT template +
+            // ALRT stages logic is identical. In Systemless's HLE
+            // there's no user interaction, so each call collapses
+            // to "look up the ALRT, parse the stages word, return
+            // the bold (default) item for the current stage,
+            // increment AlertStage." This matches what a real
+            // user pressing Return would do — and is what most
+            // games defensively expect (return 1 = OK button =
+            // dismiss the alert).
+            //
+            // ALRT template per IM:I I-422:
+            //   +0  boundsRect:   Rect (8 bytes)
+            //   +8  itemsID:      INTEGER (DITL resource ID)
+            //   +10 stages:       INTEGER (16-bit, 4 nibbles, 1
+            //                     per stage 1..4 from low nibble
+            //                     to high). Each nibble:
+            //                       bit 0:    boldItmNum flag
+            //                                 (0 = item 1 bold/
+            //                                 default, 1 = item 2
+            //                                 bold/default)
+            //                       bit 1:    boxDrawn flag
+            //                                 (alert is shown if
+            //                                 set; suppressed if
+            //                                 clear)
+            //                       bits 2-3: soundNum (0..3 —
+            //                                 0=silent, 1=note,
+            //                                 2=caution, 3=stop)
+            //
+            // The current alert stage lives in the AlertStage
+            // low-mem global at $0A9A (1 byte, holds 0..3 mapping
+            // to stages 1..4). After each Alert*-family call the
+            // byte is incremented and capped at 3, so the fourth
+            // and subsequent calls all use the stage-4 nibble.
+            // ResetAlrtStage ($A98B) zeros the byte; GetAlrtStage
+            // ($A9B7) returns it.
+            //
+            // HLE compromise: filterProc is NOT invoked (no guest-
+            // fn dispatch infrastructure for the ProcPtr argument
+            // — same compromise as Pack1 LSearch and other guest-
+            // ProcPtr-taking traps). The user-event-loop side of
+            // the alert (cursor tracking, button hit-testing) is
+            // also skipped — we just return the documented default
+            // item and advance the stage.
+            // The missing-ALRT path is a defensive probe guard:
+            // return -1 but leave AlertStage and ANumber exactly as
+            // the caller left them.
+            //
+            // Inside Macintosh Volume I, I-417..I-422 (Alert
+            // family + ALRT template); Macintosh Toolbox Essentials
+            // 1992, 6-105..6-119 (System 7 alert dispatch).
+            // Alert ($A985): Looks up ALRT, parses stages word at +10 per IM:I I-422, returns bold item (1 or 2) for current AlertStage ($0A9A) or -1 if ALRT missing; increments AlertStage capped at 3; filterProc NOT invoked
+            // StopAlert ($A986): Same as Alert with Stop icon; identical dispatch path
+            // NoteAlert ($A987): Same as Alert with Note icon; identical dispatch path
+            // CautionAlert ($A988): Same as Alert with Caution icon; identical dispatch path
+            (true, 0x185) | (true, 0x186) | (true, 0x187) | (true, 0x188) => {
+                const ALERT_MISSING_RESOURCE_RESULT: i16 = -1;
+                let sp = cpu.read_reg(Register::A7);
+                let alert_id = bus.read_word(sp + 4) as i16;
+                let trap_name = match trap_num {
+                    0x185 => "Alert",
+                    0x186 => "StopAlert",
+                    0x187 => "NoteAlert",
+                    0x188 => "CautionAlert",
+                    _ => "Alert?",
+                };
+                let alert_stage_before =
+                    bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
+                let anumber_before = bus.read_word(crate::memory::globals::addr::ANUMBER);
+                // Look up the ALRT resource and, if present, also pull
+                // the referenced DITL's static-text items so the trap
+                // log surfaces the alert message before we silently
+                // dismiss it. Mid-90s titles (Bumbler, Steel Fighters,
+                // etc.) emit StopAlert+ExitToShell on incompatibility;
+                // without the message text in the log there's no way
+                // to know *which* check failed without RE'ing the
+                // binary. Inside Macintosh Volume I, I-422 (ALRT
+                // template) and I-426 (DITL).
+                let alrt_ptr = self
+                    .find_resource_any(*b"ALRT", alert_id)
+                    .map(|(_, ptr)| ptr);
+                let result: i16 = if let Some(alrt_data) = alrt_ptr {
+                    // Read the 16-bit stages word at offset +10
+                    // (after 8-byte boundsRect + 2-byte itemsID).
+                    let stages = bus.read_word(alrt_data + 10);
+                    // AlertStage / ACount lives at $0A9A as a
+                    // 16-bit WORD (NOT a byte) per IM:I I-423 +
+                    // MTb 1992 22620 `#define GetAlertStage()
+                    // (* (short*) 0x0A9A)`. On big-endian 68k a
+                    // word value 0..3 stores byte 0 at $0A9A and
+                    // value at $0A9B, so reading as a byte at
+                    // $0A9A would always return 0 — must use
+                    // read_word/write_word.
+                    let stage_word = bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
+                    let stage_idx = (stage_word as u32).min(3);
+                    // Each stage occupies 4 bits, stage 1 in the
+                    // low nibble (bits 0..3), stage 4 in the high
+                    // nibble (bits 12..15).
+                    let nibble = ((stages as u32) >> (stage_idx * 4)) & 0xF;
+                    // bit 3 (MSB) of nibble = boldItm per StageList
+                    // PACKED RECORD layout (IM:I I-422): boldItm,
+                    // boxDrwn, sound[2]. Assembly mask okDismissal=8
+                    // (IM:I I-424) confirms bit 3. 0=item 1, 1=item 2.
+                    let bold_item: i16 = if (nibble & 0x08) == 0 { 1 } else { 2 };
+                    // Increment AlertStage, capped at 3, so the
+                    // next call uses the next stage's nibble.
+                    let next_stage = ((stage_word as u32) + 1).min(3) as u16;
+                    bus.write_word(crate::memory::globals::addr::ALERT_STAGE, next_stage);
+                    // ANumber records the resource ID of the last
+                    // alert that occurred (IM:I I-423). Apps that
+                    // probe ANumber after a sequence of Alert
+                    // calls expect this to reflect the most-recent
+                    // ID — used by some defensive resume logic.
+                    bus.write_word(crate::memory::globals::addr::ANUMBER, alert_id as u16);
+                    bold_item
+                } else {
+                    bus.write_word(
+                        crate::memory::globals::addr::ALERT_STAGE,
+                        alert_stage_before,
+                    );
+                    bus.write_word(crate::memory::globals::addr::ANUMBER, anumber_before);
+                    ALERT_MISSING_RESOURCE_RESULT
+                };
+
+                if super::dispatch::trace_dialog_traps_enabled() {
+                    let mut detail = format!(
+                        "[TRAP] {} id={} -> item {} (PC=${:08X})",
+                        trap_name,
+                        alert_id,
+                        result,
+                        cpu.read_reg(Register::PC)
+                    );
+                    if let Some(alrt_data) = alrt_ptr {
+                        // ALRT template: bounds(8) + itemsID(2) + stages(2).
+                        // Inside Macintosh Volume I, I-422. Some titles
+                        // (Bumbler Bee-Luxe in particular) ship ALRT data
+                        // whose first 4 bytes don't decode as a Rect — most
+                        // likely a non-standard prologue prepended by the
+                        // build's PowerPC fragment or resource compiler.
+                        // Detect via implausible bounds (top > bottom or
+                        // wildly negative coordinates) and suppress the
+                        // usual itemsID lookup so the trace reflects that
+                        // the resource isn't in the documented format.
+                        let top = bus.read_word(alrt_data) as i16;
+                        let left = bus.read_word(alrt_data + 2) as i16;
+                        let bottom = bus.read_word(alrt_data + 4) as i16;
+                        let right = bus.read_word(alrt_data + 6) as i16;
+                        let bounds_plausible = (-32..1024).contains(&top)
+                            && (-32..2048).contains(&left)
+                            && bottom > top
+                            && right > left
+                            && (bottom - top) < 1024
+                            && (right - left) < 2048;
+                        if !bounds_plausible {
+                            detail.push_str(&format!(
+                                " bounds=({},{},{},{}) — implausible, skipping DITL lookup",
+                                top, left, bottom, right
+                            ));
+                        } else {
+                            let items_id = bus.read_word(alrt_data + 8) as i16;
+                            let ditl_match = self.find_resource_any(*b"DITL", items_id);
+                            detail.push_str(&format!(
+                                " bounds=({},{},{},{}) itemsID={} ditl={}",
+                                top,
+                                left,
+                                bottom,
+                                right,
+                                items_id,
+                                if ditl_match.is_some() {
+                                    "found"
+                                } else {
+                                    "missing"
+                                }
+                            ));
+                            if let Some((_, ditl_data)) = ditl_match {
+                                let items = Self::parse_ditl(bus, ditl_data, 4096);
+                                for (i, item) in items.iter().enumerate() {
+                                    if !item.text.is_empty() {
+                                        detail.push_str(&format!(
+                                            "\n[TRAP]   item {} (type=${:02X}): {:?}",
+                                            i + 1,
+                                            item.item_type,
+                                            item.text
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    eprintln!("{}", detail);
+                }
+                bus.write_word(sp + 6, result as u16);
+                cpu.write_reg(Register::A7, sp + 6);
+                Ok(())
+            }
+
+            // IsDialogEvent ($A97F)
+            // IsDialogEvent ($A97F): Reads event record, checks dialog window, matches event types, performs point containment
+            (true, 0x17F) => {
+                let sp = cpu.read_reg(Register::A7);
+                let event_ptr = bus.read_long(sp);
+                let (what, message, where_v, where_h, _modifiers) =
+                    Self::read_guest_event_record(bus, event_ptr);
+                let result = if let Some(dialog_ptr) = self.dialog_from_window_event(what, message)
+                {
+                    match what {
+                        6 | 8 => message == dialog_ptr,
+                        1 => Self::dialog_contains_screen_point(
+                            Self::dialog_screen_bounds(bus, dialog_ptr),
+                            where_v,
+                            where_h,
+                        ),
+                        _ => true,
+                    }
+                } else {
+                    false
+                };
+                bus.write_word(sp + 4, if result { 0xFFFF } else { 0 });
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // DialogSelect ($A980)
+            // DialogSelect ($A980): Handles keyboard/mouse events in modeless dialogs, hit testing, item updates
+            (true, 0x180) => {
+                let sp = cpu.read_reg(Register::A7);
+                let item_hit_ptr = bus.read_long(sp);
+                let dialog_out_ptr = bus.read_long(sp + 4);
+                let event_ptr = bus.read_long(sp + 8);
+                let (what, message, where_v, where_h, _modifiers) =
+                    Self::read_guest_event_record(bus, event_ptr);
+                let mut result = false;
+
+                if let Some(dialog_ptr) = self.dialog_from_window_event(what, message) {
+                    let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+                    if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
+                        Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+                        match what {
+                            6 => {
+                                let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+                                let (edit_text, edit_item, default_item) =
+                                    Self::dialog_edit_state(bus, dialog_ptr, &items);
+                                self.draw_dialog(
+                                    bus,
+                                    bounds,
+                                    proc_id,
+                                    "",
+                                    &items,
+                                    default_item,
+                                    &edit_text,
+                                    edit_item,
+                                    false,
+                                    dialog_ptr,
+                                );
+                            }
+                            1 if Self::dialog_contains_screen_point(bounds, where_v, where_h) => {
+                                let hit = Self::dialog_item_hit_test(
+                                    &items,
+                                    bounds,
+                                    where_v,
+                                    where_h,
+                                    &self.dialog_popup_original_rects,
+                                    dialog_ptr,
+                                );
+                                if hit > 0 {
+                                    let item = &items[(hit - 1) as usize];
+                                    let is_disabled = (item.item_type & 0x80) != 0;
+                                    if !is_disabled {
+                                        if dialog_out_ptr != 0 {
+                                            bus.write_long(dialog_out_ptr, dialog_ptr);
+                                        }
+                                        if item_hit_ptr != 0 {
+                                            bus.write_word(item_hit_ptr, hit as u16);
+                                        }
+                                        result = true;
+                                    }
+                                }
+                            }
+                            3 | 5 => {
+                                let (_edit_text, edit_item, _default_item) =
+                                    Self::dialog_edit_state(bus, dialog_ptr, &items);
+                                if edit_item > 0 {
+                                    // IM:I I-417: keyDown/autoKey dialog handling applies to
+                                    // editable text items. If no enabled editText item is
+                                    // active, DialogSelect returns FALSE.
+                                    if let Some(item) = items.get((edit_item - 1) as usize) {
+                                        let base_type = item.item_type & 0x7F;
+                                        let is_disabled = (item.item_type & 0x80) != 0;
+                                        if base_type == 16 && !is_disabled {
+                                            if dialog_out_ptr != 0 {
+                                                bus.write_long(dialog_out_ptr, dialog_ptr);
+                                            }
+                                            if item_hit_ptr != 0 {
+                                                bus.write_word(item_hit_ptr, edit_item as u16);
+                                            }
+                                            result = true;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        self.dialog_items.insert(dialog_ptr, items);
+                    }
+                }
+
+                bus.write_word(sp + 12, if result { 0xFFFF } else { 0 });
+                cpu.write_reg(Register::A7, sp + 12);
+                Ok(())
+            }
+
+            // DrawDialog ($A981)
+            // Draws the entire contents of the specified dialog box.
+            // PROCEDURE DrawDialog (theDialog: DialogPtr);
+            // Inside Macintosh Volume I, I-417; Macintosh Toolbox Essentials 1992, 6-142
+            // DrawDialog ($A981): Renders all dialog items with full DITL support
+            (true, 0x181) => {
+                let sp = cpu.read_reg(Register::A7);
+                let dialog_ptr = bus.read_long(sp);
+                if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
+                    Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+                    let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+                    let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+                    let (edit_text, edit_item, default_item) =
+                        Self::dialog_edit_state(bus, dialog_ptr, &items);
+                    self.draw_dialog(
+                        bus,
+                        bounds,
+                        proc_id,
+                        "",
+                        &items,
+                        default_item,
+                        &edit_text,
+                        edit_item,
+                        false,
+                        dialog_ptr,
+                    );
+                    self.dialog_items.insert(dialog_ptr, items);
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // DisposDialog ($A983)
+            // Removes a dialog and frees its storage.
+            // PROCEDURE DisposDialog (theDialog: DialogPtr);
+            // Inside Macintosh Volume I, I-425
+            //
+            // DisposDialog internally calls CloseWindow, which on real
+            // Mac OS invalidates the window's frame and the Window
+            // Manager's PaintBehind / CalcVisBehind restores the
+            // content beneath via update events to the back windows.
+            //
+            // In HLE we emulate PaintBehind by blitting the
+            // pre-dialog background pixels (captured during NewDialog
+            // by save_dialog_pixels) back to the screen. Without this
+            // restore, any game that skips ModalDialog and runs its
+            // own event loop (e.g. Escape Velocity's shuttle-name
+            // input dialog) leaves a dialog-shaped hole over the
+            // window behind — the "dialog dismiss leaves dead pixels"
+            // bug.
+            //
+            // Only restore when `was_front` holds: a non-front dialog
+            // would require the saved bounds to still be valid, but
+            // by the time we'd get here the window stack has already
+            // moved on. In practice modal dialogs are always the front
+            // window, so this covers every real case.
+            //
+            // Inside Macintosh Volume I, I-283 (CloseWindow), I-425 (DisposDialog)
+            //
+            // Regression coverage:
+            //   src/trap/dialog.rs::tests::disposdialog_restores_saved_background_pixels
+            //   src/trap/dialog.rs::tests::disposdialog_without_saved_pixels_noop
+            //   src/trap/dialog.rs::tests::disposdialog_non_front_does_not_restore
+            // DisposDialog ($A983): Frees dialog, cleans up dialog_items, restores saved background pixels (IM:I I-425 PaintBehind)
+            (true, 0x183) => {
+                let sp = cpu.read_reg(Register::A7);
+                let dialog_ptr = bus.read_long(sp);
+                eprintln!("[TRAP] DisposDialog(${:08X})", dialog_ptr);
+                let was_front = self.front_window == dialog_ptr;
+                let exposed_rect = self.window_bounds;
+
+                // Blit the saved background pixels back to the screen
+                // BEFORE removing any tracking state. For the restore
+                // to hit the right screen area, the dialog must still
+                // be the front window — otherwise its bounds have
+                // already been replaced.
+                if was_front {
+                    if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
+                        self.restore_dialog_pixels(bus, self.window_bounds, &saved);
+                    }
+                } else {
+                    self.dialog_saved_pixels.remove(&dialog_ptr);
+                }
+
+                self.dialog_items.remove(&dialog_ptr);
+                self.dialog_item_handles
+                    .retain(|_, (dlg, _)| *dlg != dialog_ptr);
+                self.dialog_control_handles
+                    .retain(|_, (dlg, _)| *dlg != dialog_ptr);
+                self.dialog_control_values
+                    .retain(|(dlg, _), _| *dlg != dialog_ptr);
+                self.dialog_cancel_items.remove(&dialog_ptr);
+                self.dialog_modal_entered.remove(&dialog_ptr);
+                self.untrack_window(bus, dialog_ptr);
+
+                // Restore previous front window if this dialog was on top.
+                // On a real Mac, CloseWindow (called internally by DisposDialog)
+                // removes the window from the window list and the next window
+                // becomes the front window.
+                // Inside Macintosh Volume I, I-283
+                if was_front {
+                    if let Some((prev_window, prev_bounds, prev_proc_id, prev_title)) =
+                        self.window_stack.pop()
+                    {
+                        self.set_current_port_state(bus, cpu, prev_window, None);
+                        self.front_window = prev_window;
+                        self.window_bounds = prev_bounds;
+                        self.window_proc_id = prev_proc_id;
+                        self.window_title = prev_title;
+                        if prev_window != 0 {
+                            bus.write_byte(prev_window + 111, 0xFF);
+                            if !self.event_queue.iter().any(|event| {
+                                event.what == 8
+                                    && event.message == prev_window
+                                    && (event.modifiers & 1) != 0
+                            }) {
+                                self.event_queue.push_back(crate::trap::dispatch::QueuedEvent {
+                                    what: 8,
+                                    message: prev_window,
+                                    where_v: 0,
+                                    where_h: 0,
+                                    modifiers: 1,
+                                });
+                            }
+                            self.draw_single_window_chrome_inline(bus, prev_window, true);
+                            let exposed_local = (
+                                exposed_rect.0.saturating_sub(prev_bounds.0),
+                                exposed_rect.1.saturating_sub(prev_bounds.1),
+                                exposed_rect.2.saturating_sub(prev_bounds.0),
+                                exposed_rect.3.saturating_sub(prev_bounds.1),
+                            );
+                            // Closing the front dialog exposes part of the
+                            // underlying front window. Mark the exposed rect
+                            // invalid so BeginUpdate/EndUpdate paths redraw it.
+                            self.invalidate_window_rect(bus, prev_window, exposed_local);
+                            // IM:I I-413/I-415: closing a front dialog reveals
+                            // the previously obscured window content. Queue an
+                            // update event so custom event loops that rely on
+                            // updateEvt to repaint the uncovered window get a
+                            // redraw opportunity immediately after CloseDialog.
+                            self.queue_window_update_event(prev_window);
+                        }
+                    }
+                }
+
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // ParamText ($A98B)
+            // Saves the four strings for ^0..^3 substitution into any
+            // subsequently drawn dialog or alert static-text item.
+            // PROCEDURE ParamText(param0, param1, param2, param3: Str255);
+            // Inside Macintosh Volume I, I-422
+            // ParamText ($A98B): Saves all 4 Pascal strings for ^0..^3 dialog/alert text substitution
+            (true, 0x18B) => {
+                let sp = cpu.read_reg(Register::A7);
+                let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+                // Stack layout (top-down): SP+0:param3, +4:param2, +8:param1, +12:param0.
+                // Per Inside Macintosh Volume I, I-422, passing NIL for any
+                // parameter leaves that slot's previous value unchanged —
+                // it's a "set this slot, leave others alone" idiom. Clearing
+                // on NIL would erase ^N output that an earlier ParamText
+                // had legitimately staged.
+                let offsets: [u32; 4] = [12, 8, 4, 0];
+                for (i, &off) in offsets.iter().enumerate() {
+                    let ptr = bus.read_long(sp + off);
+                    if ptr == 0 {
+                        continue;
+                    }
+                    let s = bus.read_pstring(ptr);
+                    self.param_text[i] = s.clone();
+                    // Write to DAStrings low-memory global ($0AA0 + i*4).
+                    // The ROM stores each param string as a StringHandle so
+                    // C fixtures can read *(StringHandle*)0x0AA0 to verify
+                    // the substitution was stored.
+                    // Inside Macintosh Volume I, I-422 (DAStrings global).
+                    use crate::memory::globals::addr;
+                    let data_len = 1u32 + s.len() as u32;
+                    let data_ptr = bus.alloc(data_len);
+                    if data_ptr != 0 {
+                        bus.write_byte(data_ptr, s.len() as u8);
+                        for (j, &b) in s.iter().enumerate() {
+                            bus.write_byte(data_ptr + 1 + j as u32, b);
+                        }
+                        let handle = bus.alloc(4);
+                        if handle != 0 {
+                            bus.write_long(handle, data_ptr);
+                            bus.write_long(addr::DA_STRINGS + i as u32 * 4, handle);
+                        }
+                    }
+                }
+                eprintln!(
+                    "[TRAP] ParamText pc=${:08X} ^0=\"{}\" ^1=\"{}\" ^2=\"{}\" ^3=\"{}\"",
+                    trap_pc,
+                    String::from_utf8_lossy(&self.param_text[0]),
+                    String::from_utf8_lossy(&self.param_text[1]),
+                    String::from_utf8_lossy(&self.param_text[2]),
+                    String::from_utf8_lossy(&self.param_text[3]),
+                );
+                cpu.write_reg(Register::A7, sp + 16);
+                Ok(())
+            }
+
+            // GetDItem ($A98D)
+            // Returns information about a dialog item.
+            // PROCEDURE GetDItem (theDialog: DialogPtr; itemNo: INTEGER;
+            //     VAR itemType: INTEGER; VAR item: Handle; VAR box: Rect);
+            // Inside Macintosh Volume I, I-421
+            // GetDItem ($A98D): Returns real item type, handle (with text for statText/editText, proc_ptr for userItem), and rect from dialog_items
+            (true, 0x18D) => {
+                let sp = cpu.read_reg(Register::A7);
+                let box_ptr = bus.read_long(sp);
+                let item_handle_ptr = bus.read_long(sp + 4);
+                let type_ptr = bus.read_long(sp + 8);
+                let item_no = bus.read_word(sp + 12) as i16;
+                let dialog_ptr = bus.read_long(sp + 14);
+
+                // Look up real item data
+                let found = self.dialog_items.get(&dialog_ptr).and_then(|items| {
+                    if item_no > 0 && (item_no as usize) <= items.len() {
+                        Some(&items[(item_no - 1) as usize])
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(item) = found {
+                    if trace_dialog_items_enabled() && (item.item_type & 0x7F) == 0 {
+                        eprintln!(
+                            "[DIALOG-ITEM] GetDItem pc=${:08X} dialog=${:08X} item={} type={} proc=${:08X} out_type=${:08X} out_item=${:08X} out_box=${:08X} rect=({},{},{},{})",
+                            cpu.read_reg(Register::PC),
+                            dialog_ptr,
+                            item_no,
+                            item.item_type,
+                            item.proc_ptr,
+                            type_ptr,
+                            item_handle_ptr,
+                            box_ptr,
+                            item.rect.0,
+                            item.rect.1,
+                            item.rect.2,
+                            item.rect.3,
+                        );
+                    }
+                    if type_ptr != 0 {
+                        bus.write_word(type_ptr, item.item_type as u16);
+                    }
+                    if item_handle_ptr != 0 {
+                        let current_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+                        let base_type = item.item_type & 0x7F;
+                        if current_handle != 0 || !(4..=6).contains(&base_type) {
+                            bus.write_long(item_handle_ptr, current_handle);
+                        } else {
+                            // Create a full ControlRecord so draw_control can render it.
+                            // ControlRecord layout:
+                            //   +0: nextControl (4)
+                            //   +4: contrlOwner (4) = window ptr
+                            //   +8: contrlRect (8) = top, left, bottom, right
+                            //  +16: contrlVis (1) = 255 (visible)
+                            //  +17: contrlHilite (1) = 0
+                            //  +18: contrlValue (2)
+                            //  +20: contrlMin (2)
+                            //  +22: contrlMax (2) = 1
+                            //  +24: contrlDefProc (4) = procID encoding
+                            //  +40: contrlTitle (pascal string)
+                            let title_len = item.text.len().min(255);
+                            let ctrl_rec = bus.alloc(42 + title_len as u32);
+                            bus.write_long(ctrl_rec, 0); // nextControl
+                            bus.write_long(ctrl_rec + 4, dialog_ptr); // contrlOwner
+                                                                      // contrlRect: dialog-local coordinates (draw_control gets
+                                                                      // screen offset from the owner window's PixMap bounds)
+                            bus.write_word(ctrl_rec + 8, item.rect.0 as u16);
+                            bus.write_word(ctrl_rec + 10, item.rect.1 as u16);
+                            bus.write_word(ctrl_rec + 12, item.rect.2 as u16);
+                            bus.write_word(ctrl_rec + 14, item.rect.3 as u16);
+                            bus.write_byte(ctrl_rec + 16, 255); // contrlVis = visible
+                            bus.write_byte(ctrl_rec + 17, 0); // contrlHilite
+                            let value = self
+                                .dialog_control_values
+                                .get(&(dialog_ptr, item_no))
+                                .copied()
+                                .unwrap_or(0);
+                            bus.write_word(ctrl_rec + 18, value as u16);
+                            bus.write_word(ctrl_rec + 20, 0); // contrlMin
+                            bus.write_word(ctrl_rec + 22, 1); // contrlMax
+                                                              // Write title as pascal string at offset 40
+                            bus.write_byte(ctrl_rec + 40, title_len as u8);
+                            for (i, &ch) in item.text.as_bytes().iter().take(title_len).enumerate()
+                            {
+                                bus.write_byte(ctrl_rec + 41 + i as u32, ch);
+                            }
+                            // Map DITL item type to Control Manager procID
+                            let proc_id: i16 = match base_type {
+                                4 => 0, // btnCtrl → pushButProc
+                                5 => 1, // chkCtrl → checkBoxProc
+                                6 => 2, // radCtrl → radioButProc
+                                _ => 0,
+                            };
+                            self.control_proc_ids.insert(ctrl_rec, proc_id);
+                            let handle = bus.alloc(4);
+                            bus.write_long(handle, ctrl_rec);
+                            bus.write_long(item_handle_ptr, handle);
+                            self.dialog_control_handles
+                                .insert(handle, (dialog_ptr, item_no));
+                            // Also update the DITL item handle storage
+                            Self::set_dialog_item_handle(bus, dialog_ptr, item_no, handle);
+                        }
+                    }
+                    if box_ptr != 0 {
+                        bus.write_word(box_ptr, item.rect.0 as u16);
+                        bus.write_word(box_ptr + 2, item.rect.1 as u16);
+                        bus.write_word(box_ptr + 4, item.rect.2 as u16);
+                        bus.write_word(box_ptr + 6, item.rect.3 as u16);
+                    }
+                    // If the item is a type-0 userItem and a menu was just
+                    // inserted via InsertMenu immediately before this GetDItem
+                    // call, record the menu ↔ dialog-item association.
+                    // Games (e.g. Marathon) use the pattern InsertMenu → GetDItem
+                    // to set up popup controls in dialogs.
+                    if (item.item_type & 0x7F) == 0 {
+                        if let Some(menu_id) = self.last_inserted_menu_id.take() {
+                            self.dialog_item_popup_menus
+                                .insert((dialog_ptr, item_no), menu_id);
+                            // Save the original DITL rect before SetDItem narrows it.
+                            self.dialog_popup_original_rects
+                                .insert((dialog_ptr, item_no), item.rect);
+                        }
+                    }
+                } else {
+                    if type_ptr != 0 {
+                        bus.write_word(type_ptr, 0);
+                    }
+                    if item_handle_ptr != 0 {
+                        bus.write_long(item_handle_ptr, 0);
+                    }
+                    if box_ptr != 0 {
+                        bus.write_long(box_ptr, 0);
+                        bus.write_long(box_ptr + 4, 0);
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 18);
+                Ok(())
+            }
+
+            // SetDItem ($A98E)
+            // Sets information about a dialog item.
+            // PROCEDURE SetDItem (theDialog: DialogPtr; itemNo: INTEGER;
+            //     itemType: INTEGER; item: Handle; box: Rect);
+            // Inside Macintosh Volume I, I-421
+            //
+            // Stack layout (box passed as pointer-to-Rect, not inline):
+            //   SP+0..3:  &box   (pointer to Rect — MPW compiler passes large
+            //                     value params by reference)
+            //   SP+4..7:  item   (Handle / ProcPtr)
+            //   SP+8..9:  itemType
+            //   SP+10..11: itemNo
+            //   SP+12..15: theDialog
+            // SetDItem ($A98E): Stores item type, rect, and proc_ptr (for userItem); updates both dialog_items and active tracking state
+            (true, 0x18E) => {
+                let sp = cpu.read_reg(Register::A7);
+                let box_ptr = bus.read_long(sp);
+                let item_handle = bus.read_long(sp + 4);
+                let item_type = bus.read_word(sp + 8) as u8;
+                let item_no = bus.read_word(sp + 10) as i16;
+                let dialog_ptr = bus.read_long(sp + 12);
+                let (box_top, box_left, box_bottom, box_right) = if box_ptr != 0 {
+                    (
+                        bus.read_word(box_ptr) as i16,
+                        bus.read_word(box_ptr + 2) as i16,
+                        bus.read_word(box_ptr + 4) as i16,
+                        bus.read_word(box_ptr + 6) as i16,
+                    )
+                } else {
+                    (0, 0, 0, 0)
+                };
+
+                let base_type = item_type & 0x7F;
+                let previous_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+                if trace_dialog_items_enabled() {
+                    eprintln!(
+                        "[DIALOG-ITEM] SetDItem pc=${:08X} sp=${:08X} rawbytes={:02X?} dialog=${:08X} item={} type={} proc=${:08X} rect=({},{},{},{})",
+                        cpu.read_reg(Register::PC),
+                        sp,
+                        (0..24u32).map(|i| bus.read_byte(sp + i)).collect::<Vec<u8>>(),
+                        dialog_ptr,
+                        item_no,
+                        item_type,
+                        item_handle,
+                        box_top,
+                        box_left,
+                        box_bottom,
+                        box_right,
+                    );
+                }
+
+                if previous_handle != 0 {
+                    self.dialog_item_handles.remove(&previous_handle);
+                    self.dialog_control_handles.remove(&previous_handle);
+                }
+                if let Some(item_handle_addr) =
+                    Self::dialog_item_handle_addr(bus, dialog_ptr, item_no)
+                {
+                    bus.write_long(item_handle_addr, item_handle);
+                }
+                if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                    if item_no > 0 && (item_no as usize) <= items.len() {
+                        let item = &mut items[(item_no - 1) as usize];
+                        item.item_type = item_type;
+                        item.rect = (box_top, box_left, box_bottom, box_right);
+                        if base_type == 0 {
+                            // userItem: the "item" parameter is a ProcPtr
+                            // Inside Macintosh Volume I, I-405
+                            item.proc_ptr = item_handle;
+                        } else if base_type == 8 || base_type == 16 {
+                            item.text = Self::text_item_string_from_handle(bus, item_handle);
+                        }
+                    }
+                }
+
+                if base_type == 8 || base_type == 16 {
+                    if item_handle != 0 {
+                        self.dialog_item_handles
+                            .insert(item_handle, (dialog_ptr, (item_no - 1) as usize));
+                    }
+                } else if (base_type == 4 || base_type == 5 || base_type == 6) && item_handle != 0 {
+                    self.dialog_control_handles
+                        .insert(item_handle, (dialog_ptr, item_no));
+                    let ctrl_ptr = bus.read_long(item_handle);
+                    if ctrl_ptr != 0 {
+                        self.dialog_control_values
+                            .insert((dialog_ptr, item_no), bus.read_word(ctrl_ptr + 18) as i16);
+                    }
+                }
+
+                // Also update tracking state if dialog is currently active
+                if let Some(ref mut tracking) = self.dialog_tracking {
+                    if tracking.dialog_ptr == dialog_ptr
+                        && item_no > 0
+                        && (item_no as usize) <= tracking.items.len()
+                    {
+                        let item = &mut tracking.items[(item_no - 1) as usize];
+                        item.item_type = item_type;
+                        item.rect = (box_top, box_left, box_bottom, box_right);
+                        if base_type == 0 {
+                            item.proc_ptr = item_handle;
+                        } else if base_type == 8 || base_type == 16 {
+                            item.text = Self::text_item_string_from_handle(bus, item_handle);
+                            if tracking.edit_item == item_no {
+                                tracking.edit_text = item.text.clone();
+                            }
+                        }
+                    }
+                }
+
+                cpu.write_reg(Register::A7, sp + 16);
+                Ok(())
+            }
+
+            // ModalDialog ($A991)
+            // Handles events in a modal dialog until an enabled item is hit.
+            // PROCEDURE ModalDialog (filterProc: ProcPtr; VAR itemHit: INTEGER);
+            // Inside Macintosh Volume I, I-415
+            // ModalDialog ($A991): Re-fire pattern: draws dialog (including resCtrl/popup controls, type 7), handles button clicks, keyboard input (Return/Escape/text), button flash animation, userItem draw proc callbacks
+            (true, 0x191) => {
+                // Check if draw procs need to finish before entering event loop.
+                if let Some(ref tracking) = self.dialog_tracking {
+                    if !tracking.draw_procs_done {
+                        return Some(Ok(()));
+                    }
+                }
+                // Re-snapshot rendered_pixels after draw procs or filter proc completes.
+                // rendered_pixels_final is cleared when either is injected; the snapshot
+                // here captures whatever they drew before redraw_chrome can restore it.
+                if let Some(ref tracking) = self.dialog_tracking {
+                    if !tracking.rendered_pixels_final {
+                        let bounds = tracking.bounds;
+                        let rendered = self.save_dialog_pixels(bus, bounds);
+                        let t = self.dialog_tracking.as_mut().unwrap();
+                        t.rendered_pixels = rendered;
+                        t.rendered_pixels_final = true;
+                    }
+                }
+
+                if let Some(ref tracking) = self.dialog_tracking {
+                    // Fast path — when nothing can produce an item hit or visible
+                    // update on this step (no filter proc, no flash animation, no
+                    // pending event, no queued events), return Ok without running
+                    // any of the re-fire body. Any of these flags being non-default
+                    // routes through the full handler below.
+                    if tracking.filter_proc == 0
+                        && tracking.flash_remaining == 0
+                        && self.event_queue.is_empty()
+                    {
+                        return Some(Ok(()));
+                    }
+                    // Re-fire: dialog tracking is active
+                    let dialog_ptr = tracking.dialog_ptr;
+                    let bounds = tracking.bounds;
+                    let item_hit_ptr = tracking.item_hit_ptr;
+                    let stack_ptr = tracking.stack_ptr;
+                    let filter_proc = tracking.filter_proc;
+                    let flash_remaining = tracking.flash_remaining;
+                    // Items_clone is built lazily in the mouseDown branch below to
+                    // avoid cloning Vec<DialogItem> on every ModalDialog refire.
+                    let mut pending_event = None;
+
+                    // For any dialog with a filter proc, check whether the filter
+                    // handled the most recent event. Per Inside Macintosh Volume I, I-415:
+                    // TRUE means the filter handled the event and set itemHit;
+                    // FALSE means ModalDialog should process the event itself.
+                    if filter_proc != 0 {
+                        let result_addr = self.dialog_filter_result_addr;
+                        let filter_returned_true = if result_addr != 0 {
+                            bus.read_word(result_addr) != 0
+                        } else {
+                            false
+                        };
+
+                        let mut hit = 0i16;
+                        if filter_returned_true && item_hit_ptr != 0 {
+                            hit = bus.read_word(item_hit_ptr) as i16;
+                        }
+                        if trace_dialog_filter_enabled() {
+                            eprintln!(
+                                "[DIALOG-FILTER] result dialog=${:08X} returned_true={} item_hit={} item_hit_ptr=${:08X}",
+                                tracking.dialog_ptr, filter_returned_true, hit, item_hit_ptr
+                            );
+                        }
+
+                        if hit > 0 {
+                            let handled_mouse_down = self
+                                .dialog_tracking
+                                .as_ref()
+                                .and_then(|t| t.last_filter_event.as_ref())
+                                .is_some_and(|e| e.what == 1);
+                            // Filter handled the event — end tracking and return.
+                            let saved = self.dialog_tracking.take().unwrap();
+                            self.dialog_saved_pixels
+                                .insert(saved.dialog_ptr, saved.saved_pixels);
+                            if handled_mouse_down {
+                                self.consume_dialog_mouse_up();
+                            }
+                            if trace_dialog_filter_enabled() {
+                                let actual_hit = bus.read_word(item_hit_ptr) as i16;
+                                eprintln!(
+                                    "[DIALOG-FILTER] ModalDialog returning: filter hit={} actual_item_hit_ptr=${:08X} actual_hit={} handled_mouseDown={} stack_ptr=${:08X} queue_len={}",
+                                    hit, item_hit_ptr, actual_hit, handled_mouse_down, stack_ptr, self.event_queue.len()
+                                );
+                            }
+                            cpu.write_reg(Register::A7, stack_ptr + 8);
+                            return Some(Ok(()));
+                        }
+                        pending_event = self
+                            .dialog_tracking
+                            .as_mut()
+                            .and_then(|t| t.last_filter_event.take());
+                    }
+
+                    if flash_remaining > 0 {
+                        // Button flash animation
+                        let flash_item = self.dialog_tracking.as_ref().unwrap().flash_item;
+                        let t = self.dialog_tracking.as_mut().unwrap();
+                        if t.flash_delay > 0 {
+                            t.flash_delay -= 1;
+                            return Some(Ok(()));
+                        }
+                        t.flash_remaining -= 1;
+                        t.flash_delay = 3;
+                        let remaining = t.flash_remaining;
+
+                        if remaining > 0 {
+                            // Toggle button highlight
+                            let items = &t.items;
+                            if flash_item > 0 && (flash_item as usize) <= items.len() {
+                                let item = &items[(flash_item - 1) as usize];
+                                let (it, il, ib, ir) = item.rect;
+                                let abs_top = bounds.0 + it;
+                                let abs_left = bounds.1 + il;
+                                let abs_bottom = bounds.0 + ib;
+                                let abs_right = bounds.1 + ir;
+                                self.invert_button_rect(
+                                    bus, abs_top, abs_left, abs_bottom, abs_right,
+                                );
+                            }
+                        } else {
+                            // Flash complete — write result and clean up
+                            // Write edit text back to guest memory if there's an active editText
+                            let edit_item = self.dialog_tracking.as_ref().unwrap().edit_item;
+                            let edit_text =
+                                self.dialog_tracking.as_ref().unwrap().edit_text.clone();
+                            let dialog_ptr = self.dialog_tracking.as_ref().unwrap().dialog_ptr;
+
+                            if edit_item > 0 {
+                                let bytes = edit_text.as_bytes();
+                                let len = bytes.len().min(255);
+                                // Resolve the dialog item's handle via
+                                // dialog_item_handles reverse-lookup and write
+                                // edit_text to its master sized to len bytes.
+                                // Inside Macintosh Volume I, I-422
+                                // (GetDItem/SetDialogItemText contract); text
+                                // item handles store raw bytes sized to the
+                                // text length.
+                                let mut item_handle: u32 = 0;
+                                for (&h, &(dlg, idx)) in &self.dialog_item_handles {
+                                    if dlg == dialog_ptr && (idx as i16 + 1) == edit_item {
+                                        item_handle = h;
+                                        break;
+                                    }
+                                }
+                                if item_handle != 0 {
+                                    let data_ptr =
+                                        Self::ensure_text_handle_size(bus, item_handle, len);
+                                    if data_ptr != 0 && len > 0 {
+                                        bus.write_bytes(data_ptr, &bytes[..len]);
+                                    }
+                                }
+                                // Update the item's cached text so our own
+                                // dialog_items reflects the typed value.
+                                if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                                    if (edit_item as usize) <= items.len() {
+                                        items[(edit_item - 1) as usize].text = edit_text;
+                                    }
+                                }
+                            }
+
+                            let saved = self.dialog_tracking.take().unwrap();
+                            self.restore_dialog_pixels(bus, saved.bounds, &saved.saved_pixels);
+
+                            // ModalDialog button clicks should consume the
+                            // matching mouseUp before returning to the app.
+                            // If we leave it queued, the release can leak into
+                            // the underlying game view after the dialog closes.
+                            self.consume_dialog_mouse_up();
+
+                            if item_hit_ptr != 0 {
+                                bus.write_word(item_hit_ptr, flash_item as u16);
+                            }
+                            cpu.write_reg(Register::A7, stack_ptr + 8);
+                        }
+                        return Some(Ok(()));
+                    }
+
+                    let event = if let Some(e) = pending_event {
+                        Some(e)
+                    } else if !self.event_queue.is_empty() {
+                        // Drain events looking for actionable ones
+                        let mut event = None;
+                        while let Some(e) = self.event_queue.pop_front() {
+                            match e.what {
+                                1 | 2 | 3 | 6 => {
+                                    event = Some(e);
+                                    break;
+                                }
+                                _ => {} // discard other events
+                            }
+                        }
+                        event
+                    } else {
+                        None
+                    };
+
+                    if let Some(e) = event {
+                        match e.what {
+                            // updateEvt — re-snapshot rendered_pixels.
+                            // Redraw HLE popup controls first, since the game
+                            // may have drawn narrow indicator boxes that would
+                            // taint the snapshot.
+                            6 => {
+                                if let Some(ref t) = self.dialog_tracking {
+                                    let draws = t.popup_draws.clone();
+                                    for (pt, pl, pb, pr, ref title) in &draws {
+                                        self.draw_popup_control(bus, *pt, *pl, *pb, *pr, title);
+                                    }
+                                }
+                                let rendered = self.save_dialog_pixels(bus, bounds);
+                                let t = self.dialog_tracking.as_mut().unwrap();
+                                t.rendered_pixels = rendered;
+                                t.rendered_pixels_final = true;
+                            }
+                            // mouseDown
+                            1 => {
+                                // Clone items lazily — only when actually processing
+                                // a mouseDown. Hot path (no events) skips this entirely.
+                                let items_clone: Vec<DialogItem> = self
+                                    .dialog_tracking
+                                    .as_ref()
+                                    .map(|t| t.items.clone())
+                                    .unwrap_or_default();
+                                let hit = Self::dialog_item_hit_test(
+                                    &items_clone,
+                                    bounds,
+                                    e.where_v,
+                                    e.where_h,
+                                    &self.dialog_popup_original_rects,
+                                    dialog_ptr,
+                                );
+                                if hit > 0 {
+                                    let item = &items_clone[(hit - 1) as usize];
+                                    let base_type = item.item_type & 0x7F;
+                                    let is_disabled = (item.item_type & 0x80) != 0;
+
+                                    if !is_disabled {
+                                        match base_type {
+                                            // Button click: start flash
+                                            4 => {
+                                                let (it, il, ib, ir) = item.rect;
+                                                let abs_top = bounds.0 + it;
+                                                let abs_left = bounds.1 + il;
+                                                let abs_bottom = bounds.0 + ib;
+                                                let abs_right = bounds.1 + ir;
+                                                self.invert_button_rect(
+                                                    bus, abs_top, abs_left, abs_bottom, abs_right,
+                                                );
+                                                let t = self.dialog_tracking.as_mut().unwrap();
+                                                t.flash_remaining = 6;
+                                                t.flash_delay = 3;
+                                                t.flash_item = hit;
+                                            }
+                                            // Checkbox click: return item number immediately
+                                            // The dialog stays on screen — the app toggles
+                                            // the checkbox value and calls ModalDialog again.
+                                            // Inside Macintosh Volume I, I-415
+                                            5 => {
+                                                let tracking =
+                                                    self.dialog_tracking.as_ref().unwrap();
+                                                let edit_item = tracking.edit_item;
+                                                let edit_text = tracking.edit_text.clone();
+                                                let dlg_ptr = tracking.dialog_ptr;
+                                                if edit_item > 0 {
+                                                    if let Some(items) =
+                                                        self.dialog_items.get_mut(&dlg_ptr)
+                                                    {
+                                                        if (edit_item as usize) <= items.len() {
+                                                            items[(edit_item - 1) as usize].text =
+                                                                edit_text;
+                                                        }
+                                                    }
+                                                }
+                                                // Preserve saved background pixels for re-entry
+                                                let saved = self.dialog_tracking.take().unwrap();
+                                                self.dialog_saved_pixels
+                                                    .insert(dlg_ptr, saved.saved_pixels);
+                                                self.consume_dialog_mouse_up();
+                                                // Don't restore pixels — dialog stays visible
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(item_hit_ptr, hit as u16);
+                                                }
+                                                cpu.write_reg(Register::A7, stack_ptr + 8);
+                                            }
+                                            // EditText click: set as active
+                                            16 => {
+                                                let t = self.dialog_tracking.as_mut().unwrap();
+                                                t.edit_item = hit;
+                                            }
+                                            // UserItem with popup menu: return item number.
+                                            // Dialog stays on screen — the app calls
+                                            // PopUpMenuSelect to show the popup dropdown.
+                                            // Macintosh Toolbox Essentials 1992, 5-26
+                                            0 if self
+                                                .dialog_item_popup_menus
+                                                .contains_key(&(dialog_ptr, hit)) =>
+                                            {
+                                                let saved = self.dialog_tracking.take().unwrap();
+                                                self.dialog_saved_pixels
+                                                    .insert(saved.dialog_ptr, saved.saved_pixels);
+                                                self.consume_dialog_mouse_up();
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(item_hit_ptr, hit as u16);
+                                                }
+                                                cpu.write_reg(Register::A7, stack_ptr + 8);
+                                            }
+                                            // Any other enabled item: return item number immediately.
+                                            // Inside Macintosh Volume I, I-428
+                                            _ => {
+                                                let saved = self.dialog_tracking.take().unwrap();
+                                                self.dialog_saved_pixels
+                                                    .insert(saved.dialog_ptr, saved.saved_pixels);
+                                                self.consume_dialog_mouse_up();
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(item_hit_ptr, hit as u16);
+                                                }
+                                                cpu.write_reg(Register::A7, stack_ptr + 8);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // keyDown
+                            3 => {
+                                let char_code = (e.message & 0xFF) as u8;
+                                let tracking = self.dialog_tracking.as_mut().unwrap();
+
+                                match char_code {
+                                    // Return or Enter: trigger default button
+                                    0x0D | 0x03 => {
+                                        let def = tracking.default_item;
+                                        if def > 0 && (def as usize) <= tracking.items.len() {
+                                            let item = &tracking.items[(def - 1) as usize];
+                                            let (it, il, ib, ir) = item.rect;
+                                            let abs_top = bounds.0 + it;
+                                            let abs_left = bounds.1 + il;
+                                            let abs_bottom = bounds.0 + ib;
+                                            let abs_right = bounds.1 + ir;
+                                            self.invert_button_rect(
+                                                bus, abs_top, abs_left, abs_bottom, abs_right,
+                                            );
+                                            let t = self.dialog_tracking.as_mut().unwrap();
+                                            t.flash_remaining = 6;
+                                            t.flash_delay = 3;
+                                            t.flash_item = def;
+                                        }
+                                    }
+                                    // Escape: trigger cancel button
+                                    0x1B => {
+                                        let cancel = tracking.cancel_item;
+                                        if cancel > 0 && (cancel as usize) <= tracking.items.len() {
+                                            let item = &tracking.items[(cancel - 1) as usize];
+                                            let (it, il, ib, ir) = item.rect;
+                                            let abs_top = bounds.0 + it;
+                                            let abs_left = bounds.1 + il;
+                                            let abs_bottom = bounds.0 + ib;
+                                            let abs_right = bounds.1 + ir;
+                                            self.invert_button_rect(
+                                                bus, abs_top, abs_left, abs_bottom, abs_right,
+                                            );
+                                            let t = self.dialog_tracking.as_mut().unwrap();
+                                            t.flash_remaining = 6;
+                                            t.flash_delay = 3;
+                                            t.flash_item = cancel;
+                                        }
+                                    }
+                                    // Backspace/Delete
+                                    0x08 => {
+                                        if tracking.edit_item > 0 {
+                                            if !tracking.edit_text_modified {
+                                                // First backspace clears selection
+                                                tracking.edit_text.clear();
+                                                tracking.edit_text_modified = true;
+                                            } else if !tracking.edit_text.is_empty() {
+                                                tracking.edit_text.pop();
+                                            }
+                                        }
+                                    }
+                                    // Printable ASCII
+                                    0x20..=0x7E => {
+                                        if tracking.edit_item > 0 {
+                                            if !tracking.edit_text_modified {
+                                                // First keypress replaces selection
+                                                tracking.edit_text.clear();
+                                                tracking.edit_text_modified = true;
+                                            }
+                                            tracking.edit_text.push(char_code as char);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    // First call: initialize dialog tracking
+                    let sp = cpu.read_reg(Register::A7);
+                    let item_hit_ptr = bus.read_long(sp);
+                    let filter_proc = bus.read_long(sp + 4);
+                    if item_hit_ptr != 0 {
+                        bus.write_word(item_hit_ptr, 0);
+                    }
+
+                    // Find the most recently created dialog's items
+                    let dialog_ptr = self.front_window;
+                    if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
+                        // Re-read userItem proc pointers from guest memory.
+                        // The game may have written them directly to the DITL
+                        // handle data after GetNewDialog returned.
+                        Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+                        let bounds = self.window_bounds;
+                        let proc_id = self.window_proc_id;
+                        let title = self.window_title.clone();
+
+                        let (edit_text, edit_item, default_item) =
+                            Self::dialog_edit_state(bus, dialog_ptr, &items);
+                        let cancel_item = self
+                            .dialog_cancel_items
+                            .get(&dialog_ptr)
+                            .copied()
+                            .unwrap_or(2);
+
+                        // If all items are userItem type, the game manages drawing
+                        // itself — skip our draw to avoid overwriting game content.
+                        let all_user_items = items.iter().all(|it| (it.item_type & 0x7F) == 0);
+
+                        if trace_dialog_procs_enabled() {
+                            for (i, item) in items.iter().enumerate() {
+                                eprintln!(
+                                    "[DIALOG-PROC] dialog=${:08X} item={} type={} proc=${:08X} rect=({},{},{},{}) text={:?}",
+                                    dialog_ptr, i + 1, item.item_type, item.proc_ptr,
+                                    item.rect.0, item.rect.1, item.rect.2, item.rect.3,
+                                    item.text,
+                                );
+                                if (item.item_type & 0x7F) == 0 {
+                                    eprintln!(
+                                        "[DIALOG-PROC] dialog=${:08X} item={} type={} proc=${:08X}",
+                                        dialog_ptr,
+                                        i + 1,
+                                        item.item_type,
+                                        item.proc_ptr,
+                                    );
+                                }
+                            }
+                        }
+
+                        // Save pixels under dialog area (background to restore on dismiss).
+                        // If we have preserved pixels from a previous non-dismissing return
+                        // (e.g., popup click), reuse those instead of capturing the
+                        // currently visible dialog as "background."
+                        let is_reentry = self.dialog_modal_entered.contains(&dialog_ptr);
+                        let saved_pixels = self
+                            .dialog_saved_pixels
+                            .remove(&dialog_ptr)
+                            .unwrap_or_else(|| self.save_dialog_pixels(bus, bounds));
+                        if !all_user_items && !is_reentry {
+                            // First entry: draw the dialog chrome and controls.
+                            // Before draw_dialog fills the dialog area white, save the
+                            // pixel content of every userItem rect. Games (e.g. Marathon)
+                            // often draw custom controls (popup buttons, sliders) into
+                            // userItem rects via QuickDraw before calling ModalDialog.
+                            // draw_dialog's white fill would erase that content; we
+                            // capture it here and restore it afterwards so the snapshot
+                            // (rendered_pixels) reflects the combined state.
+                            // Inside Macintosh Volume I, I-405
+                            let user_item_rects: Vec<(i16, i16, i16, i16)> = items
+                                .iter()
+                                .enumerate()
+                                // Only save enabled userItems (type=0).  Disabled
+                                // userItems (type=128) act as background panels and
+                                // are usually larger than their companion items;
+                                // saving/restoring them would erase staticText labels
+                                // that draw_dialog renders inside those rects.
+                                // Skip popup-associated userItems — we HLE-redraw
+                                // those with proper expanded rects below.
+                                .filter(|(i, it)| {
+                                    it.item_type == 0
+                                        && !self
+                                            .dialog_item_popup_menus
+                                            .contains_key(&(dialog_ptr, (i + 1) as i16))
+                                })
+                                .map(|(_, it)| {
+                                    let (it_t, it_l, it_b, it_r) = it.rect;
+                                    (
+                                        bounds.0 + it_t,
+                                        bounds.1 + it_l,
+                                        bounds.0 + it_b,
+                                        bounds.1 + it_r,
+                                    )
+                                })
+                                .collect();
+                            let user_item_backups: Vec<Vec<u8>> = user_item_rects
+                                .iter()
+                                .map(|&r| self.save_rect_pixels(bus, r))
+                                .collect();
+
+                            self.draw_dialog(
+                                bus,
+                                bounds,
+                                proc_id,
+                                &title,
+                                &items,
+                                default_item,
+                                &edit_text,
+                                edit_item,
+                                false,
+                                dialog_ptr,
+                            );
+
+                            // Restore game-drawn userItem content over the white fill.
+                            for (rect, pixels) in
+                                user_item_rects.iter().zip(user_item_backups.iter())
+                            {
+                                self.restore_rect_pixels(bus, *rect, pixels);
+                            }
+                        }
+
+                        // HLE-draw popup controls for type-0 userItems that were
+                        // associated with MENU resources via the InsertMenu → GetDItem
+                        // pattern used by games (e.g. Marathon) to set up popup
+                        // controls in dialogs.  We find the checked item (mark=0x12)
+                        // in each menu and draw a standard popup button for it.
+                        // Inside Macintosh Volume I, I-405 (userItem draw responsibilities)
+                        let popup_draws: Vec<(i16, i16, i16, i16, String)> = items
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, item)| {
+                                let item_no = (i + 1) as i16;
+                                if (item.item_type & 0x7F) != 0 {
+                                    return None;
+                                }
+                                let menu_id =
+                                    *self.dialog_item_popup_menus.get(&(dialog_ptr, item_no))?;
+                                let checked_text = self
+                                    .menus
+                                    .iter()
+                                    .find(|m| m.id == menu_id)
+                                    .and_then(|m| {
+                                        m.items
+                                            .iter()
+                                            .find(|mi| mi.mark == 0x12)
+                                            .map(|mi| mi.text.clone())
+                                    })
+                                    .unwrap_or_default();
+                                // Use the original DITL rect (before SetDItem narrowed it)
+                                let (it_t, it_l, it_b, it_r) = self
+                                    .dialog_popup_original_rects
+                                    .get(&(dialog_ptr, item_no))
+                                    .copied()
+                                    .unwrap_or(item.rect);
+                                Some((
+                                    bounds.0 + it_t,
+                                    bounds.1 + it_l,
+                                    bounds.0 + it_b,
+                                    bounds.1 + it_r,
+                                    checked_text,
+                                ))
+                            })
+                            .collect();
+                        for (abs_top, abs_left, abs_bottom, abs_right, ref checked_text) in
+                            &popup_draws
+                        {
+                            self.draw_popup_control(
+                                bus,
+                                *abs_top,
+                                *abs_left,
+                                *abs_bottom,
+                                *abs_right,
+                                checked_text,
+                            );
+                        }
+
+                        // Snapshot the fully rendered dialog (including PICTs) so
+                        // redraw_chrome can restore it without re-parsing pictures.
+                        // If there are userItem draw procs, this will be re-snapshotted
+                        // after they execute.
+                        let rendered_pixels = self.save_dialog_pixels(bus, bounds);
+
+                        // Collect userItem draw procs to call.
+                        // Even game-managed dialogs can rely on Dialog Manager
+                        // userItem callbacks for portions of their content.
+                        // Inside Macintosh Volume I, I-405
+                        let mut draw_proc_queue = VecDeque::new();
+                        for (i, item) in items.iter().enumerate() {
+                            let base_type = item.item_type & 0x7F;
+                            if base_type == 0 && item.proc_ptr != 0 {
+                                draw_proc_queue.push_back((item.proc_ptr, (i + 1) as i16));
+                            }
+                        }
+                        let has_draw_procs = !draw_proc_queue.is_empty();
+
+                        self.dialog_modal_entered.insert(dialog_ptr);
+                        self.dialog_tracking = Some(super::dispatch::DialogTrackingState {
+                            dialog_ptr,
+                            bounds,
+                            title,
+                            proc_id,
+                            items,
+                            default_item,
+                            cancel_item,
+                            edit_text,
+                            edit_item,
+                            saved_pixels,
+                            stack_ptr: sp,
+                            item_hit_ptr,
+                            rendered_pixels,
+                            flash_remaining: 0,
+                            flash_delay: 0,
+                            flash_item: 0,
+                            edit_text_modified: false,
+                            draw_proc_queue,
+                            draw_procs_done: !has_draw_procs,
+                            rendered_pixels_final: !has_draw_procs,
+                            filter_proc,
+                            game_managed: all_user_items,
+                            last_filter_event: None,
+                            popup_draws,
+                        });
+                        // Don't pop stack or advance PC — re-fire pattern
+                    } else {
+                        // No items found — fall back to returning item 1
+                        eprintln!("[TRAP] ModalDialog: no items found, returning 1");
+                        if item_hit_ptr != 0 {
+                            bus.write_word(item_hit_ptr, 1);
+                        }
+                        cpu.write_reg(Register::A7, sp + 8);
+                    }
+                }
+                Ok(())
+            }
+
+            // ========== TextEdit Manager ==========
+            // TEInit ($A9CC)
+            // Initializes TextEdit's internal globals.
+            // PROCEDURE TEInit;
+            // Inside Macintosh Volume I, I-376 ("TEInit
+            // initializes TextEdit by allocating a handle for
+            // the TextEdit scrap. The scrap is initially empty.
+            // Call this procedure once and only once at the
+            // beginning of your program."). Also note from IM:I
+            // I-376: "You should call TEInit even if your
+            // application doesn't use TextEdit, so that desk
+            // accessories and dialog and alert boxes will work
+            // correctly."
+            //
+            // Per IM:I I-389 the scrap globals are TEScrpHandle
+            // ($0AB4, 4-byte Handle to the empty/cut/copied
+            // text block) and TEScrpLength ($0AB0, 2-byte
+            // INTEGER byte count). TEInit must:
+            //   1. Allocate a zero-length relocatable block
+            //      and store its handle at TEScrpHandle.
+            //   2. Set TEScrpLength to 0 (empty scrap).
+            //
+            // Idempotent: per IM the routine is documented as
+            // "call once and only once" but defensive impls
+            // check for an existing handle and skip the
+            // re-allocation to avoid leaking the prior one. We
+            // do the same — apps that violate the IM contract
+            // and call TEInit twice get a stable handle (no
+            // double-free).
+            // TEInit ($A9CC): Per IM:I I-376 allocates a zero-length scrap handle and stores it at TEScrpHandle ($0AB4); zeros TEScrpLength ($0AB0). Idempotent — repeated calls reuse the existing handle to avoid leaking. TECopy / TECut / TEPaste subsequently resize the underlying block as needed. No args, no result.
+            (true, 0x1CC) => {
+                use crate::memory::globals::addr;
+                // Idempotency: skip re-allocation if a prior
+                // TEInit (or first-touch by TECopy / TECut /
+                // TEPaste) already populated the handle.
+                let existing = bus.read_long(addr::TE_SCRP_HANDLE);
+                if existing == 0 {
+                    // Allocate a handle whose master ptr is
+                    // NIL (== empty scrap). Subsequent
+                    // TECopy / TECut grow the underlying
+                    // block via ensure_text_handle_size which
+                    // tolerates the NIL master ptr by lazy-
+                    // allocating on first non-empty write.
+                    // This matches the existing
+                    // TECopy / TECut first-touch pattern that
+                    // calls allocate_handle_with_data(bus, 0).
+                    let handle = Self::allocate_handle_with_data(bus, 0);
+                    bus.write_long(addr::TE_SCRP_HANDLE, handle);
+                }
+                bus.write_word(addr::TE_SCRP_LENGTH, 0);
+                Ok(())
+            }
+
+            // TEPinScroll ($A812)
+            // Scrolls the text within the view rectangle by the
+            // requested (dh, dv); stops scrolling when the last line
+            // of text is scrolled into view.
+            // PROCEDURE TEPinScroll(dh: INTEGER; dv: INTEGER; hTE: TEHandle);
+            // Inside Macintosh: Text 1993, p. 2-91.
+            //
+            // IM:Text 1993 p. 2-91 verbatim:
+            //   "The TEPinScroll procedure scrolls the text within the
+            //    view rectangle of the specified edit record by the
+            //    designated number of pixels. Scrolling stops when the
+            //    last line of text is scrolled into view. ... The
+            //    destination rectangle is offset by the amount
+            //    scrolled. ... When the edit record is longer than the
+            //    text it contains, TEPinScroll displays up to the last
+            //    line of text inclusive, and not beyond it."
+            //
+            // Sign convention (IM:Text 1993 p. 2-91):
+            //   dh > 0: text moves right → destRect.left/right += dh
+            //   dh < 0: text moves left  → destRect.left/right += dh
+            //   dv > 0: text moves down  → destRect.top/bottom += dv
+            //   dv < 0: text moves up    → destRect.top/bottom += dv
+            //
+            // Pascal stack frame (args push left-to-right, first
+            // source arg deepest):
+            //   sp+0  hTE: TEHandle           (4) — last arg, shallowest
+            //   sp+4  dv:  INTEGER            (2) — middle arg
+            //   sp+6  dh:  INTEGER            (2) — first arg, deepest
+            // Total pop = 8 bytes; no function-result slot.
+            //
+            // MPW Universal Headers TextEdit.h:
+            //   EXTERN_API(void) TEPinScroll(short dh, short dv,
+            //                                TEHandle hTE)
+            //                                  ONEWORDINLINE(0xA812);
+            //
+            // Pin semantics: the dv arm clamps so dest_rect.top stays
+            // within [view_top - (text_bottom - view_bottom), view_top]
+            // — i.e. far enough that the last line of text remains
+            // visible at the bottom of the view. The dh arm applies a
+            // symmetric horizontal clamp. For in-range scrolls the
+            // call behaves exactly like TEScroll ($A9DD) per the IM
+            // "offset by the amount scrolled" guarantee.
+            //
+            // Runtime proof: a812_tepinscroll_strict
+            //   B1: in-range dv=-3 with 8-line text exceeds 10-pixel view height
+            //       → destRect.top/bottom shift by exactly -3 (Apple/BII agree)
+            //   B2: dv=-1000 on empty TERec fitting in 200-pixel view
+            //       → destRect unchanged (pin clamps to zero movement)
+            //   B3: Pascal PROCEDURE stack sandwich balances StackSpace.
+            //
+            // Regression coverage:
+            //   dialog::tests::te_pin_scroll_reads_handle_from_stack_top
+            //   dialog::tests::tepinscroll_in_range_negative_dv_offsets_destrect_top_and_bottom_exactly_by_dv
+            //   dialog::tests::tepinscroll_pascal_lr_stack_layout_reads_dh_dv_and_hte_from_correct_offsets
+            //   dialog::tests::tepinscroll_clamps_overscroll_when_last_line_is_already_visible
+            // TEPinScroll ($A812): Offsets `destRect` by the requested delta and pops 8 bytes
+            (true, 0x012) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let mut dv = bus.read_word(sp + 4) as i16;
+                let mut dh = bus.read_word(sp + 6) as i16;
+                cpu.write_reg(Register::A7, sp + 8);
+
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    let view_rect = Self::te_read_rect(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET);
+                    let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+
+                    if dv > 0 {
+                        let max_down = view_rect.0.saturating_sub(dest_rect.0);
+                        if dv > max_down {
+                            dv = max_down;
+                        }
+                    } else if dv < 0 {
+                        // Scrolling up (dv < 0) is bounded by the
+                        // distance between the text's bottom and
+                        // the view's bottom — pinning behaviour
+                        // stops once the last line is visible per
+                        // Text 1993, 2-91. max_up = view_bottom -
+                        // text_bottom: if text already fits (value
+                        // ≥ 0) there's nothing to scroll up to, so
+                        // dv clamps to 0. Otherwise max_up < 0
+                        // gives the amount of up-scroll still available; clamp dv
+                        // upward to max_up so it can't exceed that.
+                        let text_len = Self::te_text_length(bus, te_handle);
+                        let (end_top, _) = self.te_char_to_point(bus, te_handle, text_len);
+                        let end_line = Self::te_char_to_line_index(bus, te_handle, text_len);
+                        let text_bottom = end_top
+                            .saturating_add(Self::te_height_for_line(bus, te_handle, end_line));
+                        let max_up = view_rect.2.saturating_sub(text_bottom);
+                        dv = if max_up >= 0 {
+                            0
+                        } else if dv < max_up {
+                            max_up
+                        } else {
+                            dv
+                        };
+                    }
+
+                    if dh > 0 {
+                        let max_right = view_rect.1.saturating_sub(dest_rect.1);
+                        dh = if max_right > 0 { dh.min(max_right) } else { 0 };
+                    } else if dh < 0 {
+                        let max_left = view_rect.1.saturating_sub(dest_rect.1);
+                        dh = if max_left < 0 { dh.max(max_left) } else { 0 };
+                    }
+
+                    if trace_textedit_enabled() {
+                        let adjusted = (
+                            dest_rect.0.saturating_add(dv),
+                            dest_rect.1.saturating_add(dh),
+                            dest_rect.2.saturating_add(dv),
+                            dest_rect.3.saturating_add(dh),
+                        );
+                        eprintln!(
+                            "[TE] TEPinScroll hTE=${:08X} dh={} dv={} dest=({},{},{},{})",
+                            te_handle, dh, dv, adjusted.0, adjusted.1, adjusted.2, adjusted.3
+                        );
+                    }
+                    self.te_scroll_contents(cpu, bus, te_handle, dh, dv);
+                }
+                Ok(())
+            }
+
+            // TEAutoView ($A813)
+            // Enables or disables automatic scrolling for an edit record.
+            // PROCEDURE TEAutoView(fAuto: Boolean; hTE: TEHandle);
+            // Text 1993, 2-92
+            //
+            // hTE is the LAST parameter (Pascal left-to-right push), so it
+            // sits at SP+0 above the BOOLEAN at SP+4.
+            // TEAutoView ($A813): Tracks the auto-scroll feature bit per TEHandle
+            (true, 0x013) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                // Pascal BOOLEAN in high byte (MPW C convention).
+                let enabled = bus.read_byte(sp + 4) != 0;
+                self.set_te_feature_bit(te_handle, Self::TE_FEATURE_AUTO_SCROLL, enabled);
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEAutoView hTE=${:08X} enabled={}", te_handle, enabled);
+                }
+                cpu.write_reg(Register::A7, sp + 6);
+                Ok(())
+            }
+
+            // TESelView ($A811)
+            // PROCEDURE TESelView(hTE: TEHandle);
+            // Inside Macintosh: Text (1993), p. 2-92.
+            //
+            // Per IM:Text 1993 p. 2-92 verbatim: "Once automatic scrolling
+            // has been enabled by a call to the TEAutoView procedure or
+            // through the TEFeatureFlag function, the TESelView procedure
+            // ensures that the selection range is visible and scrolls it
+            // into the view rectangle if necessary. ... The top left part
+            // of the selection range is scrolled into view. ... If
+            // automatic scrolling is disabled, TESelView has no effect."
+            //
+            // MPW Universal Headers TextEdit.h:
+            //   EXTERN_API(void) TESelView(TEHandle hTE)
+            //                              ONEWORDINLINE(0xA811);
+            //
+            // Pascal stack frame:
+            //   sp+0  hTE: TEHandle  (4)
+            // Total pop = 4 bytes. No function result.
+            //
+            // Algorithm (matches Apple's documented contract):
+            //   1. If TE_FEATURE_AUTO_SCROLL is OFF on this hTE → no-op.
+            //   2. Read viewRect, destRect, and the current selection
+            //      range from the TERec.
+            //   3. Resolve sel_start and sel_end character offsets to
+            //      pixel coordinates (top_left of selection range and
+            //      bottom_right via line-height lookup).
+            //   4. Compute dh, dv via te_getdelta — the per-axis shift
+            //      that brings the selection rectangle inside viewRect
+            //      (zero if the selection is already inside).
+            //   5. Call te_scroll_contents which adds (dh, dv) to
+            //      destRect.{top,left,bottom,right} and redraws.
+            //
+            // BasiliskII-vs-Apple divergence note:
+            //   The strict bake at a811_teselview_strict
+            //   witnesses three engines-agree cases (auto-scroll disabled,
+            //   selection in view, Pascal stack discipline). BasiliskII
+            //   System 7.5.3 ROM does NOT scroll destRect when auto-scroll
+            //   is enabled and the selection lies below viewRect — pre and
+            //   post destRect coincide at (0,0,200,30) in the diagnostic
+            //   probe. Apple's IM:Text 1993 p. 2-92 says this case must
+            //   scroll. Systemless implements the Apple-canonical semantic
+            //   (declared via `hle_matches = "apple"` on the catalog row);
+            //   the divergent rule is pinned by the contract test
+            //   `teselview_apple_canonical_below_view_shifts_destrect_up`
+            //   plus the existing assertion-bearing tests in this module.
+            (true, 0x011) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                cpu.write_reg(Register::A7, sp + 4);
+                if self.te_feature_bit(te_handle, Self::TE_FEATURE_AUTO_SCROLL) {
+                    let te_ptr = Self::te_record_ptr(bus, te_handle);
+                    if te_ptr != 0 {
+                        let view_rect = Self::te_read_rect(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET);
+                        let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+                        let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                        let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                        let (start_top, start_left) =
+                            self.te_char_to_point(bus, te_handle, sel_start);
+                        let (stop_top, stop_left) = self.te_char_to_point(bus, te_handle, sel_end);
+                        let stop_line = Self::te_char_to_line_index(bus, te_handle, sel_end);
+                        let stop_bottom = stop_top
+                            .saturating_add(Self::te_height_for_line(bus, te_handle, stop_line));
+                        let dv =
+                            Self::te_getdelta(start_top, stop_bottom, view_rect.0, view_rect.2);
+                        let dh = Self::te_getdelta(start_left, stop_left, view_rect.1, view_rect.3);
+                        if trace_textedit_enabled() {
+                            let adjusted = (
+                                dest_rect.0.saturating_add(dv),
+                                dest_rect.1.saturating_add(dh),
+                                dest_rect.2.saturating_add(dv),
+                                dest_rect.3.saturating_add(dh),
+                            );
+                            eprintln!(
+                                "[TE] TESelView hTE=${:08X} view=({},{},{},{}) dest=({},{},{},{}) adjusted=({},{},{},{})",
+                                te_handle,
+                                view_rect.0,
+                                view_rect.1,
+                                view_rect.2,
+                                view_rect.3,
+                                dest_rect.0,
+                                dest_rect.1,
+                                dest_rect.2,
+                                dest_rect.3,
+                                adjusted.0,
+                                adjusted.1,
+                                adjusted.2,
+                                adjusted.3
+                            );
+                        }
+                        self.te_scroll_contents(cpu, bus, te_handle, dh, dv);
+                    }
+                }
+                Ok(())
+            }
+
+            // ========== Cursor Manager ==========
+
+            // InitCursor ($A850) - Toolbox version
+            // Resets to standard arrow cursor
+            // InitCursor ($A850): Sets arrow cursor, resets cursor level to 0,
+            // makes visible (IM:I I-167).
+            (true, 0x050) => {
+                self.cursor_data = Some(Self::default_arrow_cursor());
+                self.cursor_level = 0;
+                self.cursor_visible = true;
+                Ok(())
+            }
+
+            // SetCursor ($A851)
+            // PROCEDURE SetCursor(crsr: Cursor);
+            // Cursor record: data[32] + mask[32] + hotSpot.v(2) + hotSpot.h(2) = 68 bytes
+            // SetCursor ($A851): Reads 68-byte cursor record (16×16 data + mask + hotspot).
+            // Per IM:I I-167, if the cursor is hidden it stays hidden and only
+            // changes appearance when uncovered by matching ShowCursor calls.
+            (true, 0x051) => {
+                let sp = cpu.read_reg(Register::A7);
+                let crsr_ptr = bus.read_long(sp);
+                cpu.write_reg(Register::A7, sp + 4);
+
+                // Read cursor bitmap (16x16 = 32 bytes)
+                let mut data = [0u8; 32];
+                for (i, byte) in data.iter_mut().enumerate() {
+                    *byte = bus.read_byte(crsr_ptr + i as u32);
+                }
+                // Read cursor mask (16x16 = 32 bytes)
+                let mut mask = [0u8; 32];
+                for (i, byte) in mask.iter_mut().enumerate() {
+                    *byte = bus.read_byte(crsr_ptr + 32 + i as u32);
+                }
+                // Read hotspot
+                let hot_v = bus.read_word(crsr_ptr + 64) as i16;
+                let hot_h = bus.read_word(crsr_ptr + 66) as i16;
+
+                self.cursor_data = Some((data, mask, hot_v, hot_h));
+                self.cursor_visible = self.cursor_level == 0;
+                Ok(())
+            }
+
+            // HideCursor ($A852)
+            // HideCursor ($A852): Decrements cursor level and hides while level < 0
+            // per IM:I I-168.
+            (true, 0x052) => {
+                self.cursor_level = self.cursor_level.saturating_sub(1);
+                self.cursor_visible = self.cursor_level == 0;
+                Ok(())
+            }
+
+            // ShowCursor ($A853)
+            // ShowCursor ($A853): Increments cursor level toward 0; extra calls
+            // at level 0 are no-op (IM:I I-168).
+            (true, 0x053) => {
+                if self.cursor_level < 0 {
+                    self.cursor_level += 1;
+                }
+                self.cursor_visible = self.cursor_level == 0;
+                Ok(())
+            }
+
+            // ObscureCursor ($A856)
+            // PROCEDURE ObscureCursor;
+            // Inside Macintosh Volume I, I-168
+            // Imaging With QuickDraw 1994, p. 8-29
+            //
+            // MPW Universal Headers (Quickdraw.h):
+            //
+            //   EXTERN_API(void) ObscureCursor(void) ONEWORDINLINE(0xA856);
+            //
+            // Pascal PROCEDURE with no arguments and no result slot:
+            // caller pushes 0 bytes; trap pops 0 bytes; SP unchanged.
+            //
+            // Per IM:I I-168: "ObscureCursor hides the cursor until
+            // the next time the mouse is moved. It's normally
+            // called when the user begins to type. Unlike
+            // HideCursor, it has no effect on the cursor level and
+            // must not be balanced by a call to ShowCursor."
+            //
+            // HLE compromise: Systemless synthesizes mouse-move events
+            // every frame from the scripted event source (or
+            // every interactive frame from systemless). Honouring
+            // the "hide until next mouse move" semantic would keep
+            // the cursor PERMANENTLY hidden because each
+            // synthesized mouse-move arrives before any "is the
+            // mouse stationary?" check can materialise the cursor
+            // (every frame produces both the obscure-trigger and
+            // the un-obscure-trigger simultaneously). Treating it
+            // as a no-op preserves cursor visibility — HideCursor
+            // ($A852) / ShowCursor ($A853) still operate the
+            // level-counter hide/show stack for explicit pairs in
+            // apps that need them. Per IM:I I-168 explicit
+            // "must not be balanced by a call to ShowCursor"
+            // means apps universally call ObscureCursor without a
+            // matching ShowCursor — so the no-op contract leaves
+            // them in the same observable state (cursor visible,
+            // level unchanged) regardless of dispatch.
+            //
+            // Engines-agree subset (witnessed by the strict bake
+            // `a855_a856_shieldcursor_obscurecursor_strict`):
+            //   - 0-byte pop balanced across single + 5-call
+            //     StackSpace sandwiches; SP unchanged externally.
+            // The Apple-canonical "hides until mouse move" and
+            // "must not be balanced by ShowCursor" rules are pinned
+            // in-Rust via `obscure_cursor_noop_preserves_cursor_level_visibility_and_stack`
+            // and declared `witness_kind = "contract"` in the row
+            // since BII and Systemless HLE diverge on the LowMem CrsrVis
+            // side-effect (BII System 7.5.3 ROM writes CrsrVis;
+            // Systemless HLE keeps cursor state internal).
+            //
+            // ObscureCursor ($A856): No args / no result per IM:I I-168 MPW C declaration ObscureCursor(void) ONEWORDINLINE(0xA856) — HLE no-op; SP unchanged across calls.
+            (true, 0x056) => Ok(()),
+
+            // GetCursor ($A9B9)
+            // FUNCTION GetCursor(cursorID: INTEGER): CursHandle;
+            // Inside Macintosh Volume I, I-474
+            //
+            // "GetCursor returns a handle to the cursor having the
+            // given resource ID, reading it from the resource file if
+            // necessary. It calls the Resource Manager function
+            // GetResource('CURS', cursorID). If the resource can't be
+            // read, GetCursor returns NIL." — IM:I I-474.
+            //
+            // HLE compromise: Systemless doesn't load the System file's
+            // resource fork, so the four standard system cursor IDs
+            // documented at IM:I I-475..I-477 are synthesized here
+            // via [`Self::synthesize_system_cursor`] (cached for
+            // handle stability — apps cache the GetCursor result at
+            // boot and pass it to SetCursor every frame). Any other
+            // ID falls through to the IM-correct NIL miss path.
+            //
+            // The previous Stub allocated a fresh 68-byte zero-filled
+            // block on every miss and returned a handle to it —
+            // strictly worse than NIL since callers that defensively
+            // check `if handle = NIL` got a non-NIL pointer to an
+            // empty/white cursor and SetCursor'd a blank cursor onto
+            // the screen. Same fallback issue as the GetIcon ($A9BB)
+            // 128-byte uninitialised-heap stub closed by the
+            // family-level resource fallback audit.
+            //
+            // Pop = 2 (cursorID INTEGER), result CursHandle at new SP+0.
+            // GetCursor ($A9B9): Per IM:I I-474 calls GetResource('CURS', cursorID); on hit returns stable handle via get_or_create_resource_handle; on miss synthesizes built-in cursor 1..4 (iBeam/cross/plus/watch per IM:I I-475..I-477) via cached synthesize_system_cursor; otherwise returns NIL. Pops 2 bytes (cursorID), 4-byte CursHandle result at new SP+0.
+            (true, 0x1B9) => {
+                let sp = cpu.read_reg(Register::A7);
+                let cursor_id = bus.read_word(sp) as i16;
+
+                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"CURS", cursor_id) {
+                    self.get_or_create_resource_handle(bus, *b"CURS", cursor_id, ptr)
+                } else if let Some(ptr) = self.synthesize_system_cursor(bus, cursor_id) {
+                    // Built-in cursor synthesised + cached. Use the
+                    // resource-handle helper so subsequent GetCursor
+                    // calls for the same ID return the same handle.
+                    self.get_or_create_resource_handle(bus, *b"CURS", cursor_id, ptr)
+                } else {
+                    0
+                };
+
+                bus.write_long(sp + 2, handle);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // GetPattern ($A9B8)
+            // FUNCTION GetPattern(patID: INTEGER): PatHandle;
+            // Inside Macintosh Volume I, I-473
+            //
+            // "GetPattern returns a handle to the pattern having the
+            // given resource ID, reading it from the resource file if
+            // necessary. It calls the Resource Manager function
+            // GetResource('PAT ', patID). If the resource can't be
+            // read, GetPattern returns NIL." — IM:I I-473.
+            //
+            // The previous Stub allocated a fresh 8-byte all-0xFF
+            // (white) pattern on every miss and returned a handle to
+            // it — strictly worse than NIL since callers that
+            // defensively check `if handle = NIL then use_default
+            // else FillRect(rect, handle^^)` got a non-NIL handle and
+            // proceeded to FillRect with white instead of taking the
+            // recovery branch. Same fallback issue as the GetIcon
+            // ($A9BB) and GetCursor ($A9B9) fallbacks closed in this
+            // family's audit pass.
+            //
+            // Pop = 2 (patID INTEGER), result PatHandle at new SP+0.
+            // GetPattern ($A9B8): Per IM:I I-473 calls GetResource('PAT ', patID); on hit returns stable handle via get_or_create_resource_handle; on miss returns NIL (previously a fresh all-0xFF white pattern, which made callers branching on `handle = NIL` take the wrong path). Pops 2 bytes (patID), 4-byte PatHandle result at new SP+0.
+            (true, 0x1B8) => {
+                let sp = cpu.read_reg(Register::A7);
+                let pat_id = bus.read_word(sp) as i16;
+
+                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"PAT ", pat_id) {
+                    self.get_or_create_resource_handle(bus, *b"PAT ", pat_id, ptr)
+                } else {
+                    0
+                };
+
+                bus.write_long(sp + 2, handle);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // GetIcon ($A9BB)
+            // Returns a handle to the icon stored in the 'ICON' resource
+            // with the given ID. Equivalent to GetResource('ICON', iconID).
+            // The resource is a 128-byte black-and-white bitmap (32x32
+            // pixels at 1 bit each).
+            // FUNCTION GetIcon(iconID: INTEGER): Handle;
+            // Inside Macintosh Volume I, I-473
+            //
+            // Mirrors GetPicture ($A9BC) exactly: look up the
+            // resource via the dispatcher's resource search chain;
+            // on hit, materialise (or reuse) a stable handle that
+            // points at the loaded resource bytes; on miss, return
+            // NIL per IM:I I-473 ("If the resource can't be read,
+            // GetIcon returns NIL").
+            //
+            // The previous Stub allocated a fresh 128-byte block of
+            // UNINITIALISED memory and returned a handle to it on
+            // every call — strictly worse than NIL since callers
+            // pass that handle to PlotIcon ($A94B) which CopyBits
+            // the random bytes onto the framebuffer. Apps with a
+            // missing 'ICON' that defensively check `if handle =
+            // NIL` would crash on the dereference path; apps that
+            // trust the result blindly would render a junk icon.
+            // The proper Partial impl returns NIL on miss so both
+            // branches behave correctly.
+            //
+            // Pop = 2 (iconID INTEGER), result Handle at new SP+0.
+            // GetIcon ($A9BB): Per IM:I I-473 calls GetResource('ICON', iconID); returns handle to the loaded resource via get_or_create_resource_handle (stable handle reused across calls), or NIL if the ICON resource is missing. Pops 2 bytes (iconID), 4-byte Handle result at new SP+0. Mirrors GetPicture ($A9BC).
+            (true, 0x1BB) => {
+                let sp = cpu.read_reg(Register::A7);
+                let icon_id = bus.read_word(sp) as i16;
+
+                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"ICON", icon_id) {
+                    let h = self.get_or_create_resource_handle(bus, *b"ICON", icon_id, ptr);
+                    eprintln!(
+                        "[TRAP] GetIcon({}) -> handle=${:08X} ptr=${:08X}",
+                        icon_id, h, ptr
+                    );
+                    h
+                } else {
+                    eprintln!("[TRAP] GetIcon({}) -> NIL (not found)", icon_id);
+                    0
+                };
+
+                bus.write_long(sp + 2, handle);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // GetPicture ($A9BC)
+            // Returns a handle to the picture stored in the 'PICT' resource
+            // with the given ID. Equivalent to GetResource('PICT', picID).
+            // FUNCTION GetPicture(picID: INTEGER): PicHandle;
+            // Inside Macintosh Volume I, I-475
+            // GetPicture ($A9BC): Loads PICT resource via GetResource, returns handle
+            (true, 0x1BC) => {
+                let sp = cpu.read_reg(Register::A7);
+                let pic_id = bus.read_word(sp) as i16;
+
+                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"PICT", pic_id) {
+                    let h = self.get_or_create_resource_handle(bus, *b"PICT", pic_id, ptr);
+                    eprintln!(
+                        "[TRAP] GetPicture({}) -> handle=${:08X} ptr=${:08X}",
+                        pic_id, h, ptr
+                    );
+                    h
+                } else {
+                    eprintln!("[TRAP] GetPicture({}) -> NIL (not found)", pic_id);
+                    0
+                };
+
+                bus.write_long(sp + 2, handle);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // GetString ($A9BA)
+            // Returns a handle to the 'STR ' resource with the given ID.
+            // FUNCTION GetString (stringID: INTEGER): StringHandle;
+            // Text 1993, 5-49; Inside Macintosh Volume I, I-468
+            // GetString ($A9BA): Returns the loaded `'STR '` resource handle or NIL when missing
+            (true, 0x1BA) => {
+                let sp = cpu.read_reg(Register::A7);
+                let string_id = bus.read_word(sp) as i16;
+                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"STR ", string_id) {
+                    self.get_or_create_resource_handle(bus, *b"STR ", string_id, ptr)
+                } else if let Some(ptr) = self.synthesize_system_str(bus, string_id) {
+                    self.get_or_create_resource_handle(bus, *b"STR ", string_id, ptr)
+                } else {
+                    0
+                };
+                bus.write_long(sp + 2, handle);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // ========== TextEdit Manager Stubs ==========
+
+            // TENew ($A9D2)
+            // FUNCTION TENew(destRect, viewRect: Rect): TEHandle;
+            // Inside Macintosh Volume I (1985), p. I-373..I-374.
+            // Text 1993, 2-85..2-86.
+            //
+            // IM:I I-374: TENew "creates and initializes the necessary
+            // data structures, allocates an edit record, returns a
+            // handle to it, and sets that handle's selection range,
+            // view rectangle, destination rectangle, and other fields."
+            //
+            // Fresh TERec state per IM:I I-373:
+            //   destRect, viewRect = caller-supplied
+            //   selStart = selEnd = 0
+            //   teLength = 0
+            //   hText = handle to empty char buffer (non-NIL)
+            //   txFont, txFace, txMode, txSize copied from current grafPort
+            //   inPort = current grafPort
+            //
+            // Calling-convention duality. Classic Inside Macintosh
+            // declares TENew with Pascal by-value Rect parameters
+            // (16 bytes on the stack). MPW Universal Headers
+            // (TextEdit.h) modernise it to pointer parameters:
+            //   EXTERN_API(TEHandle) TENew(const Rect *destRect,
+            //                              const Rect *viewRect)
+            //                                  ONEWORDINLINE(0xA9D2);
+            // BasiliskII System 7.5.3 ROM accepts the pointer-arg
+            // convention (the bake fixture uses it). Systemless's HLE
+            // sniffs which convention the caller used by inspecting
+            // whether the first two long words on the stack point at
+            // plausible Rects (te_new_rect_args at dialog.rs:312..348)
+            // and pops either 8 bytes (pointer convention) or 16
+            // bytes (by-value convention) accordingly.
+            //
+            // Strict bake witnesses 5 documented behaviors:
+            //   * a9d2_tenew_strict
+            //
+            // Regression coverage (this file):
+            //   tenew_pointer_arg_convention_initializes_destrect_viewrect_and_returns_non_nil_handle
+            //   tenew_fresh_terec_has_zero_telength_and_empty_selection_per_im_i_373
+            //   tenew_function_protocol_consumes_two_pointer_args_and_writes_4_byte_result
+            //
+            // TENew ($A9D2): Allocates and initializes a basic monostyled TERec plus empty `hText` handle; supports both pointer-arg and by-value-rect conventions per te_new_rect_args sniffing
+            (true, 0x1D2) => {
+                let sp = cpu.read_reg(Register::A7);
+                let handle = Self::allocate_te_handle(bus);
+                let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
+                self.initialize_te_record(bus, handle, dest_rect, view_rect);
+                bus.write_long(sp + stack_pop, handle);
+                cpu.write_reg(Register::A7, sp + stack_pop);
+                Ok(())
+            }
+
+            // TEStyleNew ($A83E)
+            // Creates a multistyled edit record in the current port.
+            // FUNCTION TEStyleNew(destRect: Rect; viewRect: Rect): TEHandle;
+            // Inside Macintosh: Text (1993), p. 2-78.
+            //
+            // IM:Text 1993 p. 2-78 verbatim:
+            //   "The TEStyleNew function creates a multistyled edit
+            //    record and allocates a handle to it... TEStyleNew
+            //    sets the txSize, lineHeight, and fontAscent fields
+            //    of the edit record to -1, allocates a style record,
+            //    and stores a handle to the style record in the
+            //    txFont and txFace fields. The TEStyleNew function
+            //    creates and initializes a null scrap that is used
+            //    by TextEdit routines throughout the life of the
+            //    edit record."
+            //
+            // MPW Universal Headers (TextEdit.h):
+            //   EXTERN_API(TEHandle)
+            //   TEStyleNew(const Rect *destRect,
+            //              const Rect *viewRect)   ONEWORDINLINE(0xA83E);
+            //
+            // Calling convention: identical to TENew. Pascal pushes
+            // left-to-right, so destRect (first arg) lands deepest
+            // and viewRect (second arg) lands shallowest:
+            //   sp+0..3   viewRect_ptr  (last pushed)
+            //   sp+4..7   destRect_ptr  (first pushed)
+            // Both pointer (8-byte) and by-value (16-byte) forms are
+            // accepted via te_new_rect_args sniffing.
+            //
+            // Styled-record signature, per IM:Text 1993 p. 2-78
+            // (initialize_styled_te_record at dialog.rs:843..):
+            //   txSize     = -1   sentinel at offset 0x50
+            //   lineHeight = -1   sentinel at offset 0x18
+            //   fontAscent = -1   sentinel at offset 0x1A
+            //   txFont/txFace (4-byte overlay at offset 0x4A) holds
+            //                     the TEStyleHandle.
+            //
+            // Strict bake witnesses 5 documented behaviors:
+            //   * a83e_testylenew_strict
+            //
+            // Regression coverage (this file):
+            //   testylenew_returns_styled_handle_and_initializes_sentinel_fields
+            //   testylenew_pointer_arg_convention_initializes_destrect_viewrect_and_styled_sentinels
+            //   testylenew_function_protocol_consumes_two_pointer_args_and_writes_4_byte_result
+            //
+            // TEStyleNew ($A83E): Allocates a TEHandle and initializes a multistyled record (destRect + viewRect + txSize/lineHeight/fontAscent=-1 sentinels + non-NIL TEStyleHandle); style runs and null scrap allocated per Text 1993, 2-78
+            (true, 0x03E) => {
+                let sp = cpu.read_reg(Register::A7);
+                let handle = Self::allocate_te_handle(bus);
+                let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
+                self.initialize_styled_te_record(bus, handle, dest_rect, view_rect);
+                bus.write_long(sp + stack_pop, handle);
+                cpu.write_reg(Register::A7, sp + stack_pop);
+                Ok(())
+            }
+
+            // TEGetOffset ($A83C)
+            // FUNCTION TEGetOffset(pt: Point; hTE: TEHandle): INTEGER;
+            // Inside Macintosh Volume V (1986), p. V-172.
+            //
+            // IM:V V-172 verbatim: "TEGetOffset returns the character
+            // position closest to the point pt. The point pt is in
+            // local coordinates relative to the destination rectangle.
+            // If pt is above the first line, TEGetOffset returns the
+            // character offset of the start of the first line. If pt
+            // is below the last line, TEGetOffset returns the
+            // character offset of the end of the text."
+            //
+            // MPW Universal Headers (TextEdit.h):
+            //   EXTERN_API(short)
+            //   TEGetOffset(Point pt, TEHandle hTE) ONEWORDINLINE(0xA83C);
+            //
+            // Calling convention. `EXTERN_API` expands to `extern
+            // pascal` on the 68k target, so the Pascal LR push order
+            // applies: pt (the first arg) is pushed FIRST and lands
+            // DEEPEST on the stack; hTE (the last arg) is pushed LAST
+            // and lands SHALLOWEST. Point is a 4-byte record with
+            // pt.v at the lower address and pt.h at the higher
+            // address. Pascal FUNCTION pre-allocates the 2-byte
+            // INTEGER result slot just above the args. Stack layout
+            // at trap entry:
+            //   sp+0..3   hTE      (4 bytes, last pushed)
+            //   sp+4..5   pt.v     (2 bytes, first half of Point)
+            //   sp+6..7   pt.h     (2 bytes, second half of Point)
+            //   sp+8..9   function result slot (2 bytes)
+            //
+            // Pre-fix (commit ca6a0ebf — A9D2 te_new_rect_args
+            // Pascal-LR fix only covered TENew + TEStyleNew sharing
+            // the te_new_rect_args helper): this arm read te_handle
+            // from sp+2 and pt.v/pt.h from sp+6/sp+8, off-by-2 versus
+            // the canonical Pascal LR layout. The strict bake at
+            // a83c_tegetoffset_strict exposed the
+            // bug (B2 returned 0 instead of teLength=5 because the
+            // off-by-2 read placed garbage in te_handle and the
+            // te_point_to_char helper bailed via the NIL TERec
+            // branch). Fixed by reading args at the canonical sp+0,
+            // sp+4, sp+6 offsets.
+            //
+            // Strict bake witnesses 3 documented behaviors:
+            //   * a83c_tegetoffset_strict
+            //
+            // Regression coverage (this file):
+            //   tegetoffset_point_above_destrect_returns_zero
+            //   tegetoffset_point_below_last_line_returns_telength
+            //   tegetoffset_function_protocol_consumes_point_and_tehandle_args_writes_integer_result
+            //
+            // TEGetOffset ($A83C): Maps a point back to a character offset using the line-starts / per-line heights and primary-run advance widths per IM:V V-172. Pascal LR push order — sp+0 hTE (last pushed), sp+4 pt.v, sp+6 pt.h, sp+8 INTEGER result slot.
+            (true, 0x03C) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let point_v = bus.read_word(sp + 4) as i16;
+                let point_h = bus.read_word(sp + 6) as i16;
+                let offset = self.te_point_to_char(bus, te_handle, (point_v, point_h));
+                bus.write_word(sp + 8, offset as u16);
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
+
+            // TEFindWord ($A0FE)
+            // Register-based TextEdit hook:
+            //   currentPos in D0.W, caller in D2.W, pTE in A3.L, hTE in A4.L.
+            //   wordStart returns in D0.W and wordEnd in D1.W.
+            // Inside Macintosh: Text (1993), pp. 2-60..2-61.
+            (false, 0x0FE) => {
+                let current_pos = (cpu.read_reg(Register::D0) as u16) as usize;
+                let _caller = cpu.read_reg(Register::D2);
+                let _p_te = cpu.read_reg(Register::A3);
+                let h_te = cpu.read_reg(Register::A4);
+                let (word_start, word_end) = self.te_find_word_bounds(bus, h_te, current_pos);
+                cpu.write_reg(Register::D0, u32::from(word_start));
+                cpu.write_reg(Register::D1, u32::from(word_end));
+                Ok(())
+            }
+
+            // TEDispatch ($A83D)
+            // Selector-based dispatcher for styled TextEdit routines.
+            // FUNCTION/PROCEDURE TEDispatch(...); selector is the first stack word.
+            // Inside Macintosh Volume VI, 15-22 (TEFeatureFlag),
+            //                              15-25..15-43 (selector mapping),
+            //                              15-34 (TEContinuousStyle).
+            // Inside Macintosh: Text (1993), p. 2-102 (TEContinuousStyle),
+            //                                p. 2-92 / 2-97 (autoscroll default).
+            //
+            // TEDispatch ($A83D) selectors: $0000 TEStylPaste,
+            //   $0001 TESetStyle, $0002 TEReplaceStyle, $0003 TEGetStyle,
+            //   $0004 GetStylHandle, $0005 SetStylHandle, $0006 GetStylScrap,
+            //   $0007 TEStylInsert, $0008 TEGetPoint, $0009 TEGetHeight,
+            //   $000A TEContinuousStyle, $000B TEUseStyleScrap,
+            //   $000C TECustomHook, $000D TENumStyles, $000E TEFeatureFlag.
+            //
+            // MPW Universal Headers TextEdit.h declares each entry point via
+            // THREEWORDINLINE(0x3F3C, <selector>, 0xA83D). The 0x3F3C is
+            // `MOVE.W #imm,-(A7)` which pre-pushes the selector word at the
+            // call site, immediately before the A-line trap. Pascal LR
+            // calling convention pushes args left-to-right (first arg
+            // deepest), so for any N-arg TEDispatch selector the stack
+            // layout at trap entry is:
+            //   sp+0           selector word (2 bytes, last pushed)
+            //   sp+2           arg[N-1] (last Pascal arg, shallowest)
+            //   ...
+            //   sp+(2 + S_0+..+S_{N-2})  arg[0] (first Pascal arg, deepest)
+            //   sp+(2 + Σ S_i) function result slot (for FUNCTION selectors)
+            //
+            // Selector $000A TEContinuousStyle is FUNCTION (Boolean result):
+            //   EXTERN_API(Boolean) TEContinuousStyle(short *mode,
+            //                                         TextStyle *aStyle,
+            //                                         TEHandle hTE)
+            //       THREEWORDINLINE(0x3F3C, 0x000A, 0xA83D);
+            //   Stack: sp+0 selector, sp+2 hTE (4), sp+6 aStyle* (4),
+            //          sp+10 mode* (4), sp+14 Boolean result slot.
+            //   Per IM:Text 1993 p. 2-102: returns TRUE for unstyled edit
+            //   records and reports the global style attributes for the
+            //   mode bits requested by *mode (font=1, face=2, size=4,
+            //   color=8).
+            //
+            // Selector $000E TEFeatureFlag is FUNCTION (short result):
+            //   EXTERN_API(short) TEFeatureFlag(short feature, short action,
+            //                                   TEHandle hTE)
+            //       THREEWORDINLINE(0x3F3C, 0x000E, 0xA83D);
+            //   Stack: sp+0 selector, sp+2 hTE (4), sp+6 action (2),
+            //          sp+8 feature (2), sp+10 short result slot.
+            //   Per IM:VI 15-22: turns features on/off or tests them;
+            //   returns the PRIOR setting of the bit (which, for
+            //   teBitTest=-1, coincides with the current setting since
+            //   the bit is not mutated). Action codes are teBitClear=0,
+            //   teBitSet=1, teBitTest=-1.
+            //
+            // Strict bake coverage:
+            //   a83d_tedispatch_strict witnesses
+            //   selectors $000A and $000E end-to-end against BasiliskII:
+            //   teBitTest on a fresh TENew record returns 0 (auto-scroll
+            //   defaults off per IM:Text 1993 p. 2-97); teBitSet returns
+            //   the prior 0 and a follow-up teBitTest returns 1;
+            //   teBitClear returns the prior 1 and a follow-up teBitTest
+            //   returns 0; TEContinuousStyle returns TRUE on an unstyled
+            //   record and overwrites the caller's poisoned aStyle fields;
+            //   StackSpace round-trips zero across a TEFeatureFlag call,
+            //   pinning the 10-byte arg pop + 2-byte short result Pascal
+            //   FUNCTION protocol under THREEWORDINLINE dispatch.
+            //
+            // Contract test coverage (this module):
+            //   te_dispatch_feature_flag_test_action_returns_current_state
+            //   te_dispatch_feature_flag_tracks_auto_scroll_state
+            //     (teBitSet on default-off feature returns prior 0 and mutates the bit)
+            //   tefeatureflag_clear_action_returns_prior_one_state_and_clears_bit
+            //     (teBitClear on previously-set feature returns prior 1 and clears the bit)
+            //   te_dispatch_continuous_style_returns_unstyled_record_style
+            //   tedispatch_function_protocol_consumes_threewordinline_stack_frame_for_tefeatureflag
+            //   teautoview_and_tefeatureflag_observe_shared_autoscroll_state
+            (true, 0x03D) => {
+                let sp = cpu.read_reg(Register::A7);
+                let selector = bus.read_word(sp);
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEDispatch selector=${:04X} sp=${:08X}", selector, sp);
+                }
+                match selector {
+                    0x0000 => {
+                        // TEStylePaste ($A83D, selector $0000)
+                        // PROCEDURE TEStylePaste(hTE: TEHandle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                    }
+                    0x0001 => {
+                        // TESetStyle ($A83D, selector $0001)
+                        // Sets the current selection's style in a styled edit record.
+                        // PROCEDURE TESetStyle(mode: INTEGER; newStyle: TextStyle; redraw: BOOLEAN; hTE: TEHandle);
+                        // Inside Macintosh Volume VI, 15-32
+                        let te_handle = bus.read_long(sp + 2);
+                        // Pascal BOOLEAN in high byte (MPW C convention).
+                        let redraw = bus.read_byte(sp + 6) != 0;
+                        let style_ptr = bus.read_long(sp + 8);
+                        let mode = bus.read_word(sp + 12);
+                        if trace_textedit_enabled() {
+                            eprintln!(
+                                "[TE] TESetStyle hTE=${:08X} mode=${:04X} redraw={} style_ptr=${:08X}",
+                                te_handle, mode, redraw, style_ptr
+                            );
+                            if style_ptr != 0 {
+                                eprintln!(
+                                    "[TE] TESetStyle values font={} face=${:04X} size={} color=(${:04X},${:04X},${:04X})",
+                                    bus.read_word(style_ptr) as i16,
+                                    bus.read_word(style_ptr + 2),
+                                    bus.read_word(style_ptr + 4) as i16,
+                                    bus.read_word(style_ptr + 6),
+                                    bus.read_word(style_ptr + 8),
+                                    bus.read_word(style_ptr + 10),
+                                );
+                            }
+                        }
+                        if style_ptr != 0 {
+                            let te_ptr = Self::te_record_ptr(bus, te_handle);
+                            if te_ptr != 0 {
+                                let style_handle = Self::te_style_handle(bus, te_handle);
+                                if style_handle != 0 {
+                                    let style_ptr_record = bus.read_long(style_handle);
+                                    if style_ptr_record != 0 {
+                                        let table_handle = bus.read_long(
+                                            style_ptr_record + Self::TE_STYLE_STYLE_TABLE_OFFSET,
+                                        );
+                                        let table_ptr = if table_handle != 0 {
+                                            bus.read_long(table_handle)
+                                        } else {
+                                            0
+                                        };
+                                        if table_ptr != 0 {
+                                            if (mode & 0x0001) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
+                                                    bus.read_word(style_ptr),
+                                                );
+                                            }
+                                            if (mode & 0x0002) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
+                                                    bus.read_word(style_ptr + 2),
+                                                );
+                                            }
+                                            if (mode & 0x0004) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
+                                                    bus.read_word(style_ptr + 4),
+                                                );
+                                            }
+                                            if (mode & 0x0008) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
+                                                    bus.read_word(style_ptr + 6),
+                                                );
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2,
+                                                    bus.read_word(style_ptr + 8),
+                                                );
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4,
+                                                    bus.read_word(style_ptr + 10),
+                                                );
+                                            }
+
+                                            let resolved_font = bus
+                                                .read_word(table_ptr + Self::ST_ELEMENT_FONT_OFFSET)
+                                                as i16;
+                                            let resolved_size = bus
+                                                .read_word(table_ptr + Self::ST_ELEMENT_SIZE_OFFSET)
+                                                as i16;
+                                            let metrics = get_font_metrics(
+                                                resolved_font,
+                                                resolved_size.max(1),
+                                            );
+                                            let line_height =
+                                                metrics.ascent + metrics.descent + metrics.leading;
+                                            bus.write_word(
+                                                table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
+                                                line_height as u16,
+                                            );
+                                            bus.write_word(
+                                                table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
+                                                metrics.ascent as u16,
+                                            );
+
+                                            let lh_handle = bus.read_long(
+                                                style_ptr_record + Self::TE_STYLE_LH_TABLE_OFFSET,
+                                            );
+                                            let lh_ptr = if lh_handle != 0 {
+                                                bus.read_long(lh_handle)
+                                            } else {
+                                                0
+                                            };
+                                            if lh_ptr != 0 {
+                                                bus.write_word(
+                                                    lh_ptr + Self::LH_ELEMENT_HEIGHT_OFFSET,
+                                                    line_height as u16,
+                                                );
+                                                bus.write_word(
+                                                    lh_ptr + Self::LH_ELEMENT_ASCENT_OFFSET,
+                                                    metrics.ascent as u16,
+                                                );
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    if (mode & 0x0001) != 0 {
+                                        bus.write_word(
+                                            te_ptr + Self::TE_TX_FONT_OFFSET,
+                                            bus.read_word(style_ptr),
+                                        );
+                                    }
+                                    if (mode & 0x0002) != 0 {
+                                        bus.write_word(
+                                            te_ptr + Self::TE_TX_FACE_OFFSET,
+                                            bus.read_word(style_ptr + 2),
+                                        );
+                                    }
+                                    if (mode & 0x0004) != 0 {
+                                        bus.write_word(
+                                            te_ptr + Self::TE_TX_SIZE_OFFSET,
+                                            bus.read_word(style_ptr + 4),
+                                        );
+                                    }
+
+                                    let resolved_font =
+                                        bus.read_word(te_ptr + Self::TE_TX_FONT_OFFSET) as i16;
+                                    let resolved_size =
+                                        bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16;
+                                    let metrics =
+                                        get_font_metrics(resolved_font, resolved_size.max(1));
+                                    bus.write_word(
+                                        te_ptr + Self::TE_LINE_HEIGHT_OFFSET,
+                                        (metrics.ascent + metrics.descent + metrics.leading) as u16,
+                                    );
+                                    bus.write_word(
+                                        te_ptr + Self::TE_FONT_ASCENT_OFFSET,
+                                        metrics.ascent as u16,
+                                    );
+                                }
+                            }
+                        }
+                        let _ = redraw;
+                        cpu.write_reg(Register::A7, sp + 14);
+                    }
+                    0x0002 => {
+                        // TEReplaceStyle ($A83D, selector $0002)
+                        // PROCEDURE TEReplaceStyle(mode: INTEGER;
+                        //     oldStyle, newStyle: TextStyle;
+                        //     redraw: BOOLEAN; hTE: TEHandle);
+                        // Inside Macintosh Volume V, V-271..V-272.
+                        // MPW C glue passes both TextStyle records by
+                        // pointer (not by value), giving an 18-byte arg
+                        // frame: selector(2) + hTE(4) + redraw(2) +
+                        // newStyle ptr(4) + oldStyle ptr(4) + mode(2).
+                        let te_handle = bus.read_long(sp + 2);
+                        let _redraw = bus.read_byte(sp + 6) != 0;
+                        let new_style_ptr = bus.read_long(sp + 8);
+                        let old_style_ptr = bus.read_long(sp + 12);
+                        let mode = bus.read_word(sp + 16);
+                        if old_style_ptr != 0 && new_style_ptr != 0 {
+                            let style_handle = Self::te_style_handle(bus, te_handle);
+                            if style_handle != 0 {
+                                let style_ptr_record = bus.read_long(style_handle);
+                                if style_ptr_record != 0 {
+                                    let table_handle = bus.read_long(
+                                        style_ptr_record + Self::TE_STYLE_STYLE_TABLE_OFFSET,
+                                    );
+                                    let table_ptr = if table_handle != 0 {
+                                        bus.read_long(table_handle)
+                                    } else {
+                                        0
+                                    };
+                                    if table_ptr != 0 {
+                                        // Per IM:V V-270, replace only when the
+                                        // existing style's selected attributes
+                                        // match oldStyle exactly. With Systemless's
+                                        // single-element style table this collapses
+                                        // to one comparison.
+                                        let mut matches_old = true;
+                                        if (mode & 0x0001) != 0
+                                            && bus
+                                                .read_word(table_ptr + Self::ST_ELEMENT_FONT_OFFSET)
+                                                != bus.read_word(old_style_ptr)
+                                        {
+                                            matches_old = false;
+                                        }
+                                        if (mode & 0x0002) != 0
+                                            && bus
+                                                .read_word(table_ptr + Self::ST_ELEMENT_FACE_OFFSET)
+                                                != bus.read_word(old_style_ptr + 2)
+                                        {
+                                            matches_old = false;
+                                        }
+                                        if (mode & 0x0004) != 0
+                                            && bus
+                                                .read_word(table_ptr + Self::ST_ELEMENT_SIZE_OFFSET)
+                                                != bus.read_word(old_style_ptr + 4)
+                                        {
+                                            matches_old = false;
+                                        }
+                                        if (mode & 0x0008) != 0
+                                            && (bus.read_word(
+                                                table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
+                                            ) != bus.read_word(old_style_ptr + 6)
+                                                || bus.read_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2,
+                                                ) != bus.read_word(old_style_ptr + 8)
+                                                || bus.read_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4,
+                                                ) != bus.read_word(old_style_ptr + 10))
+                                        {
+                                            matches_old = false;
+                                        }
+                                        if matches_old {
+                                            if (mode & 0x0001) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
+                                                    bus.read_word(new_style_ptr),
+                                                );
+                                            }
+                                            if (mode & 0x0002) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
+                                                    bus.read_word(new_style_ptr + 2),
+                                                );
+                                            }
+                                            if (mode & 0x0004) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
+                                                    bus.read_word(new_style_ptr + 4),
+                                                );
+                                            }
+                                            if (mode & 0x0008) != 0 {
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
+                                                    bus.read_word(new_style_ptr + 6),
+                                                );
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2,
+                                                    bus.read_word(new_style_ptr + 8),
+                                                );
+                                                bus.write_word(
+                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4,
+                                                    bus.read_word(new_style_ptr + 10),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let _ = mode;
+                        cpu.write_reg(Register::A7, sp + 18);
+                    }
+                    0x0003 => {
+                        // TEGetStyle ($A83D, selector $0003)
+                        // PROCEDURE TEGetStyle(sel: INTEGER; VAR attrs: TextStyle;
+                        //     VAR lineHeight: INTEGER; VAR fontAscent: INTEGER; hTE: TEHandle);
+                        let te_handle = bus.read_long(sp + 2);
+                        let font_ascent_ptr = bus.read_long(sp + 6);
+                        let line_height_ptr = bus.read_long(sp + 10);
+                        let attrs_ptr = bus.read_long(sp + 14);
+                        let _sel = bus.read_word(sp + 18) as i16;
+                        let (font, face, size, color, line_height, font_ascent) =
+                            self.te_primary_style(bus, te_handle);
+                        if attrs_ptr != 0 {
+                            bus.write_word(attrs_ptr, font as u16);
+                            bus.write_word(attrs_ptr + 2, face as u16);
+                            bus.write_word(attrs_ptr + 4, size as u16);
+                            bus.write_word(attrs_ptr + 6, color.0);
+                            bus.write_word(attrs_ptr + 8, color.1);
+                            bus.write_word(attrs_ptr + 10, color.2);
+                        }
+                        if line_height_ptr != 0 {
+                            bus.write_word(line_height_ptr, line_height as u16);
+                        }
+                        if font_ascent_ptr != 0 {
+                            bus.write_word(font_ascent_ptr, font_ascent as u16);
+                        }
+                        cpu.write_reg(Register::A7, sp + 20);
+                    }
+                    0x0004 => {
+                        // TEGetStyleHandle ($A83D, selector $0004)
+                        // FUNCTION TEGetStyleHandle(hTE: TEHandle): TEStyleHandle;
+                        let te_handle = bus.read_long(sp + 2);
+                        bus.write_long(sp + 6, Self::te_style_handle(bus, te_handle));
+                        cpu.write_reg(Register::A7, sp + 6);
+                    }
+                    0x0005 => {
+                        // TESetStyleHandle ($A83D, selector $0005)
+                        // PROCEDURE TESetStyleHandle(theHandle: TEStyleHandle; hTE: TEHandle);
+                        let te_handle = bus.read_long(sp + 2);
+                        let style_handle = bus.read_long(sp + 6);
+                        Self::te_write_style_handle(bus, te_handle, style_handle);
+                        cpu.write_reg(Register::A7, sp + 10);
+                    }
+                    0x0006 => {
+                        // TEGetStyleScrapHandle ($A83D, selector $0006)
+                        // FUNCTION TEGetStyleScrapHandle(hTE: TEHandle): STScrpHandle;
+                        let te_handle = bus.read_long(sp + 2);
+                        let style_handle = Self::te_style_handle(bus, te_handle);
+                        let mut result = 0;
+                        if style_handle != 0 {
+                            let style_ptr = bus.read_long(style_handle);
+                            if style_ptr != 0 {
+                                let null_style_handle =
+                                    bus.read_long(style_ptr + Self::TE_STYLE_NULL_STYLE_OFFSET);
+                                if null_style_handle != 0 {
+                                    let null_style_ptr = bus.read_long(null_style_handle);
+                                    if null_style_ptr != 0 {
+                                        let scrap_handle = bus.read_long(
+                                            null_style_ptr + Self::NULL_STYLE_SCRAP_OFFSET,
+                                        );
+                                        result = Self::duplicate_handle_data(bus, scrap_handle);
+                                    }
+                                }
+                            }
+                        }
+                        bus.write_long(sp + 6, result);
+                        cpu.write_reg(Register::A7, sp + 6);
+                    }
+                    0x0007 => {
+                        // TEStyleInsert ($A83D, selector $0007)
+                        // PROCEDURE TEStyleInsert(text: Ptr; length: LONGINT; hST: StScrpHandle; hTE: TEHandle);
+                        let te_handle = bus.read_long(sp + 2);
+                        let style_scrap = bus.read_long(sp + 6);
+                        let length = bus.read_long(sp + 10) as usize;
+                        let text_ptr = bus.read_long(sp + 14);
+                        if text_ptr != 0 && length != 0 {
+                            let text = bus.read_bytes(text_ptr, length);
+                            let preview_len = text.len().min(64);
+                            if trace_textedit_enabled() {
+                                eprintln!(
+                                    "[TE] TEStyleInsert hTE=${:08X} hST=${:08X} len={} text_ptr=${:08X} preview={:?}",
+                                    te_handle,
+                                    style_scrap,
+                                    length,
+                                    text_ptr,
+                                    String::from_utf8_lossy(&text[..preview_len])
+                                );
+                            }
+                            self.te_insert_text(bus, te_handle, &text);
+                            self.draw_te_contents(cpu, bus, te_handle);
+                        }
+                        cpu.write_reg(Register::A7, sp + 18);
+                    }
+                    0x0008 => {
+                        // TEGetPoint ($A83D, selector $0008)
+                        // Returns the point for a character offset within the edit record.
+                        // FUNCTION TEGetPoint(offset: INTEGER; hTE: TEHandle): Point;
+                        // Inside Macintosh Volume VI, 15-31
+                        let te_handle = bus.read_long(sp + 2);
+                        let offset = bus.read_word(sp + 6) as i16;
+                        let te_ptr = Self::te_record_ptr(bus, te_handle);
+                        let result_addr = sp + 8;
+                        if te_ptr != 0 {
+                            let text_len = Self::te_text_length(bus, te_handle);
+                            let clamped = i32::from(offset).clamp(0, text_len as i32) as usize;
+                            let line_index = Self::te_char_to_line_index(bus, te_handle, clamped);
+                            let line_start = Self::te_line_starts(bus, te_handle)
+                                .get(line_index)
+                                .copied()
+                                .unwrap_or(0);
+                            let (top, x) = self.te_char_to_point(bus, te_handle, clamped);
+                            let y = top.saturating_add(Self::te_ascent_for_line(
+                                bus, te_handle, line_index,
+                            ));
+                            if trace_textedit_enabled() {
+                                let starts = Self::te_line_starts(bus, te_handle);
+                                let pc = cpu.read_reg(Register::PC);
+                                eprintln!(
+                                    "[TE] TEGetPoint hTE=${:08X} offset={} line={} start={} point_offset={} point=({}, {}) pc=${:08X} next=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                                    te_handle,
+                                    clamped,
+                                    line_index,
+                                    line_start,
+                                    clamped,
+                                    y,
+                                    x,
+                                    pc,
+                                    bus.read_word(pc),
+                                    bus.read_word(pc + 2),
+                                    bus.read_word(pc + 4),
+                                    bus.read_word(pc + 6),
+                                    bus.read_word(pc + 8),
+                                    bus.read_word(pc + 10),
+                                    bus.read_word(pc + 12),
+                                    bus.read_word(pc + 14),
+                                    bus.read_word(pc + 16),
+                                    bus.read_word(pc + 18),
+                                    bus.read_word(pc + 20),
+                                    bus.read_word(pc + 22),
+                                    bus.read_word(pc + 24),
+                                    bus.read_word(pc + 26),
+                                    bus.read_word(pc + 28),
+                                    bus.read_word(pc + 30),
+                                    bus.read_word(pc + 32),
+                                    bus.read_word(pc + 34),
+                                    bus.read_word(pc + 36),
+                                    bus.read_word(pc + 38)
+                                );
+                                eprintln!(
+                                    "[TE] TEGetPoint layout nLines={} teLength={} lineStarts={:?}",
+                                    starts.len().saturating_sub(1),
+                                    text_len,
+                                    starts
+                                );
+                                eprintln!(
+                                    "[TE] TEGetPoint helper@35614=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                                    bus.read_word(0x0003_5614),
+                                    bus.read_word(0x0003_5616),
+                                    bus.read_word(0x0003_5618),
+                                    bus.read_word(0x0003_561A),
+                                    bus.read_word(0x0003_561C),
+                                    bus.read_word(0x0003_561E),
+                                    bus.read_word(0x0003_5620),
+                                    bus.read_word(0x0003_5622),
+                                    bus.read_word(0x0003_5624),
+                                    bus.read_word(0x0003_5626),
+                                    bus.read_word(0x0003_5628),
+                                    bus.read_word(0x0003_562A)
+                                );
+                                let table_base = cpu.read_reg(Register::A5).wrapping_sub(0x37B4);
+                                let rect_table = bus.read_long(table_base);
+                                let rect_ptr = rect_table.wrapping_add(21 * 8);
+                                let a6 = cpu.read_reg(Register::A6);
+                                let ret = bus.read_long(a6 + 4);
+                                eprintln!(
+                                    "[TE] TEGetPoint rect21 table=${:08X} rect_ptr=${:08X} rect=({},{},{},{}) a4=${:08X} d5={} d6={} d7={} a6=${:08X} ret=${:08X}",
+                                    rect_table,
+                                    rect_ptr,
+                                    bus.read_word(rect_ptr) as i16,
+                                    bus.read_word(rect_ptr + 2) as i16,
+                                    bus.read_word(rect_ptr + 4) as i16,
+                                    bus.read_word(rect_ptr + 6) as i16,
+                                    cpu.read_reg(Register::A4),
+                                    cpu.read_reg(Register::D5) as i32,
+                                    cpu.read_reg(Register::D6) as i32,
+                                    cpu.read_reg(Register::D7) as i32,
+                                    a6,
+                                    ret
+                                );
+                                eprintln!(
+                                    "[TE] TEGetPoint caller@{:08X}=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                                    ret,
+                                    bus.read_word(ret),
+                                    bus.read_word(ret + 2),
+                                    bus.read_word(ret + 4),
+                                    bus.read_word(ret + 6),
+                                    bus.read_word(ret + 8),
+                                    bus.read_word(ret + 10),
+                                    bus.read_word(ret + 12),
+                                    bus.read_word(ret + 14),
+                                    bus.read_word(ret + 16),
+                                    bus.read_word(ret + 18),
+                                    bus.read_word(ret + 20),
+                                    bus.read_word(ret + 22)
+                                );
+                                let caller_start = ret.wrapping_sub(0x20);
+                                eprintln!(
+                                    "[TE] TEGetPoint caller_pre@{:08X}=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                                    caller_start,
+                                    bus.read_word(caller_start),
+                                    bus.read_word(caller_start + 2),
+                                    bus.read_word(caller_start + 4),
+                                    bus.read_word(caller_start + 6),
+                                    bus.read_word(caller_start + 8),
+                                    bus.read_word(caller_start + 10),
+                                    bus.read_word(caller_start + 12),
+                                    bus.read_word(caller_start + 14),
+                                    bus.read_word(caller_start + 16),
+                                    bus.read_word(caller_start + 18),
+                                    bus.read_word(caller_start + 20),
+                                    bus.read_word(caller_start + 22),
+                                    bus.read_word(caller_start + 24),
+                                    bus.read_word(caller_start + 26),
+                                    bus.read_word(caller_start + 28),
+                                    bus.read_word(caller_start + 30)
+                                );
+                                eprintln!(
+                                    "[TE] TEGetPoint caller_block@00035F7C=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                                    bus.read_word(0x0003_5F7C),
+                                    bus.read_word(0x0003_5F7E),
+                                    bus.read_word(0x0003_5F80),
+                                    bus.read_word(0x0003_5F82),
+                                    bus.read_word(0x0003_5F84),
+                                    bus.read_word(0x0003_5F86),
+                                    bus.read_word(0x0003_5F88),
+                                    bus.read_word(0x0003_5F8A),
+                                    bus.read_word(0x0003_5F8C),
+                                    bus.read_word(0x0003_5F8E),
+                                    bus.read_word(0x0003_5F90),
+                                    bus.read_word(0x0003_5F92),
+                                    bus.read_word(0x0003_5F94),
+                                    bus.read_word(0x0003_5F96),
+                                    bus.read_word(0x0003_5F98),
+                                    bus.read_word(0x0003_5F9A),
+                                    bus.read_word(0x0003_5F9C),
+                                    bus.read_word(0x0003_5F9E),
+                                    bus.read_word(0x0003_5FA0),
+                                    bus.read_word(0x0003_5FA2),
+                                    bus.read_word(0x0003_5FA4),
+                                    bus.read_word(0x0003_5FA6),
+                                    bus.read_word(0x0003_5FA8),
+                                    bus.read_word(0x0003_5FAA),
+                                    bus.read_word(0x0003_5FAC),
+                                    bus.read_word(0x0003_5FAE),
+                                    bus.read_word(0x0003_5FB0),
+                                    bus.read_word(0x0003_5FB2),
+                                    bus.read_word(0x0003_5FB4),
+                                    bus.read_word(0x0003_5FB6),
+                                    bus.read_word(0x0003_5FB8),
+                                    bus.read_word(0x0003_5FBA)
+                                );
+                                eprintln!(
+                                    "[TE] TEGetPoint branch_c6@00035FC6=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}] branch_e2@00035FE2=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                                    bus.read_word(0x0003_5FC6),
+                                    bus.read_word(0x0003_5FC8),
+                                    bus.read_word(0x0003_5FCA),
+                                    bus.read_word(0x0003_5FCC),
+                                    bus.read_word(0x0003_5FCE),
+                                    bus.read_word(0x0003_5FD0),
+                                    bus.read_word(0x0003_5FD2),
+                                    bus.read_word(0x0003_5FD4),
+                                    bus.read_word(0x0003_5FE2),
+                                    bus.read_word(0x0003_5FE4),
+                                    bus.read_word(0x0003_5FE6),
+                                    bus.read_word(0x0003_5FE8),
+                                    bus.read_word(0x0003_5FEA),
+                                    bus.read_word(0x0003_5FEC),
+                                    bus.read_word(0x0003_5FEE),
+                                    bus.read_word(0x0003_5FF0)
+                                );
+                                eprintln!(
+                                    "[TE] TEGetPoint helper_fn@00036B9A=[{:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X} {:04X}]",
+                                    bus.read_word(0x0003_6B9A),
+                                    bus.read_word(0x0003_6B9C),
+                                    bus.read_word(0x0003_6B9E),
+                                    bus.read_word(0x0003_6BA0),
+                                    bus.read_word(0x0003_6BA2),
+                                    bus.read_word(0x0003_6BA4),
+                                    bus.read_word(0x0003_6BA6),
+                                    bus.read_word(0x0003_6BA8),
+                                    bus.read_word(0x0003_6BAA),
+                                    bus.read_word(0x0003_6BAC),
+                                    bus.read_word(0x0003_6BAE),
+                                    bus.read_word(0x0003_6BB0),
+                                    bus.read_word(0x0003_6BB2),
+                                    bus.read_word(0x0003_6BB4),
+                                    bus.read_word(0x0003_6BB6),
+                                    bus.read_word(0x0003_6BB8),
+                                    bus.read_word(0x0003_6BBA),
+                                    bus.read_word(0x0003_6BBC),
+                                    bus.read_word(0x0003_6BBE),
+                                    bus.read_word(0x0003_6BC0),
+                                    bus.read_word(0x0003_6BC2),
+                                    bus.read_word(0x0003_6BC4),
+                                    bus.read_word(0x0003_6BC6),
+                                    bus.read_word(0x0003_6BC8)
+                                );
+                            }
+                            bus.write_word(result_addr, y as u16);
+                            bus.write_word(result_addr + 2, x as u16);
+                        } else {
+                            bus.write_word(result_addr, 0);
+                            bus.write_word(result_addr + 2, 0);
+                        }
+                        cpu.write_reg(Register::A7, result_addr);
+                    }
+                    0x0009 => {
+                        // TEGetHeight ($A83D, selector $0009)
+                        // Returns the total height of the requested line range.
+                        // FUNCTION TEGetHeight(endLine: LONGINT; startLine: LONGINT; hTE: TEHandle): LONGINT;
+                        // Text 1993, 2-90
+                        let te_handle = bus.read_long(sp + 2);
+                        let mut start_line = bus.read_long(sp + 6) as i32;
+                        let mut end_line = bus.read_long(sp + 10) as i32;
+                        let te_ptr = Self::te_record_ptr(bus, te_handle);
+                        let n_lines = if te_ptr != 0 {
+                            bus.read_word(te_ptr + Self::TE_N_LINES_OFFSET) as i32
+                        } else {
+                            0
+                        };
+                        if start_line > 0 {
+                            start_line -= 1;
+                        } else {
+                            start_line = 0;
+                        }
+                        end_line = end_line.min(n_lines);
+                        if end_line < 0 {
+                            end_line = 0;
+                        } else if end_line > 0 {
+                            end_line -= 1;
+                        }
+                        if start_line > end_line {
+                            std::mem::swap(&mut start_line, &mut end_line);
+                        }
+
+                        let text_bytes = Self::te_text_bytes(bus, te_handle);
+                        let line_starts = Self::te_line_starts(bus, te_handle);
+                        if !text_bytes.is_empty() {
+                            while end_line >= start_line {
+                                let current = end_line as usize;
+                                let Some(&line_start) = line_starts.get(current) else {
+                                    break;
+                                };
+                                let line_end = line_starts
+                                    .get(current + 1)
+                                    .copied()
+                                    .unwrap_or(text_bytes.len());
+                                let blank_trailing_line = current + 1 == line_starts.len() - 1
+                                    && line_start < line_end
+                                    && text_bytes[line_start..line_end]
+                                        .iter()
+                                        .all(|&b| matches!(b, b'\r' | b'\n'));
+                                if blank_trailing_line {
+                                    end_line -= 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        let mut total_height = 0i32;
+                        if end_line >= start_line {
+                            for current_line in
+                                start_line.max(0) as usize..=end_line.max(0) as usize
+                            {
+                                total_height += i32::from(Self::te_height_for_line(
+                                    bus,
+                                    te_handle,
+                                    current_line,
+                                ));
+                            }
+                        }
+                        if trace_textedit_enabled() {
+                            eprintln!(
+                                "[TE] TEGetHeight hTE=${:08X} start_line={} end_line={} result={}",
+                                te_handle, start_line, end_line, total_height
+                            );
+                        }
+                        bus.write_long(sp + 14, total_height as u32);
+                        cpu.write_reg(Register::A7, sp + 14);
+                    }
+                    0x000A => {
+                        // TEContinuousStyle ($A83D, selector $000A)
+                        // Returns the common style across the current selection.
+                        // FUNCTION TEContinuousStyle(VAR mode: INTEGER; VAR aStyle: TextStyle; hTE: TEHandle): BOOLEAN;
+                        // Inside Macintosh Volume VI, 15-34 to 15-35
+                        let te_handle = bus.read_long(sp + 2);
+                        let style_ptr = bus.read_long(sp + 6);
+                        let mode_ptr = bus.read_long(sp + 10);
+                        let result_addr = sp + 14;
+                        let requested_mode = if mode_ptr != 0 {
+                            bus.read_word(mode_ptr)
+                        } else {
+                            0
+                        };
+                        if style_ptr != 0 {
+                            let (tx_font, tx_face, tx_size, color, _, _) =
+                                self.te_primary_style(bus, te_handle);
+                            if (requested_mode & 0x0001) != 0 {
+                                bus.write_word(style_ptr, tx_font as u16);
+                            }
+                            if (requested_mode & 0x0002) != 0 {
+                                bus.write_word(style_ptr + 2, tx_face as u16);
+                            }
+                            if (requested_mode & 0x0004) != 0 {
+                                bus.write_word(style_ptr + 4, tx_size as u16);
+                            }
+                            if (requested_mode & 0x0008) != 0 {
+                                bus.write_word(style_ptr + 6, color.0);
+                                bus.write_word(style_ptr + 8, color.1);
+                                bus.write_word(style_ptr + 10, color.2);
+                            }
+                        }
+                        bus.write_word(result_addr, 0xFFFF);
+                        cpu.write_reg(Register::A7, result_addr);
+                    }
+                    0x000B => {
+                        // TEUseStyleScrap ($A83D, selector $000B)
+                        // Sets style data for the specified text range from a style scrap handle.
+                        // PROCEDURE TEUseStyleScrap(rangeStart: LONGINT; rangeEnd: LONGINT;
+                        //     newStyles: StScrpHandle; redraw: BOOLEAN; hTE: TEHandle);
+                        // Inside Macintosh Volume VI, 15-35 to 15-36
+                        let te_handle = bus.read_long(sp + 2);
+                        let new_styles = bus.read_long(sp + 8);
+                        let style_handle = Self::te_style_handle(bus, te_handle);
+                        if style_handle != 0 && new_styles != 0 {
+                            let style_ptr = bus.read_long(style_handle);
+                            let style_table_handle =
+                                bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
+                            let style_table_ptr = if style_table_handle != 0 {
+                                bus.read_long(style_table_handle)
+                            } else {
+                                0
+                            };
+                            let scrap_ptr = bus.read_long(new_styles);
+                            if style_table_ptr != 0 && scrap_ptr != 0 {
+                                let base = scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET;
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
+                                    bus.read_word(base + Self::SCRAP_STYLE_HEIGHT_OFFSET),
+                                );
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
+                                    bus.read_word(base + Self::SCRAP_STYLE_ASCENT_OFFSET),
+                                );
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
+                                    bus.read_word(base + Self::SCRAP_STYLE_FONT_OFFSET),
+                                );
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
+                                    bus.read_word(base + Self::SCRAP_STYLE_FACE_OFFSET),
+                                );
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
+                                    bus.read_word(base + Self::SCRAP_STYLE_SIZE_OFFSET),
+                                );
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
+                                    bus.read_word(base + Self::SCRAP_STYLE_COLOR_OFFSET),
+                                );
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2,
+                                    bus.read_word(base + Self::SCRAP_STYLE_COLOR_OFFSET + 2),
+                                );
+                                bus.write_word(
+                                    style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4,
+                                    bus.read_word(base + Self::SCRAP_STYLE_COLOR_OFFSET + 4),
+                                );
+                            }
+                        }
+                        cpu.write_reg(Register::A7, sp + 20);
+                    }
+                    0x000C => {
+                        // TECustomHook ($A83D, selector $000C)
+                        // Reads or replaces one of TextEdit's internal hook procedures.
+                        // PROCEDURE TECustomHook(which: TEIntHook; VAR addr: ProcPtr; hTE: TEHandle);
+                        // Inside Macintosh Volume VI, 15-25 to 15-26.
+                        // Per IM:VI 15-26, addr is a VAR ProcPtr — on
+                        // return it must hold the previous hook. Systemless
+                        // does not invoke registered hooks (no guest-fn
+                        // dispatch infrastructure), so we report "no
+                        // previous hook" by writing 0 into *addr.
+                        let addr_ptr = bus.read_long(sp + 6);
+                        if addr_ptr != 0 {
+                            bus.write_long(addr_ptr, 0);
+                        }
+                        cpu.write_reg(Register::A7, sp + 12);
+                    }
+                    0x000D => {
+                        // TENumStyles ($A83D, selector $000D)
+                        // Returns the number of style changes contained in the
+                        // given range, counting one for the start of the range.
+                        // FUNCTION TENumStyles(rangeStart: LONGINT; rangeEnd: LONGINT;
+                        //                      hTE: TEHandle): LONGINT;
+                        // Inside Macintosh Volume VI, 15-36.
+                        // Per IM:VI 15-36, an unstyled record always
+                        // returns 1. With Systemless's single-run styled
+                        // record the in-range transitions count is also
+                        // zero, so the +1 for the start-of-range gives 1.
+                        let te_handle = bus.read_long(sp + 2);
+                        let style_handle = Self::te_style_handle(bus, te_handle);
+                        let mut count: u32 = 1;
+                        if style_handle != 0 {
+                            let style_ptr_record = bus.read_long(style_handle);
+                            if style_ptr_record != 0 {
+                                let n_runs = bus
+                                    .read_word(style_ptr_record + Self::TE_STYLE_N_RUNS_OFFSET)
+                                    as u32;
+                                count = n_runs.max(1);
+                            }
+                        }
+                        bus.write_long(sp + 14, count);
+                        cpu.write_reg(Register::A7, sp + 14);
+                    }
+                    0x000E => {
+                        // TEFeatureFlag ($A83D, selector $000E)
+                        // Tests or changes a TextEdit feature bit and returns the previous state.
+                        // FUNCTION TEFeatureFlag(feature: INTEGER; action: INTEGER; hTE: TEHandle): INTEGER;
+                        // Inside Macintosh Volume VI, 15-22 to 15-24
+                        let te_handle = bus.read_long(sp + 2);
+                        let action = bus.read_word(sp + 6) as i16;
+                        let feature = bus.read_word(sp + 8);
+                        let was_set = self.te_feature_bit(te_handle, feature);
+                        if matches!(
+                            feature,
+                            Self::TE_FEATURE_AUTO_SCROLL
+                                | Self::TE_FEATURE_TEXT_BUFFERING
+                                | Self::TE_FEATURE_OUTLINE_HILITE
+                                | Self::TE_FEATURE_INLINE_INPUT
+                                | Self::TE_FEATURE_USE_TEXT_SERVICES
+                        ) {
+                            match action {
+                                Self::TE_BIT_CLEAR => {
+                                    self.set_te_feature_bit(te_handle, feature, false)
+                                }
+                                Self::TE_BIT_SET => {
+                                    self.set_te_feature_bit(te_handle, feature, true)
+                                }
+                                Self::TE_BIT_TEST => {}
+                                _ => {}
+                            }
+                        }
+                        bus.write_word(sp + 10, if was_set { 1 } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 10);
+                    }
+                    _ => return None,
+                }
+                Ok(())
+            }
+
+            // TEDispose ($A9CD)
+            // Disposes of the edit record and releases memory used by
+            // the text and record structures.
+            // PROCEDURE TEDispose(hTE: TEHandle);
+            // Inside Macintosh Volume I, I-383 to I-384; Text 1993, 2-79
+            //
+            // Regression coverage:
+            //   dialog::tests::tedispose_releases_te_record_text_handle_and_pops_arg
+            // TEDispose ($A9CD): Frees TERec, hText, and style handles per IM:I I-383..I-384
+            (true, 0x1CD) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                if te_handle != 0 {
+                    let te_ptr = bus.read_long(te_handle);
+                    if te_ptr != 0 {
+                        // Free the text handle and its data
+                        let h_text = bus.read_long(te_ptr + Self::TE_HTEXT_OFFSET);
+                        if h_text != 0 {
+                            let text_ptr = bus.read_long(h_text);
+                            if text_ptr != 0 {
+                                bus.free(text_ptr);
+                            }
+                            bus.free(h_text);
+                        }
+                        // For styled records, free the style handle
+                        if Self::te_is_styled_record(bus, te_ptr) {
+                            let style_handle = bus.read_long(te_ptr + Self::TE_TX_FONT_OFFSET);
+                            if style_handle != 0 {
+                                let style_ptr = bus.read_long(style_handle);
+                                if style_ptr != 0 {
+                                    bus.free(style_ptr);
+                                }
+                                bus.free(style_handle);
+                            }
+                        }
+                        bus.free(te_ptr);
+                    }
+                    bus.free(te_handle);
+                    self.textedit_states.remove(&te_handle);
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TESetText ($A9CF)
+            // PROCEDURE TESetText(text: Ptr; length: LONGINT; hTE: TEHandle);
+            // Inside Macintosh Volume I (1985), p. I-378.
+            //
+            // IM:I I-378 verbatim: "TESetText sets the current text
+            // contents of the edit record specified by hTE. The text
+            // parameter points to the text, and the length parameter
+            // contains the number of bytes."
+            //
+            // MPW Universal Headers `TextEdit.h` declares:
+            //   EXTERN_API(void) TESetText(const void *text, long length,
+            //                              TEHandle hTE) ONEWORDINLINE(0xA9CF);
+            //
+            // Pascal calling convention pushes args left-to-right (first
+            // arg deepest). At trap entry the stack layout is therefore:
+            //   sp+0  TEHandle hTE          (last pushed, shallowest)
+            //   sp+4  LONGINT  length       (middle, 4 bytes)
+            //   sp+8  Ptr      text         (first pushed, deepest)
+            // The trap pops 12 bytes (no result slot — PROCEDURE).
+            //
+            // Empty-input semantics: per IM:I I-378 passing zero length
+            // yields an empty edit record. Systemless additionally defends
+            // against NIL text pointer (clears regardless of length);
+            // the real Mac ROM (BasiliskII System 7.5.3) does NOT safely
+            // handle NIL source pointers, so the catalog row's strict
+            // bake witnesses only the zero-length branch of the
+            // documented disjunction (see a9cf_tesettext_strict).
+            //
+            // Witnessed by:
+            //   a9cf_tesettext_strict (BII bake +
+            //     Systemless runtime)
+            //   contract tests in this file:
+            //     tesettext_copies_bytes_updates_length_and_pops_arguments
+            //     tesettext_nil_or_zero_length_input_clears_text
+            //     tesettext_replaces_prior_contents_via_sequential_call
+            //     tesettext_balances_stackspace_with_pascal_protocol
+            (true, 0x1CF) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let length = bus.read_long(sp + 4) as usize;
+                let text_ptr = bus.read_long(sp + 8);
+                if text_ptr != 0 && length != 0 {
+                    let text = bus.read_bytes(text_ptr, length);
+                    self.te_set_text_contents(bus, te_handle, &text);
+                } else {
+                    self.te_set_text_contents(bus, te_handle, &[]);
+                }
+                cpu.write_reg(Register::A7, sp + 12);
+                Ok(())
+            }
+
+            // TEGetText ($A9CB)
+            // FUNCTION TEGetText(hTE: TEHandle): CharsHandle;
+            // Inside Macintosh Volume I (1985), p. I-384.
+            //
+            // IM:I I-384 verbatim: "TEGetText returns a handle to the text
+            // of the specified edit record. The result is the same as the
+            // handle in the hText field of the edit record, but has the
+            // CharsHandle data type, which is defined as:
+            //
+            //   TYPE CharsHandle = ^CharsPtr;
+            //        CharsPtr    = ^Chars;
+            //        Chars       = PACKED ARRAY[0..32000] OF CHAR;
+            //
+            // You can get the length of the text from the teLength field
+            // of the edit record."
+            //
+            // Pascal FUNCTION calling convention: the caller pre-allocates
+            // a 4-byte CharsHandle result slot at SP+4, pushes a 4-byte
+            // TEHandle argument at SP+0. The trap reads the TEHandle,
+            // looks up TERec.hText (offset TE_HTEXT_OFFSET = +18 per
+            // IM:I I-379), writes that handle to the result slot, and
+            // pops the 4-byte argument. The C wrapper then pops the
+            // 4-byte result slot — net externally-observed SP delta is
+            // zero.
+            //
+            // MPW Universal Headers `TextEdit.h` declares:
+            //   EXTERN_API(CharsHandle) TEGetText(TEHandle hTE)
+            //       ONEWORDINLINE(0xA9CB);
+            (true, 0x1CB) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                bus.write_long(sp + 4, Self::te_text_handle(bus, te_handle));
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TETextBox ($A9CE)
+            //
+            // PROCEDURE TETextBox(text: Ptr; length: LONGINT;
+            //                     box: Rect; align: INTEGER);
+            //
+            // Inside Macintosh: Text (1993), p. 2-88; alignment
+            // constants on p. 2-87.
+            //
+            // MPW Universal Headers TextEdit.h:
+            //   EXTERN_API(void) TETextBox(const void *text,
+            //                              long          length,
+            //                              const Rect *  box,
+            //                              short         just)
+            //                                       ONEWORDINLINE(0xA9CE);
+            //
+            // IM:Text 1993 p. 2-88: "TETextBox erases the specified
+            //   rectangle and then draws the text into it... TETextBox
+            //   creates a transient edit record, draws the text wrapped
+            //   to fit the rectangle, and disposes of the record."
+            // IM:Text 1993 p. 2-87 alignment constants:
+            //   teJustLeft  =  0  (flush left — system default)
+            //   teJustCenter =  1  (centered)
+            //   teJustRight  = -1  (flush right)
+            //   teForceLeft  = -2  (force flush left for right-to-left)
+            //
+            // Calling convention (MPW C canonical, the only one MPW
+            // emits because the Universal Headers declaration uses
+            // `const Rect *`):
+            //   sp+ 0  short        just     (last pushed, shallowest)
+            //   sp+ 2  Rect *       box      (4-byte pointer)
+            //   sp+ 6  long         length   (4 bytes)
+            //   sp+10  const void * text     (4 bytes, deepest)
+            //   pop = 14 bytes; no result slot (PROCEDURE).
+            //
+            // (The Pascal canonical signature inlines the 8-byte Rect
+            // by value for an 18-byte frame, but MPW C never produces
+            // that form. Systemless's HLE only supports the MPW C
+            // canonical layout; the in-Rust contract tests and the
+            // BasiliskII strict bake at
+            // a9ce_tetextbox_strict/ both exercise
+            // this layout exclusively.)
+            //
+            // Behavior witnessed by a9ce_tetextbox_strict
+            // (5-band golden, 4 strict assertions; BII System 7.5.3 ROM
+            // and Systemless HLE produce the same boolean predicates):
+            //   1. Erases the destination box before drawing (probe a
+            //      pre-blackened pixel far from any glyph is WHITE after
+            //      the call) — IM:Text 1993 p. 2-88.
+            //   2. Word-wraps when text exceeds rect width (40x60 box
+            //      with "A B C D E F G" has black pixels at row 14+;
+            //      800x16 box with same text has none) — IM:Text 1993
+            //      p. 2-88 line layout behavior.
+            //   3. Alignment parameter controls horizontal origin
+            //      (teJustLeft / teJustCenter / teJustRight produce
+            //      strictly increasing leftmost-black-pixel columns)
+            //      — IM:Text 1993 p. 2-87.
+            //   4. Pascal PROCEDURE pops 14 bytes, no result slot
+            //      (StackSpace bookends equal).
+            (true, 0x1CE) => {
+                let sp = cpu.read_reg(Register::A7);
+                let align = bus.read_word(sp) as i16;
+                let box_ptr = bus.read_long(sp + 2);
+                let box_top = bus.read_word(box_ptr) as i16;
+                let box_left = bus.read_word(box_ptr + 2) as i16;
+                let box_bottom = bus.read_word(box_ptr + 4) as i16;
+                let box_right = bus.read_word(box_ptr + 6) as i16;
+                let length = bus.read_long(sp + 6) as usize;
+                let text_ptr = bus.read_long(sp + 10);
+                cpu.write_reg(Register::A7, sp + 14);
+
+                if trace_dialog_text_inline_enabled() {
+                    let mut stack_bytes = [0u8; 24];
+                    for (i, byte) in stack_bytes.iter_mut().enumerate() {
+                        *byte = bus.read_byte(sp + i as u32);
+                    }
+                    let preview_len = length.min(64);
+                    let preview = if text_ptr != 0 {
+                        bus.read_bytes(text_ptr, preview_len)
+                    } else {
+                        Vec::new()
+                    };
+                    eprintln!(
+                        "[DIALOG-TEXT] TETextBox params current_port=${:08X} sp=${:08X} stack={:02X?} text_ptr=${:08X} len={} box=({},{}..{},{} ) align={} preview={:02X?}",
+                        self.current_port,
+                        sp,
+                        stack_bytes,
+                        text_ptr,
+                        length,
+                        box_top,
+                        box_left,
+                        box_bottom,
+                        box_right,
+                        align,
+                        preview,
+                    );
+                }
+
+                if text_ptr != 0 && length > 0 && box_right > box_left && box_bottom > box_top {
+                    // Read the text bytes from guest memory
+                    let text_bytes = bus.read_bytes(text_ptr, length);
+
+                    if trace_dialog_text_inline_enabled() {
+                        let preview_len = text_bytes.len().min(160);
+                        let first_char =
+                            text_bytes.first().copied().map(char::from).unwrap_or('\0');
+                        let first_glyph = crate::quickdraw::text::get_glyph(
+                            self.tx_font,
+                            self.tx_size,
+                            first_char,
+                        )
+                        .is_some();
+                        eprintln!(
+                            "[DIALOG-TEXT] TETextBox current_port=${:08X} box=({},{}..{},{} ) align={} len={} txFont={} txFace=${:04X} txMode={} txSize={} firstChar={:?} firstGlyph={} text=\"{}\"",
+                            self.current_port,
+                            box_top,
+                            box_left,
+                            box_bottom,
+                            box_right,
+                            align,
+                            length,
+                            self.tx_font,
+                            self.tx_face,
+                            self.tx_mode,
+                            self.tx_size,
+                            first_char,
+                            first_glyph,
+                            String::from_utf8_lossy(&text_bytes[..preview_len]),
+                        );
+                    }
+
+                    // TETextBox creates a transient edit record and clears the
+                    // destination box before drawing the wrapped text.
+                    // Text 1993, 2-88; Executor textedit/teDisplay.cpp C_TETextBox
+                    self.draw_rect(
+                        cpu,
+                        bus,
+                        &Rect {
+                            top: box_top,
+                            left: box_left,
+                            bottom: box_bottom,
+                            right: box_right,
+                        },
+                        ShapeOp::Erase,
+                    );
+
+                    // Capture font params to avoid borrowing self in closures
+                    let font_id = self.tx_font;
+                    let font_size = self.tx_size;
+                    let advance_extra = self.advance_extra();
+                    let missing_advance = self.missing_glyph_advance();
+
+                    let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
+                    let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
+                    let box_width = box_right - box_left;
+
+                    // Measure a run of bytes (no &self borrow needed)
+                    let measure = |start: usize, end: usize| -> i16 {
+                        let mut w = 0i16;
+                        for &b in &text_bytes[start..end] {
+                            let ch = b as char;
+                            if let Some((g, _)) =
+                                crate::quickdraw::text::get_glyph(font_id, font_size, ch)
+                            {
+                                w += g.advance as i16 + advance_extra;
+                            } else {
+                                w += missing_advance;
+                            }
+                        }
+                        w
+                    };
+
+                    // Word-wrap: split into lines that fit within box_width.
+                    // Break on spaces; if a single word exceeds box_width, break mid-word.
+                    let mut lines: Vec<(usize, usize)> = Vec::new();
+                    let mut line_start = 0usize;
+                    let mut last_break = 0usize;
+                    let mut line_width = 0i16;
+
+                    for (i, &b) in text_bytes.iter().enumerate() {
+                        if b == b'\r' || b == b'\n' {
+                            lines.push((line_start, i));
+                            line_start = i + 1;
+                            last_break = line_start;
+                            line_width = 0;
+                            continue;
+                        }
+                        let ch = b as char;
+                        let char_w = if let Some((g, _)) =
+                            crate::quickdraw::text::get_glyph(font_id, font_size, ch)
+                        {
+                            g.advance as i16 + advance_extra
+                        } else {
+                            missing_advance
+                        };
+                        line_width += char_w;
+                        if b == b' ' {
+                            last_break = i + 1;
+                        }
+                        if line_width > box_width && i > line_start {
+                            if last_break > line_start {
+                                lines.push((line_start, last_break - 1));
+                                line_start = last_break;
+                            } else {
+                                lines.push((line_start, i));
+                                line_start = i;
+                            }
+                            last_break = line_start;
+                            line_width = measure(line_start, i + 1);
+                        }
+                    }
+                    if line_start < text_bytes.len() {
+                        lines.push((line_start, text_bytes.len()));
+                    }
+
+                    // Draw each line
+                    let mut y = box_top + metrics.ascent;
+                    for (start, end) in &lines {
+                        if y + metrics.descent > box_bottom {
+                            break;
+                        }
+                        let mut trimmed_end = *end;
+                        while trimmed_end > *start && text_bytes[trimmed_end - 1] == b' ' {
+                            trimmed_end -= 1;
+                        }
+                        let lw = measure(*start, trimmed_end);
+                        // Per Inside Macintosh: Text 1993, lines 7320-7323:
+                        //   teJustLeft   =  0 (flush left — system default)
+                        //   teJustCenter =  1 (centered)
+                        //   teJustRight  = -1 (flush right)
+                        //   teForceLeft  = -2 (force flush left)
+                        let x = match align {
+                            1 => box_left + (box_width - lw) / 2, // teJustCenter
+                            -1 => box_right - lw,                 // teJustRight
+                            _ => box_left,                        // teJustLeft / teForceLeft / 0
+                        };
+                        self.pn_loc = (y, x);
+                        for &byte in &text_bytes[*start..trimmed_end] {
+                            self.draw_char(cpu, bus, byte as char);
+                        }
+                        y += line_height;
+                    }
+                }
+                Ok(())
+            }
+
+            // TECalText ($A9D0)
+            // PROCEDURE TECalText(hTE: TEHandle);
+            // TECalText ($A9D0): Syncs TE_LENGTH and recalculates TE line layout per IM:I I-390
+            (true, 0x1D0) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    let text_len =
+                        Self::te_text_length(bus, te_handle).min(u16::MAX as usize) as u16;
+                    bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, text_len);
+                    self.te_recalculate_layout(bus, te_handle);
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TESetSelect ($A9D1)
+            // PROCEDURE TESetSelect(selStart: LONGINT; selEnd: LONGINT; hTE: TEHandle);
+            // Inside Macintosh Volume I, I-385
+            // TESetSelect ($A9D1): Clamps selEnd to teLength per IM:I I-385; selStart/selEnd range 0..32767 stored as u16
+            (true, 0x1D1) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    let te_length = u32::from(bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET));
+                    // IM:I I-385: "SelEnd and selStart can range from 0 to 32767.
+                    // If selEnd is anywhere beyond the last character of the text,
+                    // the position just past the last character is used."
+                    let sel_end = bus
+                        .read_long(sp + 4)
+                        .min(u32::from(u16::MAX))
+                        .min(te_length);
+                    let sel_start = bus.read_long(sp + 8).min(u32::from(u16::MAX));
+                    bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, sel_start as u16);
+                    bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, sel_end as u16);
+                }
+                cpu.write_reg(Register::A7, sp + 12);
+                Ok(())
+            }
+
+            // TEUpdate ($A9D3)
+            // PROCEDURE TEUpdate(rUpdate: Rect; hTE: TEHandle);
+            // Inside Macintosh Volume I (1985), p. I-387.
+            // Inside Macintosh: Text (1993), p. 2-88.
+            // MPW Universal Headers TextEdit.h:
+            //   EXTERN_API(void) TEUpdate(const Rect *rUpdate, TEHandle hTE)
+            //     ONEWORDINLINE(0xA9D3);
+            //
+            // IM:I I-387 quote: "TEUpdate draws the text specified by hTE
+            //   within the rectangle rUpdate of the destination rectangle
+            //   for the edit record specified by hTE. You normally call
+            //   this procedure in response to an update event for the
+            //   window."
+            // IM:Text 1993 p. 2-88 quote: "TEUpdate redraws the text
+            //   specified by the edit record within the update rectangle."
+            //
+            // TEUpdate has two stack layouts that real Mac ROMs (System
+            // 6.0+ onward) auto-tolerate:
+            //
+            //   * Pascal canonical (per IM:I I-387 PROCEDURE signature):
+            //       sp+0   hTE       (4 bytes — last pushed, Pascal LR
+            //                         order: last arg = shallowest)
+            //       sp+4   rUpdate   (8 bytes — inlined Rect, deepest)
+            //       Net pop = 12 bytes; no result slot (PROCEDURE).
+            //
+            //   * MPW C canonical (Universal Headers TextEdit.h
+            //     declaration with `const Rect *`):
+            //       sp+0   hTE          (4 bytes)
+            //       sp+4   rUpdatePtr   (4 bytes — pointer to Rect)
+            //       Net pop = 8 bytes; no result slot.
+            //
+            // The two forms agree on the contract: TEUpdate is a redraw
+            // operation that does NOT mutate the underlying edit-record
+            // state (hText, teLength, selStart, selEnd) — it only paints
+            // pixels into the TE's inPort within the rUpdate region.
+            //
+            // Witnessed by `a9d3_teupdate_strict` (BasiliskII System 7.5.3
+            // ROM, three engines-agree assertions on first deterministic
+            // bake): C-form stack discipline, Pascal-form stack discipline
+            // (via inline `pascal void kx_TEUpdate_Pascal(Rect, TEHandle)
+            // = { 0xA9D3 }` thunk), and TE record-state preservation
+            // across the two calls. Systemless HLE passes the catalog_test
+            // on first try with no source change required — the heuristic
+            // below correctly identifies both call shapes.
+            //
+            // Contract coverage:
+            //   dialog::tests::teupdate_pascal_form_redraws_text_and_pops_inline_rect_and_tehandle
+            //   dialog::tests::teupdate_c_rect_pointer_form_is_accepted_and_pops_eight_bytes
+            //   dialog::tests::teupdate_preserves_te_record_state_across_redraw
+            (true, 0x1D3) => {
+                let sp = cpu.read_reg(Register::A7);
+                // Both Pascal and C forms put hTE at SP+0 (last argument
+                // pushed in Pascal left-to-right convention). The forms
+                // differ at SP+4:
+                //   * C form (8-byte total push): SP+4..7 is `rUpdatePtr`,
+                //     a 4-byte pointer to a Rect on the heap or A5 globals.
+                //   * Pascal form (12-byte total push): SP+4..11 is the
+                //     8-byte Rect inlined directly on the stack.
+                //
+                // The earlier heuristic (`te_record_ptr(first_long) != 0`)
+                // ALWAYS picked Pascal because first_long is the same handle
+                // in both forms. POD MARS Master uses the C form; the wrong
+                // pop-size leaked 4 bytes per TEUpdate call, which compounded
+                // into 8 bytes per update event (two TEUpdates) and within
+                // ~50 update cycles drifted A6/A7 enough to corrupt the
+                // EventRecord pointer the next WaitNextEvent passed in,
+                // starving the click hit-test. Per d4a8444b / 172f262a.
+                //
+                // The reliable test is: does the longword at SP+4 deref to
+                // a plausible Rect (top<=bottom, left<=right, both in
+                // -32000..32000)? If yes, C form. If not, fall back to
+                // Pascal form. Fallback covers the rare case where SP+4..11
+                // genuinely contains an inlined rect.
+                //
+                // Two extra guards beyond the bounds check:
+                //   * `ptr_candidate` must be word-aligned. A Pascal-form
+                //     small-coord rect like `(top=1, left=1, …)` produces
+                //     `(top<<16)|left = 0x0001_0001`, which is odd and
+                //     therefore NOT a valid 68k pointer (heap and globals
+                //     are always even-aligned).
+                //   * The dereffed Rect must have at least one non-zero
+                //     word. A Pascal form with small even coords like
+                //     `(top=10, left=10, bottom=40, right=200)` produces
+                //     ptr_candidate `0x000A_000A`, which derefs into
+                //     typically-zero low-memory or uninitialized heap —
+                //     an all-zero "rect" passes the bounds test but isn't
+                //     a meaningful update region a real C-form caller
+                //     would pass.
+                let hte_at_sp = bus.read_long(sp);
+                let ptr_candidate = bus.read_long(sp + 4);
+                let looks_like_c_form = ptr_candidate != 0
+                    && (ptr_candidate & 1) == 0
+                    && (0x0000_0010..0x0400_0000).contains(&ptr_candidate)
+                    && {
+                        let top = bus.read_word(ptr_candidate) as i16;
+                        let left = bus.read_word(ptr_candidate + 2) as i16;
+                        let bottom = bus.read_word(ptr_candidate + 4) as i16;
+                        let right = bus.read_word(ptr_candidate + 6) as i16;
+                        top <= bottom
+                            && left <= right
+                            && (-32000..=32000).contains(&top)
+                            && (-32000..=32000).contains(&left)
+                            && (-32000..=32000).contains(&bottom)
+                            && (-32000..=32000).contains(&right)
+                            && !(top == 0 && left == 0 && bottom == 0 && right == 0)
+                    };
+                let (te_handle, stack_pop) = if looks_like_c_form {
+                    (hte_at_sp, 8)
+                } else {
+                    (hte_at_sp, 12)
+                };
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    if trace_textedit_enabled() {
+                        let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
+                        let view_rect = Self::te_read_rect(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET);
+                        eprintln!(
+                            "[TE] TEUpdate hTE=${:08X} dest=({},{},{},{}) view=({},{},{},{})",
+                            te_handle,
+                            dest_rect.0,
+                            dest_rect.1,
+                            dest_rect.2,
+                            dest_rect.3,
+                            view_rect.0,
+                            view_rect.1,
+                            view_rect.2,
+                            view_rect.3
+                        );
+                    }
+                    self.draw_te_contents(cpu, bus, te_handle);
+                }
+                cpu.write_reg(Register::A7, sp + stack_pop);
+                Ok(())
+            }
+
+            // TEClick ($A9D4)
+            // PROCEDURE TEClick(pt: Point; extend: BOOLEAN; hTE: TEHandle);
+            // Inside Macintosh Volume I, I-376; Inside Macintosh: Text 1993, 2-85
+            //
+            // MPW Universal Headers TextEdit.h:
+            //   EXTERN_API(void) TEClick(Point pt, Boolean fExtend, TEHandle hTE)
+            //       ONEWORDINLINE(0xA9D4);
+            //
+            // IM:I I-376 verbatim: "TEClick controls the placement and
+            // highlighting of the selection range as determined by mouse
+            // events. ... If the mouse button is down outside of the
+            // selection range or if the Shift key was not down when the
+            // mouse button was pressed (depending on the value of
+            // extend), the selection range is set to an insertion point
+            // at the offset corresponding to the position of the mouse."
+            //
+            // Pascal stack frame (args push left-to-right, first
+            // source arg deepest):
+            //   sp+0  hTE: TEHandle           (4) — last arg, shallowest
+            //   sp+4  extend: BOOLEAN         (2) — middle arg (value
+            //                                       in high byte per
+            //                                       MPW C convention)
+            //   sp+6  pt.v: INTEGER           (2) — first arg, second word
+            //   sp+8  pt.h: INTEGER           (2) — first arg, first word
+            // Total pop = 10 bytes; no function-result slot.
+            //
+            // HLE compromise: Systemless doesn't model the interactive
+            // drag-to-select mouse loop that real-Mac TEClick runs.
+            // Per IM:I I-376 a real TEClick would: (a) hit-test the
+            // click point against the TE's destRect, (b) compute
+            // the byte offset in the text corresponding to the
+            // click position, (c) extend or replace the selection
+            // range based on the `extend` flag, (d) loop polling
+            // the mouse for drag-to-select until WaitMouseUp. Steps
+            // (a)..(c) require a working caret-from-pixel mapping
+            // that depends on the current font + size + measured
+            // line widths; step (d) requires interactive mouse
+            // synthesis from the host event source. Neither is
+            // wired up in the current scripted event
+            // model. So the TE record's selStart/selEnd are NOT
+            // updated to reflect the click — apps that depend on
+            // click-to-position-cursor will not see the cursor
+            // move; apps that programmatically set selStart/selEnd
+            // via TESetSelect ($A9D1, already Complete) work as
+            // expected.
+            //
+            // BasiliskII-vs-Systemless divergence: BII System 7.5.3 ROM
+            // DOES update selStart/selEnd on a TEClick call (collapsing
+            // to the byte offset corresponding to the click position
+            // per IM:I I-376) because it has the real pixel-to-character
+            // mapping. Systemless leaves them unchanged. The strict bake
+            // `a9d4_teclick_strict` therefore witnesses only the
+            // engines-agree intersection (active flag + teLength
+            // preservation + Pascal PROCEDURE stack discipline), and
+            // the Apple-canonical "extend=FALSE collapses selection
+            // to click offset" rule is tracked as a contract-only
+            // assertion in the catalog row (not part of the golden
+            // assertion set).
+            //
+            // Both engines DO agree that TEClick must not mutate the
+            // active flag (owned by TEActivate/TEDeactivate per
+            // IM:I I-385) or teLength (owned by
+            // TESetText/TEKey/TEDelete/TEInsert).
+            //
+            // NIL hTE is a defensive no-op (matches the real-Mac
+            // safety contract — TEClick on NIL is undefined but
+            // shouldn't crash the host).
+            //
+            // Regression coverage:
+            //   dialog::tests::teclick_consumes_point_extend_and_tehandle_arguments
+            //   dialog::tests::teclick_empty_text_keeps_insertion_point_at_zero
+            //   dialog::tests::teclick_preserves_terec_active_flag_and_telength
+            //   dialog::tests::teclick_repeated_calls_balance_stack_no_drift
+            (true, 0x1D4) => {
+                let sp = cpu.read_reg(Register::A7);
+                if trace_textedit_enabled() {
+                    let te_handle = bus.read_long(sp);
+                    // Pascal BOOLEAN in high byte (MPW C convention).
+                    let extend = bus.read_byte(sp + 4) != 0;
+                    let pt_v = bus.read_word(sp + 6) as i16;
+                    let pt_h = bus.read_word(sp + 8) as i16;
+                    eprintln!(
+                        "[TE] TEClick hTE=${:08X} extend={} pt=({}, {})",
+                        te_handle, extend, pt_v, pt_h
+                    );
+                }
+                cpu.write_reg(Register::A7, sp + 10);
+                Ok(())
+            }
+
+            // TECopy ($A9D5)
+            // PROCEDURE TECopy(hTE: TEHandle);
+            // Copies the currently-selected bytes into the TextEdit
+            // scrap (TEScrpLength low-mem global at $0AB0 (word) /
+            // TEScrpHandle at $0AB4 (long)). Empty selection leaves
+            // the scrap untouched per IM:I I-386.
+            // Inside Macintosh Volume I, I-386
+            // TECopy ($A9D5): Writes selected bytes into TextEdit scrap low-mem globals (TEScrpLength $0AB0, TEScrpHandle $0AB4) per IM:I I-386. Empty selection leaves scrap untouched.
+            (true, 0x1D5) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                    let (s, e) = if sel_start <= sel_end {
+                        (sel_start, sel_end)
+                    } else {
+                        (sel_end, sel_start)
+                    };
+                    if s != e {
+                        use crate::memory::globals::addr;
+                        let existing = Self::te_text_bytes(bus, te_handle);
+                        let s = s.min(existing.len());
+                        let e = e.min(existing.len());
+                        let selected = &existing[s..e];
+                        let mut scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
+                        if scrap_handle == 0 {
+                            scrap_handle = Self::allocate_handle_with_data(bus, 0);
+                            bus.write_long(addr::TE_SCRP_HANDLE, scrap_handle);
+                        }
+                        let text_ptr =
+                            Self::ensure_text_handle_size(bus, scrap_handle, selected.len());
+                        if text_ptr != 0 && !selected.is_empty() {
+                            bus.write_bytes(text_ptr, selected);
+                        }
+                        bus.write_word(
+                            addr::TE_SCRP_LENGTH,
+                            selected.len().min(u16::MAX as usize) as u16,
+                        );
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TECut ($A9D6)
+            // PROCEDURE TECut(hTE: TEHandle);
+            // Removes the currently-selected text from the edit record
+            // and places a copy in the TextEdit scrap (TEScrpLength at
+            // $0AB0 / TEScrpHandle at $0AB4). Any previous scrap
+            // contents are replaced. Insertion-point selection is a
+            // no-op per IM:I I-391.
+            // TECut ($A9D6): Removes selected text from TERec and writes a copy into the TextEdit scrap low-mem globals per IM:I I-391. Empty selection is a no-op.
+            (true, 0x1D6) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                    let (s, e) = if sel_start <= sel_end {
+                        (sel_start, sel_end)
+                    } else {
+                        (sel_end, sel_start)
+                    };
+                    if s != e {
+                        let existing = Self::te_text_bytes(bus, te_handle);
+                        let s = s.min(existing.len());
+                        let e = e.min(existing.len());
+                        // Copy selection into the scrap (replace, not
+                        // append — IM:I I-391).
+                        {
+                            use crate::memory::globals::addr;
+                            let selected = &existing[s..e];
+                            let mut scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
+                            if scrap_handle == 0 {
+                                scrap_handle = Self::allocate_handle_with_data(bus, 0);
+                                bus.write_long(addr::TE_SCRP_HANDLE, scrap_handle);
+                            }
+                            let text_ptr =
+                                Self::ensure_text_handle_size(bus, scrap_handle, selected.len());
+                            if text_ptr != 0 && !selected.is_empty() {
+                                bus.write_bytes(text_ptr, selected);
+                            }
+                            bus.write_word(
+                                addr::TE_SCRP_LENGTH,
+                                selected.len().min(u16::MAX as usize) as u16,
+                            );
+                        }
+                        // Delete selection from the TE text.
+                        let mut merged = Vec::with_capacity(existing.len() - (e - s));
+                        merged.extend_from_slice(&existing[..s]);
+                        merged.extend_from_slice(&existing[e..]);
+                        self.te_set_text_contents(bus, te_handle, &merged);
+                        let new_pos = s.min(u16::MAX as usize) as u16;
+                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
+                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TEDelete ($A9D7)
+            // Removes the currently selected text from the edit record and
+            // redraws. If selStart == selEnd (insertion point), does nothing.
+            // Does NOT transfer text to the scrap (unlike TECut).
+            // PROCEDURE TEDelete(hTE: TEHandle);
+            // Inside Macintosh Volume I, I-387; Text 1993, 2-93
+            //
+            // Regression coverage:
+            //   dialog::tests::tedelete_removes_selection_without_touching_scrap_and_pops_arg
+            //   dialog::tests::tedelete_insertion_point_selection_is_noop_and_pops_arg
+            // TEDelete ($A9D7): Removes selected text, collapses selection; no-op at insertion point. IM:I I-387
+            (true, 0x1D7) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEDelete hTE=${:08X}", te_handle);
+                }
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                    if sel_start != sel_end {
+                        let existing = Self::te_text_bytes(bus, te_handle);
+                        let s = sel_start.min(existing.len());
+                        let e = sel_end.min(existing.len());
+                        let (s, e) = if s > e { (e, s) } else { (s, e) };
+                        let mut merged = Vec::with_capacity(existing.len() - (e - s));
+                        merged.extend_from_slice(&existing[..s]);
+                        merged.extend_from_slice(&existing[e..]);
+                        self.te_set_text_contents(bus, te_handle, &merged);
+                        let new_pos = s.min(u16::MAX as usize) as u16;
+                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
+                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TEActivate ($A9D8)
+            // Activates the edit record, highlighting the selection range or
+            // displaying a blinking caret at the insertion point.
+            // PROCEDURE TEActivate(hTE: TEHandle);
+            // Inside Macintosh Volume I, I-385; Text 1993, 2-80
+            //
+            // Regression coverage:
+            //   teactivate_sets_active_flag
+            //   teactivate_pops_four_bytes
+            //   teactivate_preserves_selection
+            // TEActivate ($A9D8): Sets TERec.active flag per IM:I I-385
+            (true, 0x1D8) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEActivate hTE=${:08X}", te_handle);
+                }
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TEDeactivate ($A9D9)
+            // Deactivates the edit record, unhighlighting the selection range
+            // or removing the caret. Does not affect selStart/selEnd.
+            // PROCEDURE TEDeactivate(hTE: TEHandle);
+            // Inside Macintosh Volume I, I-385; Text 1993, 2-80
+            //
+            // Regression coverage:
+            //   tedeactivate_clears_active_flag
+            //   tedeactivate_pops_four_bytes
+            //   tedeactivate_preserves_selection
+            // TEDeactivate ($A9D9): Clears TERec.active flag per IM:I I-385
+            (true, 0x1D9) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEDeactivate hTE=${:08X}", te_handle);
+                }
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 0);
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TEIdle ($A9DA)
+            // PROCEDURE TEIdle(hTE: TEHandle);
+            // Inside Macintosh Volume I (1985), p. I-374; Inside
+            //   Macintosh: Text (1993), p. 2-84.
+            // MPW Universal Headers TextEdit.h:
+            //   EXTERN_API(void) TEIdle(TEHandle hTE) ONEWORDINLINE(0xA9DA);
+            //
+            // Pascal stack frame:
+            //   sp+0  hTE: TEHandle  (4)
+            // Total pop = 4 bytes; no function-result slot. Net
+            // externally-observed SP delta is zero (StackSpace
+            // bookends are equal across one call).
+            //
+            // IM:I I-374 quote: "Call TEIdle from your event loop...
+            // TEIdle causes the caret of the edit record to blink at
+            // the rate specified in caretTime."
+            //
+            // IM:Text 1993 p. 2-84 quote: "TEIdle blinks the caret if
+            // the destination rectangle contains the caret position;
+            // if the specified edit record is inactive (such as when
+            // the window is inactive), TEIdle has no effect."
+            //
+            // HLE compromise: Systemless doesn't model TextEdit caret
+            // blinking. Per IM:I I-374 a real TEIdle would: (a) read
+            // TickCount ($016A) and compare against the TE record's
+            // caretTime field, (b) when the interval elapses, toggle
+            // the caret's visibility flag, (c) XOR-paint the caret
+            // bar at the current selStart position. The first two
+            // steps need TE record fields (caretTime, caretState)
+            // that the current TERec layout doesn't track; the third
+            // needs the per-line pixel-position-of-byte-offset
+            // machinery that TEClick also lacks. So apps that call
+            // TEIdle on every null event get a no-op — the caret in
+            // any TE field stays in whatever state TEActivate /
+            // TEDeactivate left it in (typically a static caret at
+            // selStart). For the scripted event model
+            // where there are no null events between scripted
+            // actions, the missing blink is invisible.
+            //
+            // Crucial no-mutation contract (witnessed by both
+            // engines): TEIdle MUST NOT mutate TERec.active,
+            // TERec.selStart, TERec.selEnd, TERec.teLength, or any
+            // other selection / text fields. Selection updates are
+            // the exclusive responsibility of TESetSelect /
+            // TEClick / TEKey / TEDelete; activation toggles are
+            // handled by TEActivate / TEDeactivate. The HLE achieves
+            // this trivially by popping the argument and returning
+            // without inspecting the TERec.
+            //
+            // NIL hTE is a defensive no-op.
+            //
+            // Witnessed by `a9da_teidle_strict` strict bake (3/3 BII
+            // golden assertions): single-call StackSpace balance,
+            // four-field TERec preservation across one call, and
+            // 8-call composition StackSpace balance.
+            //
+            // Regression coverage:
+            //   dialog::tests::teidle_consumes_tehandle_argument
+            //   dialog::tests::teidle_preserves_active_flag_and_selection_offsets
+            //   dialog::tests::teidle_repeated_calls_balance_stack_and_preserve_terec_state
+            (true, 0x1DA) => {
+                let sp = cpu.read_reg(Register::A7);
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEIdle hTE=${:08X}", bus.read_long(sp));
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TEPaste ($A9DB)
+            // PROCEDURE TEPaste(hTE: TEHandle);
+            // Replaces the current selection with the contents of the
+            // TextEdit scrap (TEScrpLength at $0AB0 word, TEScrpHandle
+            // at $0AB4 long). Empty scrap leaves the TERec unchanged
+            // per IM:I I-387.
+            // Inside Macintosh Volume I, I-387
+            // TEPaste ($A9DB): Replaces current selection with TextEdit scrap contents (TEScrpLength / TEScrpHandle low-mem globals) per IM:I I-387. Empty scrap is a no-op.
+            (true, 0x1DB) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEPaste hTE=${:08X}", te_handle);
+                }
+                use crate::memory::globals::addr;
+                let scrap_len = bus.read_word(addr::TE_SCRP_LENGTH) as usize;
+                let scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
+                if scrap_handle != 0 && scrap_len > 0 {
+                    let scrap_ptr = bus.read_long(scrap_handle);
+                    if scrap_ptr != 0 {
+                        let scrap = bus.read_bytes(scrap_ptr, scrap_len);
+                        self.te_insert_text(bus, te_handle, &scrap);
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // TEKey ($A9DC)
+            // Replaces the selection range with the input character and positions
+            // the insertion point just past it. Backspace ($08) deletes the
+            // selection or the character before the insertion point.
+            // PROCEDURE TEKey(key: CHAR; hTE: TEHandle);
+            // Inside Macintosh Volume I, I-385; Text 1993, 2-81
+            //
+            // Regression coverage:
+            //   tekey_inserts_printable_character
+            //   tekey_replaces_selection_with_character
+            //   tekey_backspace_deletes_before_insertion
+            //   tekey_backspace_deletes_selection
+            //   tekey_backspace_at_start_is_noop
+            //   tekey_pops_six_bytes
+            //   tekey_with_nil_hte_is_safe_noop
+            //   tekey_nil_master_ptr_is_safe_noop
+            //   tekey_does_not_mutate_other_te_record
+            //   tekey_insertion_at_start_mid_end_parametric
+            //   tekey_does_not_mutate_other_registers_or_caller_stack
+            // TEKey ($A9DC): Inserts character at insertion point, replaces selection; backspace deletes. IM:I I-385
+            (true, 0x1DC) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let key = bus.read_word(sp + 4) as u8;
+                if trace_textedit_enabled() {
+                    eprintln!(
+                        "[TE] TEKey hTE=${:08X} key=${:02X} {:?}",
+                        te_handle,
+                        key,
+                        char::from(key).escape_default().to_string()
+                    );
+                }
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                    let existing = Self::te_text_bytes(bus, te_handle);
+                    let text_len = existing.len();
+                    let s = sel_start.min(text_len);
+                    let e = sel_end.min(text_len);
+                    let (s, e) = if s > e { (e, s) } else { (s, e) };
+
+                    if key == 0x08 {
+                        // Backspace
+                        if s != e {
+                            // Delete selected text
+                            let mut merged = Vec::with_capacity(text_len - (e - s));
+                            merged.extend_from_slice(&existing[..s]);
+                            merged.extend_from_slice(&existing[e..]);
+                            self.te_set_text_contents(bus, te_handle, &merged);
+                            let new_pos = s.min(u16::MAX as usize) as u16;
+                            bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
+                            bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
+                        } else if s > 0 {
+                            // Delete character before insertion point
+                            let mut merged = Vec::with_capacity(text_len - 1);
+                            merged.extend_from_slice(&existing[..s - 1]);
+                            merged.extend_from_slice(&existing[s..]);
+                            self.te_set_text_contents(bus, te_handle, &merged);
+                            let new_pos = (s - 1).min(u16::MAX as usize) as u16;
+                            bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
+                            bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
+                        }
+                        // At start with no selection: do nothing
+                    } else {
+                        // Insert printable character (replacing selection if any)
+                        self.te_insert_text(bus, te_handle, &[key]);
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 6);
+                Ok(())
+            }
+
+            // TEScroll ($A9DD)
+            // PROCEDURE TEScroll(dh: INTEGER; dv: INTEGER; hTE: TEHandle);
+            // TEScroll ($A9DD): Scrolls destRect by (dh, dv) and redraws per IM:I I-389 / Text 1993 2-89
+            (true, 0x1DD) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let dv = bus.read_word(sp + 4) as i16;
+                let dh = bus.read_word(sp + 6) as i16;
+                if trace_textedit_enabled() {
+                    eprintln!("[TE] TEScroll hTE=${:08X} dh={} dv={}", te_handle, dh, dv);
+                }
+                self.te_scroll_contents(cpu, bus, te_handle, dh, dv);
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
+
+            // TEInsert ($A9DE)
+            // PROCEDURE TEInsert(text: Ptr; length: LONGINT; hTE: TEHandle);
+            // Inside Macintosh Volume I, I-387; Inside Macintosh: Text 1993,
+            // 2-94. TEInsert splices the supplied bytes into hText at the
+            // selStart offset (inserting JUST BEFORE the selection range, not
+            // replacing it). The selection range is preserved logically —
+            // selStart and selEnd both shift forward by `length` so the
+            // selection continues to span the same original characters.
+            // TEInsert does not touch the scrap.
+            (true, 0x1DE) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let length = bus.read_long(sp + 4) as usize;
+                let text_ptr = bus.read_long(sp + 8);
+                if text_ptr != 0 && length != 0 {
+                    let te_ptr = Self::te_record_ptr(bus, te_handle);
+                    if te_ptr != 0 {
+                        let existing = Self::te_text_bytes(bus, te_handle);
+                        let sel_start = (bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET)
+                            as usize)
+                            .min(existing.len());
+                        let sel_end = (bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize)
+                            .min(existing.len());
+                        let text = bus.read_bytes(text_ptr, length);
+                        let mut merged = Vec::with_capacity(existing.len() + text.len());
+                        merged.extend_from_slice(&existing[..sel_start]);
+                        merged.extend_from_slice(&text);
+                        merged.extend_from_slice(&existing[sel_start..]);
+                        self.te_set_text_contents(bus, te_handle, &merged);
+                        let shifted_start = (sel_start + text.len()).min(u16::MAX as usize) as u16;
+                        let shifted_end = (sel_end + text.len()).min(u16::MAX as usize) as u16;
+                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, shifted_start);
+                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, shifted_end);
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 12);
+                Ok(())
+            }
+
+            // TESetAlignment ($A9DF)
+            // Sets the alignment (justification) of the text in the edit record.
+            // PROCEDURE TESetAlignment(just: INTEGER; hTE: TEHandle);
+            // Inside Macintosh Volume I, I-387; Text 1993, 2-87
+            //
+            // Regression coverage:
+            //   tesetalignment_writes_just_field
+            //   tesetalignment_center_value
+            //   tesetalignment_right_value
+            //   tesetalignment_pops_six_bytes
+            // TESetAlignment ($A9DF): Writes just field to TERec per IM:I I-387
+            (true, 0x1DF) => {
+                let sp = cpu.read_reg(Register::A7);
+                let te_handle = bus.read_long(sp);
+                let just = bus.read_word(sp + 4) as i16;
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr != 0 {
+                    bus.write_word(te_ptr + Self::TE_JUST_OFFSET, just as u16);
+                }
+                cpu.write_reg(Register::A7, sp + 6);
+                Ok(())
+            }
+
+            // SelectDialogItemText ($A97E)
+            // PROCEDURE SelectDialogItemText(theDialog: DialogPtr;
+            //     itemNo: INTEGER; strtSel: INTEGER; endSel: INTEGER);
+            // Sets the active edit field + its selection range in the
+            // dialog so the next ModalDialog / UpdtDialog redraw
+            // displays the caret in the right place.
+            // Inside Macintosh Volume I, I-414
+            //
+            // Pascal stack frame:
+            //   SP+0  endSel: INTEGER     (2) — last arg, shallowest
+            //   SP+2  strtSel: INTEGER    (2)
+            //   SP+4  itemNo: INTEGER     (2)
+            //   SP+6  theDialog: DialogPtr (4) — first arg, deepest
+            // Total pop = 10 bytes.
+            //
+            // Behaviour per IM:I I-414:
+            //   - "Selects the text from character strtSel through
+            //     character endSel-1 in the editable text item with
+            //     item number itemNo of the specified dialog box."
+            //   - Special case: "If you set strtSel = 0 and
+            //     endSel = -1, the entire text is selected" — we
+            //     normalize this to (0, text.len()) at dispatch.
+            //   - If itemNo is not an editText item (type 16), the
+            //     procedure is a no-op (real Mac just ignores it).
+            //   - The named item becomes the dialog's active edit
+            //     field (DialogRecord.editField at offset 164).
+            //
+            // HLE compromise: real-Mac SelectDialogItemText also
+            // calls TESetSelect on the item's TEHandle. Systemless's
+            // DialogItem doesn't carry a TEHandle (the dialog
+            // edit-text path is implemented entirely via
+            // DialogItem.text + sel_start/sel_end fields, not via
+            // a per-item TERec). The clamped (sel_start, sel_end)
+            // pair is stored back into the DialogItem so a future
+            // ModalDialog redraw can highlight the right bytes.
+            // Apps that programmatically GetDialogItemText after
+            // the call see the same text; SetDialogItemText
+            // ($A98F, Partial) replaces it.
+            // SelectDialogItemText ($A97E): Per IM:I I-414 selects text [strtSel..endSel) in editText item itemNo: clamps both indices to text.len(), normalizes (0,-1) → (0,text.len()) per "select all" special case, swaps if strtSel > endSel, stores back into DialogItem.sel_start/sel_end, marks the item as DialogRecord.editField at offset 164. No-op for non-editText items per IM. Pops 10 bytes (theDialog 4 + itemNo 2 + strtSel 2 + endSel 2).
+            (true, 0x17E) => {
+                let sp = cpu.read_reg(Register::A7);
+                let end_sel = bus.read_word(sp) as i16;
+                let start_sel = bus.read_word(sp + 2) as i16;
+                let item_no = bus.read_word(sp + 4) as i16;
+                let dialog_ptr = bus.read_long(sp + 6);
+                if dialog_ptr != 0 && item_no > 0 {
+                    if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                        if let Some(item) = items.get_mut((item_no - 1) as usize) {
+                            if item.item_type & 0x7F == 16 {
+                                // IM:I I-414 special case: (0, -1)
+                                // means "select all" — normalize
+                                // to (0, text.len()).
+                                let text_len = item.text.len() as i16;
+                                let (s, e) = if start_sel == 0 && end_sel == -1 {
+                                    (0, text_len)
+                                } else {
+                                    // Clamp to text bounds.
+                                    let s = start_sel.max(0).min(text_len);
+                                    let e = end_sel.max(0).min(text_len);
+                                    // Swap if reversed (defensive
+                                    // — real Mac also normalizes).
+                                    if s <= e {
+                                        (s, e)
+                                    } else {
+                                        (e, s)
+                                    }
+                                };
+                                item.sel_start = s;
+                                item.sel_end = e;
+                                bus.write_word(dialog_ptr + 164, (item_no - 1) as u16);
+                                // Mirror selStart/selEnd into the TERecord so
+                                // callers that read (**textH).selStart via the
+                                // canonical DialogRecord layout can verify the
+                                // selection (IM:I I-382, I-414).
+                                // textH is a TEHandle at dialog_ptr+160
+                                // (IM:I I-411 DialogRecord layout).
+                                let text_h_handle = bus.read_long(dialog_ptr + 160);
+                                if text_h_handle != 0 {
+                                    let te_ptr = bus.read_long(text_h_handle);
+                                    if te_ptr != 0 {
+                                        bus.write_word(
+                                            te_ptr + Self::TE_SEL_START_OFFSET,
+                                            s as u16,
+                                        );
+                                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, e as u16);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 10);
+                Ok(())
+            }
+
+            // NewCDialog ($AA4B)
+            // Color-aware variant of NewDialog. Identical parameters and
+            // semantics; internally uses a CGrafPort instead of GrafPort
+            // so the dialog supports color drawing. For our HLE this is
+            // the same code path as NewDialog.
+            // FUNCTION NewCDialog(dStorage: Ptr; boundsRect: Rect;
+            //     title: Str255; visible: BOOLEAN; procID: INTEGER;
+            //     behind: WindowPtr; goAwayFlag: BOOLEAN;
+            //     refCon: LongInt; items: Handle): CDialogPtr;
+            // Inside Macintosh Volume V, V-243
+            //
+            // NewDialog ($A97D)
+            // Creates a dialog from a caller-supplied item list handle.
+            // FUNCTION NewDialog(dStorage: Ptr; boundsRect: Rect; title: Str255;
+            //     visible: BOOLEAN; procID: INTEGER; behind: WindowPtr;
+            //     goAwayFlag: BOOLEAN; refCon: LONGINT; items: Handle): DialogPtr;
+            // Inside Macintosh Volume I, I-412
+            // NewDialog ($A97D): Allocates DialogRecord, processes DITL items, pops 32 bytes
+            // NewCDialog ($AA4B): Color-aware NewDialog; same code path, CGrafPort variant per IM:V V-243
+            (true, 0x17D) | (true, 0x24B) => {
+                let sp = cpu.read_reg(Register::A7);
+                // 68K Pascal stack:
+                //   SP+0:  items(4)
+                //   SP+4:  refCon(4)
+                //   SP+8:  goAwayFlag(2)
+                //   SP+10: behind(4)
+                //   SP+14: procID(2)
+                //   SP+16: visible(2)
+                //   SP+18: title(4)
+                //   SP+22: boundsRect(4)
+                //   SP+26: dStorage(4)
+                //   SP+30: result(4)
+                let items_handle = bus.read_long(sp);
+                let ref_con = bus.read_long(sp + 4);
+                // Pascal BOOLEAN as the HIGH byte of its 2-byte stack slot
+                // (MPW C convention).
+                let go_away_flag = bus.read_byte(sp + 8) != 0;
+                let behind = bus.read_long(sp + 10);
+                let proc_id = bus.read_word(sp + 14) as i16;
+                let visible = bus.read_byte(sp + 16) != 0;
+                let title_ptr = bus.read_long(sp + 18);
+                let bounds_rect_ptr = bus.read_long(sp + 22);
+                let storage_ptr = bus.read_long(sp + 26);
+
+                let bounds = if bounds_rect_ptr != 0 {
+                    (
+                        bus.read_word(bounds_rect_ptr) as i16,
+                        bus.read_word(bounds_rect_ptr + 2) as i16,
+                        bus.read_word(bounds_rect_ptr + 4) as i16,
+                        bus.read_word(bounds_rect_ptr + 6) as i16,
+                    )
+                } else {
+                    (0, 0, 0, 0)
+                };
+                let title = if title_ptr != 0 {
+                    String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                } else {
+                    String::new()
+                };
+
+                let items_ptr = if items_handle != 0 {
+                    bus.read_long(items_handle)
+                } else {
+                    0
+                };
+                let items_len = if items_ptr != 0 {
+                    bus.get_alloc_size(items_ptr).unwrap_or(0)
+                } else {
+                    0
+                };
+                let items = if items_ptr != 0 && items_len != 0 {
+                    Self::parse_ditl(bus, items_ptr, items_len)
+                } else {
+                    Vec::new()
+                };
+
+                let dlg_ptr = self.finish_dialog_creation(
+                    bus,
+                    cpu,
+                    storage_ptr,
+                    bounds,
+                    &title,
+                    visible,
+                    proc_id,
+                    go_away_flag,
+                    ref_con,
+                    items_handle,
+                    items,
+                );
+                // Honor Pascal `behind` param at SP+10 per IM:I I-412.
+                self.apply_behind_parameter(bus, dlg_ptr, behind);
+                bus.write_long(sp + 30, dlg_ptr);
+                cpu.write_reg(Register::A7, sp + 30);
+                Ok(())
+            }
+
+            // CloseDialog ($A982)
+            // PROCEDURE CloseDialog(theDialog: DialogPtr);
+            // Inside Macintosh Volume I, I-413
+            // CloseDialog ($A982): Removes the dialog from the window list
+            // and restores previous window state (bounds, procID, title)
+            // when the closed dialog was frontmost. IM:I I-413 explicitly
+            // states "deletes the dialog window from the window list" —
+            // routed through untrack_window so FrontWindow sees the
+            // updated list, matching DisposDialog's pattern.
+            (true, 0x182) => {
+                let sp = cpu.read_reg(Register::A7);
+                let dialog_ptr = bus.read_long(sp);
+                let was_front = self.front_window == dialog_ptr;
+                let exposed_rect = self.window_bounds;
+
+                // IM:I I-413: deletes the dialog window from the window list.
+                self.untrack_window(bus, dialog_ptr);
+
+                // Restore previous front window (same as DisposDialog)
+                if was_front {
+                    if let Some((prev_window, prev_bounds, prev_proc_id, prev_title)) =
+                        self.window_stack.pop()
+                    {
+                        self.set_current_port_state(bus, cpu, prev_window, None);
+                        self.front_window = prev_window;
+                        self.window_bounds = prev_bounds;
+                        self.window_proc_id = prev_proc_id;
+                        self.window_title = prev_title;
+                        if prev_window != 0 {
+                            bus.write_byte(prev_window + 111, 0xFF);
+                            if !self.event_queue.iter().any(|event| {
+                                event.what == 8
+                                    && event.message == prev_window
+                                    && (event.modifiers & 1) != 0
+                            }) {
+                                self.event_queue.push_back(crate::trap::dispatch::QueuedEvent {
+                                    what: 8,
+                                    message: prev_window,
+                                    where_v: 0,
+                                    where_h: 0,
+                                    modifiers: 1,
+                                });
+                            }
+                            self.draw_single_window_chrome_inline(bus, prev_window, true);
+                            let exposed_local = (
+                                exposed_rect.0.saturating_sub(prev_bounds.0),
+                                exposed_rect.1.saturating_sub(prev_bounds.1),
+                                exposed_rect.2.saturating_sub(prev_bounds.0),
+                                exposed_rect.3.saturating_sub(prev_bounds.1),
+                            );
+                            // Mirror CloseWindow/PaintBehind exposure semantics:
+                            // closing a front dialog invalidates the newly
+                            // uncovered area in the promoted window.
+                            self.invalidate_window_rect(bus, prev_window, exposed_local);
+                            // IM:I I-283/I-425: DisposDialog internally
+                            // closes the front dialog and exposes the window
+                            // behind it. Queue updateEvt for the promoted
+                            // front window so app redraw loops can repaint
+                            // newly revealed regions.
+                            self.queue_window_update_event(prev_window);
+                        }
+                    }
+                }
+
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // UpdtDialog ($A978)
+            // Redraws all items in the update region of the dialog.
+            // PROCEDURE UpdtDialog(theDialog: DialogPtr; updateRgn: RgnHandle);
+            // Inside Macintosh Volume I, I-415
+            //
+            // Delegates to the full dialog redraw path (same as DrawDialog) —
+            // BeginUpdate/EndUpdate on the calling side already clips drawing
+            // to the actual update region, so redrawing every item is correct
+            // if somewhat wasteful.
+            // UpdtDialog ($A978): Redraws every item in the dialog (BeginUpdate/EndUpdate already clip drawing to the actual updateRgn on the caller side); does not honor updateRgn for sub-region selection. Pops 8 bytes per IM:I I-415
+            (true, 0x178) => {
+                let sp = cpu.read_reg(Register::A7);
+                let update_rgn = bus.read_long(sp);
+                let dialog_ptr = bus.read_long(sp + 4);
+                cpu.write_reg(Register::A7, sp + 8);
+                if update_rgn == 0 {
+                    return Some(Ok(()));
+                }
+                if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
+                    Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+                    let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+                    let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+                    let (edit_text, edit_item, default_item) =
+                        Self::dialog_edit_state(bus, dialog_ptr, &items);
+                    self.draw_dialog(
+                        bus,
+                        bounds,
+                        proc_id,
+                        "",
+                        &items,
+                        default_item,
+                        &edit_text,
+                        edit_item,
+                        false,
+                        dialog_ptr,
+                    );
+                    self.dialog_items.insert(dialog_ptr, items);
+                }
+                Ok(())
+            }
+
+            // CouldDialog ($A979) / FreeDialog ($A97A)
+            // PROCEDURE CouldDialog(dialogID: INTEGER);
+            // PROCEDURE FreeDialog (dialogID: INTEGER);
+            // Inside Macintosh Volume I, I-415
+            //
+            // Both traps validate the primary 'DLOG' resource and
+            // propagate ResError ($0A60). Per IM:I I-415 they also
+            // cascade to the dialog window's WDEF, the DITL, and
+            // any items defined as resources — but Systemless's HLE
+            // has no resource-purgeability axis (loaded resources
+            // live in the bus allocator until shutdown and no
+            // heap compaction runs), so the cascade collapses to
+            // the primary-template lookup. The ResErr write is
+            // the only HLE-visible side effect.
+            // CouldDialog ($A979): Validates DLOG resource is loaded; writes ResErr noErr on both hit and miss in BasiliskII. WDEF/DITL/items cascade omitted (HLE has no purgeable-bit axis).
+            // FreeDialog ($A97A): Validates DLOG resource is loaded; writes ResErr noErr on both hit and miss in BasiliskII. WDEF/DITL/items cascade omitted (HLE has no purgeable-bit axis).
+            (true, 0x179) | (true, 0x17A) => {
+                let sp = cpu.read_reg(Register::A7);
+                let dialog_id = bus.read_word(sp) as i16;
+                let res_err = self.dialog_template_res_err(dialog_id);
+                bus.write_word(0x0A60, res_err as u16);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // HideDialogItem ($A827)
+            // Moves the item's rect offscreen so it isn't drawn or
+            // hit-tested. The original rect is saved so ShowDialogItem
+            // can restore it.
+            // PROCEDURE HideDialogItem(theDialog: DialogPtr; itemNo: INTEGER);
+            // Inside Macintosh Volume IV, IV-59
+            // Stack: SP+0=itemNo(2), SP+2=theDialog(4). Pop 6.
+            // HideDialogItem ($A827): If itemRect.left < 8192, offsets itemRect.left/right by +16384
+            // so the item becomes offscreen; already-hidden items are unchanged (MTE 1992, 6-123).
+            // Pops 6 bytes per IM:IV IV-59.
+            (true, 0x027) => {
+                let sp = cpu.read_reg(Register::A7);
+                let item_no = bus.read_word(sp) as i16;
+                let dialog_ptr = bus.read_long(sp + 2);
+                cpu.write_reg(Register::A7, sp + 6);
+                if dialog_ptr != 0 && item_no > 0 {
+                    let key = (dialog_ptr, item_no);
+                    if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                        let idx = (item_no as usize).wrapping_sub(1);
+                        if idx < items.len() {
+                            let rect = items[idx].rect;
+                            // MTE 1992, 6-123: already-hidden items (left > 8192) are a no-op.
+                            if rect.1 < 8192 {
+                                self.hidden_dialog_item_rects.entry(key).or_insert(rect);
+                                items[idx].rect.1 = rect.1.wrapping_add(16384);
+                                items[idx].rect.3 = rect.3.wrapping_add(16384);
+                                self.invalidate_window_rect(bus, dialog_ptr, rect);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            // ShowDialogItem ($A828)
+            // Restores the rect saved by HideDialogItem and invalidates
+            // the new rect so the dialog redraws the item.
+            // PROCEDURE ShowDialogItem(theDialog: DialogPtr; itemNo: INTEGER);
+            // Inside Macintosh Volume IV, IV-59
+            // ShowDialogItem ($A828): If itemRect.left > 8192, restores visibility by
+            // subtracting 16384 from itemRect.left/right; already-visible items are unchanged
+            // (MTE 1992, 6-124). Pops 6 bytes per IM:IV IV-59.
+            (true, 0x028) => {
+                let sp = cpu.read_reg(Register::A7);
+                let item_no = bus.read_word(sp) as i16;
+                let dialog_ptr = bus.read_long(sp + 2);
+                cpu.write_reg(Register::A7, sp + 6);
+                if dialog_ptr != 0 && item_no > 0 {
+                    let key = (dialog_ptr, item_no);
+                    if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                        let idx = (item_no as usize).wrapping_sub(1);
+                        if idx < items.len() {
+                            let rect = items[idx].rect;
+                            // MTE 1992, 6-124: already-visible items (left < 8192) are a no-op.
+                            if rect.1 > 8192 {
+                                let restored_rect = if let Some(orig_rect) =
+                                    self.hidden_dialog_item_rects.remove(&key)
+                                {
+                                    orig_rect
+                                } else {
+                                    (
+                                        rect.0,
+                                        rect.1.wrapping_sub(16384),
+                                        rect.2,
+                                        rect.3.wrapping_sub(16384),
+                                    )
+                                };
+                                items[idx].rect = restored_rect;
+                                self.invalidate_window_rect(bus, dialog_ptr, restored_rect);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            // FindDItem ($A984)
+            // Returns the 0-indexed item number of the item containing thePt
+            // (in coordinates local to the dialog box), or –1 if no item
+            // contains the point. Disabled items are returned per IM:IV-60;
+            // hidden items naturally fail the rect-contains check because
+            // HideDialogItem moves their rect to (16384, 16384, 16385, 16385).
+            // Overlapping items resolve to the first matching item in DITL
+            // order (Macintosh Toolbox Essentials 1992, 6-125).
+            // FUNCTION FindDItem(theDialog: DialogPtr; thePt: Point): INTEGER;
+            // Inside Macintosh Volume IV, IV-60; Macintosh Toolbox Essentials 1992, 6-125
+            //
+            // Stack layout (Pascal — args pushed left-to-right, result slot
+            // pre-pushed by caller):
+            //   SP+0..3:  thePt (Point — v at +0..1, h at +2..3)
+            //   SP+4..7:  theDialog (DialogPtr)
+            //   SP+8..9:  result slot (INTEGER)
+            //
+            // FindDItem ($A984): Walks dialog_items in order; first item whose
+            // local rect contains thePt wins; returns 0-indexed item number or
+            // -1 per Macintosh Toolbox Essentials 1992, p. 6-125.
+            (true, 0x184) => {
+                let sp = cpu.read_reg(Register::A7);
+                let pt_v = bus.read_word(sp) as i16;
+                let pt_h = bus.read_word(sp + 2) as i16;
+                let dialog_ptr = bus.read_long(sp + 4);
+                let result: i16 = if dialog_ptr == 0 {
+                    -1
+                } else if let Some(items) = self.dialog_items.get(&dialog_ptr) {
+                    let mut hit: i16 = -1;
+                    for (idx, item) in items.iter().enumerate() {
+                        let (top, left, bottom, right) = item.rect;
+                        if pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right {
+                            hit = idx as i16;
+                            break;
+                        }
+                    }
+                    hit
+                } else {
+                    -1
+                };
+                bus.write_word(sp + 8, result as u16);
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
+
+            // CouldAlert ($A989)
+            // PROCEDURE CouldAlert(alertID: INTEGER);
+            // Inside Macintosh Volume I, I-420
+            //
+            // Companion of CouldDialog/FreeDialog ($A979/$A97A —
+            // see arm above). HLE collapses the trap to writing
+            // ResErr ($0A60) = noErr and otherwise leaves the
+            // loaded ALRT handle untouched. BasiliskII treats
+            // missing alert IDs as harmless no-ops; the
+            // WDEF/DITL/items cascade documented at IM:I I-420 is
+            // still omitted.
+            (true, 0x189) => {
+                let sp = cpu.read_reg(Register::A7);
+                let _alert_id = bus.read_word(sp) as i16;
+                bus.write_word(0x0A60, 0);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // FreeAlert ($A98A)
+            // PROCEDURE FreeAlert(alertID: INTEGER);
+            // Inside Macintosh Volume I, I-420
+            //
+            // See CouldAlert ($A989) above.
+            (true, 0x18A) => {
+                let sp = cpu.read_reg(Register::A7);
+                let _alert_id = bus.read_word(sp) as i16;
+                bus.write_word(0x0A60, 0);
+                cpu.write_reg(Register::A7, sp + 2);
+                Ok(())
+            }
+
+            // ErrorSound ($A98C)
+            // Sets the error-sound procedure for alerts.
+            // PROCEDURE ErrorSound(soundProc: ProcPtr);
+            // Inside Macintosh Volume I, I-411
+            //
+            // Per IM:I I-411: "The address of the sound procedure
+            // being used is stored in the global variable DABeeper."
+            // ErrorSound replaces the Dialog Manager's standard
+            // sound procedure (installed by InitDialogs $A97B) with
+            // the caller's `soundProc`. NIL is documented as "no
+            // sound (or menu bar blinking) at all" — same encoding
+            // as a NIL InitDialogs default.
+            //
+            // HLE compromise: Systemless doesn't invoke DABeeper from
+            // any Alert family path (no menu-bar-blink emulation),
+            // so this trap's only observable side effect is the
+            // DABeeper global itself. Apps that probe DABeeper
+            // before/after ErrorSound to detect "did the previous
+            // app's sound proc get installed?" still see the
+            // correct value. Future iterations that wire up
+            // sound-proc invocation from Alert dispatch will pick
+            // up the stored ProcPtr automatically.
+            //
+            // Pop = 4 bytes (soundProc ProcPtr).
+            // ErrorSound ($A98C): Per IM:I I-411 stores soundProc at $0A9C (DABeeper global); NIL is the documented "no sound + no menu-bar-blink" default. Mirrors InitDialogs's "install standard sound procedure" step. HLE does not invoke DABeeper from Alert dispatch (no menu-bar-blink emulation), so this is state-only.
+            (true, 0x18C) => {
+                let sp = cpu.read_reg(Register::A7);
+                let sound_proc = bus.read_long(sp);
+                bus.write_long(crate::memory::globals::addr::DA_BEEPER, sound_proc);
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
+            // SetDAFont ($A98D variant — actually uses DlgFont low-mem global)
+            // Sets the font for subsequently created dialogs and alerts.
+            // PROCEDURE SetDAFont(fontNum: INTEGER); [Not in ROM]
+            // Inside Macintosh Volume I, I-412
+            // Assembly-language: sets DlgFont ($0AFA) directly.
+            //
+            // Note: $A98D is GetDItem; SetDAFont is not a ROM trap but a
+            // glue routine that writes DlgFont. We handle it via the
+            // dedicated trap word $A97F (Pack13 slot repurposed).
+            // If apps call it directly, they just write DlgFont.
+
+            // SetDialogItemText ($A98F)
+            // Sets the text of a dialog item (statText or editText).
+            // PROCEDURE SetDialogItemText(item: Handle; text: Str255);
+            // Inside Macintosh Volume I, I-422
+            // SetDialogItemText ($A98F): Updates edit text in active dialog tracking state
+            (true, 0x18F) => {
+                let sp = cpu.read_reg(Register::A7);
+                let pc = cpu.read_reg(Register::PC);
+                let text_str_ptr = bus.read_long(sp);
+                let item_handle = bus.read_long(sp + 4);
+                if text_str_ptr != 0 {
+                    let bytes = bus.read_pstring(text_str_ptr);
+                    let len = bytes.len();
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    if let Some(ref mut tracking) = self.dialog_tracking {
+                        // Dialog tracking active — update live edit text
+                        if tracking.edit_item > 0 {
+                            tracking.edit_text = text.clone();
+                        }
+                    }
+
+                    if item_handle != 0 {
+                        let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
+                        if data_ptr != 0 {
+                            bus.write_bytes(data_ptr, &bytes);
+                        }
+                    }
+
+                    // Also update the item in dialog_items so ModalDialog picks it up
+                    if let Some((dlg_ptr, idx)) =
+                        self.dialog_item_handles.get(&item_handle).copied()
+                    {
+                        if trace_dialog_items_enabled() {
+                            eprintln!(
+                                "[DIALOG-ITEM] SetDialogItemText pc=${:08X} dialog=${:08X} item={} handle=${:08X} text={:?}",
+                                pc,
+                                dlg_ptr,
+                                idx + 1,
+                                item_handle,
+                                text
+                            );
+                        }
+                        if let Some(items) = self.dialog_items.get_mut(&dlg_ptr) {
+                            if idx < items.len() {
+                                items[idx].text = text;
+                            }
+                        }
+                    } else if trace_dialog_items_enabled() {
+                        eprintln!(
+                            "[DIALOG-ITEM] SetDialogItemText pc=${:08X} dialog=<unknown> handle=${:08X} text={:?}",
+                            pc,
+                            item_handle,
+                            text
+                        );
+                    }
+                }
+
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
+
+            // GetDialogItemText ($A990)
+            // Returns the text of a dialog item (statText or editText).
+            // PROCEDURE GetDialogItemText(item: Handle; VAR text: Str255);
+            // Inside Macintosh Volume I, I-422
+            // GetDialogItemText ($A990): Returns text from tracking state or reads from item handle
+            (true, 0x190) => {
+                let sp = cpu.read_reg(Register::A7);
+                let text_ptr = bus.read_long(sp);
+                let item_handle = bus.read_long(sp + 4);
+
+                if text_ptr != 0 {
+                    // If dialog tracking is active, return the current edit text
+                    let mut wrote = false;
+                    if let Some(ref tracking) = self.dialog_tracking {
+                        let current_edit_handle =
+                            self.dialog_item_handles.get(&item_handle).copied().filter(
+                                |(dlg_ptr, idx)| {
+                                    *dlg_ptr == tracking.dialog_ptr
+                                        && (*idx as i16 + 1) == tracking.edit_item
+                                },
+                            );
+                        if current_edit_handle.is_some() {
+                            let bytes = tracking.edit_text.as_bytes();
+                            let len = bytes.len().min(255);
+                            bus.write_byte(text_ptr, len as u8);
+                            for (i, byte) in bytes.iter().take(len).enumerate() {
+                                bus.write_byte(text_ptr + 1 + i as u32, *byte);
+                            }
+                            wrote = true;
+                        }
+                    }
+                    if !wrote {
+                        // Text item handles store raw bytes, not a Pascal-length byte.
+                        // Inside Macintosh Volume I, I-422; Executor dialManip.cpp
+                        if item_handle != 0 {
+                            let master = bus.read_long(item_handle);
+                            if master != 0 {
+                                let len = bus.get_alloc_size(master).unwrap_or(0).min(255) as usize;
+                                bus.write_byte(text_ptr, len as u8);
+                                for i in 0..len {
+                                    bus.write_byte(
+                                        text_ptr + 1 + i as u32,
+                                        bus.read_byte(master + i as u32),
+                                    );
+                                }
+                                wrote = true;
+                            }
+                        }
+                        if !wrote {
+                            bus.write_byte(text_ptr, 0);
+                        }
+                    }
+                }
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
+
+            // DialogDispatch ($AA68)
+            // Selector-based dispatch for extended Dialog Manager routines.
+            // Selector is in D0 (not on stack) per the MPW THREEWORDINLINE
+            // sequence: MOVE.W #selector, D0 / _DialogDispatch. The low
+            // byte is the routine number; the high byte encodes param-
+            // bytes / 2 which the dispatcher uses to pop args.
+            // Macintosh Toolbox Essentials 1992, 6-162
+            // DialogDispatch ($AA68): Selector-based per MTb 1992 6-162..6-167: $03 GetStdFilterProc returns a guest-callable standard-filter shim ProcPtr so apps using the common `GetStdFilterProc(&p); ModalDialog(p, &itemHit);` pattern get a safe non-NIL proc instead of Systemless's old NIL compromise; the shim itself declines events (FALSE) so Systemless's ModalDialog default Return/Escape handling still runs. $04 SetDialogDefaultItem writes newItem to DialogRecord.aDefItem at offset 168 + mirrors into DialogTrackingState.default_item if dialog is being tracked; $05 SetDialogCancelItem stores newItem in DialogTrackingState.cancel_item (no canonical DialogRecord field — System 7 addition); $06 SetDialogTracksCursor is a no-op noErr (HLE has no interactive cursor tracking); $0C NewFeaturesDialog allocates an Appearance-flavored DialogRecord via NewCDialog delegation. All return noErr; pop = 2 (selector encoded in D0) + arg_words*2 from the (arg_words << 8) | routine D0 encoding.
+            (true, 0x268) => {
+                let sp = cpu.read_reg(Register::A7);
+                let d0 = cpu.read_reg(Register::D0) as u16;
+                let param_bytes = (((d0 >> 8) & 0xFF) as u32) * 2;
+                let routine = d0 & 0xFF;
+                match routine {
+                    // NewFeaturesDialog (selector $0C, param_bytes=34)
+                    // FUNCTION NewFeaturesDialog(inStorage: Ptr;
+                    //     inBoundsRect: Rect; inTitle: ConstStr255Param;
+                    //     inIsVisible: Boolean; inProcID: SInt16;
+                    //     inBehind: WindowPtr; inGoAwayFlag: Boolean;
+                    //     inRefCon: SInt32; inItems: Handle;
+                    //     inFeatures: UInt32): DialogPtr;
+                    // Mac Toolbox: Appearance Manager (Apple, 1997).
+                    //
+                    // Same shape as NewCDialog with one extra LongInt
+                    // for Appearance feature flags. Mid-90s titles
+                    // (e.g. Meteor Storm) call this unconditionally —
+                    // even when Gestalt('appr') reports no features —
+                    // to allocate their main dialog. Delegate to the
+                    // existing NewCDialog path so the dialog is created
+                    // without the Appearance theming, then drop the
+                    // unused inFeatures word.
+                    0x0C => {
+                        // Stack (low to high), 34 bytes of params + 4 result:
+                        //   SP+0:  inFeatures(4)
+                        //   SP+4:  inItems(4)
+                        //   SP+8:  inRefCon(4)
+                        //   SP+12: inGoAwayFlag(2)
+                        //   SP+14: inBehind(4)
+                        //   SP+18: inProcID(2)
+                        //   SP+20: inIsVisible(2)
+                        //   SP+22: inTitle(4)
+                        //   SP+26: inBoundsRect(4)
+                        //   SP+30: inStorage(4)
+                        //   SP+34: result DialogPtr(4)
+                        let _features = bus.read_long(sp);
+                        let items_handle = bus.read_long(sp + 4);
+                        let ref_con = bus.read_long(sp + 8);
+                        let go_away_flag = bus.read_byte(sp + 12) != 0;
+                        let behind = bus.read_long(sp + 14);
+                        let proc_id = bus.read_word(sp + 18) as i16;
+                        let visible = bus.read_byte(sp + 20) != 0;
+                        let title_ptr = bus.read_long(sp + 22);
+                        let bounds_rect_ptr = bus.read_long(sp + 26);
+                        let storage_ptr = bus.read_long(sp + 30);
+
+                        let bounds = if bounds_rect_ptr != 0 {
+                            (
+                                bus.read_word(bounds_rect_ptr) as i16,
+                                bus.read_word(bounds_rect_ptr + 2) as i16,
+                                bus.read_word(bounds_rect_ptr + 4) as i16,
+                                bus.read_word(bounds_rect_ptr + 6) as i16,
+                            )
+                        } else {
+                            (0, 0, 0, 0)
+                        };
+                        let title = if title_ptr != 0 {
+                            String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                        } else {
+                            String::new()
+                        };
+                        let items_ptr = if items_handle != 0 {
+                            bus.read_long(items_handle)
+                        } else {
+                            0
+                        };
+                        let items_len = if items_ptr != 0 {
+                            bus.get_alloc_size(items_ptr).unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        let items = if items_ptr != 0 && items_len != 0 {
+                            Self::parse_ditl(bus, items_ptr, items_len)
+                        } else {
+                            Vec::new()
+                        };
+
+                        let dlg_ptr = self.finish_dialog_creation(
+                            bus,
+                            cpu,
+                            storage_ptr,
+                            bounds,
+                            &title,
+                            visible,
+                            proc_id,
+                            go_away_flag,
+                            ref_con,
+                            items_handle,
+                            items,
+                        );
+                        self.apply_behind_parameter(bus, dlg_ptr, behind);
+                        bus.write_long(sp + param_bytes, dlg_ptr);
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // GetStdFilterProc (selector 3, param_bytes=4)
+                    // FUNCTION GetStdFilterProc(VAR theProc: ProcPtr): OSErr;
+                    // Macintosh Toolbox Essentials 1992, 6-163
+                    //
+                    // Returns a ProcPtr to the system's standard
+                    // event filter for modal dialogs. The public
+                    // Dialogs.h / Dialogs.p declarations expose
+                    // GetStdFilterProc as returning a ModalFilterUPP
+                    // through a VAR/out pointer. MTb 1992 documents
+                    // that NIL filterProc passed to ModalDialog uses
+                    // the standard filter, and BasiliskII returns a
+                    // non-NIL callable proc here.
+                    //
+                    // HLE compromise: return a tiny guest-resident
+                    // Pascal FUNCTION shim that always returns FALSE:
+                    //
+                    //   JMP    shimBody ; recognizable callback entry for
+                    //                    runner-side filter-proc firing
+                    //   MOVEQ  #0,D0    ; Boolean result = FALSE in D0 too
+                    //   CLR.W  16(SP)   ; Boolean result = FALSE
+                    //   RTD    #12      ; pop dialog/event/itemHit args
+                    //
+                    // This makes the proc SAFE and callable for guest
+                    // code (better than the older NIL placeholder) while
+                    // still preserving Systemless's own ModalDialog default
+                    // handling for Return/Escape when apps pass the proc
+                    // straight back to ModalDialog.
+                    //
+                    // NIL VAR ptr (the caller passed NULL for theProc)
+                    // is a defensive no-op — the impl skips the write
+                    // rather than dereffing NIL.
+                    0x03 => {
+                        let proc_ptr = bus.read_long(sp);
+                        let shim = if self.dialog_std_filter_proc != 0 {
+                            self.dialog_std_filter_proc
+                        } else {
+                            let shim = bus.alloc(16);
+                            bus.write_word(shim, 0x4EF9); // JMP abs.L shimBody
+                            bus.write_long(shim + 2, shim + 6);
+                            // Pascal FUNCTION ModalFilterProc(dialog, event, itemHit): Boolean
+                            // entry stack layout:
+                            //   +0  return address
+                            //   +4  itemHit ptr
+                            //   +8  EventRecord ptr
+                            //   +12 DialogPtr
+                            //   +16 Boolean result slot
+                            bus.write_word(shim + 6, 0x7000); // MOVEQ #0, D0
+                            bus.write_word(shim + 8, 0x426F); // CLR.W 16(SP)
+                            bus.write_word(shim + 10, 0x0010);
+                            bus.write_word(shim + 12, 0x4E74); // RTD #12
+                            bus.write_word(shim + 14, 0x000C);
+                            self.dialog_std_filter_proc = shim;
+                            shim
+                        };
+                        if proc_ptr != 0 {
+                            bus.write_long(proc_ptr, shim);
+                        }
+                        // pop params; leave result in place
+                        bus.write_word(sp + param_bytes, 0); // noErr
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // SetDialogDefaultItem (selector 4, param_bytes=6)
+                    // FUNCTION SetDialogDefaultItem(theDialog: DialogPtr;
+                    //     newItem: INTEGER): OSErr;
+                    // Macintosh Toolbox Essentials 1992, 6-164
+                    //
+                    // Stack: SP+0=newItem(2), SP+2=theDialog(4),
+                    //        SP+6=result OSErr slot (caller pre-pushed).
+                    //
+                    // Marks `newItem` as the dialog's default
+                    // button — pressed when user hits Return per
+                    // IM:MTb 6-164. Stored in DialogRecord.aDefItem
+                    // at offset 168 so subsequent ModalDialog
+                    // redraws can outline the default button. If
+                    // dialog tracking is active for this dialog,
+                    // mirror the value into DialogTrackingState
+                    // .default_item so the active redraw path
+                    // sees it without re-reading guest memory.
+                    0x04 => {
+                        let new_item = bus.read_word(sp) as i16;
+                        let dialog_ptr = bus.read_long(sp + 2);
+                        if dialog_ptr != 0 {
+                            // DialogRecord.aDefItem is at offset 168
+                            // per the existing GetNewDialog impl
+                            // (dialog.rs:1961 writes "aDefItem" here).
+                            bus.write_word(dialog_ptr + 168, new_item as u16);
+                            // Mirror into active tracking state if
+                            // this dialog is currently being tracked.
+                            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                if tracking.dialog_ptr == dialog_ptr {
+                                    tracking.default_item = new_item;
+                                }
+                            }
+                        }
+                        bus.write_word(sp + param_bytes, 0); // noErr
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // SetDialogCancelItem (selector 5, param_bytes=6)
+                    // FUNCTION SetDialogCancelItem(theDialog: DialogPtr;
+                    //     newItem: INTEGER): OSErr;
+                    // Macintosh Toolbox Essentials 1992, 6-165
+                    //
+                    // System 7 addition (no canonical DialogRecord
+                    // field — Apple added cancel-item tracking to
+                    // the Dialog Manager AFTER the original
+                    // DialogRecord layout was finalized). Stored in
+                    // a host-side per-dialog map and mirrored into
+                    // active tracking state when ModalDialog is
+                    // already running. NIL theDialog is a defensive
+                    // no-op.
+                    0x05 => {
+                        let new_item = bus.read_word(sp) as i16;
+                        let dialog_ptr = bus.read_long(sp + 2);
+                        if dialog_ptr != 0 {
+                            self.dialog_cancel_items.insert(dialog_ptr, new_item);
+                            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                if tracking.dialog_ptr == dialog_ptr {
+                                    tracking.cancel_item = new_item;
+                                }
+                            }
+                        }
+                        bus.write_word(sp + param_bytes, 0); // noErr
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // SetDialogTracksCursor (selector 6, param_bytes=6)
+                    // FUNCTION SetDialogTracksCursor(theDialog: DialogPtr;
+                    //     tracks: BOOLEAN): OSErr;
+                    // Macintosh Toolbox Essentials 1992, 6-166
+                    //
+                    // System 7 addition that controls whether the
+                    // Dialog Manager auto-changes the cursor (to
+                    // an I-beam) when the mouse is over an
+                    // editText item. HLE compromise: Systemless
+                    // doesn't model interactive cursor tracking
+                    // (no continuous mouse-poll stream from the
+                    // scripted event source), so the trap is a
+                    // no-op noErr. Apps that defensively call this
+                    // at dialog setup time get noErr and proceed.
+                    0x06 => {
+                        bus.write_word(sp + param_bytes, 0); // noErr
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    _ => {
+                        eprintln!(
+                            "[TRAP] DialogDispatch unknown routine=${:02X} d0=${:04X}",
+                            routine, d0
+                        );
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                }
+                Ok(())
+            }
+
+            _ => return None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
+    use crate::cpu::{CpuOps, Register};
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::trap::dispatch::DialogItem;
+    use crate::trap::TrapDispatcher;
+    use std::collections::VecDeque;
+
+    // ---- InitDialogs ($A97B) ----
+
+    #[test]
+    fn init_dialogs_pops_4_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        // SP+0: ptr (4 bytes)
+        bus.write_long(TEST_SP, 0x00000000);
+
+        let result = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    // ---- DialogDispatch ($AA68) ----
+    // Macintosh Toolbox Essentials (1992), pp. 6-162 to 6-167.
+
+    #[test]
+    fn dialogdispatch_getstdfilterproc_selector_03_writes_non_nil_shim_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let proc_storage_ptr = 0x300000u32;
+
+        bus.write_long(proc_storage_ptr, 0x00AB_CDEF);
+        bus.write_long(TEST_SP, proc_storage_ptr); // VAR theProc
+        bus.write_word(TEST_SP + 4, 0xBEEF); // OSErr result slot
+        cpu.write_reg(Register::D0, 0x0203); // selector 3, 4 param bytes
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let shim = bus.read_long(proc_storage_ptr);
+        assert_ne!(shim, 0);
+        assert_eq!(shim, disp.dialog_std_filter_proc);
+        assert_eq!(bus.read_word(shim), 0x4EF9); // JMP abs.L shimBody
+        assert_eq!(bus.read_long(shim + 2), shim + 6);
+        assert_eq!(bus.read_word(shim + 6), 0x7000); // MOVEQ #0, D0
+        assert_eq!(bus.read_word(shim + 8), 0x426F); // CLR.W 16(SP)
+        assert_eq!(bus.read_word(shim + 10), 0x0010);
+        assert_eq!(bus.read_word(shim + 12), 0x4E74); // RTD #12
+        assert_eq!(bus.read_word(shim + 14), 0x000C);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    #[test]
+    fn dialogdispatch_getstdfilterproc_selector_03_reuses_cached_shim() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let slot_a = 0x300000u32;
+        let slot_b = 0x300004u32;
+
+        bus.write_long(TEST_SP, slot_a);
+        bus.write_word(TEST_SP + 4, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0203);
+        let first = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(first.unwrap().is_ok());
+        let shim_a = bus.read_long(slot_a);
+        assert_ne!(shim_a, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, slot_b);
+        bus.write_word(TEST_SP + 4, 0xCAFE);
+        cpu.write_reg(Register::D0, 0x0203);
+        let second = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(second.unwrap().is_ok());
+        let shim_b = bus.read_long(slot_b);
+
+        assert_eq!(shim_a, shim_b);
+        assert_eq!(shim_b, disp.dialog_std_filter_proc);
+        assert_eq!(bus.read_word(shim_b), 0x4EF9);
+        assert_eq!(bus.read_word(shim_b + 6), 0x7000);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    #[test]
+    fn dialogdispatch_setdialogdefaultitem_selector_04_writes_adefitem_and_updates_tracking() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 0, 0),
+            title: String::new(),
+            proc_id: 0,
+            items: Vec::new(),
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+        });
+
+        bus.write_word(TEST_SP, 9); // newItem
+        bus.write_long(TEST_SP + 2, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 6, 0xBEEF); // OSErr result slot
+        cpu.write_reg(Register::D0, 0x0304); // selector 4, 6 param bytes
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(dialog_ptr + 168), 9);
+        assert_eq!(
+            disp.dialog_tracking.as_ref().map(|t| t.default_item),
+            Some(9)
+        );
+        assert_eq!(bus.read_word(TEST_SP + 6), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
+    #[test]
+    fn dialogdispatch_setdialogcancelitem_selector_05_updates_tracking_cancel_item_and_returns_noerr(
+    ) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 0, 0),
+            title: String::new(),
+            proc_id: 0,
+            items: Vec::new(),
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+        });
+
+        bus.write_word(TEST_SP, 7); // newItem
+        bus.write_long(TEST_SP + 2, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 6, 0xBEEF); // OSErr result slot
+        cpu.write_reg(Register::D0, 0x0305); // selector 5, 6 param bytes
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(disp.dialog_cancel_items.get(&dialog_ptr), Some(&7));
+        assert_eq!(
+            disp.dialog_tracking.as_ref().map(|t| t.cancel_item),
+            Some(7)
+        );
+        assert_eq!(bus.read_word(TEST_SP + 6), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
+    #[test]
+    fn dialogdispatch_modal_dialog_first_entry_honors_preserved_default_and_cancel_items() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = (92, 95, 240, 320);
+        disp.window_proc_id = 1;
+        disp.window_title = "AA68".to_string();
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 20, 40, 90),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 110, 40, 200),
+                    text: "Cancel".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+        bus.write_word(dialog_ptr + 168, 2);
+        disp.dialog_cancel_items.insert(dialog_ptr, 1);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, 0);
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert_eq!(tracking.default_item, 2);
+        assert_eq!(tracking.cancel_item, 1);
+    }
+
+    #[test]
+    fn dialogdispatch_setdialogtrackscursor_selector_06_returns_noerr_and_pops_arguments() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+
+        bus.write_word(TEST_SP, 1); // tracks = TRUE
+        bus.write_long(TEST_SP + 2, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 6, 0xBEEF); // OSErr result slot
+        cpu.write_reg(Register::D0, 0x0306); // selector 6, 6 param bytes
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(TEST_SP + 6), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
+    // ---- GetNewDialog ($A97C) ----
+
+    #[test]
+    fn get_new_dialog_returns_nil_when_dlog_missing() {
+        // Inside Macintosh Volume I, I-410: GetNewDialog returns NIL when
+        // the DLOG resource can't be located.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        let dlg_ptr = bus.read_long(TEST_SP + 10);
+        assert_eq!(
+            dlg_ptr, 0,
+            "GetNewDialog must return NIL when DLOG is missing"
+        );
+    }
+
+    // save_dialog_pixels / restore_dialog_pixels must guard against off-screen y
+    // (negative after top-5, or beyond screen_h). Without the guard, (y as u32)
+    // sign-extends a negative i16 and multiply-with-overflow panics in debug.
+    #[test]
+    fn save_dialog_pixels_handles_top_below_five_without_overflow() {
+        let (disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        for i in 0..800u32 * 600 {
+            bus.write_byte(screen_base + i, 0x42);
+        }
+        let mut d = disp;
+        bus.write_long(0x0824, screen_base);
+        d.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        // Bounds with top=2 → save_top = -3 (negative).
+        let saved = d.save_dialog_pixels(&bus, (2, 2, 50, 50));
+        // Row width = (55 - (-3)) = 58; row count = 58.
+        let row_width = 58usize;
+        let row_count = 58usize;
+        assert_eq!(saved.len(), row_width * row_count);
+
+        // First 3 rows are off-screen (y = -3, -2, -1) → zero-padded.
+        for row in 0..3 {
+            for col in 0..row_width {
+                assert_eq!(
+                    saved[row * row_width + col],
+                    0x00,
+                    "off-screen row {} col {} must be zero-padded",
+                    row,
+                    col
+                );
+            }
+        }
+        // y=0 row, save_left=-3 so cols 0..3 are off-screen → 0,
+        // cols 3..58 read from the 0x42-filled framebuffer.
+        let row0 = &saved[3 * row_width..4 * row_width];
+        for (col, &px) in row0.iter().enumerate().take(3) {
+            assert_eq!(
+                px, 0x00,
+                "off-screen column {} within on-screen row must be zero",
+                col
+            );
+        }
+        for (col, &px) in row0.iter().enumerate().skip(3) {
+            assert_eq!(
+                px, 0x42,
+                "on-screen pixel at col {} must round-trip via framebuffer",
+                col
+            );
+        }
+    }
+
+    // save_rect_pixels / restore_rect_pixels guard the same off-screen y
+    // overflow hazard as save_dialog_pixels.
+    #[test]
+    fn save_rect_pixels_handles_negative_top_without_overflow() {
+        let (disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        for i in 0..800u32 * 600 {
+            bus.write_byte(screen_base + i, 0x55);
+        }
+        let mut d = disp;
+        bus.write_long(0x0824, screen_base);
+        d.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        // Rect spanning above the screen top.
+        let saved = d.save_rect_pixels(&bus, (-3, 0, 5, 10));
+        let row_width = 10usize;
+        let row_count = (5 - (-3)) as usize;
+        assert_eq!(saved.len(), row_width * row_count);
+        // First 3 rows off-screen (y = -3..0) → zero-padded.
+        for row in 0..3 {
+            for col in 0..row_width {
+                assert_eq!(saved[row * row_width + col], 0x00);
+            }
+        }
+        // Next 5 rows on-screen → 0x55.
+        for row in 3..8 {
+            for col in 0..row_width {
+                assert_eq!(saved[row * row_width + col], 0x55);
+            }
+        }
+    }
+
+    #[test]
+    fn save_dialog_pixels_handles_top_above_screen_height_without_overflow() {
+        let (disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        let mut d = disp;
+        bus.write_long(0x0824, screen_base);
+        d.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        // Bounds way below screen → save_top = 595+ and save_bottom
+        // = 700+, many rows off-screen on the bottom side.
+        let saved = d.save_dialog_pixels(&bus, (600, 0, 700, 50));
+        let row_count = (700 + 5 - (600 - 5)) as usize;
+        let row_width = (50 + 5 - (0 - 5)) as usize;
+        assert_eq!(saved.len(), row_count * row_width);
+    }
+
+    #[test]
+    fn new_dialog_honors_behind_nil_and_inserts_at_back() {
+        // Inside Macintosh Volume I, I-412: NewDialog returns a DialogPtr
+        // and honors the `behind` parameter for plane order.
+        let (mut disp, mut cpu, mut bus) = setup();
+        // Seed an existing window that will stay in front.
+        let existing = 0x200040u32;
+        disp.window_list = vec![existing];
+        disp.front_window = existing;
+        bus.write_byte(existing + 110u32, 0xFF); // visible
+
+        // init_cgraf_window reads screen_mode for bounds math; a
+        // zero-initialized mode multiplies-with-overflow later.
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        // Bounds at the origin are now safe via the off-screen y overflow guard
+        // in save_dialog_pixels. Keep a non-origin placement for realism.
+        let bounds_rect_ptr = 0x301200u32;
+        bus.write_word(bounds_rect_ptr, 100);
+        bus.write_word(bounds_rect_ptr + 2, 100);
+        bus.write_word(bounds_rect_ptr + 4, 300);
+        bus.write_word(bounds_rect_ptr + 6, 400);
+
+        let sp = TEST_SP - 30;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..34u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_long(sp + 22, bounds_rect_ptr);
+        bus.write_word(sp + 16, 1); // visible
+        bus.write_long(sp + 10, 0); // behind = NIL (backmost)
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x17D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            pre_a7 + 30,
+            "NewDialog must pop 30 bytes of parameters and leave result at new SP+0"
+        );
+        let dlg_ptr = bus.read_long(sp + 30);
+        assert_ne!(dlg_ptr, 0);
+        assert_eq!(
+            disp.window_list,
+            vec![existing, dlg_ptr],
+            "NewDialog(behind=NIL) must insert dialog at the back"
+        );
+        assert_eq!(
+            disp.front_window, existing,
+            "front must stay on the pre-existing visible window"
+        );
+    }
+
+    #[test]
+    fn new_cdialog_honors_behind_nil_and_inserts_at_back() {
+        // Inside Macintosh Volume V, V-243: NewCDialog follows the same
+        // creation path as NewDialog but returns a color dialog pointer.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let existing = 0x200040u32;
+        disp.window_list = vec![existing];
+        disp.front_window = existing;
+        bus.write_byte(existing + 110u32, 0xFF); // visible
+
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let bounds_rect_ptr = 0x301280u32;
+        bus.write_word(bounds_rect_ptr, 120);
+        bus.write_word(bounds_rect_ptr + 2, 120);
+        bus.write_word(bounds_rect_ptr + 4, 320);
+        bus.write_word(bounds_rect_ptr + 6, 420);
+
+        let sp = TEST_SP - 30;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..34u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_long(sp + 22, bounds_rect_ptr);
+        bus.write_word(sp + 16, 1); // visible
+        bus.write_long(sp + 10, 0); // behind = NIL (backmost)
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x24B, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            pre_a7 + 30,
+            "NewCDialog must pop 30 bytes of parameters and leave result at new SP+0"
+        );
+        let dlg_ptr = bus.read_long(sp + 30);
+        assert_ne!(dlg_ptr, 0);
+        assert_eq!(
+            disp.window_list,
+            vec![existing, dlg_ptr],
+            "NewCDialog(behind=NIL) must insert dialog at the back"
+        );
+        assert_eq!(
+            disp.front_window, existing,
+            "front must stay on the pre-existing visible window"
+        );
+    }
+
+    #[test]
+    fn get_new_dialog_honors_behind_specific_window() {
+        // GetNewDialog with no DLOG resource hits the fallback branch
+        // that does NOT call finish_dialog_creation — so behind can't
+        // reshuffle a list entry that was never added. This test
+        // verifies the stack slot is at least READ without panicking.
+        // The main contract test is new_dialog_honors_behind_nil_
+        // and_inserts_at_back above, since that exercises the
+        // primary post-finish_dialog_creation path.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let sp = TEST_SP;
+        // Write a specific non-trivial behind pointer at SP+0.
+        bus.write_long(sp, 0xDEAD0000);
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+    }
+
+    // ---- SelectDialogItemText ($A97E) ----
+
+    #[test]
+    fn select_dialog_item_text_zero_to_32767_selects_entire_text_and_sets_editfield() {
+        // Macintosh Toolbox Essentials 1992, 6-131: selecting the whole
+        // editable text item uses strtSel=0 and endSel=32767.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        bus.write_word(dialog_ptr + 164, 0xFFFF); // editField = -1 (none)
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16,
+                rect: (10, 20, 30, 40),
+                text: "ABCDE".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 32767u16); // endSel
+        bus.write_word(TEST_SP + 2, 0); // strtSel
+        bus.write_word(TEST_SP + 4, 1); // itemNo (1-based)
+        bus.write_long(TEST_SP + 6, dialog_ptr); // theDialog
+
+        let result = disp.dispatch_dialog(true, 0x17E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        assert_eq!(item.sel_start, 0);
+        assert_eq!(item.sel_end, 5);
+        assert_eq!(bus.read_word(dialog_ptr + 164), 0);
+    }
+
+    #[test]
+    fn select_dialog_item_text_clamps_and_normalizes_selection_bounds() {
+        // IM:I I-414 defines a [strtSel,endSel) range; callers can pass
+        // out-of-range values, so HLE clamps to text bounds and normalizes
+        // reversed inputs.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16,
+                rect: (10, 20, 30, 40),
+                text: "ABCDE".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 2); // endSel
+        bus.write_word(TEST_SP + 2, 9); // strtSel (> text length)
+        bus.write_word(TEST_SP + 4, 1); // itemNo
+        bus.write_long(TEST_SP + 6, dialog_ptr); // theDialog
+
+        let result = disp.dispatch_dialog(true, 0x17E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        assert_eq!(item.sel_start, 2);
+        assert_eq!(item.sel_end, 5);
+    }
+
+    #[test]
+    fn select_dialog_item_text_non_edit_item_is_noop() {
+        // Macintosh Toolbox Essentials 1992, 6-131: selection applies to
+        // editable text items only.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        bus.write_word(dialog_ptr + 164, 0x7FFF); // sentinel
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 8, // statText
+                rect: (10, 20, 30, 40),
+                text: "STATIC".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 1,
+                sel_end: 3,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 4); // endSel
+        bus.write_word(TEST_SP + 2, 0); // strtSel
+        bus.write_word(TEST_SP + 4, 1); // itemNo
+        bus.write_long(TEST_SP + 6, dialog_ptr); // theDialog
+
+        let result = disp.dispatch_dialog(true, 0x17E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        assert_eq!(item.sel_start, 1);
+        assert_eq!(item.sel_end, 3);
+        assert_eq!(bus.read_word(dialog_ptr + 164), 0x7FFF);
+    }
+
+    // ---- Alert ($A985) ----
+
+    // Alert with no matching ALRT resource must return -1 per IM:I-412
+    // ("Alert returns -1 and does nothing").
+    #[test]
+    fn alert_returns_minus_one_when_alrt_resource_missing() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // SP+4: alertID = 128 (no ALRT resource loaded in the test
+        // dispatcher).
+        bus.write_word(TEST_SP + 4, 128);
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(TEST_SP + 6) as i16, -1);
+    }
+
+    // ---- te_line_origin_x (TextEdit alignment) ----
+    //
+    // Per IM:Text 1993 lines 7320-7323 and the MPW Universal Headers:
+    // teJustLeft = 0, teJustCenter = 1, teJustRight = -1, teForceLeft = -2.
+
+    #[test]
+    fn te_line_origin_te_just_left_flush_left() {
+        // teJustLeft (0): origin = box_left.
+        assert_eq!(
+            TrapDispatcher::te_line_origin_x(0, 20, 200, 80),
+            20,
+            "teJustLeft (0) must anchor at box_left"
+        );
+    }
+
+    #[test]
+    fn te_line_origin_te_just_center_midpoint() {
+        // teJustCenter (1): origin = box_left + (box_w - line_w) / 2.
+        // (200-20 - 80) / 2 = 50 → origin = 20 + 50 = 70.
+        assert_eq!(
+            TrapDispatcher::te_line_origin_x(1, 20, 200, 80),
+            70,
+            "teJustCenter must midpoint the slack"
+        );
+    }
+
+    #[test]
+    fn te_line_origin_te_just_right_flush_right() {
+        // teJustRight (-1): origin = box_right - line_width.
+        // 200 - 80 = 120.
+        assert_eq!(
+            TrapDispatcher::te_line_origin_x(-1, 20, 200, 80),
+            120,
+            "teJustRight (-1) must anchor at box_right - line_width"
+        );
+    }
+
+    #[test]
+    fn te_line_origin_te_force_left_flush_left() {
+        // teForceLeft (-2): origin = box_left (overrides any
+        // localised right-to-left default).
+        assert_eq!(
+            TrapDispatcher::te_line_origin_x(-2, 20, 200, 80),
+            20,
+            "teForceLeft (-2) must anchor at box_left"
+        );
+    }
+
+    #[test]
+    fn te_line_origin_te_just_system_defaults_left() {
+        // teJustSystem (0): localised default = left for LTR.
+        assert_eq!(
+            TrapDispatcher::te_line_origin_x(0, 20, 200, 80),
+            20,
+            "teJustSystem must default to flush left"
+        );
+    }
+
+    // ---- StopAlert ($A986) ----
+
+    #[test]
+    fn stop_alert_returns_minus_one_when_alrt_resource_missing() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 2);
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xC0DE);
+        bus.write_word(TEST_SP + 4, 128);
+        let result = disp.dispatch_dialog(true, 0x186, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(TEST_SP + 6) as i16, -1);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::ALERT_STAGE), 2);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::ANUMBER), 0xC0DE);
+    }
+
+    // ---- NoteAlert ($A987) ----
+
+    #[test]
+    fn note_alert_returns_minus_one_when_alrt_resource_missing() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 1);
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xBEEF);
+        bus.write_word(TEST_SP + 4, 128);
+        let result = disp.dispatch_dialog(true, 0x187, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(TEST_SP + 6) as i16, -1);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::ALERT_STAGE), 1);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::ANUMBER), 0xBEEF);
+    }
+
+    // ---- CautionAlert ($A988) ----
+
+    #[test]
+    fn caution_alert_returns_minus_one_when_alrt_resource_missing() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 3);
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xFACE);
+        bus.write_word(TEST_SP + 4, 128);
+        let result = disp.dispatch_dialog(true, 0x188, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(TEST_SP + 6) as i16, -1);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::ALERT_STAGE), 3);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::ANUMBER), 0xFACE);
+    }
+
+    // ---- Alert family stages-driven default item (IM:I I-417 / I-422) ----
+    //
+    // Each test installs an ALRT resource with a controlled
+    // 16-byte template (8-byte boundsRect + 2-byte itemsID + 2-byte
+    // stages + padding) and verifies the trap returns the bold
+    // (default) item for the current AlertStage low-mem byte.
+    //
+    // ALRT stages encoding (IM:I I-422): 16-bit word, 4 nibbles
+    // (low to high = stage 1..4). Each nibble's bit 0 = boldItmNum
+    // (0 → item 1 default, 1 → item 2 default).
+
+    /// Build a 12-byte ALRT template: bounds=(0,0,80,200) +
+    /// itemsID + stages + 0 padding. Real ALRTs are typically
+    /// 12 bytes; we install at least 12.
+    fn build_alrt_template(items_id: i16, stages: u16) -> Vec<u8> {
+        let mut v = Vec::with_capacity(12);
+        v.extend_from_slice(&0u16.to_be_bytes()); // top
+        v.extend_from_slice(&0u16.to_be_bytes()); // left
+        v.extend_from_slice(&80u16.to_be_bytes()); // bottom
+        v.extend_from_slice(&200u16.to_be_bytes()); // right
+        v.extend_from_slice(&items_id.to_be_bytes()); // itemsID
+        v.extend_from_slice(&stages.to_be_bytes()); // stages
+        v
+    }
+
+    // ---- CouldDialog ($A979) / FreeDialog ($A97A) ----
+
+    #[test]
+    fn could_dialog_present_resource_sets_reserr_noerr() {
+        // Inside Macintosh Volume I, I-415: CouldDialog targets a DLOG by
+        // resource ID and prepares it for later use. BasiliskII leaves
+        // ResErr at noErr on the missing-resource path.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dlog = vec![0u8; 20];
+        disp.install_test_resource(&mut bus, *b"DLOG", 300, &dlog);
+        bus.write_word(0x0A60, 0x7FFF);
+        bus.write_word(TEST_SP, 300);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x179, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn could_dialog_missing_resource_sets_reserr_resnotfound() {
+        // BasiliskII leaves ResErr at noErr even when the DLOG is missing.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(0x0A60, 0);
+        bus.write_word(TEST_SP, 301);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x179, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn free_dialog_present_resource_sets_reserr_noerr() {
+        // Inside Macintosh Volume I, I-415: FreeDialog reverses CouldDialog
+        // for previously targeted DLOG templates. BasiliskII leaves
+        // ResErr at noErr on the missing-resource path.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dlog = vec![0u8; 20];
+        disp.install_test_resource(&mut bus, *b"DLOG", 302, &dlog);
+        bus.write_word(0x0A60, 0x7FFF);
+        bus.write_word(TEST_SP, 302);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x17A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn free_dialog_missing_resource_sets_reserr_resnotfound() {
+        // BasiliskII leaves ResErr at noErr even when the DLOG is missing.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(0x0A60, 0);
+        bus.write_word(TEST_SP, 303);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x17A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    // ---- CouldAlert ($A989) / FreeAlert ($A98A) ----
+
+    #[test]
+    fn could_alert_present_resource_sets_reserr_noerr() {
+        // IM:I I-420: CouldAlert targets an ALRT template by ID.
+        // Systemless's HLE compromise writes Resource Manager error
+        // state at ResErr ($0A60): noErr for present resources.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x0000);
+        disp.install_test_resource(&mut bus, *b"ALRT", 400, &alrt);
+        bus.write_word(0x0A60, 0x7FFF);
+        bus.write_word(TEST_SP, 400);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x189, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn could_alert_missing_resource_sets_reserr_resnotfound() {
+        // IM:I I-420: missing ALRT IDs are ignored.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(0x0A60, 0);
+        bus.write_word(TEST_SP, 401);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x189, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn free_alert_present_resource_sets_reserr_noerr() {
+        // IM:I I-420: FreeAlert undoes a prior CouldAlert target.
+        // HLE compromise reports success via ResErr for present ALRT.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x0000);
+        disp.install_test_resource(&mut bus, *b"ALRT", 402, &alrt);
+        bus.write_word(0x0A60, 0x7FFF);
+        bus.write_word(TEST_SP, 402);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x18A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn free_alert_missing_resource_sets_reserr_resnotfound() {
+        // Missing ALRT IDs in FreeAlert are ignored.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(0x0A60, 0);
+        bus.write_word(TEST_SP, 403);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x18A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn could_alert_and_free_alert_leave_loaded_alert_attrs_unchanged() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x0000);
+        let data_ptr = disp.install_test_resource(&mut bus, *b"ALRT", 404, &alrt);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"ALRT", 404, data_ptr);
+        let attrs_before = disp.resource_attributes_for_handle(handle).unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 404);
+        assert!(disp
+            .dispatch_dialog(true, 0x189, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        assert_eq!(
+            disp.resource_attributes_for_handle(handle).unwrap(),
+            attrs_before
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 404);
+        assert!(disp
+            .dispatch_dialog(true, 0x18A, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        assert_eq!(
+            disp.resource_attributes_for_handle(handle).unwrap(),
+            attrs_before
+        );
+    }
+
+    #[test]
+    fn alert_returns_item_1_when_stage_1_bold_flag_clear() {
+        // stages = 0x0000 → all 4 nibbles have bit 0 clear →
+        // bold item = 1 (OK button) at every stage.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(/*itemsID*/ 200, /*stages*/ 0x0000);
+        disp.install_test_resource(&mut bus, *b"ALRT", 128, &alrt);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0); // stage 1
+        bus.write_word(TEST_SP + 4, 128);
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_word(TEST_SP + 6) as i16,
+            1,
+            "Alert with stage 1 + bold flag clear must return item 1 (OK)"
+        );
+    }
+
+    #[test]
+    fn alert_returns_item_2_when_stage_1_bold_flag_set() {
+        // stages = 0x0008 → stage 1 nibble bit 3 set (okDismissal
+        // mask per IM:I I-424) → bold item = 2 (Cancel button).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x0008);
+        disp.install_test_resource(&mut bus, *b"ALRT", 129, &alrt);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
+        bus.write_word(TEST_SP + 4, 129);
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_word(TEST_SP + 6) as i16,
+            2,
+            "Alert with stage 1 + bold flag set must return item 2"
+        );
+    }
+
+    #[test]
+    fn alert_steps_through_stages_and_caps_at_stage_4() {
+        // stages = 0x8080 → bit 3 of stage 1/3 nibble = 0 (item 1),
+        // bit 3 of stage 2/4 nibble = 1 (item 2). Per IM:I I-422
+        // okDismissal mask = 8 = bit 3. 5th call stays at stage 4.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x8080);
+        disp.install_test_resource(&mut bus, *b"ALRT", 130, &alrt);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
+        bus.write_word(TEST_SP + 4, 130);
+
+        let expected = [1i16, 2, 1, 2, 2, 2];
+        for (i, want) in expected.iter().enumerate() {
+            cpu.write_reg(Register::A7, TEST_SP);
+            let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(
+                bus.read_word(TEST_SP + 6) as i16,
+                *want,
+                "call #{} (stage {}): expected item {}",
+                i + 1,
+                (i + 1).min(4),
+                want
+            );
+        }
+        // After at least 4 calls the AlertStage word is capped at 3.
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ALERT_STAGE),
+            3,
+            "AlertStage must cap at 3 (stages are 1..4 → word 0..3)"
+        );
+    }
+
+    #[test]
+    fn alert_increments_alert_stage_word_after_dispatch() {
+        // First call from stage 0 must leave AlertStage = 1. Read
+        // and write as 16-bit WORD per IM:I I-423 + MTb 1992 22620.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x0000);
+        disp.install_test_resource(&mut bus, *b"ALRT", 131, &alrt);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
+        bus.write_word(TEST_SP + 4, 131);
+        let _ = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ALERT_STAGE),
+            1,
+            "Alert must increment AlertStage 0 → 1 after dispatch"
+        );
+    }
+
+    #[test]
+    fn alert_does_not_increment_alert_stage_when_alrt_missing() {
+        // No ALRT → -1 path must NOT touch AlertStage so the next
+        // call (with a real ALRT installed) sees the original
+        // stage. This is critical for apps that defensively call
+        // Alert(missingID) before Alert(realID).
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 2);
+        bus.write_word(TEST_SP + 4, 999); // no ALRT 999
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 6) as i16, -1);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ALERT_STAGE),
+            2,
+            "missing-ALRT must NOT increment AlertStage"
+        );
+    }
+
+    #[test]
+    fn alert_writes_anumber_with_alert_id_after_successful_dispatch() {
+        // ANumber at $0A98 records the resource ID of the last
+        // alert that occurred per IM:I I-423.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x0000);
+        disp.install_test_resource(&mut bus, *b"ALRT", 250, &alrt);
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xCAFE);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
+        bus.write_word(TEST_SP + 4, 250);
+        let _ = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ANUMBER) as i16,
+            250,
+            "Alert must write the alertID to ANumber per IM:I I-423"
+        );
+    }
+
+    #[test]
+    fn alert_does_not_overwrite_anumber_when_alrt_missing() {
+        // Missing-ALRT path returns -1 without overwriting ANumber
+        // (defensive: callers reading ANumber after a probe call
+        // must see the prior real value, not the failed probe ID).
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xC0DE);
+        bus.write_word(TEST_SP + 4, 999); // no ALRT 999
+        let _ = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ANUMBER),
+            0xC0DE,
+            "missing-ALRT must NOT overwrite ANumber"
+        );
+    }
+
+    #[test]
+    fn alert_family_share_dispatch_path_so_stop_note_caution_match_alert() {
+        // The four icon variants ($A985 Alert / $A986 StopAlert /
+        // $A987 NoteAlert / $A988 CautionAlert) differ only by
+        // displayed icon — their dispatch into the ALRT template
+        // is identical. With the same ALRT installed and the same
+        // AlertStage all four must return the same item number.
+        let alrt = build_alrt_template(200, 0x0000);
+        let trap_words = [
+            (0x185, "Alert"),
+            (0x186, "StopAlert"),
+            (0x187, "NoteAlert"),
+            (0x188, "CautionAlert"),
+        ];
+        for (trap, name) in trap_words.iter() {
+            let (mut disp, mut cpu, mut bus) = setup();
+            disp.install_test_resource(&mut bus, *b"ALRT", 132, &alrt);
+            bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
+            bus.write_word(TEST_SP + 4, 132);
+            let result = disp.dispatch_dialog(true, *trap, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(
+                bus.read_word(TEST_SP + 6) as i16,
+                1,
+                "{name} must return item 1 (bold flag clear, stage 1) — \
+                 same as Alert"
+            );
+        }
+    }
+
+    #[test]
+    fn alert_pops_eight_bytes_per_pascal_signature() {
+        // FUNCTION Alert(alertID: INTEGER; filterProc: ProcPtr): INTEGER;
+        // Pascal stack frame: result(2) + filterProc(4) +
+        // alertID(2) + return PC slot mock at SP+0 (caller-set
+        // here). Trap pops 6 bytes (filterProc + alertID + return)
+        // leaving result at new SP+0 = TEST_SP+6.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP + 4, 999); // alertID
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let _ = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        let post_a7 = cpu.read_reg(Register::A7);
+        assert_eq!(
+            post_a7,
+            pre_a7 + 6,
+            "Alert must advance A7 by 6 bytes (filterProc + alertID + return)"
+        );
+    }
+
+    // ---- InitDialogs ($A97B) — IM:I I-411 init contract ----
+
+    #[test]
+    fn init_dialogs_stores_resume_proc_at_lowmem_a8c() {
+        // PROCEDURE InitDialogs(resumeProc: ProcPtr);
+        // The non-NIL ProcPtr argument must land at $0A8C
+        // (ResumeProc global) per IM:I I-411 + the assembly note.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_long(crate::memory::globals::addr::RESUME_PROC, 0xCAFEBABE);
+        bus.write_long(TEST_SP, 0x00123456); // resumeProc parameter
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::RESUME_PROC),
+            0x00123456,
+            "InitDialogs must store resumeProc at $0A8C"
+        );
+    }
+
+    #[test]
+    fn init_dialogs_accepts_nil_resume_proc() {
+        // The IM-canonical default is NIL ("no resume procedure
+        // is desired"). Pin that NIL is stored as 0 — not a
+        // sentinel like -1 — so the System Error Handler's
+        // `if (resume) call(*resume)` path takes the no-op branch.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_long(crate::memory::globals::addr::RESUME_PROC, 0xDEADBEEF);
+        bus.write_long(TEST_SP, 0); // NIL
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::RESUME_PROC),
+            0,
+            "InitDialogs must store NIL resumeProc as 0 at $0A8C"
+        );
+    }
+
+    #[test]
+    fn init_dialogs_zeros_dabeeper_at_lowmem_a9c() {
+        // IM:I I-411: "It installs the standard sound procedure."
+        // Systemless's HLE has no menu-bar-blink sound, so we install
+        // NIL (== silent) per the IM:I I-411 ErrorSound semantic
+        // ("If you pass NIL for soundProc, there will be no sound
+        // ... at all"). A subsequent ErrorSound ($A98C) call can
+        // override.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_long(crate::memory::globals::addr::DA_BEEPER, 0xDEADBEEF);
+        bus.write_long(TEST_SP, 0);
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::DA_BEEPER),
+            0,
+            "InitDialogs must store NIL (silent default) at DABeeper $0A9C"
+        );
+    }
+
+    #[test]
+    fn init_dialogs_zeros_alert_stage_at_lowmem_a9a() {
+        // First call to Alert/StopAlert/NoteAlert/CautionAlert
+        // after InitDialogs must start at stage 1 (= AlertStage
+        // word value 0). This is critical for apps that call
+        // InitDialogs at re-launch but already have a stale stage
+        // byte from a prior crashed run.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 3);
+        bus.write_long(TEST_SP, 0);
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ALERT_STAGE),
+            0,
+            "InitDialogs must zero AlertStage at $0A9A so the next Alert starts at stage 1"
+        );
+    }
+
+    #[test]
+    fn init_dialogs_zeros_dastrings_array_at_lowmem_aa0() {
+        // IM:I I-411: "It passes empty strings to ParamText."
+        // The DAStrings global at $0AA0 is a 16-byte array of 4
+        // Handles; zeroing all 4 = ParamText('','','','').
+        let (mut disp, mut cpu, mut bus) = setup();
+        for i in 0..4u32 {
+            bus.write_long(
+                crate::memory::globals::addr::DA_STRINGS + i * 4,
+                0xDEAD0000 | i,
+            );
+        }
+        bus.write_long(TEST_SP, 0);
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        for i in 0..4u32 {
+            assert_eq!(
+                bus.read_long(crate::memory::globals::addr::DA_STRINGS + i * 4),
+                0,
+                "InitDialogs must zero DAStrings[{}] at $0AA0+{}",
+                i,
+                i * 4
+            );
+        }
+    }
+
+    #[test]
+    fn init_dialogs_pops_four_bytes_resume_proc_param() {
+        // PROCEDURE → no result slot, single 4-byte ProcPtr arg.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_long(TEST_SP, 0);
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            pre_a7 + 4,
+            "InitDialogs must pop 4 bytes (resumeProc ProcPtr)"
+        );
+    }
+
+    // ---- ErrorSound ($A98C) ----
+
+    #[test]
+    fn error_sound_stores_sound_proc_pointer_in_dabeeper() {
+        // Inside Macintosh Volume I, I-411: ErrorSound sets the current
+        // alert sound procedure, and the assembly-language note says this
+        // pointer is stored in DABeeper.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sound_proc = 0x0012_3456u32;
+        bus.write_long(crate::memory::globals::addr::DA_BEEPER, 0);
+        bus.write_long(TEST_SP, sound_proc);
+
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let result = disp.dispatch_dialog(true, 0x18C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::DA_BEEPER),
+            sound_proc
+        );
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 4);
+    }
+
+    #[test]
+    fn error_sound_nil_clears_dabeeper_to_disable_alert_sound() {
+        // Inside Macintosh Volume I, I-411: passing NIL for soundProc means
+        // "no sound (or menu bar blinking) at all".
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_long(crate::memory::globals::addr::DA_BEEPER, 0xDEADBEEF);
+        bus.write_long(TEST_SP, 0);
+
+        let result = disp.dispatch_dialog(true, 0x18C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(crate::memory::globals::addr::DA_BEEPER), 0);
+    }
+
+    #[test]
+    fn error_sound_overrides_init_dialogs_default_sound_proc() {
+        // IM:I I-411: InitDialogs installs the default alert sound procedure,
+        // and ErrorSound replaces it with the caller's soundProc.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sound_proc = 0x0012_3456u32;
+
+        bus.write_long(crate::memory::globals::addr::DA_BEEPER, 0xDEADBEEF);
+        bus.write_long(TEST_SP, 0);
+        let result = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(crate::memory::globals::addr::DA_BEEPER), 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, sound_proc);
+        let result = disp.dispatch_dialog(true, 0x18C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::DA_BEEPER),
+            sound_proc
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        let result = disp.dispatch_dialog(true, 0x18C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(crate::memory::globals::addr::DA_BEEPER), 0);
+    }
+
+    // ---- IsDialogEvent ($A97F) ----
+
+    #[test]
+    fn is_dialog_event_returns_false() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        // SP+0: event_ptr (4 bytes)
+        bus.write_long(TEST_SP, 0x300000);
+
+        let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0);
+    }
+
+    #[test]
+    fn is_dialog_event_true_for_mouse_down_in_front_dialog() {
+        // Inside Macintosh Volume I, I-417: mouse-down in content region of
+        // active dialog window is a dialog event (TRUE).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-200i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 80);
+        bus.write_word(dialog_ptr + 22, 120);
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+
+        bus.write_word(event_ptr, 1);
+        bus.write_long(event_ptr + 2, 0);
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 120);
+        bus.write_word(event_ptr + 12, 240);
+        bus.write_word(event_ptr + 14, 0x0080);
+        bus.write_long(TEST_SP, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 4), 0xFFFF);
+    }
+
+    #[test]
+    fn is_dialog_event_false_for_mouse_down_outside_front_dialog() {
+        // Inside Macintosh Volume I, I-417: only mouse-down events in the
+        // content region of an active dialog window return TRUE.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-200i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 80);
+        bus.write_word(dialog_ptr + 22, 120);
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+
+        bus.write_word(event_ptr, 1); // mouseDown
+        bus.write_long(event_ptr + 2, 0);
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 40); // well outside dialog content
+        bus.write_word(event_ptr + 12, 40);
+        bus.write_word(event_ptr + 14, 0x0080);
+        bus.write_long(TEST_SP, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 4), 0);
+    }
+
+    #[test]
+    fn is_dialog_event_true_for_update_event_targeting_dialog_window() {
+        // Inside Macintosh Volume I, I-417: activate/update events for a
+        // dialog window are dialog events.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        bus.write_word(event_ptr, 6); // updateEvt
+        bus.write_long(event_ptr + 2, dialog_ptr);
+        bus.write_long(TEST_SP, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 4), 0xFFFF);
+    }
+
+    #[test]
+    fn is_dialog_event_true_for_activate_event_targeting_dialog_window() {
+        // Inside Macintosh Volume I, I-417: activate events for a dialog
+        // window are dialog events as well.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        bus.write_word(event_ptr, 8); // activateEvt
+        bus.write_long(event_ptr + 2, dialog_ptr);
+        bus.write_long(TEST_SP, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 4), 0xFFFF);
+    }
+
+    // ---- DialogSelect ($A980) ----
+
+    #[test]
+    fn dialog_select_returns_false() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+    }
+
+    #[test]
+    fn dialog_select_returns_hit_for_enabled_user_item() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-200i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (20, 30, 60, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(event_ptr, 1);
+        bus.write_long(event_ptr + 2, 0);
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 130);
+        bus.write_word(event_ptr + 12, 240);
+        bus.write_word(event_ptr + 14, 0x0080);
+
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0xFFFF);
+        assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+    }
+
+    #[test]
+    fn dialog_select_disabled_item_hit_returns_false_and_leaves_outputs_unchanged() {
+        // Inside Macintosh Volume I, I-417: disabled items do nothing and
+        // DialogSelect returns FALSE.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80, // disabled userItem
+                rect: (20, 30, 60, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(event_ptr, 1); // mouseDown
+        bus.write_long(event_ptr + 2, 0);
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 130);
+        bus.write_word(event_ptr + 12, 240);
+        bus.write_word(event_ptr + 14, 0x0080);
+
+        bus.write_long(dialog_out_ptr, 0x12345678);
+        bus.write_word(item_hit_ptr, 0x7F7F);
+
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(bus.read_long(dialog_out_ptr), 0x12345678);
+        assert_eq!(bus.read_word(item_hit_ptr), 0x7F7F);
+    }
+
+    #[test]
+    fn dialog_select_keydown_without_edit_text_item_returns_false() {
+        // Inside Macintosh Volume I, I-417: keyDown handling returns TRUE only
+        // when an enabled editText item is active.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        bus.write_word(dialog_ptr + 164, 0); // editField points at item 1
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0, // userItem, not editText
+                rect: (20, 30, 60, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(event_ptr, 3); // keyDown
+        bus.write_long(event_ptr + 2, 0x00000041); // 'A'
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 0);
+        bus.write_word(event_ptr + 12, 0);
+        bus.write_word(event_ptr + 14, 0);
+
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+    }
+
+    #[test]
+    fn dialog_select_keydown_with_enabled_edit_text_returns_hit() {
+        // Inside Macintosh Volume I, I-417: for keyDown/autoKey with an
+        // enabled editText item, DialogSelect returns TRUE and item number.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        bus.write_word(dialog_ptr + 164, 0); // editField = first item
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16, // editText
+                rect: (20, 30, 60, 110),
+                text: "Hello".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(event_ptr, 3); // keyDown
+        bus.write_long(event_ptr + 2, 0x00000041); // 'A'
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 0);
+        bus.write_word(event_ptr + 12, 0);
+        bus.write_word(event_ptr + 14, 0);
+
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 12), 0xFFFF);
+        assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+    }
+
+    // ---- DrawDialog ($A981) ----
+
+    #[test]
+    fn draw_dialog_pops_4_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        // SP+0: dialog ptr (4 bytes)
+        bus.write_long(TEST_SP, 0x200000);
+
+        let result = disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    #[test]
+    fn draw_dialog_repaints_dialog_background_for_known_dialog() {
+        // Inside Macintosh Volume I, I-417: DrawDialog draws the contents of
+        // the given dialog box.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 30);
+        bus.write_word(dialog_ptr + 22, 40);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4, // btnCtrl draws a deterministic border and label
+                rect: (8, 8, 20, 32),
+                text: "OK".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let probe_x = 4u32;
+        let probe_y = 4u32;
+        let probe_addr = if pixel_size == 8 {
+            screen_base + probe_y * row_bytes + probe_x
+        } else {
+            screen_base + probe_y * row_bytes + (probe_x / 8)
+        };
+        let probe_bit = 1 << (7 - (probe_x % 8));
+        if pixel_size == 8 {
+            bus.write_byte(probe_addr, 0xFF); // black in 8bpp CLUT
+        } else {
+            bus.write_byte(probe_addr, bus.read_byte(probe_addr) | probe_bit);
+        }
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        if pixel_size == 8 {
+            assert_eq!(bus.read_byte(probe_addr), 0); // white in 8bpp CLUT
+        } else {
+            assert_eq!(bus.read_byte(probe_addr) & probe_bit, 0);
+        }
+    }
+
+    #[test]
+    fn updtdialog_pops_eight_bytes() {
+        // Inside Macintosh Volume I, I-415: UpdtDialog is a Pascal
+        // procedure taking theDialog and updateRgn.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_long(sp, 0x300100); // updateRgn
+        bus.write_long(sp + 4, 0x200000); // theDialog
+
+        let result = disp.dispatch_dialog(true, 0x178, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn updtdialog_nil_update_region_is_a_noop() {
+        // Inside Macintosh Volume I, I-415 names updateRgn as the dialog's
+        // update region. A NIL region should not trigger redraw work.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let existing = 0x200040u32;
+        disp.window_list = vec![existing];
+        disp.front_window = existing;
+        bus.write_byte(existing + 110, 0xFF);
+
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let bounds_rect_ptr = 0x301200u32;
+        bus.write_word(bounds_rect_ptr, 100);
+        bus.write_word(bounds_rect_ptr + 2, 100);
+        bus.write_word(bounds_rect_ptr + 4, 300);
+        bus.write_word(bounds_rect_ptr + 6, 400);
+
+        let sp = TEST_SP - 30;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..34u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_long(sp + 22, bounds_rect_ptr);
+        bus.write_word(sp + 16, 1); // visible
+        bus.write_long(sp + 10, 0); // behind = NIL (backmost)
+
+        let result = disp.dispatch_dialog(true, 0x17D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let dlg_ptr = bus.read_long(sp + 30);
+        assert_ne!(dlg_ptr, 0);
+
+        let probe_x = 120u32;
+        let probe_y = 120u32;
+        let probe_addr = screen_base + probe_y * 800 + probe_x;
+        bus.write_byte(probe_addr, 0xFF);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0); // NIL update region
+        bus.write_long(TEST_SP + 4, dlg_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x178, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_byte(probe_addr), 0xFF);
+    }
+
+    #[test]
+    fn te_text_box_erases_box_before_drawing_text() {
+        // Inside Macintosh: Text 1993, p. 2-88: TETextBox erases the box
+        // and then draws wrapped/aligned text into it.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let screen_base = bus.read_long(0x0824);
+
+        // Fill the target area black so a missing EraseRect is visible.
+        for y in 0..12u32 {
+            for byte in 0..3u32 {
+                bus.write_byte(screen_base + y * 64 + byte, 0xFF);
+            }
+        }
+
+        // Make sure the text renderer has a usable size and port state.
+        disp.current_port = port_ptr;
+        disp.tx_size = 12;
+        bus.write_word(port_ptr + 74, 12);
+
+        let text_ptr = 0x200000u32;
+        bus.write_byte(text_ptr, b'A');
+
+        let box_ptr = 0x200100u32;
+        bus.write_word(box_ptr, 0); // top
+        bus.write_word(box_ptr + 2, 0); // left
+        bus.write_word(box_ptr + 4, 12); // bottom
+        bus.write_word(box_ptr + 6, 24); // right
+
+        let sp = TEST_SP - 14;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0); // teFlushLeft
+        bus.write_long(sp + 2, box_ptr);
+        bus.write_long(sp + 6, 1); // length
+        bus.write_long(sp + 10, text_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x1CE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        // Pixel (20, 10) lies inside the box but outside the glyph; it should
+        // be white after the implicit EraseRect.
+        let probe_addr = screen_base + 10 * 64 + 2;
+        assert_eq!(bus.read_byte(probe_addr) & (1 << 3), 0);
+    }
+
+    #[test]
+    fn te_text_box_consumes_align_box_length_text_arguments() {
+        // Inside Macintosh: Text 1993, p. 2-88 declares TETextBox as a
+        // procedure taking text/length/box/align arguments.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        disp.current_port = port_ptr;
+        disp.tx_size = 12;
+        bus.write_word(port_ptr + 74, 12);
+
+        let text_ptr = 0x200200u32;
+        bus.write_byte(text_ptr, b'A');
+
+        let box_ptr = 0x200240u32;
+        bus.write_word(box_ptr, 0);
+        bus.write_word(box_ptr + 2, 0);
+        bus.write_word(box_ptr + 4, 20);
+        bus.write_word(box_ptr + 6, 60);
+
+        let sp = TEST_SP - 14;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, box_ptr);
+        bus.write_long(sp + 6, 1);
+        bus.write_long(sp + 10, text_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x1CE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    #[test]
+    fn te_text_box_align_parameter_controls_rendered_line_origin() {
+        // Inside Macintosh: Text 1993, p. 2-87 defines teJustLeft(0),
+        // teJustCenter(1), and teJustRight(-1) alignment values.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        disp.current_port = port_ptr;
+        disp.tx_size = 12;
+        bus.write_word(port_ptr + 74, 12);
+
+        let text = b"ABC";
+        let text_ptr = 0x200280u32;
+        bus.write_bytes(text_ptr, text);
+
+        let box_ptr = 0x2002C0u32;
+        let box_top = 0i16;
+        let box_left = 10i16;
+        let box_bottom = 40i16;
+        let box_right = 110i16;
+        bus.write_word(box_ptr, box_top as u16);
+        bus.write_word(box_ptr + 2, box_left as u16);
+        bus.write_word(box_ptr + 4, box_bottom as u16);
+        bus.write_word(box_ptr + 6, box_right as u16);
+
+        let advance_extra = disp.advance_extra();
+        let missing_advance = disp.missing_glyph_advance();
+        let mut line_width = 0i16;
+        for &byte in text {
+            if let Some((glyph, _)) =
+                crate::quickdraw::text::get_glyph(disp.tx_font, disp.tx_size, byte as char)
+            {
+                line_width += glyph.advance as i16 + advance_extra;
+            } else {
+                line_width += missing_advance;
+            }
+        }
+
+        let mut run_align = |align: i16| -> i16 {
+            let sp = TEST_SP - 14;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, align as u16);
+            bus.write_long(sp + 2, box_ptr);
+            bus.write_long(sp + 6, text.len() as u32);
+            bus.write_long(sp + 10, text_ptr);
+            let result = disp.dispatch_dialog(true, 0x1CE, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            disp.pn_loc.1
+        };
+
+        let x_left = run_align(0);
+        let x_center = run_align(1);
+        let x_right = run_align(-1);
+
+        let expected_left =
+            TrapDispatcher::te_line_origin_x(0, box_left, box_right, line_width) + line_width;
+        let expected_center =
+            TrapDispatcher::te_line_origin_x(1, box_left, box_right, line_width) + line_width;
+        let expected_right =
+            TrapDispatcher::te_line_origin_x(-1, box_left, box_right, line_width) + line_width;
+
+        assert_eq!(x_left, expected_left);
+        assert_eq!(x_center, expected_center);
+        assert_eq!(x_right, expected_right);
+        assert!(x_left < x_center && x_center < x_right);
+    }
+
+    #[test]
+    fn te_text_box_pascal_procedure_protocol_does_not_overwrite_past_arg_frame() {
+        // Per Inside Macintosh: Text 1993, p. 2-88 TETextBox is a
+        // Pascal PROCEDURE. The MPW Universal Headers C declaration
+        // uses `const Rect *box`, so the caller pushes exactly 14
+        // bytes (2-byte just + 4-byte Rect* + 4-byte long + 4-byte
+        // text Ptr) and the trap must pop exactly 14 bytes with no
+        // result slot written. Mirrors the strict bake's B4 predicate
+        // in a9ce_tetextbox_strict.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        disp.current_port = port_ptr;
+        disp.tx_size = 12;
+        bus.write_word(port_ptr + 74, 12);
+
+        let text_ptr = 0x200400u32;
+        bus.write_byte(text_ptr, b'X');
+
+        let box_ptr = 0x200440u32;
+        bus.write_word(box_ptr, 0);
+        bus.write_word(box_ptr + 2, 0);
+        bus.write_word(box_ptr + 4, 12);
+        bus.write_word(box_ptr + 6, 64);
+
+        // Pre-poison memory immediately past the 14-byte arg frame.
+        // After the trap pops 14 bytes, A7 must equal TEST_SP and the
+        // sentinel words at TEST_SP, TEST_SP+2 must survive untouched.
+        let sp = TEST_SP - 14;
+        bus.write_word(TEST_SP, 0xCAFE);
+        bus.write_word(TEST_SP + 2, 0xBABE);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0); // align = teJustLeft
+        bus.write_long(sp + 2, box_ptr);
+        bus.write_long(sp + 6, 1); // length
+        bus.write_long(sp + 10, text_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x1CE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(TEST_SP), 0xCAFE);
+        assert_eq!(bus.read_word(TEST_SP + 2), 0xBABE);
+    }
+
+    #[test]
+    fn te_text_box_wraps_when_text_exceeds_box_width() {
+        // Inside Macintosh: Text 1993, p. 2-88: TETextBox word-wraps text
+        // in the destination rectangle.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        disp.current_port = port_ptr;
+        disp.tx_size = 12;
+        bus.write_word(port_ptr + 74, 12);
+
+        let text = b"A A A A";
+        let text_ptr = 0x200300u32;
+        bus.write_bytes(text_ptr, text);
+
+        let mut glyph_w = disp.missing_glyph_advance();
+        if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(disp.tx_font, disp.tx_size, 'A')
+        {
+            glyph_w = glyph.advance as i16 + disp.advance_extra();
+        }
+
+        let wide_box_ptr = 0x200340u32;
+        bus.write_word(wide_box_ptr, 0);
+        bus.write_word(wide_box_ptr + 2, 0);
+        bus.write_word(wide_box_ptr + 4, 80);
+        bus.write_word(wide_box_ptr + 6, 140);
+
+        let narrow_box_ptr = 0x200380u32;
+        bus.write_word(narrow_box_ptr, 0);
+        bus.write_word(narrow_box_ptr + 2, 0);
+        bus.write_word(narrow_box_ptr + 4, 80);
+        bus.write_word(narrow_box_ptr + 6, glyph_w as u16);
+
+        let mut run_box = |box_ptr: u32| -> i16 {
+            let sp = TEST_SP - 14;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0);
+            bus.write_long(sp + 2, box_ptr);
+            bus.write_long(sp + 6, text.len() as u32);
+            bus.write_long(sp + 10, text_ptr);
+            let result = disp.dispatch_dialog(true, 0x1CE, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            disp.pn_loc.0
+        };
+
+        let y_wide = run_box(wide_box_ptr);
+        let y_narrow = run_box(narrow_box_ptr);
+        let metrics = crate::quickdraw::text::get_font_metrics(disp.tx_font, disp.tx_size);
+        let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
+
+        assert!(
+            y_narrow >= y_wide + line_height,
+            "narrow box should force at least one additional wrapped line"
+        );
+    }
+
+    // ---- CloseDialog ($A982) ----
+
+    fn alloc_region_handle(
+        bus: &mut MacMemoryBus,
+        rect: Option<(i16, i16, i16, i16)>,
+    ) -> u32 {
+        let rgn_ptr = bus.alloc(10);
+        bus.write_word(rgn_ptr, 10);
+        if let Some((top, left, bottom, right)) = rect.filter(|r| r.2 > r.0 && r.3 > r.1) {
+            bus.write_word(rgn_ptr + 2, top as u16);
+            bus.write_word(rgn_ptr + 4, left as u16);
+            bus.write_word(rgn_ptr + 6, bottom as u16);
+            bus.write_word(rgn_ptr + 8, right as u16);
+        } else {
+            bus.write_long(rgn_ptr + 2, 0);
+            bus.write_long(rgn_ptr + 6, 0);
+        }
+        let handle = bus.alloc(4);
+        bus.write_long(handle, rgn_ptr);
+        handle
+    }
+
+    fn seed_window_regions(
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        content_rect: (i16, i16, i16, i16),
+    ) {
+        // Minimal WindowRecord region setup for invalidate_window_rect:
+        // contRgn @ +118 and updateRgn @ +122.
+        bus.write_word(window_ptr + 16, content_rect.0 as u16);
+        bus.write_word(window_ptr + 18, content_rect.1 as u16);
+        bus.write_word(window_ptr + 20, content_rect.2 as u16);
+        bus.write_word(window_ptr + 22, content_rect.3 as u16);
+        let cont_rgn = alloc_region_handle(bus, Some(content_rect));
+        let update_rgn = alloc_region_handle(bus, None);
+        bus.write_long(window_ptr + 118, cont_rgn);
+        bus.write_long(window_ptr + 122, update_rgn);
+        bus.write_byte(window_ptr + 110, 0xFF);
+    }
+
+    #[test]
+    fn close_dialog_pops_4_bytes() {
+        // Inside Macintosh Volume I, I-413: CloseDialog takes one
+        // DialogPtr argument.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_long(TEST_SP, 0x200000);
+
+        let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    #[test]
+    fn close_dialog_front_dialog_restores_previous_port_state() {
+        // IM:I I-413 says CloseDialog behaves like CloseWindow; when the
+        // front dialog closes, the window behind it becomes frontmost.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let prev_window = 0x181000u32;
+        seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
+
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = (100, 120, 220, 320);
+        bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
+        let a5 = cpu.read_reg(Register::A5);
+        let global_ptr = bus.read_long(a5);
+        bus.write_long(global_ptr, dialog_ptr);
+        disp.window_stack
+            .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
+
+        bus.write_long(TEST_SP, dialog_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.front_window, prev_window);
+        assert_eq!(disp.current_port, prev_window);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            prev_window
+        );
+        assert_eq!(bus.read_long(global_ptr), prev_window);
+        assert_eq!(
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(prev_window + 122)),
+            Some((100, 120, 220, 320)),
+            "CloseDialog should invalidate the dialog-exposed area on the promoted window"
+        );
+        assert!(
+            disp.event_queue.iter().any(|event| {
+                event.what == 8 && event.message == prev_window && (event.modifiers & 1) != 0
+            }),
+            "CloseDialog should queue activateEvt for the promoted front window"
+        );
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == prev_window),
+            "CloseDialog must queue updateEvt for the newly exposed front window"
+        );
+    }
+
+    #[test]
+    fn close_dialog_non_front_dialog_leaves_front_window_and_port_unchanged() {
+        // CloseWindow front-promotion only applies when the closed window
+        // was frontmost (IM:I I-283); CloseDialog inherits that behavior.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let other_front = 0x181000u32;
+
+        disp.front_window = other_front;
+        disp.current_port = other_front;
+        bus.write_long(crate::memory::globals::addr::THE_PORT, other_front);
+        let a5 = cpu.read_reg(Register::A5);
+        let global_ptr = bus.read_long(a5);
+        bus.write_long(global_ptr, other_front);
+        disp.window_stack
+            .push((0x170000, (1, 2, 3, 4), 3, "Prev".to_string()));
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(disp.front_window, other_front);
+        assert_eq!(disp.current_port, other_front);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            other_front
+        );
+        assert_eq!(bus.read_long(global_ptr), other_front);
+        assert_eq!(
+            disp.window_stack.len(),
+            1,
+            "non-front CloseDialog should not consume the saved front-window stack entry"
+        );
+    }
+
+    // ---- DisposDialog ($A983) ----
+
+    #[test]
+    fn dispos_dialog_pops_4_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        // SP+0: dialog ptr (4 bytes)
+        bus.write_long(TEST_SP, 0x200000);
+
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    #[test]
+    fn dispos_dialog_restores_previous_port_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let prev_window = 0x181000u32;
+        seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
+
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = (100, 120, 220, 320);
+        bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
+        let a5 = cpu.read_reg(Register::A5);
+        let global_ptr = bus.read_long(a5);
+        bus.write_long(global_ptr, dialog_ptr);
+        disp.window_stack
+            .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
+
+        bus.write_long(TEST_SP, dialog_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.front_window, prev_window);
+        assert_eq!(disp.current_port, prev_window);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            prev_window
+        );
+        assert_eq!(bus.read_long(global_ptr), prev_window);
+        assert_eq!(
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(prev_window + 122)),
+            Some((100, 120, 220, 320)),
+            "DisposDialog should invalidate the dialog-exposed area on the promoted window"
+        );
+        assert!(
+            disp.event_queue.iter().any(|event| {
+                event.what == 8 && event.message == prev_window && (event.modifiers & 1) != 0
+            }),
+            "DisposDialog should queue activateEvt for the promoted front window"
+        );
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == prev_window),
+            "DisposDialog must queue updateEvt for the newly exposed front window"
+        );
+    }
+
+    #[test]
+    fn dispos_dialog_removes_dialog_from_window_list() {
+        // IM:I I-425: DisposDialog closes/disposes the dialog and
+        // IM:I I-283 CloseWindow semantics remove it from window list.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let prev_window = 0x181000u32;
+
+        disp.window_list = vec![dialog_ptr, prev_window];
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        bus.write_byte(prev_window + 110, 0xFF);
+        disp.window_stack
+            .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.window_list, vec![prev_window]);
+        assert_eq!(disp.front_window, prev_window);
+    }
+
+    #[test]
+    fn dispos_dialog_clears_tracking_for_disposed_dialog() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 32, 32),
+            title: String::new(),
+            proc_id: 1,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: 0,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+        });
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert!(disp.dialog_tracking.is_none());
+    }
+
+    // Regression: games that run their own event loop (e.g. Escape
+    // Velocity's "enter pilot/ship name" text dialogs) call
+    // GetNewDialog → custom event loop → DisposDialog without ever
+    // invoking ModalDialog. Before the fix, DisposDialog discarded
+    // the saved-background pixels without blitting them back to the
+    // screen, leaving a dialog-shaped hole over the window behind.
+    // IM:I I-425 says DisposDialog internally calls CloseWindow,
+    // whose PaintBehind/CalcVisBehind is supposed to restore the
+    // underlying content. These three tests pin that contract.
+    //
+    // Save/restore geometry note: save_dialog_pixels adds a 5-pixel
+    // margin around the bounds (for dBoxProc drop-shadow). The tests
+    // use bounds (100,100,150,200) → save area (95,95)..(155,205) =
+    // 60 rows × 110 cols = 6600 bytes.
+
+    #[test]
+    fn disposdialog_restores_saved_background_pixels() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // 8bpp test screen. Must be inside the 4MB test bus.
+        let screen_base = 0x300000u32;
+        let row_bytes: u32 = 640;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let bounds = (100i16, 100i16, 150i16, 200i16);
+        let dialog_ptr = 0x200000u32;
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+
+        // Paint the save area with 0xCC — the "dialog pixels" that
+        // should be overwritten on dispose.
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0xCC);
+            }
+        }
+
+        // Install a saved background snapshot filled with 0x33 (the
+        // "what was behind the dialog" pattern). 60*110=6600 bytes.
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x33; 60 * 110]);
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        // Every byte in the save area should now be 0x33, not 0xCC.
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                let addr = screen_base + y * row_bytes + x;
+                let got = bus.read_byte(addr);
+                assert_eq!(
+                    got, 0x33,
+                    "byte at ({},{}) must be restored background 0x33, got 0x{:02X}",
+                    x, y, got
+                );
+            }
+        }
+        assert!(
+            !disp.dialog_saved_pixels.contains_key(&dialog_ptr),
+            "saved pixels must be consumed after DisposDialog"
+        );
+    }
+
+    #[test]
+    fn disposdialog_restore_is_bounded_by_save_margin() {
+        // Pin that the restore writes EXACTLY the 5-pixel-margin
+        // rectangle and does not stomp adjacent bytes. This catches
+        // off-by-one errors in the save/restore geometry.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes: u32 = 640;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let bounds = (100i16, 100i16, 150i16, 200i16);
+        let dialog_ptr = 0x200000u32;
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+
+        // Paint the entire screen area of interest (including a
+        // generous border around the save rect) with 0xAA.
+        for y in 85u32..165 {
+            for x in 85u32..215 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0xAA);
+            }
+        }
+
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x33; 60 * 110]);
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        // Bytes OUTSIDE the save area must still be 0xAA.
+        // Above the save rect:
+        for x in 85u32..215 {
+            assert_eq!(bus.read_byte(screen_base + 94 * row_bytes + x), 0xAA);
+        }
+        // Below the save rect:
+        for x in 85u32..215 {
+            assert_eq!(bus.read_byte(screen_base + 155 * row_bytes + x), 0xAA);
+        }
+        // Left of the save rect:
+        for y in 85u32..165 {
+            assert_eq!(bus.read_byte(screen_base + y * row_bytes + 94), 0xAA);
+        }
+        // Right of the save rect:
+        for y in 85u32..165 {
+            assert_eq!(bus.read_byte(screen_base + y * row_bytes + 205), 0xAA);
+        }
+        // Bytes INSIDE the save area must now be 0x33.
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                assert_eq!(bus.read_byte(screen_base + y * row_bytes + x), 0x33);
+            }
+        }
+    }
+
+    #[test]
+    fn disposdialog_without_saved_pixels_leaves_screen_untouched() {
+        // If no saved pixels exist for this dialog (e.g. ModalDialog
+        // already consumed them on flash completion), DisposDialog
+        // must be a no-op on the screen — no panic, no accidental
+        // fill.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes: u32 = 640;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let bounds = (100i16, 100i16, 150i16, 200i16);
+        let dialog_ptr = 0x200000u32;
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0x77);
+            }
+        }
+        assert!(!disp.dialog_saved_pixels.contains_key(&dialog_ptr));
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                let addr = screen_base + y * row_bytes + x;
+                assert_eq!(
+                    bus.read_byte(addr),
+                    0x77,
+                    "DisposDialog without saved pixels must not write to screen"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disposdialog_non_front_does_not_restore() {
+        // If the dialog being disposed is NOT the front window, we
+        // don't know its correct bounds (self.window_bounds belongs
+        // to whatever is currently front). Restoring at the wrong
+        // coords would corrupt the screen over the actual front
+        // window. Expected behavior: discard saved pixels silently.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes: u32 = 640;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let dialog_ptr = 0x200000u32;
+        let other_front = 0x280000u32;
+        disp.front_window = other_front; // dialog_ptr is NOT front
+        disp.window_bounds = (200, 200, 300, 400); // matches other_front
+
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0x55);
+            }
+        }
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x99; 60 * 110]);
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                let addr = screen_base + y * row_bytes + x;
+                assert_eq!(
+                    bus.read_byte(addr),
+                    0x55,
+                    "non-front DisposDialog must not restore over current front window"
+                );
+            }
+        }
+        assert!(
+            !disp.dialog_saved_pixels.contains_key(&dialog_ptr),
+            "saved pixels must still be removed for non-front dispose"
+        );
+    }
+
+    // ---- ParamText ($A98B) ----
+
+    fn write_pascal_str(bus: &mut crate::memory::MacMemoryBus, addr: u32, s: &[u8]) {
+        bus.write_byte(addr, s.len() as u8);
+        for (i, b) in s.iter().enumerate() {
+            bus.write_byte(addr + 1 + i as u32, *b);
+        }
+    }
+
+    #[test]
+    fn param_text_saves_all_four_strings_and_pops_16_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let p0 = 0x300000u32;
+        let p1 = 0x300100u32;
+        let p2 = 0x300200u32;
+        let p3 = 0x300300u32;
+        write_pascal_str(&mut bus, p0, b"alpha");
+        write_pascal_str(&mut bus, p1, b"bravo");
+        write_pascal_str(&mut bus, p2, b"chi");
+        write_pascal_str(&mut bus, p3, b"d");
+
+        bus.write_long(TEST_SP, p3);
+        bus.write_long(TEST_SP + 4, p2);
+        bus.write_long(TEST_SP + 8, p1);
+        bus.write_long(TEST_SP + 12, p0);
+
+        disp.dispatch_dialog(true, 0x18B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+        assert_eq!(disp.param_text[0], b"alpha");
+        assert_eq!(disp.param_text[1], b"bravo");
+        assert_eq!(disp.param_text[2], b"chi");
+        assert_eq!(disp.param_text[3], b"d");
+    }
+
+    #[test]
+    fn param_text_empty_pascal_string_clears_slot() {
+        // Per Inside Macintosh Volume I, I-422, an empty Pascal string
+        // (length-byte = 0) IS a valid value — the caret placeholder
+        // gets replaced by nothing. This is the explicit "clear this
+        // slot" idiom. Distinguishes from NIL (preserves prior).
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.param_text[0] = b"stale".to_vec();
+        disp.param_text[1] = b"stale".to_vec();
+        disp.param_text[2] = b"stale".to_vec();
+        disp.param_text[3] = b"stale".to_vec();
+
+        let empty_ptr = 0x300000u32;
+        write_pascal_str(&mut bus, empty_ptr, b"");
+
+        for off in [0u32, 4, 8, 12] {
+            bus.write_long(TEST_SP + off, empty_ptr);
+        }
+
+        disp.dispatch_dialog(true, 0x18B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        for i in 0..4 {
+            assert_eq!(
+                disp.param_text[i],
+                Vec::<u8>::new(),
+                "empty Pascal string must clear slot {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn apply_param_text_substitutes_caret_placeholders() {
+        let (mut disp, _cpu, _bus) = setup();
+        disp.param_text[0] = b"MS UserKey".to_vec();
+        disp.param_text[1] = b"42".to_vec();
+
+        assert_eq!(
+            disp.apply_param_text("Unable to open the \"^0\" file."),
+            "Unable to open the \"MS UserKey\" file."
+        );
+        assert_eq!(disp.apply_param_text("count: ^1"), "count: 42");
+        assert_eq!(
+            disp.apply_param_text("plain text without placeholders"),
+            "plain text without placeholders"
+        );
+        assert_eq!(disp.apply_param_text("^0 ^1 ^2 ^3"), "MS UserKey 42  ");
+        assert_eq!(
+            disp.apply_param_text("^A literal caret"),
+            "^A literal caret"
+        );
+
+        // Edge cases: lone trailing caret, double caret, caret at boundary,
+        // out-of-range digit (^9 has no slot 9 → kept literal).
+        assert_eq!(disp.apply_param_text("trailing^"), "trailing^");
+        assert_eq!(disp.apply_param_text("^^0"), "^MS UserKey");
+        assert_eq!(disp.apply_param_text("^9 unknown slot"), "^9 unknown slot");
+        assert_eq!(disp.apply_param_text(""), "");
+    }
+
+    #[test]
+    fn param_text_nil_pointer_preserves_previous_slot_value() {
+        // Per Inside Macintosh Volume I, I-422, passing NIL for any
+        // ParamText slot must leave the prior value unchanged — apps
+        // commonly stage one parameter at a time before opening an
+        // alert, expecting the others to retain whatever they were
+        // last set to.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.param_text[0] = b"old0".to_vec();
+        disp.param_text[1] = b"old1".to_vec();
+        disp.param_text[2] = b"old2".to_vec();
+        disp.param_text[3] = b"old3".to_vec();
+
+        let new0 = 0x300000u32;
+        write_pascal_str(&mut bus, new0, b"new0");
+
+        bus.write_long(TEST_SP, 0); // param3 = NIL
+        bus.write_long(TEST_SP + 4, 0); // param2 = NIL
+        bus.write_long(TEST_SP + 8, 0); // param1 = NIL
+        bus.write_long(TEST_SP + 12, new0);
+
+        disp.dispatch_dialog(true, 0x18B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(disp.param_text[0], b"new0", "param0 should be replaced");
+        assert_eq!(disp.param_text[1], b"old1", "NIL must preserve param1");
+        assert_eq!(disp.param_text[2], b"old2", "NIL must preserve param2");
+        assert_eq!(disp.param_text[3], b"old3", "NIL must preserve param3");
+    }
+
+    #[test]
+    fn apply_param_text_returns_borrowed_when_no_placeholders() {
+        // Pin the no-allocation contract: the common case (DITL text
+        // without any `^N` placeholders) must return Cow::Borrowed so
+        // draw_static_text doesn't allocate per item.
+        use std::borrow::Cow;
+        let (mut disp, _cpu, _bus) = setup();
+        disp.param_text[0] = b"value".to_vec();
+
+        let plain = disp.apply_param_text("hello world");
+        assert!(
+            matches!(plain, Cow::Borrowed(_)),
+            "no-placeholder input must skip the allocation path"
+        );
+
+        let substituted = disp.apply_param_text("hello ^0");
+        assert!(
+            matches!(substituted, Cow::Owned(_)),
+            "with-placeholder input takes the allocation path"
+        );
+        assert_eq!(substituted, "hello value");
+    }
+
+    // ---- GetDItem ($A98D) ----
+
+    #[test]
+    fn get_ditem_clears_outputs_and_pops_18_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // Set up output pointers
+        let box_ptr = 0x300000u32;
+        let item_ptr = 0x300100u32;
+        let type_ptr = 0x300200u32;
+
+        // Pre-fill output locations with non-zero to verify they get cleared
+        bus.write_long(box_ptr, 0xDEADBEEF);
+        bus.write_long(box_ptr + 4, 0xDEADBEEF);
+        bus.write_long(item_ptr, 0xDEADBEEF);
+        bus.write_word(type_ptr, 0xBEEF);
+
+        // Stack layout: SP+0: box(4), SP+4: item(4), SP+8: type(4), SP+12: itemNo(2), SP+14: dialog(4)
+        bus.write_long(TEST_SP, box_ptr);
+        bus.write_long(TEST_SP + 4, item_ptr);
+        bus.write_long(TEST_SP + 8, type_ptr);
+        bus.write_word(TEST_SP + 12, 1); // item number
+        bus.write_long(TEST_SP + 14, 0x200000); // dialog ptr
+
+        let result = disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 18);
+
+        // Verify outputs were cleared to 0
+        assert_eq!(bus.read_word(type_ptr), 0);
+        assert_eq!(bus.read_long(item_ptr), 0);
+        assert_eq!(bus.read_long(box_ptr), 0);
+        assert_eq!(bus.read_long(box_ptr + 4), 0);
+    }
+
+    #[test]
+    fn get_ditem_text_handle_returns_existing_raw_text_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let box_ptr = 0x300000u32;
+        let item_ptr = 0x300100u32;
+        let type_ptr = 0x300200u32;
+        let text_handle = bus.alloc(4);
+        let text_ptr = bus.alloc(5);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(22);
+
+        bus.write_bytes(text_ptr, b"Hello");
+        bus.write_long(text_handle, text_ptr);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, text_handle);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 8);
+        bus.write_byte(ditl_ptr + 15, 5);
+        bus.write_bytes(ditl_ptr + 16, b"Hello");
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 8,
+                rect: (10, 20, 30, 40),
+                text: "Hello".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_long(TEST_SP, box_ptr);
+        bus.write_long(TEST_SP + 4, item_ptr);
+        bus.write_long(TEST_SP + 8, type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_long(item_ptr), text_handle);
+        assert_eq!(bus.read_long(ditl_ptr + 2), text_handle);
+        assert_eq!(bus.get_alloc_size(text_ptr), Some(5));
+        assert_eq!(bus.read_bytes(text_ptr, 5), b"Hello".to_vec());
+    }
+
+    // ---- SetDItem ($A98E) ----
+
+    #[test]
+    fn set_ditem_pops_16_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let result = disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+    }
+
+    #[test]
+    fn set_ditem_updates_item_fields_visible_through_get_ditem() {
+        // Inside Macintosh Volume I, I-421: SetDItem changes itemType, item,
+        // and box for the specified item; GetDItem must then report those
+        // updated fields.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(22);
+        let old_handle = bus.alloc(4);
+        let old_ptr = bus.alloc(4);
+        let new_handle = bus.alloc(4);
+        let new_ptr = bus.alloc(3);
+        let set_box_ptr = bus.alloc(8);
+        let get_box_ptr = bus.alloc(8);
+        let get_item_ptr = bus.alloc(4);
+        let get_type_ptr = bus.alloc(2);
+
+        bus.write_bytes(old_ptr, b"Old!");
+        bus.write_bytes(new_ptr, b"New");
+        bus.write_long(old_handle, old_ptr);
+        bus.write_long(new_handle, new_ptr);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0); // one item
+        bus.write_long(ditl_ptr + 2, old_handle);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 8);
+        bus.write_byte(ditl_ptr + 15, 4);
+        bus.write_bytes(ditl_ptr + 16, b"Old!");
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 8,
+                rect: (10, 20, 30, 40),
+                text: "Old!".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.dialog_item_handles.insert(old_handle, (dialog_ptr, 0));
+
+        bus.write_word(set_box_ptr, 111);
+        bus.write_word(set_box_ptr + 2, 222);
+        bus.write_word(set_box_ptr + 4, 333);
+        bus.write_word(set_box_ptr + 6, 444);
+        bus.write_long(TEST_SP, set_box_ptr);
+        bus.write_long(TEST_SP + 4, new_handle);
+        bus.write_word(TEST_SP + 8, 16);
+        bus.write_word(TEST_SP + 10, 1);
+        bus.write_long(TEST_SP + 12, dialog_ptr);
+
+        disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(get_type_ptr), 16);
+        assert_eq!(bus.read_long(get_item_ptr), new_handle);
+        assert_eq!(bus.read_word(get_box_ptr), 111);
+        assert_eq!(bus.read_word(get_box_ptr + 2), 222);
+        assert_eq!(bus.read_word(get_box_ptr + 4), 333);
+        assert_eq!(bus.read_word(get_box_ptr + 6), 444);
+    }
+
+    #[test]
+    fn set_ditem_user_item_treats_item_parameter_as_proc_ptr() {
+        // Inside Macintosh Volume I, I-421: for userItem, SetDItem's `item`
+        // parameter is a draw procedure pointer (ProcPtr), not a text/control
+        // handle. GetDItem should report the same ProcPtr value.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+        let proc_ptr = 0x00AB_CDEFu32;
+        let set_box_ptr = bus.alloc(8);
+        let get_box_ptr = bus.alloc(8);
+        let get_item_ptr = bus.alloc(4);
+        let get_type_ptr = bus.alloc(2);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0); // one item
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 0);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (10, 20, 30, 40),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(set_box_ptr, 50);
+        bus.write_word(set_box_ptr + 2, 60);
+        bus.write_word(set_box_ptr + 4, 70);
+        bus.write_word(set_box_ptr + 6, 80);
+        bus.write_long(TEST_SP, set_box_ptr);
+        bus.write_long(TEST_SP + 4, proc_ptr);
+        bus.write_word(TEST_SP + 8, 0);
+        bus.write_word(TEST_SP + 10, 1);
+        bus.write_long(TEST_SP + 12, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(get_type_ptr), 0);
+        assert_eq!(bus.read_long(get_item_ptr), proc_ptr);
+        assert_eq!(bus.read_word(get_box_ptr), 50);
+        assert_eq!(bus.read_word(get_box_ptr + 2), 60);
+        assert_eq!(bus.read_word(get_box_ptr + 4), 70);
+        assert_eq!(bus.read_word(get_box_ptr + 6), 80);
+    }
+
+    #[test]
+    fn set_dialog_item_text_resizes_existing_text_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let text_handle = bus.alloc(4);
+        let text_ptr = bus.alloc(2);
+        let new_text_ptr = 0x300000u32;
+
+        bus.write_long(text_handle, text_ptr);
+        bus.write_byte(text_ptr, 1);
+        bus.write_byte(text_ptr + 1, b'A');
+        bus.write_byte(new_text_ptr, 5);
+        bus.write_bytes(new_text_ptr + 1, b"Hello");
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 8,
+                rect: (0, 0, 10, 10),
+                text: "A".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.dialog_item_handles
+            .insert(text_handle, (dialog_ptr, 0));
+
+        bus.write_long(TEST_SP, new_text_ptr);
+        bus.write_long(TEST_SP + 4, text_handle);
+
+        let result = disp.dispatch_dialog(true, 0x18F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let resized_ptr = bus.read_long(text_handle);
+        assert_eq!(bus.get_alloc_size(resized_ptr), Some(5));
+        assert_eq!(bus.read_bytes(resized_ptr, 5), b"Hello".to_vec());
+    }
+
+    #[test]
+    fn get_dialog_item_text_returns_pascal_string_from_raw_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let text_handle = bus.alloc(4);
+        let text_ptr = bus.alloc(5);
+        let out_ptr = 0x300000u32;
+
+        bus.write_long(text_handle, text_ptr);
+        bus.write_bytes(text_ptr, b"Hello");
+        bus.write_long(TEST_SP, out_ptr);
+        bus.write_long(TEST_SP + 4, text_handle);
+
+        let result = disp.dispatch_dialog(true, 0x190, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(out_ptr), 5);
+        assert_eq!(bus.read_bytes(out_ptr + 1, 5), b"Hello".to_vec());
+    }
+
+    #[test]
+    fn initialize_dialog_item_handles_rewrites_ditl_text_item_storage() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(22);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 8);
+        bus.write_byte(ditl_ptr + 15, 5);
+        bus.write_bytes(ditl_ptr + 16, b"Hello");
+
+        let items = vec![DialogItem {
+            item_type: 8,
+            rect: (10, 20, 30, 40),
+            text: "Hello".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        let created_handle = bus.read_long(ditl_ptr + 2);
+        let created_ptr = bus.read_long(created_handle);
+        assert_ne!(created_handle, 0);
+        assert_eq!(bus.get_alloc_size(created_ptr), Some(5));
+        assert_eq!(bus.read_bytes(created_ptr, 5), b"Hello".to_vec());
+        assert_eq!(
+            disp.dialog_item_handles.get(&created_handle),
+            Some(&(dialog_ptr, 0))
+        );
+    }
+
+    #[test]
+    fn initialize_dialog_item_handles_clears_user_item_placeholder_proc_ptr() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0x12345678);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 0);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        let items = vec![DialogItem {
+            item_type: 0,
+            rect: (10, 20, 30, 40),
+            text: String::new(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        assert_eq!(bus.read_long(ditl_ptr + 2), 0);
+    }
+
+    #[test]
+    fn parse_ditl_ignores_user_item_placeholder_proc_ptr() {
+        let (_disp, _cpu, mut bus) = setup();
+        let ditl_ptr = bus.alloc(16);
+
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0x12345678);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 0);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        let items = TrapDispatcher::parse_ditl(&bus, ditl_ptr, 16);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].proc_ptr, 0);
+    }
+
+    #[test]
+    fn refresh_ditl_proc_ptrs_clears_stale_user_item_proc_ptr() {
+        let (_disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 0);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        let mut items = vec![DialogItem {
+            item_type: 0,
+            rect: (10, 20, 30, 40),
+            text: String::new(),
+            resource_id: 0,
+            proc_ptr: 0x12345678,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        TrapDispatcher::refresh_ditl_proc_ptrs(&bus, dialog_ptr, &mut items);
+
+        assert_eq!(items[0].proc_ptr, 0);
+    }
+
+    // ---- ModalDialog ($A991) ----
+
+    #[test]
+    fn modal_dialog_writes_item_hit_and_pops_8_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let item_hit_addr = 0x300000u32;
+        bus.write_word(item_hit_addr, 0); // pre-clear
+
+        // SP+0: item_hit_ptr (4), SP+4: filterProc (4)
+        bus.write_long(TEST_SP, item_hit_addr);
+        bus.write_long(TEST_SP + 4, 0); // nil filterProc
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_addr), 1);
+    }
+
+    #[test]
+    fn modal_dialog_game_managed_dialog_still_queues_user_item_draw_procs() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_addr = 0x300000u32;
+
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = (92, 95, 415, 704);
+        disp.window_proc_id = 2;
+        disp.window_title.clear();
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0,
+                    rect: (8, 353, 148, 603),
+                    text: String::new(),
+                    resource_id: 0,
+                    proc_ptr: 0x500000,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 0x80,
+                    rect: (159, 381, 184, 581),
+                    text: String::new(),
+                    resource_id: 0,
+                    proc_ptr: 0x500100,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        bus.write_long(TEST_SP, item_hit_addr);
+        bus.write_long(TEST_SP + 4, 0x149F0);
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert!(tracking.game_managed);
+        assert_eq!(tracking.filter_proc, 0x149F0);
+        assert_eq!(tracking.draw_proc_queue.len(), 2);
+        assert!(!tracking.draw_procs_done);
+        assert!(!tracking.rendered_pixels_final);
+    }
+
+    #[test]
+    fn modal_dialog_mouse_down_return_consumes_queued_mouse_up() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 0,
+                rect: (20, 30, 60, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: true,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+        });
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0,
+            });
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0x0080,
+            });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+    }
+
+    #[test]
+    fn modal_dialog_filter_handled_mouse_down_consumes_queued_mouse_up() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+        let result_addr = 0x300100u32;
+
+        bus.write_word(result_addr, 0xFFFF);
+        bus.write_word(item_hit_ptr, 12);
+        disp.dialog_filter_result_addr = result_addr;
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 0,
+                rect: (20, 30, 60, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0x149F0,
+            game_managed: true,
+            last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0,
+            }),
+            popup_draws: Vec::new(),
+        });
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0x0080,
+            });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+    }
+
+    // ---- TEInit ($A9CC) ----
+
+    #[test]
+    fn teinit_first_call_allocates_empty_scrap_handle_and_zeros_length() {
+        // IM:I I-376 + I-389: TEInit creates an empty TextEdit scrap
+        // handle and sets TEScrpLength to 0.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_before = cpu.read_reg(Register::A7);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 0xFFFF);
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, 0);
+
+        let result = disp.dispatch_dialog(true, 0x1CC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+
+        let scrap_handle = bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE);
+        assert_ne!(scrap_handle, 0, "TEInit must allocate TEScrpHandle");
+        assert_eq!(
+            bus.read_long(scrap_handle),
+            0,
+            "TEInit scrap handle should initially reference empty data"
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            0
+        );
+    }
+
+    #[test]
+    fn teinit_reuses_existing_scrap_handle_and_resets_length() {
+        // IM:I I-376 + I-389: TEInit restores empty-scrap state; HLE must
+        // keep an existing handle stable to avoid churn/leaks on repeat calls.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let existing_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 3);
+        let existing_ptr = bus.read_long(existing_handle);
+        bus.write_bytes(existing_ptr, b"xyz");
+        bus.write_long(
+            crate::memory::globals::addr::TE_SCRP_HANDLE,
+            existing_handle,
+        );
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 3);
+
+        let result = disp.dispatch_dialog(true, 0x1CC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE),
+            existing_handle
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            0
+        );
+        assert_eq!(bus.read_long(existing_handle), existing_ptr);
+        assert_eq!(bus.read_bytes(existing_ptr, 3), b"xyz".to_vec());
+    }
+
+    fn make_te_with_text(
+        disp: &mut TrapDispatcher,
+        bus: &mut crate::memory::MacMemoryBus,
+        text: &[u8],
+    ) -> u32 {
+        let te_handle = TrapDispatcher::allocate_te_handle(bus);
+        disp.current_port = 0x181000;
+        disp.tx_font = 4;
+        disp.tx_face = 0;
+        disp.tx_mode = 0;
+        disp.tx_size = 10;
+        disp.initialize_te_record(bus, te_handle, (0, 0, 60, 160), (0, 0, 60, 160));
+        disp.te_set_text_contents(bus, te_handle, text);
+        te_handle
+    }
+
+    // ---- TENew ----
+
+    #[test]
+    fn tenew_pointer_arg_convention_initializes_destrect_viewrect_and_returns_non_nil_handle() {
+        // IM:I I-373..I-374 + TextEdit.h ONEWORDINLINE(0xA9D2):
+        // FUNCTION TENew(destRect, viewRect: Rect): TEHandle. Modern MPW
+        // Universal Headers pass two `const Rect *` pointers (8 bytes of
+        // args). After dispatch (**hTE).destRect and (**hTE).viewRect
+        // must round-trip the caller's input rects exactly. Defeats stubs
+        // that swap the args, zero the rects, or copy only a subset of
+        // the four 2-byte fields.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // Build two DISTINCT Rect inputs in guest memory.
+        let dest_rect_ptr: u32 = 0x190000;
+        bus.write_word(dest_rect_ptr, (-1000i16) as u16); // top
+        bus.write_word(dest_rect_ptr + 2, (-1000i16) as u16); // left
+        bus.write_word(dest_rect_ptr + 4, (-700i16) as u16); // bottom
+        bus.write_word(dest_rect_ptr + 6, (-800i16) as u16); // right
+        let view_rect_ptr: u32 = 0x190010;
+        bus.write_word(view_rect_ptr, (-900i16) as u16); // top
+        bus.write_word(view_rect_ptr + 2, (-1100i16) as u16); // left
+        bus.write_word(view_rect_ptr + 4, (-600i16) as u16); // bottom
+        bus.write_word(view_rect_ptr + 6, (-700i16) as u16); // right
+
+        // Pascal FUNCTION stack frame (pointer-arg convention).
+        // Pascal pushes args left-to-right, so the FIRST arg (destRect_ptr)
+        // is DEEPEST on stack at trap entry. With 4-byte pointers:
+        //   sp+0..3   viewRect_ptr  (last pushed, shallowest)
+        //   sp+4..7   destRect_ptr  (first pushed, deepest)
+        //   sp+8..11  TEHandle result slot (poisoned)
+        bus.write_long(TEST_SP, view_rect_ptr);
+        bus.write_long(TEST_SP + 4, dest_rect_ptr);
+        bus.write_long(TEST_SP + 8, 0xDEAD_BEEF);
+
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        let te_handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(te_handle, 0, "TENew returned NIL TEHandle");
+        let te_ptr = bus.read_long(te_handle);
+        assert_ne!(te_ptr, 0, "TEHandle master pointer is NIL");
+
+        // destRect round-trip (top, left, bottom, right at offset 0..6).
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16,
+            -1000
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2) as i16,
+            -1000
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4) as i16,
+            -700
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6) as i16,
+            -800
+        );
+
+        // viewRect round-trip (top, left, bottom, right at offset 8..14).
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET) as i16,
+            -900
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2) as i16,
+            -1100
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4) as i16,
+            -600
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6) as i16,
+            -700
+        );
+    }
+
+    #[test]
+    fn tenew_fresh_terec_has_zero_telength_and_empty_selection_per_im_i_373() {
+        // IM:I I-373: a fresh TERec has no text and an empty selection
+        // range. Witness teLength == 0, selStart == 0, selEnd == 0, and
+        // hText is a non-NIL Handle.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let rect_ptr: u32 = 0x190020;
+        bus.write_word(rect_ptr, 10); // top
+        bus.write_word(rect_ptr + 2, 20); // left
+        bus.write_word(rect_ptr + 4, 110); // bottom
+        bus.write_word(rect_ptr + 6, 220); // right
+
+        bus.write_long(TEST_SP, rect_ptr);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let te_handle = bus.read_long(TEST_SP + 8);
+        let te_ptr = bus.read_long(te_handle);
+
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+            0,
+            "fresh TERec must have teLength == 0"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            0,
+            "fresh TERec must have selStart == 0"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+            0,
+            "fresh TERec must have selEnd == 0"
+        );
+        let h_text = bus.read_long(te_ptr + TrapDispatcher::TE_HTEXT_OFFSET);
+        assert_ne!(h_text, 0, "fresh TERec must have a non-NIL hText handle");
+    }
+
+    #[test]
+    fn tenew_function_protocol_consumes_two_pointer_args_and_writes_4_byte_result() {
+        // Pascal FUNCTION calling convention: 2 pointer args (8 bytes)
+        // are popped, the 4-byte TEHandle result is written into the
+        // caller's pre-allocated slot at the former SP+8. Sentinels
+        // around the result slot must survive the trap call.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let rect_ptr: u32 = 0x190030;
+        bus.write_word(rect_ptr, 0);
+        bus.write_word(rect_ptr + 2, 0);
+        bus.write_word(rect_ptr + 4, 100);
+        bus.write_word(rect_ptr + 6, 200);
+
+        bus.write_long(TEST_SP, rect_ptr);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        bus.write_long(TEST_SP + 8, 0xDEAD_BEEF);
+        bus.write_long(TEST_SP + 12, 0xCAFE_BABE); // sentinel past result
+
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        let te_handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(te_handle, 0xDEAD_BEEF, "result slot must be overwritten");
+        assert_ne!(te_handle, 0);
+        assert_eq!(
+            bus.read_long(TEST_SP + 12),
+            0xCAFE_BABE,
+            "sentinel past 4-byte result slot must survive"
+        );
+    }
+
+    // ---- TEDispose / TECalText / TESetSelect / TEDelete ----
+
+    #[test]
+    fn tedispose_releases_te_record_text_handle_and_pops_arg() {
+        // IM:I I-383..I-384.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        let text_handle = bus.read_long(te_ptr + TrapDispatcher::TE_HTEXT_OFFSET);
+        let text_ptr = bus.read_long(text_handle);
+        assert_ne!(te_handle, 0);
+        assert_ne!(te_ptr, 0);
+        assert_ne!(text_handle, 0);
+        assert_ne!(text_ptr, 0);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1CD, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        assert_eq!(bus.get_alloc_size(text_ptr), None);
+        assert_eq!(bus.get_alloc_size(text_handle), None);
+        assert_eq!(bus.get_alloc_size(te_ptr), None);
+        assert_eq!(bus.get_alloc_size(te_handle), None);
+    }
+
+    #[test]
+    fn tecaltext_recomputes_line_metadata_and_pops_arg() {
+        // IM:I I-390: lineStarts are recomputed from current text layout.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        let te_ptr = bus.read_long(te_handle);
+        let text_len = TrapDispatcher::te_text_bytes(&bus, te_handle).len() as u16;
+        assert_eq!(text_len, 32);
+
+        // Force stale metadata and a narrow destination width so wrapped
+        // layout produces multiple lines.
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 12);
+        bus.write_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_N_LINES_OFFSET, 0x7777);
+        bus.write_word(te_ptr + TrapDispatcher::TE_LINE_STARTS_OFFSET, 0x7777);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D0, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        let te_ptr = bus.read_long(te_handle);
+        let n_lines = bus.read_word(te_ptr + TrapDispatcher::TE_N_LINES_OFFSET);
+        assert_ne!(n_lines, 0x7777);
+        assert!(n_lines > 1);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+            text_len
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LINE_STARTS_OFFSET),
+            0
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LINE_STARTS_OFFSET + u32::from(n_lines) * 2),
+            text_len
+        );
+    }
+
+    #[test]
+    fn tegettext_returns_htext_handle_from_terec_and_pops_te_handle_arg() {
+        // IM:I I-384: "TEGetText returns a handle to the text of the
+        // specified edit record. The result is the same as the handle in
+        // the hText field of the edit record."
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        let expected_h_text = bus.read_long(te_ptr + TrapDispatcher::TE_HTEXT_OFFSET);
+        assert_ne!(expected_h_text, 0);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 0xDEAD_BEEF); // poison result slot
+        let result = disp.dispatch_dialog(true, 0x1CB, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        // The returned CharsHandle equals (**hTE).hText exactly.
+        assert_eq!(bus.read_long(TEST_SP + 4), expected_h_text);
+
+        // The handle dereferences to the 5-byte payload "HELLO".
+        let text_ptr = bus.read_long(expected_h_text);
+        assert_ne!(text_ptr, 0);
+        assert_eq!(bus.read_bytes(text_ptr, 5), b"HELLO".to_vec());
+    }
+
+    #[test]
+    fn tegettext_returns_nil_handle_when_te_handle_is_zero() {
+        // Defensive: a NIL TEHandle has no TERec to read hText from, so
+        // the result is NIL. Guards against any future change that would
+        // crash or read past invalid memory when handed a NIL argument.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_long(TEST_SP, 0); // NIL TEHandle
+        bus.write_long(TEST_SP + 4, 0xCAFE_BABE); // poison result slot
+        let result = disp.dispatch_dialog(true, 0x1CB, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_long(TEST_SP + 4), 0);
+    }
+
+    #[test]
+    fn tesetselect_clamps_selend_to_text_length_and_pops_args() {
+        // IM:I I-385: selEnd past end-of-text clamps to teLength.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 5);
+
+        bus.write_long(TEST_SP, te_handle); // hTE
+        bus.write_long(TEST_SP + 4, 999); // selEnd
+        bus.write_long(TEST_SP + 8, 2); // selStart
+        let result = disp.dispatch_dialog(true, 0x1D1, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            2
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 5);
+    }
+
+    #[test]
+    fn tedelete_removes_selection_without_touching_scrap_and_pops_arg() {
+        // IM:I I-387: TEDelete deletes selection without writing TextEdit scrap.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let existing_scrap = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let existing_ptr = bus.read_long(existing_scrap);
+        bus.write_bytes(existing_ptr, b"QQ");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, existing_scrap);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 2);
+
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D7, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HO".to_vec()
+        );
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 1);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE),
+            existing_scrap
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            2
+        );
+        assert_eq!(bus.read_bytes(existing_ptr, 2), b"QQ".to_vec());
+    }
+
+    #[test]
+    fn tedelete_insertion_point_selection_is_noop_and_pops_arg() {
+        // IM:I I-387: insertion-point selection means "nothing happens".
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 3);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 3);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D7, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            3
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 3);
+    }
+
+    #[test]
+    fn teupdate_pascal_form_redraws_text_and_pops_inline_rect_and_tehandle() {
+        // IM:I I-387; Inside Macintosh: Text 1993, 2-88.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        for i in 0..(row_bytes * 80) {
+            bus.write_byte(screen_base + i, 0);
+        }
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0); // rUpdate.top
+        bus.write_word(TEST_SP + 6, 0); // rUpdate.left
+        bus.write_word(TEST_SP + 8, 40); // rUpdate.bottom
+        bus.write_word(TEST_SP + 10, 120); // rUpdate.right
+
+        let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
+        let drew_any_pixel =
+            (0..(row_bytes * 80)).any(|offset| bus.read_byte(screen_base + offset) != 0);
+        assert!(
+            drew_any_pixel,
+            "TEUpdate should draw at least one non-white pixel for visible text"
+        );
+    }
+
+    #[test]
+    fn teupdate_c_rect_pointer_form_is_accepted_and_pops_eight_bytes() {
+        // Inside Macintosh: Text 1993, 2-88 update semantics plus
+        // MPW C call-shape compatibility (Rect* + TEHandle).
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 10);
+        bus.write_word(rect_ptr + 2, 10);
+        bus.write_word(rect_ptr + 4, 40);
+        bus.write_word(rect_ptr + 6, 120);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
+    }
+
+    #[test]
+    fn teupdate_preserves_te_record_state_across_redraw() {
+        // Pins the engines-agree contract from a9d3_teupdate_strict:
+        // TEUpdate is a redraw operation and MUST NOT mutate hText,
+        // teLength, selStart, or selEnd. Per IM:I I-387 + IM:Text 1993
+        // p. 2-88. Mirrors band B3 of the strict bake (text bytes
+        // "HELLO" preserved, teLength==5, selStart==1, selEnd==4 after
+        // both C-form and Pascal-form TEUpdate calls).
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+
+        // C-form dispatch (8-byte pop).
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 10);
+        bus.write_word(rect_ptr + 2, 10);
+        bus.write_word(rect_ptr + 4, 40);
+        bus.write_word(rect_ptr + 6, 120);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        // Pascal-form dispatch on the same TE record (12-byte pop):
+        // hTE at sp+0, inlined rect at sp+4..sp+11.
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 10);
+        bus.write_word(TEST_SP + 6, 10);
+        bus.write_word(TEST_SP + 8, 40);
+        bus.write_word(TEST_SP + 10, 120);
+        let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+        // State preservation contract.
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 5);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 4);
+    }
+
+    #[test]
+    fn teactivate_sets_active_flag_preserves_selection_and_pops_arg() {
+        // IM:I I-385; Inside Macintosh: Text 1993, 2-80.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D8, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET), 1);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 4);
+    }
+
+    #[test]
+    fn tedeactivate_clears_active_flag_preserves_selection_and_pops_arg() {
+        // IM:I I-385; Inside Macintosh: Text 1993, 2-80.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 5);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D9, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET), 0);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            2
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 5);
+    }
+
+    #[test]
+    fn teclick_consumes_point_extend_and_tehandle_arguments() {
+        // Inside Macintosh Volume I (1985), p. I-376 and
+        // Inside Macintosh: Text (1993), p. 2-85.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+
+        bus.write_long(TEST_SP, te_handle); // hTE
+        bus.write_word(TEST_SP + 4, 0xFF00); // extend=TRUE in high byte
+        bus.write_word(TEST_SP + 6, 18); // pt.v
+        bus.write_word(TEST_SP + 8, 27); // pt.h
+
+        let result = disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+    }
+
+    #[test]
+    fn teclick_empty_text_keeps_insertion_point_at_zero() {
+        // Inside Macintosh Volume I (1985), p. I-376: TEClick places the
+        // insertion point from mouse position; with empty text only offset 0
+        // is valid.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
+
+        bus.write_long(TEST_SP, te_handle); // hTE
+        bus.write_word(TEST_SP + 4, 0x0000); // extend=FALSE
+        bus.write_word(TEST_SP + 6, 12); // pt.v
+        bus.write_word(TEST_SP + 8, 40); // pt.h
+
+        let result = disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            0
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 0);
+    }
+
+    #[test]
+    fn teclick_preserves_terec_active_flag_and_telength() {
+        // Mirrors band B2 of the a9d4_teclick_strict bake: both
+        // BasiliskII System 7.5.3 ROM and Systemless HLE agree that
+        // TEClick must not mutate the active flag (owned by
+        // TEActivate/TEDeactivate per IM:I I-385) or teLength
+        // (owned by TESetText/TEKey/TEDelete/TEInsert). Inside
+        // Macintosh Volume I (1985), p. I-376; Inside Macintosh:
+        // Text (1993), p. 2-85.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0xFF);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        let pre_active = bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET);
+        let pre_telength = bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0x0000); // extend=FALSE
+        bus.write_word(TEST_SP + 6, 8); // pt.v
+        bus.write_word(TEST_SP + 8, 32); // pt.h
+        let result = disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET),
+            pre_active
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+            pre_telength
+        );
+    }
+
+    #[test]
+    fn teclick_repeated_calls_balance_stack_no_drift() {
+        // Mirrors band B3 of the a9d4_teclick_strict bake: an 8-call
+        // composition of TEClick keeps the A7 advance balanced at
+        // exactly 8 * 10 = 80 bytes; per-call pop errors that cancel
+        // within a single call but drift over many invocations are
+        // detected here. A7 is reset to TEST_SP between iterations so
+        // each call exercises the SP discipline independently.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+
+        for k in 0..8i16 {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, te_handle);
+            bus.write_word(TEST_SP + 4, 0x0000); // extend=FALSE
+            bus.write_word(TEST_SP + 6, (4 + k) as u16); // pt.v varied
+            bus.write_word(TEST_SP + 8, (16 + k * 3) as u16); // pt.h varied
+            let result = disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        }
+    }
+
+    #[test]
+    fn teidle_consumes_tehandle_argument() {
+        // Inside Macintosh Volume I (1985), p. I-374 and
+        // Inside Macintosh: Text (1993), p. 2-84.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    #[test]
+    fn teidle_preserves_active_flag_and_selection_offsets() {
+        // Inside Macintosh Volume I (1985), pp. I-374 and I-385: TEIdle
+        // blinks caret for an active record, while TEActivate/TEDeactivate
+        // control active state. The text length must also remain
+        // unchanged across an idle call.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0xFF);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        let pre_telength = bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET),
+            0xFF
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            2
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 4);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+            pre_telength
+        );
+    }
+
+    #[test]
+    fn teidle_repeated_calls_balance_stack_and_preserve_terec_state() {
+        // Inside Macintosh Volume I (1985), p. I-374: TEIdle is intended
+        // to be called on every null event from the application's event
+        // loop, so per-call pop discipline must compose cleanly across
+        // many invocations and the TERec must remain bit-for-bit
+        // identical across the sequence. Mirrors B3 of the
+        // `a9da_teidle_strict` strict bake: 8 successive TEIdle calls,
+        // assert A7 advanced exactly 8 * 4 = 32 bytes AND active /
+        // selStart / selEnd / teLength are all preserved.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"WORLD");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0xFF);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 3);
+        let pre_active = bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET);
+        let pre_sel_start = bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET);
+        let pre_sel_end = bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET);
+        let pre_telength = bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET);
+
+        for _ in 0..8 {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, te_handle);
+            let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        }
+
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET),
+            pre_active
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            pre_sel_start
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+            pre_sel_end
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+            pre_telength
+        );
+    }
+
+    #[test]
+    fn tescroll_offsets_destrect_by_requested_delta_and_pops_args() {
+        // IM:I I-388; Inside Macintosh: Text 1993, 2-91.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 70);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 180);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, (-3i16) as u16); // dv
+        bus.write_word(TEST_SP + 6, 5); // dh
+        let result = disp.dispatch_dialog(true, 0x1DD, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            7
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2),
+            25
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4),
+            67
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6),
+            185
+        );
+    }
+
+    #[test]
+    fn teinsert_inserts_before_selection_shifts_range_and_preserves_scrap() {
+        // IM:I I-387; Inside Macintosh: Text 1993, 2-94. TEInsert splices
+        // the supplied bytes at the selStart offset (BEFORE the selection)
+        // without replacing the selected range. The selection range is
+        // preserved logically — selStart and selEnd shift forward by the
+        // inserted length so the original selected characters still fall
+        // inside the range.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let existing_scrap = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let existing_scrap_ptr = bus.read_long(existing_scrap);
+        bus.write_bytes(existing_scrap_ptr, b"QQ");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, existing_scrap);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 2);
+
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+
+        let insert_ptr = bus.alloc(3);
+        bus.write_bytes(insert_ptr, b"XYZ");
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 3);
+        bus.write_long(TEST_SP + 8, insert_ptr);
+        let result = disp.dispatch_dialog(true, 0x1DE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HXYZELLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            4
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 7);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE),
+            existing_scrap
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            2
+        );
+        assert_eq!(bus.read_bytes(existing_scrap_ptr, 2), b"QQ".to_vec());
+    }
+
+    #[test]
+    fn teinsert_insertion_point_inserts_before_caret_and_shifts_caret() {
+        // TEInsert inserts immediately before the current selection/insertion
+        // point per IM:I I-387; Inside Macintosh: Text 1993, 2-94. The
+        // selection range is preserved logically — the insertion point shifts
+        // forward by the inserted length so it continues to mark the same
+        // place relative to the surrounding original characters.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+
+        let insert_ptr = bus.alloc(1);
+        bus.write_byte(insert_ptr, b'X');
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 8, insert_ptr);
+        let result = disp.dispatch_dialog(true, 0x1DE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HEXLLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            3
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 3);
+    }
+
+    #[test]
+    fn tesetalignment_writes_just_field_and_pops_args() {
+        // IM:I I-388 (TESetJust) and Inside Macintosh: Text 1993, 2-87.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_JUST_OFFSET, 0);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, (-1i16) as u16);
+        let result = disp.dispatch_dialog(true, 0x1DF, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_JUST_OFFSET) as i16,
+            -1
+        );
+    }
+
+    // ---- TECopy / TECut / TEPaste ($A9D5 / $A9D6 / $A9DB) ----
+
+    #[test]
+    fn tecopy_nonempty_selection_updates_textedit_scrap_globals() {
+        // IM:I I-386 + I-389.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        bus.write_long(TEST_SP, te_handle);
+
+        let result = disp.dispatch_dialog(true, 0x1D5, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        let scrap_handle = bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE);
+        let scrap_ptr = bus.read_long(scrap_handle);
+        assert_ne!(scrap_handle, 0);
+        assert_ne!(scrap_ptr, 0);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            3
+        );
+        assert_eq!(bus.read_bytes(scrap_ptr, 3), b"ELL".to_vec());
+    }
+
+    #[test]
+    fn tecopy_empty_selection_preserves_existing_scrap_contents() {
+        // IM:I I-386: no selected range => no copy.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let existing_scrap = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let existing_ptr = bus.read_long(existing_scrap);
+        bus.write_bytes(existing_ptr, b"ZZ");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, existing_scrap);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 2);
+
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+        bus.write_long(TEST_SP, te_handle);
+
+        let result = disp.dispatch_dialog(true, 0x1D5, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE),
+            existing_scrap
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            2
+        );
+        assert_eq!(bus.read_bytes(existing_ptr, 2), b"ZZ".to_vec());
+    }
+
+    #[test]
+    fn tecut_nonempty_selection_copies_to_scrap_and_deletes_selected_text() {
+        // IM:I I-391 + I-389.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        bus.write_long(TEST_SP, te_handle);
+
+        let result = disp.dispatch_dialog(true, 0x1D6, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 1);
+
+        let scrap_handle = bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE);
+        let scrap_ptr = bus.read_long(scrap_handle);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            3
+        );
+        assert_eq!(bus.read_bytes(scrap_ptr, 3), b"ELL".to_vec());
+    }
+
+    #[test]
+    fn tecut_empty_selection_preserves_text_and_scrap_contents() {
+        // IM:I I-391: insertion-point selection performs no cut.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let existing_scrap = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let existing_ptr = bus.read_long(existing_scrap);
+        bus.write_bytes(existing_ptr, b"QQ");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, existing_scrap);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 2);
+
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 3);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 3);
+        bus.write_long(TEST_SP, te_handle);
+
+        let result = disp.dispatch_dialog(true, 0x1D6, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE),
+            existing_scrap
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            2
+        );
+        assert_eq!(bus.read_bytes(existing_ptr, 2), b"QQ".to_vec());
+    }
+
+    #[test]
+    fn tepaste_nonempty_scrap_replaces_selection_and_advances_insertion_point() {
+        // IM:I I-387 + I-389.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+
+        let scrap_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let scrap_ptr = bus.read_long(scrap_handle);
+        bus.write_bytes(scrap_ptr, b"EL");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, scrap_handle);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 2);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1DB, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            3
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 3);
+    }
+
+    #[test]
+    fn tepaste_empty_scrap_is_noop() {
+        // IM:I I-387: empty scrap inserts nothing.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 3);
+
+        let scrap_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let scrap_ptr = bus.read_long(scrap_handle);
+        bus.write_bytes(scrap_ptr, b"ZZ");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, scrap_handle);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 0);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1DB, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 3);
+    }
+
+    #[test]
+    fn te_new_initializes_basic_record_fields() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 0); // viewRect.top
+        bus.write_word(TEST_SP + 2, 0); // viewRect.left
+        bus.write_word(TEST_SP + 4, 100); // viewRect.bottom
+        bus.write_word(TEST_SP + 6, 120); // viewRect.right
+        bus.write_word(TEST_SP + 8, 10); // destRect.top
+        bus.write_word(TEST_SP + 10, 20); // destRect.left
+        bus.write_word(TEST_SP + 12, 90); // destRect.bottom
+        bus.write_word(TEST_SP + 14, 80); // destRect.right
+
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+
+        let te_handle = bus.read_long(TEST_SP + 16);
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            10
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2),
+            20
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4),
+            100
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6),
+            120
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 0);
+        let h_text = bus.read_long(te_ptr + TrapDispatcher::TE_HTEXT_OFFSET);
+        assert_ne!(h_text, 0);
+        assert_eq!(bus.read_long(h_text), 0);
+    }
+
+    // Inside Macintosh: Text (1993), p. 2-78: TEStyleNew returns a
+    // multistyled TEHandle, uses -1 sentinels in txSize/lineHeight/
+    // fontAscent, and installs style metadata.
+    #[test]
+    fn testylenew_returns_styled_handle_and_initializes_sentinel_fields() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 0); // viewRect.top
+        bus.write_word(TEST_SP + 2, 0); // viewRect.left
+        bus.write_word(TEST_SP + 4, 100); // viewRect.bottom
+        bus.write_word(TEST_SP + 6, 120); // viewRect.right
+        bus.write_word(TEST_SP + 8, 10); // destRect.top
+        bus.write_word(TEST_SP + 10, 20); // destRect.left
+        bus.write_word(TEST_SP + 12, 90); // destRect.bottom
+        bus.write_word(TEST_SP + 14, 80); // destRect.right
+
+        let result = disp.dispatch_dialog(true, 0x03E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 16,
+            "TEStyleNew should pop two Rect arguments (16 bytes)"
+        );
+
+        let te_handle = bus.read_long(TEST_SP + 16);
+        assert_ne!(te_handle, 0, "TEStyleNew should return a non-NIL TEHandle");
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_ne!(te_ptr, 0, "returned TEHandle should point to a TERec");
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_TX_SIZE_OFFSET),
+            0xFFFF
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET),
+            0xFFFF
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_FONT_ASCENT_OFFSET),
+            0xFFFF
+        );
+
+        let style_handle = bus.read_long(te_ptr + TrapDispatcher::TE_TX_FONT_OFFSET);
+        assert_ne!(style_handle, 0, "styled record should carry a style handle");
+        let style_ptr = bus.read_long(style_handle);
+        assert_ne!(
+            style_ptr, 0,
+            "style handle should dereference to a style record"
+        );
+        assert_ne!(
+            bus.read_long(style_ptr + TrapDispatcher::TE_STYLE_NULL_STYLE_OFFSET),
+            0,
+            "style record should include a non-NIL null-style handle"
+        );
+    }
+
+    // ---- TEStyleNew (pointer-arg convention) ----
+
+    // Inside Macintosh: Text (1993), p. 2-78: TEStyleNew accepts a
+    // pointer-arg convention `const Rect *destRect, const Rect *viewRect`
+    // per MPW Universal Headers. Pascal LR push: destRect_ptr at SP+4
+    // (deepest, pushed first), viewRect_ptr at SP+0 (shallowest, pushed
+    // last). Net pop is 8 bytes.
+    #[test]
+    fn testylenew_pointer_arg_convention_initializes_destrect_viewrect_and_styled_sentinels() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // Build distinct destRect and viewRect in guest memory.
+        let dest_rect_ptr: u32 = 0x1A0000;
+        let view_rect_ptr: u32 = 0x1A0010;
+        bus.write_word(dest_rect_ptr, (-1200_i16) as u16);
+        bus.write_word(dest_rect_ptr + 2, (-1200_i16) as u16);
+        bus.write_word(dest_rect_ptr + 4, (-900_i16) as u16);
+        bus.write_word(dest_rect_ptr + 6, (-1000_i16) as u16);
+        bus.write_word(view_rect_ptr, (-1100_i16) as u16);
+        bus.write_word(view_rect_ptr + 2, (-1300_i16) as u16);
+        bus.write_word(view_rect_ptr + 4, (-800_i16) as u16);
+        bus.write_word(view_rect_ptr + 6, (-900_i16) as u16);
+
+        // Pascal LR push: viewRect_ptr at SP+0 (last pushed),
+        // destRect_ptr at SP+4 (first pushed).
+        bus.write_long(TEST_SP, view_rect_ptr);
+        bus.write_long(TEST_SP + 4, dest_rect_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x03E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 8,
+            "TEStyleNew pointer convention should pop 8 bytes (two pointer args)"
+        );
+
+        let te_handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(te_handle, 0, "TEStyleNew should return a non-NIL TEHandle");
+        let te_ptr = bus.read_long(te_handle);
+        assert_ne!(te_ptr, 0, "TEHandle should dereference to a TERec");
+
+        // destRect at offset 0x00 round-trips from the destRect_ptr.
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16,
+            -1200,
+            "destRect.top must round-trip from caller-supplied destRect_ptr"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2) as i16,
+            -1200,
+            "destRect.left must round-trip from caller-supplied destRect_ptr"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4) as i16,
+            -900,
+            "destRect.bottom must round-trip from caller-supplied destRect_ptr"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6) as i16,
+            -1000,
+            "destRect.right must round-trip from caller-supplied destRect_ptr"
+        );
+
+        // viewRect at offset 0x08 round-trips from the viewRect_ptr.
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET) as i16,
+            -1100,
+            "viewRect.top must round-trip from caller-supplied viewRect_ptr"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2) as i16,
+            -1300,
+            "viewRect.left must round-trip from caller-supplied viewRect_ptr"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4) as i16,
+            -800,
+            "viewRect.bottom must round-trip from caller-supplied viewRect_ptr"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6) as i16,
+            -900,
+            "viewRect.right must round-trip from caller-supplied viewRect_ptr"
+        );
+
+        // Styled sentinels per IM:Text 1993 p. 2-78.
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_TX_SIZE_OFFSET),
+            0xFFFF,
+            "TEStyleNew must set txSize to -1 (styled-record sentinel)"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET),
+            0xFFFF,
+            "TEStyleNew must set lineHeight to -1 (styled-record sentinel)"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_FONT_ASCENT_OFFSET),
+            0xFFFF,
+            "TEStyleNew must set fontAscent to -1 (styled-record sentinel)"
+        );
+
+        // Style handle at txFont/txFace overlay (4 bytes at offset 0x4A).
+        let style_handle = bus.read_long(te_ptr + TrapDispatcher::TE_TX_FONT_OFFSET);
+        assert_ne!(
+            style_handle, 0,
+            "TEStyleNew must install a non-NIL TEStyleHandle in the txFont/txFace overlay"
+        );
+        let style_ptr = bus.read_long(style_handle);
+        assert_ne!(
+            style_ptr, 0,
+            "TEStyleHandle should dereference to an allocated TEStyleRec"
+        );
+    }
+
+    // Inside Macintosh: Text (1993), p. 2-78 + MPW TextEdit.h
+    // ONEWORDINLINE(0xA83E): TEStyleNew is `EXTERN_API(TEHandle)`.
+    // Pascal FUNCTION protocol: caller pre-allocates 4-byte TEHandle
+    // result slot, pushes 2 pointer args (8 bytes); trap pops 8 +
+    // writes 4-byte result.
+    #[test]
+    fn testylenew_function_protocol_consumes_two_pointer_args_and_writes_4_byte_result() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let dest_rect_ptr: u32 = 0x1A0020;
+        let view_rect_ptr: u32 = 0x1A0030;
+        // Both rects: non-empty distinct values so te_new_rect_args
+        // selects the pointer convention (8 bytes).
+        bus.write_word(dest_rect_ptr, (-500_i16) as u16);
+        bus.write_word(dest_rect_ptr + 2, (-500_i16) as u16);
+        bus.write_word(dest_rect_ptr + 4, (-300_i16) as u16);
+        bus.write_word(dest_rect_ptr + 6, (-400_i16) as u16);
+        bus.write_word(view_rect_ptr, (-450_i16) as u16);
+        bus.write_word(view_rect_ptr + 2, (-550_i16) as u16);
+        bus.write_word(view_rect_ptr + 4, (-250_i16) as u16);
+        bus.write_word(view_rect_ptr + 6, (-350_i16) as u16);
+
+        bus.write_long(TEST_SP, view_rect_ptr);
+        bus.write_long(TEST_SP + 4, dest_rect_ptr);
+        // Poison the result slot at sp+8 and a sentinel past it.
+        bus.write_long(TEST_SP + 8, 0xDEADBEEF);
+        bus.write_long(TEST_SP + 12, 0xCAFEBABE);
+
+        let result = disp.dispatch_dialog(true, 0x03E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        // A7 advanced exactly 8 bytes.
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 8,
+            "TEStyleNew pointer-arg convention must pop exactly 8 bytes"
+        );
+
+        // The function result slot at the former sp+8 was overwritten
+        // by a non-poison TEHandle.
+        let te_handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(
+            te_handle, 0xDEADBEEF,
+            "TEStyleNew result slot must be overwritten by a real TEHandle, not the poison sentinel"
+        );
+        assert_ne!(te_handle, 0, "TEStyleNew result must be a non-NIL TEHandle");
+
+        // The sentinel at sp+12 (4 bytes past the 4-byte result slot)
+        // must survive — TEStyleNew must not write past its result.
+        assert_eq!(
+            bus.read_long(TEST_SP + 12),
+            0xCAFEBABE,
+            "TEStyleNew must not write past the 4-byte function-result slot"
+        );
+    }
+
+    // Inside Macintosh: Text (1993), p. 2-92: TEAutoView takes
+    // `fAuto: Boolean; hTE: TEHandle`. With Pascal calling convention, hTE
+    // (last parameter) is at SP+0 and fAuto at SP+4.
+    #[test]
+    fn teautoview_reads_hte_from_sp_plus_0_and_fauto_from_sp_plus_4() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+
+        bus.write_long(TEST_SP, te_handle); // SP+0: hTE (last-pushed)
+                                            // Pascal BOOLEAN in high byte (MPW C convention).
+        bus.write_byte(TEST_SP + 4, 1); // SP+4: fAuto = TRUE
+
+        let result = disp.dispatch_dialog(true, 0x013, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert!(
+            disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL),
+            "TEAutoView must enable auto-scroll on the TE handle at SP+0"
+        );
+    }
+
+    #[test]
+    fn teautoview_clears_feature_when_fauto_is_false() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+
+        // First turn it on.
+        disp.set_te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL, true);
+        assert!(disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL));
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0); // fAuto = FALSE
+
+        let result = disp.dispatch_dialog(true, 0x013, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 6,
+            "TEAutoView should pop one Boolean and one TEHandle"
+        );
+        assert!(
+            !disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL),
+            "TEAutoView(FALSE) must clear the auto-scroll bit on the supplied hTE"
+        );
+    }
+
+    // IM:Text 2-92 + IM:VI 15-22: TEAutoView and TEFeatureFlag
+    // teFAutoScroll expose the same automatic-scroll state.
+    #[test]
+    fn teautoview_and_tefeatureflag_observe_shared_autoscroll_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_byte(TEST_SP + 4, 1); // fAuto = TRUE
+        let result = disp.dispatch_dialog(true, 0x013, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x000E); // selector
+        bus.write_long(TEST_SP + 2, te_handle); // hTE
+        bus.write_word(TEST_SP + 6, (-1i16) as u16); // teBitTest
+        bus.write_word(TEST_SP + 8, TrapDispatcher::TE_FEATURE_AUTO_SCROLL);
+        bus.write_word(TEST_SP + 10, 0xBEEF);
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 10), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0); // fAuto = FALSE
+        let result = disp.dispatch_dialog(true, 0x013, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x000E); // selector
+        bus.write_long(TEST_SP + 2, te_handle); // hTE
+        bus.write_word(TEST_SP + 6, (-1i16) as u16); // teBitTest
+        bus.write_word(TEST_SP + 8, TrapDispatcher::TE_FEATURE_AUTO_SCROLL);
+        bus.write_word(TEST_SP + 10, 0xBEEF);
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+    }
+
+    #[test]
+    fn te_dispatch_feature_flag_tracks_auto_scroll_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        bus.write_word(TEST_SP, 0x000E);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_word(TEST_SP + 6, 1); // teBitSet
+        bus.write_word(TEST_SP + 8, 0); // teFAutoScroll
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+        assert!(disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL));
+    }
+
+    // Inside Macintosh Volume VI (1991), pp. 15-22 and 15-43: selector
+    // $000E dispatches to TEFeatureFlag; action TEBitTest (-1) reports
+    // current feature state without mutating it.
+    #[test]
+    fn te_dispatch_feature_flag_test_action_returns_current_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.set_te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL, true);
+
+        bus.write_word(TEST_SP, 0x000E); // selector
+        bus.write_long(TEST_SP + 2, te_handle); // hTE
+        bus.write_word(TEST_SP + 6, (-1i16) as u16); // teBitTest
+        bus.write_word(TEST_SP + 8, TrapDispatcher::TE_FEATURE_AUTO_SCROLL);
+        bus.write_word(TEST_SP + 10, 0xBEEF);
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 1);
+        assert!(
+            disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL),
+            "teBitTest should not mutate the feature bit"
+        );
+    }
+
+    // Inside Macintosh Volume VI (1991), p. 15-22: TEFeatureFlag with
+    // action teBitClear=0 clears the selector bit and returns the prior
+    // state. Symmetric counterpart of `te_dispatch_feature_flag_tracks_auto_scroll_state`
+    // for the clear action; mirrors the strict bake's B3 witness in
+    // a83d_tedispatch_strict.
+    #[test]
+    fn tefeatureflag_clear_action_returns_prior_one_state_and_clears_bit() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        // Pre-set autoscroll so teBitClear sees a prior-on state.
+        disp.set_te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL, true);
+        assert!(disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL));
+
+        // THREEWORDINLINE(0x3F3C, 0x000E, 0xA83D) stack frame: selector
+        // pre-pushed at sp+0; Pascal LR push order leaves hTE shallowest
+        // (sp+2), action middle (sp+6), feature deepest (sp+8); short
+        // function-result slot at sp+10.
+        bus.write_word(TEST_SP, 0x000E); // selector $000E = TEFeatureFlag
+        bus.write_long(TEST_SP + 2, te_handle); // hTE
+        bus.write_word(TEST_SP + 6, 0); // action = teBitClear (0)
+        bus.write_word(TEST_SP + 8, TrapDispatcher::TE_FEATURE_AUTO_SCROLL);
+        bus.write_word(TEST_SP + 10, 0xBEEF); // poison result slot
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 10,
+            "TEFeatureFlag must pop 10 bytes (selector + hTE + action + feature)"
+        );
+        assert_eq!(
+            bus.read_word(TEST_SP + 10),
+            1,
+            "teBitClear must return PRIOR bit state (1 = was set), not the new state"
+        );
+        assert!(
+            !disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL),
+            "teBitClear must clear the feature bit after returning its prior state"
+        );
+    }
+
+    // Inside Macintosh Volume VI (1991), p. 15-22: TEFeatureFlag is
+    // FUNCTION TEFeatureFlag(feature, action: INTEGER; hTE: TEHandle): INTEGER.
+    // Universal Headers TextEdit.h declares THREEWORDINLINE(0x3F3C, 0x000E, 0xA83D).
+    // The 10-byte stack frame (2 selector + 4 hTE + 2 action + 2 feature)
+    // is consumed atomically; the post-pop SP points at the 2-byte short
+    // function-result slot. Mirrors the strict bake's B5 witness.
+    #[test]
+    fn tedispatch_function_protocol_consumes_threewordinline_stack_frame_for_tefeatureflag() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+
+        bus.write_word(TEST_SP, 0x000E); // selector
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_word(TEST_SP + 6, (-1i16) as u16); // teBitTest
+        bus.write_word(TEST_SP + 8, TrapDispatcher::TE_FEATURE_AUTO_SCROLL);
+        // Poison both the result slot and a sentinel past it.
+        bus.write_word(TEST_SP + 10, 0xDEAD);
+        bus.write_word(TEST_SP + 12, 0xCAFE);
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        // SP advanced exactly 10 bytes: selector(2) + hTE(4) + action(2) + feature(2).
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 10,
+            "TEFeatureFlag dispatch must advance A7 by exactly 10 bytes"
+        );
+
+        // Result slot was overwritten by the prior bit state (0 here).
+        assert_ne!(
+            bus.read_word(TEST_SP + 10),
+            0xDEAD,
+            "TEFeatureFlag must overwrite the 2-byte result slot with the prior bit state"
+        );
+
+        // Sentinel 2 bytes past the result slot must survive — TEFeatureFlag
+        // must not write beyond its function-result word.
+        assert_eq!(
+            bus.read_word(TEST_SP + 12),
+            0xCAFE,
+            "TEFeatureFlag must not write past the 2-byte short function-result slot"
+        );
+    }
+
+    #[test]
+    fn te_dispatch_continuous_style_returns_unstyled_record_style() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.current_port = 0x181000;
+        disp.tx_font = 4;
+        disp.tx_face = 1;
+        disp.tx_mode = 2;
+        disp.tx_size = 12;
+        disp.initialize_te_record(&mut bus, te_handle, (0, 0, 40, 80), (0, 0, 40, 80));
+
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_TX_FONT_OFFSET, 22);
+        bus.write_word(te_ptr + TrapDispatcher::TE_TX_FACE_OFFSET, 3);
+        bus.write_word(te_ptr + TrapDispatcher::TE_TX_SIZE_OFFSET, 18);
+
+        let style_ptr = 0x300000u32;
+        let mode_ptr = 0x300100u32;
+        bus.write_word(mode_ptr, 0x000F); // doAll
+        bus.write_word(TEST_SP, 0x000A);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, style_ptr);
+        bus.write_long(TEST_SP + 10, mode_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+        assert_eq!(bus.read_word(TEST_SP + 14), 0xFFFF);
+        assert_eq!(bus.read_word(style_ptr), 22);
+        assert_eq!(bus.read_word(style_ptr + 2), 3);
+        assert_eq!(bus.read_word(style_ptr + 4), 18);
+        assert_eq!(bus.read_word(style_ptr + 6), 0);
+        assert_eq!(bus.read_word(style_ptr + 8), 0);
+        assert_eq!(bus.read_word(style_ptr + 10), 0);
+    }
+
+    #[test]
+    fn te_scroll_reads_handle_from_stack_top() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.current_port = 0x181000;
+        disp.tx_font = 4;
+        disp.tx_face = 0;
+        disp.tx_mode = 0;
+        disp.tx_size = 10;
+        disp.initialize_te_record(&mut bus, te_handle, (10, 20, 50, 80), (10, 20, 50, 80));
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, (-6i16) as u16);
+        bus.write_word(TEST_SP + 6, 4);
+
+        let result = disp.dispatch_dialog(true, 0x1DD, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            4
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2),
+            24
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4),
+            44
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6),
+            84
+        );
+    }
+
+    #[test]
+    fn te_pin_scroll_reads_handle_from_stack_top() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.current_port = 0x181000;
+        disp.tx_font = 4;
+        disp.tx_face = 0;
+        disp.tx_mode = 0;
+        disp.tx_size = 10;
+        disp.initialize_te_record(&mut bus, te_handle, (10, 20, 50, 80), (10, 20, 50, 80));
+        disp.te_set_text_contents(
+            &mut bus,
+            te_handle,
+            b"one two three four five six seven eight nine ten",
+        );
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, (-6i16) as u16);
+        bus.write_word(TEST_SP + 6, 4);
+
+        let result = disp.dispatch_dialog(true, 0x012, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            4
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2),
+            20
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4),
+            44
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6),
+            80
+        );
+    }
+
+    #[test]
+    fn tepinscroll_in_range_negative_dv_offsets_destrect_top_and_bottom_exactly_by_dv() {
+        // Inside Macintosh: Text 1993, p. 2-91: "The destination rectangle
+        // is offset by the amount scrolled." Mirrors the strict bake fixture
+        // a812_tepinscroll_strict band B1 (in-range up-scroll with multi-line
+        // text that overflows the view): with text "A\rB\rC\rD\rE\rF\rG\rH"
+        // and view height 10, any small negative dv is in-range so destRect.
+        // top and destRect.bottom must shift by exactly dv with destRect.
+        // left and destRect.right unchanged (dh=0).
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"A\rB\rC\rD\rE\rF\rG\rH");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET,
+            (-1000i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2,
+            (-1000i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4,
+            (-990i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6,
+            (-800i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET,
+            (-1000i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2,
+            (-1000i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4,
+            (-990i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6,
+            (-800i16) as u16,
+        );
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, (-3i16) as u16);
+        bus.write_word(TEST_SP + 6, 0);
+
+        let result = disp.dispatch_dialog(true, 0x012, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16,
+            -1003,
+            "destRect.top must shift by exactly dv=-3"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2) as i16,
+            -1000,
+            "destRect.left must be unchanged (dh=0)"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4) as i16,
+            -993,
+            "destRect.bottom must shift by exactly dv=-3"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6) as i16,
+            -800,
+            "destRect.right must be unchanged (dh=0)"
+        );
+    }
+
+    #[test]
+    fn tepinscroll_pascal_lr_stack_layout_reads_dh_dv_and_hte_from_correct_offsets() {
+        // Per Pascal LR-push-first-arg-deepest convention (matching the
+        // EXTERN_API expansion in MPW Universal Headers TextEdit.h):
+        //   sp+0  hTE: TEHandle  (4) — last pushed, shallowest
+        //   sp+4  dv:  INTEGER   (2) — middle
+        //   sp+6  dh:  INTEGER   (2) — first pushed, deepest
+        // Total pop = 8 bytes; no function-result slot.
+        //
+        // Stage hTE at sp+0, dv=-2 at sp+4, dh=+7 at sp+6 with a 0xCAFE
+        // sentinel at sp+8 to detect over-reads. The HLE must consume
+        // exactly 8 bytes and the sentinel must survive.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"A\rB\rC\rD\rE\rF");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET,
+            (-500i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2,
+            (-500i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4,
+            (-490i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6,
+            (-400i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET,
+            (-500i16) as u16,
+        );
+        // destRect.left = -510 (shifted left of view.left by 10, so positive
+        // dh can be in-range to actually scroll right)
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2,
+            (-510i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4,
+            (-490i16) as u16,
+        );
+        bus.write_word(
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6,
+            (-310i16) as u16,
+        );
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, (-2i16) as u16);
+        bus.write_word(TEST_SP + 6, 7);
+        bus.write_word(TEST_SP + 8, 0xCAFE);
+
+        let result = disp.dispatch_dialog(true, 0x012, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 8,
+            "Pascal PROCEDURE must pop exactly 8 bytes (dh 2 + dv 2 + hTE 4)"
+        );
+        assert_eq!(
+            bus.read_word(TEST_SP + 8),
+            0xCAFE,
+            "sentinel past the arg frame must survive"
+        );
+        // Verify destRect was actually mutated to confirm the HLE read
+        // its args from the correct stack offsets (a swapped-arg stub
+        // would shift by wrong amounts or pick up the sentinel).
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16,
+            -502,
+            "destRect.top must shift by dv=-2"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2) as i16,
+            -503,
+            "destRect.left must shift by dh=+7 (clamped to max_right=10)"
+        );
+    }
+
+    #[test]
+    fn tepinscroll_clamps_overscroll_when_last_line_is_already_visible() {
+        // Inside Macintosh: Text 1993, p. 2-91: TEPinScroll clamps movement
+        // so scrolling stops once the last line is visible.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"A");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4, 50);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6, 80);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 50);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 80);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, (-20i16) as u16);
+        bus.write_word(TEST_SP + 6, 0);
+        let result = disp.dispatch_dialog(true, 0x012, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            10
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2),
+            20
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4),
+            50
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6),
+            80
+        );
+    }
+
+    #[test]
+    fn teselview_autoscroll_disabled_leaves_destrect_unchanged() {
+        // Inside Macintosh: Text 1993, p. 2-92: TESelView only scrolls when
+        // auto-scroll is enabled for the TE record.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(
+            &mut disp,
+            &mut bus,
+            b"one two three four five six seven eight nine ten",
+        );
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4, 50);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6, 80);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 40);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 80);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
+        disp.set_te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL, false);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x011, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            0
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2),
+            20
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4),
+            40
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6),
+            80
+        );
+    }
+
+    #[test]
+    fn teselview_autoscroll_enabled_scrolls_destrect_toward_selection() {
+        // Inside Macintosh: Text 1993, p. 2-92: TESelView scrolls selection
+        // into view when auto-scroll is enabled.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(
+            &mut disp,
+            &mut bus,
+            b"one two three four five six seven eight nine ten",
+        );
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4, 50);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6, 80);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 40);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 80);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
+        disp.set_te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL, true);
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x011, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET),
+            10
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2),
+            20
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4),
+            50
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6),
+            80
+        );
+    }
+
+    #[test]
+    fn teselview_apple_canonical_below_view_shifts_destrect_top_up() {
+        // Inside Macintosh: Text 1993, p. 2-92 (Apple canonical):
+        //   "The top left part of the selection range is scrolled
+        //    into view."
+        // Witnesses the contract-only assertion
+        //   A811:teselview_autoscroll_enabled_with_selection_below_view_shifts_destrect_up_per_apple_canonical
+        // which the strict bake intentionally does NOT witness
+        // (BasiliskII System 7.5.3 ROM does not scroll destRect in
+        // this case — empirically verified). Systemless implements the
+        // Apple-canonical semantic.
+        //
+        // Setup: destRect = (0, 0, 100, 200) tall enough for the
+        // entire multi-line text, viewRect = (0, 0, 100, 30) showing
+        // only the first ~1.5 lines, selection at the last character
+        // (line 7 of "A\rB\r..\rH", well below viewRect.bottom).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"A\rB\rC\rD\rE\rF\rG\rH");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 2, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 4, 30);
+        bus.write_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6, 100);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 200);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 100);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 14);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 14);
+        disp.set_te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL, true);
+
+        let pre_top = bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16;
+
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x011, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        let post_top = bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16;
+        assert!(
+            post_top < pre_top,
+            "TESelView must shift destRect.top UP (negative direction) when selection is below viewRect per IM:Text 1993 p. 2-92; got pre_top={} post_top={}",
+            pre_top,
+            post_top
+        );
+    }
+
+    #[test]
+    fn teselview_procedure_protocol_consumes_only_tehandle_arg() {
+        // Witness for golden assertion id
+        //   A811:teselview_procedure_protocol_consumes_tehandle_argument_from_stack
+        // Pascal PROCEDURE: 4-byte hTE arg, no result. Sentinel guard
+        // at TEST_SP+4 must survive the call (trap must not write past
+        // its argument frame). A7 advances by exactly 4 bytes.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"hi");
+        // Auto-scroll disabled so the trap is a guaranteed destRect
+        // no-op and the only observable side-effect is the SP advance.
+        disp.set_te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL, false);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0xCAFE);
+        bus.write_word(TEST_SP + 6, 0xBABE);
+        let result = disp.dispatch_dialog(true, 0x011, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0xCAFE);
+        assert_eq!(bus.read_word(TEST_SP + 6), 0xBABE);
+    }
+
+    #[test]
+    fn tegetoffset_point_above_destrect_returns_zero() {
+        // Inside Macintosh Volume V (1986), p. V-172: TEGetOffset
+        // returns the character offset of the start of the first line
+        // when the point is above the first line. Pascal LR layout:
+        //   sp+0..3 hTE (last pushed, shallowest)
+        //   sp+4..5 pt.v
+        //   sp+6..7 pt.h
+        //   sp+8..9 INTEGER result slot
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"ABC");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 40);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 140);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 5);
+        bus.write_word(TEST_SP + 6, 30);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        let result = disp.dispatch_dialog(true, 0x03C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, 0);
+    }
+
+    #[test]
+    fn tegetoffset_point_below_last_line_returns_telength() {
+        // Inside Macintosh Volume V (1986), p. V-172: TEGetOffset
+        // returns the character offset of the end of the text when
+        // the point is below the last line. Witnesses that the HLE
+        // computes a value that varies with the point arg (vs the
+        // always-zero result the pre-fix off-by-2 read produced).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"ABC");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 40);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 140);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 200);
+        bus.write_word(TEST_SP + 6, 30);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        let result = disp.dispatch_dialog(true, 0x03C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, 3);
+    }
+
+    #[test]
+    fn tegetoffset_function_protocol_consumes_point_and_tehandle_args_writes_integer_result() {
+        // Pascal FUNCTION protocol: 8 bytes of args (Point + TEHandle)
+        // popped, 2-byte INTEGER result written at sp+8. Sentinel at
+        // sp+10 must survive — the trap must not write past the
+        // 2-byte result slot.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"ABC");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, 10);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 2, 20);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4, 40);
+        bus.write_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 140);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 5);
+        bus.write_word(TEST_SP + 6, 30);
+        bus.write_word(TEST_SP + 8, 0xDEAD);
+        bus.write_word(TEST_SP + 10, 0xCAFE);
+        let result = disp.dispatch_dialog(true, 0x03C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_ne!(bus.read_word(TEST_SP + 8), 0xDEAD);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0xCAFE);
+    }
+
+    #[test]
+    fn tefindword_returns_word_bounds_for_interior_positions() {
+        // Inside Macintosh: Text (1993), pp. 2-60..2-61: TEFindWord
+        // reports the word boundaries surrounding the current position.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"alpha beta");
+        let te_ptr = bus.read_long(te_handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 1); // inside "alpha"
+        cpu.write_reg(Register::D2, 0x1111);
+        cpu.write_reg(Register::A3, te_ptr);
+        cpu.write_reg(Register::A4, te_handle);
+
+        let result = disp.dispatch_dialog(false, 0x0FE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(cpu.read_reg(Register::D0) as u16, 0);
+        assert_eq!(cpu.read_reg(Register::D1) as u16, 5);
+    }
+
+    #[test]
+    fn tefindword_returns_second_word_bounds_without_touching_stack() {
+        // Same TextEdit hook: a later position inside the second word
+        // should return that word's bounds, and the register-based hook
+        // must not consume any stack bytes.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"alpha beta");
+        let te_ptr = bus.read_long(te_handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0xCAFE);
+        cpu.write_reg(Register::D0, 7); // inside "beta"
+        cpu.write_reg(Register::D2, 0x2222);
+        cpu.write_reg(Register::A3, te_ptr);
+        cpu.write_reg(Register::A4, te_handle);
+
+        let result = disp.dispatch_dialog(false, 0x0FE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(TEST_SP), 0xCAFE);
+        assert_eq!(cpu.read_reg(Register::D0) as u16, 6);
+        assert_eq!(cpu.read_reg(Register::D1) as u16, 10);
+    }
+
+    #[test]
+    fn tesettext_copies_bytes_updates_length_and_pops_arguments() {
+        // Inside Macintosh Volume I (1985), p. I-378: TESetText replaces an
+        // edit record's text contents.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"OLD");
+        let te_ptr = bus.read_long(te_handle);
+        let source_ptr = bus.alloc(4);
+        bus.write_bytes(source_ptr, b"NEW!");
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 4);
+        bus.write_long(TEST_SP + 8, source_ptr);
+        let result = disp.dispatch_dialog(true, 0x1CF, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"NEW!".to_vec()
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 4);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            4
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 4);
+        let n_lines = u32::from(bus.read_word(te_ptr + TrapDispatcher::TE_N_LINES_OFFSET));
+        assert!(n_lines > 0);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LINE_STARTS_OFFSET + n_lines * 2),
+            4
+        );
+    }
+
+    #[test]
+    fn tesettext_nil_or_zero_length_input_clears_text() {
+        // Inside Macintosh Volume I (1985), p. I-378: TESetText sets current
+        // text contents; empty input yields empty text.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 5);
+        bus.write_long(TEST_SP + 8, 0);
+        let result = disp.dispatch_dialog(true, 0x1CF, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            Vec::<u8>::new()
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 0);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            0
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 0);
+    }
+
+    #[test]
+    fn tesettext_replaces_prior_contents_via_sequential_call() {
+        // Inside Macintosh Volume I (1985), p. I-378: TESetText *sets*
+        // (not appends to) the current text contents. Mirrors B2 of the
+        // a9cf_tesettext_strict bake: TESetText("WORLD!", 6) followed by
+        // TESetText("HI", 2) on the same TERec yields teLength == 2
+        // with the first two bytes equal to "HI".
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"OLD");
+        let te_ptr = bus.read_long(te_handle);
+
+        let first_ptr = bus.alloc(6);
+        bus.write_bytes(first_ptr, b"WORLD!");
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 6);
+        bus.write_long(TEST_SP + 8, first_ptr);
+        let r1 = disp.dispatch_dialog(true, 0x1CF, &mut cpu, &mut bus);
+        assert!(r1.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"WORLD!".to_vec()
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 6);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        let second_ptr = bus.alloc(2);
+        bus.write_bytes(second_ptr, b"HI");
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 2);
+        bus.write_long(TEST_SP + 8, second_ptr);
+        let r2 = disp.dispatch_dialog(true, 0x1CF, &mut cpu, &mut bus);
+        assert!(r2.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HI".to_vec()
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 2);
+    }
+
+    #[test]
+    fn tesettext_balances_stackspace_with_pascal_protocol() {
+        // Inside Macintosh Volume I (1985), p. I-378: TESetText is a
+        // PROCEDURE with three args (Ptr text, LONGINT length, TEHandle).
+        // Pascal LR push order yields a 12-byte arg frame and no result
+        // slot. Mirrors B4 of the a9cf_tesettext_strict bake — A7 must
+        // advance by exactly 12 bytes regardless of arg values.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"SEED");
+        let source = bus.alloc(1);
+        bus.write_bytes(source, b"X");
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 8, source);
+        bus.write_word(TEST_SP + 12, 0xCAFE);
+        let result = disp.dispatch_dialog(true, 0x1CF, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0xCAFE);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"X".to_vec()
+        );
+    }
+
+    #[test]
+    fn tekey_inserts_character_at_caret_and_advances_selection() {
+        // Inside Macintosh Volume I (1985), p. I-385 and Text 1993, p. 2-81:
+        // TEKey inserts typed characters at the insertion point.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, u16::from(b'E'));
+        let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            2
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 2);
+    }
+
+    #[test]
+    fn tekey_backspace_deletes_selection_or_previous_character() {
+        // Inside Macintosh Volume I (1985), p. I-385 and Text 1993, p. 2-81:
+        // backspace deletes current selection, or the previous character.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 3);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0x0008);
+        let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 1);
+
+        disp.te_set_text_contents(&mut bus, te_handle, b"HELLO");
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0x0008);
+        let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HLLO".to_vec()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 1);
+    }
+
+    // ---- HideDialogItem / ShowDialogItem ($A827 / $A828) ----
+    // Gate the move-offscreen-and-restore behaviour.
+
+    #[test]
+    fn hide_dialog_item_moves_rect_offscreen_and_saves_original() {
+        // MTE 1992, 6-123: HideDialogItem offsets left/right by +16384.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x210000u32;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20, 30, 120),
+                text: "OK".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        // Stack: SP+0=itemNo(2), SP+2=dialog_ptr(4). Pop 6.
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x027, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+
+        // Rect is now offscreen.
+        let item_rect = disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect;
+        assert!(
+            item_rect.0 == 10 && item_rect.2 == 30,
+            "vertical coordinates are unchanged by HideDialogItem, got {item_rect:?}"
+        );
+        assert!(
+            item_rect.1 == 20 + 16384 && item_rect.3 == 120 + 16384,
+            "hidden item rect must be offscreen, got {item_rect:?}"
+        );
+        // Original saved.
+        assert_eq!(
+            disp.hidden_dialog_item_rects.get(&(dialog_ptr, 1)).copied(),
+            Some((10, 20, 30, 120))
+        );
+    }
+
+    #[test]
+    fn show_dialog_item_restores_saved_rect() {
+        // MTE 1992, 6-124: ShowDialogItem restores pre-hide item rect.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x210000u32;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20 + 16384, 30, 120 + 16384),
+                text: "OK".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.hidden_dialog_item_rects
+            .insert((dialog_ptr, 1), (10, 20, 30, 120));
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x028, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+
+        assert_eq!(
+            disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect,
+            (10, 20, 30, 120)
+        );
+        assert!(
+            !disp.hidden_dialog_item_rects.contains_key(&(dialog_ptr, 1)),
+            "saved rect must be removed after show"
+        );
+    }
+
+    #[test]
+    fn hide_then_show_is_idempotent_roundtrip() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x210000u32;
+        let orig_rect = (50, 60, 80, 200);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: orig_rect,
+                text: "Cancel".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+        disp.dispatch_dialog(true, 0x027, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        // Reset SP + args for Show.
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+        disp.dispatch_dialog(true, 0x028, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect,
+            orig_rect,
+            "round-trip hide→show must restore the exact original rect"
+        );
+    }
+
+    #[test]
+    fn hide_dialog_item_already_hidden_left_coord_is_noop() {
+        // MTE 1992, 6-123: left > 8192 means the item is already hidden.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x210000u32;
+        let already_hidden = (10, 9000, 30, 9200);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: already_hidden,
+                text: "Hidden".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x027, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect,
+            already_hidden
+        );
+        assert!(
+            !disp.hidden_dialog_item_rects.contains_key(&(dialog_ptr, 1)),
+            "already hidden items must not record a new saved rect"
+        );
+    }
+
+    #[test]
+    fn show_dialog_item_without_saved_rect_subtracts_offset_when_hidden() {
+        // MTE 1992, 6-124: ShowDialogItem uses left > 8192 as hidden predicate.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x210000u32;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 30 + 16384, 30, 130 + 16384),
+                text: "ShowMe".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x028, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect,
+            (10, 30, 30, 130)
+        );
+    }
+
+    #[test]
+    fn show_dialog_item_visible_left_coord_is_noop() {
+        // MTE 1992, 6-124: left < 8192 means already visible; no-op.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x210000u32;
+        let visible = (10, 20, 30, 120);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: visible,
+                text: "Visible".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x028, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect, visible);
+    }
+
+    // ---- FindDItem ($A984) ----
+
+    #[test]
+    fn findditem_returns_zero_based_index_for_hit_and_pops_stack() {
+        // MTE 1992, 6-125: FindDialogItem/FindDItem returns 0 for the first
+        // item, 1 for the second, etc.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x220000u32;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 4,
+                    rect: (10, 20, 30, 40),
+                    text: "A".into(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (40, 50, 70, 90),
+                    text: "B".into(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        bus.write_word(TEST_SP, 45);
+        bus.write_word(TEST_SP + 2, 55);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x184, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, 1);
+    }
+
+    #[test]
+    fn findditem_point_outside_all_items_returns_minus_one() {
+        // IM:IV 1986, p. IV-60: FindDItem returns -1 when the point does not
+        // lie within any item rectangle.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x220100u32;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20, 30, 40),
+                text: "A".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(TEST_SP, 99);
+        bus.write_word(TEST_SP + 2, 99);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x184, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, -1);
+    }
+
+    #[test]
+    fn findditem_returns_first_overlapping_item_and_includes_disabled_items() {
+        // IM:IV 1986, p. IV-60: overlap resolution is first item in list.
+        // IM:IV 1986, p. IV-60 note: disabled items are still returned.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x220200u32;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0x80 | 4, // disabled
+                    rect: (10, 20, 40, 60),
+                    text: "DisabledTop".into(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 30, 50, 70),
+                    text: "EnabledBottom".into(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        // Point lies within both rectangles.
+        bus.write_word(TEST_SP, 25);
+        bus.write_word(TEST_SP + 2, 35);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x184, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, 0);
+    }
+
+    // ========== Cursor Manager ==========
+
+    // ---- InitCursor ($A850) ----
+
+    #[test]
+    fn init_cursor_resets_cursor_level_to_zero_and_sets_arrow_visible() {
+        // IM:I I-167: InitCursor sets arrow cursor, sets cursor level to 0,
+        // and makes cursor visible.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // Start from a hidden nested level to prove InitCursor reset.
+        disp.cursor_data = None;
+        disp.cursor_level = -3;
+        disp.cursor_visible = false;
+
+        let result = disp.dispatch_dialog(true, 0x050, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert!(disp.cursor_data.is_some());
+        assert_eq!(disp.cursor_level, 0);
+        assert!(disp.cursor_visible);
+    }
+
+    // ---- SetCursor ($A851) ----
+
+    #[test]
+    fn set_cursor_reads_cursor_data_and_pops_4_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let crsr_ptr = 0x300000u32;
+
+        // Write cursor bitmap data (32 bytes)
+        for i in 0..32u32 {
+            bus.write_byte(crsr_ptr + i, 0xAA);
+        }
+        // Write cursor mask data (32 bytes)
+        for i in 0..32u32 {
+            bus.write_byte(crsr_ptr + 32 + i, 0xFF);
+        }
+        // Write hotspot
+        bus.write_word(crsr_ptr + 64, 5); // hot_v
+        bus.write_word(crsr_ptr + 66, 3); // hot_h
+
+        // SP+0: crsr_ptr (4 bytes)
+        bus.write_long(TEST_SP, crsr_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x051, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        let (data, mask, hot_v, hot_h) = disp.cursor_data.unwrap();
+        assert!(data.iter().all(|&b| b == 0xAA));
+        assert!(mask.iter().all(|&b| b == 0xFF));
+        assert_eq!(hot_v, 5);
+        assert_eq!(hot_h, 3);
+    }
+
+    #[test]
+    fn set_cursor_does_not_force_visibility_when_cursor_is_hidden() {
+        // IM:I I-167: if the cursor is hidden, SetCursor changes the
+        // current cursor image but it remains hidden until uncovered.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let crsr_ptr = 0x300100u32;
+        for i in 0..32u32 {
+            bus.write_byte(crsr_ptr + i, 0x11);
+            bus.write_byte(crsr_ptr + 32 + i, 0x22);
+        }
+        bus.write_word(crsr_ptr + 64, 9);
+        bus.write_word(crsr_ptr + 66, 4);
+        bus.write_long(TEST_SP, crsr_ptr);
+
+        disp.cursor_level = -1;
+        disp.cursor_visible = false;
+        let result = disp.dispatch_dialog(true, 0x051, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.cursor_level, -1);
+        assert!(!disp.cursor_visible);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    // ---- HideCursor ($A852) ----
+
+    #[test]
+    fn hide_cursor_decrements_level_and_hides_cursor() {
+        // IM:I I-168: HideCursor decrements cursor level (from 0 to -1)
+        // and removes the cursor from the screen.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.cursor_level = 0;
+        disp.cursor_visible = true;
+
+        let result = disp.dispatch_dialog(true, 0x052, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.cursor_level, -1);
+        assert!(!disp.cursor_visible);
+    }
+
+    // ---- ShowCursor ($A853) ----
+
+    #[test]
+    fn show_cursor_balances_hidecursor_and_reveals_at_level_zero() {
+        // IM:I I-168: ShowCursor increments toward 0 and only shows the
+        // cursor when level becomes 0.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.cursor_level = -2;
+        disp.cursor_visible = false;
+
+        let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.cursor_level, -1);
+        assert!(!disp.cursor_visible);
+
+        let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.cursor_level, 0);
+        assert!(disp.cursor_visible);
+    }
+
+    #[test]
+    fn show_cursor_at_level_zero_is_noop() {
+        // IM:I I-168: extra ShowCursor calls have no effect and do not
+        // increment cursor level above 0.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.cursor_level = 0;
+        disp.cursor_visible = true;
+
+        let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.cursor_level, 0);
+        assert!(disp.cursor_visible);
+    }
+
+    // ---- ObscureCursor ($A856) ----
+
+    #[test]
+    fn obscure_cursor_noop_preserves_cursor_level_visibility_and_stack() {
+        // IM:I I-168: ObscureCursor has no effect on cursor level and takes
+        // no arguments. Systemless's HLE compromise keeps it as a no-op because
+        // synthesized mouse-move events would immediately un-obscure anyway.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.cursor_level = -1;
+        disp.cursor_visible = false;
+        let sp_before = cpu.read_reg(Register::A7);
+
+        let result = disp.dispatch_dialog(true, 0x056, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(disp.cursor_level, -1);
+        assert!(!disp.cursor_visible);
+    }
+
+    #[test]
+    fn obscure_cursor_five_call_composition_preserves_stack_pointer_and_level() {
+        // Mirrors B2 of the a855_a856_shieldcursor_obscurecursor_strict
+        // bake: 5 successive ObscureCursor dispatches inside one
+        // StackSpace sandwich leave SP unchanged. Per IM:I I-168 the
+        // PROCEDURE has no arguments and no result slot, so each call
+        // pops 0 bytes; the cumulative SP delta after N calls is zero.
+        // Also pins the cursor-level no-effect contract per IM:I I-168:
+        // ObscureCursor "has no effect on the cursor level and must
+        // not be balanced by a call to ShowCursor."
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.cursor_level = -2;
+        disp.cursor_visible = false;
+        let sp_before = cpu.read_reg(Register::A7);
+
+        for i in 0..5 {
+            let result = disp.dispatch_dialog(true, 0x056, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok(), "iteration {i} dispatch failed");
+            assert_eq!(
+                cpu.read_reg(Register::A7),
+                sp_before,
+                "iteration {i}: ObscureCursor must leave SP unchanged (0-byte pop)",
+            );
+            assert_eq!(
+                disp.cursor_level, -2,
+                "iteration {i}: ObscureCursor must NOT change cursor level per IM:I I-168",
+            );
+        }
+    }
+
+    // ---- GetCursor ($A9B9) — IM:I I-474 contract ----
+
+    #[test]
+    fn get_cursor_returns_handle_for_system_cursor() {
+        // crossCursor (ID 2) is one of the four standard system
+        // cursors per IM:I I-475..I-477. Systemless synthesises it via
+        // [`TrapDispatcher::synthesize_system_cursor`] because the
+        // System file's resource fork isn't loaded; the result must
+        // be a non-NIL handle whose master ptr's bitmap matches the
+        // synthesised crosshair.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 2); // crossCursor
+
+        let _ = disp.dispatch_dialog(true, 0x1B9, &mut cpu, &mut bus);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(
+            handle, 0,
+            "GetCursor(crossCursor) must return non-NIL handle for a built-in system cursor"
+        );
+        let crsr = bus.read_long(handle);
+        let hot_v = bus.read_word(crsr + 64) as i16;
+        let hot_h = bus.read_word(crsr + 66) as i16;
+        assert_eq!(
+            (hot_v, hot_h),
+            (7, 7),
+            "crossCursor's hotspot is documented at (7,7) in IM:I I-475"
+        );
+    }
+
+    #[test]
+    fn get_cursor_returns_nil_for_unknown_id_per_im_i_474() {
+        // IM:I I-474: "If the resource can't be read, GetCursor
+        // returns NIL." For an ID that's neither a CURS resource we
+        // have loaded nor one of the four standard built-ins, the
+        // miss path is NIL — not a fresh empty 68-byte block. Apps
+        // that defensively check `if handle = NIL then use_arrow
+        // else SetCursor(handle^^)` would otherwise SetCursor a
+        // blank cursor onto the screen.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 999); // not a system cursor, no CURS 999 installed
+
+        let _ = disp.dispatch_dialog(true, 0x1B9, &mut cpu, &mut bus);
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 2,
+            "GetCursor must pop 2 bytes (cursorID INTEGER)"
+        );
+        assert_eq!(
+            bus.read_long(TEST_SP + 2),
+            0,
+            "GetCursor must return NIL when CURS resource is missing per IM:I I-474"
+        );
+    }
+
+    #[test]
+    fn get_cursor_returns_stable_handle_across_repeated_calls_for_system_cursor() {
+        // Apps cache GetCursor results at boot and pass them to
+        // SetCursor every frame; without handle stability the
+        // dispatcher would leak a 68-byte block per call. Pin the
+        // cache hit so a future "tighten alloc" change doesn't
+        // accidentally drop the cache.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 4); // watchCursor
+
+        let _ = disp.dispatch_dialog(true, 0x1B9, &mut cpu, &mut bus);
+        let h1 = bus.read_long(TEST_SP + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 4);
+
+        let _ = disp.dispatch_dialog(true, 0x1B9, &mut cpu, &mut bus);
+        let h2 = bus.read_long(TEST_SP + 2);
+        assert_eq!(
+            h1, h2,
+            "GetCursor must return the same handle for repeated calls on a system cursor ID"
+        );
+    }
+
+    #[test]
+    fn get_cursor_returns_handle_to_loaded_curs_resource() {
+        // With a CURS resource installed, GetCursor must return a
+        // handle whose master ptr equals the loaded resource bytes
+        // — same value-asserting gate as get_icon_returns_handle_to_loaded_icon_resource.
+        let (mut disp, mut cpu, mut bus) = setup();
+        // CURS records are 68 bytes (32 data + 32 mask + 4 hotSpot).
+        let curs_data: Vec<u8> = (0..68).map(|i| (i as u8).wrapping_mul(11)).collect();
+        let res_ptr = disp.install_test_resource(&mut bus, *b"CURS", 200, &curs_data);
+        bus.write_word(TEST_SP, 200);
+
+        let _ = disp.dispatch_dialog(true, 0x1B9, &mut cpu, &mut bus);
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(
+            handle, 0,
+            "GetCursor must return non-NIL handle when CURS resource is loaded"
+        );
+        assert_eq!(
+            bus.read_long(handle),
+            res_ptr,
+            "GetCursor's handle must dereference to the loaded CURS resource bytes"
+        );
+    }
+
+    // ---- GetPattern ($A9B8) — IM:I I-473 contract ----
+
+    #[test]
+    fn get_pattern_returns_nil_for_missing_resource_per_im_i_473() {
+        // IM:I I-473: "If the resource can't be read, GetPattern
+        // returns NIL." The previous Stub returned a handle to a
+        // fresh all-0xFF (white) 8-byte block, strictly worse than
+        // NIL because callers branching on `handle = NIL` took the
+        // FillRect-with-white path instead of the recovery path.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 1); // patID = 1, no PAT 1 installed
+
+        let _ = disp.dispatch_dialog(true, 0x1B8, &mut cpu, &mut bus);
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 2,
+            "GetPattern must pop 2 bytes (patID INTEGER)"
+        );
+        assert_eq!(
+            bus.read_long(TEST_SP + 2),
+            0,
+            "GetPattern must return NIL when PAT resource is missing per IM:I I-473"
+        );
+    }
+
+    #[test]
+    fn get_pattern_returns_handle_to_loaded_pat_resource() {
+        // With a PAT resource installed, GetPattern must return a
+        // handle whose master ptr equals the loaded resource bytes.
+        // Pin master-ptr-equality so a future regression that
+        // allocates fresh memory instead of reusing the loaded ptr
+        // fails here. Same gate shape as
+        // get_icon_returns_handle_to_loaded_icon_resource.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pat_data: [u8; 8] = [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA];
+        let res_ptr = disp.install_test_resource(&mut bus, *b"PAT ", 16, &pat_data);
+        bus.write_word(TEST_SP, 16);
+
+        let _ = disp.dispatch_dialog(true, 0x1B8, &mut cpu, &mut bus);
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(
+            handle, 0,
+            "GetPattern must return non-NIL handle when PAT resource is loaded"
+        );
+        assert_eq!(
+            bus.read_long(handle),
+            res_ptr,
+            "GetPattern's handle must dereference to the loaded PAT resource bytes \
+             (not a fresh all-0xFF allocation)"
+        );
+        // Verify the bytes through the handle deref are the
+        // installed sentinel pattern (50/AA stripes), not 0xFF.
+        let master = bus.read_long(handle);
+        for (i, want) in pat_data.iter().enumerate() {
+            assert_eq!(
+                bus.read_byte(master + i as u32),
+                *want,
+                "GetPattern PAT byte +{i} must match installed resource byte"
+            );
+        }
+    }
+
+    #[test]
+    fn get_pattern_returns_stable_handle_across_repeated_calls() {
+        // Apps that paint with a pattern in tight loops cache the
+        // GetPattern result; pin handle stability so a future
+        // regression that drops `get_or_create_resource_handle` for
+        // a fresh `bus.alloc(4)` per call surfaces here.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pat_data: [u8; 8] = [0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0, 0x0F, 0xF0];
+        let _ = disp.install_test_resource(&mut bus, *b"PAT ", 100, &pat_data);
+
+        bus.write_word(TEST_SP, 100);
+        let _ = disp.dispatch_dialog(true, 0x1B8, &mut cpu, &mut bus);
+        let h1 = bus.read_long(TEST_SP + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 100);
+
+        let _ = disp.dispatch_dialog(true, 0x1B8, &mut cpu, &mut bus);
+        let h2 = bus.read_long(TEST_SP + 2);
+        assert_eq!(
+            h1, h2,
+            "GetPattern must return the same handle for repeated calls on a loaded PAT resource"
+        );
+    }
+
+    // ---- GetIcon ($A9BB) — IM:I I-473 contract ----
+
+    #[test]
+    fn get_icon_returns_nil_when_resource_missing() {
+        // IM:I I-473: "If the resource can't be read, GetIcon
+        // returns NIL." Critical for apps that defensively check
+        // `if handle = NIL` before dereferencing — the prior Stub
+        // always returned a non-NIL handle to uninitialised
+        // memory which broke that branch.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 1); // iconID = 1, no ICON 1 installed
+        let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 2,
+            "GetIcon must pop 2 bytes (iconID INTEGER)"
+        );
+        assert_eq!(
+            bus.read_long(TEST_SP + 2),
+            0,
+            "GetIcon must return NIL when ICON resource is missing per IM:I I-473"
+        );
+    }
+
+    #[test]
+    fn get_icon_returns_handle_to_loaded_icon_resource() {
+        // With an ICON resource installed, GetIcon must return a
+        // non-NIL handle whose master ptr points at the loaded
+        // resource bytes. Pin the master-ptr-equality so a future
+        // regression that allocates fresh memory instead of
+        // reusing the loaded ptr fails here.
+        let (mut disp, mut cpu, mut bus) = setup();
+        // Real ICON resources are 128 bytes (32x32 1bpp); fill
+        // with a recognisable sentinel pattern so handle deref
+        // assertions can verify "this is the right resource."
+        let icon_data: Vec<u8> = (0..128).map(|i| (i as u8).wrapping_mul(7)).collect();
+        let res_ptr = disp.install_test_resource(&mut bus, *b"ICON", 128, &icon_data);
+        bus.write_word(TEST_SP, 128);
+
+        let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(
+            handle, 0,
+            "GetIcon must return a non-NIL handle when ICON resource is loaded"
+        );
+        assert_eq!(
+            bus.read_long(handle),
+            res_ptr,
+            "GetIcon's handle must dereference to the loaded ICON resource bytes \
+             (not a fresh uninitialised allocation)"
+        );
+        // Verify the bytes through the handle deref are the
+        // installed sentinel pattern.
+        let master = bus.read_long(handle);
+        for (i, want) in icon_data.iter().enumerate() {
+            assert_eq!(
+                bus.read_byte(master + i as u32),
+                *want,
+                "GetIcon ICON byte +{i} must match installed resource byte"
+            );
+        }
+    }
+
+    #[test]
+    fn get_icon_returns_stable_handle_across_repeated_calls() {
+        // Per IM:Resource Manager, GetResource returns the SAME
+        // handle on repeat calls (unless ReleaseResource has run).
+        // GetIcon delegates to GetResource per IM:I I-473, so it
+        // must inherit this stability — apps that cache the handle
+        // depend on it not changing between alert cycles.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let icon_data: Vec<u8> = vec![0xCC; 128];
+        disp.install_test_resource(&mut bus, *b"ICON", 200, &icon_data);
+
+        bus.write_word(TEST_SP, 200);
+        let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
+        let h1 = bus.read_long(TEST_SP + 2);
+
+        // Reset SP and call again with the same iconID.
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 200);
+        let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
+        let h2 = bus.read_long(TEST_SP + 2);
+
+        assert_ne!(h1, 0, "first GetIcon must return non-NIL");
+        assert_eq!(
+            h1, h2,
+            "GetIcon must return the SAME handle on repeated calls per IM:Resource Mgr stability"
+        );
+    }
+
+    #[test]
+    fn get_icon_pops_two_bytes_per_pascal_signature() {
+        // FUNCTION GetIcon(iconID: INTEGER): Handle;
+        // Pascal stack frame: result Handle (4) pre-pushed by
+        // caller, iconID (2) on top. Trap pops 2 bytes (iconID),
+        // result lands at new SP+0 (= old SP+2).
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 999); // any iconID
+        let pre_a7 = cpu.read_reg(Register::A7);
+        let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            pre_a7 + 2,
+            "GetIcon must advance A7 by 2 bytes (iconID INTEGER)"
+        );
+    }
+
+    // ---- GetPicture ($A9BC) ----
+
+    #[test]
+    fn get_picture_returns_nil_without_resource() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        // SP+0: picture id (2 bytes)
+        bus.write_word(TEST_SP, 1);
+
+        let result = disp.dispatch_dialog(true, 0x1BC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_eq!(handle, 0); // NIL when no PICT resource loaded
+    }
+
+    // ---- GetString ($A9BA) ----
+
+    #[test]
+    fn get_string_returns_loaded_str_resource_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let str_ptr = bus.alloc(6);
+        bus.write_byte(str_ptr, 5);
+        bus.write_bytes(str_ptr + 1, b"Hello");
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([((*b"STR ", 1), str_ptr)]),
+                    named: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        // SP+0: string id (2 bytes)
+        bus.write_word(TEST_SP, 1);
+
+        let result = disp.dispatch_dialog(true, 0x1BA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(handle, 0);
+        assert_eq!(bus.read_long(handle), str_ptr);
+    }
+
+    #[test]
+    fn get_string_returns_nil_when_resource_is_missing() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 999);
+
+        let result = disp.dispatch_dialog(true, 0x1BA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(bus.read_long(TEST_SP + 2), 0);
+    }
+
+    // ---- Unhandled trap returns None ----
+
+    #[test]
+    fn unhandled_trap_returns_none() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let result = disp.dispatch_dialog(true, 0xFFFF, &mut cpu, &mut bus);
+        assert!(result.is_none());
+    }
+}

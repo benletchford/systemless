@@ -1,0 +1,51 @@
+//! Error types surfaced by the public API.
+
+use thiserror::Error;
+
+/// `Result<T, Error>` shorthand for any systemless operation.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Top-level error returned by [`crate::runner::FixtureRunner`] and
+/// the supporting traps. Variants:
+///
+/// * [`Error::UnimplementedTrap`] — the dispatcher reached an A-line
+///   trap word with no matching handler. The trap word is included
+///   for diagnosis. Adding a `(is_tool, trap_num) =>` arm in the
+///   appropriate `src/trap/*.rs` file is how you fix this.
+///
+/// * [`Error::Halted`] — the guest application called `ExitToShell`
+///   (or otherwise reached a halt state). Not a failure per se;
+///   callers that loop on `run_steps` use `still_running == false`
+///   from the tuple instead of catching this.
+///
+/// * [`Error::Timeout`] — execution exceeded a caller-supplied
+///   instruction budget without halting. The carried `usize` is the
+///   instruction-count cap that was hit.
+///
+/// * [`Error::Oracle`] — recording-side error from the cross-runtime
+///   parity oracle (filesystem write, JSON serialisation, etc).
+///   Surfaces only when oracle recording is enabled via
+///   `enable_oracle_recording`.
+#[derive(Debug, Error)]
+pub enum Error {
+    /// The dispatcher reached an A-line trap word with no matching
+    /// handler. The trap word is included for diagnosis.
+    #[error("Unimplemented trap ${0:04X}")]
+    UnimplementedTrap(u16),
+
+    /// The guest application reached a halt state (typically via
+    /// `ExitToShell`).
+    #[error("Application halted")]
+    Halted,
+
+    /// Execution exceeded the caller-supplied instruction budget
+    /// without halting. The carried value is the instruction count
+    /// at the timeout.
+    #[error("Execution timeout after {0} instructions")]
+    Timeout(usize),
+
+    /// Cross-runtime parity oracle returned an error (filesystem
+    /// write, JSON serialisation, etc).
+    #[error("Oracle error: {0}")]
+    Oracle(String),
+}

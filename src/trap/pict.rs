@@ -1,0 +1,3566 @@
+//! PICT v1/v2 picture parser and renderer.
+//!
+//! Handles DrawPicture by parsing the PICT opcode stream and rendering
+//! bitmap data to the framebuffer. Supports PackBitsRect (0x0098) and
+//! DirectBitsRect (0x009A) for game artwork.
+
+use crate::memory::{MacMemoryBus, MemoryBus};
+
+use std::sync::OnceLock;
+static TRACE_PICT: OnceLock<bool> = OnceLock::new();
+static TRACE_PICT_PALETTE: OnceLock<bool> = OnceLock::new();
+static TRACE_PICT_SAMPLES: OnceLock<bool> = OnceLock::new();
+static CLUT_MATCH_ITABLE: OnceLock<bool> = OnceLock::new();
+static CLUT_MATCH_LEGACY_GRAY: OnceLock<bool> = OnceLock::new();
+static CLUT_MATCH_DEVICE_ITABLE: OnceLock<bool> = OnceLock::new();
+static PICT_IDENTITY_REMAP: OnceLock<bool> = OnceLock::new();
+
+fn trace_pict_enabled() -> bool {
+    *TRACE_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_PICT").is_some())
+}
+
+fn trace_pict_palette_enabled() -> bool {
+    *TRACE_PICT_PALETTE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_PICT_PALETTE").is_some())
+}
+
+fn trace_pict_samples_enabled() -> bool {
+    *TRACE_PICT_SAMPLES.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_PICT_SAMPLES").is_some())
+}
+
+fn clut_match_itable_enabled() -> bool {
+    *CLUT_MATCH_ITABLE.get_or_init(|| std::env::var_os("SYSTEMLESS_CLUT_MATCH_ITABLE").is_some())
+}
+
+fn clut_match_legacy_gray_enabled() -> bool {
+    *CLUT_MATCH_LEGACY_GRAY
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_CLUT_MATCH_LEGACY_GRAY").is_some())
+}
+
+fn clut_match_device_itable_enabled() -> bool {
+    *CLUT_MATCH_DEVICE_ITABLE
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_CLUT_MATCH_DEVICE_ITABLE").is_some())
+}
+
+fn pict_identity_remap_enabled() -> bool {
+    *PICT_IDENTITY_REMAP.get_or_init(|| std::env::var_os("SYSTEMLESS_PICT_IDENTITY_REMAP").is_some())
+}
+
+const REGION_HEADER_SIZE: u32 = 10;
+const REGION_STOP: i16 = i16::MAX;
+
+struct PictureRegion {
+    top: i16,
+    left: i16,
+    bottom: i16,
+    right: i16,
+    rows: Vec<Vec<i16>>,
+}
+
+impl PictureRegion {
+    fn contains(&self, y: i32, x: i32) -> bool {
+        if y < i32::from(self.top)
+            || y >= i32::from(self.bottom)
+            || x < i32::from(self.left)
+            || x >= i32::from(self.right)
+        {
+            return false;
+        }
+
+        if self.rows.is_empty() {
+            return true;
+        }
+
+        let row_index = (y - i32::from(self.top)) as usize;
+        let Some(row) = self.rows.get(row_index) else {
+            return false;
+        };
+
+        let mut in_region = false;
+        for &edge in row {
+            if i32::from(edge) > x {
+                break;
+            }
+            in_region = !in_region;
+        }
+        in_region
+    }
+}
+
+fn merge_region_endpoints(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
+    let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
+    let mut lhs_index = 0usize;
+    let mut rhs_index = 0usize;
+
+    while lhs_index < lhs.len() || rhs_index < rhs.len() {
+        match (lhs.get(lhs_index), rhs.get(rhs_index)) {
+            (Some(&lhs_value), Some(&rhs_value)) if lhs_value < rhs_value => {
+                merged.push(lhs_value);
+                lhs_index += 1;
+            }
+            (Some(&lhs_value), Some(&rhs_value)) if rhs_value < lhs_value => {
+                merged.push(rhs_value);
+                rhs_index += 1;
+            }
+            (Some(_), Some(_)) => {
+                lhs_index += 1;
+                rhs_index += 1;
+            }
+            (Some(&lhs_value), None) => {
+                merged.push(lhs_value);
+                lhs_index += 1;
+            }
+            (None, Some(&rhs_value)) => {
+                merged.push(rhs_value);
+                rhs_index += 1;
+            }
+            (None, None) => break,
+        }
+    }
+
+    merged
+}
+
+fn parse_picture_region(bus: &MacMemoryBus, region_ptr: u32) -> Option<PictureRegion> {
+    let region_size = u32::from(bus.read_word(region_ptr));
+    if region_size < REGION_HEADER_SIZE {
+        return None;
+    }
+
+    let top = bus.read_word(region_ptr + 2) as i16;
+    let left = bus.read_word(region_ptr + 4) as i16;
+    let bottom = bus.read_word(region_ptr + 6) as i16;
+    let right = bus.read_word(region_ptr + 8) as i16;
+    if bottom <= top || right <= left {
+        return None;
+    }
+
+    if region_size == REGION_HEADER_SIZE {
+        return Some(PictureRegion {
+            top,
+            left,
+            bottom,
+            right,
+            rows: Vec::new(),
+        });
+    }
+
+    let region_end = region_ptr + region_size;
+    let mut cursor = region_ptr + REGION_HEADER_SIZE;
+    if cursor + 2 > region_end {
+        return None;
+    }
+
+    let mut next_change_y = bus.read_word(cursor) as i16;
+    cursor += 2;
+    let mut active = Vec::new();
+    let mut rows = Vec::with_capacity((bottom - top) as usize);
+
+    for y in top..bottom {
+        while next_change_y != REGION_STOP && next_change_y <= y {
+            let mut delta = Vec::new();
+            loop {
+                if cursor + 2 > region_end {
+                    return None;
+                }
+                let value = bus.read_word(cursor) as i16;
+                cursor += 2;
+                if value == REGION_STOP {
+                    break;
+                }
+                delta.push(value);
+            }
+            active = merge_region_endpoints(&active, &delta);
+            if cursor + 2 > region_end {
+                return None;
+            }
+            next_change_y = bus.read_word(cursor) as i16;
+            cursor += 2;
+        }
+        rows.push(active.clone());
+    }
+
+    Some(PictureRegion {
+        top,
+        left,
+        bottom,
+        right,
+        rows,
+    })
+}
+
+/// Parse and render a PICT from guest memory.
+/// `pic_ptr` points to the Picture record (picSize + picFrame + opcodes).
+/// `dst_rect` is the destination rectangle from DrawPicture parameters.
+/// Returns true if rendering was attempted.
+pub fn draw_picture(
+    bus: &mut MacMemoryBus,
+    pic_ptr: u32,
+    dst_top: i16,
+    dst_left: i16,
+    dst_bottom: i16,
+    dst_right: i16,
+    screen_mode: (u32, u32, u16, u16, u16), // (base, row_bytes, width, height, pixel_size)
+    device_clut: &[[u16; 3]; 256],
+    device_ct_seed: u32,
+) -> (bool, Option<Vec<[u16; 3]>>) {
+    if pic_ptr == 0 {
+        return (false, None);
+    }
+
+    // Read Picture header
+    let _pic_size = bus.read_word(pic_ptr) as u32;
+    let frame_top = bus.read_word(pic_ptr + 2) as i16;
+    let frame_left = bus.read_word(pic_ptr + 4) as i16;
+    let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
+    let frame_right = bus.read_word(pic_ptr + 8) as i16;
+
+    if trace_pict_enabled() {
+        eprintln!(
+            "[PICT] draw_picture picPtr=${:08X} picFrame=({},{}..{},{}) dst=({},{}..{},{}) dstBase=${:08X}",
+            pic_ptr, frame_top, frame_left, frame_bottom, frame_right,
+            dst_top, dst_left, dst_bottom, dst_right, screen_mode.0,
+        );
+    }
+
+    let frame_w = (frame_right - frame_left) as f64;
+    let frame_h = (frame_bottom - frame_top) as f64;
+    let dst_w = (dst_right - dst_left) as f64;
+    let dst_h = (dst_bottom - dst_top) as f64;
+
+    if frame_w <= 0.0 || frame_h <= 0.0 {
+        return (false, None);
+    }
+
+    let scale_x = dst_w / frame_w;
+    let scale_y = dst_h / frame_h;
+
+    // Start parsing opcodes after the 10-byte header
+    let mut pos = pic_ptr + 10;
+    let mut opcount = 0;
+    let mut last_clut: Option<Vec<[u16; 3]>> = None;
+    // Prefer a non-canonical-looking CTab (the "scene palette") over
+    // canonical-looking ones. A multi-PICT scene with a custom-palette PICT
+    // plus several canonical-palette decorative PICTs would otherwise lose
+    // the scene palette since `last_clut` returns the canonical one
+    // last-drawn.
+    let mut preferred_clut: Option<Vec<[u16; 3]>> = None;
+    let mut clip_region: Option<PictureRegion> = None;
+    // Most recently seen shape rect for $38-$3C / $48-$4C / $58-$5C
+    // (frame/paint/erase/invert/fillSameRect — 0-byte opcodes that reuse
+    // the last rect). Imaging With QuickDraw 1994, Appendix A, A-7.
+    let mut last_shape_rect: Option<(i16, i16, i16, i16)> = None;
+    // Text state tracked through the picture — TxFont (0x03), TxSize
+    // (0x0D), and pen position as updated by LongText / DHText / DVText /
+    // DHDVText. Default to Geneva 12 like most classic Mac UI.
+    let mut pict_font_id: i16 = 3;
+    let mut pict_font_size: i16 = 12;
+    let mut pen_v: i16 = 0;
+    let mut pen_h: i16 = 0;
+    // PnSize(0x07) so frameRect / frameOval / frameArc / frame-variants
+    // honor thick pens. Default (1, 1) matches QuickDraw initPort.
+    let mut pen_size: (i16, i16) = (1, 1);
+    // PnPat (0x09) + BkPat (0x02) so paintRect uses the pen pattern and
+    // eraseRect uses the background pattern. Defaults patBlack / patWhite.
+    let mut pn_pat: [u8; 8] = [0xFF; 8];
+    let mut bk_pat: [u8; 8] = [0x00; 8];
+    // FillPat (0x0A): PICT fill* use this pattern, NOT the pen pattern.
+    // Imaging With QuickDraw 1994, Appendix A, A-7.
+    let mut fill_pat: [u8; 8] = [0xFF; 8];
+    // PICT FgColor (0x0E) and BkColor (0x0F) tracked as 8bpp CLUT indices.
+    // Default fg=255 (black), bg=0 (white). Legacy QuickDraw color
+    // constants map per IM:I I-172: blackColor=33, whiteColor=30, plus the
+    // 6 canonical primaries. Unknown constants fall back to (color & 0xFF).
+    // IM:V V-66 (ForeColor).
+    let mut fg_idx: u8 = 255;
+    let mut bg_idx: u8 = 0;
+    // TxMode (PICT opcode 0x05). Default srcOr (1) per QuickDraw initPort
+    // (IM:I I-171). Used by draw_picture_text to XOR glyph pixels when the
+    // PICT sets mode srcXor (2).
+    let mut tx_mode: i16 = 1;
+
+    let mut is_v2 = false;
+
+    loop {
+        if opcount > 10000 {
+            eprintln!("[PICT] Too many opcodes, stopping");
+            break;
+        }
+        opcount += 1;
+
+        // PICT v1: opcodes are single bytes.
+        // PICT v2: opcodes are words, word-aligned.
+        // Imaging With QuickDraw (1994), Appendix A, pp. A-3, A-18
+        if is_v2 && !pos.is_multiple_of(2) {
+            pos += 1;
+        }
+
+        let opcode: u16 = if is_v2 {
+            let op = bus.read_word(pos);
+            pos += 2;
+            op
+        } else {
+            let op = bus.read_byte(pos) as u16;
+            pos += 1;
+            op
+        };
+
+        match opcode {
+            0x00 => {
+                // NOP
+            }
+            0x01 => {
+                // ClipRgn
+                let rgn_size = bus.read_word(pos) as u32;
+                clip_region = parse_picture_region(bus, pos);
+                pos += rgn_size;
+            }
+            0x02 => {
+                // BkPat (8 bytes) — track for eraseRect pattern fill
+                bus.read_bytes_into(pos, &mut bk_pat);
+                pos += 8;
+            }
+            0x03 => {
+                // TxFont (2 bytes) — track for subsequent text opcodes
+                pict_font_id = bus.read_word(pos) as i16;
+                pos += 2;
+            }
+            0x04 => {
+                // TxFace (1 byte in v1, 2 in v2)
+                pos += if is_v2 { 2 } else { 1 };
+            }
+            0x05 => {
+                // TxMode (2 bytes) — track for draw_picture_text.
+                tx_mode = bus.read_word(pos) as i16;
+                pos += 2;
+            }
+            0x06 => {
+                // SpExtra (4 bytes)
+                pos += 4;
+            }
+            0x07 => {
+                // PnSize(v:word, h:word) — track for frame opcodes
+                pen_size = (
+                    bus.read_word(pos) as i16,
+                    bus.read_word(pos + 2) as i16,
+                );
+                pos += 4;
+            }
+            0x08 => {
+                // PnMode (2 bytes)
+                pos += 2;
+            }
+            0x09 => {
+                // PnPat (8 bytes) — track for paint/frame/fillRect
+                bus.read_bytes_into(pos, &mut pn_pat);
+                pos += 8;
+            }
+            0x0A => {
+                // FillPat (8 bytes) — track for fill-variant shape opcodes
+                // (kind=4: fillRect / fillOval / etc.). Imaging With
+                // QuickDraw 1994, A-7.
+                bus.read_bytes_into(pos, &mut fill_pat);
+                pos += 8;
+            }
+            0x0B => {
+                // OvSize (4 bytes)
+                pos += 4;
+            }
+            0x0C => {
+                // Origin (4 bytes)
+                pos += 4;
+            }
+            0x0D => {
+                // TxSize (2 bytes) — track for subsequent text opcodes
+                pict_font_size = bus.read_word(pos) as i16;
+                pos += 2;
+            }
+            0x0E => {
+                // FgColor (4 bytes) — map legacy QD color to an 8bpp CLUT
+                // index. blackColor (33) = 255, whiteColor (30) = 0, the 6
+                // canonical primaries map to fixed CLUT slots chosen to be
+                // visible on the standard Mac 8bpp CLUT. Unknown colors
+                // fall through to (color & 0xFF).
+                let c = bus.read_long(pos);
+                fg_idx = pict_qd_color_to_clut_index(c, 255);
+                pos += 4;
+            }
+            0x0F => {
+                // BkColor (4 bytes) — same mapping as FgColor.
+                let c = bus.read_long(pos);
+                bg_idx = pict_qd_color_to_clut_index(c, 0);
+                pos += 4;
+            }
+            0x10 => {
+                // TxRatio (8 bytes)
+                pos += 8;
+            }
+            0x11 => {
+                // picVersion / VersionOp
+                let version = bus.read_byte(pos);
+                pos += 1;
+                if version == 0x02 {
+                    // PICT v2: skip 0xFF padding byte, switch to word opcodes
+                    pos += 1;
+                    is_v2 = true;
+                }
+            }
+            0x1A => {
+                // RGBFgCol (6 bytes) - v2 only. Maps the 48-bit RGB to the
+                // closest 8bpp CLUT index.
+                let r = bus.read_word(pos);
+                let g = bus.read_word(pos + 2);
+                let b = bus.read_word(pos + 4);
+                pos += 6;
+                let clut = super::TrapDispatcher::standard_mac_8bpp_clut();
+                fg_idx = closest_clut_index(r, g, b, &clut);
+            }
+            0x1B => {
+                // RGBBkCol (6 bytes) - v2 only. Same mapping.
+                let r = bus.read_word(pos);
+                let g = bus.read_word(pos + 2);
+                let b = bus.read_word(pos + 4);
+                pos += 6;
+                let clut = super::TrapDispatcher::standard_mac_8bpp_clut();
+                bg_idx = closest_clut_index(r, g, b, &clut);
+            }
+            0x1E => {
+                // DefHilite (0 bytes) - v2 only
+            }
+            0x20 => {
+                // Line: pnLoc(v:word, h:word) + newPt(v:word, h:word).
+                // Render via draw_picture_line; pen position updates for
+                // follow-on LineFrom / ShortLineFrom opcodes.
+                let pn_v = bus.read_word(pos) as i16;
+                let pn_h = bus.read_word(pos + 2) as i16;
+                let new_v = bus.read_word(pos + 4) as i16;
+                let new_h = bus.read_word(pos + 6) as i16;
+                pos += 8;
+                draw_picture_line(
+                    bus, screen_mode, pn_v, pn_h, new_v, new_h,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                );
+                pen_v = new_v;
+                pen_h = new_h;
+            }
+            0x21 => {
+                // LineFrom: newPt(v:word, h:word). Draws from current
+                // pen to newPt and updates the pen.
+                let new_v = bus.read_word(pos) as i16;
+                let new_h = bus.read_word(pos + 2) as i16;
+                pos += 4;
+                draw_picture_line(
+                    bus, screen_mode, pen_v, pen_h, new_v, new_h,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                );
+                pen_v = new_v;
+                pen_h = new_h;
+            }
+            0x22 => {
+                // ShortLine: pnLoc(v:word, h:word) + dh(i8) + dv(i8).
+                let pn_v = bus.read_word(pos) as i16;
+                let pn_h = bus.read_word(pos + 2) as i16;
+                let dh = bus.read_byte(pos + 4) as i8 as i16;
+                let dv = bus.read_byte(pos + 5) as i8 as i16;
+                pos += 6;
+                let new_v = pn_v.saturating_add(dv);
+                let new_h = pn_h.saturating_add(dh);
+                draw_picture_line(
+                    bus, screen_mode, pn_v, pn_h, new_v, new_h,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                );
+                pen_v = new_v;
+                pen_h = new_h;
+            }
+            0x23 => {
+                // ShortLineFrom: dh(i8) + dv(i8). Draws from current
+                // pen + (dh, dv) and updates pen.
+                let dh = bus.read_byte(pos) as i8 as i16;
+                let dv = bus.read_byte(pos + 1) as i8 as i16;
+                pos += 2;
+                let new_v = pen_v.saturating_add(dv);
+                let new_h = pen_h.saturating_add(dh);
+                draw_picture_line(
+                    bus, screen_mode, pen_v, pen_h, new_v, new_h,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                );
+                pen_v = new_v;
+                pen_h = new_h;
+            }
+            0x28 => {
+                // LongText: txLoc(v:word, h:word) + count(1) + text
+                pen_v = bus.read_word(pos) as i16;
+                pen_h = bus.read_word(pos + 2) as i16;
+                pos += 4;
+                let len = bus.read_byte(pos) as u32;
+                pos += 1;
+                let text_start = pos;
+                pos += len;
+                draw_picture_text(
+                    bus, screen_mode, pen_v, pen_h, text_start, len,
+                    pict_font_id, pict_font_size,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                );
+                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                if is_v2 && !(1 + len).is_multiple_of(2) {
+                    pos += 1;
+                }
+            }
+            0x29 => {
+                // DHText: dh(1) + count(1) + text
+                let dh = bus.read_byte(pos) as i8 as i16;
+                pos += 1;
+                let len = bus.read_byte(pos) as u32;
+                pos += 1;
+                let text_start = pos;
+                pos += len;
+                pen_h = pen_h.saturating_add(dh);
+                draw_picture_text(
+                    bus, screen_mode, pen_v, pen_h, text_start, len,
+                    pict_font_id, pict_font_size,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                );
+                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                if is_v2 && len.is_multiple_of(2) {
+                    pos += 1;
+                }
+            }
+            0x2A => {
+                // DVText: dv(1) + count(1) + text
+                let dv = bus.read_byte(pos) as i8 as i16;
+                pos += 1;
+                let len = bus.read_byte(pos) as u32;
+                pos += 1;
+                let text_start = pos;
+                pos += len;
+                pen_v = pen_v.saturating_add(dv);
+                draw_picture_text(
+                    bus, screen_mode, pen_v, pen_h, text_start, len,
+                    pict_font_id, pict_font_size,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                );
+                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                if is_v2 && len.is_multiple_of(2) {
+                    pos += 1;
+                }
+            }
+            0x2B => {
+                // DHDVText: dh(1) + dv(1) + count(1) + text
+                let dh = bus.read_byte(pos) as i8 as i16;
+                let dv = bus.read_byte(pos + 1) as i8 as i16;
+                pos += 2;
+                let len = bus.read_byte(pos) as u32;
+                pos += 1;
+                let text_start = pos;
+                pos += len;
+                pen_h = pen_h.saturating_add(dh);
+                pen_v = pen_v.saturating_add(dv);
+                draw_picture_text(
+                    bus, screen_mode, pen_v, pen_h, text_start, len,
+                    pict_font_id, pict_font_size,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                );
+                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                if is_v2 && !(1 + len).is_multiple_of(2) {
+                    pos += 1;
+                }
+            }
+            0x2C => {
+                // FontName (v2)
+                let data_len = bus.read_word(pos) as u32;
+                pos += data_len;
+                if !data_len.is_multiple_of(2) {
+                    pos += 1;
+                }
+            }
+            // Rectangle drawing opcodes ($30-$34, $38-$3C)
+            // Imaging With QuickDraw 1994, Appendix A, A-7
+            0x30..=0x34 => {
+                // frame/paint/erase/invert/fillRect: Rect(8)
+                let (t, l, b, r) = read_shape_rect(bus, pos);
+                pos += 8;
+                last_shape_rect = Some((t, l, b, r));
+                draw_shape_rect(
+                    bus,
+                    opcode as u8,
+                    t,
+                    l,
+                    b,
+                    r,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                );
+            }
+            0x38..=0x3C => {
+                // frameSameRect etc: 0 bytes; reuse the most recent rect
+                if let Some((t, l, b, r)) = last_shape_rect {
+                    draw_shape_rect(
+                        bus,
+                        (opcode - 0x38 + 0x30) as u8,
+                        t,
+                        l,
+                        b,
+                        r,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                    );
+                }
+            }
+            // Rounded rectangle opcodes ($40-$44, $48-$4C)
+            // Imaging With QuickDraw 1994, Appendix A, A-8
+            // (ovSize state is tracked via opcode 0x0B but rounded
+            // corners are approximated as plain rects here; fine for
+            // games that use frame/paintRRect decoratively.)
+            0x40..=0x44 => {
+                let (t, l, b, r) = read_shape_rect(bus, pos);
+                pos += 8;
+                last_shape_rect = Some((t, l, b, r));
+                draw_shape_rect(
+                    bus,
+                    (opcode - 0x40 + 0x30) as u8,
+                    t,
+                    l,
+                    b,
+                    r,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                );
+            }
+            0x48..=0x4C => {
+                if let Some((t, l, b, r)) = last_shape_rect {
+                    draw_shape_rect(
+                        bus,
+                        (opcode - 0x48 + 0x30) as u8,
+                        t,
+                        l,
+                        b,
+                        r,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                    );
+                }
+            }
+            // Oval opcodes ($50-$54, $58-$5C)
+            // Imaging With QuickDraw 1994, Appendix A, A-9
+            0x50..=0x54 => {
+                let (t, l, b, r) = read_shape_rect(bus, pos);
+                pos += 8;
+                last_shape_rect = Some((t, l, b, r));
+                draw_shape_oval(
+                    bus,
+                    (opcode - 0x50) as u8,
+                    t,
+                    l,
+                    b,
+                    r,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat, bk_pat, fill_pat,
+                    fg_idx, bg_idx,
+                );
+            }
+            0x58..=0x5C => {
+                if let Some((t, l, b, r)) = last_shape_rect {
+                    draw_shape_oval(
+                        bus,
+                        (opcode - 0x58) as u8,
+                        t,
+                        l,
+                        b,
+                        r,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        clip_region.as_ref(),
+                        pen_size,
+                        pn_pat, bk_pat, fill_pat,
+                        fg_idx, bg_idx,
+                    );
+                }
+            }
+            // Arc opcodes ($60-$64: rect(8)+startAngle(2)+arcAngle(2)=12;
+            // $68-$6C: same-rect variants with just the two angles = 4).
+            // Mac convention: 0°=north, positive angle sweeps clockwise.
+            // Same-rect variants ($68-$6C) reuse last_shape_rect just
+            // like $48-$4C for round rects.
+            0x60..=0x64 => {
+                let (t, l, b, r) = read_shape_rect(bus, pos);
+                let start_angle = bus.read_word(pos + 8) as i16;
+                let arc_angle = bus.read_word(pos + 10) as i16;
+                pos += 12;
+                last_shape_rect = Some((t, l, b, r));
+                draw_shape_oval_or_arc(
+                    bus, (opcode - 0x60) as u8,
+                    t, l, b, r,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    screen_mode, clip_region.as_ref(),
+                    Some((start_angle, arc_angle)), pen_size,
+                    pn_pat, bk_pat, fill_pat,
+                    fg_idx, bg_idx,
+                );
+            }
+            0x68..=0x6C => {
+                let start_angle = bus.read_word(pos) as i16;
+                let arc_angle = bus.read_word(pos + 2) as i16;
+                pos += 4;
+                if let Some((t, l, b, r)) = last_shape_rect {
+                    draw_shape_oval_or_arc(
+                        bus, (opcode - 0x68) as u8,
+                        t, l, b, r,
+                        dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                        screen_mode, clip_region.as_ref(),
+                        Some((start_angle, arc_angle)), pen_size,
+                        pn_pat, bk_pat, fill_pat,
+                        fg_idx, bg_idx,
+                    );
+                }
+            }
+            // Polygon opcodes ($70-$74: frame/paint/erase/invert/fillPoly).
+            // Each has a PolyRec inline: polySize(2) + polyBBox(8) +
+            // N*(v,h) vertex pairs.
+            0x70..=0x74 => {
+                let poly_size = bus.read_word(pos) as u32;
+                let poly_ptr = pos;
+                pos += poly_size;
+                // Pass kind so paint/erase/invert/fill get scanline-filled
+                // interior pixels; framePoly (kind=0) uses the edge-draw
+                // path. Pass pen_size + pn_pat so framePoly honors PnSize
+                // and PnPat.
+                render_pict_polygon(
+                    bus, poly_ptr, (opcode - 0x70) as u8, pen_size, pn_pat,
+                    bk_pat, fill_pat,
+                    screen_mode,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    clip_region.as_ref(), fg_idx, bg_idx,
+                );
+            }
+            0x78..=0x7C => {}
+            // Region opcodes ($80-$84: frame/paint/erase/invert/fillRgn).
+            // Region data = rgnSize(2) + rgnBBox(8) + optional scanlines.
+            // Region storage is bbox-only, so the bbox fully describes what
+            // we can draw; paint/fill collapse to a solid rect in that
+            // bounding box.
+            0x80..=0x84 => {
+                let rgn_size = bus.read_word(pos) as u32;
+                let rgn_top = bus.read_word(pos + 2) as i16;
+                let rgn_left = bus.read_word(pos + 4) as i16;
+                let rgn_bottom = bus.read_word(pos + 6) as i16;
+                let rgn_right = bus.read_word(pos + 8) as i16;
+                pos += rgn_size;
+                let kind = (opcode - 0x80) as u8; // 0=frame .. 4=fill
+                draw_shape_rect(
+                    bus, kind,
+                    rgn_top, rgn_left, rgn_bottom, rgn_right,
+                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                    screen_mode, clip_region.as_ref(), pen_size, pn_pat, bk_pat,
+                    fill_pat, fg_idx, bg_idx,
+                );
+            }
+            0x88..=0x8C => {}
+            0x90 | 0x91 => {
+                // BitsRect / BitsRgn - 1bpp bitmap
+                pos = parse_bits_rect(
+                    bus,
+                    pos,
+                    opcode == 0x91,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    device_clut,
+                    clip_region.as_ref(),
+                );
+            }
+            0x98 | 0x99 => {
+                // PackBitsRect / PackBitsRgn - packed bitmap
+                let (new_pos, clut16) = parse_pack_bits_rect(
+                    bus,
+                    pos,
+                    opcode == 0x99,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    device_clut,
+                    device_ct_seed,
+                    clip_region.as_ref(),
+                );
+                pos = new_pos;
+                if let Some(ct) = clut16 {
+                    // Always track the most-recent CTab as a fallback. Also
+                    // track the FIRST CTab seen — that's usually the
+                    // scene-defining PICT drawn before any decorative overlay
+                    // PICTs inside a multi-PICT DrawPicture stream.
+                    if preferred_clut.is_none() {
+                        preferred_clut = Some(ct.clone());
+                    } else if !clut_resembles_canonical_8bpp(&ct) {
+                        // If we see a non-canonical CTab later, prefer
+                        // it over an earlier canonical one (covers
+                        // PICT streams where canonical helper PICTs
+                        // draw first).
+                        if let Some(ref existing) = preferred_clut {
+                            if clut_resembles_canonical_8bpp(existing) {
+                                preferred_clut = Some(ct.clone());
+                            }
+                        }
+                    }
+                    last_clut = Some(ct);
+                }
+            }
+            0x9A | 0x9B => {
+                // DirectBitsRect / DirectBitsRgn - direct RGB
+                pos = parse_direct_bits_rect(
+                    bus,
+                    pos,
+                    opcode == 0x9B,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    device_clut,
+                    clip_region.as_ref(),
+                );
+            }
+            0xA0 => {
+                // ShortComment (2 bytes)
+                pos += 2;
+            }
+            0xA1 => {
+                // LongComment: kind(2) + size(2) + data
+                pos += 2;
+                let data_len = bus.read_word(pos) as u32;
+                pos += 2 + data_len;
+                if is_v2 && !data_len.is_multiple_of(2) {
+                    pos += 1;
+                }
+            }
+            0xFF => {
+                // EndOfPicture (v1: $FF, v2: $00FF)
+                break;
+            }
+            // --- v2-only opcodes below ---
+            0x0C00 => {
+                // HeaderOp (extended v2) - 24 bytes
+                pos += 24;
+            }
+            0x02FF => {
+                // Version (v2, 2 bytes)
+                pos += 2;
+            }
+            _ => {
+                if is_v2 {
+                    // v2 reserved opcode skip rules
+                    if (0x0100..=0x01FF).contains(&opcode) {
+                        pos += 2;
+                    } else if (0x0B00..=0x0BFF).contains(&opcode)
+                        || (0x8000..=0x80FF).contains(&opcode)
+                    {
+                        // 0 bytes — both reserved-range blocks have no payload
+                    } else {
+                        eprintln!(
+                            "[PICT] Unknown v2 opcode 0x{:04X} at offset {} - stopping",
+                            opcode,
+                            pos - 2 - pic_ptr
+                        );
+                        break;
+                    }
+                } else {
+                    eprintln!(
+                        "[PICT] Unknown v1 opcode 0x{:02X} at offset {} - stopping",
+                        opcode,
+                        pos - 1 - pic_ptr
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    // Prefer the first non-canonical CTab if any PackBitsRect emitted
+    // one (scene palette); fall back to the last CTab seen otherwise.
+    let returned_clut = preferred_clut.or(last_clut);
+    (true, returned_clut)
+}
+
+/// Read a PixMap structure from PICT data. Returns (pos, PixMapInfo).
+struct PixMapInfo {
+    row_bytes: u16,
+    bounds_top: i16,
+    bounds_left: i16,
+    bounds_bottom: i16,
+    bounds_right: i16,
+    pixel_size: u16,
+    cmp_count: u16,
+    /// PixMap.packType: 0=default (no compression for >8bpp; PackBits for ≤8bpp),
+    /// 1=no packing, 2=drop pad byte, 3=byte-PackBits on 16-bit pixels, 4=byte-PackBits
+    /// on cmpCount component planes per row.
+    /// Imaging With QuickDraw 1994, 4-29.
+    pack_type: u16,
+}
+
+/// Read PixMap with baseAddr prefix (for DirectBitsRect).
+fn read_pixmap_with_base(bus: &MacMemoryBus, mut pos: u32) -> (u32, PixMapInfo) {
+    let _base_addr = bus.read_long(pos);
+    pos += 4;
+    read_pixmap(bus, pos)
+}
+
+/// Read PixMap starting from rowBytes (for PackBitsRect).
+fn read_pixmap(bus: &MacMemoryBus, mut pos: u32) -> (u32, PixMapInfo) {
+    let row_bytes_raw = bus.read_word(pos);
+    pos += 2;
+    let row_bytes = row_bytes_raw & 0x3FFF;
+    let bounds_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let bounds_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let bounds_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let bounds_right = bus.read_word(pos) as i16;
+    pos += 2;
+    let _version = bus.read_word(pos);
+    pos += 2;
+    let pack_type = bus.read_word(pos);
+    pos += 2;
+    let _pack_size = bus.read_long(pos);
+    pos += 4;
+    let _h_res = bus.read_long(pos);
+    pos += 4;
+    let _v_res = bus.read_long(pos);
+    pos += 4;
+    let _pixel_type = bus.read_word(pos);
+    pos += 2;
+    let pixel_size = bus.read_word(pos);
+    pos += 2;
+    let cmp_count = bus.read_word(pos);
+    pos += 2;
+    let _cmp_size = bus.read_word(pos);
+    pos += 2;
+    let _plane_bytes = bus.read_long(pos);
+    pos += 4;
+    let _pm_table = bus.read_long(pos);
+    pos += 4;
+    let _pm_reserved = bus.read_long(pos);
+    pos += 4;
+
+    (
+        pos,
+        PixMapInfo {
+            row_bytes,
+            bounds_top,
+            bounds_left,
+            bounds_bottom,
+            bounds_right,
+            pixel_size,
+            cmp_count,
+            pack_type,
+        },
+    )
+}
+
+/// Read a ColorTable from PICT data.
+/// Returns (pos, color_table_16bit, ct_seed).
+/// color_table_16bit: 256 entries of [r16, g16, b16].
+/// ct_seed is the PICT CTab's ctSeed field; used by
+/// `parse_pack_bits_rect` to skip remapping when the PICT CTab
+/// and current GDevice CTab share a seed (matching CopyBits seed behavior).
+fn read_color_table(bus: &MacMemoryBus, mut pos: u32) -> (u32, Vec<[u16; 3]>, u32) {
+    let ct_seed = bus.read_long(pos);
+    pos += 4;
+    let ct_flags = bus.read_word(pos);
+    pos += 2;
+    let ct_size = bus.read_word(pos) as u32;
+    pos += 2;
+
+    if trace_pict_enabled() {
+        eprintln!(
+            "[PICT] ColorTable ctSeed=${:08X} ctFlags=0x{:04X} ctSize={} at ${:08X}",
+            ct_seed,
+            ct_flags,
+            ct_size,
+            pos - 8
+        );
+    }
+
+    let mut colors16 = vec![[0u16; 3]; 256];
+    for i in 0..=ct_size {
+        let value = bus.read_word(pos) as usize;
+        pos += 2;
+        let r = bus.read_word(pos);
+        pos += 2;
+        let g = bus.read_word(pos);
+        pos += 2;
+        let b = bus.read_word(pos);
+        pos += 2;
+        let idx = if ct_flags & 0x8000 != 0 {
+            i as usize
+        } else {
+            value
+        };
+        if idx < 256 {
+            colors16[idx] = [r, g, b];
+        }
+    }
+
+    if trace_pict_palette_enabled() {
+        for index in [0usize, 1, 2, 15, 16, 17, 32, 43, 50, 93, 100, 150, 185, 220, 245] {
+            if index < colors16.len() {
+                let [r, g, b] = colors16[index];
+                eprintln!("[PICT]   clut[{}]=({:04X},{:04X},{:04X})", index, r, g, b);
+            }
+        }
+    }
+
+    (pos, colors16, ct_seed)
+}
+
+/// Decompress 16-bit chunked PackBits for one scanline (PixMap.packType=3).
+///
+/// At 16bpp packType=3 the run-length encoding operates on 16-bit pixels
+/// rather than bytes: a literal run of N+1 emits N+1 pixels (2 bytes each),
+/// and a repeat run of -N+1 emits -N+1 copies of one 2-byte pixel.
+/// The leading byte-count word/byte selects between word/byte length per
+/// the same `rowBytes > 250` rule as byte PackBits.
+/// Imaging With QuickDraw 1994, 4-30.
+fn unpack_bits_chunk16(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32, Vec<u8>) {
+    let byte_count = if row_bytes > 250 {
+        let bc = bus.read_word(pos) as u32;
+        pos += 2;
+        bc
+    } else {
+        let bc = bus.read_byte(pos) as u32;
+        pos += 1;
+        bc
+    };
+
+    let end_pos = pos + byte_count;
+    let mut result = Vec::with_capacity(row_bytes as usize);
+
+    while pos < end_pos && result.len() < row_bytes as usize {
+        let flag = bus.read_byte(pos) as i8;
+        pos += 1;
+
+        if flag >= 0 {
+            // Literal run: flag+1 pixels (each 2 bytes) follow.
+            let count = (flag as usize) + 1;
+            for _ in 0..count {
+                if pos + 1 < end_pos {
+                    result.push(bus.read_byte(pos));
+                    result.push(bus.read_byte(pos + 1));
+                    pos += 2;
+                }
+            }
+        } else if flag != -128 {
+            // Repeat run: -(flag)+1 copies of next pixel (2 bytes).
+            let count = (-(flag as i16)) as usize + 1;
+            let hi = bus.read_byte(pos);
+            let lo = bus.read_byte(pos + 1);
+            pos += 2;
+            for _ in 0..count {
+                result.push(hi);
+                result.push(lo);
+            }
+        }
+        // flag == -128 (0x80) is a NOP
+    }
+
+    (end_pos, result)
+}
+
+/// Decompress PackBits-encoded data for one scanline.
+fn unpack_bits(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32, Vec<u8>) {
+    // Read byte count for this scanline
+    let byte_count = if row_bytes > 250 {
+        let bc = bus.read_word(pos) as u32;
+        pos += 2;
+        bc
+    } else {
+        let bc = bus.read_byte(pos) as u32;
+        pos += 1;
+        bc
+    };
+
+    let end_pos = pos + byte_count;
+    let mut result = Vec::with_capacity(row_bytes as usize);
+
+    while pos < end_pos && result.len() < (row_bytes as usize) * 2 {
+        let flag = bus.read_byte(pos) as i8;
+        pos += 1;
+
+        if flag >= 0 {
+            // Literal run: flag+1 bytes follow
+            let count = (flag as usize) + 1;
+            for _ in 0..count {
+                if pos < end_pos {
+                    result.push(bus.read_byte(pos));
+                    pos += 1;
+                }
+            }
+        } else if flag != -128 {
+            // Repeat run: -(flag)+1 copies of next byte
+            let count = (-(flag as i16)) as usize + 1;
+            let val = bus.read_byte(pos);
+            pos += 1;
+            for _ in 0..count {
+                result.push(val);
+            }
+        }
+        // flag == -128 (0x80) is a NOP
+    }
+
+    (end_pos, result)
+}
+
+/// Write a pixel to the screen framebuffer (supports 1bpp and 8bpp).
+fn write_pixel(
+    bus: &mut MacMemoryBus,
+    screen_base: u32,
+    screen_rb: u32,
+    x: i32,
+    y: i32,
+    color_index: u8,
+    screen_w: i32,
+    screen_h: i32,
+    pixel_size: u16,
+) {
+    if x < 0 || y < 0 || x >= screen_w || y >= screen_h {
+        return;
+    }
+    if pixel_size == 1 {
+        // 1bpp: each byte holds 8 pixels, MSB = leftmost
+        let byte_offset = (x as u32) / 8;
+        let bit = 7 - ((x as u32) % 8);
+        let addr = screen_base + (y as u32) * screen_rb + byte_offset;
+        let byte = bus.read_byte(addr);
+        // In 1bpp Mac, bit set = black (color_index 255), bit clear = white (0)
+        if color_index != 0 {
+            bus.write_byte(addr, byte | (1 << bit));
+        } else {
+            bus.write_byte(addr, byte & !(1 << bit));
+        }
+    } else {
+        // 8bpp: one byte per pixel
+        let addr = screen_base + (y as u32) * screen_rb + (x as u32);
+        bus.write_byte(addr, color_index);
+    }
+}
+
+/// Map a legacy Mac Pascal QuickDraw color constant to an 8bpp CLUT index.
+/// Inside Macintosh Volume I, I-172 defines the 8 canonical colors; the
+/// indices below match the Mac's standard 8bpp CLUT slots. Unknown
+/// constants fall through to `color & 0xFF` so games passing custom CLUT
+/// indices via FgColor still address the intended slot. `default_idx` is
+/// returned for color = 0 (Pascal sentinel for "no color change").
+fn pict_qd_color_to_clut_index(color: u32, default_idx: u8) -> u8 {
+    match color {
+        0 => default_idx,
+        30 => 0,             // whiteColor → white
+        33 => 255,           // blackColor → black
+        205 => 35,           // redColor → red slot on std Mac 8bpp CLUT
+        341 => 173,          // greenColor
+        409 => 210,          // blueColor
+        69 => 17,            // yellowColor
+        137 => 137,          // magentaColor
+        273 => 69,           // cyanColor
+        _ => (color & 0xFF) as u8,
+    }
+}
+
+fn read_shape_rect(bus: &MacMemoryBus, pos: u32) -> (i16, i16, i16, i16) {
+    let t = bus.read_word(pos) as i16;
+    let l = bus.read_word(pos + 2) as i16;
+    let b = bus.read_word(pos + 4) as i16;
+    let r = bus.read_word(pos + 6) as i16;
+    (t, l, b, r)
+}
+
+/// Transform a PICT-space rect to dst-space pixel coordinates.
+fn transform_shape_rect(
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    frame_top: i16,
+    frame_left: i16,
+    dst_top: i16,
+    dst_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+) -> (i32, i32, i32, i32) {
+    let x1 = ((src_left as f64 - frame_left as f64) * scale_x + dst_left as f64).round() as i32;
+    let y1 = ((src_top as f64 - frame_top as f64) * scale_y + dst_top as f64).round() as i32;
+    let x2 = ((src_right as f64 - frame_left as f64) * scale_x + dst_left as f64).round() as i32;
+    let y2 = ((src_bottom as f64 - frame_top as f64) * scale_y + dst_top as f64).round() as i32;
+    (x1, y1, x2, y2)
+}
+
+/// Plot a dst-space pixel, honoring the PICT clip region (checked in
+/// picture-space via a back-transform).
+#[allow(clippy::too_many_arguments)]
+fn plot_dst_pixel(
+    bus: &mut MacMemoryBus,
+    screen_base: u32,
+    screen_rb: u32,
+    screen_w: i32,
+    screen_h: i32,
+    pixel_size: u16,
+    x: i32,
+    y: i32,
+    color_index: u8,
+    frame_top: i16,
+    frame_left: i16,
+    dst_top: i16,
+    dst_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+) {
+    if let Some(rgn) = clip_region {
+        let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
+        let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
+        let pic_x = ((x - dst_left as i32) as f64 * inv_sx + frame_left as f64).floor() as i32;
+        let pic_y = ((y - dst_top as i32) as f64 * inv_sy + frame_top as f64).floor() as i32;
+        if !rgn.contains(pic_y, pic_x) {
+            return;
+        }
+    }
+    write_pixel(
+        bus,
+        screen_base,
+        screen_rb,
+        x,
+        y,
+        color_index,
+        screen_w,
+        screen_h,
+        pixel_size,
+    );
+}
+
+/// Fill a dst-space axis-aligned rectangle with `color_index`.
+#[allow(clippy::too_many_arguments)]
+fn fill_dst_rect(
+    bus: &mut MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    frame_top: i16,
+    frame_left: i16,
+    dst_top: i16,
+    dst_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+    color_index: u8,
+) {
+    let (sb, srb, sw, sh, ps) = screen_mode;
+    for y in y1..y2 {
+        for x in x1..x2 {
+            plot_dst_pixel(
+                bus, sb, srb, sw as i32, sh as i32, ps, x, y, color_index,
+                frame_top, frame_left, dst_top, dst_left, scale_x, scale_y, clip_region,
+            );
+        }
+    }
+}
+
+/// Fill a dst-space axis-aligned rectangle with an 8x8 QuickDraw pattern.
+/// Pattern bit set → `on_color`; bit clear → `off_color`. Pattern is
+/// sampled in dst-pixel coords modulo 8.
+#[allow(clippy::too_many_arguments)]
+fn fill_dst_rect_pat(
+    bus: &mut MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    frame_top: i16,
+    frame_left: i16,
+    dst_top: i16,
+    dst_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+    pattern: [u8; 8],
+    on_color: u8,
+    off_color: u8,
+) {
+    // Fast path for the two monochrome patterns (solid black/white)
+    // so we don't do per-pixel bit lookups for the common case.
+    if pattern == [0xFF; 8] {
+        fill_dst_rect(
+            bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
+            scale_x, scale_y, clip_region, on_color,
+        );
+        return;
+    }
+    if pattern == [0x00; 8] {
+        fill_dst_rect(
+            bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
+            scale_x, scale_y, clip_region, off_color,
+        );
+        return;
+    }
+    let (sb, srb, sw, sh, ps) = screen_mode;
+    for y in y1..y2 {
+        let row = pattern[y.rem_euclid(8) as usize];
+        for x in x1..x2 {
+            let bit = 1u8 << (7 - x.rem_euclid(8));
+            let color = if row & bit != 0 { on_color } else { off_color };
+            plot_dst_pixel(
+                bus, sb, srb, sw as i32, sh as i32, ps, x, y, color,
+                frame_top, frame_left, dst_top, dst_left, scale_x, scale_y, clip_region,
+            );
+        }
+    }
+}
+
+/// Render a PICT shape-rect opcode ($30-$34 family).
+/// `kind` = low 4 bits of opcode: 0=frame, 1=paint, 2=erase, 3=invert,
+/// 4=fill. `pen_size` (h, w) controls frame thickness. `pn_pat` /
+/// `bk_pat` are the 8x8 pen + background patterns from the PICT state
+/// opcodes 0x09 / 0x02. Inside Macintosh Volume I, I-190 + Imaging With
+/// QuickDraw 1994, Appendix A, A-7.
+///
+/// `fg_idx` / `bg_idx` are 8bpp CLUT indices tracked from FgColor (0x0E)
+/// / BkColor (0x0F) state opcodes. paintRect / fillRect / frameRect draw
+/// with fg_idx for pen bits; eraseRect uses bg_idx per IM:V V-66.
+#[allow(clippy::too_many_arguments)]
+fn draw_shape_rect(
+    bus: &mut MacMemoryBus,
+    kind: u8,
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    clip_region: Option<&PictureRegion>,
+    pen_size: (i16, i16),
+    pn_pat: [u8; 8],
+    bk_pat: [u8; 8],
+    fill_pat: [u8; 8],
+    fg_idx: u8,
+    bg_idx: u8,
+) {
+    let kind = kind & 0x0F;
+    if src_bottom <= src_top || src_right <= src_left {
+        return;
+    }
+    let (x1, y1, x2, y2) = transform_shape_rect(
+        src_top, src_left, src_bottom, src_right, frame_top, frame_left, dst_top, dst_left,
+        scale_x, scale_y,
+    );
+    if x2 <= x1 || y2 <= y1 {
+        return;
+    }
+    // fg/bg colors come from tracked FgColor/BkColor state (default
+    // fg_idx=255 black, bg_idx=0 white per QD initPort). Invert (kind=3)
+    // is still pure XOR and ignores fg/bg.
+    match kind {
+        0 => {
+            // frameRect — 4 edges, thickness = PnSize (in picture-
+            // space, scaled along with the rect).  Scale each PnSize
+            // dim separately so 1.5× horizontal + 1.0× vertical draws
+            // still produce distinguishable thicknesses.  Per IM:I
+            // I-163, pen_h applies to top/bottom edges, pen_w to
+            // left/right edges; PnSize(h, w) stored with pen_size.0 = h.
+            let (pen_h, pen_w) = pen_size;
+            let eh = ((pen_h as f64 * scale_y).round() as i32).max(1);
+            let ew = ((pen_w as f64 * scale_x).round() as i32).max(1);
+            fill_dst_rect(
+                bus, screen_mode, x1, y1, x2, y1 + eh, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region, fg_idx,
+            );
+            fill_dst_rect(
+                bus, screen_mode, x1, y2 - eh, x2, y2, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region, fg_idx,
+            );
+            fill_dst_rect(
+                bus, screen_mode, x1, y1, x1 + ew, y2, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region, fg_idx,
+            );
+            fill_dst_rect(
+                bus, screen_mode, x2 - ew, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region, fg_idx,
+            );
+        }
+        1 => {
+            // paintRect — interior uses pn_pat with fg_idx / bg_idx for
+            // set / clear bits.
+            fill_dst_rect_pat(
+                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region, pn_pat, fg_idx, bg_idx,
+            );
+        }
+        4 => {
+            // fillRect — interior uses fill_pat (tracked via state opcode
+            // 0x0A) instead of pn_pat. Per IM:I I-169 fillRect "paints the
+            // area ... using pat as a pattern"; the pat arg on the 68k trap
+            // comes from the FillPat state, distinct from the pen pattern
+            // used by paintRect.
+            fill_dst_rect_pat(
+                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region, fill_pat, fg_idx, bg_idx,
+            );
+        }
+        2 => {
+            // eraseRect — interior uses bk_pat with bg_idx for set bits
+            // per IM:V V-66 (erase draws in background color).
+            fill_dst_rect_pat(
+                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region, bk_pat, bg_idx, fg_idx,
+            );
+        }
+        3 => {
+            // invertRect — XOR each pixel in the interior.
+            invert_dst_rect(
+                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
+                scale_x, scale_y, clip_region,
+            );
+        }
+        _ => {}
+    }
+}
+
+/// XOR-invert each pixel in a dst-space axis-aligned rectangle.
+#[allow(clippy::too_many_arguments)]
+fn invert_dst_rect(
+    bus: &mut MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    frame_top: i16,
+    frame_left: i16,
+    dst_top: i16,
+    dst_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+) {
+    let (sb, srb, sw, sh, ps) = screen_mode;
+    let sw = sw as i32;
+    let sh = sh as i32;
+    for y in y1..y2 {
+        if y < 0 || y >= sh {
+            continue;
+        }
+        for x in x1..x2 {
+            if x < 0 || x >= sw {
+                continue;
+            }
+            if let Some(rgn) = clip_region {
+                let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
+                let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
+                let pic_x = ((x - dst_left as i32) as f64 * inv_sx + frame_left as f64).floor() as i32;
+                let pic_y = ((y - dst_top as i32) as f64 * inv_sy + frame_top as f64).floor() as i32;
+                if !rgn.contains(pic_y, pic_x) {
+                    continue;
+                }
+            }
+            if ps == 1 {
+                let addr = sb + (y as u32) * srb + (x as u32) / 8;
+                let bit = 7 - ((x as u32) % 8);
+                let byte = bus.read_byte(addr);
+                bus.write_byte(addr, byte ^ (1 << bit));
+            } else {
+                let addr = sb + (y as u32) * srb + (x as u32);
+                let byte = bus.read_byte(addr);
+                bus.write_byte(addr, byte ^ 0xFF);
+            }
+        }
+    }
+}
+
+/// Render a PICT shape-oval opcode ($50-$54 family).
+/// `kind` = low 4 bits of opcode (0=frame, 1=paint, 2=erase, 3=invert,
+/// 4=fill). Inside Macintosh Volume I, I-193 + Imaging With QuickDraw
+/// 1994, Appendix A, A-9.
+#[allow(clippy::too_many_arguments)]
+fn draw_shape_oval(
+    bus: &mut MacMemoryBus,
+    kind: u8,
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    clip_region: Option<&PictureRegion>,
+    pen_size: (i16, i16),
+    pn_pat: [u8; 8],
+    bk_pat: [u8; 8],
+    fill_pat: [u8; 8],
+    fg_idx: u8,
+    bg_idx: u8,
+) {
+    draw_shape_oval_or_arc(
+        bus, kind, src_top, src_left, src_bottom, src_right,
+        dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+        screen_mode, clip_region, None, pen_size,
+        pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+    );
+}
+
+/// Shared renderer for shape oval + arc opcodes. When `arc_angles` is
+/// Some((start, extent)) the pixel filter gates by Mac-convention
+/// angle-from-center (0°=north, CW positive). Frame mode becomes
+/// arc-outline; paint/erase/invert/fill become wedge fill. Full-oval
+/// behavior is preserved when None.
+#[allow(clippy::too_many_arguments)]
+fn draw_shape_oval_or_arc(
+    bus: &mut MacMemoryBus,
+    kind: u8,
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    clip_region: Option<&PictureRegion>,
+    arc_angles: Option<(i16, i16)>,
+    pen_size: (i16, i16),
+    pn_pat: [u8; 8],
+    bk_pat: [u8; 8],
+    fill_pat: [u8; 8],
+    fg_idx: u8,
+    bg_idx: u8,
+) {
+    let kind = kind & 0x0F;
+    if src_bottom <= src_top || src_right <= src_left {
+        return;
+    }
+    let (x1, y1, x2, y2) = transform_shape_rect(
+        src_top, src_left, src_bottom, src_right, frame_top, frame_left, dst_top, dst_left,
+        scale_x, scale_y,
+    );
+    if x2 <= x1 || y2 <= y1 {
+        return;
+    }
+    let cx = (x1 as f64 + x2 as f64) * 0.5;
+    let cy = (y1 as f64 + y2 as f64) * 0.5;
+    let rx = (x2 - x1) as f64 * 0.5;
+    let ry = (y2 - y1) as f64 * 0.5;
+    // Frame mode inset = pen_size, scaled by the picture→dst ratio so a
+    // thick PnSize doesn't degenerate to a 1-pixel ring.
+    let (pen_h, pen_w) = pen_size;
+    let stamp_w = ((pen_w.max(1) as f64) * scale_x).max(1.0);
+    let stamp_h = ((pen_h.max(1) as f64) * scale_y).max(1.0);
+    let rx_in = (rx - stamp_w).max(0.0);
+    let ry_in = (ry - stamp_h).max(0.0);
+    let (sb, srb, sw, sh, ps) = screen_mode;
+    let sw = sw as i32;
+    let sh = sh as i32;
+    // Prepare arc-angle gating state. Empty extent → skip everything
+    // (matches IM: arcAngle=0 draws nothing).
+    let arc_range = arc_angles.map(|(start_raw, extent_raw)| {
+        if extent_raw == 0 {
+            // sentinel: unreachable range so every pixel fails the test.
+            (f64::INFINITY, f64::INFINITY)
+        } else {
+            let mut start = start_raw as f64;
+            let mut extent = extent_raw as f64;
+            if extent < 0.0 {
+                start += extent;
+                extent = -extent;
+            }
+            if extent > 360.0 {
+                extent = 360.0;
+            }
+            start = start.rem_euclid(360.0);
+            (start, start + extent)
+        }
+    });
+    for y in y1..y2 {
+        let ny = (y as f64 + 0.5 - cy) / ry;
+        let ny2 = 1.0 - ny * ny;
+        if ny2 < 0.0 {
+            continue;
+        }
+        let hw_out = ny2.sqrt() * rx;
+        let xl_out = (cx - hw_out).round() as i32;
+        let xr_out = (cx + hw_out).round() as i32;
+        let (xl_in, xr_in) = if rx_in <= 0.0 || ry_in <= 0.0 {
+            (i32::MAX, i32::MIN)
+        } else {
+            let ny_in = (y as f64 + 0.5 - cy) / ry_in;
+            let ny2_in = 1.0 - ny_in * ny_in;
+            if ny2_in <= 0.0 {
+                (i32::MAX, i32::MIN)
+            } else {
+                let hw_in = ny2_in.sqrt() * rx_in;
+                ((cx - hw_in).round() as i32, (cx + hw_in).round() as i32)
+            }
+        };
+        for x in xl_out..xr_out {
+            let inside_inner = x >= xl_in && x < xr_in;
+            let do_draw = match kind {
+                0 => !inside_inner, // frame
+                1..=4 => true,
+                _ => false,
+            };
+            if !do_draw {
+                continue;
+            }
+            // Arc-angle gate. Mac convention 0°=north CW; the atan2 below
+            // converts screen-space (y down) → Mac angle.
+            if let Some((a_start, a_end)) = arc_range {
+                if !a_start.is_finite() {
+                    continue;
+                }
+                let angle = (-(y as f64 + 0.5 - cy)).atan2(x as f64 + 0.5 - cx);
+                let mut mac_angle = 90.0 - angle.to_degrees();
+                if mac_angle < 0.0 {
+                    mac_angle += 360.0;
+                }
+                let in_range = (mac_angle >= a_start && mac_angle < a_end)
+                    || (a_end > 360.0 && mac_angle + 360.0 < a_end);
+                if !in_range {
+                    continue;
+                }
+            }
+            // Pick color from tracked FgColor/BkColor state and sample the
+            // appropriate 8×8 pattern per pixel so paint/erase/fill honor
+            // PnPat / BkPat / FillPat. Frame (kind=0) keeps solid fg
+            // (pen-thickness frame doesn't participate in fill patterning).
+            // Invert ignores fg/bg (pure XOR).
+            // Imaging With QuickDraw 1994, Appendix A, A-7.
+            let pat_row_idx = (y.rem_euclid(8)) as usize;
+            let pat_bit = 1u8 << (7 - x.rem_euclid(8) as u32);
+            let color = match kind {
+                0 => fg_idx,
+                1 => {
+                    // paint — pn_pat, set bit = fg.
+                    if pn_pat[pat_row_idx] & pat_bit != 0 { fg_idx } else { bg_idx }
+                }
+                2 => {
+                    // erase — bk_pat, set bit = bg (IM:V V-66).
+                    if bk_pat[pat_row_idx] & pat_bit != 0 { bg_idx } else { fg_idx }
+                }
+                4 => {
+                    // fill — fill_pat, set bit = fg.
+                    if fill_pat[pat_row_idx] & pat_bit != 0 { fg_idx } else { bg_idx }
+                }
+                _ => fg_idx,
+            };
+            if kind == 3 {
+                if x < 0 || x >= sw || y < 0 || y >= sh {
+                    continue;
+                }
+                if let Some(rgn) = clip_region {
+                    let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
+                    let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
+                    let pic_x =
+                        ((x - dst_left as i32) as f64 * inv_sx + frame_left as f64).floor() as i32;
+                    let pic_y =
+                        ((y - dst_top as i32) as f64 * inv_sy + frame_top as f64).floor() as i32;
+                    if !rgn.contains(pic_y, pic_x) {
+                        continue;
+                    }
+                }
+                if ps == 1 {
+                    let addr = sb + (y as u32) * srb + (x as u32) / 8;
+                    let bit = 7 - ((x as u32) % 8);
+                    let byte = bus.read_byte(addr);
+                    bus.write_byte(addr, byte ^ (1 << bit));
+                } else {
+                    let addr = sb + (y as u32) * srb + (x as u32);
+                    let byte = bus.read_byte(addr);
+                    bus.write_byte(addr, byte ^ 0xFF);
+                }
+            } else {
+                plot_dst_pixel(
+                    bus, sb, srb, sw, sh, ps, x, y, color,
+                    frame_top, frame_left, dst_top, dst_left, scale_x, scale_y, clip_region,
+                );
+            }
+        }
+    }
+}
+
+/// Render a PICT Poly record. `poly_ptr` points to the polySize word; the
+/// record is `polySize(2) + bbox(8) + N*(v,h)(4)`. Frame variants use the
+/// edge-only Bresenham path; paint/erase/invert/fill use a scanline-fill
+/// rasteriser.
+///
+/// kind: 0=frame, 1=paint, 2=erase, 3=invert, 4=fill.
+/// The fill color maps as in draw_shape_rect: paint/fill → 255
+/// (Mac CLUT black), erase → 0 (white), invert → pixel XOR.
+#[allow(clippy::too_many_arguments)]
+fn render_pict_polygon(
+    bus: &mut MacMemoryBus,
+    poly_ptr: u32,
+    kind: u8,
+    pen_size: (i16, i16),
+    pn_pat: [u8; 8],
+    bk_pat: [u8; 8],
+    fill_pat: [u8; 8],
+    screen_mode: (u32, u32, u16, u16, u16),
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+    fg_idx: u8,
+    bg_idx: u8,
+) {
+    let poly_size = bus.read_word(poly_ptr) as u32;
+    if poly_size < 10 {
+        return;
+    }
+    let n = (poly_size - 10) / 4;
+    if n < 2 {
+        return;
+    }
+    let verts_ptr = poly_ptr + 10;
+    let mut verts: Vec<(i16, i16)> = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let v = bus.read_word(verts_ptr + i * 4) as i16;
+        let h = bus.read_word(verts_ptr + i * 4 + 2) as i16;
+        verts.push((v, h));
+    }
+    if kind == 0 {
+        // framePoly: edge-only outline via draw_picture_line.
+        for i in 0..verts.len() {
+            let (v0, h0) = verts[i];
+            let (v1, h1) = verts[(i + 1) % verts.len()];
+            if v0 == v1 && h0 == h1 {
+                continue;
+            }
+            draw_picture_line(
+                bus, screen_mode, v0, h0, v1, h1,
+                dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
+                clip_region, pen_size, pn_pat, fg_idx,
+            );
+        }
+        return;
+    }
+
+    // Scanline fill (even-odd rule). Build edge list excluding
+    // horizontal edges (they contribute no crossings).
+    struct Edge {
+        y_min: i16,
+        y_max: i16,
+        x_at_ymin: f32,
+        inv_slope: f32,
+    }
+    let mut edges: Vec<Edge> = Vec::with_capacity(verts.len());
+    for i in 0..verts.len() {
+        let (v0, h0) = verts[i];
+        let (v1, h1) = verts[(i + 1) % verts.len()];
+        if v0 == v1 {
+            continue;
+        }
+        let (y_min, y_max, x_at_ymin) = if v0 < v1 {
+            (v0, v1, h0 as f32)
+        } else {
+            (v1, v0, h1 as f32)
+        };
+        let inv_slope = (h1 as f32 - h0 as f32) / (v1 as f32 - v0 as f32);
+        edges.push(Edge { y_min, y_max, x_at_ymin, inv_slope });
+    }
+    if edges.is_empty() {
+        return;
+    }
+
+    // Read polyBBox for scanline bounds.
+    let bbox_top = bus.read_word(poly_ptr + 2) as i16;
+    let bbox_left = bus.read_word(poly_ptr + 4) as i16;
+    let bbox_bottom = bus.read_word(poly_ptr + 6) as i16;
+    let bbox_right = bus.read_word(poly_ptr + 8) as i16;
+
+    let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = screen_mode;
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+
+    for y in bbox_top..bbox_bottom {
+        // Gather x-intersections for edges active at this scanline.
+        let mut xs: Vec<f32> = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            if y < edge.y_min || y >= edge.y_max {
+                continue;
+            }
+            let x = edge.x_at_ymin
+                + (i32::from(y) - i32::from(edge.y_min)) as f32 * edge.inv_slope;
+            xs.push(x);
+        }
+        if xs.len() < 2 {
+            continue;
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // Walk spans in pairs (even-odd rule: fill between pair 0-1,
+        // 2-3, etc).
+        let mut i = 0;
+        while i + 1 < xs.len() {
+            let x_start = xs[i].ceil() as i16;
+            let x_end = xs[i + 1].ceil() as i16;
+            for x in x_start..x_end.min(bbox_right) {
+                if x < bbox_left {
+                    continue;
+                }
+                // Clip region check in picture-space.
+                if let Some(rgn) = clip_region {
+                    if !rgn.contains(y as i32, x as i32) {
+                        continue;
+                    }
+                }
+                // Map picture-space (y, x) to dst-space. Widen to i32
+                // before arithmetic — POD ships PICTs whose poly bbox
+                // and the surrounding frame straddle the i16 range, so
+                // the literal i16 subtractions panic on overflow.
+                let dx = ((i32::from(x) - i32::from(bbox_left)) as f64 * scale_x
+                    + (i32::from(dst_left)
+                        + i32::from(bbox_left)
+                        - i32::from(frame_left)) as f64) as i32;
+                let dy = ((i32::from(y) - i32::from(bbox_top)) as f64 * scale_y
+                    + (i32::from(dst_top)
+                        + i32::from(bbox_top)
+                        - i32::from(frame_top)) as f64) as i32;
+                // Sample the appropriate 8×8 pattern at (dx mod 8, dy mod 8)
+                // so paint/erase/fill honor PnPat / BkPat / FillPat. Pattern
+                // set bit → "on" color (fg for paint/fill, bg for erase);
+                // clear bit → "off" color. Imaging With QuickDraw 1994, A-7.
+                let pat_row_idx = (dy.rem_euclid(8)) as usize;
+                let pat_bit = 1u8 << (7 - dx.rem_euclid(8) as u32);
+                match kind {
+                    1 => {
+                        // paintPoly — pn_pat.
+                        let bit_set = pn_pat[pat_row_idx] & pat_bit != 0;
+                        let color = if bit_set { fg_idx } else { bg_idx };
+                        write_pixel(bus, screen_base, screen_rb, dx, dy, color,
+                            screen_w, screen_h, pixel_size);
+                    }
+                    4 => {
+                        // fillPoly — fill_pat.
+                        let bit_set = fill_pat[pat_row_idx] & pat_bit != 0;
+                        let color = if bit_set { fg_idx } else { bg_idx };
+                        write_pixel(bus, screen_base, screen_rb, dx, dy, color,
+                            screen_w, screen_h, pixel_size);
+                    }
+                    2 => {
+                        // erasePoly — bk_pat. Set bit → bg, clear → fg
+                        // (per IM:V V-66 "erase paints in background color";
+                        // bk_pat's set bits are the dominant erase color).
+                        let bit_set = bk_pat[pat_row_idx] & pat_bit != 0;
+                        let color = if bit_set { bg_idx } else { fg_idx };
+                        write_pixel(bus, screen_base, screen_rb, dx, dy, color,
+                            screen_w, screen_h, pixel_size);
+                    }
+                    3 => {
+                        // invert: XOR pixel value
+                        if dx < 0 || dx >= screen_w || dy < 0 || dy >= screen_h {
+                            continue;
+                        }
+                        if pixel_size == 8 {
+                            let addr = screen_base
+                                + (dy as u32) * screen_rb
+                                + (dx as u32);
+                            let old = bus.read_byte(addr);
+                            bus.write_byte(addr, old ^ 0xFF);
+                        } else {
+                            // 1bpp not commonly hit by PICT invert;
+                            // skip for now.
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            i += 2;
+        }
+    }
+}
+
+/// Draw a line between two picture-space points using Bresenham's
+/// algorithm. Plots each pixel through the picture→dst coord transform
+/// so scaling / clipping match the shape-opcode handlers.
+///
+/// Honors PICT PnSize (tracked via state opcode 0x07): each Bresenham
+/// pixel stamps a pen_h × pen_w rectangle in dst-space, scaled by the
+/// picture→dst ratio per IM:V V-102. Pen sizes of (1, 1) take the fast
+/// single-pixel path; (0, 0) suppresses the draw entirely per IM:I I-170
+/// ("if either component is 0 or negative, no drawing is performed").
+#[allow(clippy::too_many_arguments)]
+fn draw_picture_line(
+    bus: &mut MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    v0: i16,
+    h0: i16,
+    v1: i16,
+    h1: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+    pen_size: (i16, i16),
+    pn_pat: [u8; 8],
+    fg_idx: u8,
+) {
+    let (pen_h, pen_w) = pen_size;
+    if pen_h <= 0 || pen_w <= 0 {
+        return;
+    }
+    // All-zero PnPat means the pen is transparent per the same IM:I I-170
+    // rule that gates pen size. Fast-skip.
+    if pn_pat == [0u8; 8] {
+        return;
+    }
+    // Scale pen dimensions per picture→dst ratio, floor at 1 pixel
+    // so a pen of 1 stays visible at any scale.
+    let stamp_w = ((pen_w as f64 * scale_x).round() as i32).max(1);
+    let stamp_h = ((pen_h as f64 * scale_y).round() as i32).max(1);
+    let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = screen_mode;
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+    // Fast path for solid pen skips the per-pixel pn_pat lookup. Every
+    // other pattern goes through the 8×8 mod-sampling plot branch below.
+    let solid_black = pn_pat == [0xFFu8; 8];
+    let plot = |bus: &mut MacMemoryBus, cx: i32, cy: i32| {
+        if stamp_w == 1 && stamp_h == 1 {
+            if solid_black {
+                write_pixel(bus, screen_base, screen_rb, cx, cy, fg_idx,
+                    screen_w, screen_h, pixel_size);
+            } else {
+                let row = pn_pat[cy.rem_euclid(8) as usize];
+                let bit = 1u8 << (7 - cx.rem_euclid(8));
+                if row & bit != 0 {
+                    write_pixel(bus, screen_base, screen_rb, cx, cy, fg_idx,
+                        screen_w, screen_h, pixel_size);
+                }
+            }
+        } else {
+            for dy in 0..stamp_h {
+                for dx in 0..stamp_w {
+                    let ox = cx + dx;
+                    let oy = cy + dy;
+                    if solid_black {
+                        write_pixel(bus, screen_base, screen_rb, ox, oy, fg_idx,
+                            screen_w, screen_h, pixel_size);
+                    } else {
+                        let row = pn_pat[oy.rem_euclid(8) as usize];
+                        let bit = 1u8 << (7 - ox.rem_euclid(8));
+                        if row & bit != 0 {
+                            write_pixel(bus, screen_base, screen_rb, ox, oy, fg_idx,
+                                screen_w, screen_h, pixel_size);
+                        }
+                    }
+                }
+            }
+        }
+    };
+    let mut x0 = h0 as i32;
+    let mut y0 = v0 as i32;
+    let x1 = h1 as i32;
+    let y1 = v1 as i32;
+    let dx = (x1 - x0).abs();
+    let sx: i32 = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy: i32 = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        let plot_here = match clip_region {
+            Some(rgn) => rgn.contains(y0, x0),
+            None => true,
+        };
+        if plot_here {
+            let x = ((x0 - i32::from(frame_left)) as f64 * scale_x + dst_left as f64) as i32;
+            let y = ((y0 - i32::from(frame_top)) as f64 * scale_y + dst_top as f64) as i32;
+            plot(bus, x, y);
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+/// Render PICT text at pen (v, h) in picture coordinates. Pixels are
+/// plotted through `write_pixel` after the picture→dst coord transform so
+/// scaling + clipping match the shape-opcode paths.
+#[allow(clippy::too_many_arguments)]
+fn draw_picture_text(
+    bus: &mut MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    pen_v: i16,
+    pen_h: i16,
+    text_ptr: u32,
+    len: u32,
+    font_id: i16,
+    font_size: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+    fg_idx: u8,
+    bg_idx: u8,
+    tx_mode: i16,
+) {
+    let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = screen_mode;
+    let screen_w = screen_w as i32;
+    let screen_h = screen_h as i32;
+    let mut cur_h: i32 = pen_h as i32;
+    let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
+    let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
+    for i in 0..len {
+        let ch = bus.read_byte(text_ptr + i) as char;
+        if let Some((glyph, data)) = crate::quickdraw::text::get_glyph(font_id, font_size, ch) {
+            let gx0 = cur_h + glyph.origin_x as i32;
+            let gy0 = pen_v as i32 + glyph.origin_y as i32;
+            let gw = glyph.width as usize;
+            let gh = glyph.height as usize;
+            for row in 0..gh {
+                for col in 0..gw {
+                    let idx = glyph.data_offset + row * gw + col;
+                    if idx >= data.len() || data[idx] < 128 {
+                        continue;
+                    }
+                    let pic_x = gx0 + col as i32;
+                    let pic_y = gy0 + row as i32;
+                    if let Some(rgn) = clip_region {
+                        if !rgn.contains(pic_y, pic_x) {
+                            continue;
+                        }
+                    }
+                    let x = ((pic_x - i32::from(frame_left)) as f64 * scale_x
+                        + dst_left as f64) as i32;
+                    let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y
+                        + dst_top as f64) as i32;
+                    let _ = inv_sx;
+                    let _ = inv_sy;
+                    // Honor TxMode. srcCopy (0) / srcOr (1) overwrite;
+                    // srcXor (2) XORs the dst byte with fg_idx; srcBic (3)
+                    // clears dst to bg_idx at glyph pixels. Modes >= 32 fall
+                    // back to plain overwrite.
+                    if x < 0 || x >= screen_w || y < 0 || y >= screen_h {
+                        continue;
+                    }
+                    if pixel_size == 8 {
+                        let addr = screen_base + (y as u32) * screen_rb + (x as u32);
+                        match tx_mode & 0x3F {
+                            2 => {
+                                let old = bus.read_byte(addr);
+                                bus.write_byte(addr, old ^ fg_idx);
+                            }
+                            3 => {
+                                bus.write_byte(addr, bg_idx);
+                            }
+                            _ => {
+                                bus.write_byte(addr, fg_idx);
+                            }
+                        }
+                    } else {
+                        write_pixel(
+                            bus, screen_base, screen_rb, x, y, fg_idx, screen_w, screen_h, pixel_size,
+                        );
+                    }
+                }
+            }
+            cur_h += glyph.advance as i32;
+        } else {
+            cur_h += 6;
+        }
+    }
+}
+
+/// Compute total glyph advance for a PICT text run without drawing.
+fn text_advance(bus: &MacMemoryBus, text_ptr: u32, len: u32, font_id: i16, font_size: i16) -> i16 {
+    let mut w: i32 = 0;
+    for i in 0..len {
+        let ch = bus.read_byte(text_ptr + i) as char;
+        if let Some((g, _)) = crate::quickdraw::text::get_glyph(font_id, font_size, ch) {
+            w += g.advance as i32;
+        } else {
+            w += 6;
+        }
+    }
+    w.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
+
+/// Find the closest index in a CLUT for a given 16-bit RGB color.
+/// Quantizes to 5-bit precision then compares in 8-bit space, matching
+/// the Mac's MakeITable 32x32x32 inverse table approach.
+/// Imaging With QuickDraw 1994, p. 4-82
+pub(crate) fn closest_clut_index(r: u16, g: u16, b: u16, clut: &[[u16; 3]; 256]) -> u8 {
+    // ITable-style 4-bit-per-channel quantized lookup, gated by env var
+    // for initial rollout. The Mac ROM's MakeITable uses a default 4-bit
+    // inverse table: each 16-bit input channel is quantized to its top
+    // 4 bits, giving 16x16x16 = 4096 cube cells. Within each cell, the
+    // first-encountered CLUT entry whose top-4-bits match is used.
+    // This produces different results than full-precision Euclidean
+    // closest-match when the input is numerically close to two different
+    // CLUT entries but falls in the same 4-bit cube as one of them.
+    //
+    // Example: input (F0F0, F0F0, F0F0) has 4-bit cube (F, F, F);
+    //   clut[0] = (FFFF, FFFF, FFFF) has cube (F, F, F)   -> MATCH, idx 0
+    //   clut[245] = (EEEE, EEEE, EEEE) has cube (E, E, E) -> different cube
+    // Full-precision Euclidean would pick 245 (exact-distance from F0F0).
+    // ITable picks 0 (first-bin-match). The Mac ROM uses ITable.
+    // Imaging With QuickDraw 1994, p. 4-82 (MakeITable, default res 4)
+    if clut_match_itable_enabled() {
+        // Opt-in path: cached ITable from the System 8bpp CLUT. Improves
+        // splash fidelity but regresses some menu renders — the System
+        // ITable picks dst indices assuming the System CLUT, while games
+        // may have overwritten device_clut entries via SetEntries.
+        //
+        // Correct long-term fix: rebuild the ITable when the Palette
+        // Manager changes the GDevice CTab (not on every SetEntries).
+        let _ = clut;
+        return crate::trap::TrapDispatcher::standard_itable_lookup(r, g, b);
+    }
+
+    // QuickDraw's inverse tables pin exact white/black to the first/last
+    // entries when the CLUT endpoints are white/black, instead of picking an
+    // arbitrary duplicate from the 8bpp color cube. During all-black fade
+    // steps index 0 can temporarily collapse to black too; preserve canonical
+    // black drawing by preferring index 255 in that case.
+    // Imaging With QuickDraw 1994, p. 4-82
+    // references/executor/src/quickdraw/qColorMgr.cpp (MakeITable)
+    let rgb = [r, g, b];
+    if rgb == [0, 0, 0] && clut[255] == [0, 0, 0] {
+        return 255;
+    }
+    if rgb == [0xFFFF, 0xFFFF, 0xFFFF] && clut[0] == [0xFFFF, 0xFFFF, 0xFFFF] {
+        return 0;
+    }
+    if rgb == clut[255] {
+        return 255;
+    }
+    if rgb == clut[0] {
+        return 0;
+    }
+
+    // Grayscale source colors should stay on the destination grayscale ramp
+    // when one is available. A pure Euclidean search across the 8bpp system
+    // palette can pick tinted cube entries that are numerically close but
+    // visibly wrong for grayscale title art (notably EV's splash PICTs).
+    if r == g && g == b {
+        let mut best_gray_idx = None;
+        let mut best_gray_dist = i64::MAX;
+        for (idx, entry) in clut.iter().enumerate() {
+            if entry[0] != entry[1] || entry[1] != entry[2] {
+                continue;
+            }
+            let dr = i64::from(r) - i64::from(entry[0]);
+            let d = dr * dr;
+            if d < best_gray_dist {
+                best_gray_dist = d;
+                best_gray_idx = Some(idx as u8);
+                if d == 0 {
+                    break;
+                }
+            }
+        }
+        if let Some(idx) = best_gray_idx {
+            return idx;
+        }
+    }
+
+    // Use full 16-bit precision for the distance calculation.
+    // The Mac Color Manager's MakeITable quantizes to 5-bit bins for the
+    // lookup table index, but the actual nearest-match is computed from
+    // full-precision color values.
+    // Imaging With QuickDraw 1994, p. 4-82
+    let mut best_idx = 0u8;
+    let mut best_dist = i64::MAX;
+    for (idx, entry) in clut.iter().enumerate() {
+        let dr = i64::from(r) - i64::from(entry[0]);
+        let dg = i64::from(g) - i64::from(entry[1]);
+        let db = i64::from(b) - i64::from(entry[2]);
+        let d = dr * dr + dg * dg + db * db;
+        if d < best_dist {
+            best_dist = d;
+            best_idx = idx as u8;
+            if d == 0 {
+                break;
+            }
+        }
+    }
+    best_idx
+}
+
+/// Build a 256-entry mapping table from source CLUT indices to device CLUT indices.
+/// For each source palette entry, finds the closest match in the device CLUT.
+/// This is the core of CopyBits color translation for indexed pixmaps.
+fn build_src_to_dst_table(src_clut: &[[u16; 3]], device_clut: &[[u16; 3]; 256]) -> [u8; 256] {
+    let mut table = [0u8; 256];
+    if should_preserve_source_palette_indices(src_clut, device_clut) {
+        for (i, slot) in table.iter_mut().enumerate() {
+            *slot = i as u8;
+        }
+        return table;
+    }
+    // Device-ITable path: 4-bit inverse table built from the CURRENT
+    // device_clut once, used for all 256 src_clut entries. Matches the
+    // Mac ROM's MakeITable semantics — rebuild on GDevice CTab change,
+    // then consult per pixel.
+    //
+    // Scoped to DENSE-GRAYSCALE source PICTs only. ITable on colour PICTs
+    // regresses the main_menu and
+    // in-space HUD panel because the game's Palette Manager state and
+    // the ITable cell-centre picks diverge on non-gray colours).
+    // Dense-grayscale PICTs (like the EV splash) have no such issue:
+    // they use the standard gray ramp which the ITable resolves
+    // correctly against any device_clut.
+    //
+    // Default-on; set `SYSTEMLESS_CLUT_MATCH_LEGACY_GRAY=1` to opt out of
+    // the grayscale ITable path and use full-precision luma-diff.
+    let gray_itable_enabled = !clut_match_legacy_gray_enabled();
+    let force_all = clut_match_device_itable_enabled();
+    let use_itable = force_all
+        || (gray_itable_enabled && pict_clut_is_dense_grayscale(src_clut));
+    if use_itable {
+        let itable = build_device_itable(device_clut);
+        for (i, entry) in src_clut.iter().enumerate() {
+            if i >= 256 {
+                break;
+            }
+            let qr = (entry[0] >> 12) as u32;
+            let qg = (entry[1] >> 12) as u32;
+            let qb = (entry[2] >> 12) as u32;
+            table[i] = itable[((qr << 8) | (qg << 4) | qb) as usize];
+        }
+        return table;
+    }
+    for (i, entry) in src_clut.iter().enumerate() {
+        if i >= 256 {
+            break;
+        }
+        table[i] = if pict_clut_is_dense_grayscale(src_clut)
+            && entry[0] == entry[1]
+            && entry[1] == entry[2]
+        {
+            closest_grayscale_luminance_index(entry[0], device_clut)
+        } else {
+            closest_clut_index(entry[0], entry[1], entry[2], device_clut)
+        };
+    }
+    table
+}
+
+/// Build a 4-bit-per-channel inverse table (16 × 16 × 16 = 4096 cells)
+/// against the given `device_clut`. For each cube cell, stores the
+/// CLUT idx whose entry is Euclidean-closest to the cell's centre.
+/// The cell index is `qr<<8 | qg<<4 | qb`.
+///
+/// Cost: 4096 cells × 256 clut entries = ~1M compare ops. Called once
+/// per `build_src_to_dst_table` invocation (once per PICT parse), not
+/// per pixel. Matches the Mac ROM MakeITable semantics for the
+/// device's active GDevice at the moment of DrawPicture.
+///
+/// Imaging With QuickDraw 1994, p. 4-82 (MakeITable, default 4 bits)
+fn build_device_itable(device_clut: &[[u16; 3]; 256]) -> [u8; 4096] {
+    let mut table = [0u8; 4096];
+    for cell in 0u32..4096 {
+        let qr = (cell >> 8) & 0xF;
+        let qg = (cell >> 4) & 0xF;
+        let qb = cell & 0xF;
+        let cr = ((qr << 12) | 0x0800) as i64;
+        let cg = ((qg << 12) | 0x0800) as i64;
+        let cb = ((qb << 12) | 0x0800) as i64;
+        let mut best_idx = 0u8;
+        let mut best_dist = i64::MAX;
+        for (idx, entry) in device_clut.iter().enumerate() {
+            let dr = cr - i64::from(entry[0]);
+            let dg = cg - i64::from(entry[1]);
+            let db = cb - i64::from(entry[2]);
+            let d = dr * dr + dg * dg + db * db;
+            if d < best_dist {
+                best_dist = d;
+                best_idx = idx as u8;
+            }
+        }
+        table[cell as usize] = best_idx;
+    }
+    table
+}
+
+fn closest_grayscale_luminance_index(luma: u16, clut: &[[u16; 3]; 256]) -> u8 {
+    let grayscale_entries = clut
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, entry)| (entry[0] == entry[1] && entry[1] == entry[2]).then_some(idx))
+        .collect::<Vec<_>>();
+    let distinct_grays = grayscale_entries
+        .iter()
+        .map(|&idx| clut[idx][0])
+        .collect::<std::collections::BTreeSet<_>>();
+    let search_indices = if distinct_grays.len() >= 8 {
+        grayscale_entries
+    } else {
+        (0..clut.len()).collect()
+    };
+
+    // Opt-in cached-ITable path for grayscale (matches the colour
+    // path's SYSTEMLESS_CLUT_MATCH_ITABLE gate). This remains gated because
+    // the direct luminance path better matches menu artwork in common apps.
+    if clut_match_itable_enabled() {
+        let _ = clut;
+        let _ = search_indices;
+        return crate::trap::TrapDispatcher::standard_itable_lookup(luma, luma, luma);
+    }
+    let match_target = luma;
+
+    let mut best_idx = 0u8;
+    let mut best_luma_diff = u64::MAX;
+    let mut best_chroma = u64::MAX;
+    for idx in search_indices {
+        let entry = clut[idx];
+        let entry_luma =
+            (u64::from(entry[0]) * 30 + u64::from(entry[1]) * 59 + u64::from(entry[2]) * 11) / 100;
+        let luma_diff = entry_luma.abs_diff(u64::from(match_target));
+        let max_component = entry[0].max(entry[1]).max(entry[2]);
+        let min_component = entry[0].min(entry[1]).min(entry[2]);
+        let chroma = u64::from(max_component - min_component);
+        if luma_diff < best_luma_diff || (luma_diff == best_luma_diff && chroma < best_chroma) {
+            best_idx = idx as u8;
+            best_luma_diff = luma_diff;
+            best_chroma = chroma;
+        }
+    }
+    best_idx
+}
+
+fn pict_clut_is_dense_grayscale(clut: &[[u16; 3]]) -> bool {
+    let grayscale_entries = clut
+        .iter()
+        .take(192)
+        .filter(|rgb| rgb[0] == rgb[1] && rgb[1] == rgb[2] && rgb[0] != 0)
+        .count();
+    grayscale_entries >= 96
+}
+
+/// True if `clut` looks like the canonical Mac 8bpp system palette.
+/// Used by draw_picture to distinguish a scene-defining CTab from
+/// canonical helper CTabs inside a multi-PICT stream. Checks a handful
+/// of landmark entries — custom CTabs are statistically unlikely to
+/// have all of them match.
+fn clut_resembles_canonical_8bpp(clut: &[[u16; 3]]) -> bool {
+    // Landmark entries from the 6x6x6 colour cube used across Mac OS:
+    //   idx 0  = (FFFF, FFFF, FFFF) — white
+    //   idx 1  = (FFFF, FFFF, CCCC)
+    //   idx 16 = (FFFF, 9999, 3333)
+    //   idx 42 = (CCCC, CCCC, FFFF)
+    //   idx 255= (0000, 0000, 0000) — black
+    if clut.len() < 256 {
+        return false;
+    }
+    clut[0] == [0xFFFF, 0xFFFF, 0xFFFF]
+        && clut[1] == [0xFFFF, 0xFFFF, 0xCCCC]
+        && clut[16] == [0xFFFF, 0x9999, 0x3333]
+        && clut[42] == [0xCCCC, 0xCCCC, 0xFFFF]
+        && clut[255] == [0x0000, 0x0000, 0x0000]
+}
+
+fn should_preserve_source_palette_indices(
+    src_clut: &[[u16; 3]],
+    device_clut: &[[u16; 3]; 256],
+) -> bool {
+    // Diagnostic gate: SYSTEMLESS_PICT_IDENTITY_REMAP=1 forces identity
+    // mapping (src idx = dst idx, no remap through device_clut) for every
+    // 256-entry source CTab.
+    if pict_identity_remap_enabled() && src_clut.len() == 256 {
+        return true;
+    }
+    // Preserve identity only when source and destination really use the same
+    // table. Grayscale PICTs drawn into the canonical 8bpp system palette
+    // still need color translation; preserving raw source indices there turns
+    // gray art into the orange/green system cube.
+    if src_clut.len() == 256 {
+        src_clut.iter().zip(device_clut.iter()).all(|(s, d)| s == d)
+    } else {
+        false
+    }
+}
+
+/// Map a source bitmap coordinate from a CopyBits srcRect into its dstRect.
+/// BitsRect, PackBitsRect, and DirectBitsRect use CopyBits-style rectangles,
+/// so pixels outside srcRect must not be transferred.
+/// Inside Macintosh Volume I, I-158; Imaging With QuickDraw 1994, A-17
+fn map_src_coord(
+    src_coord: i32,
+    src_start: i16,
+    src_end: i16,
+    dst_start: i16,
+    dst_end: i16,
+) -> Option<i32> {
+    let src_span = i32::from(src_end) - i32::from(src_start);
+    let dst_span = i32::from(dst_end) - i32::from(dst_start);
+    if src_span <= 0 || dst_span <= 0 {
+        return None;
+    }
+
+    let rel = src_coord - i32::from(src_start);
+    if rel < 0 || rel >= src_span {
+        return None;
+    }
+
+    Some(i32::from(dst_start) + (rel * dst_span) / src_span)
+}
+
+/// Parse BitsRect / BitsRgn (1bpp bitmap, opcode 0x0090/0x0091)
+fn parse_bits_rect(
+    bus: &mut MacMemoryBus,
+    mut pos: u32,
+    has_rgn: bool,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    _device_clut: &[[u16; 3]; 256],
+    clip_region: Option<&PictureRegion>,
+) -> u32 {
+    // Read BitMap structure (not full PixMap)
+    let row_bytes = bus.read_word(pos) & 0x3FFF;
+    pos += 2;
+    let bounds_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let bounds_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let bounds_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let bounds_right = bus.read_word(pos) as i16;
+    pos += 2;
+    // srcRect
+    let src_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_right = bus.read_word(pos) as i16;
+    pos += 2;
+    // dstRect
+    let pic_dst_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_right = bus.read_word(pos) as i16;
+    pos += 2;
+    // mode
+    let mode = bus.read_word(pos);
+    pos += 2;
+
+    if trace_pict_enabled() {
+        eprintln!(
+            "[PICT] Bits{} mode={} src=({},{}..{},{} ) dst=({},{}..{},{} )",
+            if has_rgn { "Rgn" } else { "Rect" },
+            mode,
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            pic_dst_top,
+            pic_dst_left,
+            pic_dst_bottom,
+            pic_dst_right,
+        );
+    }
+
+    if has_rgn {
+        let rgn_size = bus.read_word(pos) as u32;
+        pos += rgn_size;
+    }
+
+    let width = (bounds_right - bounds_left).max(0) as u32;
+    let height = (bounds_bottom - bounds_top).max(0) as u32;
+    let (screen_base, screen_rb, screen_w, screen_h, scrn_ps) = (
+        screen_mode.0,
+        screen_mode.1,
+        screen_mode.2 as i32,
+        screen_mode.3 as i32,
+        screen_mode.4,
+    );
+
+    // Read unpacked bitmap data (row_bytes * height bytes)
+    for row in 0..height {
+        let src_y = i32::from(bounds_top) + row as i32;
+        let mapped_pic_y = map_src_coord(src_y, src_top, src_bottom, pic_dst_top, pic_dst_bottom);
+        for col_byte in 0..row_bytes as u32 {
+            let byte = bus.read_byte(pos);
+            pos += 1;
+            for bit in 0..8u32 {
+                let px = col_byte * 8 + bit;
+                if px >= width {
+                    continue;
+                }
+                let is_black = (byte & (1 << (7 - bit))) != 0;
+                if is_black {
+                    let Some(pic_y) = mapped_pic_y else {
+                        continue;
+                    };
+                    let src_x = i32::from(bounds_left) + px as i32;
+                    let Some(pic_x) =
+                        map_src_coord(src_x, src_left, src_right, pic_dst_left, pic_dst_right)
+                    else {
+                        continue;
+                    };
+                    if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                        continue;
+                    }
+                    let x =
+                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    let y =
+                        ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32 + dst_top as i32;
+                    write_pixel(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        y,
+                        255,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                    );
+                }
+            }
+        }
+    }
+
+    pos
+}
+
+/// Parse PackBitsRect / PackBitsRgn (opcode 0x0098/0x0099)
+fn parse_pack_bits_rect(
+    bus: &mut MacMemoryBus,
+    mut pos: u32,
+    has_rgn: bool,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    device_ct_seed: u32,
+    clip_region: Option<&PictureRegion>,
+) -> (u32, Option<Vec<[u16; 3]>>) {
+    // In PICT data, PackBitsRect starts with rowBytes directly (no baseAddr)
+    // Check if this is a PixMap (row_bytes high bit set) or BitMap
+    let row_bytes_raw = bus.read_word(pos); // peek at rowBytes field (first word)
+    let is_pixmap = (row_bytes_raw & 0x8000) != 0;
+
+    let (new_pos, pm, colors16, src_ct_seed) = if is_pixmap {
+        let (p, pm) = read_pixmap(bus, pos);
+        let (p2, colors16, ct_seed) = read_color_table(bus, p);
+        (p2, pm, Some(colors16), ct_seed)
+    } else {
+        // 1bpp BitMap: just rowBytes + bounds
+        let row_bytes = bus.read_word(pos) & 0x3FFF;
+        pos += 2;
+        let bt = bus.read_word(pos) as i16;
+        pos += 2;
+        let bl = bus.read_word(pos) as i16;
+        pos += 2;
+        let bb = bus.read_word(pos) as i16;
+        pos += 2;
+        let br = bus.read_word(pos) as i16;
+        pos += 2;
+        let pm = PixMapInfo {
+            row_bytes,
+            bounds_top: bt,
+            bounds_left: bl,
+            bounds_bottom: bb,
+            bounds_right: br,
+            pixel_size: 1,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        (pos, pm, None, 0)
+    };
+    pos = new_pos;
+
+    if trace_pict_enabled() {
+        // Include destination base + rowBytes so each PackBitsRect decode
+        // can be correlated to the specific offscreen GWorld buffer it
+        // writes into.
+        eprintln!(
+            "[PICT] PackBits{} pixelSize={} cmpCount={} rowBytes={} bounds=({}, {}, {}, {}) dstBase=${:08X} dstRowBytes={}",
+            if has_rgn { "Rgn" } else { "Rect" },
+            pm.pixel_size,
+            pm.cmp_count,
+            pm.row_bytes,
+            pm.bounds_top,
+            pm.bounds_left,
+            pm.bounds_bottom,
+            pm.bounds_right,
+            screen_mode.0,
+            screen_mode.1,
+        );
+    }
+
+    // srcRect
+    let src_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_right = bus.read_word(pos) as i16;
+    pos += 2;
+    // dstRect (within picture coordinates)
+    let pic_dst_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_right = bus.read_word(pos) as i16;
+    pos += 2;
+    // mode
+    let mode = bus.read_word(pos);
+    pos += 2;
+    let mode_base = mode & 0x003F;
+
+    if trace_pict_enabled() {
+        eprintln!(
+            "[PICT] PackBits{} mode={} src=({},{}..{},{} ) dst=({},{}..{},{} )",
+            if has_rgn { "Rgn" } else { "Rect" },
+            mode,
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            pic_dst_top,
+            pic_dst_left,
+            pic_dst_bottom,
+            pic_dst_right,
+        );
+    }
+
+    if has_rgn {
+        let rgn_size = bus.read_word(pos) as u32;
+        pos += rgn_size;
+    }
+
+    let height = (pm.bounds_bottom - pm.bounds_top) as u32;
+    let (screen_base, screen_rb, screen_w, screen_h, scrn_ps) = (
+        screen_mode.0,
+        screen_mode.1,
+        screen_mode.2 as i32,
+        screen_mode.3 as i32,
+        screen_mode.4,
+    );
+
+    // Build source→destination CLUT mapping for indexed pixel formats.
+    // Each PICT pixel index is remapped to the closest match in the
+    // destination port's color table (passed as device_clut).
+    //
+    // Seed-match identity gate: if the PICT CTab carried a non-zero
+    // ctSeed that matches the current GDevice
+    // CTab seed, the game is asserting the PICT was authored for
+    // this exact palette, and we should write source indices
+    // verbatim. Executor qStdBits.cpp:564-568 applies the same
+    // logic; the equivalent path for PICT playback is here since
+    // PICTs with an embedded CTab carry the seed via their
+    // ColorTable record (Imaging With QuickDraw 1994, A-16).
+    let src_clut = colors16.as_deref().unwrap_or(&[][..]);
+    let src_to_dst = if src_ct_seed != 0 && src_ct_seed == device_ct_seed {
+        let mut t = [0u8; 256];
+        for (i, slot) in t.iter_mut().enumerate() {
+            *slot = i as u8;
+        }
+        t
+    } else {
+        build_src_to_dst_table(src_clut, device_clut)
+    };
+    let mut traced_min_index = u8::MAX;
+    let mut traced_max_index = 0u8;
+    let mut traced_have_index = false;
+
+    let mut update_trace_index_range = |row_data: &[u8]| {
+        if !trace_pict_enabled() || pm.pixel_size != 8 {
+            return;
+        }
+        for &pixel in row_data {
+            traced_min_index = traced_min_index.min(pixel);
+            traced_max_index = traced_max_index.max(pixel);
+            traced_have_index = true;
+        }
+    };
+
+    if pm.row_bytes < 8 {
+        // Small rowBytes: data is unpacked (not PackBits compressed)
+        for row in 0..height {
+            let row_data: Vec<u8> = (0..pm.row_bytes as u32)
+                .map(|i| {
+                    
+                    bus.read_byte(pos + i)
+                })
+                .collect();
+            pos += pm.row_bytes as u32;
+            update_trace_index_range(&row_data);
+            blit_row(
+                bus,
+                &row_data,
+                mode_base,
+                &pm,
+                &src_to_dst,
+                device_clut,
+                row,
+                src_top,
+                src_left,
+                src_bottom,
+                src_right,
+                dst_top,
+                dst_left,
+                frame_top,
+                frame_left,
+                pic_dst_top,
+                pic_dst_left,
+                pic_dst_bottom,
+                pic_dst_right,
+                scale_x,
+                scale_y,
+                screen_base,
+                screen_rb,
+                screen_w,
+                screen_h,
+                scrn_ps,
+                clip_region,
+            );
+        }
+    } else {
+        // PackBits compressed
+        for row in 0..height {
+            let (new_pos, row_data) = unpack_bits(bus, pos, pm.row_bytes);
+            pos = new_pos;
+            update_trace_index_range(&row_data);
+            blit_row(
+                bus,
+                &row_data,
+                mode_base,
+                &pm,
+                &src_to_dst,
+                device_clut,
+                row,
+                src_top,
+                src_left,
+                src_bottom,
+                src_right,
+                dst_top,
+                dst_left,
+                frame_top,
+                frame_left,
+                pic_dst_top,
+                pic_dst_left,
+                pic_dst_bottom,
+                pic_dst_right,
+                scale_x,
+                scale_y,
+                screen_base,
+                screen_rb,
+                screen_w,
+                screen_h,
+                scrn_ps,
+                clip_region,
+            );
+        }
+    }
+
+    if trace_pict_enabled() && pm.pixel_size == 8 && traced_have_index {
+        eprintln!(
+            "[PICT] PackBits index range {}..={}",
+            traced_min_index, traced_max_index
+        );
+    }
+
+    // Return the 16-bit color table for 8bpp PICTs so the caller can
+    // install it as the device CLUT if needed.
+    (pos, if pm.pixel_size == 8 { colors16 } else { None })
+}
+
+/// Blit a decompressed row of pixel data to the screen.
+fn blit_row(
+    bus: &mut MacMemoryBus,
+    row_data: &[u8],
+    mode_base: u16,
+    pm: &PixMapInfo,
+    src_to_dst: &[u8; 256],
+    device_clut: &[[u16; 3]; 256],
+    row: u32,
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    pic_dst_top: i16,
+    pic_dst_left: i16,
+    pic_dst_bottom: i16,
+    pic_dst_right: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_base: u32,
+    screen_rb: u32,
+    screen_w: i32,
+    screen_h: i32,
+    scrn_ps: u16,
+    clip_region: Option<&PictureRegion>,
+) {
+    let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
+    let src_y = i32::from(pm.bounds_top) + row as i32;
+    let Some(pic_y) = map_src_coord(src_y, src_top, src_bottom, pic_dst_top, pic_dst_bottom) else {
+        return;
+    };
+    let base_y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32 + dst_top as i32;
+
+    let map_x = |px: u32| {
+        let src_x = i32::from(pm.bounds_left) + px as i32;
+        map_src_coord(src_x, src_left, src_right, pic_dst_left, pic_dst_right)
+    };
+
+    match pm.pixel_size {
+        1 => {
+            for px in 0..width {
+                let byte_idx = (px / 8) as usize;
+                let bit = 7 - (px % 8);
+                if byte_idx < row_data.len() {
+                    let is_set = (row_data[byte_idx] & (1 << bit)) != 0;
+                    let color_idx = if is_set { 255u8 } else { 0u8 };
+                    let Some(pic_x) = map_x(px) else {
+                        continue;
+                    };
+                    if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                        continue;
+                    }
+                    let x =
+                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    write_pixel(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        color_idx,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                    );
+                }
+            }
+        }
+        2 => {
+            for px in 0..width {
+                let byte_idx = (px / 4) as usize;
+                let shift = (3 - (px % 4)) * 2;
+                if byte_idx < row_data.len() {
+                    let ci = ((row_data[byte_idx] >> shift) & 0x03) as usize;
+                    if mode_base == 36 && ci == 0 {
+                        continue;
+                    }
+                    let pixel = src_to_dst[ci];
+                    let Some(pic_x) = map_x(px) else {
+                        continue;
+                    };
+                    if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                        continue;
+                    }
+                    let x =
+                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    write_pixel(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        pixel,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                    );
+                }
+            }
+        }
+        4 => {
+            for px in 0..width {
+                let byte_idx = (px / 2) as usize;
+                let shift = if px % 2 == 0 { 4 } else { 0 };
+                if byte_idx < row_data.len() {
+                    let ci = ((row_data[byte_idx] >> shift) & 0x0F) as usize;
+                    if mode_base == 36 && ci == 0 {
+                        continue;
+                    }
+                    let pixel = src_to_dst[ci];
+                    let Some(pic_x) = map_x(px) else {
+                        continue;
+                    };
+                    if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                        continue;
+                    }
+                    let x =
+                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    write_pixel(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        pixel,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                    );
+                }
+            }
+        }
+        8 => {
+            for px in 0..width {
+                let byte_idx = px as usize;
+                if byte_idx < row_data.len() {
+                    let src_pixel = row_data[byte_idx] as usize;
+                    if mode_base == 36 && src_pixel == 0 {
+                        continue;
+                    }
+                    let pixel = src_to_dst[src_pixel];
+                    let Some(pic_x) = map_x(px) else {
+                        continue;
+                    };
+                    if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                        continue;
+                    }
+                    let x =
+                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    if trace_pict_samples_enabled() {
+                        for (label, sample_x, sample_y) in [
+                            ("center", 400i32, 300i32),
+                            ("title_right", 580, 350),
+                            ("title_low", 400, 430),
+                        ] {
+                            if x == sample_x && base_y == sample_y {
+                                let src_rgb = device_clut[pixel as usize];
+                                eprintln!(
+                                    "[PICT] sample {} dst=({}, {}) src_row={} src_px={} src_idx={} dst_idx={} dst_rgb=({:04X},{:04X},{:04X})",
+                                    label,
+                                    x,
+                                    base_y,
+                                    row,
+                                    px,
+                                    src_pixel,
+                                    pixel,
+                                    src_rgb[0],
+                                    src_rgb[1],
+                                    src_rgb[2],
+                                );
+                            }
+                        }
+                    }
+                    write_pixel(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        pixel,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                    );
+                }
+            }
+        }
+        16 => {
+            for px in 0..width {
+                let byte_idx = (px * 2) as usize;
+                if byte_idx + 1 < row_data.len() {
+                    let hi = row_data[byte_idx] as u16;
+                    let lo = row_data[byte_idx + 1] as u16;
+                    let pixel = (hi << 8) | lo;
+                    // Mac 16-bit: xRRRRRGG GGGBBBBB
+                    let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
+                    let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u8;
+                    let b = ((pixel & 0x1F) * 255 / 31) as u8;
+                    let idx = closest_clut_index(
+                        r as u16 * 257,
+                        g as u16 * 257,
+                        b as u16 * 257,
+                        device_clut,
+                    );
+                    let Some(pic_x) = map_x(px) else {
+                        continue;
+                    };
+                    if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                        continue;
+                    }
+                    let x =
+                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    write_pixel(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        idx,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                    );
+                }
+            }
+        }
+        _ => {
+            // Unsupported pixel size
+        }
+    }
+}
+
+/// Parse DirectBitsRect / DirectBitsRgn (opcode 0x009A/0x009B)
+fn parse_direct_bits_rect(
+    bus: &mut MacMemoryBus,
+    mut pos: u32,
+    has_rgn: bool,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    clip_region: Option<&PictureRegion>,
+) -> u32 {
+    // DirectBitsRect has PixMap WITH baseAddr prefix (usually 0x000000FF)
+    let (new_pos, pm) = read_pixmap_with_base(bus, pos);
+    pos = new_pos;
+    // No ColorTable for direct pixels
+
+    if trace_pict_enabled() {
+        eprintln!(
+            "[PICT] DirectBits{} pixelSize={} cmpCount={} packType={} rowBytes={} bounds=({}, {}, {}, {})",
+            if has_rgn { "Rgn" } else { "Rect" },
+            pm.pixel_size,
+            pm.cmp_count,
+            pm.pack_type,
+            pm.row_bytes,
+            pm.bounds_top,
+            pm.bounds_left,
+            pm.bounds_bottom,
+            pm.bounds_right
+        );
+    }
+
+    // srcRect
+    let src_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let src_right = bus.read_word(pos) as i16;
+    pos += 2;
+    // dstRect
+    let pic_dst_top = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_left = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_bottom = bus.read_word(pos) as i16;
+    pos += 2;
+    let pic_dst_right = bus.read_word(pos) as i16;
+    pos += 2;
+    // mode
+    let mode = bus.read_word(pos);
+    pos += 2;
+
+    if trace_pict_enabled() {
+        eprintln!(
+            "[PICT] DirectBits{} mode={} src=({},{}..{},{} ) dst=({},{}..{},{} )",
+            if has_rgn { "Rgn" } else { "Rect" },
+            mode,
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            pic_dst_top,
+            pic_dst_left,
+            pic_dst_bottom,
+            pic_dst_right,
+        );
+    }
+
+    if has_rgn {
+        let rgn_size = bus.read_word(pos) as u32;
+        pos += rgn_size;
+    }
+
+    let height = (pm.bounds_bottom - pm.bounds_top).max(0) as u32;
+    let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
+    let (screen_base, screen_rb, screen_w, screen_h, scrn_ps) = (
+        screen_mode.0,
+        screen_mode.1,
+        screen_mode.2 as i32,
+        screen_mode.3 as i32,
+        screen_mode.4,
+    );
+
+    for row in 0..height {
+        // Per PixMap.packType (Imaging With QuickDraw 1994, 4-29):
+        //   0 = default (no compression for >8bpp; PackBits for ≤8bpp)
+        //   1 = unpacked
+        //   2 = drop pad byte (32bpp only — 4-byte → 3-byte conversion)
+        //   3 = byte-PackBits on 16-bit pixels (16bpp)
+        //   4 = byte-PackBits on cmpCount component planes per row
+        //       (16bpp uses RGB planes; 32bpp uses ARGB or RGB planes)
+        let unpacked_len = match (pm.pixel_size, pm.pack_type) {
+            (32, 4) => (pm.bounds_right - pm.bounds_left) as u16 * pm.cmp_count,
+            _ => pm.row_bytes,
+        };
+        let (new_pos, row_data) = if pm.row_bytes < 8 || pm.pack_type == 0 || pm.pack_type == 1 {
+            // Uncompressed: raw bytes equal to rowBytes.
+            let data: Vec<u8> = (0..pm.row_bytes as u32)
+                .map(|i| bus.read_byte(pos + i))
+                .collect();
+            (pos + pm.row_bytes as u32, data)
+        } else if pm.pack_type == 3 && pm.pixel_size == 16 {
+            unpack_bits_chunk16(bus, pos, unpacked_len)
+        } else {
+            unpack_bits(bus, pos, unpacked_len)
+        };
+        pos = new_pos;
+
+        let src_y = i32::from(pm.bounds_top) + row as i32;
+        let mapped_pic_y = map_src_coord(src_y, src_top, src_bottom, pic_dst_top, pic_dst_bottom);
+
+        match pm.pixel_size {
+            16 => {
+                for px in 0..width {
+                    let byte_idx = (px * 2) as usize;
+                    if byte_idx + 1 < row_data.len() {
+                        let pixel =
+                            ((row_data[byte_idx] as u16) << 8) | (row_data[byte_idx + 1] as u16);
+                        let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
+                        let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u8;
+                        let b = ((pixel & 0x1F) * 255 / 31) as u8;
+                        let idx = closest_clut_index(
+                            r as u16 * 257,
+                            g as u16 * 257,
+                            b as u16 * 257,
+                            device_clut,
+                        );
+                        let Some(pic_y) = mapped_pic_y else {
+                            continue;
+                        };
+                        let src_x = i32::from(pm.bounds_left) + px as i32;
+                        let Some(pic_x) =
+                            map_src_coord(src_x, src_left, src_right, pic_dst_left, pic_dst_right)
+                        else {
+                            continue;
+                        };
+                        if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                            continue;
+                        }
+                        let x = ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32
+                            + dst_left as i32;
+                        let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
+                            + dst_top as i32;
+                        write_pixel(
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            x,
+                            y,
+                            idx,
+                            screen_w,
+                            screen_h,
+                            scrn_ps,
+                        );
+                    }
+                }
+            }
+            32 => {
+                // 32-bit direct: data is arranged as component planes
+                // cmpCount=3: R plane, G plane, B plane (each width bytes)
+                // cmpCount=4: A, R, G, B (each width bytes)
+                let skip = if pm.cmp_count == 4 { width as usize } else { 0 };
+                let r_start = skip;
+                let g_start = skip + width as usize;
+                let b_start = skip + 2 * width as usize;
+                for px in 0..width {
+                    let ri = r_start + px as usize;
+                    let gi = g_start + px as usize;
+                    let bi = b_start + px as usize;
+                    if bi < row_data.len() {
+                        let ci = closest_clut_index(
+                            row_data[ri] as u16 * 257,
+                            row_data[gi] as u16 * 257,
+                            row_data[bi] as u16 * 257,
+                            device_clut,
+                        );
+                        let Some(pic_y) = mapped_pic_y else {
+                            continue;
+                        };
+                        let src_x = i32::from(pm.bounds_left) + px as i32;
+                        let Some(pic_x) =
+                            map_src_coord(src_x, src_left, src_right, pic_dst_left, pic_dst_right)
+                        else {
+                            continue;
+                        };
+                        if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                            continue;
+                        }
+                        let x = ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32
+                            + dst_left as i32;
+                        let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
+                            + dst_top as i32;
+                        write_pixel(
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            x,
+                            y,
+                            ci,
+                            screen_w,
+                            screen_h,
+                            scrn_ps,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_src_to_dst_table, closest_grayscale_luminance_index, draw_picture};
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::trap::dispatch::TrapDispatcher;
+
+    #[test]
+    fn grayscale_luminance_mapping_prefers_low_chroma_match() {
+        let mut dst = [[0u16; 3]; 256];
+        dst[10] = [0xE000, 0x0000, 0x0000];
+        dst[20] = [0x3939, 0x2C2C, 0x3939];
+        assert_eq!(closest_grayscale_luminance_index(0x3939, &dst), 20);
+    }
+
+    #[test]
+    fn dense_grayscale_source_uses_luminance_translation() {
+        let mut src = [[0u16; 3]; 256];
+        for (index, rgb) in src.iter_mut().enumerate() {
+            let value = 0xFFFFu16.saturating_sub((index as u16) * 0x0101);
+            *rgb = [value, value, value];
+        }
+
+        let mut dst = [[0u16; 3]; 256];
+        dst[10] = [0xE000, 0x0000, 0x0000];
+        dst[20] = [0x3939, 0x2C2C, 0x3939];
+        dst[42] = [0x1111, 0x0202, 0x0000];
+
+        let table = build_src_to_dst_table(&src, &dst);
+        assert_eq!(table[198], 20);
+    }
+
+    #[test]
+    fn dense_grayscale_source_does_not_preserve_indices_on_system_palette() {
+        let mut src = [[0u16; 3]; 256];
+        for (index, rgb) in src.iter_mut().enumerate() {
+            let value = 0xFFFFu16.saturating_sub((index as u16) * 0x0101);
+            *rgb = [value, value, value];
+        }
+
+        let dst = TrapDispatcher::standard_mac_8bpp_clut();
+        let table = build_src_to_dst_table(&src, &dst);
+
+        // Canonical index 16 is orange in the system color cube, not gray.
+        // A grayscale PICT must remap this entry instead of passing it through.
+        assert_ne!(table[16], 16);
+        let mapped = dst[table[16] as usize];
+        assert_eq!(mapped[0], mapped[1]);
+        assert_eq!(mapped[1], mapped[2]);
+    }
+
+    /// fillRect ($0x34) honors FillPat (0x0A) rather than PnPat (0x09) —
+    /// otherwise it would be indistinguishable from paintRect ($0x31).
+    /// Imaging With QuickDraw 1994, Appendix A, A-7.
+    #[test]
+    fn pict_fillrect_honors_fillpat_not_pnpat() {
+        // 32×32 8bpp framebuffer at 0x08_0000.
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_w: u16 = 32;
+        let screen_h: u16 = 32;
+        let row_bytes = screen_w as u32;
+        // Pre-fill with a sentinel so an untouched pixel is distinguishable.
+        bus.write_bytes(
+            screen_base,
+            &vec![0x42; (row_bytes * screen_h as u32) as usize],
+        );
+
+        // Build a PICT v1 at 0x10_0000.
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        // version 1 (short opcodes)
+        bus.write_byte(p, 0x11); p += 1; // versionOp
+        bus.write_byte(p, 0x01); p += 1; // v1
+        // PnPat (0x09): 8 bytes all 0x00 — set bits→fg, clear→bg.
+        // An all-zero pattern fills with bg_idx (0 = white).
+        bus.write_byte(p, 0x09); p += 1;
+        bus.fill_zeros(p, 8); p += 8;
+        // FillPat (0x0A): 8 bytes all 0xFF — fills with fg_idx
+        // (255 = black).
+        bus.write_byte(p, 0x0A); p += 1;
+        bus.write_bytes(p, &[0xFFu8; 8]); p += 8;
+        // fillRect (0x34): rect = (0, 0, 32, 32)
+        bus.write_byte(p, 0x34); p += 1;
+        bus.write_word(p, 0); p += 2; // top
+        bus.write_word(p, 0); p += 2; // left
+        bus.write_word(p, 32); p += 2; // bottom
+        bus.write_word(p, 32); p += 2; // right
+        // EndPic
+        bus.write_byte(p, 0xFF);
+
+        // picFrame = (0, 0, 32, 32)
+        bus.write_word(pic, (p - pic + 1) as u16); // picSize (approx)
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 32);
+        bus.write_word(pic + 8, 32);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (_ok, _clut) = draw_picture(
+            &mut bus,
+            pic,
+            0, 0, 32, 32,
+            (screen_base, row_bytes, screen_w, screen_h, 8),
+            &clut,
+            0,
+        );
+
+        // A representative interior pixel must be fg_idx (255 = black).
+        // If fillRect were using PnPat (all-zeros), it would leak as
+        // bg_idx (0 = white).
+        let sample = bus.read_byte(screen_base + 8 * row_bytes + 8);
+        assert_eq!(
+            sample, 255,
+            "fillRect must use FillPat (all-0xFF → fg=255), not PnPat \
+             (all-0x00 → bg=0). Got 0x{:02X}.",
+            sample,
+        );
+    }
+
+    /// fillPoly ($0x74) samples FillPat per pixel — alternating row pattern
+    /// (rows 0,2,4,6 = 0xFF / rows 1,3,5,7 = 0x00) produces horizontal
+    /// stripes of fg_idx / bg_idx.
+    #[test]
+    fn pict_fillpoly_honors_fillpat_striped_pattern() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_w: u16 = 32;
+        let screen_h: u16 = 32;
+        let row_bytes = screen_w as u32;
+        bus.write_bytes(
+            screen_base,
+            &vec![0x42; (row_bytes * screen_h as u32) as usize],
+        );
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11); p += 1; // VersionOp
+        bus.write_byte(p, 0x01); p += 1; // v1
+        // FillPat: alternating rows 0xFF / 0x00 → horizontal stripes.
+        bus.write_byte(p, 0x0A); p += 1;
+        for row in 0..8 {
+            bus.write_byte(p, if row % 2 == 0 { 0xFF } else { 0x00 });
+            p += 1;
+        }
+        // fillPoly ($0x74) — inline polySize(2) + bbox(8) + N*(v,h)(4)
+        bus.write_byte(p, 0x74); p += 1;
+        // polySize = 10 (header) + 4 verts × 4 bytes = 26
+        let poly_size: u16 = 10 + 4 * 4;
+        bus.write_word(p, poly_size); p += 2;
+        bus.write_word(p, 4); p += 2;  // bbox.top
+        bus.write_word(p, 4); p += 2;  // bbox.left
+        bus.write_word(p, 28); p += 2; // bbox.bottom
+        bus.write_word(p, 28); p += 2; // bbox.right
+        // square verts
+        for &(v, h) in &[(4i16, 4i16), (4, 28), (28, 28), (28, 4)] {
+            bus.write_word(p, v as u16); p += 2;
+            bus.write_word(p, h as u16); p += 2;
+        }
+        bus.write_byte(p, 0xFF); // EndPic
+
+        bus.write_word(pic, (p - pic + 1) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 32);
+        bus.write_word(pic + 8, 32);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let _ = draw_picture(
+            &mut bus, pic, 0, 0, 32, 32,
+            (screen_base, row_bytes, screen_w, screen_h, 8),
+            &clut, 0,
+        );
+
+        // Interior columns: sample two adjacent rows. With the stripe
+        // pattern, even rows must land on an fg stripe, odd rows on
+        // a bg stripe (or vice-versa). Assert they differ rather than
+        // coupling to pattern phase, which depends on dy mod 8 within
+        // the polygon bbox.
+        let x = 10u32;
+        let mut saw_fg = false;
+        let mut saw_bg = false;
+        for dy in 6..16u32 {
+            let val = bus.read_byte(screen_base + dy * row_bytes + x);
+            if val == 255 { saw_fg = true; }
+            if val == 0 { saw_bg = true; }
+        }
+        assert!(saw_fg, "striped fillPoly must produce some fg_idx pixels");
+        assert!(saw_bg, "striped fillPoly must produce some bg_idx pixels");
+    }
+
+    /// fillOval ($0x54) samples FillPat per pixel. Striped FillPat
+    /// (alternating rows 0xFF / 0x00) must produce both fg_idx and bg_idx
+    /// pixels inside the oval, not solid fg_idx.
+    #[test]
+    fn pict_filloval_honors_fillpat_striped_pattern() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_w: u16 = 32;
+        let screen_h: u16 = 32;
+        let row_bytes = screen_w as u32;
+        bus.write_bytes(
+            screen_base,
+            &vec![0x42; (row_bytes * screen_h as u32) as usize],
+        );
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11); p += 1;
+        bus.write_byte(p, 0x01); p += 1;
+        // FillPat: alternating rows 0xFF / 0x00.
+        bus.write_byte(p, 0x0A); p += 1;
+        for row in 0..8 {
+            bus.write_byte(p, if row % 2 == 0 { 0xFF } else { 0x00 });
+            p += 1;
+        }
+        // fillOval ($0x54): rect = (2, 2, 30, 30)
+        bus.write_byte(p, 0x54); p += 1;
+        bus.write_word(p, 2); p += 2;
+        bus.write_word(p, 2); p += 2;
+        bus.write_word(p, 30); p += 2;
+        bus.write_word(p, 30); p += 2;
+        bus.write_byte(p, 0xFF);
+
+        bus.write_word(pic, (p - pic + 1) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 32);
+        bus.write_word(pic + 8, 32);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let _ = draw_picture(
+            &mut bus, pic, 0, 0, 32, 32,
+            (screen_base, row_bytes, screen_w, screen_h, 8),
+            &clut, 0,
+        );
+
+        // Sample a vertical column through the oval's interior; expect
+        // both fg and bg stripes to appear.
+        let x = 16u32;
+        let mut saw_fg = false;
+        let mut saw_bg = false;
+        for dy in 6..22u32 {
+            let val = bus.read_byte(screen_base + dy * row_bytes + x);
+            if val == 255 { saw_fg = true; }
+            if val == 0 { saw_bg = true; }
+        }
+        assert!(saw_fg, "striped fillOval must produce some fg_idx pixels");
+        assert!(saw_bg, "striped fillOval must produce some bg_idx pixels");
+    }
+}

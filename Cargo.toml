@@ -1,0 +1,48 @@
+[package]
+name = "systemless"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "High-Level Emulation for classic Macintosh applications"
+readme = "README.md"
+keywords = ["macintosh", "emulator", "68k", "hle", "quickdraw"]
+categories = ["emulators", "rendering", "game-development"]
+repository = "https://github.com/benletchford/systemless"
+documentation = "https://docs.rs/systemless"
+# `cargo run` (no `--bin`) routes to the GUI runner for local checkouts.
+default-run = "systemless"
+
+[dependencies]
+m68k = "0.1.5"
+thiserror = "2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Windowing (optional, for graphical runner)
+winit = { version = "0.30", optional = true }
+softbuffer = { version = "0.4", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+cpal = { version = "0.15", optional = true }
+stuffit = "0.1.4"
+
+# Pure-Rust math library for cross-platform deterministic transcendentals
+libm = "0.2"
+
+[features]
+default = ["gui"]
+gui = ["winit", "softbuffer", "cpal"]
+
+[[bin]]
+name = "systemless"
+required-features = ["gui"]
+
+[dev-dependencies]
+tempfile = "3"
+
+# The 68k interpreter is the dominant hot path; fat LTO + a single
+# codegen unit let the optimizer inline across crates, which is worth
+# the longer build time.
+[profile.release]
+lto = "fat"
+codegen-units = 1

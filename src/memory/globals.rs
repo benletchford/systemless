@@ -1,0 +1,314 @@
+//! Low-memory globals
+//!
+//! Mac OS stores important system variables in the low-memory area ($0000-$0FFF).
+//! These are documented in Inside Macintosh and are essential for Toolbox operation.
+//!
+//! References:
+//! - Inside Macintosh Volume II, II-19 (Low-Memory Global Variables)
+//! - Inside Macintosh Volume IV, IV-246 (Additional globals)
+
+use std::collections::HashMap;
+
+/// Low-memory global variable addresses
+pub mod addr {
+    // System globals
+    pub const MEM_TOP: u32 = 0x0108; // Top of memory (ptr)
+    pub const BUF_PTR: u32 = 0x010C; // Sound/disk buffer (ptr)
+    pub const HEAP_END: u32 = 0x0114; // End of heap zone (ptr)
+    pub const THE_ZONE: u32 = 0x0118; // Current heap zone (ptr)
+    pub const RND_SEED: u32 = 0x0156; // Random number seed (long) - Inside Macintosh Volume II, II-387
+    pub const TICKS: u32 = 0x016A; // Tick count (long) - system timer
+    pub const MB_STATE: u32 = 0x0172; // Mouse button state (byte) - 0=down, $80=up
+    pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
+    pub const ROM85: u32 = 0x028E; // Version number of ROM (word) - Inside Macintosh V, V-578
+
+    /// SoundLevel: current Sound Driver buffer level (1 byte).
+    /// Inside Macintosh: Sound 1994, "Sound Driver" chapter — `SoundLevel`
+    /// holds the Sound Driver's current PCM byte. It's non-zero when audio
+    /// is being emitted; zero when the driver is idle.
+    ///
+    /// Marathon 1's sound module reads this byte at CODE 5 +`$0003F2`
+    /// (`MOVE.B (mem $260).W, (A0)`) and uses it as a "Sound Driver alive"
+    /// sentinel — if zero, M1 short-circuits its entire audio submission
+    /// path. Systemless's HLE bypasses the legacy Sound Driver layer (we mix
+    /// PCM directly), so this byte must be initialized non-zero at boot
+    /// to satisfy classic Sound-Driver clients like M1.
+    pub const SOUND_LEVEL: u32 = 0x0260;
+
+    // Menu Manager globals
+    pub const MBAR_HEIGHT: u32 = 0x0BAA; // Menu bar height in pixels (word) - Inside Macintosh V, V-245
+    pub const MENU_FLASH: u32 = 0x0A24; // Number of times menu item blinks (word) - Inside Macintosh Volume I, I-361
+
+    /// MenuDisable: menu ID + item number of the last menu item the cursor
+    /// passed over while a menu was down (4 bytes, LongInt — high word =
+    /// menuID, low word = itemNumber). Maintained by the standard menu
+    /// definition procedure ('MDEF' 0) on each cursor-into-item transition,
+    /// regardless of whether the item is enabled or disabled. Read by
+    /// MenuChoice ($AA66) when the application's MenuSelect / MenuKey
+    /// returned zero, to surface "which disabled item did the user click?"
+    /// for help/explanation UI. Per IM:V V-248 + MTb 1992 3-118 (the
+    /// canonical EQU at IM:V V-571 line 8689: `MenuDisable EQU $0B54`).
+    /// Systemless's HLE reads this lowmem word directly in MenuChoice; it
+    /// still does not synthesize the MDEF cursor-tracking writes that
+    /// classic ROMs receive, so tests seed the value explicitly when they
+    /// need a deterministic result.
+    /// Inside Macintosh Volume V, V-248 (MenuChoice routine description)
+    /// and V-571 (assembly globals table); Macintosh Toolbox Essentials
+    /// 1992, 3-118..3-119 (MenuChoice canonical chapter).
+    pub const MENU_DISABLE: u32 = 0x0B54;
+
+    /// MenuCInfo: handle to the current menu color information table
+    /// (4 bytes, MCTableHandle). Created by InitMenus and maintained by
+    /// the Menu Color Manager traps: GetMCInfo ($AA61) returns a deep
+    /// copy of the current table, SetMCInfo ($AA62) replaces the current
+    /// table, DispMCInfo ($AA63) disposes a caller-supplied table,
+    /// GetMCEntry ($AA64) returns a pointer into the live table, and
+    /// SetMCEntries / DelMCEntries ($AA65 / $AA60) update or remove
+    /// entries. Systemless HLE still does not auto-load 'mctb' resources,
+    /// but it now stores a real live table here for API compatibility.
+    /// Per IM:V V-247 + V-571 line 8688: `MenuCInfo EQU $0D50`. The
+    /// Menu Color Manager was deprecated in System 7.5 by the Theme
+    /// Manager (Macintosh Toolbox Essentials 1992 treats the routines
+    /// as compatibility-only).
+    /// Inside Macintosh Volume V, V-247..V-248 (Menu Color Manager
+    /// routines) and V-571 (assembly globals table).
+    pub const MENU_C_INFO: u32 = 0x0D50;
+
+    // QuickDraw globals
+    pub const THE_PORT: u32 = 0x09DA; // Current GrafPort (ptr)
+    pub const SCRN_BASE: u32 = 0x0824; // Screen base address (ptr) - Inside Macintosh II, II-19
+
+    // Mouse position globals (Points are 4 bytes: v word, h word)
+    // Reference: Executor docs/globals.cpp
+    pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
+    pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
+    pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
+
+    // screenBits BitMap structure (14 bytes: baseAddr(4) + rowBytes(2) + bounds(8))
+    // On a real Mac this lives in QD globals, but apps read it during InitGraf.
+    // We store it at $083C to avoid conflicting with mouse globals at $0828-$0833.
+    pub const SCREEN_BITS: u32 = 0x083C;
+
+    // File Manager globals
+    pub const SF_SAVE_DISK: u32 = 0x0214; // Negative of volume reference number (word) - Inside Macintosh Volume IV, IV-72
+    pub const FCB_S_PTR: u32 = 0x034E; // FCB array pointer
+    pub const DEF_VCB_PTR: u32 = 0x0352; // Default VCB pointer
+    pub const VCB_Q_HDR: u32 = 0x0356; // VCB queue header
+    pub const FS_Q_HDR: u32 = 0x0360; // File I/O queue header
+    pub const CUR_DIR_STORE: u32 = 0x0398; // Directory ID of directory last opened (long) - Inside Macintosh Volume IV, IV-72
+
+    // Memory Manager globals (for NewPtr, etc.)
+    pub const APP_L_ZONE: u32 = 0x02AA; // Application zone (ptr)
+    pub const SYS_ZONE: u32 = 0x02A6; // System zone (ptr)
+
+    /// ResumeProc: address of the system error resume procedure
+    /// (4 bytes, ProcPtr). Set by InitDialogs ($A97B) from its
+    /// `resumeProc` parameter; read by the System Error Handler
+    /// when a fatal system error occurs. Inside Macintosh Volume I,
+    /// I-411 (and the Dialog Mgr globals summary table at I-432).
+    pub const RESUME_PROC: u32 = 0x0A8C;
+
+    /// DSErrCode: current system error ID (word) written by SysError.
+    /// Inside Macintosh Volume III (1985), low-memory globals table.
+    pub const DS_ERR_CODE: u32 = 0x0AF0;
+
+    /// ANumber: resource ID of the last alert that occurred (2
+    /// bytes, INTEGER). Written by Alert/StopAlert/NoteAlert/
+    /// CautionAlert ($A985..$A988) on each successful ALRT lookup.
+    /// Inside Macintosh Volume I, I-423.
+    pub const ANUMBER: u32 = 0x0A98;
+
+    /// AlertStage / ACount: stage of the last occurrence of an
+    /// alert (2 bytes, INTEGER per IM:I I-423; MPW reads via
+    /// `#define GetAlertStage() (* (short*) 0x0A9A)` per
+    /// MTb 1992 22620). Holds 0..3 with stage = word+1. The
+    /// Alert/StopAlert/NoteAlert/CautionAlert trio inspect this
+    /// word to choose which 4-bit nibble of the ALRT template's
+    /// `stages` word to apply, then increment (capped at 3 — IM:I
+    /// I-417). InitDialogs ($A97B) zeros it. ResetAlertStage and
+    /// GetAlertStage are documented "[Not in ROM]" per IM:I I-422
+    /// — ResetAlertStage compiles to a direct `CLR.W $0A9A.W`
+    /// store; GetAlertStage compiles to a direct word load. Read
+    /// and write this address with `read_word` / `write_word` —
+    /// using `read_byte` reads the high byte (always 0 for stages
+    /// 0..3 on big-endian 68k) which is a subtle latent bug.
+    /// Inside Macintosh Volume I, I-417 + I-423.
+    pub const ALERT_STAGE: u32 = 0x0A9A;
+
+    /// DABeeper: address of the current alert sound procedure
+    /// (4 bytes, ProcPtr). Set by InitDialogs ($A97B) to the
+    /// standard sound procedure; replaced by ErrorSound ($A98C)
+    /// from its `soundProc` argument. NIL means "no sound (and no
+    /// menu bar blink) at all" per IM:I I-411.
+    /// Inside Macintosh Volume I, I-411.
+    pub const DA_BEEPER: u32 = 0x0A9C;
+
+    /// TEScrpLength: size of the TextEdit scrap in bytes (2-byte
+    /// INTEGER). Per IM:I I-389 + I-390 + assembly note at
+    /// I-12606: contains the byte count of the cut/copied text
+    /// currently held in the TE-private scrap (separate from the
+    /// shared desk scrap). Set to 0 by TEInit ($A9CC); rewritten
+    /// by TECopy / TECut / TEPaste / TEFromScrap each time the
+    /// scrap is touched. Apps that probe this from assembly to
+    /// detect "is there text on the TE clipboard?" rely on it
+    /// being correctly maintained.
+    /// Inside Macintosh Volume I, I-389 (TEScrpLength global).
+    pub const TE_SCRP_LENGTH: u32 = 0x0AB0;
+
+    /// TEScrpHandle: handle to the TextEdit scrap (4 bytes,
+    /// Handle). Per IM:I I-389 + assembly note at I-12598: the
+    /// allocated relocatable block holding the cut/copied text
+    /// bytes. TEInit ($A9CC) allocates a zero-length handle
+    /// here on first call; TECopy / TECut / TEPaste resize the
+    /// underlying block as needed. NIL if TEInit hasn't run yet
+    /// — defensive callers should check before dereferencing.
+    /// Inside Macintosh Volume I, I-389 (TEScrpHandle global).
+    pub const TE_SCRP_HANDLE: u32 = 0x0AB4;
+
+    /// DAStrings: handles to the four ParamText strings
+    /// (16 bytes = 4 × Handle). Substitutable into dialog and
+    /// alert text via the `^0`..`^3` escapes at draw time.
+    /// InitDialogs ($A97B) zeros all 4 entries (== "" empty
+    /// strings); ParamText ($A98B) replaces each entry with a
+    /// fresh handle to the caller's Pascal string.
+    /// Inside Macintosh Volume I, I-421 (DAStrings global array).
+    pub const DA_STRINGS: u32 = 0x0AA0;
+
+    // Application globals
+    pub const CUR_APNAME: u32 = 0x0910; // Current app name (Str31)
+    pub const CUR_APREF_NUM: u32 = 0x0900; // Current app ref num (int)
+    pub const CURRENT_A5: u32 = 0x0904; // Current A5 (ptr) - Inside Macintosh Memory 1-77
+    pub const CUR_JT_OFFSET: u32 = 0x0934; // Jump table offset from A5 (word) - Inside Macintosh Volume II, II-62
+
+    // Stack and heap limits
+    pub const CUR_STACK_BASE: u32 = 0x0908; // Stack base (ptr)
+    pub const APPL_LIMIT: u32 = 0x0130; // Application heap limit (ptr)
+}
+
+/// Manager for low-memory globals
+pub struct LowMemGlobals {
+    /// Storage for global values (sparse, only populated as needed)
+    values: HashMap<u32, u32>,
+}
+
+impl LowMemGlobals {
+    /// Create new low-memory globals
+    pub fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+        }
+    }
+
+    /// Get a 32-bit global value
+    pub fn get_long(&self, address: u32) -> u32 {
+        *self.values.get(&address).unwrap_or(&0)
+    }
+
+    /// Set a 32-bit global value
+    pub fn set_long(&mut self, address: u32, value: u32) {
+        self.values.insert(address, value);
+    }
+
+    /// Get a 16-bit global value
+    pub fn get_word(&self, address: u32) -> u16 {
+        (self.get_long(address & !1) >> ((1 - (address & 1)) * 8)) as u16
+    }
+
+    /// Set a 16-bit global value
+    pub fn set_word(&mut self, address: u32, value: u16) {
+        let aligned = address & !1;
+        let current = self.get_long(aligned);
+        let new_value = if (address & 1) == 0 {
+            (current & 0x0000_FFFF) | ((value as u32) << 16)
+        } else {
+            (current & 0xFFFF_0000) | (value as u32)
+        };
+        self.set_long(aligned, new_value);
+    }
+
+    // Convenience accessors for common globals
+
+    /// Get FCB array pointer
+    pub fn fcb_ptr(&self) -> u32 {
+        self.get_long(addr::FCB_S_PTR)
+    }
+
+    /// Set FCB array pointer
+    pub fn set_fcb_ptr(&mut self, ptr: u32) {
+        self.set_long(addr::FCB_S_PTR, ptr);
+    }
+
+    /// Get default VCB pointer
+    pub fn def_vcb_ptr(&self) -> u32 {
+        self.get_long(addr::DEF_VCB_PTR)
+    }
+
+    /// Set default VCB pointer
+    pub fn set_def_vcb_ptr(&mut self, ptr: u32) {
+        self.set_long(addr::DEF_VCB_PTR, ptr);
+    }
+
+    /// Get current GrafPort
+    pub fn the_port(&self) -> u32 {
+        self.get_long(addr::THE_PORT)
+    }
+
+    /// Set current GrafPort
+    pub fn set_the_port(&mut self, ptr: u32) {
+        self.set_long(addr::THE_PORT, ptr);
+    }
+
+    /// Get top of memory
+    pub fn mem_top(&self) -> u32 {
+        self.get_long(addr::MEM_TOP)
+    }
+
+    /// Set top of memory
+    pub fn set_mem_top(&mut self, ptr: u32) {
+        self.set_long(addr::MEM_TOP, ptr);
+    }
+}
+
+impl Default for LowMemGlobals {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lock in low-memory global addresses against IM:I App-A. A typo
+    /// (e.g. swapping a digit) in any of these would silently break
+    /// apps that read the global directly.
+    #[test]
+    fn low_mem_global_addresses_match_inside_macintosh() {
+        // SOUND_LEVEL ($0260) is the M1 sound-unlock load-bearing
+        // constant. Marathon 1's CODE 5 +$0003F2 reads the byte here
+        // as a "Sound Driver alive" sentinel; with zero, M1 short-
+        // circuits its entire audio submission path. Inside Macintosh:
+        // Sound 1994 (Sound Driver chapter).
+        assert_eq!(
+            addr::SOUND_LEVEL,
+            0x0260,
+            "SoundLevel must be at $0260 per IM:Sound 1994 — \
+             changing this address breaks M1 audio unlock."
+        );
+
+        // Other heavily-load-bearing globals; a regression in any
+        // of these has been historically catastrophic.
+        assert_eq!(addr::TICKS, 0x016A, "Ticks per IM:II II-387");
+        assert_eq!(
+            addr::RND_SEED,
+            0x0156,
+            "RndSeed per IM:II II-387 — regression breaks random sequences"
+        );
+        assert_eq!(
+            addr::MB_STATE,
+            0x0172,
+            "MBState mouse button — wrong address = button stuck"
+        );
+        assert_eq!(addr::CURRENT_A5, 0x0904, "CurrentA5 per IM:Memory 1-77");
+    }
+}
