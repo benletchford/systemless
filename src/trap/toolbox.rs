@@ -7217,12 +7217,35 @@ impl super::TrapDispatcher {
                 // MPW's inline wraps ScriptUtil selectors as
                 //   MOVE.L #<encoding>.L, -(SP)
                 //   _ScriptUtil
-                // where the high word encodes param-count metadata and
-                // the low byte holds the routine number (IM:V-315).
-                // Mask to the low byte for the match; the high-byte
-                // metadata is consumed by the trap's stack-frame logic,
-                // not the dispatch.
-                let selector = (bus.read_long(sp) & 0xFF) as i32;
+                // where the high word encodes result-size and argument-count
+                // metadata. Older Script Manager calls use the low byte as the
+                // routine number; System 7 text utilities use full selectors.
+                let raw_selector = bus.read_long(sp);
+                let selector = (raw_selector & 0xFF) as i32;
+
+                match raw_selector {
+                    // TruncString ($8208FFE0): FUNCTION TruncString(width: INTEGER;
+                    //   VAR theString: Str255; truncWhere: TruncCode): INTEGER
+                    // Returning smNotTruncated leaves the string unchanged.
+                    // Stack: selector(4), args(8), result(2). Pop selector + args.
+                    // Inside Macintosh Volume VI, 14-59..14-60 and Table C-3.
+                    0x8208_FFE0 => {
+                        bus.write_word(sp + 12, 0); // smNotTruncated
+                        cpu.write_reg(Register::A7, sp + 12);
+                        return Some(Ok(()));
+                    }
+                    // TruncText ($820CFFDE): FUNCTION TruncText(width: INTEGER;
+                    //   textPtr: Ptr; VAR length: INTEGER; truncWhere: TruncCode): INTEGER
+                    // Returning smNotTruncated leaves the pointed-to text and length unchanged.
+                    // Stack: selector(4), args(12), result(2). Pop selector + args.
+                    // Inside Macintosh Volume VI, 14-59..14-60 and Table C-3.
+                    0x820C_FFDE => {
+                        bus.write_word(sp + 16, 0); // smNotTruncated
+                        cpu.write_reg(Register::A7, sp + 16);
+                        return Some(Ok(()));
+                    }
+                    _ => {}
+                }
 
                 match selector {
                     // FontScript (0): FUNCTION FontScript: INTEGER
@@ -7384,9 +7407,28 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 16);
                     }
                     _ => {
-                        // Unknown or complex selector — pop the selector and return
-                        eprintln!("[TRAP] ScriptUtil: unhandled selector {}", selector);
-                        cpu.write_reg(Register::A7, sp + 4);
+                        let result_bytes = (raw_selector >> 24) & 0x7F;
+                        let arg_bytes = (raw_selector >> 16) & 0xFF;
+                        if (raw_selector & 0x8000_0000) != 0
+                            && matches!(result_bytes, 0 | 1 | 2 | 4)
+                        {
+                            let result_sp = sp + 4 + arg_bytes;
+                            match result_bytes {
+                                1 => bus.write_byte(result_sp, 0),
+                                2 => bus.write_word(result_sp, 0),
+                                4 => bus.write_long(result_sp, 0),
+                                _ => {}
+                            }
+                            eprintln!(
+                                "[TRAP] ScriptUtil: unhandled encoded selector ${:08X}; popped {} arg bytes",
+                                raw_selector, arg_bytes
+                            );
+                            cpu.write_reg(Register::A7, result_sp);
+                        } else {
+                            // Unknown legacy selector — pop the selector and return.
+                            eprintln!("[TRAP] ScriptUtil: unhandled selector {}", selector);
+                            cpu.write_reg(Register::A7, sp + 4);
+                        }
                     }
                 }
                 Ok(())
@@ -16198,6 +16240,50 @@ mod tests {
 
         assert_eq!(bus.read_bytes(offsets_ptr, 12), vec![0; 12]);
         assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+    }
+
+    // ScriptUtil ($A8B5) selector $820CFFDE TruncText
+    // IM:VI 1991 pp. 14-59..14-60 and Table C-3.
+    #[test]
+    fn scriptutil_trunctext_returns_not_truncated_and_pops_encoded_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let length_ptr = 0x366000u32;
+
+        bus.write_long(sp, 0x820C_FFDE); // TruncText encoded selector
+        bus.write_word(sp + 4, 0); // truncWhere
+        bus.write_long(sp + 6, length_ptr); // VAR length
+        bus.write_long(sp + 10, 0x367000); // textPtr
+        bus.write_word(sp + 14, 80); // width
+        bus.write_word(sp + 16, 0xBEEF); // INTEGER result
+        bus.write_word(length_ptr, 12);
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 16), 0); // smNotTruncated
+        assert_eq!(bus.read_word(length_ptr), 12);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    }
+
+    // ScriptUtil ($A8B5) encoded selector fallback
+    // IM:VI Table C-3 stores result size and argument byte count in the high word.
+    #[test]
+    fn scriptutil_unknown_encoded_selector_uses_stack_metadata() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        bus.write_long(sp, 0x8204_ABCD); // 2-byte result, 4 arg bytes
+        bus.write_long(sp + 4, 0xCAFE_BABE); // opaque args
+        bus.write_word(sp + 8, 0xBEEF); // result slot
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 8), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
     }
 
     // FMSwapFont ($A901)
