@@ -1113,7 +1113,27 @@ impl super::TrapDispatcher {
                 }
                 let old_ptr = bus.read_long(handle);
                 let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
-                if old_size == new_size || (new_size + 3) & !3 == (old_size + 3) & !3 {
+                if self.loaded_handles.contains_key(&handle) {
+                    let master_was_nil = old_ptr == 0;
+                    let old_ptr = if old_ptr != 0 {
+                        old_ptr
+                    } else {
+                        self.loaded_handles
+                            .get(&handle)
+                            .map(|(ptr, _, _)| *ptr)
+                            .unwrap_or(0)
+                    };
+                    let new_ptr = self.resize_resource_allocation(bus, handle, old_ptr, new_size);
+                    if new_ptr == 0 && new_size > 0 {
+                        cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                    } else {
+                        if master_was_nil && new_ptr != 0 {
+                            bus.write_long(handle, new_ptr);
+                            self.ptr_to_handle.insert(new_ptr, handle);
+                        }
+                        cpu.write_reg(Register::D0, 0); // noErr
+                    }
+                } else if old_size == new_size || (new_size + 3) & !3 == (old_size + 3) & !3 {
                     // Same aligned size — no work needed
                     cpu.write_reg(Register::D0, 0);
                 } else {

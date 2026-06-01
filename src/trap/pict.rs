@@ -45,6 +45,10 @@ fn pict_identity_remap_enabled() -> bool {
     *PICT_IDENTITY_REMAP.get_or_init(|| std::env::var_os("SYSTEMLESS_PICT_IDENTITY_REMAP").is_some())
 }
 
+fn align_pict_pos(pos: u32) -> u32 {
+    if pos.is_multiple_of(2) { pos } else { pos + 1 }
+}
+
 const REGION_HEADER_SIZE: u32 = 10;
 const REGION_STOP: i16 = i16::MAX;
 
@@ -404,6 +408,14 @@ pub fn draw_picture(
                     is_v2 = true;
                 }
             }
+            0x12..=0x14 => {
+                // BkPixPat / PnPixPat / FillPixPat.
+                pos = skip_pixpat(bus, pos);
+            }
+            0x15 | 0x16 => {
+                // PnLocHFrac / ChExtra.
+                pos += 2;
+            }
             0x1A => {
                 // RGBFgCol (6 bytes) - v2 only. Maps the 48-bit RGB to the
                 // closest 8bpp CLUT index.
@@ -423,8 +435,20 @@ pub fn draw_picture(
                 let clut = super::TrapDispatcher::standard_mac_8bpp_clut();
                 bg_idx = closest_clut_index(r, g, b, &clut);
             }
+            0x1C => {
+                // HiliteMode (0 bytes).
+            }
+            0x1D => {
+                // HiliteColor (6 bytes). Highlight transfer modes are not
+                // modelled by this PICT renderer, but the stream must advance.
+                pos += 6;
+            }
             0x1E => {
                 // DefHilite (0 bytes) - v2 only
+            }
+            0x1F => {
+                // OpColor (6 bytes). Only arithmetic transfer modes consult it.
+                pos += 6;
             }
             0x20 => {
                 // Line: pnLoc(v:word, h:word) + newPt(v:word, h:word).
@@ -575,10 +599,20 @@ pub fn draw_picture(
             0x2C => {
                 // FontName (v2)
                 let data_len = bus.read_word(pos) as u32;
-                pos += data_len;
-                if !data_len.is_multiple_of(2) {
-                    pos += 1;
-                }
+                pos += 2 + data_len;
+                pos = align_pict_pos(pos);
+            }
+            0x2D | 0x2E => {
+                // lineJustify / glyphState: word data length followed by data.
+                let data_len = bus.read_word(pos) as u32;
+                pos += 2 + data_len;
+                pos = align_pict_pos(pos);
+            }
+            0x24..=0x27 | 0x2F => {
+                // Reserved data-bearing opcodes: word length + data.
+                let data_len = bus.read_word(pos) as u32;
+                pos += 2 + data_len;
+                pos = align_pict_pos(pos);
             }
             // Rectangle drawing opcodes ($30-$34, $38-$3C)
             // Imaging With QuickDraw 1994, Appendix A, A-7
@@ -901,12 +935,20 @@ pub fn draw_picture(
             _ => {
                 if is_v2 {
                     // v2 reserved opcode skip rules
-                    if (0x0100..=0x01FF).contains(&opcode) {
-                        pos += 2;
-                    } else if (0x0B00..=0x0BFF).contains(&opcode)
+                    if (0x00A2..=0x00AF).contains(&opcode) {
+                        let data_len = bus.read_word(pos) as u32;
+                        pos += 2 + data_len;
+                        pos = align_pict_pos(pos);
+                    } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                         // 0 bytes — both reserved-range blocks have no payload
+                    } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
+                        let data_len = bus.read_long(pos);
+                        pos += 4 + data_len;
+                        pos = align_pict_pos(pos);
+                    } else if (0x0100..=0x7FFF).contains(&opcode) {
+                        pos += u32::from(opcode >> 8) * 2;
                     } else {
                         eprintln!(
                             "[PICT] Unknown v2 opcode 0x{:04X} at offset {} - stopping",
@@ -1007,6 +1049,60 @@ fn read_pixmap(bus: &MacMemoryBus, mut pos: u32) -> (u32, PixMapInfo) {
             pack_type,
         },
     )
+}
+
+fn skip_pixpat(bus: &MacMemoryBus, mut pos: u32) -> u32 {
+    let pat_type = bus.read_word(pos);
+    pos += 2;
+    pos += 8; // Pat1Data.
+
+    if pat_type == 2 {
+        // ditherPat: RGBColor follows the old Pattern.
+        return pos + 6;
+    }
+
+    if pat_type != 1 {
+        return pos;
+    }
+
+    let (new_pos, pm) = read_pixmap(bus, pos);
+    pos = new_pos;
+    let (new_pos, _colors16, _ct_seed) = read_color_table(bus, pos);
+    pos = new_pos;
+    skip_pixdata(bus, pos, &pm)
+}
+
+fn skip_pixdata(bus: &MacMemoryBus, mut pos: u32, pm: &PixMapInfo) -> u32 {
+    let height = (pm.bounds_bottom - pm.bounds_top).max(0) as u32;
+    let row_bytes = u32::from(pm.row_bytes);
+
+    if pm.pack_type == 1 || pm.row_bytes < 8 {
+        return pos + row_bytes.saturating_mul(height);
+    }
+
+    if pm.pack_type == 2 {
+        let data_bytes = if pm.pixel_size == 32 {
+            row_bytes.saturating_mul(height).saturating_mul(3) / 4
+        } else {
+            row_bytes.saturating_mul(height)
+        };
+        return pos + data_bytes;
+    }
+
+    for _ in 0..height {
+        let byte_count = if pm.row_bytes > 250 {
+            let count = u32::from(bus.read_word(pos));
+            pos += 2;
+            count
+        } else {
+            let count = u32::from(bus.read_byte(pos));
+            pos += 1;
+            count
+        };
+        pos += byte_count;
+    }
+
+    pos
 }
 
 /// Read a ColorTable from PICT data.
@@ -2300,10 +2396,14 @@ fn build_src_to_dst_table(src_clut: &[[u16; 3]], device_clut: &[[u16; 3]; 256]) 
             if i >= 256 {
                 break;
             }
-            let qr = (entry[0] >> 12) as u32;
-            let qg = (entry[1] >> 12) as u32;
-            let qb = (entry[2] >> 12) as u32;
-            table[i] = itable[((qr << 8) | (qg << 4) | qb) as usize];
+            table[i] = if *entry == device_clut[i] {
+                i as u8
+            } else {
+                let qr = (entry[0] >> 12) as u32;
+                let qg = (entry[1] >> 12) as u32;
+                let qb = (entry[2] >> 12) as u32;
+                itable[((qr << 8) | (qg << 4) | qb) as usize]
+            };
         }
         return table;
     }
@@ -2311,7 +2411,14 @@ fn build_src_to_dst_table(src_clut: &[[u16; 3]], device_clut: &[[u16; 3]; 256]) 
         if i >= 256 {
             break;
         }
-        table[i] = if pict_clut_is_dense_grayscale(src_clut)
+        table[i] = if *entry == device_clut[i] {
+            // If a PICT's source table and the active port table share an
+            // exact color at the same index, preserve the authored pixel
+            // value. Games such as Prince of Destruction duplicate colors
+            // in custom palettes; a nearest-color search can otherwise move
+            // art to an earlier duplicate with a very different intended use.
+            i as u8
+        } else if pict_clut_is_dense_grayscale(src_clut)
             && entry[0] == entry[1]
             && entry[1] == entry[2]
         {
@@ -3366,6 +3473,20 @@ mod tests {
         assert_eq!(mapped[1], mapped[2]);
     }
 
+    #[test]
+    fn exact_same_index_palette_entries_win_over_earlier_duplicates() {
+        let mut src = [[0u16; 3]; 256];
+        let mut dst = [[0u16; 3]; 256];
+        let rgb = [0x2E2E, 0x0000, 0x3333];
+        src[71] = rgb;
+        dst[12] = rgb;
+        dst[71] = rgb;
+
+        let table = build_src_to_dst_table(&src, &dst);
+
+        assert_eq!(table[71], 71);
+    }
+
     /// fillRect ($0x34) honors FillPat (0x0A) rather than PnPat (0x09) —
     /// otherwise it would be indistinguishable from paintRect ($0x31).
     /// Imaging With QuickDraw 1994, Appendix A, A-7.
@@ -3433,6 +3554,69 @@ mod tests {
              (all-0x00 → bg=0). Got 0x{:02X}.",
             sample,
         );
+    }
+
+    #[test]
+    fn pict_v2_opcolor_advances_to_following_opcode() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_w: u16 = 16;
+        let screen_h: u16 = 16;
+        let row_bytes = screen_w as u32;
+        bus.write_bytes(
+            screen_base,
+            &vec![0x42; (row_bytes * screen_h as u32) as usize],
+        );
+
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1; // versionOp
+        bus.write_byte(p, 0x02);
+        p += 1; // v2
+        bus.write_byte(p, 0xFF);
+        p += 1; // v2 version padding
+        bus.write_byte(p, 0x00);
+        p += 1; // align first word opcode
+        bus.write_word(p, 0x001F);
+        p += 2; // OpColor
+        bus.write_word(p, 0x1111);
+        p += 2;
+        bus.write_word(p, 0x2222);
+        p += 2;
+        bus.write_word(p, 0x3333);
+        p += 2;
+        bus.write_word(p, 0x0034);
+        p += 2; // fillRect
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 16);
+        p += 2;
+        bus.write_word(p, 16);
+        p += 2;
+        bus.write_word(p, 0x00FF);
+        p += 2; // EndOfPicture
+
+        bus.write_word(pic, (p - pic) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 16);
+        bus.write_word(pic + 8, 16);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0, 0, 16, 16,
+            (screen_base, row_bytes, screen_w, screen_h, 8),
+            &clut,
+            0,
+        );
+
+        assert!(ok, "v2 OpColor should be skipped, not stop the PICT stream");
+        assert_eq!(bus.read_byte(screen_base + 8 * row_bytes + 8), 255);
     }
 
     /// fillPoly ($0x74) samples FillPat per pixel — alternating row pattern

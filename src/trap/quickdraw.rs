@@ -7531,11 +7531,9 @@ impl super::TrapDispatcher {
                             pic_handle,
                         );
                     }
-                    if ok
-                        && port_ps == 8
-                        && port_base == self.screen_mode.0
-                        && port_rb == self.screen_mode.1
-                    {
+                    let is_screen_picture_target =
+                        port_base == self.screen_mode.0 && port_rb == self.screen_mode.1;
+                    if ok && port_ps == 8 && is_screen_picture_target {
                         if let (Some(fetch), Some(fetch_clut)) = (
                             recent_resource_ctable_fetch.as_ref(),
                             recent_resource_ctable_clut.as_ref(),
@@ -7548,108 +7546,171 @@ impl super::TrapDispatcher {
                                 Some(fetch.ct_id),
                             );
                         } else if let Some(pict_clut) = pict_clut.as_ref() {
-                            // Hour-133 Palette Manager: merge the PICT's
-                            // non-zero entries into a copy of the current
-                            // color_manager_clut instead of using a
-                            // zero-initialised buffer. A PICT CTab that
-                            // declares only 64 entries (common for panel
-                            // PICTs in multi-PICT dialogs like EV's
-                            // landing scene) would previously zero the
-                            // remaining 192 slots, wiping out the screen
-                            // palette's existing colours. With a merge,
-                            // only the indices the PICT claims are
-                            // overwritten; the rest retain their current
-                            // values. This is the Palette Manager's
-                            // "cumulative palette install" semantics —
-                            // Inside Macintosh Volume VI 20-12 notes
-                            // that a window palette with fewer entries
-                            // than the device CLUT only affects the
-                            // entries it defines.
-                            // Snapshot the PICT's raw CTab (zero-padded,
-                            // as emitted by the PICT parser) for the
-                            // dense-grayscale gate check — protects EV
-                            // title from being reseeded from its
-                            // grayscale art.
-                            let mut raw_pict_array = [[0u16; 3]; 256];
-                            for (index, rgb) in pict_clut.iter().take(256).enumerate() {
-                                raw_pict_array[index] = *rgb;
-                            }
-                            // Merge semantics: start from the current
-                            // color_manager_clut, overlay only the non-zero
-                            // entries the PICT specifies.
-                            let mut pict_clut_array = self.color_manager_clut;
-                            let mut had_nonzero = false;
-                            for (index, rgb) in pict_clut.iter().take(256).enumerate() {
-                                if !(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0) {
-                                    pict_clut_array[index] = *rgb;
-                                    had_nonzero = true;
-                                }
-                            }
-                            if had_nonzero
-                                && Self::should_seed_screen_palette_from_pict(
+                            if let Some((raw_pict_array, pict_clut_array)) =
+                                Self::picture_clut_arrays(&self.color_manager_clut, pict_clut)
+                            {
+                                if Self::should_seed_screen_palette_from_pict(
                                     &raw_pict_array,
                                     &self.color_manager_clut,
-                                )
-                                && !pict_seed_clut_disabled()
-                            {
-                                if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
-                                    let cm_before = self.color_manager_clut[0];
-                                    let pict0 = pict_clut_array[0];
-                                    eprintln!(
-                                        "[CM-WRITE] PictSeed@6097 tick={} cm[0]=({:04X},{:04X},{:04X}) <- pict[0]=({:04X},{:04X},{:04X})",
-                                        self.tick_count, cm_before[0], cm_before[1], cm_before[2], pict0[0], pict0[1], pict0[2]
+                                ) && !pict_seed_clut_disabled()
+                                {
+                                    if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
+                                        let cm_before = self.color_manager_clut[0];
+                                        let pict0 = pict_clut_array[0];
+                                        eprintln!(
+                                            "[CM-WRITE] PictSeed@6097 tick={} cm[0]=({:04X},{:04X},{:04X}) <- pict[0]=({:04X},{:04X},{:04X})",
+                                            self.tick_count, cm_before[0], cm_before[1], cm_before[2], pict0[0], pict0[1], pict0[2]
+                                        );
+                                    }
+                                    self.device_clut = pict_clut_array;
+                                    self.color_manager_clut = pict_clut_array;
+                                    self.seeded_picture_palette = pict_clut_array;
+                                    self.seeded_picture_palette_until_tick =
+                                        self.tick_count.saturating_add(48);
+                                    self.sync_canonical_offscreen_ctabs_to_clut(
+                                        bus,
+                                        &pict_clut_array,
                                     );
-                                }
-                                self.device_clut = pict_clut_array;
-                                self.color_manager_clut = pict_clut_array;
-                                self.seeded_picture_palette = pict_clut_array;
-                                self.seeded_picture_palette_until_tick =
-                                    self.tick_count.saturating_add(48);
-                                self.sync_canonical_offscreen_ctabs_to_clut(bus, &pict_clut_array);
-                                // The first pass just drew against the port's
-                                // pre-seed logical table. Replay the picture
-                                // once against the newly-seeded screen CLUT so
-                                // direct screen draws land the same indices an
-                                // offscreen GWorld + later CopyBits would show.
-                                let device_ct_seed =
-                                    Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
-                                        .unwrap_or(0);
-                                let _ = super::pict::draw_picture(
-                                    bus,
-                                    pic_ptr,
-                                    adj_top,
-                                    adj_left,
-                                    adj_bottom,
-                                    adj_right,
-                                    port_mode,
-                                    &self.device_clut,
-                                    device_ct_seed,
-                                );
-                                if trace_palette_enabled() {
-                                    eprintln!(
-                                        "[PALETTE] SeedFromPicture tick={} picHandle=${:08X} picPtr=${:08X} cm[0]=({:04X},{:04X},{:04X}) cm[1]=({:04X},{:04X},{:04X}) cm[16]=({:04X},{:04X},{:04X}) cm[42]=({:04X},{:04X},{:04X}) cm[128]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
-                                        self.tick_count,
-                                        pic_handle,
+                                    // The first pass just drew against the port's
+                                    // pre-seed logical table. Replay the picture
+                                    // once against the newly-seeded screen CLUT so
+                                    // direct screen draws land the same indices an
+                                    // offscreen GWorld + later CopyBits would show.
+                                    let device_ct_seed =
+                                        Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
+                                            .unwrap_or(0);
+                                    let _ = super::pict::draw_picture(
+                                        bus,
                                         pic_ptr,
-                                        self.color_manager_clut[0][0],
-                                        self.color_manager_clut[0][1],
-                                        self.color_manager_clut[0][2],
-                                        self.color_manager_clut[1][0],
-                                        self.color_manager_clut[1][1],
-                                        self.color_manager_clut[1][2],
-                                        self.color_manager_clut[16][0],
-                                        self.color_manager_clut[16][1],
-                                        self.color_manager_clut[16][2],
-                                        self.color_manager_clut[42][0],
-                                        self.color_manager_clut[42][1],
-                                        self.color_manager_clut[42][2],
-                                        self.color_manager_clut[128][0],
-                                        self.color_manager_clut[128][1],
-                                        self.color_manager_clut[128][2],
-                                        self.color_manager_clut[255][0],
-                                        self.color_manager_clut[255][1],
-                                        self.color_manager_clut[255][2]
+                                        adj_top,
+                                        adj_left,
+                                        adj_bottom,
+                                        adj_right,
+                                        port_mode,
+                                        &self.device_clut,
+                                        device_ct_seed,
                                     );
+                                    if trace_palette_enabled() {
+                                        eprintln!(
+                                            "[PALETTE] SeedFromPicture tick={} picHandle=${:08X} picPtr=${:08X} cm[0]=({:04X},{:04X},{:04X}) cm[1]=({:04X},{:04X},{:04X}) cm[16]=({:04X},{:04X},{:04X}) cm[42]=({:04X},{:04X},{:04X}) cm[128]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
+                                            self.tick_count,
+                                            pic_handle,
+                                            pic_ptr,
+                                            self.color_manager_clut[0][0],
+                                            self.color_manager_clut[0][1],
+                                            self.color_manager_clut[0][2],
+                                            self.color_manager_clut[1][0],
+                                            self.color_manager_clut[1][1],
+                                            self.color_manager_clut[1][2],
+                                            self.color_manager_clut[16][0],
+                                            self.color_manager_clut[16][1],
+                                            self.color_manager_clut[16][2],
+                                            self.color_manager_clut[42][0],
+                                            self.color_manager_clut[42][1],
+                                            self.color_manager_clut[42][2],
+                                            self.color_manager_clut[128][0],
+                                            self.color_manager_clut[128][1],
+                                            self.color_manager_clut[128][2],
+                                            self.color_manager_clut[255][0],
+                                            self.color_manager_clut[255][1],
+                                            self.color_manager_clut[255][2]
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    } else if ok && port_ps == 8 {
+                        if let Some(pict_clut) = pict_clut.as_ref() {
+                            if let Some((raw_pict_array, pict_clut_array)) =
+                                Self::picture_clut_arrays(&port_clut, pict_clut)
+                            {
+                                if Self::should_preserve_offscreen_picture_indices_from_pict(
+                                    &raw_pict_array,
+                                    &port_clut,
+                                    &self.color_manager_clut,
+                                ) {
+                                    let device_ct_seed =
+                                        Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
+                                            .unwrap_or(0);
+                                    let _ = super::pict::draw_picture(
+                                        bus,
+                                        pic_ptr,
+                                        adj_top,
+                                        adj_left,
+                                        adj_bottom,
+                                        adj_right,
+                                        port_mode,
+                                        &raw_pict_array,
+                                        device_ct_seed,
+                                    );
+                                    if trace_palette_enabled() {
+                                        eprintln!(
+                                            "[PALETTE] PreserveOffscreenPictureIndices tick={} port=${:08X} picHandle=${:08X} rgb16=({:04X},{:04X},{:04X}) rgb42=({:04X},{:04X},{:04X}) rgb128=({:04X},{:04X},{:04X})",
+                                            self.tick_count,
+                                            port,
+                                            pic_handle,
+                                            raw_pict_array[16][0],
+                                            raw_pict_array[16][1],
+                                            raw_pict_array[16][2],
+                                            raw_pict_array[42][0],
+                                            raw_pict_array[42][1],
+                                            raw_pict_array[42][2],
+                                            raw_pict_array[128][0],
+                                            raw_pict_array[128][1],
+                                            raw_pict_array[128][2],
+                                        );
+                                    }
+                                } else if Self::should_seed_screen_palette_from_pict(
+                                    &raw_pict_array,
+                                    &port_clut,
+                                ) && !pict_seed_clut_disabled()
+                                {
+                                    if port_ctab_handle != 0 {
+                                        let ctab_ptr = bus.read_long(port_ctab_handle);
+                                        let ct_flags = if ctab_ptr != 0 {
+                                            bus.read_word(ctab_ptr + 4)
+                                        } else {
+                                            0x8000
+                                        };
+                                        let _ = self.overwrite_color_table_handle_with_clut(
+                                            bus,
+                                            port_ctab_handle,
+                                            &pict_clut_array,
+                                            ct_flags,
+                                        );
+                                    }
+                                    let device_ct_seed =
+                                        Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
+                                            .unwrap_or(0);
+                                    let _ = super::pict::draw_picture(
+                                        bus,
+                                        pic_ptr,
+                                        adj_top,
+                                        adj_left,
+                                        adj_bottom,
+                                        adj_right,
+                                        port_mode,
+                                        &pict_clut_array,
+                                        device_ct_seed,
+                                    );
+                                    if trace_palette_enabled() {
+                                        eprintln!(
+                                            "[PALETTE] SeedOffscreenFromPicture tick={} port=${:08X} ctab=${:08X} picHandle=${:08X} rgb16=({:04X},{:04X},{:04X}) rgb42=({:04X},{:04X},{:04X}) rgb128=({:04X},{:04X},{:04X})",
+                                            self.tick_count,
+                                            port,
+                                            port_ctab_handle,
+                                            pic_handle,
+                                            pict_clut_array[16][0],
+                                            pict_clut_array[16][1],
+                                            pict_clut_array[16][2],
+                                            pict_clut_array[42][0],
+                                            pict_clut_array[42][1],
+                                            pict_clut_array[42][2],
+                                            pict_clut_array[128][0],
+                                            pict_clut_array[128][1],
+                                            pict_clut_array[128][2],
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -14948,6 +15009,27 @@ impl super::TrapDispatcher {
             .count()
     }
 
+    fn picture_clut_arrays(
+        base_clut: &[[u16; 3]; 256],
+        pict_clut: &[[u16; 3]],
+    ) -> Option<([[u16; 3]; 256], [[u16; 3]; 256])> {
+        // Palette Manager merge semantics: start from the active logical
+        // table and overlay only entries the PICT actually specifies. The
+        // raw zero-padded table remains available for the dense-grayscale
+        // gate so sparse PICT CTabs do not look like full scene palettes.
+        let mut raw_pict_array = [[0u16; 3]; 256];
+        let mut merged = *base_clut;
+        let mut had_nonzero = false;
+        for (index, rgb) in pict_clut.iter().take(256).enumerate() {
+            raw_pict_array[index] = *rgb;
+            if !(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0) {
+                merged[index] = *rgb;
+                had_nonzero = true;
+            }
+        }
+        had_nonzero.then_some((raw_pict_array, merged))
+    }
+
     fn should_seed_screen_palette_from_pict(
         pict_clut: &[[u16; 3]; 256],
         _current_clut: &[[u16; 3]; 256],
@@ -14975,6 +15057,41 @@ impl super::TrapDispatcher {
         // Manager merge semantics).
         !Self::pict_clut_is_dense_grayscale(pict_clut)
             && Self::pict_clut_populated_count(pict_clut) >= 16
+    }
+
+    fn should_preserve_offscreen_picture_indices_from_pict(
+        pict_clut: &[[u16; 3]; 256],
+        current_clut: &[[u16; 3]; 256],
+        logical_screen_clut: &[[u16; 3]; 256],
+    ) -> bool {
+        // Some games draw a full-scene PICT into an offscreen GWorld before
+        // installing the palette that belongs to that picture, then blit the
+        // raw 8-bit indices after SetEntries. Matching the PICT's colors
+        // against the currently-active stale port CTab bakes the wrong index
+        // values into the offscreen buffer. Preserve authored indices only for
+        // substantial, non-grayscale PICT CTabs; sparse helper pictures and
+        // dense grayscale fades still use normal color matching.
+        //
+        // Do not preserve when the destination is still the system palette
+        // (possibly mid-fade). In that case QuickDraw should translate the
+        // PICT colors into system-palette grays instead of storing raw PICT
+        // indices that would display as unrelated color-cube entries.
+        if Self::uses_canonical_system_8bpp_clut(current_clut)
+            || Self::uses_scaled_canonical_system_8bpp_clut(current_clut)
+            || Self::uses_canonical_system_8bpp_clut(logical_screen_clut)
+            || Self::uses_scaled_canonical_system_8bpp_clut(logical_screen_clut)
+        {
+            return false;
+        }
+        // If the offscreen port has already inherited the current screen
+        // palette, normal Color Manager translation is the real-Mac path.
+        // Raw-index preservation is only for stale offscreen CTabs that will
+        // be blitted after a different screen palette is installed.
+        if current_clut == logical_screen_clut {
+            return false;
+        }
+        !Self::pict_clut_is_dense_grayscale(pict_clut)
+            && Self::pict_clut_populated_count(pict_clut) >= 64
     }
 
     fn scale_clut(clut: &[[u16; 3]; 256], scale: f64) -> [[u16; 3]; 256] {
@@ -17602,7 +17719,11 @@ impl super::TrapDispatcher {
     ) -> [u8; 256] {
         let mut translation = [0u8; 256];
         for (index, rgb) in src_clut.iter().enumerate() {
-            translation[index] = self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, *rgb);
+            translation[index] = if dst_clut[index] == *rgb {
+                index as u8
+            } else {
+                self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, *rgb)
+            };
         }
         translation
     }
@@ -17704,53 +17825,7 @@ impl super::TrapDispatcher {
         start: i16,
         count: i16,
     ) {
-        // POD MARS Master ships its 'ctab' resource ID 128 in a custom
-        // 'ajcp'-prefixed format (1190 bytes, neither standard 2056-byte
-        // ColorTable nor Apple compressed-resource layout). The app
-        // installs that handle's data at an A5-relative global, then
-        // calls SetEntries(0, 255, *handle + 8) — a full-CLUT replace.
-        // Without POD's own decompressor running, the buffer behind that
-        // handle has only the 8-byte header populated; entries past the
-        // first one are zero, and applying the call wipes 250+ device-
-        // CLUT slots to (0, 0, 0). The screen renders all-black even
-        // though the framebuffer holds valid index 247/248/249/254 etc.
-        //
-        // Real Mac OS hands the same call through, but on a real Mac the
-        // decompressed buffer has 256 valid ColorSpec entries so the
-        // replace is benign. Until Systemless implements POD's decoder,
-        // detect the case where the caller passed `ctab + 8` (i.e. the
-        // 8 bytes preceding `table_ptr` form a plausible device-owned
-        // CTAB header with `ctFlags` high bit set and `ctSize < count`)
-        // and clamp the update to the header-declared size. The fade-
-        // down path (stack-built CSpecArray with no preceding header)
-        // is unaffected because random stack bytes almost never satisfy
-        // the `ctFlags & 0x8000` test.
-        let mut effective_count = count;
-        let mut undersized_ctab_replace = false;
-        if start >= 0 && count > 0 && table_ptr >= 8 {
-            let header_addr = table_ptr - 8;
-            let ct_flags = bus.read_word(header_addr + 4);
-            let ct_size = bus.read_word(header_addr + 6) as i16;
-            if (ct_flags & 0x8000) != 0 && ct_size >= 0 && ct_size < count {
-                if trace_palette_enabled() {
-                    eprintln!(
-                        "[PALETTE] SetEntries clamp: header@${:08X} ctFlags=${:04X} ctSize={} < count={} → effective count={}",
-                        header_addr, ct_flags, ct_size, count, ct_size
-                    );
-                }
-                effective_count = ct_size;
-                // Treat the call as a full-replace whose source data is
-                // truncated (POD's 'ctab' decompression isn't running, so
-                // entries past `ctSize` are zero garbage). Refresh the
-                // un-updated slots from `color_manager_clut`, which still
-                // holds the canonical palette installed before the fade-
-                // down sequence. Without this, the post-fade dark device
-                // CLUT bleeds through and the screen stays nearly black
-                // even though the dialog and its content draw correctly.
-                undersized_ctab_replace = start == 0;
-            }
-        }
-        let num_entries = (effective_count + 1) as u32;
+        let num_entries = (count + 1) as u32;
         // Low-level SetEntries always targets the screen's hardware CLUT
         // and GDevice ColorTable, regardless of the current GrafPort.
         // On real Mac OS, the video driver SetEntries operates on the
@@ -17792,18 +17867,6 @@ impl super::TrapDispatcher {
                 // protected to preserve palette-animation slots.
                 if !self.clut_protected[idx] && !self.clut_reserved[idx] {
                     self.device_clut[idx] = [r, g, b];
-                }
-            }
-        }
-        if undersized_ctab_replace && target_is_screen {
-            // Restore canonical palette to the slots the truncated source
-            // CTAB couldn't cover. See `undersized_ctab_replace` setup
-            // above for the POD MARS Master rationale.
-            let cm = self.color_manager_clut;
-            let written = (effective_count as usize).saturating_add(1);
-            for (idx, cm_entry) in cm.iter().enumerate().skip(written) {
-                if !self.clut_protected[idx] && !self.clut_reserved[idx] {
-                    self.device_clut[idx] = *cm_entry;
                 }
             }
         }
@@ -17980,6 +18043,9 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let target_is_screen = self.set_entries_target_is_screen(bus);
+        let is_full_replace = start == 0 && count == 255;
+
         // Normal path: install the supplied RGB values into device_clut
         // unconditionally. Per Inside Macintosh Volume V, V-143 the caller's
         // table values MUST land in the hardware CLUT — Systemless must not
@@ -18011,62 +18077,12 @@ impl super::TrapDispatcher {
         //   setentries_full_replace_at_full_brightness_publishes_cm
         //   setentries_dimmed_full_replace_does_not_publish_cm
         //   palette_strict_mode_publishes_dimmed_full_replace
-        let target_is_screen = self.set_entries_target_is_screen(bus);
-        let is_full_replace = start == 0 && count == 255;
         let dimmed_scale_of_current = !strict_palette
             && is_full_replace
             && Self::table_uniform_scale_of_clut(bus, table_ptr, &self.color_manager_clut)
                 .is_some_and(|scale| scale < 0.98);
 
-        // Detect the "source CTAB undersized" case: the caller passed a
-        // `count` parameter larger than the source CTAB's declared
-        // ctSize. The matching clamp in `apply_set_entries` (line ~12939)
-        // only updates [start .. start+ctSize+1] in device_clut and
-        // restores the remaining slots from `color_manager_clut`. So the
-        // outer count parameter still reads as 255 (full-replace), but
-        // the actual fresh data only covers a prefix. Publishing the
-        // full device_clut to cm would lock cm to a frankenstein palette
-        // and corrupt the inverse-table baseline. Skip the publish when
-        // the source CTAB header reports fewer entries than the caller's
-        // count — this is generic and triggers any time SetEntries is
-        // called with a mismatched count/ctSize (Inside Macintosh
-        // Volume V, V-143 documents `count` as the entry-index of the
-        // last entry, so it must be ≤ ctSize).
-        let source_ctab_undersized = if start >= 0 && count > 0 && table_ptr >= 8 {
-            let header_addr = table_ptr - 8;
-            let ct_flags = bus.read_word(header_addr + 4);
-            let ct_size = bus.read_word(header_addr + 6) as i16;
-            (ct_flags & 0x8000) != 0 && ct_size >= 0 && ct_size < count
-        } else {
-            false
-        };
-        if source_ctab_undersized && target_is_screen {
-            // The caller's count parameter exceeded the source CTAB's
-            // ctSize, so the apply step clamped its write. Treat the
-            // call as effectively a no-op for the screen CLUT: restore
-            // every slot in device_clut from color_manager_clut so the
-            // bad ColorSpec bytes the truncated source produced for
-            // [start .. start+ctSize+1] don't poison subsequent
-            // index→RGB lookups. The cm_clut is already untouched
-            // (we skip the publish below).
-            if trace_palette_enabled() {
-                eprintln!(
-                    "[PALETTE] PublishCm-skip: source CTAB undersized (ctSize<count); restoring device_clut from cm_clut"
-                );
-            }
-            let cm = self.color_manager_clut;
-            for (idx, cm_entry) in cm.iter().enumerate() {
-                if !self.clut_protected[idx] && !self.clut_reserved[idx] {
-                    self.device_clut[idx] = *cm_entry;
-                }
-            }
-        }
-
-        if target_is_screen
-            && is_full_replace
-            && !dimmed_scale_of_current
-            && !source_ctab_undersized
-        {
+        if target_is_screen && is_full_replace && !dimmed_scale_of_current {
             if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
                 let cm_before = self.color_manager_clut[0];
                 let dev0 = self.device_clut[0];
@@ -19701,6 +19717,49 @@ mod tests {
         d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
 
         assert_eq!(bus.read_byte(screen_base), 7);
+    }
+
+    #[test]
+    fn test_screen_backed_black_shape_drawing_uses_index_255_during_palette_transition() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd_ptr = bus.read_long(gdh);
+        let pixmap_handle = bus.read_long(gd_ptr + 22);
+        let pixmap_ptr = bus.read_long(pixmap_handle);
+        let screen_base = bus.read_long(pixmap_ptr);
+        let screen_row_bytes = (bus.read_word(pixmap_ptr + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        d.device_clut[71] = [0, 0, 0];
+        d.device_clut[255] = [0x2E2E, 0, 0x3333];
+
+        let port = bus.alloc(64);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_word(port + 16, 0);
+        bus.write_word(port + 18, 0);
+        bus.write_word(port + 20, 600);
+        bus.write_word(port + 22, 800);
+        make_rgn(&mut bus, 0x320000, 0x320100, 0, 0, 600, 800);
+        make_rgn(&mut bus, 0x320200, 0x320300, 0, 0, 600, 800);
+        bus.write_long(port + 24, 0x320100);
+        bus.write_long(port + 28, 0x320300);
+
+        d.set_current_port_state(&mut bus, &mut cpu, port, Some(gdh));
+        d.fg_color = (0, 0, 0);
+        d.pn_mode = 0;
+        d.pn_pat = [0xFF; 8];
+
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: 1,
+            right: 1,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+
+        assert_eq!(bus.read_byte(screen_base), 255);
     }
 
     #[test]
@@ -24840,6 +24899,50 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_byte(dst_base), 42);
+    }
+
+    #[test]
+    fn test_copy_bits_palette_translation_preserves_same_index_duplicate_match() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x314200u32;
+        let dst_pixmap = 0x314300u32;
+        let src_base = 0x315200u32;
+        let dst_base = 0x316200u32;
+        let src_ctab_handle = 0x317200u32;
+        let dst_ctab_handle = 0x318200u32;
+        let src_rect = 0x319200u32;
+        let dst_rect = 0x319210u32;
+        let rgb = (0x2E2E, 0x0000, 0x3333);
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[(71, rgb.0, rgb.1, rgb.2)],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[(3, rgb.0, rgb.1, rgb.2), (71, rgb.0, rgb.1, rgb.2)],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 1, 1, dst_ctab_handle);
+        bus.write_byte(src_base, 71);
+        bus.write_byte(dst_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(dst_base), 71);
     }
 
     #[test]
@@ -30028,6 +30131,89 @@ mod tests {
         assert!(!TrapDispatcher::should_seed_screen_palette_from_pict(
             &pict, &current
         ));
+    }
+
+    #[test]
+    fn test_offscreen_pict_indices_not_preserved_against_system_palette() {
+        let current = TrapDispatcher::standard_mac_8bpp_clut();
+        let mut pict = [[0u16; 3]; 256];
+        for (index, rgb) in pict.iter_mut().enumerate().take(128) {
+            *rgb = [
+                ((index as u16) << 8) | index as u16,
+                0x8000u16.saturating_sub((index as u16) << 6),
+                0x1000u16.saturating_add((index as u16) << 5),
+            ];
+        }
+
+        assert!(
+            !TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
+                &pict, &current, &current
+            )
+        );
+    }
+
+    #[test]
+    fn test_offscreen_pict_indices_preserved_against_custom_palette() {
+        let mut current = TrapDispatcher::standard_mac_8bpp_clut();
+        current[42] = [0x1234, 0x5678, 0x9ABC];
+        let mut logical = current;
+        logical[43] = [0x2222, 0x3333, 0x4444];
+        let mut pict = [[0u16; 3]; 256];
+        for (index, rgb) in pict.iter_mut().enumerate().take(128) {
+            *rgb = [
+                ((index as u16) << 8) | index as u16,
+                0x8000u16.saturating_sub((index as u16) << 6),
+                0x1000u16.saturating_add((index as u16) << 5),
+            ];
+        }
+
+        assert!(
+            TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
+                &pict, &current, &logical
+            )
+        );
+    }
+
+    #[test]
+    fn test_offscreen_pict_indices_not_preserved_when_port_matches_screen_palette() {
+        let mut current = TrapDispatcher::standard_mac_8bpp_clut();
+        current[42] = [0x1234, 0x5678, 0x9ABC];
+        let logical = current;
+        let mut pict = [[0u16; 3]; 256];
+        for (index, rgb) in pict.iter_mut().enumerate().take(128) {
+            *rgb = [
+                ((index as u16) << 8) | index as u16,
+                0x8000u16.saturating_sub((index as u16) << 6),
+                0x1000u16.saturating_add((index as u16) << 5),
+            ];
+        }
+
+        assert!(
+            !TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
+                &pict, &current, &logical
+            )
+        );
+    }
+
+    #[test]
+    fn test_offscreen_pict_indices_not_preserved_when_logical_screen_palette_is_canonical() {
+        let mut current = TrapDispatcher::standard_mac_8bpp_clut();
+        current[42] = [0x1234, 0x5678, 0x9ABC];
+        let logical = TrapDispatcher::standard_mac_8bpp_clut();
+        let mut pict = [[0u16; 3]; 256];
+        for (index, rgb) in pict.iter_mut().enumerate().take(128) {
+            *rgb = [
+                ((index as u16) << 8) | index as u16,
+                0x8000u16.saturating_sub((index as u16) << 6),
+                0x1000u16.saturating_add((index as u16) << 5),
+            ];
+        }
+
+        assert!(
+            !TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
+                &pict, &current, &logical
+            )
+        );
     }
 
     #[test]

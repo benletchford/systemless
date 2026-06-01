@@ -5649,7 +5649,7 @@ impl super::TrapDispatcher {
     /// `LoadedResources::files[refnum].loaded` / `.named` entries
     /// pointing at the old pointer so subsequent GetResource lookups
     /// see the new allocation.
-    fn resize_resource_allocation(
+    pub(crate) fn resize_resource_allocation(
         &mut self,
         bus: &mut MacMemoryBus,
         handle: u32,
@@ -6348,6 +6348,62 @@ mod tests {
         let deref = bus.read_long(handle);
         assert_eq!(deref, data_ptr);
         assert_eq!(bus.read_word(0x0A60), 0, "ResErr should be noErr");
+    }
+
+    #[test]
+    fn sethandlesize_resource_handle_keeps_resource_maps_current() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = setup_resources(&mut disp, &mut bus, b"TEST", 77, &[1, 2, 3, 4]);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"TEST", 77, data_ptr);
+
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .named
+            .insert((*b"TEST", "ResizeMe".to_string()), (77, data_ptr));
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 64);
+        let resize = disp.dispatch_memory(false, 0x24, &mut cpu, &mut bus);
+        assert!(resize.is_some(), "SetHandleSize should be handled");
+        assert!(resize.unwrap().is_ok(), "SetHandleSize should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        let new_ptr = bus.read_long(handle);
+        assert_ne!(new_ptr, 0);
+        assert_ne!(new_ptr, data_ptr);
+        assert_eq!(bus.read_bytes(new_ptr, 4), vec![1, 2, 3, 4]);
+        assert_eq!(bus.get_alloc_size(new_ptr), Some(64));
+        assert_eq!(
+            disp.loaded_handles.get(&handle).map(|(ptr, _, _)| *ptr),
+            Some(new_ptr)
+        );
+        assert_eq!(disp.ptr_to_handle.get(&data_ptr).copied(), None);
+        assert_eq!(disp.ptr_to_handle.get(&new_ptr).copied(), Some(handle));
+
+        let file = disp.resources.as_ref().unwrap().files.get(&0).unwrap();
+        assert_eq!(file.loaded.get(&(*b"TEST", 77)).copied(), Some(new_ptr));
+        assert_eq!(
+            file.named
+                .get(&(*b"TEST", "ResizeMe".to_string()))
+                .copied(),
+            Some((77, new_ptr))
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 77u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"TEST"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let returned_handle = bus.read_long(TEST_SP + 6);
+        assert_eq!(
+            returned_handle, handle,
+            "GetResource should return the resized live handle, not a duplicate"
+        );
+        assert_eq!(bus.read_long(returned_handle), new_ptr);
     }
 
     #[test]

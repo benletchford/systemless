@@ -108,6 +108,22 @@ fn trace_all_shapes_enabled() -> bool {
     *TRACE_ALL_SHAPES.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SHAPES_ALL").is_some())
 }
 
+fn shape_palette_index_for_rgb(
+    is_screen_port: bool,
+    rgb: [u16; 3],
+    clut: &[[u16; 3]; 256],
+) -> u8 {
+    if is_screen_port {
+        if rgb == [0, 0, 0] {
+            return 255;
+        }
+        if rgb == [0xFFFF, 0xFFFF, 0xFFFF] {
+            return 0;
+        }
+    }
+    super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], clut)
+}
+
 fn trace_menu_probe_points() -> [(&'static str, i16, i16); 2] {
     [("orb", 337, 220), ("enter_ship", 307, 500)]
 }
@@ -1128,9 +1144,9 @@ impl super::TrapDispatcher {
                 self.read_port_clut(bus, ctab_handle)
             };
             let (r, g, b) = self.fg_color;
-            fg_idx = super::pict::closest_clut_index(r, g, b, &port_clut);
+            fg_idx = shape_palette_index_for_rgb(is_screen_port, [r, g, b], &port_clut);
             let (r, g, b) = self.bg_color;
-            bg_idx = super::pict::closest_clut_index(r, g, b, &port_clut);
+            bg_idx = shape_palette_index_for_rgb(is_screen_port, [r, g, b], &port_clut);
             if trace_dialog_text_enabled() && matches!(op, ShapeOp::Glyph(_)) {
                 eprintln!(
                     "[DIALOG-TEXT] Glyph colors port=${:08X} fgRGB=({:04X},{:04X},{:04X}) bgRGB=({:04X},{:04X},{:04X}) fgIdx={} bgIdx={}",
