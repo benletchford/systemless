@@ -618,15 +618,16 @@ impl super::TrapDispatcher {
         }
 
         let selected = state.selected.contains(&(row, col));
-        let bg_is_dark = if selected {
-            false
-        } else {
-            self.list_cell_background_is_dark(bus, state.port, rect)
-        };
-        let bg = if bg_is_dark {
+        let bg = if selected {
+            self.hilite_color
+        } else if self.list_cell_background_is_dark(bus, state.port, rect) {
             (0x0000, 0x0000, 0x0000)
         } else {
             (0xFFFF, 0xFFFF, 0xFFFF)
+        };
+        let bg_is_dark = {
+            let (r, g, b) = bg;
+            (299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) < 500 * 0xFFFF
         };
         let fg = if bg_is_dark {
             (0xFFFF, 0xFFFF, 0xFFFF)
@@ -14925,6 +14926,95 @@ mod tests {
         assert_eq!(disp.pn_loc, (7, 8));
         assert_eq!(disp.tx_mode, 2);
         assert_eq!(disp.tx_size, 12);
+    }
+
+    #[test]
+    fn pack0_lupdate_draws_selected_empty_cell_with_hilite_color() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let screen_base = 0x300000u32;
+        let row_bytes = 128u32;
+        let window_ptr = 0x210000u32;
+        let view_rect_ptr = 0x356000u32;
+        let data_bounds_ptr = 0x356100u32;
+        let hilite = (0x0000, 0x8000, 0x0000);
+
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 96, 8);
+        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
+        disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
+        disp.hilite_color = hilite;
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        for offset in 0..(row_bytes * 96) {
+            bus.write_byte(screen_base + offset, 255);
+        }
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_ptr,
+            screen_base,
+            0,
+            0,
+            96,
+            128,
+            "",
+            0,
+            true,
+            false,
+            0,
+        );
+
+        bus.write_word(view_rect_ptr, 10);
+        bus.write_word(view_rect_ptr + 2, 10);
+        bus.write_word(view_rect_ptr + 4, 22);
+        bus.write_word(view_rect_ptr + 6, 100);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 1);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, window_ptr);
+        bus.write_word(sp + 14, 128);
+        bus.write_word(sp + 16, 12);
+        bus.write_word(sp + 18, 90);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        let create = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(create.is_some());
+        assert!(create.unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x005C); // LSetSelect
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 0x0100);
+        let select = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(select.is_some());
+        assert!(select.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0064); // LUpdate
+        bus.write_long(sp + 2, list_handle);
+        bus.write_long(sp + 6, 0);
+        let update = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(update.is_some());
+        assert!(update.unwrap().is_ok());
+
+        let interior = bus.read_byte(screen_base + 11 * row_bytes + 95);
+        assert_eq!(
+            interior, 42,
+            "selected list cells should paint with HiliteColor, not plain white"
+        );
     }
 
     // Pack1 / List Manager ($A9E8) — LNew selector $0044

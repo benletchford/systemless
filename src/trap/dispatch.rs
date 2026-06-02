@@ -1718,10 +1718,10 @@ impl TrapDispatcher {
             output_dir: None,
             fg_color: (0, 0, 0),
             bg_color: (0xFFFF, 0xFFFF, 0xFFFF),
-            // Default hilite color: System 7 standard "highlight color"
-            // (cyan). Apps that read it before HiliteColor is called
-            // see this initial value.
-            hilite_color: (0x0000, 0xFFFF, 0xFFFF),
+            // Default HiliteRGB used before an application calls HiliteColor.
+            // The System 7.5.3 BasiliskII oracle resolves this to EV's
+            // darker selected-list green rather than a saturated primary.
+            hilite_color: (0x0000, 0x8000, 0x0000),
             op_color: (0x0000, 0x0000, 0x0000),
             char_extra: 0,
             bk_pat: [0x00; 8],
