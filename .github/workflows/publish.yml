@@ -77,34 +77,12 @@ jobs:
           echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
           echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
 
-      - name: Check crates.io version availability
-        id: crates_io
-        if: steps.version.outputs.should_release == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          status=$(
-            curl -sS -o /tmp/systemless-crate-version.json -w "%{http_code}" \
-              "https://crates.io/api/v1/crates/systemless/$VERSION"
-          )
-
-          if [ "$status" = "200" ]; then
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-          elif [ "$status" = "404" ]; then
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          else
-            cat /tmp/systemless-crate-version.json >&2 || true
-            echo "Unexpected crates.io response: HTTP $status" >&2
-            exit 1
-          fi
-
       - name: Dry-run package publish
-        if: steps.version.outputs.should_release == 'true' && steps.crates_io.outputs.already_published == 'false'
+        if: steps.version.outputs.should_release == 'true'
         run: cargo publish --locked --dry-run
 
       - name: Validate crates.io token
-        if: steps.version.outputs.should_release == 'true' && steps.crates_io.outputs.already_published == 'false'
+        if: steps.version.outputs.should_release == 'true'
         env:
           SYSTEMLESS_CRATES_TOKEN: ${{ secrets.SYSTEMLESS_CRATES_TOKEN }}
         run: |
@@ -114,10 +92,26 @@ jobs:
           fi
 
       - name: Publish crate
-        if: steps.version.outputs.should_release == 'true' && steps.crates_io.outputs.already_published == 'false'
+        if: steps.version.outputs.should_release == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.SYSTEMLESS_CRATES_TOKEN }}
-        run: cargo publish --locked
+        run: |
+          set +e
+          output=$(cargo publish --locked 2>&1)
+          status=$?
+          set -e
+
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          if echo "$output" | grep -Eiq 'already uploaded|already exists|previously uploaded|crate version .* is already'; then
+            echo "systemless ${{ steps.version.outputs.version }} is already published; continuing."
+            exit 0
+          fi
+
+          exit "$status"
 
       - name: Trigger systemless-web rebuild
         if: steps.version.outputs.should_release == 'true'
