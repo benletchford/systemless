@@ -17,15 +17,29 @@ pub fn render_screen(
     screen_mode: (u32, u32, u16, u16, u16),
     device_clut: &[[u16; 3]; 256],
 ) -> Vec<u8> {
+    let (_, _, scrn_w, scrn_h, _) = screen_mode;
+    let mut pixels = Vec::with_capacity(scrn_w as usize * scrn_h as usize * 4);
+    render_screen_into(bus, screen_mode, device_clut, &mut pixels);
+    pixels
+}
+
+/// Render the current screen into a reusable RGBA pixel buffer.
+pub fn render_screen_into(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    pixels: &mut Vec<u8>,
+) {
     let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
     let w = scrn_w as u32;
     let h = scrn_h as u32;
     let is_8bpp = pixel_size == 8;
 
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    pixels.resize((w * h * 4) as usize, 0);
 
     if w == 0 || h == 0 || row_bytes == 0 {
-        return pixels;
+        pixels.fill(0);
+        return;
     }
 
     let fb = bus.ram_slice(scrn_base, row_bytes * h);
@@ -71,8 +85,6 @@ pub fn render_screen(
             }
         }
     }
-
-    pixels
 }
 
 /// Render the current screen to an ARGB pixel buffer suitable for desktop backends.

@@ -853,6 +853,16 @@ impl FixtureRunner {
         std::mem::take(&mut self.audio_buffer)
     }
 
+    /// Drain accumulated audio samples into a caller-owned buffer.
+    ///
+    /// This avoids transferring the runner's `Vec` allocation out on every
+    /// browser frame, so the next audio mix can reuse its existing capacity.
+    pub fn drain_audio_into(&mut self, out: &mut Vec<u8>) {
+        out.clear();
+        out.extend_from_slice(&self.audio_buffer);
+        self.audio_buffer.clear();
+    }
+
     /// Current number of buffered audio samples (for diagnostics).
     pub fn audio_buffer_len(&self) -> usize {
         self.audio_buffer.len()
