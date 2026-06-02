@@ -156,10 +156,9 @@ pub fn get_underline_offset(font_id: i16, size: i16, glyph: &Glyph, is_shadow: b
     let mut off = 0;
 
     // Geneva 24 has kernMax -1, needs shift for chars with origin_x <= 0
-    if font_id == FONT_GENEVA && size == 24
-        && glyph.origin_x <= 0 {
-            off -= 1;
-        }
+    if font_id == FONT_GENEVA && size == 24 && glyph.origin_x <= 0 {
+        off -= 1;
+    }
 
     // Shadow always shifts left by 1
     if is_shadow {

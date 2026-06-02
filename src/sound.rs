@@ -549,7 +549,10 @@ mod tests {
     #[test]
     fn sound_module_constants_match_mac_sound_manager() {
         assert_eq!(OUTPUT_RATE, 22050, "OUTPUT_RATE = 22050 Hz");
-        assert_eq!(FULL_VOLUME, 0x0100, "FULL_VOLUME = 256 (8-bit volume range)");
+        assert_eq!(
+            FULL_VOLUME, 0x0100,
+            "FULL_VOLUME = 256 (8-bit volume range)"
+        );
         assert_eq!(
             UNITY_RATE_FIXED, 0x0001_0000,
             "UNITY_RATE_FIXED = 1.0 as 16.16 Fixed"
@@ -595,12 +598,7 @@ mod tests {
     fn mix_frame_drains_quiet_cmd_before_mixing() {
         let mut sm = SoundManager::new();
         let mut chan = SndChannel::new(0x1234_0000, true);
-        chan.play_buffer(
-            vec![0x80; 128],
-            OUTPUT_RATE << 16,
-            PlaybackKind::Buffer,
-            0,
-        );
+        chan.play_buffer(vec![0x80; 128], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
         assert!(chan.is_playing(), "channel active pre-queue");
 
         // Queue a QUIET command — mix_frame should drain it and
@@ -632,12 +630,7 @@ mod tests {
         let mut sm = SoundManager::new();
         let mut chan = SndChannel::new(0x1234_0000, true);
         // Install an active buffer at native OUTPUT_RATE so step = 1.0.
-        chan.play_buffer(
-            vec![0x80; 128],
-            OUTPUT_RATE << 16,
-            PlaybackKind::Buffer,
-            0,
-        );
+        chan.play_buffer(vec![0x80; 128], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
         sm.channels.push(chan);
 
         let pre = sm.debug_samples_mixed;
@@ -704,7 +697,10 @@ mod tests {
             0xABCD_1234,
         );
 
-        assert_eq!(chan.rate_fixed, UNITY_RATE_FIXED, "rate_fixed reset to unity");
+        assert_eq!(
+            chan.rate_fixed, UNITY_RATE_FIXED,
+            "rate_fixed reset to unity"
+        );
         assert!(!chan.file_paused, "file_paused cleared");
         assert_eq!(chan.playback_kind, Some(PlaybackKind::File));
         assert_eq!(chan.file_completion_addr, 0xABCD_1234);
@@ -1059,7 +1055,11 @@ mod tests {
 
         // Pre-populate every piece of playback state flush should
         // leave alone.
-        chan.enqueue(SndCommand { cmd: 81, param1: 0, param2: 0 });
+        chan.enqueue(SndCommand {
+            cmd: 81,
+            param1: 0,
+            param2: 0,
+        });
         chan.q_head = 7;
         chan.q_tail = 11;
         chan.playing = Some(PlayingBuffer {
@@ -1127,7 +1127,11 @@ mod tests {
         // Simulate an active channel: pending cmd in queue,
         // active playback, file-play state, non-unity rate, and
         // a double-buffer handle.
-        chan.enqueue(SndCommand { cmd: 81, param1: 0, param2: 0 });
+        chan.enqueue(SndCommand {
+            cmd: 81,
+            param1: 0,
+            param2: 0,
+        });
         chan.playing = Some(PlayingBuffer {
             samples: vec![0x80; 16],
             sample_rate_fixed: 22050 << 16,
@@ -1155,7 +1159,10 @@ mod tests {
         assert_eq!(chan.q_head, 0);
         assert_eq!(chan.q_tail, 0);
         assert!(chan.playing.is_none(), "quiet must clear playing");
-        assert!(chan.playback_kind.is_none(), "quiet must clear playback_kind");
+        assert!(
+            chan.playback_kind.is_none(),
+            "quiet must clear playback_kind"
+        );
         assert!(
             chan.pending_callback_cmds.is_empty(),
             "quiet must clear pending_callback_cmds"
@@ -1166,7 +1173,10 @@ mod tests {
             chan.rate_fixed, UNITY_RATE_FIXED,
             "quiet must reset rate_fixed to unity"
         );
-        assert!(chan.double_buffer.is_none(), "quiet must clear double_buffer");
+        assert!(
+            chan.double_buffer.is_none(),
+            "quiet must clear double_buffer"
+        );
     }
 
     /// `SndChannel::enqueue` returns false when the queue is at
@@ -1217,7 +1227,10 @@ mod tests {
 
         // Hit: returns Some and matches the requested ptr.
         let found = sm.find_channel_mut(0xBBBB_0000);
-        assert!(found.is_some(), "find_channel_mut must return Some for known ptr");
+        assert!(
+            found.is_some(),
+            "find_channel_mut must return Some for known ptr"
+        );
         assert_eq!(found.unwrap().guest_ptr, 0xBBBB_0000);
 
         // Miss: unknown ptr returns None.
@@ -1397,9 +1410,15 @@ mod tests {
         //   output[5] = untouched silence
         assert_eq!(output.len(), 6);
         assert_eq!(output[0], 0x90, "source[0] at step 0");
-        assert_eq!(output[1], 0x90, "source[0] repeated at step 1 (0.5 advance)");
+        assert_eq!(
+            output[1], 0x90,
+            "source[0] repeated at step 1 (0.5 advance)"
+        );
         assert_eq!(output[2], 0xA0, "source[1] at step 2 (position 1.0)");
-        assert_eq!(output[3], 0xA0, "source[1] repeated at step 3 (position 1.5)");
+        assert_eq!(
+            output[3], 0xA0,
+            "source[1] repeated at step 3 (position 1.5)"
+        );
         assert_eq!(output[4], 0x80, "break leaves default silence");
         assert_eq!(output[5], 0x80, "break leaves default silence");
 
@@ -1469,22 +1488,42 @@ mod tests {
 
         // sample=0xA0 (+0x20 centered) → 0x20 × 0x200 / 0x100 = 0x40
         // → result = 0x40 + 0x80 = 0xC0.
-        assert_eq!(apply_volume(0xA0, two_x), 0xC0, "+0x20 doubled = +0x40 → 0xC0");
+        assert_eq!(
+            apply_volume(0xA0, two_x),
+            0xC0,
+            "+0x20 doubled = +0x40 → 0xC0"
+        );
 
         // sample=0x60 (-0x20 centered) → -0x20 × 0x200 / 0x100 = -0x40
         // → result = -0x40 + 0x80 = 0x40.
-        assert_eq!(apply_volume(0x60, two_x), 0x40, "-0x20 doubled = -0x40 → 0x40");
+        assert_eq!(
+            apply_volume(0x60, two_x),
+            0x40,
+            "-0x20 doubled = -0x40 → 0x40"
+        );
 
         // sample=0xFF (+0x7F centered) → 0x7F × 2 = 0xFE → +0x80 = 0x17E
         // → clamps to 0xFF (upper saturation).
-        assert_eq!(apply_volume(0xFF, two_x), 0xFF, "+0x7F doubled saturates at 0xFF");
+        assert_eq!(
+            apply_volume(0xFF, two_x),
+            0xFF,
+            "+0x7F doubled saturates at 0xFF"
+        );
 
         // sample=0x00 (-0x80 centered) → -0x80 × 2 = -0x100 → +0x80 = -0x80
         // → clamps to 0x00 (lower saturation).
-        assert_eq!(apply_volume(0x00, two_x), 0x00, "-0x80 doubled saturates at 0x00");
+        assert_eq!(
+            apply_volume(0x00, two_x),
+            0x00,
+            "-0x80 doubled saturates at 0x00"
+        );
 
         // sample=0x80 (silence) at any volume → still silence.
-        assert_eq!(apply_volume(0x80, two_x), 0x80, "silence is silence regardless of gain");
+        assert_eq!(
+            apply_volume(0x80, two_x),
+            0x80,
+            "silence is silence regardless of gain"
+        );
     }
 
     /// Locks in the interaction between `pause_file_playback_toggle`
@@ -1496,15 +1535,13 @@ mod tests {
     #[test]
     fn quiet_clears_file_paused_after_pause_toggle() {
         let mut chan = SndChannel::new(0x1234_0000, true);
-        chan.play_buffer(
-            vec![0x80; 16],
-            OUTPUT_RATE << 16,
-            PlaybackKind::File,
-            0,
-        );
+        chan.play_buffer(vec![0x80; 16], OUTPUT_RATE << 16, PlaybackKind::File, 0);
         // Toggle paused on.
         chan.pause_file_playback_toggle();
-        assert!(chan.has_active_playback(), "playing OR file_paused → active");
+        assert!(
+            chan.has_active_playback(),
+            "playing OR file_paused → active"
+        );
 
         // quiet must wipe everything, including file_paused.
         chan.quiet();
@@ -1652,12 +1689,7 @@ mod tests {
         {
             let mut sm = SoundManager::new();
             let mut chan = SndChannel::new(0x1234_0000, true);
-            chan.play_buffer(
-                vec![0x80, 0x80],
-                OUTPUT_RATE << 16,
-                PlaybackKind::Buffer,
-                0,
-            );
+            chan.play_buffer(vec![0x80, 0x80], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
             chan.double_buffer = Some(DoubleBufferState {
                 header_ptr: 0x0070_0000,
                 current_buffer: 0,
@@ -1680,7 +1712,11 @@ mod tests {
             // current_buffer must NOT flip since we skipped the
             // whole guarded block.
             assert_eq!(
-                sm.channels[0].double_buffer.as_ref().unwrap().current_buffer,
+                sm.channels[0]
+                    .double_buffer
+                    .as_ref()
+                    .unwrap()
+                    .current_buffer,
                 0,
                 "current_buffer must NOT flip when last_buffer_seen=true"
             );
@@ -1690,12 +1726,7 @@ mod tests {
         {
             let mut sm = SoundManager::new();
             let mut chan = SndChannel::new(0x1234_0000, true);
-            chan.play_buffer(
-                vec![0x80, 0x80],
-                OUTPUT_RATE << 16,
-                PlaybackKind::Buffer,
-                0,
-            );
+            chan.play_buffer(vec![0x80, 0x80], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
             chan.double_buffer = Some(DoubleBufferState {
                 header_ptr: 0x0070_0000,
                 current_buffer: 0,
@@ -1716,7 +1747,11 @@ mod tests {
                 "waiting_for_callback=true must inhibit callback push (no spam)"
             );
             assert_eq!(
-                sm.channels[0].double_buffer.as_ref().unwrap().current_buffer,
+                sm.channels[0]
+                    .double_buffer
+                    .as_ref()
+                    .unwrap()
+                    .current_buffer,
                 0,
                 "current_buffer must NOT flip when waiting_for_callback=true"
             );
@@ -1746,12 +1781,7 @@ mod tests {
 
         // Install a short Buffer playback so it exhausts in 2
         // samples; attach double_buffer state around it.
-        chan.play_buffer(
-            vec![0x80, 0x80],
-            OUTPUT_RATE << 16,
-            PlaybackKind::Buffer,
-            0,
-        );
+        chan.play_buffer(vec![0x80, 0x80], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
         chan.double_buffer = Some(DoubleBufferState {
             header_ptr: 0x0070_0000,
             current_buffer: 0,
@@ -1768,7 +1798,11 @@ mod tests {
         sm.mix_frame(4); // overshoots — buffer exhausts
 
         // Exactly one PendingDoubleBackCallback pushed.
-        assert_eq!(sm.pending_callbacks.len(), 1, "one double-back callback queued");
+        assert_eq!(
+            sm.pending_callbacks.len(),
+            1,
+            "one double-back callback queued"
+        );
         let p = &sm.pending_callbacks[0];
         assert_eq!(p.callback_addr, 0xCAFE_0000);
         assert_eq!(p.chan_ptr, 0x1234_0000);
@@ -1779,7 +1813,10 @@ mod tests {
         );
 
         // Channel's double_buffer state flipped and armed.
-        let db = sm.channels[0].double_buffer.as_ref().expect("db still present");
+        let db = sm.channels[0]
+            .double_buffer
+            .as_ref()
+            .expect("db still present");
         assert_eq!(db.current_buffer, 1, "current_buffer flipped 0 → 1");
         assert!(
             db.waiting_for_callback,
@@ -1815,8 +1852,14 @@ mod tests {
         // Exactly one FileCompletion queued, no Command variants.
         assert_eq!(sm.pending_sound_callbacks.len(), 1);
         match &sm.pending_sound_callbacks[0] {
-            PendingSoundCallback::FileCompletion { callback_addr, chan_ptr } => {
-                assert_eq!(*callback_addr, 0xABCD_1234, "file_completion_addr propagates");
+            PendingSoundCallback::FileCompletion {
+                callback_addr,
+                chan_ptr,
+            } => {
+                assert_eq!(
+                    *callback_addr, 0xABCD_1234,
+                    "file_completion_addr propagates"
+                );
                 assert_eq!(*chan_ptr, 0x1234_0000, "chan guest_ptr propagates");
             }
             other => panic!("expected FileCompletion, got {:?}", other),
@@ -1850,21 +1893,27 @@ mod tests {
 
         // 2-sample playback at unity rate so 2 mix_frame samples
         // exhaust it fully.
-        chan.play_buffer(
-            vec![0x80, 0x80],
-            OUTPUT_RATE << 16,
-            PlaybackKind::Buffer,
-            0,
-        );
+        chan.play_buffer(vec![0x80, 0x80], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
         chan.callback_addr = 0xBEEF_0000;
-        chan.queue_callback(SndCommand { cmd: cmd::CALLBACK, param1: 7, param2: 0x1111 });
-        chan.queue_callback(SndCommand { cmd: cmd::CALLBACK, param1: 9, param2: 0x2222 });
+        chan.queue_callback(SndCommand {
+            cmd: cmd::CALLBACK,
+            param1: 7,
+            param2: 0x1111,
+        });
+        chan.queue_callback(SndCommand {
+            cmd: cmd::CALLBACK,
+            param1: 9,
+            param2: 0x2222,
+        });
         sm.channels.push(chan);
 
         sm.mix_frame(4); // overshoots; buffer exhausts
 
         // Playback cleared.
-        assert!(!sm.channels[0].is_playing(), "playback cleared on exhaustion");
+        assert!(
+            !sm.channels[0].is_playing(),
+            "playback cleared on exhaustion"
+        );
         // Both queued callback cmds pushed to pending list.
         assert_eq!(
             sm.pending_sound_callbacks.len(),
@@ -1873,7 +1922,11 @@ mod tests {
         );
         for (i, pending) in sm.pending_sound_callbacks.iter().enumerate() {
             match pending {
-                PendingSoundCallback::Command { callback_addr, chan_ptr, cmd } => {
+                PendingSoundCallback::Command {
+                    callback_addr,
+                    chan_ptr,
+                    cmd,
+                } => {
                     assert_eq!(*callback_addr, 0xBEEF_0000, "callback_addr propagates");
                     assert_eq!(*chan_ptr, 0x1234_0000, "chan_ptr propagates");
                     let expected_param1 = if i == 0 { 7 } else { 9 };
@@ -1904,12 +1957,7 @@ mod tests {
         let mut chan = SndChannel::new(0x1234_0000, true);
 
         // Install a File-kind playback, then toggle paused on.
-        chan.play_buffer(
-            vec![0x80; 128],
-            OUTPUT_RATE << 16,
-            PlaybackKind::File,
-            0,
-        );
+        chan.play_buffer(vec![0x80; 128], OUTPUT_RATE << 16, PlaybackKind::File, 0);
         chan.pause_file_playback_toggle();
         assert!(chan.file_paused, "file_paused must be set after toggle");
         sm.channels.push(chan);
@@ -1948,25 +1996,31 @@ mod tests {
 
         // Install an active playback so we can observe whether a
         // subsequent QUIET runs (which would set playing=None).
-        chan.play_buffer(
-            vec![0x80; 128],
-            OUTPUT_RATE << 16,
-            PlaybackKind::Buffer,
-            0,
-        );
+        chan.play_buffer(vec![0x80; 128], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
         assert!(chan.is_playing(), "channel active pre-queue");
 
         // Queue [FLUSH, QUIET]. If both run, playing goes None. If
         // FLUSH discards the QUIET per contract, playing stays set.
-        chan.enqueue(SndCommand { cmd: cmd::FLUSH, param1: 0, param2: 0 });
-        chan.enqueue(SndCommand { cmd: cmd::QUIET, param1: 0, param2: 0 });
+        chan.enqueue(SndCommand {
+            cmd: cmd::FLUSH,
+            param1: 0,
+            param2: 0,
+        });
+        chan.enqueue(SndCommand {
+            cmd: cmd::QUIET,
+            param1: 0,
+            param2: 0,
+        });
         assert_eq!(chan.queue.len(), 2, "two cmds queued pre mix_frame");
         sm.channels.push(chan);
 
         sm.mix_frame(64);
 
         // Queue drained to empty.
-        assert!(sm.channels[0].queue.is_empty(), "queue must be empty after mix_frame");
+        assert!(
+            sm.channels[0].queue.is_empty(),
+            "queue must be empty after mix_frame"
+        );
         // Crucial: the QUIET after FLUSH did NOT run — playback survived.
         assert!(
             sm.channels[0].is_playing(),
@@ -1985,16 +2039,28 @@ mod tests {
         let mut chan = SndChannel::new(0x1234_0000, true);
 
         // Constructor args pass through unchanged.
-        assert_eq!(chan.guest_ptr, 0x1234_0000, "guest_ptr must match constructor arg");
+        assert_eq!(
+            chan.guest_ptr, 0x1234_0000,
+            "guest_ptr must match constructor arg"
+        );
         assert!(chan.allocated, "allocated=true must propagate");
 
         // Fields that start zero / None per IM:Sound 2-80.
-        assert_eq!(chan.callback_addr, 0, "callback_addr starts 0 (no userRoutine yet)");
-        assert!(chan.double_buffer.is_none(), "double_buffer starts None (not in SndPlayDoubleBuffer)");
+        assert_eq!(
+            chan.callback_addr, 0,
+            "callback_addr starts 0 (no userRoutine yet)"
+        );
+        assert!(
+            chan.double_buffer.is_none(),
+            "double_buffer starts None (not in SndPlayDoubleBuffer)"
+        );
 
         // Playback accessors report no activity on a fresh channel.
         assert!(!chan.is_playing(), "fresh channel reports is_playing=false");
-        assert!(!chan.has_active_playback(), "fresh channel reports has_active_playback=false");
+        assert!(
+            !chan.has_active_playback(),
+            "fresh channel reports has_active_playback=false"
+        );
 
         // Rate defaults to unity — a channel playing a buffer at the
         // buffer's sample_rate with no explicit rateCmd must play at

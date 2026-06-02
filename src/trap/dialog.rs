@@ -21,7 +21,8 @@ fn trace_dialog_procs_enabled() -> bool {
 }
 
 fn trace_dialog_filter_enabled() -> bool {
-    *TRACE_DIALOG_FILTER.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_FILTER").is_some())
+    *TRACE_DIALOG_FILTER
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_FILTER").is_some())
 }
 
 fn trace_textedit_enabled() -> bool {
@@ -2011,6 +2012,7 @@ impl super::TrapDispatcher {
             go_away_flag,
             ref_con,
         );
+        self.set_current_port_state(bus, cpu, dlg_ptr, None);
 
         bus.write_word(dlg_ptr + 108, proc_id as u16);
         bus.write_long(dlg_ptr + 156, items_handle);
@@ -2266,6 +2268,90 @@ impl super::TrapDispatcher {
             }
         }
         saved
+    }
+
+    fn saved_rect_has_non_background_content(&self, saved: &[u8]) -> bool {
+        saved.iter().any(|&byte| byte != 0)
+    }
+
+    fn user_item_preserve_rects(
+        &self,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        items: &[DialogItem],
+        skip_popup_user_items: bool,
+    ) -> Vec<((i16, i16, i16, i16), bool)> {
+        items
+            .iter()
+            .enumerate()
+            .filter(|(i, it)| {
+                (it.item_type & 0x7F) == 0
+                    && (!skip_popup_user_items
+                        || !self
+                            .dialog_item_popup_menus
+                            .contains_key(&(dialog_ptr, (i + 1) as i16)))
+            })
+            .map(|(_, it)| {
+                let (it_t, it_l, it_b, it_r) = it.rect;
+                let rect = (
+                    bounds.0 + it_t,
+                    bounds.1 + it_l,
+                    bounds.0 + it_b,
+                    bounds.1 + it_r,
+                );
+                (rect, it.item_type == 0)
+            })
+            .collect()
+    }
+
+    fn restore_user_item_preserved_pixels(
+        &self,
+        bus: &mut MacMemoryBus,
+        rects: &[((i16, i16, i16, i16), bool)],
+        backups: &[Vec<u8>],
+    ) {
+        for ((rect, always_restore), pixels) in rects.iter().zip(backups.iter()) {
+            if *always_restore || self.saved_rect_has_non_background_content(pixels) {
+                self.restore_rect_pixels(bus, *rect, pixels);
+            }
+        }
+    }
+
+    fn draw_dialog_preserving_user_items(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        title: &str,
+        items: &[DialogItem],
+        default_item: i16,
+        edit_text: &str,
+        edit_item: i16,
+        skip_pictures: bool,
+        dialog_ptr: u32,
+        skip_popup_user_items: bool,
+    ) {
+        let user_item_rects =
+            self.user_item_preserve_rects(dialog_ptr, bounds, items, skip_popup_user_items);
+        let user_item_backups: Vec<Vec<u8>> = user_item_rects
+            .iter()
+            .map(|&(r, _)| self.save_rect_pixels(bus, r))
+            .collect();
+
+        self.draw_dialog(
+            bus,
+            bounds,
+            proc_id,
+            title,
+            items,
+            default_item,
+            edit_text,
+            edit_item,
+            skip_pictures,
+            dialog_ptr,
+        );
+
+        self.restore_user_item_preserved_pixels(bus, &user_item_rects, &user_item_backups);
     }
 
     /// Restore framebuffer pixels to an exact rectangle (no margin).
@@ -3836,8 +3922,7 @@ impl super::TrapDispatcher {
                     0x188 => "CautionAlert",
                     _ => "Alert?",
                 };
-                let alert_stage_before =
-                    bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
+                let alert_stage_before = bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
                 let anumber_before = bus.read_word(crate::memory::globals::addr::ANUMBER);
                 // Look up the ALRT resource and, if present, also pull
                 // the referenced DITL's static-text items so the trap
@@ -4095,7 +4180,7 @@ impl super::TrapDispatcher {
                     let proc_id = bus.read_word(dialog_ptr + 108) as i16;
                     let (edit_text, edit_item, default_item) =
                         Self::dialog_edit_state(bus, dialog_ptr, &items);
-                    self.draw_dialog(
+                    self.draw_dialog_preserving_user_items(
                         bus,
                         bounds,
                         proc_id,
@@ -4106,6 +4191,7 @@ impl super::TrapDispatcher {
                         edit_item,
                         false,
                         dialog_ptr,
+                        false,
                     );
                     self.dialog_items.insert(dialog_ptr, items);
                 }
@@ -4197,13 +4283,14 @@ impl super::TrapDispatcher {
                                     && event.message == prev_window
                                     && (event.modifiers & 1) != 0
                             }) {
-                                self.event_queue.push_back(crate::trap::dispatch::QueuedEvent {
-                                    what: 8,
-                                    message: prev_window,
-                                    where_v: 0,
-                                    where_h: 0,
-                                    modifiers: 1,
-                                });
+                                self.event_queue
+                                    .push_back(crate::trap::dispatch::QueuedEvent {
+                                        what: 8,
+                                        message: prev_window,
+                                        where_v: 0,
+                                        where_h: 0,
+                                        modifiers: 1,
+                                    });
                             }
                             self.draw_single_window_chrome_inline(bus, prev_window, true);
                             let exposed_local = (
@@ -5013,38 +5100,7 @@ impl super::TrapDispatcher {
                             // capture it here and restore it afterwards so the snapshot
                             // (rendered_pixels) reflects the combined state.
                             // Inside Macintosh Volume I, I-405
-                            let user_item_rects: Vec<(i16, i16, i16, i16)> = items
-                                .iter()
-                                .enumerate()
-                                // Only save enabled userItems (type=0).  Disabled
-                                // userItems (type=128) act as background panels and
-                                // are usually larger than their companion items;
-                                // saving/restoring them would erase staticText labels
-                                // that draw_dialog renders inside those rects.
-                                // Skip popup-associated userItems — we HLE-redraw
-                                // those with proper expanded rects below.
-                                .filter(|(i, it)| {
-                                    it.item_type == 0
-                                        && !self
-                                            .dialog_item_popup_menus
-                                            .contains_key(&(dialog_ptr, (i + 1) as i16))
-                                })
-                                .map(|(_, it)| {
-                                    let (it_t, it_l, it_b, it_r) = it.rect;
-                                    (
-                                        bounds.0 + it_t,
-                                        bounds.1 + it_l,
-                                        bounds.0 + it_b,
-                                        bounds.1 + it_r,
-                                    )
-                                })
-                                .collect();
-                            let user_item_backups: Vec<Vec<u8>> = user_item_rects
-                                .iter()
-                                .map(|&r| self.save_rect_pixels(bus, r))
-                                .collect();
-
-                            self.draw_dialog(
+                            self.draw_dialog_preserving_user_items(
                                 bus,
                                 bounds,
                                 proc_id,
@@ -5055,14 +5111,8 @@ impl super::TrapDispatcher {
                                 edit_item,
                                 false,
                                 dialog_ptr,
+                                true,
                             );
-
-                            // Restore game-drawn userItem content over the white fill.
-                            for (rect, pixels) in
-                                user_item_rects.iter().zip(user_item_backups.iter())
-                            {
-                                self.restore_rect_pixels(bus, *rect, pixels);
-                            }
                         }
 
                         // HLE-draw popup controls for type-0 userItems that were
@@ -7100,21 +7150,38 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                if text_ptr != 0 && length > 0 && box_right > box_left && box_bottom > box_top {
-                    // Read the text bytes from guest memory
-                    let text_bytes = bus.read_bytes(text_ptr, length);
+                if box_right > box_left && box_bottom > box_top {
+                    // TETextBox creates a transient edit record and clears the
+                    // destination box before drawing the wrapped text. The erase
+                    // happens even when length is zero.
+                    // Text 1993, 2-88; Executor textedit/teDisplay.cpp C_TETextBox
+                    self.draw_rect(
+                        cpu,
+                        bus,
+                        &Rect {
+                            top: box_top,
+                            left: box_left,
+                            bottom: box_bottom,
+                            right: box_right,
+                        },
+                        ShapeOp::Erase,
+                    );
 
-                    if trace_dialog_text_inline_enabled() {
-                        let preview_len = text_bytes.len().min(160);
-                        let first_char =
-                            text_bytes.first().copied().map(char::from).unwrap_or('\0');
-                        let first_glyph = crate::quickdraw::text::get_glyph(
-                            self.tx_font,
-                            self.tx_size,
-                            first_char,
-                        )
-                        .is_some();
-                        eprintln!(
+                    if text_ptr != 0 && length > 0 {
+                        // Read the text bytes from guest memory
+                        let text_bytes = bus.read_bytes(text_ptr, length);
+
+                        if trace_dialog_text_inline_enabled() {
+                            let preview_len = text_bytes.len().min(160);
+                            let first_char =
+                                text_bytes.first().copied().map(char::from).unwrap_or('\0');
+                            let first_glyph = crate::quickdraw::text::get_glyph(
+                                self.tx_font,
+                                self.tx_size,
+                                first_char,
+                            )
+                            .is_some();
+                            eprintln!(
                             "[DIALOG-TEXT] TETextBox current_port=${:08X} box=({},{}..{},{} ) align={} len={} txFont={} txFace=${:04X} txMode={} txSize={} firstChar={:?} firstGlyph={} text=\"{}\"",
                             self.current_port,
                             box_top,
@@ -7131,118 +7198,104 @@ impl super::TrapDispatcher {
                             first_glyph,
                             String::from_utf8_lossy(&text_bytes[..preview_len]),
                         );
-                    }
+                        }
 
-                    // TETextBox creates a transient edit record and clears the
-                    // destination box before drawing the wrapped text.
-                    // Text 1993, 2-88; Executor textedit/teDisplay.cpp C_TETextBox
-                    self.draw_rect(
-                        cpu,
-                        bus,
-                        &Rect {
-                            top: box_top,
-                            left: box_left,
-                            bottom: box_bottom,
-                            right: box_right,
-                        },
-                        ShapeOp::Erase,
-                    );
+                        // Capture font params to avoid borrowing self in closures
+                        let font_id = self.tx_font;
+                        let font_size = self.tx_size;
+                        let advance_extra = self.advance_extra();
+                        let missing_advance = self.missing_glyph_advance();
 
-                    // Capture font params to avoid borrowing self in closures
-                    let font_id = self.tx_font;
-                    let font_size = self.tx_size;
-                    let advance_extra = self.advance_extra();
-                    let missing_advance = self.missing_glyph_advance();
+                        let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
+                        let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
+                        let box_width = box_right - box_left;
 
-                    let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
-                    let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
-                    let box_width = box_right - box_left;
+                        // Measure a run of bytes (no &self borrow needed)
+                        let measure = |start: usize, end: usize| -> i16 {
+                            let mut w = 0i16;
+                            for &b in &text_bytes[start..end] {
+                                let ch = b as char;
+                                if let Some((g, _)) =
+                                    crate::quickdraw::text::get_glyph(font_id, font_size, ch)
+                                {
+                                    w += g.advance as i16 + advance_extra;
+                                } else {
+                                    w += missing_advance;
+                                }
+                            }
+                            w
+                        };
 
-                    // Measure a run of bytes (no &self borrow needed)
-                    let measure = |start: usize, end: usize| -> i16 {
-                        let mut w = 0i16;
-                        for &b in &text_bytes[start..end] {
+                        // Word-wrap: split into lines that fit within box_width.
+                        // Break on spaces; if a single word exceeds box_width, break mid-word.
+                        let mut lines: Vec<(usize, usize)> = Vec::new();
+                        let mut line_start = 0usize;
+                        let mut last_break = 0usize;
+                        let mut line_width = 0i16;
+
+                        for (i, &b) in text_bytes.iter().enumerate() {
+                            if b == b'\r' || b == b'\n' {
+                                lines.push((line_start, i));
+                                line_start = i + 1;
+                                last_break = line_start;
+                                line_width = 0;
+                                continue;
+                            }
                             let ch = b as char;
-                            if let Some((g, _)) =
+                            let char_w = if let Some((g, _)) =
                                 crate::quickdraw::text::get_glyph(font_id, font_size, ch)
                             {
-                                w += g.advance as i16 + advance_extra;
+                                g.advance as i16 + advance_extra
                             } else {
-                                w += missing_advance;
+                                missing_advance
+                            };
+                            line_width += char_w;
+                            if b == b' ' {
+                                last_break = i + 1;
+                            }
+                            if line_width > box_width && i > line_start {
+                                if last_break > line_start {
+                                    lines.push((line_start, last_break - 1));
+                                    line_start = last_break;
+                                } else {
+                                    lines.push((line_start, i));
+                                    line_start = i;
+                                }
+                                last_break = line_start;
+                                line_width = measure(line_start, i + 1);
                             }
                         }
-                        w
-                    };
-
-                    // Word-wrap: split into lines that fit within box_width.
-                    // Break on spaces; if a single word exceeds box_width, break mid-word.
-                    let mut lines: Vec<(usize, usize)> = Vec::new();
-                    let mut line_start = 0usize;
-                    let mut last_break = 0usize;
-                    let mut line_width = 0i16;
-
-                    for (i, &b) in text_bytes.iter().enumerate() {
-                        if b == b'\r' || b == b'\n' {
-                            lines.push((line_start, i));
-                            line_start = i + 1;
-                            last_break = line_start;
-                            line_width = 0;
-                            continue;
+                        if line_start < text_bytes.len() {
+                            lines.push((line_start, text_bytes.len()));
                         }
-                        let ch = b as char;
-                        let char_w = if let Some((g, _)) =
-                            crate::quickdraw::text::get_glyph(font_id, font_size, ch)
-                        {
-                            g.advance as i16 + advance_extra
-                        } else {
-                            missing_advance
-                        };
-                        line_width += char_w;
-                        if b == b' ' {
-                            last_break = i + 1;
-                        }
-                        if line_width > box_width && i > line_start {
-                            if last_break > line_start {
-                                lines.push((line_start, last_break - 1));
-                                line_start = last_break;
-                            } else {
-                                lines.push((line_start, i));
-                                line_start = i;
+
+                        // Draw each line
+                        let mut y = box_top + metrics.ascent;
+                        for (start, end) in &lines {
+                            if y + metrics.descent > box_bottom {
+                                break;
                             }
-                            last_break = line_start;
-                            line_width = measure(line_start, i + 1);
+                            let mut trimmed_end = *end;
+                            while trimmed_end > *start && text_bytes[trimmed_end - 1] == b' ' {
+                                trimmed_end -= 1;
+                            }
+                            let lw = measure(*start, trimmed_end);
+                            // Per Inside Macintosh: Text 1993, lines 7320-7323:
+                            //   teJustLeft   =  0 (flush left — system default)
+                            //   teJustCenter =  1 (centered)
+                            //   teJustRight  = -1 (flush right)
+                            //   teForceLeft  = -2 (force flush left)
+                            let x = match align {
+                                1 => box_left + (box_width - lw) / 2, // teJustCenter
+                                -1 => box_right - lw,                 // teJustRight
+                                _ => box_left, // teJustLeft / teForceLeft / 0
+                            };
+                            self.pn_loc = (y, x);
+                            for &byte in &text_bytes[*start..trimmed_end] {
+                                self.draw_char(cpu, bus, byte as char);
+                            }
+                            y += line_height;
                         }
-                    }
-                    if line_start < text_bytes.len() {
-                        lines.push((line_start, text_bytes.len()));
-                    }
-
-                    // Draw each line
-                    let mut y = box_top + metrics.ascent;
-                    for (start, end) in &lines {
-                        if y + metrics.descent > box_bottom {
-                            break;
-                        }
-                        let mut trimmed_end = *end;
-                        while trimmed_end > *start && text_bytes[trimmed_end - 1] == b' ' {
-                            trimmed_end -= 1;
-                        }
-                        let lw = measure(*start, trimmed_end);
-                        // Per Inside Macintosh: Text 1993, lines 7320-7323:
-                        //   teJustLeft   =  0 (flush left — system default)
-                        //   teJustCenter =  1 (centered)
-                        //   teJustRight  = -1 (flush right)
-                        //   teForceLeft  = -2 (force flush left)
-                        let x = match align {
-                            1 => box_left + (box_width - lw) / 2, // teJustCenter
-                            -1 => box_right - lw,                 // teJustRight
-                            _ => box_left,                        // teJustLeft / teForceLeft / 0
-                        };
-                        self.pn_loc = (y, x);
-                        for &byte in &text_bytes[*start..trimmed_end] {
-                            self.draw_char(cpu, bus, byte as char);
-                        }
-                        y += line_height;
                     }
                 }
                 Ok(())
@@ -8182,13 +8235,14 @@ impl super::TrapDispatcher {
                                     && event.message == prev_window
                                     && (event.modifiers & 1) != 0
                             }) {
-                                self.event_queue.push_back(crate::trap::dispatch::QueuedEvent {
-                                    what: 8,
-                                    message: prev_window,
-                                    where_v: 0,
-                                    where_h: 0,
-                                    modifiers: 1,
-                                });
+                                self.event_queue
+                                    .push_back(crate::trap::dispatch::QueuedEvent {
+                                        what: 8,
+                                        message: prev_window,
+                                        where_v: 0,
+                                        where_h: 0,
+                                        modifiers: 1,
+                                    });
                             }
                             self.draw_single_window_chrome_inline(bus, prev_window, true);
                             let exposed_local = (
@@ -10511,6 +10565,85 @@ mod tests {
     }
 
     #[test]
+    fn draw_dialog_preserves_existing_user_item_pixels() {
+        // UserItems are application-owned drawing areas. Games often draw
+        // into them before calling DrawDialog; the Dialog Manager redraw
+        // must not erase that content while refreshing the standard items.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 40);
+        bus.write_word(dialog_ptr + 22, 80);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0x80, // disabled userItem
+                    rect: (8, 8, 20, 32),
+                    text: String::new(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (24, 8, 36, 40),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        let user_x = 10u32;
+        let user_y = 10u32;
+        let background_x = 4u32;
+        let background_y = 4u32;
+        if pixel_size == 8 {
+            bus.write_byte(screen_base + user_y * row_bytes + user_x, 0xFF);
+            bus.write_byte(screen_base + background_y * row_bytes + background_x, 0xFF);
+        } else {
+            for (x, y) in [(user_x, user_y), (background_x, background_y)] {
+                let addr = screen_base + y * row_bytes + (x / 8);
+                let bit = 1 << (7 - (x % 8));
+                bus.write_byte(addr, bus.read_byte(addr) | bit);
+            }
+        }
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        if pixel_size == 8 {
+            assert_eq!(
+                bus.read_byte(screen_base + user_y * row_bytes + user_x),
+                0xFF,
+                "DrawDialog should preserve pre-drawn userItem pixels"
+            );
+            assert_eq!(
+                bus.read_byte(screen_base + background_y * row_bytes + background_x),
+                0,
+                "DrawDialog should still repaint normal dialog background"
+            );
+        } else {
+            let user_addr = screen_base + user_y * row_bytes + (user_x / 8);
+            let user_bit = 1 << (7 - (user_x % 8));
+            let background_addr = screen_base + background_y * row_bytes + (background_x / 8);
+            let background_bit = 1 << (7 - (background_x % 8));
+            assert_ne!(bus.read_byte(user_addr) & user_bit, 0);
+            assert_eq!(bus.read_byte(background_addr) & background_bit, 0);
+        }
+    }
+
+    #[test]
     fn updtdialog_pops_eight_bytes() {
         // Inside Macintosh Volume I, I-415: UpdtDialog is a Pascal
         // procedure taking theDialog and updateRgn.
@@ -10615,6 +10748,46 @@ mod tests {
 
         // Pixel (20, 10) lies inside the box but outside the glyph; it should
         // be white after the implicit EraseRect.
+        let probe_addr = screen_base + 10 * 64 + 2;
+        assert_eq!(bus.read_byte(probe_addr) & (1 << 3), 0);
+    }
+
+    #[test]
+    fn te_text_box_erases_box_for_zero_length_text() {
+        // Inside Macintosh: Text 1993, p. 2-88: the erase precedes text
+        // drawing and is not conditional on the text length.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let screen_base = bus.read_long(0x0824);
+
+        for y in 0..12u32 {
+            for byte in 0..3u32 {
+                bus.write_byte(screen_base + y * 64 + byte, 0xFF);
+            }
+        }
+
+        disp.current_port = port_ptr;
+        disp.tx_size = 12;
+        bus.write_word(port_ptr + 74, 12);
+
+        let text_ptr = 0x200000u32;
+        let box_ptr = 0x200100u32;
+        bus.write_word(box_ptr, 0);
+        bus.write_word(box_ptr + 2, 0);
+        bus.write_word(box_ptr + 4, 12);
+        bus.write_word(box_ptr + 6, 24);
+
+        let sp = TEST_SP - 14;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, box_ptr);
+        bus.write_long(sp + 6, 0);
+        bus.write_long(sp + 10, text_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x1CE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
         let probe_addr = screen_base + 10 * 64 + 2;
         assert_eq!(bus.read_byte(probe_addr) & (1 << 3), 0);
     }
@@ -10818,10 +10991,7 @@ mod tests {
 
     // ---- CloseDialog ($A982) ----
 
-    fn alloc_region_handle(
-        bus: &mut MacMemoryBus,
-        rect: Option<(i16, i16, i16, i16)>,
-    ) -> u32 {
+    fn alloc_region_handle(bus: &mut MacMemoryBus, rect: Option<(i16, i16, i16, i16)>) -> u32 {
         let rgn_ptr = bus.alloc(10);
         bus.write_word(rgn_ptr, 10);
         if let Some((top, left, bottom, right)) = rect.filter(|r| r.2 > r.0 && r.3 > r.1) {

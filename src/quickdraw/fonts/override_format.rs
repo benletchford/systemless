@@ -77,7 +77,10 @@ impl std::fmt::Display for LoadError {
                 write!(f, "truncated: expected {expected} bytes, got {actual}")
             }
             LoadError::DataLenMismatch { header, file } => {
-                write!(f, "data_len {header} disagrees with file size remainder {file}")
+                write!(
+                    f,
+                    "data_len {header} disagrees with file size remainder {file}"
+                )
             }
         }
     }

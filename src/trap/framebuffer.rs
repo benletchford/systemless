@@ -394,12 +394,8 @@ impl super::TrapDispatcher {
             let pb_right = bus.read_word(port + 14) as i16;
             let bitmap_w = (pb_right - pb_left).max(0) as u32;
             let bitmap_h = (pb_bottom - pb_top).max(0) as u32;
-            let row_count = h
-                .min((screen_h as u32).saturating_sub(dst_y))
-                .min(bitmap_h);
-            let col_count = w
-                .min((screen_w as u32).saturating_sub(dst_x))
-                .min(bitmap_w);
+            let row_count = h.min((screen_h as u32).saturating_sub(dst_y)).min(bitmap_h);
+            let col_count = w.min((screen_w as u32).saturating_sub(dst_x)).min(bitmap_w);
             for row in 0..row_count {
                 let src_row_addr = port_base + (src_y_offset + row) * port_rb;
                 let dst_row_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
@@ -1258,10 +1254,7 @@ impl super::TrapDispatcher {
         // visRgn to extend over the now-hidden menu bar area. Doing this
         // unconditionally would clobber wind_top for documentProc windows where
         // the menu bar is visible (degenerate title bar on every redraw).
-        if self.front_window != 0
-            && !no_visrgn_auto_expand_enabled()
-            && effective_mbar == 0
-        {
+        if self.front_window != 0 && !no_visrgn_auto_expand_enabled() && effective_mbar == 0 {
             let vis_top_expected = 0i16;
             let vis_rgn_handle = bus.read_long(self.front_window + 24);
             if vis_rgn_handle != 0 {
@@ -1329,10 +1322,7 @@ impl super::TrapDispatcher {
                         bus.read_word(pm_ptr + 8) as i16,
                     )
                 } else {
-                    (
-                        bus.read_word(w + 8) as i16,
-                        bus.read_word(w + 10) as i16,
-                    )
+                    (bus.read_word(w + 8) as i16, bus.read_word(w + 10) as i16)
                 };
                 let wind_top = -pmap_top;
                 let wind_left = -pmap_left;
@@ -1379,8 +1369,7 @@ impl super::TrapDispatcher {
         if self.front_window != 0 && !skip_chrome {
             // Use the front window's hilited byte rather than hard-coding
             // active=true so HiliteWindow(front, false) renders no stripes.
-            let front_hilited =
-                bus.read_byte(self.front_window + 111u32) != 0;
+            let front_hilited = bus.read_byte(self.front_window + 111u32) != 0;
             self.draw_window_chrome(bus, front_hilited);
         }
         // If a modal dialog is active, restore the rendered snapshot and
@@ -1742,7 +1731,8 @@ mod redraw_chrome_tests {
                     bus.read_byte(screen_base + y * 800 + x),
                     0xAA,
                     "initial frame: sentinel must hold at (x={}, y={})",
-                    x, y
+                    x,
+                    y
                 );
             }
         }
@@ -1768,7 +1758,8 @@ mod redraw_chrome_tests {
                     bus.read_byte(screen_base + y * 800 + x),
                     0xAA,
                     "after mouse-at-top: sentinel must still hold at (x={}, y={})",
-                    x, y
+                    x,
+                    y
                 );
             }
         }

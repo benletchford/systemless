@@ -68,12 +68,12 @@ fn macroman_or_ascii_fallback(
     // drop the character.
     // Mac Roman encoding (Inside Macintosh Volume I, I-247):
     let ascii_fallback: char = match mac_code {
-        0xD0 | 0xD1 => '-',        // en-dash (–), em-dash (—)
-        0xD2 | 0xD3 => '"',        // left-double, right-double quote
-        0xD4 | 0xD5 => '\'',       // left-single, right-single quote
-        0xA5 => '*',               // bullet •
-        0xCA => ' ',               // non-breaking space
-        0xE1 | 0xE5 => '.',        // leading/trailing space-like
+        0xD0 | 0xD1 => '-',  // en-dash (–), em-dash (—)
+        0xD2 | 0xD3 => '"',  // left-double, right-double quote
+        0xD4 | 0xD5 => '\'', // left-single, right-single quote
+        0xA5 => '*',         // bullet •
+        0xCA => ' ',         // non-breaking space
+        0xE1 | 0xE5 => '.',  // leading/trailing space-like
         _ => return None,
     };
     get_glyph(font_id, size, ascii_fallback)

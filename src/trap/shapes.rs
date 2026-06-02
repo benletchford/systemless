@@ -108,11 +108,7 @@ fn trace_all_shapes_enabled() -> bool {
     *TRACE_ALL_SHAPES.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SHAPES_ALL").is_some())
 }
 
-fn shape_palette_index_for_rgb(
-    is_screen_port: bool,
-    rgb: [u16; 3],
-    clut: &[[u16; 3]; 256],
-) -> u8 {
+fn shape_palette_index_for_rgb(is_screen_port: bool, rgb: [u16; 3], clut: &[[u16; 3]; 256]) -> u8 {
     if is_screen_port {
         if rgb == [0, 0, 0] {
             return 255;
@@ -272,8 +268,8 @@ impl super::TrapDispatcher {
             let height = i32::from(r.bottom) - i32::from(r.top);
             let area = width.saturating_mul(height);
             let large = width >= 200 || height >= 200 || area >= 40_000;
-            let should_trace = trace_all_shapes_enabled()
-                || (trace_large_shapes_enabled() && large);
+            let should_trace =
+                trace_all_shapes_enabled() || (trace_large_shapes_enabled() && large);
             if should_trace {
                 let op_name = match &op {
                     ShapeOp::Paint => "paint",
@@ -1241,26 +1237,16 @@ impl super::TrapDispatcher {
                                 & (1 << (7 - x.rem_euclid(8)))
                                 != 0;
                             let old = bus.read_byte(addr);
-                            let new = apply_boolean_transfer_8(
-                                old,
-                                0,
-                                source_is_black,
-                                fg_idx,
-                                bg_idx,
-                            );
+                            let new =
+                                apply_boolean_transfer_8(old, 0, source_is_black, fg_idx, bg_idx);
                             bus.write_byte(addr, new);
                         }
                         ShapeOp::Fill(ref p) => {
                             let source_is_black =
                                 p[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0;
                             let old = bus.read_byte(addr);
-                            let new = apply_boolean_transfer_8(
-                                old,
-                                0,
-                                source_is_black,
-                                fg_idx,
-                                bg_idx,
-                            );
+                            let new =
+                                apply_boolean_transfer_8(old, 0, source_is_black, fg_idx, bg_idx);
                             bus.write_byte(addr, new);
                         }
                         ShapeOp::Glyph(mode) => {
@@ -1274,8 +1260,7 @@ impl super::TrapDispatcher {
                                 continue;
                             }
                             let old = bus.read_byte(addr);
-                            let new =
-                                apply_boolean_transfer_8(old, mode, true, fg_idx, bg_idx);
+                            let new = apply_boolean_transfer_8(old, mode, true, fg_idx, bg_idx);
                             bus.write_byte(addr, new);
                         }
                         ShapeOp::Invert => {
@@ -1283,100 +1268,84 @@ impl super::TrapDispatcher {
                         }
                     }
                 } else if pixel_size == 32 {
-                        let byte_offset = dy * pix_row_bytes + dx * 4;
-                        if byte_offset + 4 > (dy + 1) * pix_row_bytes {
-                            continue;
-                        }
-                        let addr = pix_base + byte_offset;
-                        let old = bus.read_long(addr) & 0x00FF_FFFF;
-                        let (fg_r, fg_g, fg_b) = self.fg_color;
-                        let fg_color = ((fg_r as u32 >> 8) << 16)
-                            | ((fg_g as u32 >> 8) << 8)
-                            | (fg_b as u32 >> 8);
-                        let (bg_r, bg_g, bg_b) = self.bg_color;
-                        let bg_color = ((bg_r as u32 >> 8) << 16)
-                            | ((bg_g as u32 >> 8) << 8)
-                            | (bg_b as u32 >> 8);
-                        let color = match op {
-                            ShapeOp::Paint | ShapeOp::Frame => {
-                                let source_is_black = self.pn_pat[y.rem_euclid(8) as usize]
-                                    & (1 << (7 - x.rem_euclid(8)))
-                                    != 0;
-                                apply_boolean_transfer_32(
-                                    old,
-                                    self.pn_mode,
-                                    source_is_black,
-                                    fg_color,
-                                    bg_color,
-                                )
-                            }
-                            ShapeOp::Erase => {
-                                let source_is_black = self.bk_pat[y.rem_euclid(8) as usize]
-                                    & (1 << (7 - x.rem_euclid(8)))
-                                    != 0;
-                                apply_boolean_transfer_32(
-                                    old,
-                                    0,
-                                    source_is_black,
-                                    fg_color,
-                                    bg_color,
-                                )
-                            }
-                            ShapeOp::Fill(ref p) => {
-                                let source_is_black =
-                                    p[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0;
-                                apply_boolean_transfer_32(
-                                    old,
-                                    0,
-                                    source_is_black,
-                                    fg_color,
-                                    bg_color,
-                                )
-                            }
-                            ShapeOp::Glyph(mode) => {
-                                apply_boolean_transfer_32(old, mode, true, fg_color, bg_color)
-                            }
-                            ShapeOp::Invert => !old & 0x00FF_FFFF,
-                        };
-                        bus.write_long(addr, color);
-                    } else if pixel_size == 1 {
-                        let byte_offset = dy * pix_row_bytes + (dx / 8);
-                        if (dx / 8) >= pix_row_bytes {
-                            continue;
-                        }
-
-                        let bit = 7 - (dx % 8);
-                        let addr = pix_base + byte_offset;
-                        let b = bus.read_byte(addr);
-                        let old = b & (1 << bit) != 0;
-                        let (mode, source_is_black) = match op {
-                            ShapeOp::Paint | ShapeOp::Frame => (
-                                self.pn_mode,
-                                self.pn_pat[y.rem_euclid(8) as usize]
-                                    & (1 << (7 - x.rem_euclid(8)))
-                                    != 0,
-                            ),
-                            ShapeOp::Erase => (
-                                0,
-                                self.bk_pat[y.rem_euclid(8) as usize]
-                                    & (1 << (7 - x.rem_euclid(8)))
-                                    != 0,
-                            ),
-                            ShapeOp::Fill(ref p) => (
-                                0,
-                                p[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0,
-                            ),
-                            ShapeOp::Glyph(mode) => (mode, true),
-                            ShapeOp::Invert => (2, true),
-                        };
-                        let val = apply_boolean_transfer_1(old, mode, source_is_black);
-
-                        if val {
-                            bus.write_byte(addr, b | (1 << bit));
-                        } else {
-                            bus.write_byte(addr, b & !(1 << bit));
-                        }
+                    let byte_offset = dy * pix_row_bytes + dx * 4;
+                    if byte_offset + 4 > (dy + 1) * pix_row_bytes {
+                        continue;
                     }
+                    let addr = pix_base + byte_offset;
+                    let old = bus.read_long(addr) & 0x00FF_FFFF;
+                    let (fg_r, fg_g, fg_b) = self.fg_color;
+                    let fg_color =
+                        ((fg_r as u32 >> 8) << 16) | ((fg_g as u32 >> 8) << 8) | (fg_b as u32 >> 8);
+                    let (bg_r, bg_g, bg_b) = self.bg_color;
+                    let bg_color =
+                        ((bg_r as u32 >> 8) << 16) | ((bg_g as u32 >> 8) << 8) | (bg_b as u32 >> 8);
+                    let color = match op {
+                        ShapeOp::Paint | ShapeOp::Frame => {
+                            let source_is_black = self.pn_pat[y.rem_euclid(8) as usize]
+                                & (1 << (7 - x.rem_euclid(8)))
+                                != 0;
+                            apply_boolean_transfer_32(
+                                old,
+                                self.pn_mode,
+                                source_is_black,
+                                fg_color,
+                                bg_color,
+                            )
+                        }
+                        ShapeOp::Erase => {
+                            let source_is_black = self.bk_pat[y.rem_euclid(8) as usize]
+                                & (1 << (7 - x.rem_euclid(8)))
+                                != 0;
+                            apply_boolean_transfer_32(old, 0, source_is_black, fg_color, bg_color)
+                        }
+                        ShapeOp::Fill(ref p) => {
+                            let source_is_black =
+                                p[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0;
+                            apply_boolean_transfer_32(old, 0, source_is_black, fg_color, bg_color)
+                        }
+                        ShapeOp::Glyph(mode) => {
+                            apply_boolean_transfer_32(old, mode, true, fg_color, bg_color)
+                        }
+                        ShapeOp::Invert => !old & 0x00FF_FFFF,
+                    };
+                    bus.write_long(addr, color);
+                } else if pixel_size == 1 {
+                    let byte_offset = dy * pix_row_bytes + (dx / 8);
+                    if (dx / 8) >= pix_row_bytes {
+                        continue;
+                    }
+
+                    let bit = 7 - (dx % 8);
+                    let addr = pix_base + byte_offset;
+                    let b = bus.read_byte(addr);
+                    let old = b & (1 << bit) != 0;
+                    let (mode, source_is_black) = match op {
+                        ShapeOp::Paint | ShapeOp::Frame => (
+                            self.pn_mode,
+                            self.pn_pat[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8)))
+                                != 0,
+                        ),
+                        ShapeOp::Erase => (
+                            0,
+                            self.bk_pat[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8)))
+                                != 0,
+                        ),
+                        ShapeOp::Fill(ref p) => (
+                            0,
+                            p[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0,
+                        ),
+                        ShapeOp::Glyph(mode) => (mode, true),
+                        ShapeOp::Invert => (2, true),
+                    };
+                    let val = apply_boolean_transfer_1(old, mode, source_is_black);
+
+                    if val {
+                        bus.write_byte(addr, b | (1 << bit));
+                    } else {
+                        bus.write_byte(addr, b & !(1 << bit));
+                    }
+                }
             }
         }
 
@@ -1556,9 +1525,9 @@ mod tests {
         let fg = (0xFFFFu16, 0x0000u16, 0x8000u16);
         let bg = (0x0000u16, 0xFFFFu16, 0x4000u16);
         let blended = blend_rgb(fg, bg, 64); // ~25% fg
-        // R: 25% of FFFF ≈ 0x4000
-        // G: 75% of FFFF ≈ 0xC000
-        // B: 25% of 8000 + 75% of 4000 = 0x2000 + 0x3000 = 0x5000
+                                             // R: 25% of FFFF ≈ 0x4000
+                                             // G: 75% of FFFF ≈ 0xC000
+                                             // B: 25% of 8000 + 75% of 4000 = 0x2000 + 0x3000 = 0x5000
         assert!((0x3F00..=0x4100).contains(&blended.0));
         assert!((0xBF00..=0xC100).contains(&blended.1));
         assert!((0x4F00..=0x5100).contains(&blended.2));

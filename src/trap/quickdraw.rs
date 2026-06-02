@@ -84,7 +84,8 @@ fn trace_dialog_draw_enabled() -> bool {
 }
 
 fn trace_dialog_gworld_enabled() -> bool {
-    *TRACE_DIALOG_GWORLD.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_GWORLD").is_some())
+    *TRACE_DIALOG_GWORLD
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_GWORLD").is_some())
 }
 
 fn trace_dialog_ports_enabled() -> bool {
@@ -99,16 +100,18 @@ fn trace_dialog_port_dump_enabled() -> bool {
 fn dump_copybits_src_path() -> Option<&'static str> {
     DUMP_COPYBITS_SRC_PATH
         .get_or_init(|| {
-            std::env::var("SYSTEMLESS_DUMP_COPYBITS_SRC").ok().map(|value| {
-                if value.is_empty() || value == "1" {
-                    std::env::temp_dir()
-                        .join("systemless_copybits_src.png")
-                        .display()
-                        .to_string()
-                } else {
-                    value
-                }
-            })
+            std::env::var("SYSTEMLESS_DUMP_COPYBITS_SRC")
+                .ok()
+                .map(|value| {
+                    if value.is_empty() || value == "1" {
+                        std::env::temp_dir()
+                            .join("systemless_copybits_src.png")
+                            .display()
+                            .to_string()
+                    } else {
+                        value
+                    }
+                })
         })
         .as_deref()
 }
@@ -2858,8 +2861,7 @@ impl super::TrapDispatcher {
                 // no-op regresses menu/title rendering.
                 //
                 // Inside Macintosh Volume I, I-148 (BitMap structure).
-                if src_info.base == u32::MAX || dst_info.base == 0 || dst_info.base == u32::MAX
-                {
+                if src_info.base == u32::MAX || dst_info.base == 0 || dst_info.base == u32::MAX {
                     eprintln!(
                         "[COPYBITS] skipping no-op: src_base=${:08X} dst_base=${:08X} (NIL baseAddr)",
                         src_info.base, dst_info.base
@@ -13584,7 +13586,11 @@ impl super::TrapDispatcher {
                             self.ensure_main_gdevice(bus)
                         };
                         let gd = if gdh != 0 { bus.read_long(gdh) } else { 0 };
-                        let current_mode = if gd != 0 { bus.read_long(gd + 42) } else { 0x0000_0085 };
+                        let current_mode = if gd != 0 {
+                            bus.read_long(gd + 42)
+                        } else {
+                            0x0000_0085
+                        };
                         if switch_info != 0 {
                             let mut screen_base = self.screen_mode.0;
                             if screen_base == 0 {
@@ -16577,20 +16583,8 @@ impl super::TrapDispatcher {
         let dst_bottom = bus.read_word(dst_rect_ptr + 4) as i16;
         let dst_right = bus.read_word(dst_rect_ptr + 6) as i16;
         let mode_base = (mode & 0x3F) as u16;
-        Self::sanitize_copy_bitmap_bounds(
-            &mut src_info,
-            src_top,
-            src_left,
-            src_bottom,
-            src_right,
-        );
-        Self::sanitize_copy_bitmap_bounds(
-            &mut dst_info,
-            dst_top,
-            dst_left,
-            dst_bottom,
-            dst_right,
-        );
+        Self::sanitize_copy_bitmap_bounds(&mut src_info, src_top, src_left, src_bottom, src_right);
+        Self::sanitize_copy_bitmap_bounds(&mut dst_info, dst_top, dst_left, dst_bottom, dst_right);
 
         if trace_menu_redraw_enabled()
             && trace_menu_redraw_rect_intersects(dst_top, dst_left, dst_bottom, dst_right)
@@ -28786,7 +28780,10 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(bus.read_long(TEST_SP + 4), onscreen_base);
-        assert_eq!(TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm_ptr), 0);
+        assert_eq!(
+            TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm_ptr),
+            0
+        );
         assert_eq!(
             TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm_ptr),
             onscreen_base

@@ -42,11 +42,16 @@ fn clut_match_device_itable_enabled() -> bool {
 }
 
 fn pict_identity_remap_enabled() -> bool {
-    *PICT_IDENTITY_REMAP.get_or_init(|| std::env::var_os("SYSTEMLESS_PICT_IDENTITY_REMAP").is_some())
+    *PICT_IDENTITY_REMAP
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_PICT_IDENTITY_REMAP").is_some())
 }
 
 fn align_pict_pos(pos: u32) -> u32 {
-    if pos.is_multiple_of(2) { pos } else { pos + 1 }
+    if pos.is_multiple_of(2) {
+        pos
+    } else {
+        pos + 1
+    }
 }
 
 const REGION_HEADER_SIZE: u32 = 10;
@@ -343,10 +348,7 @@ pub fn draw_picture(
             }
             0x07 => {
                 // PnSize(v:word, h:word) — track for frame opcodes
-                pen_size = (
-                    bus.read_word(pos) as i16,
-                    bus.read_word(pos + 2) as i16,
-                );
+                pen_size = (bus.read_word(pos) as i16, bus.read_word(pos + 2) as i16);
                 pos += 4;
             }
             0x08 => {
@@ -460,9 +462,22 @@ pub fn draw_picture(
                 let new_h = bus.read_word(pos + 6) as i16;
                 pos += 8;
                 draw_picture_line(
-                    bus, screen_mode, pn_v, pn_h, new_v, new_h,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                    bus,
+                    screen_mode,
+                    pn_v,
+                    pn_h,
+                    new_v,
+                    new_h,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat,
+                    fg_idx,
                 );
                 pen_v = new_v;
                 pen_h = new_h;
@@ -474,9 +489,22 @@ pub fn draw_picture(
                 let new_h = bus.read_word(pos + 2) as i16;
                 pos += 4;
                 draw_picture_line(
-                    bus, screen_mode, pen_v, pen_h, new_v, new_h,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                    bus,
+                    screen_mode,
+                    pen_v,
+                    pen_h,
+                    new_v,
+                    new_h,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat,
+                    fg_idx,
                 );
                 pen_v = new_v;
                 pen_h = new_h;
@@ -491,9 +519,22 @@ pub fn draw_picture(
                 let new_v = pn_v.saturating_add(dv);
                 let new_h = pn_h.saturating_add(dh);
                 draw_picture_line(
-                    bus, screen_mode, pn_v, pn_h, new_v, new_h,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                    bus,
+                    screen_mode,
+                    pn_v,
+                    pn_h,
+                    new_v,
+                    new_h,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat,
+                    fg_idx,
                 );
                 pen_v = new_v;
                 pen_h = new_h;
@@ -507,9 +548,22 @@ pub fn draw_picture(
                 let new_v = pen_v.saturating_add(dv);
                 let new_h = pen_h.saturating_add(dh);
                 draw_picture_line(
-                    bus, screen_mode, pen_v, pen_h, new_v, new_h,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), pen_size, pn_pat, fg_idx,
+                    bus,
+                    screen_mode,
+                    pen_v,
+                    pen_h,
+                    new_v,
+                    new_h,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat,
+                    fg_idx,
                 );
                 pen_v = new_v;
                 pen_h = new_h;
@@ -524,12 +578,32 @@ pub fn draw_picture(
                 let text_start = pos;
                 pos += len;
                 draw_picture_text(
-                    bus, screen_mode, pen_v, pen_h, text_start, len,
-                    pict_font_id, pict_font_size,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                    bus,
+                    screen_mode,
+                    pen_v,
+                    pen_h,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    fg_idx,
+                    bg_idx,
+                    tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                pen_h = pen_h.saturating_add(text_advance(
+                    bus,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                ));
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
                 }
@@ -544,12 +618,32 @@ pub fn draw_picture(
                 pos += len;
                 pen_h = pen_h.saturating_add(dh);
                 draw_picture_text(
-                    bus, screen_mode, pen_v, pen_h, text_start, len,
-                    pict_font_id, pict_font_size,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                    bus,
+                    screen_mode,
+                    pen_v,
+                    pen_h,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    fg_idx,
+                    bg_idx,
+                    tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                pen_h = pen_h.saturating_add(text_advance(
+                    bus,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                ));
                 if is_v2 && len.is_multiple_of(2) {
                     pos += 1;
                 }
@@ -564,12 +658,32 @@ pub fn draw_picture(
                 pos += len;
                 pen_v = pen_v.saturating_add(dv);
                 draw_picture_text(
-                    bus, screen_mode, pen_v, pen_h, text_start, len,
-                    pict_font_id, pict_font_size,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                    bus,
+                    screen_mode,
+                    pen_v,
+                    pen_h,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    fg_idx,
+                    bg_idx,
+                    tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                pen_h = pen_h.saturating_add(text_advance(
+                    bus,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                ));
                 if is_v2 && len.is_multiple_of(2) {
                     pos += 1;
                 }
@@ -586,12 +700,32 @@ pub fn draw_picture(
                 pen_h = pen_h.saturating_add(dh);
                 pen_v = pen_v.saturating_add(dv);
                 draw_picture_text(
-                    bus, screen_mode, pen_v, pen_h, text_start, len,
-                    pict_font_id, pict_font_size,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), fg_idx, bg_idx, tx_mode,
+                    bus,
+                    screen_mode,
+                    pen_v,
+                    pen_h,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    fg_idx,
+                    bg_idx,
+                    tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(bus, text_start, len, pict_font_id, pict_font_size));
+                pen_h = pen_h.saturating_add(text_advance(
+                    bus,
+                    text_start,
+                    len,
+                    pict_font_id,
+                    pict_font_size,
+                ));
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
                 }
@@ -635,7 +769,13 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     screen_mode,
-                    clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat,
+                    bk_pat,
+                    fill_pat,
+                    fg_idx,
+                    bg_idx,
                 );
             }
             0x38..=0x3C => {
@@ -655,7 +795,13 @@ pub fn draw_picture(
                         scale_x,
                         scale_y,
                         screen_mode,
-                        clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                        clip_region.as_ref(),
+                        pen_size,
+                        pn_pat,
+                        bk_pat,
+                        fill_pat,
+                        fg_idx,
+                        bg_idx,
                     );
                 }
             }
@@ -682,7 +828,13 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     screen_mode,
-                    clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat,
+                    bk_pat,
+                    fill_pat,
+                    fg_idx,
+                    bg_idx,
                 );
             }
             0x48..=0x4C => {
@@ -701,7 +853,13 @@ pub fn draw_picture(
                         scale_x,
                         scale_y,
                         screen_mode,
-                        clip_region.as_ref(), pen_size, pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+                        clip_region.as_ref(),
+                        pen_size,
+                        pn_pat,
+                        bk_pat,
+                        fill_pat,
+                        fg_idx,
+                        bg_idx,
                     );
                 }
             }
@@ -727,8 +885,11 @@ pub fn draw_picture(
                     screen_mode,
                     clip_region.as_ref(),
                     pen_size,
-                    pn_pat, bk_pat, fill_pat,
-                    fg_idx, bg_idx,
+                    pn_pat,
+                    bk_pat,
+                    fill_pat,
+                    fg_idx,
+                    bg_idx,
                 );
             }
             0x58..=0x5C => {
@@ -749,8 +910,11 @@ pub fn draw_picture(
                         screen_mode,
                         clip_region.as_ref(),
                         pen_size,
-                        pn_pat, bk_pat, fill_pat,
-                        fg_idx, bg_idx,
+                        pn_pat,
+                        bk_pat,
+                        fill_pat,
+                        fg_idx,
+                        bg_idx,
                     );
                 }
             }
@@ -766,13 +930,27 @@ pub fn draw_picture(
                 pos += 12;
                 last_shape_rect = Some((t, l, b, r));
                 draw_shape_oval_or_arc(
-                    bus, (opcode - 0x60) as u8,
-                    t, l, b, r,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    screen_mode, clip_region.as_ref(),
-                    Some((start_angle, arc_angle)), pen_size,
-                    pn_pat, bk_pat, fill_pat,
-                    fg_idx, bg_idx,
+                    bus,
+                    (opcode - 0x60) as u8,
+                    t,
+                    l,
+                    b,
+                    r,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    clip_region.as_ref(),
+                    Some((start_angle, arc_angle)),
+                    pen_size,
+                    pn_pat,
+                    bk_pat,
+                    fill_pat,
+                    fg_idx,
+                    bg_idx,
                 );
             }
             0x68..=0x6C => {
@@ -781,13 +959,27 @@ pub fn draw_picture(
                 pos += 4;
                 if let Some((t, l, b, r)) = last_shape_rect {
                     draw_shape_oval_or_arc(
-                        bus, (opcode - 0x68) as u8,
-                        t, l, b, r,
-                        dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                        screen_mode, clip_region.as_ref(),
-                        Some((start_angle, arc_angle)), pen_size,
-                        pn_pat, bk_pat, fill_pat,
-                        fg_idx, bg_idx,
+                        bus,
+                        (opcode - 0x68) as u8,
+                        t,
+                        l,
+                        b,
+                        r,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        clip_region.as_ref(),
+                        Some((start_angle, arc_angle)),
+                        pen_size,
+                        pn_pat,
+                        bk_pat,
+                        fill_pat,
+                        fg_idx,
+                        bg_idx,
                     );
                 }
             }
@@ -803,11 +995,23 @@ pub fn draw_picture(
                 // path. Pass pen_size + pn_pat so framePoly honors PnSize
                 // and PnPat.
                 render_pict_polygon(
-                    bus, poly_ptr, (opcode - 0x70) as u8, pen_size, pn_pat,
-                    bk_pat, fill_pat,
+                    bus,
+                    poly_ptr,
+                    (opcode - 0x70) as u8,
+                    pen_size,
+                    pn_pat,
+                    bk_pat,
+                    fill_pat,
                     screen_mode,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    clip_region.as_ref(), fg_idx, bg_idx,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    clip_region.as_ref(),
+                    fg_idx,
+                    bg_idx,
                 );
             }
             0x78..=0x7C => {}
@@ -825,11 +1029,26 @@ pub fn draw_picture(
                 pos += rgn_size;
                 let kind = (opcode - 0x80) as u8; // 0=frame .. 4=fill
                 draw_shape_rect(
-                    bus, kind,
-                    rgn_top, rgn_left, rgn_bottom, rgn_right,
-                    dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                    screen_mode, clip_region.as_ref(), pen_size, pn_pat, bk_pat,
-                    fill_pat, fg_idx, bg_idx,
+                    bus,
+                    kind,
+                    rgn_top,
+                    rgn_left,
+                    rgn_bottom,
+                    rgn_right,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    clip_region.as_ref(),
+                    pen_size,
+                    pn_pat,
+                    bk_pat,
+                    fill_pat,
+                    fg_idx,
+                    bg_idx,
                 );
             }
             0x88..=0x8C => {}
@@ -1150,7 +1369,9 @@ fn read_color_table(bus: &MacMemoryBus, mut pos: u32) -> (u32, Vec<[u16; 3]>, u3
     }
 
     if trace_pict_palette_enabled() {
-        for index in [0usize, 1, 2, 15, 16, 17, 32, 43, 50, 93, 100, 150, 185, 220, 245] {
+        for index in [
+            0usize, 1, 2, 15, 16, 17, 32, 43, 50, 93, 100, 150, 185, 220, 245,
+        ] {
             if index < colors16.len() {
                 let [r, g, b] = colors16[index];
                 eprintln!("[PICT]   clut[{}]=({:04X},{:04X},{:04X})", index, r, g, b);
@@ -1301,14 +1522,14 @@ fn write_pixel(
 fn pict_qd_color_to_clut_index(color: u32, default_idx: u8) -> u8 {
     match color {
         0 => default_idx,
-        30 => 0,             // whiteColor → white
-        33 => 255,           // blackColor → black
-        205 => 35,           // redColor → red slot on std Mac 8bpp CLUT
-        341 => 173,          // greenColor
-        409 => 210,          // blueColor
-        69 => 17,            // yellowColor
-        137 => 137,          // magentaColor
-        273 => 69,           // cyanColor
+        30 => 0,    // whiteColor → white
+        33 => 255,  // blackColor → black
+        205 => 35,  // redColor → red slot on std Mac 8bpp CLUT
+        341 => 173, // greenColor
+        409 => 210, // blueColor
+        69 => 17,   // yellowColor
+        137 => 137, // magentaColor
+        273 => 69,  // cyanColor
         _ => (color & 0xFF) as u8,
     }
 }
@@ -1406,8 +1627,22 @@ fn fill_dst_rect(
     for y in y1..y2 {
         for x in x1..x2 {
             plot_dst_pixel(
-                bus, sb, srb, sw as i32, sh as i32, ps, x, y, color_index,
-                frame_top, frame_left, dst_top, dst_left, scale_x, scale_y, clip_region,
+                bus,
+                sb,
+                srb,
+                sw as i32,
+                sh as i32,
+                ps,
+                x,
+                y,
+                color_index,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
             );
         }
     }
@@ -1439,15 +1674,39 @@ fn fill_dst_rect_pat(
     // so we don't do per-pixel bit lookups for the common case.
     if pattern == [0xFF; 8] {
         fill_dst_rect(
-            bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
-            scale_x, scale_y, clip_region, on_color,
+            bus,
+            screen_mode,
+            x1,
+            y1,
+            x2,
+            y2,
+            frame_top,
+            frame_left,
+            dst_top,
+            dst_left,
+            scale_x,
+            scale_y,
+            clip_region,
+            on_color,
         );
         return;
     }
     if pattern == [0x00; 8] {
         fill_dst_rect(
-            bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
-            scale_x, scale_y, clip_region, off_color,
+            bus,
+            screen_mode,
+            x1,
+            y1,
+            x2,
+            y2,
+            frame_top,
+            frame_left,
+            dst_top,
+            dst_left,
+            scale_x,
+            scale_y,
+            clip_region,
+            off_color,
         );
         return;
     }
@@ -1458,8 +1717,22 @@ fn fill_dst_rect_pat(
             let bit = 1u8 << (7 - x.rem_euclid(8));
             let color = if row & bit != 0 { on_color } else { off_color };
             plot_dst_pixel(
-                bus, sb, srb, sw as i32, sh as i32, ps, x, y, color,
-                frame_top, frame_left, dst_top, dst_left, scale_x, scale_y, clip_region,
+                bus,
+                sb,
+                srb,
+                sw as i32,
+                sh as i32,
+                ps,
+                x,
+                y,
+                color,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
             );
         }
     }
@@ -1524,28 +1797,90 @@ fn draw_shape_rect(
             let eh = ((pen_h as f64 * scale_y).round() as i32).max(1);
             let ew = ((pen_w as f64 * scale_x).round() as i32).max(1);
             fill_dst_rect(
-                bus, screen_mode, x1, y1, x2, y1 + eh, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region, fg_idx,
+                bus,
+                screen_mode,
+                x1,
+                y1,
+                x2,
+                y1 + eh,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                fg_idx,
             );
             fill_dst_rect(
-                bus, screen_mode, x1, y2 - eh, x2, y2, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region, fg_idx,
+                bus,
+                screen_mode,
+                x1,
+                y2 - eh,
+                x2,
+                y2,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                fg_idx,
             );
             fill_dst_rect(
-                bus, screen_mode, x1, y1, x1 + ew, y2, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region, fg_idx,
+                bus,
+                screen_mode,
+                x1,
+                y1,
+                x1 + ew,
+                y2,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                fg_idx,
             );
             fill_dst_rect(
-                bus, screen_mode, x2 - ew, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region, fg_idx,
+                bus,
+                screen_mode,
+                x2 - ew,
+                y1,
+                x2,
+                y2,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                fg_idx,
             );
         }
         1 => {
             // paintRect — interior uses pn_pat with fg_idx / bg_idx for
             // set / clear bits.
             fill_dst_rect_pat(
-                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region, pn_pat, fg_idx, bg_idx,
+                bus,
+                screen_mode,
+                x1,
+                y1,
+                x2,
+                y2,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                pn_pat,
+                fg_idx,
+                bg_idx,
             );
         }
         4 => {
@@ -1555,23 +1890,62 @@ fn draw_shape_rect(
             // comes from the FillPat state, distinct from the pen pattern
             // used by paintRect.
             fill_dst_rect_pat(
-                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region, fill_pat, fg_idx, bg_idx,
+                bus,
+                screen_mode,
+                x1,
+                y1,
+                x2,
+                y2,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                fill_pat,
+                fg_idx,
+                bg_idx,
             );
         }
         2 => {
             // eraseRect — interior uses bk_pat with bg_idx for set bits
             // per IM:V V-66 (erase draws in background color).
             fill_dst_rect_pat(
-                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region, bk_pat, bg_idx, fg_idx,
+                bus,
+                screen_mode,
+                x1,
+                y1,
+                x2,
+                y2,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                bk_pat,
+                bg_idx,
+                fg_idx,
             );
         }
         3 => {
             // invertRect — XOR each pixel in the interior.
             invert_dst_rect(
-                bus, screen_mode, x1, y1, x2, y2, frame_top, frame_left, dst_top, dst_left,
-                scale_x, scale_y, clip_region,
+                bus,
+                screen_mode,
+                x1,
+                y1,
+                x2,
+                y2,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
             );
         }
         _ => {}
@@ -1609,8 +1983,10 @@ fn invert_dst_rect(
             if let Some(rgn) = clip_region {
                 let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
                 let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
-                let pic_x = ((x - dst_left as i32) as f64 * inv_sx + frame_left as f64).floor() as i32;
-                let pic_y = ((y - dst_top as i32) as f64 * inv_sy + frame_top as f64).floor() as i32;
+                let pic_x =
+                    ((x - dst_left as i32) as f64 * inv_sx + frame_left as f64).floor() as i32;
+                let pic_y =
+                    ((y - dst_top as i32) as f64 * inv_sy + frame_top as f64).floor() as i32;
                 if !rgn.contains(pic_y, pic_x) {
                     continue;
                 }
@@ -1657,10 +2033,27 @@ fn draw_shape_oval(
     bg_idx: u8,
 ) {
     draw_shape_oval_or_arc(
-        bus, kind, src_top, src_left, src_bottom, src_right,
-        dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-        screen_mode, clip_region, None, pen_size,
-        pn_pat, bk_pat, fill_pat, fg_idx, bg_idx,
+        bus,
+        kind,
+        src_top,
+        src_left,
+        src_bottom,
+        src_right,
+        dst_top,
+        dst_left,
+        frame_top,
+        frame_left,
+        scale_x,
+        scale_y,
+        screen_mode,
+        clip_region,
+        None,
+        pen_size,
+        pn_pat,
+        bk_pat,
+        fill_pat,
+        fg_idx,
+        bg_idx,
     );
 }
 
@@ -1798,15 +2191,27 @@ fn draw_shape_oval_or_arc(
                 0 => fg_idx,
                 1 => {
                     // paint — pn_pat, set bit = fg.
-                    if pn_pat[pat_row_idx] & pat_bit != 0 { fg_idx } else { bg_idx }
+                    if pn_pat[pat_row_idx] & pat_bit != 0 {
+                        fg_idx
+                    } else {
+                        bg_idx
+                    }
                 }
                 2 => {
                     // erase — bk_pat, set bit = bg (IM:V V-66).
-                    if bk_pat[pat_row_idx] & pat_bit != 0 { bg_idx } else { fg_idx }
+                    if bk_pat[pat_row_idx] & pat_bit != 0 {
+                        bg_idx
+                    } else {
+                        fg_idx
+                    }
                 }
                 4 => {
                     // fill — fill_pat, set bit = fg.
-                    if fill_pat[pat_row_idx] & pat_bit != 0 { fg_idx } else { bg_idx }
+                    if fill_pat[pat_row_idx] & pat_bit != 0 {
+                        fg_idx
+                    } else {
+                        bg_idx
+                    }
                 }
                 _ => fg_idx,
             };
@@ -1837,8 +2242,22 @@ fn draw_shape_oval_or_arc(
                 }
             } else {
                 plot_dst_pixel(
-                    bus, sb, srb, sw, sh, ps, x, y, color,
-                    frame_top, frame_left, dst_top, dst_left, scale_x, scale_y, clip_region,
+                    bus,
+                    sb,
+                    srb,
+                    sw,
+                    sh,
+                    ps,
+                    x,
+                    y,
+                    color,
+                    frame_top,
+                    frame_left,
+                    dst_top,
+                    dst_left,
+                    scale_x,
+                    scale_y,
+                    clip_region,
                 );
             }
         }
@@ -1897,9 +2316,22 @@ fn render_pict_polygon(
                 continue;
             }
             draw_picture_line(
-                bus, screen_mode, v0, h0, v1, h1,
-                dst_top, dst_left, frame_top, frame_left, scale_x, scale_y,
-                clip_region, pen_size, pn_pat, fg_idx,
+                bus,
+                screen_mode,
+                v0,
+                h0,
+                v1,
+                h1,
+                dst_top,
+                dst_left,
+                frame_top,
+                frame_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                pen_size,
+                pn_pat,
+                fg_idx,
             );
         }
         return;
@@ -1926,7 +2358,12 @@ fn render_pict_polygon(
             (v1, v0, h1 as f32)
         };
         let inv_slope = (h1 as f32 - h0 as f32) / (v1 as f32 - v0 as f32);
-        edges.push(Edge { y_min, y_max, x_at_ymin, inv_slope });
+        edges.push(Edge {
+            y_min,
+            y_max,
+            x_at_ymin,
+            inv_slope,
+        });
     }
     if edges.is_empty() {
         return;
@@ -1949,8 +2386,7 @@ fn render_pict_polygon(
             if y < edge.y_min || y >= edge.y_max {
                 continue;
             }
-            let x = edge.x_at_ymin
-                + (i32::from(y) - i32::from(edge.y_min)) as f32 * edge.inv_slope;
+            let x = edge.x_at_ymin + (i32::from(y) - i32::from(edge.y_min)) as f32 * edge.inv_slope;
             xs.push(x);
         }
         if xs.len() < 2 {
@@ -1978,13 +2414,11 @@ fn render_pict_polygon(
                 // and the surrounding frame straddle the i16 range, so
                 // the literal i16 subtractions panic on overflow.
                 let dx = ((i32::from(x) - i32::from(bbox_left)) as f64 * scale_x
-                    + (i32::from(dst_left)
-                        + i32::from(bbox_left)
-                        - i32::from(frame_left)) as f64) as i32;
+                    + (i32::from(dst_left) + i32::from(bbox_left) - i32::from(frame_left)) as f64)
+                    as i32;
                 let dy = ((i32::from(y) - i32::from(bbox_top)) as f64 * scale_y
-                    + (i32::from(dst_top)
-                        + i32::from(bbox_top)
-                        - i32::from(frame_top)) as f64) as i32;
+                    + (i32::from(dst_top) + i32::from(bbox_top) - i32::from(frame_top)) as f64)
+                    as i32;
                 // Sample the appropriate 8×8 pattern at (dx mod 8, dy mod 8)
                 // so paint/erase/fill honor PnPat / BkPat / FillPat. Pattern
                 // set bit → "on" color (fg for paint/fill, bg for erase);
@@ -1996,15 +2430,33 @@ fn render_pict_polygon(
                         // paintPoly — pn_pat.
                         let bit_set = pn_pat[pat_row_idx] & pat_bit != 0;
                         let color = if bit_set { fg_idx } else { bg_idx };
-                        write_pixel(bus, screen_base, screen_rb, dx, dy, color,
-                            screen_w, screen_h, pixel_size);
+                        write_pixel(
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            dx,
+                            dy,
+                            color,
+                            screen_w,
+                            screen_h,
+                            pixel_size,
+                        );
                     }
                     4 => {
                         // fillPoly — fill_pat.
                         let bit_set = fill_pat[pat_row_idx] & pat_bit != 0;
                         let color = if bit_set { fg_idx } else { bg_idx };
-                        write_pixel(bus, screen_base, screen_rb, dx, dy, color,
-                            screen_w, screen_h, pixel_size);
+                        write_pixel(
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            dx,
+                            dy,
+                            color,
+                            screen_w,
+                            screen_h,
+                            pixel_size,
+                        );
                     }
                     2 => {
                         // erasePoly — bk_pat. Set bit → bg, clear → fg
@@ -2012,8 +2464,17 @@ fn render_pict_polygon(
                         // bk_pat's set bits are the dominant erase color).
                         let bit_set = bk_pat[pat_row_idx] & pat_bit != 0;
                         let color = if bit_set { bg_idx } else { fg_idx };
-                        write_pixel(bus, screen_base, screen_rb, dx, dy, color,
-                            screen_w, screen_h, pixel_size);
+                        write_pixel(
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            dx,
+                            dy,
+                            color,
+                            screen_w,
+                            screen_h,
+                            pixel_size,
+                        );
                     }
                     3 => {
                         // invert: XOR pixel value
@@ -2021,9 +2482,7 @@ fn render_pict_polygon(
                             continue;
                         }
                         if pixel_size == 8 {
-                            let addr = screen_base
-                                + (dy as u32) * screen_rb
-                                + (dx as u32);
+                            let addr = screen_base + (dy as u32) * screen_rb + (dx as u32);
                             let old = bus.read_byte(addr);
                             bus.write_byte(addr, old ^ 0xFF);
                         } else {
@@ -2089,14 +2548,32 @@ fn draw_picture_line(
     let plot = |bus: &mut MacMemoryBus, cx: i32, cy: i32| {
         if stamp_w == 1 && stamp_h == 1 {
             if solid_black {
-                write_pixel(bus, screen_base, screen_rb, cx, cy, fg_idx,
-                    screen_w, screen_h, pixel_size);
+                write_pixel(
+                    bus,
+                    screen_base,
+                    screen_rb,
+                    cx,
+                    cy,
+                    fg_idx,
+                    screen_w,
+                    screen_h,
+                    pixel_size,
+                );
             } else {
                 let row = pn_pat[cy.rem_euclid(8) as usize];
                 let bit = 1u8 << (7 - cx.rem_euclid(8));
                 if row & bit != 0 {
-                    write_pixel(bus, screen_base, screen_rb, cx, cy, fg_idx,
-                        screen_w, screen_h, pixel_size);
+                    write_pixel(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        cx,
+                        cy,
+                        fg_idx,
+                        screen_w,
+                        screen_h,
+                        pixel_size,
+                    );
                 }
             }
         } else {
@@ -2105,14 +2582,32 @@ fn draw_picture_line(
                     let ox = cx + dx;
                     let oy = cy + dy;
                     if solid_black {
-                        write_pixel(bus, screen_base, screen_rb, ox, oy, fg_idx,
-                            screen_w, screen_h, pixel_size);
+                        write_pixel(
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            ox,
+                            oy,
+                            fg_idx,
+                            screen_w,
+                            screen_h,
+                            pixel_size,
+                        );
                     } else {
                         let row = pn_pat[oy.rem_euclid(8) as usize];
                         let bit = 1u8 << (7 - ox.rem_euclid(8));
                         if row & bit != 0 {
-                            write_pixel(bus, screen_base, screen_rb, ox, oy, fg_idx,
-                                screen_w, screen_h, pixel_size);
+                            write_pixel(
+                                bus,
+                                screen_base,
+                                screen_rb,
+                                ox,
+                                oy,
+                                fg_idx,
+                                screen_w,
+                                screen_h,
+                                pixel_size,
+                            );
                         }
                     }
                 }
@@ -2203,10 +2698,10 @@ fn draw_picture_text(
                             continue;
                         }
                     }
-                    let x = ((pic_x - i32::from(frame_left)) as f64 * scale_x
-                        + dst_left as f64) as i32;
-                    let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y
-                        + dst_top as f64) as i32;
+                    let x =
+                        ((pic_x - i32::from(frame_left)) as f64 * scale_x + dst_left as f64) as i32;
+                    let y =
+                        ((pic_y - i32::from(frame_top)) as f64 * scale_y + dst_top as f64) as i32;
                     let _ = inv_sx;
                     let _ = inv_sy;
                     // Honor TxMode. srcCopy (0) / srcOr (1) overwrite;
@@ -2232,7 +2727,15 @@ fn draw_picture_text(
                         }
                     } else {
                         write_pixel(
-                            bus, screen_base, screen_rb, x, y, fg_idx, screen_w, screen_h, pixel_size,
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            x,
+                            y,
+                            fg_idx,
+                            screen_w,
+                            screen_h,
+                            pixel_size,
                         );
                     }
                 }
@@ -2388,8 +2891,7 @@ fn build_src_to_dst_table(src_clut: &[[u16; 3]], device_clut: &[[u16; 3]; 256]) 
     // the grayscale ITable path and use full-precision luma-diff.
     let gray_itable_enabled = !clut_match_legacy_gray_enabled();
     let force_all = clut_match_device_itable_enabled();
-    let use_itable = force_all
-        || (gray_itable_enabled && pict_clut_is_dense_grayscale(src_clut));
+    let use_itable = force_all || (gray_itable_enabled && pict_clut_is_dense_grayscale(src_clut));
     if use_itable {
         let itable = build_device_itable(device_clut);
         for (i, entry) in src_clut.iter().enumerate() {
@@ -2882,10 +3384,7 @@ fn parse_pack_bits_rect(
         // Small rowBytes: data is unpacked (not PackBits compressed)
         for row in 0..height {
             let row_data: Vec<u8> = (0..pm.row_bytes as u32)
-                .map(|i| {
-                    
-                    bus.read_byte(pos + i)
-                })
+                .map(|i| bus.read_byte(pos + i))
                 .collect();
             pos += pm.row_bytes as u32;
             update_trace_index_range(&row_data);
@@ -3508,23 +4007,34 @@ mod tests {
         let pic = 0x10_0000u32;
         let mut p = pic + 10;
         // version 1 (short opcodes)
-        bus.write_byte(p, 0x11); p += 1; // versionOp
-        bus.write_byte(p, 0x01); p += 1; // v1
-        // PnPat (0x09): 8 bytes all 0x00 — set bits→fg, clear→bg.
-        // An all-zero pattern fills with bg_idx (0 = white).
-        bus.write_byte(p, 0x09); p += 1;
-        bus.fill_zeros(p, 8); p += 8;
+        bus.write_byte(p, 0x11);
+        p += 1; // versionOp
+        bus.write_byte(p, 0x01);
+        p += 1; // v1
+                // PnPat (0x09): 8 bytes all 0x00 — set bits→fg, clear→bg.
+                // An all-zero pattern fills with bg_idx (0 = white).
+        bus.write_byte(p, 0x09);
+        p += 1;
+        bus.fill_zeros(p, 8);
+        p += 8;
         // FillPat (0x0A): 8 bytes all 0xFF — fills with fg_idx
         // (255 = black).
-        bus.write_byte(p, 0x0A); p += 1;
-        bus.write_bytes(p, &[0xFFu8; 8]); p += 8;
+        bus.write_byte(p, 0x0A);
+        p += 1;
+        bus.write_bytes(p, &[0xFFu8; 8]);
+        p += 8;
         // fillRect (0x34): rect = (0, 0, 32, 32)
-        bus.write_byte(p, 0x34); p += 1;
-        bus.write_word(p, 0); p += 2; // top
-        bus.write_word(p, 0); p += 2; // left
-        bus.write_word(p, 32); p += 2; // bottom
-        bus.write_word(p, 32); p += 2; // right
-        // EndPic
+        bus.write_byte(p, 0x34);
+        p += 1;
+        bus.write_word(p, 0);
+        p += 2; // top
+        bus.write_word(p, 0);
+        p += 2; // left
+        bus.write_word(p, 32);
+        p += 2; // bottom
+        bus.write_word(p, 32);
+        p += 2; // right
+                // EndPic
         bus.write_byte(p, 0xFF);
 
         // picFrame = (0, 0, 32, 32)
@@ -3538,7 +4048,10 @@ mod tests {
         let (_ok, _clut) = draw_picture(
             &mut bus,
             pic,
-            0, 0, 32, 32,
+            0,
+            0,
+            32,
+            32,
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
@@ -3609,7 +4122,10 @@ mod tests {
         let (ok, _) = draw_picture(
             &mut bus,
             pic,
-            0, 0, 16, 16,
+            0,
+            0,
+            16,
+            16,
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
@@ -3635,27 +4151,38 @@ mod tests {
         );
         let pic = 0x10_0000u32;
         let mut p = pic + 10;
-        bus.write_byte(p, 0x11); p += 1; // VersionOp
-        bus.write_byte(p, 0x01); p += 1; // v1
-        // FillPat: alternating rows 0xFF / 0x00 → horizontal stripes.
-        bus.write_byte(p, 0x0A); p += 1;
+        bus.write_byte(p, 0x11);
+        p += 1; // VersionOp
+        bus.write_byte(p, 0x01);
+        p += 1; // v1
+                // FillPat: alternating rows 0xFF / 0x00 → horizontal stripes.
+        bus.write_byte(p, 0x0A);
+        p += 1;
         for row in 0..8 {
             bus.write_byte(p, if row % 2 == 0 { 0xFF } else { 0x00 });
             p += 1;
         }
         // fillPoly ($0x74) — inline polySize(2) + bbox(8) + N*(v,h)(4)
-        bus.write_byte(p, 0x74); p += 1;
+        bus.write_byte(p, 0x74);
+        p += 1;
         // polySize = 10 (header) + 4 verts × 4 bytes = 26
         let poly_size: u16 = 10 + 4 * 4;
-        bus.write_word(p, poly_size); p += 2;
-        bus.write_word(p, 4); p += 2;  // bbox.top
-        bus.write_word(p, 4); p += 2;  // bbox.left
-        bus.write_word(p, 28); p += 2; // bbox.bottom
-        bus.write_word(p, 28); p += 2; // bbox.right
-        // square verts
+        bus.write_word(p, poly_size);
+        p += 2;
+        bus.write_word(p, 4);
+        p += 2; // bbox.top
+        bus.write_word(p, 4);
+        p += 2; // bbox.left
+        bus.write_word(p, 28);
+        p += 2; // bbox.bottom
+        bus.write_word(p, 28);
+        p += 2; // bbox.right
+                // square verts
         for &(v, h) in &[(4i16, 4i16), (4, 28), (28, 28), (28, 4)] {
-            bus.write_word(p, v as u16); p += 2;
-            bus.write_word(p, h as u16); p += 2;
+            bus.write_word(p, v as u16);
+            p += 2;
+            bus.write_word(p, h as u16);
+            p += 2;
         }
         bus.write_byte(p, 0xFF); // EndPic
 
@@ -3667,9 +4194,15 @@ mod tests {
 
         let clut = TrapDispatcher::standard_mac_8bpp_clut();
         let _ = draw_picture(
-            &mut bus, pic, 0, 0, 32, 32,
+            &mut bus,
+            pic,
+            0,
+            0,
+            32,
+            32,
             (screen_base, row_bytes, screen_w, screen_h, 8),
-            &clut, 0,
+            &clut,
+            0,
         );
 
         // Interior columns: sample two adjacent rows. With the stripe
@@ -3682,8 +4215,12 @@ mod tests {
         let mut saw_bg = false;
         for dy in 6..16u32 {
             let val = bus.read_byte(screen_base + dy * row_bytes + x);
-            if val == 255 { saw_fg = true; }
-            if val == 0 { saw_bg = true; }
+            if val == 255 {
+                saw_fg = true;
+            }
+            if val == 0 {
+                saw_bg = true;
+            }
         }
         assert!(saw_fg, "striped fillPoly must produce some fg_idx pixels");
         assert!(saw_bg, "striped fillPoly must produce some bg_idx pixels");
@@ -3705,20 +4242,28 @@ mod tests {
         );
         let pic = 0x10_0000u32;
         let mut p = pic + 10;
-        bus.write_byte(p, 0x11); p += 1;
-        bus.write_byte(p, 0x01); p += 1;
+        bus.write_byte(p, 0x11);
+        p += 1;
+        bus.write_byte(p, 0x01);
+        p += 1;
         // FillPat: alternating rows 0xFF / 0x00.
-        bus.write_byte(p, 0x0A); p += 1;
+        bus.write_byte(p, 0x0A);
+        p += 1;
         for row in 0..8 {
             bus.write_byte(p, if row % 2 == 0 { 0xFF } else { 0x00 });
             p += 1;
         }
         // fillOval ($0x54): rect = (2, 2, 30, 30)
-        bus.write_byte(p, 0x54); p += 1;
-        bus.write_word(p, 2); p += 2;
-        bus.write_word(p, 2); p += 2;
-        bus.write_word(p, 30); p += 2;
-        bus.write_word(p, 30); p += 2;
+        bus.write_byte(p, 0x54);
+        p += 1;
+        bus.write_word(p, 2);
+        p += 2;
+        bus.write_word(p, 2);
+        p += 2;
+        bus.write_word(p, 30);
+        p += 2;
+        bus.write_word(p, 30);
+        p += 2;
         bus.write_byte(p, 0xFF);
 
         bus.write_word(pic, (p - pic + 1) as u16);
@@ -3729,9 +4274,15 @@ mod tests {
 
         let clut = TrapDispatcher::standard_mac_8bpp_clut();
         let _ = draw_picture(
-            &mut bus, pic, 0, 0, 32, 32,
+            &mut bus,
+            pic,
+            0,
+            0,
+            32,
+            32,
             (screen_base, row_bytes, screen_w, screen_h, 8),
-            &clut, 0,
+            &clut,
+            0,
         );
 
         // Sample a vertical column through the oval's interior; expect
@@ -3741,8 +4292,12 @@ mod tests {
         let mut saw_bg = false;
         for dy in 6..22u32 {
             let val = bus.read_byte(screen_base + dy * row_bytes + x);
-            if val == 255 { saw_fg = true; }
-            if val == 0 { saw_bg = true; }
+            if val == 255 {
+                saw_fg = true;
+            }
+            if val == 0 {
+                saw_bg = true;
+            }
         }
         assert!(saw_fg, "striped fillOval must produce some fg_idx pixels");
         assert!(saw_bg, "striped fillOval must produce some bg_idx pixels");

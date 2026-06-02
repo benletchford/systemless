@@ -374,7 +374,9 @@ fn maybe_select_executable(
 }
 
 fn executable_name_override() -> Option<String> {
-    std::env::var("SYSTEMLESS_LOAD_EXECUTABLE").ok().filter(|s| !s.is_empty())
+    std::env::var("SYSTEMLESS_LOAD_EXECUTABLE")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 fn is_stuffit_archive(bytes: &[u8]) -> bool {
@@ -387,12 +389,22 @@ fn log_vfs(runner: &FixtureRunner) {
     }
     eprintln!("[VFS] Data fork entries:");
     for key in runner.dispatcher().vfs.keys() {
-        let size = runner.dispatcher().vfs.get(key).map(|v| v.len()).unwrap_or(0);
+        let size = runner
+            .dispatcher()
+            .vfs
+            .get(key)
+            .map(|v| v.len())
+            .unwrap_or(0);
         eprintln!("  \"{}\" ({} bytes)", key, size);
     }
     eprintln!("[VFS] Resource fork entries:");
     for key in runner.dispatcher().vfs_rsrc.keys() {
-        let size = runner.dispatcher().vfs_rsrc.get(key).map(|v| v.len()).unwrap_or(0);
+        let size = runner
+            .dispatcher()
+            .vfs_rsrc
+            .get(key)
+            .map(|v| v.len())
+            .unwrap_or(0);
         eprintln!("  \"{}\" ({} bytes)", key, size);
     }
 }

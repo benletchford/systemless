@@ -601,10 +601,9 @@ impl super::TrapDispatcher {
                                         height_above = std::cmp::max(height_above, h);
                                     }
 
-                                    if !connects_down && connects_up
-                                        && height_above > 7 {
-                                            continue;
-                                        }
+                                    if !connects_down && connects_up && height_above > 7 {
+                                        continue;
+                                    }
                                 }
 
                                 found_any = true;
@@ -1073,10 +1072,20 @@ impl super::TrapDispatcher {
             // for space characters per IM:I I-171 (SpaceExtra) and
             // self.char_extra for non-space characters per IM:V V-149
             // (CharExtra).
-            let space_bonus = if ch == ' ' { self.space_extra_pixels(bus) } else { 0 };
-            let char_bonus = if ch != ' ' { (self.char_extra >> 16) as i16 } else { 0 };
-            self.pn_loc =
-                (v, h + glyph.advance as i16 * fs + advance_extra + space_bonus + char_bonus);
+            let space_bonus = if ch == ' ' {
+                self.space_extra_pixels(bus)
+            } else {
+                0
+            };
+            let char_bonus = if ch != ' ' {
+                (self.char_extra >> 16) as i16
+            } else {
+                0
+            };
+            self.pn_loc = (
+                v,
+                h + glyph.advance as i16 * fs + advance_extra + space_bonus + char_bonus,
+            );
         } else {
             // Missing glyph: advance by scaled default width
             let (_f, fs_missing) = get_font_face_scaled(self.tx_font, self.tx_size);

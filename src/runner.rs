@@ -16,7 +16,8 @@ static TRACE_TIMER: OnceLock<bool> = OnceLock::new();
 static TRACE_VBL: OnceLock<bool> = OnceLock::new();
 
 fn trace_dialog_filter_enabled() -> bool {
-    *TRACE_DIALOG_FILTER.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_FILTER").is_some())
+    *TRACE_DIALOG_FILTER
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_FILTER").is_some())
 }
 
 fn trace_timer_enabled() -> bool {
@@ -244,6 +245,7 @@ enum ActiveInterruptCallbackSource {
     SoundCallback,
     SoundFileCompletion,
     SoundDoubleBack,
+    DialogDrawProc,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -254,6 +256,7 @@ struct ActiveInterruptCallback {
     d_regs: [u32; 8],
     a_regs: [u32; 8],
     ccr: u8,
+    restore_port: Option<(u32, u32)>,
 }
 
 /// Configuration knobs for [`FixtureRunner`]. Use
@@ -676,10 +679,7 @@ impl FixtureRunner {
                 0x0100_0000..=0x01FF_FFFF => "ROM",
                 _ => "other",
             };
-            eprintln!(
-                "[PC-HIST]   {:>8}  PC=${:08X}  ({})",
-                count, pc, region
-            );
+            eprintln!("[PC-HIST]   {:>8}  PC=${:08X}  ({})", count, pc, region);
         }
     }
 
@@ -1086,7 +1086,6 @@ impl FixtureRunner {
         let exit_trampoline = 0x100u32;
         self.bus.write_word(exit_trampoline, 0xA9F4); // ExitToShell
 
-
         // Pre-allocate the main GDevice with 800x600 8bpp settings
         // and set the low-memory globals that games read directly.
         // screenBits is already initialized to 800x600 8bpp by the bus.
@@ -1368,11 +1367,7 @@ impl FixtureRunner {
 
     /// Shared helper: advance guest ticks until `target_tick` is
     /// reached.
-    fn advance_until_tick(
-        &mut self,
-        target_tick: u32,
-        tick_cap: Option<u32>,
-    ) -> AdvanceResult {
+    fn advance_until_tick(&mut self, target_tick: u32, tick_cap: Option<u32>) -> AdvanceResult {
         let current_tick = self.dispatcher.tick_count;
         let ticks_to_advance = target_tick.wrapping_sub(current_tick);
         if ticks_to_advance > SPIN_FASTFWD_MAX_TICKS {
@@ -1504,6 +1499,14 @@ impl FixtureRunner {
                         );
                     }
                     self.cpu.core.set_ccr(active_interrupt_callback.ccr);
+                    if let Some((port, gdevice)) = active_interrupt_callback.restore_port {
+                        self.dispatcher.set_current_port_state(
+                            &mut self.bus,
+                            &mut self.cpu,
+                            port,
+                            Some(gdevice),
+                        );
+                    }
                     self.active_interrupt_callback = None;
                 } else if trace_timer_enabled() {
                     eprintln!(
@@ -1634,9 +1637,7 @@ impl FixtureRunner {
                     );
                     if let Some(hint) = decode_fakeptr_pc(halted_pc) {
                         eprintln!("[RUN_STEPS]   {}", hint);
-                    } else if let Some((entry_pc, hint)) =
-                        self.trace_find_fakeptr_entry()
-                    {
+                    } else if let Some((entry_pc, hint)) = self.trace_find_fakeptr_entry() {
                         eprintln!(
                             "[RUN_STEPS]   PC drifted ${:X} bytes from a fake-ptr entry at \
                              ${:08X}. {}",
@@ -1691,16 +1692,12 @@ impl FixtureRunner {
                         self.dispatcher.trap_count += 1;
                         self.dispatcher.current_trap_word = opcode;
                         let idx = (opcode & 0xFFF) as usize;
-                        self.dispatcher.trap_histogram[idx] = self
-                            .dispatcher
-                            .trap_histogram[idx]
-                            .saturating_add(1);
+                        self.dispatcher.trap_histogram[idx] =
+                            self.dispatcher.trap_histogram[idx].saturating_add(1);
                         // Count this entry as inline-skipped — the
                         // fast path bypassed dispatch().
-                        self.dispatcher.inline_skipped[idx] = self
-                            .dispatcher
-                            .inline_skipped[idx]
-                            .saturating_add(1);
+                        self.dispatcher.inline_skipped[idx] =
+                            self.dispatcher.inline_skipped[idx].saturating_add(1);
 
                         // Generic TickCount spin-wait fast-forward (opt-in).
                         // Check post-trap bytes against the spin-wait
@@ -1710,11 +1707,8 @@ impl FixtureRunner {
                         // PC is already at pc + 2.
                         if spin_wait_fastfwd_enabled_for(yield_for_ui) {
                             let post_trap_pc = pc.wrapping_add(2);
-                            let hit_cap = self.try_tickcount_spin_fastfwd(
-                                post_trap_pc,
-                                tick_cap,
-                                &mut count,
-                            );
+                            let hit_cap =
+                                self.try_tickcount_spin_fastfwd(post_trap_pc, tick_cap, &mut count);
                             if hit_cap {
                                 break;
                             }
@@ -1773,17 +1767,13 @@ impl FixtureRunner {
                             let idx = (opcode & 0xFFF) as usize;
                             self.dispatcher.trap_count += 1;
                             self.dispatcher.current_trap_word = opcode;
-                            self.dispatcher.trap_histogram[idx] = self
-                                .dispatcher
-                                .trap_histogram[idx]
-                                .saturating_add(1);
+                            self.dispatcher.trap_histogram[idx] =
+                                self.dispatcher.trap_histogram[idx].saturating_add(1);
                             // Count inline-skipped entries separately
                             // from real dispatches so the trap-timing
                             // histogram can show per-real-dispatch ns.
-                            self.dispatcher.inline_skipped[idx] = self
-                                .dispatcher
-                                .inline_skipped[idx]
-                                .saturating_add(1);
+                            self.dispatcher.inline_skipped[idx] =
+                                self.dispatcher.inline_skipped[idx].saturating_add(1);
                             const BATCH: u32 = 64;
                             let mut budget = BATCH - 1;
                             while budget > 0 && count < max_steps && !tick_cap_reached {
@@ -1802,18 +1792,12 @@ impl FixtureRunner {
                                     break;
                                 }
                                 count += 1;
-                                self.total_instructions = self
-                                    .total_instructions
-                                    .wrapping_add(1);
+                                self.total_instructions = self.total_instructions.wrapping_add(1);
                                 self.dispatcher.trap_count += 1;
-                                self.dispatcher.trap_histogram[idx] = self
-                                    .dispatcher
-                                    .trap_histogram[idx]
-                                    .saturating_add(1);
-                                self.dispatcher.inline_skipped[idx] = self
-                                    .dispatcher
-                                    .inline_skipped[idx]
-                                    .saturating_add(1);
+                                self.dispatcher.trap_histogram[idx] =
+                                    self.dispatcher.trap_histogram[idx].saturating_add(1);
+                                self.dispatcher.inline_skipped[idx] =
+                                    self.dispatcher.inline_skipped[idx].saturating_add(1);
                                 budget -= 1;
                             }
                             self.cpu.write_reg(Register::PC, pc);
@@ -2269,6 +2253,7 @@ impl FixtureRunner {
             d_regs,
             a_regs,
             ccr,
+            restore_port: None,
         });
         self.cpu.write_reg(Register::PC, tramp);
 
@@ -2382,6 +2367,7 @@ impl FixtureRunner {
                 d_regs,
                 a_regs,
                 ccr,
+                restore_port: None,
             });
             if trace_timer_enabled() {
                 eprintln!(
@@ -2469,6 +2455,7 @@ impl FixtureRunner {
             d_regs,
             a_regs,
             ccr,
+            restore_port: None,
         });
         self.cpu.write_reg(Register::PC, trampoline);
     }
@@ -2676,6 +2663,7 @@ impl FixtureRunner {
             d_regs,
             a_regs,
             ccr,
+            restore_port: None,
         });
         self.cpu.write_reg(Register::PC, tramp);
     }
@@ -2699,6 +2687,10 @@ impl FixtureRunner {
     ///   4. Restores D0-D3/A0-A3
     ///   5. RTS back to interrupted code (the ModalDialog A-line)
     fn fire_dialog_draw_procs(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+
         let (proc_addr, item_no, dialog_ptr) = {
             let tracking = match self.dispatcher.dialog_tracking.as_mut() {
                 Some(t) if !t.draw_procs_done => t,
@@ -2754,12 +2746,47 @@ impl FixtureRunner {
         self.bus.write_word(tramp + 12, item_no as u16);
         self.bus.write_long(tramp + 16, proc_addr);
 
+        let previous_port = self.dispatcher.current_port;
+        let previous_gdevice = self.dispatcher.current_gdevice;
+        self.dispatcher
+            .set_current_port_state(&mut self.bus, &mut self.cpu, dialog_ptr, None);
+
         // Inject: push current PC, jump to trampoline
         let current_pc = self.cpu.read_reg(Register::PC);
         let sp = self.cpu.read_reg(Register::A7);
+        let d_regs = [
+            self.cpu.read_reg(Register::D0),
+            self.cpu.read_reg(Register::D1),
+            self.cpu.read_reg(Register::D2),
+            self.cpu.read_reg(Register::D3),
+            self.cpu.read_reg(Register::D4),
+            self.cpu.read_reg(Register::D5),
+            self.cpu.read_reg(Register::D6),
+            self.cpu.read_reg(Register::D7),
+        ];
+        let a_regs = [
+            self.cpu.read_reg(Register::A0),
+            self.cpu.read_reg(Register::A1),
+            self.cpu.read_reg(Register::A2),
+            self.cpu.read_reg(Register::A3),
+            self.cpu.read_reg(Register::A4),
+            self.cpu.read_reg(Register::A5),
+            self.cpu.read_reg(Register::A6),
+            sp,
+        ];
+        let ccr = self.cpu.core.get_ccr();
         let new_sp = sp.wrapping_sub(4);
         self.bus.write_long(new_sp, current_pc);
         self.cpu.write_reg(Register::A7, new_sp);
+        self.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source: ActiveInterruptCallbackSource::DialogDrawProc,
+            resume_pc: current_pc,
+            resume_sp: sp,
+            d_regs,
+            a_regs,
+            ccr,
+            restore_port: Some((previous_port, previous_gdevice)),
+        });
         self.cpu.write_reg(Register::PC, tramp);
         true
     }
@@ -3069,10 +3096,7 @@ impl FixtureRunner {
                         }
                         Err(Error::Halted) => {
                             if trace_load_enabled() {
-                                eprintln!(
-                                    "[RUN] Halted via trap after {} instructions",
-                                    count
-                                );
+                                eprintln!("[RUN] Halted via trap after {} instructions", count);
                             }
                             self.dump_trace();
                             return Ok(());
@@ -3841,10 +3865,14 @@ mod tests {
                         true, // yield_for_ui = GUI
                         has_tracking,
                         true, // all "noop" conditions
-                        true, true, true, events,
+                        true,
+                        true,
+                        true,
+                        events,
                     ),
                     "GUI mode must never skip refires (has_tracking={}, events={})",
-                    has_tracking, events
+                    has_tracking,
+                    events
                 );
             }
         }
@@ -4011,7 +4039,10 @@ mod tests {
         // exactly one entry + 63 batched iterations = 64 increments.
         let (steps, _running) = runner.run_steps(64, None);
 
-        assert_eq!(steps, 64, "max_steps cap exhausted by 64 batched no-op refires");
+        assert_eq!(
+            steps, 64,
+            "max_steps cap exhausted by 64 batched no-op refires"
+        );
         let after_inline = runner.dispatcher.inline_skipped[idx];
         let after_hist = runner.dispatcher.trap_histogram[idx];
         assert_eq!(
@@ -4428,7 +4459,8 @@ mod tests {
         runner.push_mouse_down(123, 456);
 
         assert_eq!(
-            runner.bus.read_byte(0x0172), 0x00,
+            runner.bus.read_byte(0x0172),
+            0x00,
             "MBState must be 0x00 (pressed) immediately after push_mouse_down"
         );
         // All three position globals must mirror the click site so
@@ -4458,7 +4490,8 @@ mod tests {
 
         runner.push_mouse_up(10, 20);
         assert_eq!(
-            runner.bus.read_byte(0x0172), 0x80,
+            runner.bus.read_byte(0x0172),
+            0x80,
             "MBState must flip back to 0x80 (released) immediately on push_mouse_up — \
              not deferred to the next tick"
         );
@@ -4484,7 +4517,8 @@ mod tests {
         runner.advance_guest_tick();
 
         assert_eq!(
-            runner.bus.read_byte(0x0172), 0x80,
+            runner.bus.read_byte(0x0172),
+            0x80,
             "advance_guest_tick must release MBState to 0x80 once a \
              paired mouseUp is queued behind the mouseDown — even when \
              nothing has drained the event queue"
@@ -4516,7 +4550,8 @@ mod tests {
         runner.push_mouse_down(10, 20);
         runner.advance_guest_tick();
         assert_eq!(
-            runner.bus.read_byte(0x0172), 0x00,
+            runner.bus.read_byte(0x0172),
+            0x00,
             "MBState must stay pressed across a tick advance while only \
              a mouseDown is queued (no paired mouseUp yet)"
         );
@@ -4592,7 +4627,11 @@ mod tests {
         // $4E71 NOP again
         runner.bus.write_word(pc + 4, 0x4E71);
         let out = runner.disassemble_at(pc, 3);
-        assert_eq!(out.len(), 3, "disassemble_at must return exactly count entries");
+        assert_eq!(
+            out.len(),
+            3,
+            "disassemble_at must return exactly count entries"
+        );
         assert_eq!(
             out[0].0, pc,
             "first entry's PC must equal the requested start"

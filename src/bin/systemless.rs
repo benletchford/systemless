@@ -637,12 +637,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn run_gui(
-    game_path: PathBuf,
-    arrows_as_numpad: bool,
-    cpu_mhz: Option<f64>,
-    show_menu_bar: bool,
-) {
+fn run_gui(game_path: PathBuf, arrows_as_numpad: bool, cpu_mhz: Option<f64>, show_menu_bar: bool) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     match cpu_mhz {
         Some(mhz) => eprintln!("[SYSTEMLESS] GUI CPU cap: {:.1} MHz", mhz),
@@ -682,11 +677,7 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
     eprintln!("[HEADLESS] Screenshot #{}: {} (ticks={})", num, path, ticks);
 }
 
-fn run_headless(
-    game_path: &std::path::Path,
-    max_instructions: usize,
-    show_menu_bar: bool,
-) {
+fn run_headless(game_path: &std::path::Path, max_instructions: usize, show_menu_bar: bool) {
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
 
@@ -782,7 +773,11 @@ fn main() {
     eprintln!("[SYSTEMLESS] Game: {}", game_path.display());
 
     if headless {
-        run_headless(&game_path, max_instructions.unwrap_or(5_000_000), show_menu_bar);
+        run_headless(
+            &game_path,
+            max_instructions.unwrap_or(5_000_000),
+            show_menu_bar,
+        );
     } else {
         run_gui(game_path, arrows_as_numpad, cpu_mhz, show_menu_bar);
     }
@@ -920,8 +915,9 @@ mod tests {
             total += samples;
         }
 
-        let expected = (FRAME_DURATION.as_secs_f64() * systemless::sound::OUTPUT_RATE as f64 * 120.0)
-            .floor() as usize;
+        let expected =
+            (FRAME_DURATION.as_secs_f64() * systemless::sound::OUTPUT_RATE as f64 * 120.0).floor()
+                as usize;
         assert_eq!(total, expected);
         assert!(remainder >= 0.0);
         assert!(remainder < 1.0);

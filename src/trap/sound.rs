@@ -53,7 +53,9 @@ impl super::TrapDispatcher {
     }
 
     fn release_sound_channel(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32) {
-        self.sound_manager.pending_callbacks.retain(|pending| pending.chan_ptr != chan_ptr);
+        self.sound_manager
+            .pending_callbacks
+            .retain(|pending| pending.chan_ptr != chan_ptr);
         self.sound_manager
             .pending_sound_callbacks
             .retain(|pending| match pending {
@@ -1668,8 +1670,7 @@ fn decode_double_buffer_samples(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_double_buffer_samples, extended80_to_f64, parse_aiff_samples,
-        GUEST_SND_CHANNEL_SIZE,
+        decode_double_buffer_samples, extended80_to_f64, parse_aiff_samples, GUEST_SND_CHANNEL_SIZE,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
@@ -1689,8 +1690,8 @@ mod tests {
         //   channels(2) numSampleFrames(4) sampleSize(2) sampleRate(10) [+ comp(4) for AIFC]
         let mut comm = Vec::new();
         comm.extend_from_slice(&channels.to_be_bytes());
-        let num_frames = (ssnd_samples.len()
-            / (channels as usize * (sample_size_bits as usize / 8))) as u32;
+        let num_frames =
+            (ssnd_samples.len() / (channels as usize * (sample_size_bits as usize / 8))) as u32;
         comm.extend_from_slice(&num_frames.to_be_bytes());
         comm.extend_from_slice(&sample_size_bits.to_be_bytes());
         comm.extend_from_slice(&sample_rate_extended80);
@@ -1937,8 +1938,7 @@ mod tests {
         assert_eq!(bus.read_word(sp + 10), 0);
         let reallocated = bus.alloc(GUEST_SND_CHANNEL_SIZE);
         assert_eq!(
-            reallocated,
-            recycled,
+            reallocated, recycled,
             "internal NIL-chan SndPlay must return its guest channel block to the allocator"
         );
         assert_eq!(bus.read_long(reallocated), 0, "nextChan cleared");
@@ -2232,11 +2232,10 @@ mod tests {
         bus.write_long(create_sp + 4, 0);
         bus.write_word(create_sp + 8, 5);
         bus.write_long(create_sp + 10, chan_ptr_ptr);
-        assert!(
-            disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
-                .unwrap()
-                .is_ok()
-        );
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_some());
 
@@ -2277,11 +2276,10 @@ mod tests {
         bus.write_long(create_sp + 4, 0);
         bus.write_word(create_sp + 8, 5);
         bus.write_long(create_sp + 10, chan_ptr_ptr);
-        assert!(
-            disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
-                .unwrap()
-                .is_ok()
-        );
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
         assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_some());
         bus.write_long(chan_ptr, 0x1111_0001);
         bus.write_long(chan_ptr + 4, 0x1111_0002);
@@ -2346,11 +2344,10 @@ mod tests {
         bus.write_long(create_sp + 4, 0);
         bus.write_word(create_sp + 8, 5);
         bus.write_long(create_sp + 10, chan_ptr_ptr);
-        assert!(
-            disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
-                .unwrap()
-                .is_ok()
-        );
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
 
         disp.sound_manager
@@ -2412,8 +2409,7 @@ mod tests {
         ));
         assert_eq!(disp.sound_manager.pending_callbacks.len(), 1);
         assert_eq!(
-            disp.sound_manager.pending_callbacks[0].chan_ptr,
-            other_chan_ptr,
+            disp.sound_manager.pending_callbacks[0].chan_ptr, other_chan_ptr,
             "double-back callbacks for disposed channel must be removed"
         );
     }
@@ -2431,11 +2427,10 @@ mod tests {
         bus.write_long(create_sp + 4, 0);
         bus.write_word(create_sp + 8, 5);
         bus.write_long(create_sp + 10, chan_ptr_ptr);
-        assert!(
-            disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
-                .unwrap()
-                .is_ok()
-        );
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
 
         let cmd_ptr = 0x230000;
@@ -2494,11 +2489,10 @@ mod tests {
         bus.write_long(create_sp + 4, 0);
         bus.write_word(create_sp + 8, 5);
         bus.write_long(create_sp + 10, chan_ptr_ptr);
-        assert!(
-            disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
-                .unwrap()
-                .is_ok()
-        );
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         disp.sound_manager.pending_sound_callbacks.clear();
 
@@ -2544,11 +2538,10 @@ mod tests {
         bus.write_long(create_sp + 4, 0);
         bus.write_word(create_sp + 8, 5);
         bus.write_long(create_sp + 10, chan_ptr_ptr);
-        assert!(
-            disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
-                .unwrap()
-                .is_ok()
-        );
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
 
         let cmd_ptr = 0x230200;
@@ -2602,11 +2595,10 @@ mod tests {
         bus.write_long(create_sp + 4, 0);
         bus.write_word(create_sp + 8, 5);
         bus.write_long(create_sp + 10, chan_ptr_ptr);
-        assert!(
-            disp.dispatch_sound(true, 0x007, &mut cpu, &mut bus)
-                .unwrap()
-                .is_ok()
-        );
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         disp.sound_manager
             .find_channel_mut(chan_ptr)
@@ -2684,8 +2676,8 @@ mod tests {
         bus.write_byte(data_addr, 0x40);
         bus.write_byte(data_addr + 1, 0x80);
         bus.write_byte(data_addr + 2, 0xC0);
-        let out = decode_double_buffer_samples(&bus, data_addr, 3, 1, 8)
-            .expect("mono 8-bit frames");
+        let out =
+            decode_double_buffer_samples(&bus, data_addr, 3, 1, 8).expect("mono 8-bit frames");
         assert_eq!(out, vec![0x40, 0x80, 0xC0], "mono 8-bit pass-through");
 
         // Mono 16-bit: sample i16 >> 8 gives the upper byte.
@@ -2697,8 +2689,8 @@ mod tests {
         bus.write_byte(data_addr + 1, 0x00);
         bus.write_byte(data_addr + 2, 0xC0);
         bus.write_byte(data_addr + 3, 0x00);
-        let out = decode_double_buffer_samples(&bus, data_addr, 2, 1, 16)
-            .expect("mono 16-bit frames");
+        let out =
+            decode_double_buffer_samples(&bus, data_addr, 2, 1, 16).expect("mono 16-bit frames");
         assert_eq!(out, vec![0xC0, 0x40], "mono 16-bit upper-byte + center");
     }
 

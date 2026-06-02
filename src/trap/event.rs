@@ -43,9 +43,7 @@ impl super::TrapDispatcher {
         // 24/25/26 per IM:II-66) and Sound Manager / file-system
         // notification events are NOT gated by SysEvtMask — always postable.
         match what {
-            Self::K_HIGH_LEVEL_EVENT => {
-                (self.system_event_mask & Self::HIGH_LEVEL_EVENT_MASK) != 0
-            }
+            Self::K_HIGH_LEVEL_EVENT => (self.system_event_mask & Self::HIGH_LEVEL_EVENT_MASK) != 0,
             0..=15 => {
                 let bit = 1u16 << what;
                 (self.system_event_mask & bit) != 0
@@ -450,7 +448,7 @@ impl super::TrapDispatcher {
             (false, 0x6D) => {
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
-            },
+            }
 
             // Enqueue ($A96F)
             // Inside Macintosh: Operating System Utilities (1994),
@@ -865,8 +863,16 @@ mod tests {
         let result = disp.dispatch_event(false, 0x6D, &mut cpu, &mut bus);
         assert!(result.is_some(), "InitEvents should be handled");
         assert!(result.unwrap().is_ok(), "InitEvents should return normally");
-        assert_eq!(cpu.read_reg(Register::D0), 0, "InitEvents should return noErr in D0");
-        assert_eq!(cpu.read_reg(Register::A7), stack_ptr, "InitEvents should preserve A7");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "InitEvents should return noErr in D0"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            stack_ptr,
+            "InitEvents should preserve A7"
+        );
     }
 
     // ---- Device/Interrupt no-op family ($A03D/$A03E/$A072/$A075/$A076) ----
@@ -884,7 +890,10 @@ mod tests {
 
         let result = disp.dispatch_event(false, 0x3D, &mut cpu, &mut bus);
         assert!(result.is_some(), "DrvrInstall should be handled");
-        assert!(result.unwrap().is_ok(), "DrvrInstall should return normally");
+        assert!(
+            result.unwrap().is_ok(),
+            "DrvrInstall should return normally"
+        );
         assert_eq!(
             cpu.read_reg(Register::D0),
             0,
@@ -1080,8 +1089,7 @@ mod tests {
             "AttachVBL is register-based and should preserve A7"
         );
         assert_eq!(
-            disp.primary_vbl_slot,
-            10,
+            disp.primary_vbl_slot, 10,
             "AttachVBL should record the newly selected primary slot"
         );
     }
@@ -1110,8 +1118,7 @@ mod tests {
             "AttachVBL should preserve A7 on an invalid-slot path"
         );
         assert_eq!(
-            disp.primary_vbl_slot,
-            7,
+            disp.primary_vbl_slot, 7,
             "AttachVBL should not mutate the recorded primary slot on error"
         );
     }
@@ -1131,7 +1138,10 @@ mod tests {
 
         let result = disp.dispatch_event(false, 0x75, &mut cpu, &mut bus);
         assert!(result.is_some(), "SIntInstall should be handled");
-        assert!(result.unwrap().is_ok(), "SIntInstall should return normally");
+        assert!(
+            result.unwrap().is_ok(),
+            "SIntInstall should return normally"
+        );
         assert_eq!(
             cpu.read_reg(Register::D0),
             0,
@@ -1332,7 +1342,10 @@ mod tests {
         cpu.write_reg(Register::A1, q_header);
         let result = disp.dispatch_event(true, 0x16E, &mut cpu, &mut bus);
         assert!(result.is_some(), "Dequeue should be handled");
-        assert!(result.unwrap().is_ok(), "Dequeue should return from dispatch");
+        assert!(
+            result.unwrap().is_ok(),
+            "Dequeue should return from dispatch"
+        );
         assert_eq!(
             cpu.read_reg(Register::D0) as i32,
             0,
@@ -1375,7 +1388,10 @@ mod tests {
         cpu.write_reg(Register::A1, q_header);
         let result = disp.dispatch_event(true, 0x16E, &mut cpu, &mut bus);
         assert!(result.is_some(), "Dequeue should be handled");
-        assert!(result.unwrap().is_ok(), "Dequeue should return from dispatch");
+        assert!(
+            result.unwrap().is_ok(),
+            "Dequeue should return from dispatch"
+        );
         assert_eq!(
             cpu.read_reg(Register::D0) as i32,
             -1,
@@ -1433,7 +1449,9 @@ mod tests {
         // B1: Enqueue elem_a onto empty queue.
         cpu.write_reg(Register::A0, elem_a);
         cpu.write_reg(Register::A1, q_header);
-        assert!(disp.dispatch_event(true, 0x16F, &mut cpu, &mut bus).is_some());
+        assert!(disp
+            .dispatch_event(true, 0x16F, &mut cpu, &mut bus)
+            .is_some());
         assert_eq!(bus.read_long(q_header + QHDR_HEAD_OFFSET), elem_a);
         assert_eq!(bus.read_long(q_header + QHDR_TAIL_OFFSET), elem_a);
         assert_eq!(bus.read_long(elem_a + QELEM_LINK_OFFSET), 0);
@@ -1441,7 +1459,9 @@ mod tests {
         // B2: Enqueue elem_b — appends after elem_a.
         cpu.write_reg(Register::A0, elem_b);
         cpu.write_reg(Register::A1, q_header);
-        assert!(disp.dispatch_event(true, 0x16F, &mut cpu, &mut bus).is_some());
+        assert!(disp
+            .dispatch_event(true, 0x16F, &mut cpu, &mut bus)
+            .is_some());
         assert_eq!(bus.read_long(q_header + QHDR_HEAD_OFFSET), elem_a);
         assert_eq!(bus.read_long(q_header + QHDR_TAIL_OFFSET), elem_b);
         assert_eq!(bus.read_long(elem_a + QELEM_LINK_OFFSET), elem_b);
@@ -1452,7 +1472,9 @@ mod tests {
         cpu.write_reg(Register::D0, 0x3FFF_3FFF); // poison D0
         cpu.write_reg(Register::A0, elem_a);
         cpu.write_reg(Register::A1, q_header);
-        assert!(disp.dispatch_event(true, 0x16E, &mut cpu, &mut bus).is_some());
+        assert!(disp
+            .dispatch_event(true, 0x16E, &mut cpu, &mut bus)
+            .is_some());
         assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
         assert_eq!(bus.read_long(q_header + QHDR_HEAD_OFFSET), elem_b);
         assert_eq!(bus.read_long(q_header + QHDR_TAIL_OFFSET), elem_b);
@@ -1461,7 +1483,9 @@ mod tests {
         cpu.write_reg(Register::D0, 0x3FFF_3FFF); // poison D0
         cpu.write_reg(Register::A0, elem_c);
         cpu.write_reg(Register::A1, q_header);
-        assert!(disp.dispatch_event(true, 0x16E, &mut cpu, &mut bus).is_some());
+        assert!(disp
+            .dispatch_event(true, 0x16E, &mut cpu, &mut bus)
+            .is_some());
         assert_eq!(cpu.read_reg(Register::D0) as i32, -1);
         assert_eq!(bus.read_long(q_header + QHDR_HEAD_OFFSET), elem_b);
         assert_eq!(bus.read_long(q_header + QHDR_TAIL_OFFSET), elem_b);

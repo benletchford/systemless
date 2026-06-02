@@ -3,8 +3,11 @@
 use crate::cpu::{CpuOps, Register};
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::quickdraw::text::get_font_metrics;
 use crate::{Error, Result};
 use std::sync::OnceLock;
+
+use super::types::{Rect, ShapeOp};
 
 static TRACE_MUNGER: OnceLock<bool> = OnceLock::new();
 static TRACE_LIST: OnceLock<bool> = OnceLock::new();
@@ -420,6 +423,294 @@ impl super::TrapDispatcher {
             Some((row, col))
         } else {
             None
+        }
+    }
+
+    fn list_cell_rect(
+        state: &super::dispatch::ListState,
+        row: i16,
+        col: i16,
+    ) -> Option<(i16, i16, i16, i16)> {
+        if !Self::list_cell_is_valid(state, row, col) {
+            return None;
+        }
+        if row < state.visible.0
+            || row >= state.visible.2
+            || col < state.visible.1
+            || col >= state.visible.3
+        {
+            return None;
+        }
+
+        let top = state.view_rect.0 + (row - state.visible.0) * state.cell_size.0.max(1);
+        let left = state.view_rect.1 + (col - state.visible.1) * state.cell_size.1.max(1);
+        let bottom = (top + state.cell_size.0.max(1)).min(state.view_rect.2);
+        let right = (left + state.cell_size.1.max(1)).min(state.view_rect.3);
+        if bottom > top && right > left {
+            Some((top, left, bottom, right))
+        } else {
+            None
+        }
+    }
+
+    fn list_cell_text(data: &[u8]) -> String {
+        data.iter()
+            .copied()
+            .take_while(|&b| b != 0)
+            .map(|b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    fn qd_state_snapshot(&self) -> super::dispatch::PortDrawState {
+        super::dispatch::PortDrawState {
+            fg_color: self.fg_color,
+            bg_color: self.bg_color,
+            bk_pat: self.bk_pat,
+            pn_loc: self.pn_loc,
+            pn_size: self.pn_size,
+            pn_mode: self.pn_mode,
+            pn_pat: self.pn_pat,
+            tx_font: self.tx_font,
+            tx_face: self.tx_face,
+            tx_mode: self.tx_mode,
+            tx_size: self.tx_size,
+        }
+    }
+
+    fn restore_qd_state(&mut self, state: super::dispatch::PortDrawState) {
+        self.fg_color = state.fg_color;
+        self.bg_color = state.bg_color;
+        self.bk_pat = state.bk_pat;
+        self.pn_loc = state.pn_loc;
+        self.pn_size = state.pn_size;
+        self.pn_mode = state.pn_mode;
+        self.pn_pat = state.pn_pat;
+        self.tx_font = state.tx_font;
+        self.tx_face = state.tx_face;
+        self.tx_mode = state.tx_mode;
+        self.tx_size = state.tx_size;
+    }
+
+    fn list_cell_background_is_dark(
+        &self,
+        bus: &MacMemoryBus,
+        port: u32,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        if port == 0 {
+            return false;
+        }
+
+        let sample_v = rect.0 + (rect.2 - rect.0).max(1) / 2;
+        let sample_h = (rect.3 - 2).max(rect.1);
+        let port_version = bus.read_word(port.wrapping_add(6));
+
+        let pixel = if (port_version & 0xC000) == 0xC000 {
+            let pix_map_handle = bus.read_long(port.wrapping_add(2));
+            let pix_map_ptr = if pix_map_handle != 0 {
+                bus.read_long(pix_map_handle)
+            } else {
+                0
+            };
+            if pix_map_ptr == 0 {
+                None
+            } else {
+                let base = bus.read_long(pix_map_ptr) & 0x3FFF_FFFF;
+                let row_bytes = (bus.read_word(pix_map_ptr.wrapping_add(4)) & 0x3FFF) as u32;
+                let bounds_top = bus.read_word(pix_map_ptr.wrapping_add(6)) as i16;
+                let bounds_left = bus.read_word(pix_map_ptr.wrapping_add(8)) as i16;
+                let pixel_size = bus.read_word(pix_map_ptr.wrapping_add(32));
+                let ctab_handle = bus.read_long(pix_map_ptr.wrapping_add(42));
+                if pixel_size == 8
+                    && sample_v >= bounds_top
+                    && sample_h >= bounds_left
+                    && row_bytes != 0
+                {
+                    let dy = (sample_v - bounds_top) as u32;
+                    let dx = (sample_h - bounds_left) as u32;
+                    if dx < row_bytes {
+                        let index = bus.read_byte(base + dy * row_bytes + dx);
+                        let is_screen_port = base == self.screen_mode.0
+                            && row_bytes == self.screen_mode.1
+                            && pixel_size == self.screen_mode.4;
+                        let clut = if is_screen_port {
+                            self.device_clut
+                        } else {
+                            self.read_port_clut(bus, ctab_handle)
+                        };
+                        let [r, g, b] = clut[index as usize];
+                        Some((u32::from(r), u32::from(g), u32::from(b)))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        } else {
+            let base = bus.read_long(port.wrapping_add(2));
+            let row_bytes = (bus.read_word(port.wrapping_add(6)) & 0x3FFF) as u32;
+            let bounds_top = bus.read_word(port.wrapping_add(8)) as i16;
+            let bounds_left = bus.read_word(port.wrapping_add(10)) as i16;
+            if sample_v >= bounds_top && sample_h >= bounds_left && row_bytes != 0 {
+                let dy = (sample_v - bounds_top) as u32;
+                let dx = (sample_h - bounds_left) as u32;
+                if self.screen_mode.4 == 8 && base == self.screen_mode.0 {
+                    if dx < row_bytes {
+                        let index = bus.read_byte(base + dy * row_bytes + dx);
+                        let [r, g, b] = self.device_clut[index as usize];
+                        Some((u32::from(r), u32::from(g), u32::from(b)))
+                    } else {
+                        None
+                    }
+                } else if (dx / 8) < row_bytes {
+                    let byte = bus.read_byte(base + dy * row_bytes + dx / 8);
+                    let bit = 7 - (dx % 8);
+                    let black = (byte & (1 << bit)) != 0;
+                    Some(if black {
+                        (0, 0, 0)
+                    } else {
+                        (0xFFFF, 0xFFFF, 0xFFFF)
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some((r, g, b)) = pixel {
+            // Integer Rec. 601 luma over 16-bit QuickDraw RGB.
+            (299 * r + 587 * g + 114 * b) < 500 * 0xFFFF
+        } else {
+            false
+        }
+    }
+
+    fn draw_list_cell_fallback<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        state: &super::dispatch::ListState,
+        row: i16,
+        col: i16,
+    ) {
+        let Some(rect) = Self::list_cell_rect(state, row, col) else {
+            return;
+        };
+        let data = state
+            .cells
+            .get(&(row, col))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let text = Self::list_cell_text(data);
+        if text.is_empty() && !state.selected.contains(&(row, col)) {
+            return;
+        }
+
+        let selected = state.selected.contains(&(row, col));
+        let bg_is_dark = if selected {
+            false
+        } else {
+            self.list_cell_background_is_dark(bus, state.port, rect)
+        };
+        let bg = if bg_is_dark {
+            (0x0000, 0x0000, 0x0000)
+        } else {
+            (0xFFFF, 0xFFFF, 0xFFFF)
+        };
+        let fg = if bg_is_dark {
+            (0xFFFF, 0xFFFF, 0xFFFF)
+        } else {
+            (0x0000, 0x0000, 0x0000)
+        };
+
+        self.fg_color = bg;
+        self.bg_color = bg;
+        self.pn_mode = 0;
+        self.pn_pat = [0xFF; 8];
+        self.pn_size = (1, 1);
+        self.draw_rect(
+            cpu,
+            bus,
+            &Rect {
+                top: rect.0,
+                left: rect.1,
+                bottom: rect.2,
+                right: rect.3,
+            },
+            ShapeOp::Paint,
+        );
+
+        if text.is_empty() {
+            return;
+        }
+
+        let font_size = self.tx_size.max(9);
+        self.fg_color = fg;
+        self.bg_color = bg;
+        self.tx_face = 0;
+        self.tx_mode = 1;
+        self.tx_size = font_size;
+        let metrics = get_font_metrics(self.tx_font, font_size);
+        let cell_height = rect.2 - rect.0;
+        let text_height = metrics.ascent + metrics.descent;
+        let baseline = rect.0 + (cell_height - text_height).max(0) / 2 + metrics.ascent;
+        self.pn_loc = (baseline, rect.1 + 3);
+
+        let max_h = rect.3 - 3;
+        for ch in text.chars() {
+            if self.pn_loc.1 >= max_h {
+                break;
+            }
+            self.draw_char(cpu, bus, ch);
+        }
+    }
+
+    fn draw_list_fallback<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        state: &super::dispatch::ListState,
+        only_cell: Option<(i16, i16)>,
+    ) {
+        if state.port == 0 {
+            return;
+        }
+
+        let previous_port = self.current_port;
+        let previous_gdevice = self.current_gdevice;
+        let previous_state = self.qd_state_snapshot();
+
+        self.set_current_port_state(bus, cpu, state.port, None);
+        let list_port_state = self.qd_state_snapshot();
+
+        if let Some((row, col)) = only_cell {
+            self.draw_list_cell_fallback(cpu, bus, state, row, col);
+        } else {
+            for row in state.visible.0..state.visible.2 {
+                for col in state.visible.1..state.visible.3 {
+                    self.draw_list_cell_fallback(cpu, bus, state, row, col);
+                }
+            }
+        }
+
+        self.restore_qd_state(list_port_state);
+        self.sync_current_port_draw_state(bus);
+
+        if previous_port != state.port {
+            self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
+            self.restore_qd_state(previous_state);
+            self.sync_current_port_draw_state(bus);
         }
     }
 
@@ -5258,13 +5549,28 @@ impl super::TrapDispatcher {
                         let cell = Self::read_stack_point(bus, sp + 6);
                         let data_len = bus.read_word(sp + 10) as i16;
                         let data_ptr = bus.read_long(sp + 12);
+                        let data = if data_len > 0 && data_ptr != 0 {
+                            bus.read_bytes(data_ptr, data_len as usize)
+                        } else {
+                            Vec::new()
+                        };
                         if let Some(state) = self.list_states.get_mut(&list_handle) {
                             let key = (cell.0, cell.1);
-                            if Self::list_cell_is_valid(state, key.0, key.1) {
-                                if data_len > 0 && data_ptr != 0 {
-                                    state
-                                        .cells
-                                        .insert(key, bus.read_bytes(data_ptr, data_len as usize));
+                            let valid = Self::list_cell_is_valid(state, key.0, key.1);
+                            if trace_list_manager_enabled() {
+                                eprintln!(
+                                    "[LIST] LSetCell handle=${:08X} cell=({}, {}) len={} valid={} text=\"{}\"",
+                                    list_handle,
+                                    key.0,
+                                    key.1,
+                                    data_len,
+                                    valid,
+                                    Self::list_cell_text(&data),
+                                );
+                            }
+                            if valid {
+                                if !data.is_empty() {
+                                    state.cells.insert(key, data);
                                 } else {
                                     state.cells.remove(&key);
                                 }
@@ -5347,7 +5653,14 @@ impl super::TrapDispatcher {
                         let set_it = Self::stack_bool_slot(bus, sp + 10);
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
                         if let Some(state) = self.list_states.get_mut(&list_handle) {
-                            if Self::list_cell_is_valid(state, cell.0, cell.1) {
+                            let valid = Self::list_cell_is_valid(state, cell.0, cell.1);
+                            if trace_list_manager_enabled() {
+                                eprintln!(
+                                    "[LIST] LSetSelect handle=${:08X} cell=({}, {}) set={} valid={}",
+                                    list_handle, cell.0, cell.1, set_it, valid,
+                                );
+                            }
+                            if valid {
                                 let single_select = list_ptr != 0
                                     && (bus.read_byte(list_ptr + Self::LIST_SEL_FLAGS_OFFSET)
                                         & 0x80)
@@ -5473,11 +5786,40 @@ impl super::TrapDispatcher {
                         Ok(())
                     }
 
-                    // LDraw/LUpdate/LAutoScroll/LActivate/LScroll/LSize are accepted as no-ops for now.
-                    // Inside Macintosh Volume IV, IV-274 to IV-276
-                    0x00 | 0x10 | 0x30 | 0x50 | 0x60 | 0x64 => {
-                        self.pack0_fallback(cpu, bus, sp, selector)
+                    // LDraw (selector 48 / $30)
+                    // Draws one cell through the list's owning port.
+                    // PROCEDURE LDraw(theCell: Cell; lHandle: ListHandle);
+                    // Inside Macintosh Volume IV, IV-274
+                    0x30 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let cell = Self::read_stack_point(bus, sp + 6);
+                        if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                            self.draw_list_fallback(cpu, bus, &state, Some((cell.0, cell.1)));
+                        }
+                        cpu.write_reg(Register::A7, sp + 10);
+                        Ok(())
                     }
+
+                    // LUpdate (selector 100 / $64)
+                    // Redraws visible cells. The update region is accepted
+                    // for stack discipline; clipping is already enforced by
+                    // the port's visRgn/clipRgn in the QuickDraw path.
+                    // PROCEDURE LUpdate(theRgn: RgnHandle; lHandle: ListHandle);
+                    // Inside Macintosh Volume IV, IV-275
+                    0x64 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                            if state.draw_enabled {
+                                self.draw_list_fallback(cpu, bus, &state, None);
+                            }
+                        }
+                        cpu.write_reg(Register::A7, sp + 10);
+                        Ok(())
+                    }
+
+                    // LAutoScroll/LActivate/LScroll/LSize are accepted as no-ops for now.
+                    // Inside Macintosh Volume IV, IV-274 to IV-276
+                    0x00 | 0x10 | 0x50 | 0x60 => self.pack0_fallback(cpu, bus, sp, selector),
 
                     // LDispose (selector 40 / $28)
                     // Disposes of the list.
@@ -8251,9 +8593,7 @@ impl super::TrapDispatcher {
             // Regression coverage:
             //   src/trap/toolbox.rs::tests::codefragmentdispatch_*
             // CodeFragmentDispatch (CFM) ($AA5A): PPC SS 1994 ch.6 1770. D0 selector. Gestalt 'cfrg' → gestaltCFMPresent=0. HLE: D0=0, registers + stack preserved (68K-only — fat binaries fall back to 68K fork).
-            (true, 0x25A) => {
-                return_noerr(cpu)
-            }
+            (true, 0x25A) => return_noerr(cpu),
 
             // IconDispatch ($ABC9) — Icon Utilities
             // Inside Macintosh: More Macintosh Toolbox (1993),
@@ -8657,7 +8997,11 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x1F8, &mut cpu, &mut bus);
         assert!(result.is_some(), "MethodDispatch should be handled");
         assert!(result.unwrap().is_ok(), "MethodDispatch should succeed");
-        assert_eq!(cpu.read_reg(Register::D0), 0, "MethodDispatch should return noErr");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "MethodDispatch should return noErr"
+        );
         assert_eq!(
             cpu.read_reg(Register::D1),
             0x89AB_CDEF,
@@ -8680,7 +9024,10 @@ mod tests {
 
         let result = disp.dispatch_toolbox(true, 0x25A, &mut cpu, &mut bus);
         assert!(result.is_some(), "CodeFragmentDispatch should be handled");
-        assert!(result.unwrap().is_ok(), "CodeFragmentDispatch should succeed");
+        assert!(
+            result.unwrap().is_ok(),
+            "CodeFragmentDispatch should succeed"
+        );
         assert_eq!(
             cpu.read_reg(Register::D0),
             0,
@@ -8704,7 +9051,10 @@ mod tests {
         cpu.write_reg(Register::D0, 0x0000_0000);
         let result = disp.dispatch_toolbox(true, 0x25A, &mut cpu, &mut bus);
         assert!(result.is_some(), "CodeFragmentDispatch should be handled");
-        assert!(result.unwrap().is_ok(), "CodeFragmentDispatch should return");
+        assert!(
+            result.unwrap().is_ok(),
+            "CodeFragmentDispatch should return"
+        );
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(cpu.read_reg(Register::D1), 0x2222_3333);
         assert_eq!(cpu.read_reg(Register::A0), 0x4444_5555);
@@ -13848,7 +14198,7 @@ mod tests {
         bus.write_word(data_bounds_ptr + 6, 1);
 
         bus.write_word(sp, 0x0044); // LNew selector
-        bus.write_word(sp + 2, 1); // drawIt = TRUE
+        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
         bus.write_word(sp + 4, 0); // hasGrow = FALSE
         bus.write_word(sp + 6, 0); // scrollHoriz = FALSE
         bus.write_word(sp + 8, 0); // scrollVert = FALSE
@@ -14463,6 +14813,120 @@ mod tests {
         assert_eq!(bus.read_word(sp + 8), 0xFFFF);
     }
 
+    #[test]
+    fn pack0_lupdate_draws_visible_cell_text_and_restores_qd_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let screen_base = 0x300000u32;
+        let row_bytes = 128u32;
+        let window_ptr = 0x210000u32;
+        let view_rect_ptr = 0x356000u32;
+        let data_bounds_ptr = 0x356100u32;
+        let data_ptr = 0x356200u32;
+
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 96, 8);
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        for offset in 0..(row_bytes * 96) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_ptr,
+            screen_base,
+            0,
+            0,
+            96,
+            128,
+            "",
+            0,
+            true,
+            false,
+            0,
+        );
+
+        for y in 10..22 {
+            for x in 10..100 {
+                bus.write_byte(screen_base + y * row_bytes + x, 255);
+            }
+        }
+
+        bus.write_word(view_rect_ptr, 10);
+        bus.write_word(view_rect_ptr + 2, 10);
+        bus.write_word(view_rect_ptr + 4, 22);
+        bus.write_word(view_rect_ptr + 6, 100);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 1);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, window_ptr);
+        bus.write_word(sp + 14, 128); // custom LDEF id: fallback renderer still applies
+        bus.write_word(sp + 16, 12);
+        bus.write_word(sp + 18, 90);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        let create = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(create.is_some());
+        assert!(create.unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+
+        bus.write_bytes(data_ptr, b"Mission");
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0058); // LSetCell
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 7);
+        bus.write_long(sp + 12, data_ptr);
+        let set_cell = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(set_cell.is_some());
+        assert!(set_cell.unwrap().is_ok());
+
+        disp.fg_color = (0x1111, 0x2222, 0x3333);
+        disp.bg_color = (0xAAAA, 0xBBBB, 0xCCCC);
+        disp.pn_loc = (7, 8);
+        disp.tx_mode = 2;
+        disp.tx_size = 12;
+        disp.sync_current_port_draw_state(&mut bus);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0064); // LUpdate
+        bus.write_long(sp + 2, list_handle);
+        bus.write_long(sp + 6, 0); // update region
+        let update = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(update.is_some());
+        assert!(update.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+
+        let mut white_pixels = 0usize;
+        for y in 10..22 {
+            for x in 10..100 {
+                if bus.read_byte(screen_base + y * row_bytes + x) == 0 {
+                    white_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            white_pixels > 0,
+            "LUpdate should render opposite-colored text pixels into a dark visible cell"
+        );
+        assert_eq!(disp.current_port, window_ptr);
+        assert_eq!(disp.fg_color, (0x1111, 0x2222, 0x3333));
+        assert_eq!(disp.bg_color, (0xAAAA, 0xBBBB, 0xCCCC));
+        assert_eq!(disp.pn_loc, (7, 8));
+        assert_eq!(disp.tx_mode, 2);
+        assert_eq!(disp.tx_size, 12);
+    }
+
     // Pack1 / List Manager ($A9E8) — LNew selector $0044
     // IM:IV 1986 pp. IV-269 to IV-270: LNew returns a live handle and initializes
     // selFlags=0 with lActive=TRUE.
@@ -14706,7 +15170,10 @@ mod tests {
 
         let result = disp.dispatch_toolbox(true, 0x254, &mut cpu, &mut bus);
         assert!(result.is_some(), "TextServicesDispatch should be handled");
-        assert!(result.unwrap().is_ok(), "TextServicesDispatch should succeed");
+        assert!(
+            result.unwrap().is_ok(),
+            "TextServicesDispatch should succeed"
+        );
         assert_eq!(
             cpu.read_reg(Register::D0),
             0,
@@ -14791,8 +15258,10 @@ mod tests {
         toolbox_bus.write_long(sp, 0x1122_3344);
         memory_bus.write_long(sp, 0x1122_3344);
 
-        let toolbox_result = toolbox_disp.dispatch_toolbox(true, 0x02B, &mut toolbox_cpu, &mut toolbox_bus);
-        let memory_result = memory_disp.dispatch_memory(false, 0x65, &mut memory_cpu, &mut memory_bus);
+        let toolbox_result =
+            toolbox_disp.dispatch_toolbox(true, 0x02B, &mut toolbox_cpu, &mut toolbox_bus);
+        let memory_result =
+            memory_disp.dispatch_memory(false, 0x65, &mut memory_cpu, &mut memory_bus);
 
         assert!(toolbox_result.is_some(), "Pack9 should be handled");
         assert!(toolbox_result.unwrap().is_ok(), "Pack9 should return");
@@ -14836,13 +15305,18 @@ mod tests {
         toolbox_bus.write_long(sp, 0x1122_3344);
         memory_bus.write_long(sp, 0x1122_3344);
 
-        let toolbox_result = toolbox_disp.dispatch_toolbox(true, 0x02C, &mut toolbox_cpu, &mut toolbox_bus);
-        let memory_result = memory_disp.dispatch_memory(false, 0x66, &mut memory_cpu, &mut memory_bus);
+        let toolbox_result =
+            toolbox_disp.dispatch_toolbox(true, 0x02C, &mut toolbox_cpu, &mut toolbox_bus);
+        let memory_result =
+            memory_disp.dispatch_memory(false, 0x66, &mut memory_cpu, &mut memory_bus);
 
         assert!(toolbox_result.is_some(), "Pack10 should be handled");
         assert!(toolbox_result.unwrap().is_ok(), "Pack10 should return");
         assert!(memory_result.is_some(), "NewEmptyHandle should be handled");
-        assert!(memory_result.unwrap().is_ok(), "NewEmptyHandle should return");
+        assert!(
+            memory_result.unwrap().is_ok(),
+            "NewEmptyHandle should return"
+        );
         assert_eq!(
             toolbox_cpu.read_reg(Register::D0),
             memory_cpu.read_reg(Register::D0),

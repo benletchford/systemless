@@ -25,8 +25,8 @@
 //! domain-equivalent). See `assets/fonts/LICENSE.DejaVu.txt` — the
 //! bitmap strikes in `baked.rs` are a derivative work.
 
-pub mod heuristics;
 mod baked;
+pub mod heuristics;
 pub mod override_format;
 
 use std::collections::HashMap;
@@ -119,24 +119,132 @@ struct PackedFace {
 }
 
 const PACKED_FACES: &[PackedFace] = &[
-    PackedFace { font_id: FONT_CHICAGO,     size:  9, metrics: baked::CHICAGO_9_METRICS,     glyphs: &baked::CHICAGO_9_GLYPHS,     data: baked::CHICAGO_9_DATA },
-    PackedFace { font_id: FONT_CHICAGO,     size: 12, metrics: baked::CHICAGO_12_METRICS,    glyphs: &baked::CHICAGO_12_GLYPHS,    data: baked::CHICAGO_12_DATA },
-    PackedFace { font_id: FONT_APPLICATION, size: 12, metrics: baked::APPLICATION_12_METRICS,glyphs: &baked::APPLICATION_12_GLYPHS,data: baked::APPLICATION_12_DATA },
-    PackedFace { font_id: FONT_NEWYORK,     size: 12, metrics: baked::NEWYORK_12_METRICS,    glyphs: &baked::NEWYORK_12_GLYPHS,    data: baked::NEWYORK_12_DATA },
-    PackedFace { font_id: FONT_NEWYORK,     size: 14, metrics: baked::NEWYORK_14_METRICS,    glyphs: &baked::NEWYORK_14_GLYPHS,    data: baked::NEWYORK_14_DATA },
-    PackedFace { font_id: FONT_NEWYORK,     size: 18, metrics: baked::NEWYORK_18_METRICS,    glyphs: &baked::NEWYORK_18_GLYPHS,    data: baked::NEWYORK_18_DATA },
-    PackedFace { font_id: FONT_GENEVA,      size:  9, metrics: baked::GENEVA_9_METRICS,      glyphs: &baked::GENEVA_9_GLYPHS,      data: baked::GENEVA_9_DATA },
-    PackedFace { font_id: FONT_GENEVA,      size: 10, metrics: baked::GENEVA_10_METRICS,     glyphs: &baked::GENEVA_10_GLYPHS,     data: baked::GENEVA_10_DATA },
-    PackedFace { font_id: FONT_GENEVA,      size: 12, metrics: baked::GENEVA_12_METRICS,     glyphs: &baked::GENEVA_12_GLYPHS,     data: baked::GENEVA_12_DATA },
-    PackedFace { font_id: FONT_GENEVA,      size: 14, metrics: baked::GENEVA_14_METRICS,     glyphs: &baked::GENEVA_14_GLYPHS,     data: baked::GENEVA_14_DATA },
-    PackedFace { font_id: FONT_GENEVA,      size: 18, metrics: baked::GENEVA_18_METRICS,     glyphs: &baked::GENEVA_18_GLYPHS,     data: baked::GENEVA_18_DATA },
-    PackedFace { font_id: FONT_GENEVA,      size: 24, metrics: baked::GENEVA_24_METRICS,     glyphs: &baked::GENEVA_24_GLYPHS,     data: baked::GENEVA_24_DATA },
-    PackedFace { font_id: FONT_MONACO,      size:  9, metrics: baked::MONACO_9_METRICS,      glyphs: &baked::MONACO_9_GLYPHS,      data: baked::MONACO_9_DATA },
-    PackedFace { font_id: FONT_MONACO,      size: 10, metrics: baked::MONACO_10_METRICS,     glyphs: &baked::MONACO_10_GLYPHS,     data: baked::MONACO_10_DATA },
-    PackedFace { font_id: FONT_MONACO,      size: 12, metrics: baked::MONACO_12_METRICS,     glyphs: &baked::MONACO_12_GLYPHS,     data: baked::MONACO_12_DATA },
-    PackedFace { font_id: FONT_VENICE,      size: 14, metrics: baked::VENICE_14_METRICS,     glyphs: &baked::VENICE_14_GLYPHS,     data: baked::VENICE_14_DATA },
-    PackedFace { font_id: FONT_LONDON,      size: 18, metrics: baked::LONDON_18_METRICS,     glyphs: &baked::LONDON_18_GLYPHS,     data: baked::LONDON_18_DATA },
-    PackedFace { font_id: FONT_CAIRO,       size: 18, metrics: baked::CAIRO_18_METRICS,      glyphs: &baked::CAIRO_18_GLYPHS,      data: baked::CAIRO_18_DATA },
+    PackedFace {
+        font_id: FONT_CHICAGO,
+        size: 9,
+        metrics: baked::CHICAGO_9_METRICS,
+        glyphs: &baked::CHICAGO_9_GLYPHS,
+        data: baked::CHICAGO_9_DATA,
+    },
+    PackedFace {
+        font_id: FONT_CHICAGO,
+        size: 12,
+        metrics: baked::CHICAGO_12_METRICS,
+        glyphs: &baked::CHICAGO_12_GLYPHS,
+        data: baked::CHICAGO_12_DATA,
+    },
+    PackedFace {
+        font_id: FONT_APPLICATION,
+        size: 12,
+        metrics: baked::APPLICATION_12_METRICS,
+        glyphs: &baked::APPLICATION_12_GLYPHS,
+        data: baked::APPLICATION_12_DATA,
+    },
+    PackedFace {
+        font_id: FONT_NEWYORK,
+        size: 12,
+        metrics: baked::NEWYORK_12_METRICS,
+        glyphs: &baked::NEWYORK_12_GLYPHS,
+        data: baked::NEWYORK_12_DATA,
+    },
+    PackedFace {
+        font_id: FONT_NEWYORK,
+        size: 14,
+        metrics: baked::NEWYORK_14_METRICS,
+        glyphs: &baked::NEWYORK_14_GLYPHS,
+        data: baked::NEWYORK_14_DATA,
+    },
+    PackedFace {
+        font_id: FONT_NEWYORK,
+        size: 18,
+        metrics: baked::NEWYORK_18_METRICS,
+        glyphs: &baked::NEWYORK_18_GLYPHS,
+        data: baked::NEWYORK_18_DATA,
+    },
+    PackedFace {
+        font_id: FONT_GENEVA,
+        size: 9,
+        metrics: baked::GENEVA_9_METRICS,
+        glyphs: &baked::GENEVA_9_GLYPHS,
+        data: baked::GENEVA_9_DATA,
+    },
+    PackedFace {
+        font_id: FONT_GENEVA,
+        size: 10,
+        metrics: baked::GENEVA_10_METRICS,
+        glyphs: &baked::GENEVA_10_GLYPHS,
+        data: baked::GENEVA_10_DATA,
+    },
+    PackedFace {
+        font_id: FONT_GENEVA,
+        size: 12,
+        metrics: baked::GENEVA_12_METRICS,
+        glyphs: &baked::GENEVA_12_GLYPHS,
+        data: baked::GENEVA_12_DATA,
+    },
+    PackedFace {
+        font_id: FONT_GENEVA,
+        size: 14,
+        metrics: baked::GENEVA_14_METRICS,
+        glyphs: &baked::GENEVA_14_GLYPHS,
+        data: baked::GENEVA_14_DATA,
+    },
+    PackedFace {
+        font_id: FONT_GENEVA,
+        size: 18,
+        metrics: baked::GENEVA_18_METRICS,
+        glyphs: &baked::GENEVA_18_GLYPHS,
+        data: baked::GENEVA_18_DATA,
+    },
+    PackedFace {
+        font_id: FONT_GENEVA,
+        size: 24,
+        metrics: baked::GENEVA_24_METRICS,
+        glyphs: &baked::GENEVA_24_GLYPHS,
+        data: baked::GENEVA_24_DATA,
+    },
+    PackedFace {
+        font_id: FONT_MONACO,
+        size: 9,
+        metrics: baked::MONACO_9_METRICS,
+        glyphs: &baked::MONACO_9_GLYPHS,
+        data: baked::MONACO_9_DATA,
+    },
+    PackedFace {
+        font_id: FONT_MONACO,
+        size: 10,
+        metrics: baked::MONACO_10_METRICS,
+        glyphs: &baked::MONACO_10_GLYPHS,
+        data: baked::MONACO_10_DATA,
+    },
+    PackedFace {
+        font_id: FONT_MONACO,
+        size: 12,
+        metrics: baked::MONACO_12_METRICS,
+        glyphs: &baked::MONACO_12_GLYPHS,
+        data: baked::MONACO_12_DATA,
+    },
+    PackedFace {
+        font_id: FONT_VENICE,
+        size: 14,
+        metrics: baked::VENICE_14_METRICS,
+        glyphs: &baked::VENICE_14_GLYPHS,
+        data: baked::VENICE_14_DATA,
+    },
+    PackedFace {
+        font_id: FONT_LONDON,
+        size: 18,
+        metrics: baked::LONDON_18_METRICS,
+        glyphs: &baked::LONDON_18_GLYPHS,
+        data: baked::LONDON_18_DATA,
+    },
+    PackedFace {
+        font_id: FONT_CAIRO,
+        size: 18,
+        metrics: baked::CAIRO_18_METRICS,
+        glyphs: &baked::CAIRO_18_GLYPHS,
+        data: baked::CAIRO_18_DATA,
+    },
 ];
 
 pub static FONT_TABLE: LazyLock<&'static [FontFace]> = LazyLock::new(|| {
