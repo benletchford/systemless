@@ -1,0 +1,144 @@
+name: Publish systemless crate
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - README.md
+      - src/**
+      - assets/**
+      - .github/workflows/publish.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Publish and dispatch even if Cargo.toml version did not change in this event"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-systemless
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - name: Detect crate version bump
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+
+          version=$(
+            sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' Cargo.toml
+          )
+          if [ -z "$version" ]; then
+            echo "Could not read package version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          previous_version=""
+          if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && git cat-file -e "$BEFORE_SHA:Cargo.toml" 2>/dev/null; then
+            previous_version=$(
+              git show "$BEFORE_SHA:Cargo.toml" \
+                | sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p'
+            )
+          fi
+
+          should_release=false
+          if [ "$FORCE" = "true" ]; then
+            should_release=true
+          elif [ "$EVENT_NAME" = "push" ] && [ "$version" != "$previous_version" ]; then
+            should_release=true
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+
+      - name: Check crates.io version availability
+        id: crates_io
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          status=$(
+            curl -sS -o /tmp/systemless-crate-version.json -w "%{http_code}" \
+              "https://crates.io/api/v1/crates/systemless/$VERSION"
+          )
+
+          if [ "$status" = "200" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          elif [ "$status" = "404" ]; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/systemless-crate-version.json >&2 || true
+            echo "Unexpected crates.io response: HTTP $status" >&2
+            exit 1
+          fi
+
+      - name: Dry-run package publish
+        if: steps.version.outputs.should_release == 'true' && steps.crates_io.outputs.already_published == 'false'
+        run: cargo publish --locked --dry-run
+
+      - name: Validate crates.io token
+        if: steps.version.outputs.should_release == 'true' && steps.crates_io.outputs.already_published == 'false'
+        env:
+          SYSTEMLESS_CRATES_TOKEN: ${{ secrets.SYSTEMLESS_CRATES_TOKEN }}
+        run: |
+          if [ -z "$SYSTEMLESS_CRATES_TOKEN" ]; then
+            echo "SYSTEMLESS_CRATES_TOKEN must contain the crates.io API token" >&2
+            exit 1
+          fi
+
+      - name: Publish crate
+        if: steps.version.outputs.should_release == 'true' && steps.crates_io.outputs.already_published == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.SYSTEMLESS_CRATES_TOKEN }}
+        run: cargo publish --locked
+
+      - name: Trigger systemless-web rebuild
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          SYSTEMLESS_WEB_GITHUB_TOKEN: ${{ secrets.SYSTEMLESS_WEB_GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SYSTEMLESS_WEB_GITHUB_TOKEN" ]; then
+            echo "SYSTEMLESS_WEB_GITHUB_TOKEN is required to dispatch systemless-web" >&2
+            exit 1
+          fi
+
+          payload=$(
+            jq -n --arg version "$VERSION" \
+              '{event_type:"systemless-published", client_payload:{crate:"systemless", version:$version}}'
+          )
+
+          curl -fsS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $SYSTEMLESS_WEB_GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/benletchford/systemless-web/dispatches" \
+            -d "$payload"
