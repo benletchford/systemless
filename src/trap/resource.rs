@@ -1,8 +1,8 @@
 //! Resource Manager and File Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
-use crate::managers::resource::ResourceFork;
 use crate::machine_profile::ORACLE_MACHINE_PROFILE;
+use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::types::read_fsspec_name;
@@ -236,7 +236,10 @@ impl super::TrapDispatcher {
         if self.ajcp_call_state.is_some() {
             return false;
         }
-        if self.ajcp_decompressed_handles.contains(&handle) {
+        let resource_identity = self.resource_record_for_handle(handle);
+        if resource_identity
+            .is_some_and(|identity| self.ajcp_decompressed_resources.contains(&identity))
+        {
             return false;
         }
         let Some((init_addr, bb2_addr)) = self.ajcp_function_addrs(bus) else {
@@ -284,7 +287,9 @@ impl super::TrapDispatcher {
         });
 
         if matches!(phase, super::dispatch::AjcpCallPhase::Decompress) {
-            self.ajcp_decompressed_handles.insert(handle);
+            if let Some(identity) = resource_identity {
+                self.ajcp_decompressed_resources.insert(identity);
+            }
         }
 
         eprintln!(
@@ -412,24 +417,28 @@ impl super::TrapDispatcher {
 
         let resources = self.resources.as_ref()?;
         let file = resources.files.get(&current_refnum)?;
-        file.loaded.iter().find_map(|((loaded_type, loaded_id), loaded_ptr)| {
-            if *loaded_type == res_type
-                && *loaded_ptr == ptr
-                && file.attrs.get(&(*loaded_type, *loaded_id)).is_some_and(|attrs| {
-                    (*attrs & Self::RES_SYS_REF_ATTR as u8) != 0
-                })
-            {
-                Some((current_refnum, *loaded_id))
-            } else {
-                None
-            }
-        })
+        file.loaded
+            .iter()
+            .find_map(|((loaded_type, loaded_id), loaded_ptr)| {
+                if *loaded_type == res_type
+                    && *loaded_ptr == ptr
+                    && file
+                        .attrs
+                        .get(&(*loaded_type, *loaded_id))
+                        .is_some_and(|attrs| (*attrs & Self::RES_SYS_REF_ATTR as u8) != 0)
+                {
+                    Some((current_refnum, *loaded_id))
+                } else {
+                    None
+                }
+            })
     }
 
     pub(crate) fn resource_record_for_handle(&self, handle: u32) -> Option<(u16, [u8; 4], i16)> {
         let (_, res_type, res_id) = self.loaded_handles.get(&handle).copied()?;
         let home_refnum = self.resource_handle_files.get(&handle).copied()?;
-        if let Some((current_refnum, current_id)) = self.current_system_reference_for_handle(handle) {
+        if let Some((current_refnum, current_id)) = self.current_system_reference_for_handle(handle)
+        {
             return Some((current_refnum, res_type, current_id));
         }
         Some((home_refnum, res_type, res_id))
@@ -457,7 +466,8 @@ impl super::TrapDispatcher {
             let current_refnum = self.current_resource_refnum();
             let attrs = self.resource_attributes_for_handle(handle).unwrap_or(0);
             let home_refnum = self.resource_handle_files.get(&handle).copied();
-            let shadowed_system_ref = home_refnum == Some(0) && self.current_system_reference_for_handle(handle).is_some();
+            let shadowed_system_ref = home_refnum == Some(0)
+                && self.current_system_reference_for_handle(handle).is_some();
 
             // Must be in the current file and not protected.
             if (!shadowed_system_ref && refnum != current_refnum) || (attrs & 0x0008) != 0 {
@@ -503,7 +513,9 @@ impl super::TrapDispatcher {
     ) -> bool {
         const ADD_REF_FAILED: i16 = -195;
 
-        let Some((res_type, _res_id, source_refnum)) = self.live_resource_identity_for_handle(handle) else {
+        let Some((res_type, _res_id, source_refnum)) =
+            self.live_resource_identity_for_handle(handle)
+        else {
             bus.write_word(0x0A60, ADD_REF_FAILED as u16);
             return false;
         };
@@ -538,15 +550,17 @@ impl super::TrapDispatcher {
         };
 
         if file.loaded.contains_key(&(res_type, new_id))
-            || file.loaded.values().any(|&existing_ptr| existing_ptr == ptr)
+            || file
+                .loaded
+                .values()
+                .any(|&existing_ptr| existing_ptr == ptr)
         {
             bus.write_word(0x0A60, ADD_REF_FAILED as u16);
             return false;
         }
 
-        let attrs = (source_attrs as u8)
-            | Self::RES_CHANGED_ATTR as u8
-            | Self::RES_SYS_REF_ATTR as u8;
+        let attrs =
+            (source_attrs as u8) | Self::RES_CHANGED_ATTR as u8 | Self::RES_SYS_REF_ATTR as u8;
         file.loaded.insert((res_type, new_id), ptr);
         file.attrs.insert((res_type, new_id), attrs);
         file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
@@ -619,7 +633,9 @@ impl super::TrapDispatcher {
         let resources = self.resources.as_ref()?;
         let file = resources.files.get(&refnum)?;
         let mut ordered_keys: Vec<([u8; 4], i16)> = file.loaded.keys().copied().collect();
-        ordered_keys.sort_unstable_by(|(type_a, id_a), (type_b, id_b)| type_a.cmp(type_b).then(id_a.cmp(id_b)));
+        ordered_keys.sort_unstable_by(|(type_a, id_a), (type_b, id_b)| {
+            type_a.cmp(type_b).then(id_a.cmp(id_b))
+        });
         let index = ordered_keys
             .iter()
             .position(|key| *key == (res_type, res_id))? as u32;
@@ -911,11 +927,11 @@ impl super::TrapDispatcher {
             }
 
             // ReleaseResource ($A9A3)
-            // Releases the memory occupied by a resource and stops recognizing
-            // the given handle as a resource handle.
+            // Releases the memory occupied by a resource while preserving the
+            // handle's resource identity for later LoadResource/GetResource.
             // PROCEDURE ReleaseResource(theResource: Handle);
             // Inside Macintosh Volume I, I-120 to I-121
-            // ReleaseResource ($A9A3): Clears live resource handles and stops recognizing them as resource-backed; returns `resNotFound` for non-resource handles
+            // ReleaseResource ($A9A3): Clears a resource handle's master pointer but preserves Resource Manager metadata so it can be reloaded; returns `resNotFound` for non-resource handles
             (true, 0x1A3) => {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
@@ -928,8 +944,7 @@ impl super::TrapDispatcher {
                     let attrs = self.resource_attributes_for_handle(handle).unwrap_or(0);
                     if (attrs & Self::RES_CHANGED_ATTR) == 0 {
                         bus.write_long(handle, 0);
-                        self.loaded_handles.remove(&handle);
-                        self.resource_handle_files.remove(&handle);
+                        self.ptr_to_handle.remove(&ptr);
                     }
                     bus.write_word(0x0A60, 0);
                 } else {
@@ -1431,7 +1446,6 @@ impl super::TrapDispatcher {
                                 patched, n_entries, seg_num
                             );
                         }
-
                     }
 
                     // Ensure the calling entry itself was patched.
@@ -1829,10 +1843,8 @@ impl super::TrapDispatcher {
                                                 .get(&(res_type, new_id))
                                                 .copied()
                                                 .unwrap_or(0);
-                                            file.named.insert(
-                                                (res_type, name_str),
-                                                (new_id, ptr_val),
-                                            );
+                                            file.named
+                                                .insert((res_type, name_str), (new_id, ptr_val));
                                         }
                                     }
                                 } else {
@@ -1956,7 +1968,7 @@ impl super::TrapDispatcher {
                 let _ = self.add_resource_reference(bus, handle, new_id, name_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
-            },
+            }
 
             // WriteResource ($A9B0)
             // Writes the resource data for the given resource to the resource
@@ -4968,9 +4980,7 @@ impl super::TrapDispatcher {
                         if trace_fsspec_enabled() {
                             eprintln!(
                                 "[FSSPEC] FSpOpenResFile file='{}' rsrc_match={:?} data_match={:?}",
-                                filename,
-                                rsrc_key,
-                                data_key
+                                filename, rsrc_key, data_key
                             );
                         }
 
@@ -5892,7 +5902,12 @@ impl super::TrapDispatcher {
         None
     }
 
-    pub(crate) fn vfs_key_for_fsspec(&self, vref: i16, dir_id: u32, filename: &str) -> Option<String> {
+    pub(crate) fn vfs_key_for_fsspec(
+        &self,
+        vref: i16,
+        dir_id: u32,
+        filename: &str,
+    ) -> Option<String> {
         let resolved_dir_id = self.resolve_directory_id(vref, dir_id);
         let dir_path = self.directory_path_for_id(resolved_dir_id)?;
         let normalized = super::TrapDispatcher::normalize_vfs_path(filename);
@@ -6001,7 +6016,11 @@ mod tests {
         cpu.write_reg(Register::D0, 0xDEAD_BEEF);
         call_trap_word(&mut disp, 0xAA88, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::D0), 0, "AA88 clears D0");
-        assert_eq!(bus.read_word(sp + 6), 0xCAFE, "AA88 leaves trailing memory untouched");
+        assert_eq!(
+            bus.read_word(sp + 6),
+            0xCAFE,
+            "AA88 leaves trailing memory untouched"
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp + 6, "AA88 pops 6 bytes");
 
         // AA89 GetEnvirons alias: selector word + result slot.
@@ -6040,11 +6059,7 @@ mod tests {
         }
     }
 
-    fn make_single_resource_fork_bytes(
-        res_type: [u8; 4],
-        res_id: i16,
-        data: &[u8],
-    ) -> Vec<u8> {
+    fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
         let data_offset = 16u32;
         let data_length = (4 + data.len()) as u32;
         let map_offset = data_offset + data_length;
@@ -6078,7 +6093,8 @@ mod tests {
         bytes[type_list_start..type_list_start + 2].copy_from_slice(&0u16.to_be_bytes());
         bytes[type_list_start + 2..type_list_start + 6].copy_from_slice(&res_type);
         bytes[type_list_start + 6..type_list_start + 8].copy_from_slice(&0u16.to_be_bytes());
-        bytes[type_list_start + 8..type_list_start + 10].copy_from_slice(&ref_list_offset.to_be_bytes());
+        bytes[type_list_start + 8..type_list_start + 10]
+            .copy_from_slice(&ref_list_offset.to_be_bytes());
 
         let ref_list_start = map_start + type_list_offset as usize + ref_list_offset as usize;
         bytes[ref_list_start..ref_list_start + 2].copy_from_slice(&(res_id as u16).to_be_bytes());
@@ -6387,9 +6403,7 @@ mod tests {
         let file = disp.resources.as_ref().unwrap().files.get(&0).unwrap();
         assert_eq!(file.loaded.get(&(*b"TEST", 77)).copied(), Some(new_ptr));
         assert_eq!(
-            file.named
-                .get(&(*b"TEST", "ResizeMe".to_string()))
-                .copied(),
+            file.named.get(&(*b"TEST", "ResizeMe".to_string())).copied(),
             Some((77, new_ptr))
         );
 
@@ -6972,7 +6986,7 @@ mod tests {
     // 5. ReleaseResource (0x1A3)
     // ================================================================
     #[test]
-    fn release_resource() {
+    fn release_resource_keeps_handle_reloadable() {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"DLOG", 200, &[0xAB; 8]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"DLOG", 200, data_ptr);
@@ -6984,8 +6998,33 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(bus.read_long(handle), 0);
-        assert!(!disp.loaded_handles.contains_key(&handle));
-        assert!(!disp.resource_handle_files.contains_key(&handle));
+        assert_eq!(
+            disp.loaded_handles.get(&handle).copied(),
+            Some((data_ptr, *b"DLOG", 200)),
+            "ReleaseResource should preserve the resource identity"
+        );
+        assert!(
+            disp.resource_handle_files.contains_key(&handle),
+            "ReleaseResource should preserve the resource file binding"
+        );
+        assert_eq!(
+            disp.ptr_to_handle.get(&data_ptr).copied(),
+            None,
+            "released resource data should not be recoverable until reload"
+        );
+        assert_eq!(bus.read_word(0x0A60), 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        call(&mut disp, true, 0x1A2, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_long(handle), data_ptr);
+        assert_eq!(
+            disp.ptr_to_handle.get(&data_ptr).copied(),
+            Some(handle),
+            "LoadResource should restore RecoverHandle ownership"
+        );
         assert_eq!(bus.read_word(0x0A60), 0);
     }
 
@@ -7352,7 +7391,10 @@ mod tests {
     ) {
         let (mut disp, cpu, mut bus) = setup();
         let source_ptr = bus.alloc(8);
-        bus.write_bytes(source_ptr, &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        bus.write_bytes(
+            source_ptr,
+            &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+        );
 
         let mut file0_loaded = HashMap::new();
         file0_loaded.insert((*b"CURS", 1), source_ptr);
@@ -7403,9 +7445,15 @@ mod tests {
         );
 
         let file = disp.resources.as_ref().unwrap().files.get(&1).unwrap();
-        assert_eq!(disp.loaded_handles.get(&source_handle).copied(), Some((source_ptr, *b"CURS", 1)));
+        assert_eq!(
+            disp.loaded_handles.get(&source_handle).copied(),
+            Some((source_ptr, *b"CURS", 1))
+        );
         assert_eq!(file.loaded.get(&(*b"CURS", ref_id)), Some(&source_ptr));
-        assert_eq!(file.named.get(&(*b"CURS", "AddedReference".to_string())), Some(&(ref_id, source_ptr)));
+        assert_eq!(
+            file.named.get(&(*b"CURS", "AddedReference".to_string())),
+            Some(&(ref_id, source_ptr))
+        );
         assert_eq!(
             file.attrs.get(&(*b"CURS", ref_id)).copied().unwrap_or(0)
                 & (super::super::TrapDispatcher::RES_CHANGED_ATTR as u8
@@ -7482,7 +7530,10 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
         assert_eq!(bus.read_word(0x0A60), 0);
-        assert_eq!(disp.resource_handle_files.get(&source_handle).copied(), Some(0));
+        assert_eq!(
+            disp.resource_handle_files.get(&source_handle).copied(),
+            Some(0)
+        );
         assert_eq!(bus.read_word(info_id_ptr), ref_id as u16);
         assert_eq!(bus.read_long(info_type_ptr), u32::from_be_bytes(*b"CURS"));
         assert_eq!(bus.read_pstring(info_name_ptr), b"AddedReference".to_vec());
@@ -7500,8 +7551,14 @@ mod tests {
                     | super::super::TrapDispatcher::RES_SYS_REF_ATTR as u16),
             0
         );
-        assert_ne!(attrs & super::super::TrapDispatcher::RES_SYS_REF_ATTR as u16, 0);
-        assert_ne!(attrs & super::super::TrapDispatcher::RES_CHANGED_ATTR as u16, 0);
+        assert_ne!(
+            attrs & super::super::TrapDispatcher::RES_SYS_REF_ATTR as u16,
+            0
+        );
+        assert_ne!(
+            attrs & super::super::TrapDispatcher::RES_CHANGED_ATTR as u16,
+            0
+        );
     }
 
     #[test]
@@ -7585,7 +7642,14 @@ mod tests {
 
         assert_eq!(bus.read_word(0x0A60) as i16, -195);
         assert_eq!(
-            disp.resources.as_ref().unwrap().files.get(&1).unwrap().loaded.len(),
+            disp.resources
+                .as_ref()
+                .unwrap()
+                .files
+                .get(&1)
+                .unwrap()
+                .loaded
+                .len(),
             1
         );
     }
@@ -11065,11 +11129,27 @@ mod tests {
         assert_eq!(bus.read_long(info_ptr + 24), 0, "processMode");
         assert_eq!(bus.read_long(info_ptr + 28), 0x0010_0000, "processLocation");
         assert_eq!(bus.read_long(info_ptr + 32), bus.ram_size(), "processSize");
-        assert_eq!(bus.read_long(info_ptr + 36), bus.ram_size() / 2, "processFreeMem");
-        assert_eq!(bus.read_long(info_ptr + 40), 0, "processLauncher.highLongOfPSN");
-        assert_eq!(bus.read_long(info_ptr + 44), 0, "processLauncher.lowLongOfPSN");
+        assert_eq!(
+            bus.read_long(info_ptr + 36),
+            bus.ram_size() / 2,
+            "processFreeMem"
+        );
+        assert_eq!(
+            bus.read_long(info_ptr + 40),
+            0,
+            "processLauncher.highLongOfPSN"
+        );
+        assert_eq!(
+            bus.read_long(info_ptr + 44),
+            0,
+            "processLauncher.lowLongOfPSN"
+        );
         assert_eq!(bus.read_long(info_ptr + 48), 0, "processLaunchDate");
-        assert_ne!(bus.read_byte(name_ptr), 0, "processName should be populated");
+        assert_ne!(
+            bus.read_byte(name_ptr),
+            0,
+            "processName should be populated"
+        );
         assert_ne!(bus.read_word(app_spec_ptr), 0, "processAppSpec.vRefNum");
     }
 

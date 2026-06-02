@@ -244,10 +244,7 @@ impl super::TrapDispatcher {
         if proc_ptr == 0 || proc_ptr > bus.ram_size().saturating_sub(2) {
             return false;
         }
-        matches!(
-            bus.read_word(proc_ptr),
-            0x4E56 | 0x48E7 | 0x4EF9 | 0x4EFA
-        )
+        matches!(bus.read_word(proc_ptr), 0x4E56 | 0x48E7 | 0x4EF9 | 0x4EFA)
     }
 
     fn get_or_create_defer_user_fn_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
@@ -426,7 +423,8 @@ impl super::TrapDispatcher {
             (false, 0x23) => {
                 let handle = cpu.read_reg(Register::A0);
                 let trap_site = cpu.read_reg(Register::PC).wrapping_sub(2);
-                if let Some((_ptr, res_type, res_id)) = self.loaded_handles.get(&handle).copied() {
+                let resource_backing = self.loaded_handles.get(&handle).copied();
+                if let Some((_ptr, res_type, res_id)) = resource_backing {
                     if &res_type == b".256" {
                         eprintln!(
                             "[MEM] DisposeHandle .256 id={} handle=${:08X}",
@@ -435,6 +433,7 @@ impl super::TrapDispatcher {
                     }
                 }
                 self.detached_handles.remove(&handle);
+                self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
                 self.detached_handle_files.remove(&handle);
                 self.handle_state_bits.remove(&handle);
@@ -454,7 +453,9 @@ impl super::TrapDispatcher {
                     // rather than nil. We replicate this by leaving the stale
                     // entry in ptr_to_handle; NewHandle will overwrite it if
                     // the address is ever reused. (IM:V V-579)
-                    bus.free(data_ptr);
+                    if resource_backing.is_none() {
+                        bus.free(data_ptr);
+                    }
                     bus.free(handle);
                 }
                 cpu.write_reg(Register::D0, 0);
@@ -1133,8 +1134,18 @@ impl super::TrapDispatcher {
                         }
                         cpu.write_reg(Register::D0, 0); // noErr
                     }
-                } else if old_size == new_size || (new_size + 3) & !3 == (old_size + 3) & !3 {
-                    // Same aligned size — no work needed
+                } else if old_size == new_size
+                    || (old_ptr != 0
+                        && MacMemoryBus::allocation_bucket_size(new_size)
+                            == MacMemoryBus::allocation_bucket_size(old_size))
+                {
+                    // Same allocation bucket — the block can stay put,
+                    // but GetHandleSize and any later grow/move must see
+                    // the new logical byte count.
+                    if new_size < old_size {
+                        bus.fill_zeros(old_ptr.wrapping_add(new_size), old_size - new_size);
+                    }
+                    bus.set_alloc_size(old_ptr, new_size);
                     cpu.write_reg(Register::D0, 0);
                 } else {
                     let new_ptr = bus.alloc(new_size);
@@ -1410,8 +1421,8 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 let old_size = bus.get_alloc_size(ptr).unwrap_or(0);
-                let old_aligned = (old_size + 3) & !3;
-                let new_aligned = (new_size + 3) & !3;
+                let old_aligned = MacMemoryBus::allocation_bucket_size(old_size);
+                let new_aligned = MacMemoryBus::allocation_bucket_size(new_size);
                 if new_aligned <= old_aligned {
                     // Fits in the existing block — just update the
                     // logical size and zero the newly "freed" tail so
@@ -2796,9 +2807,7 @@ impl super::TrapDispatcher {
             // Strict bake:
             //   a08a_sleepqinstall_strict
             // PMgrOp ($A085): Returns noErr; no hardware power management; per IM:V
-            (false, 0x85) => {
-                return_noerr(cpu)
-            }
+            (false, 0x85) => return_noerr(cpu),
 
             // IOPInfoAccess ($A086)
             // Access IOP information.
@@ -2808,9 +2817,7 @@ impl super::TrapDispatcher {
             // Contract coverage:
             //   src/trap/memory.rs::tests::iopinfoaccess_returns_noerr_and_preserves_stack_pointer
             // IOPInfoAccess ($A086): Returns noErr; no IOP hardware; per IM:VI
-            (false, 0x86) => {
-                return_noerr(cpu)
-            }
+            (false, 0x86) => return_noerr(cpu),
 
             // IOPMsgRequest ($A087)
             // Send message to IOP.
@@ -2820,9 +2827,7 @@ impl super::TrapDispatcher {
             // Contract coverage:
             //   src/trap/memory.rs::tests::iopmsgrequest_returns_noerr_and_preserves_stack_pointer
             // IOPMsgRequest ($A087): Returns noErr; per IM:VI
-            (false, 0x87) => {
-                return_noerr(cpu)
-            }
+            (false, 0x87) => return_noerr(cpu),
 
             // IOPMoveData ($A088)
             // Move data to/from IOP.
@@ -2833,9 +2838,7 @@ impl super::TrapDispatcher {
             // Regression coverage:
             //   iopmovedata_moves_iop_data
             // IOPMoveData ($A088): Returns noErr; per IM:VI
-            (false, 0x88) => {
-                return_noerr(cpu)
-            }
+            (false, 0x88) => return_noerr(cpu),
 
             // EgretDispatch ($A092)
             // Egret processor dispatch.
@@ -2845,9 +2848,7 @@ impl super::TrapDispatcher {
             // Contract coverage:
             //   src/trap/memory.rs::tests::egretdispatch_returns_noerr_and_preserves_stack_pointer
             // EgretDispatch ($A092): Returns noErr; no Egret processor; per IM:VI
-            (false, 0x92) => {
-                return_noerr(cpu)
-            }
+            (false, 0x92) => return_noerr(cpu),
 
             // SleepQInstall ($A28A) / SleepQRemove ($A48A)
             // Sleep queue management.
@@ -2914,20 +2915,14 @@ impl super::TrapDispatcher {
 
                 let pb_length = bus.read_word(scsi_pb + SCSI_PB_LENGTH_OFFSET);
                 if pb_length < SCSI_PB_LENGTH_MIN {
-                    bus.write_word(
-                        scsi_pb + SCSI_PB_RESULT_OFFSET,
-                        SCSI_PB_LENGTH_ERROR as u16,
-                    );
+                    bus.write_word(scsi_pb + SCSI_PB_RESULT_OFFSET, SCSI_PB_LENGTH_ERROR as u16);
                     cpu.write_reg(Register::D0, SCSI_PB_LENGTH_ERROR as u32);
                     return Some(Ok(()));
                 }
 
                 let completion = bus.read_long(scsi_pb + SCSI_PB_COMPLETION_OFFSET);
                 if completion != 0 {
-                    bus.write_word(
-                        scsi_pb + SCSI_PB_RESULT_OFFSET,
-                        SCSI_REQUEST_INVALID as u16,
-                    );
+                    bus.write_word(scsi_pb + SCSI_PB_RESULT_OFFSET, SCSI_REQUEST_INVALID as u16);
                     cpu.write_reg(Register::D0, SCSI_REQUEST_INVALID as u32);
                     return Some(Ok(()));
                 }
@@ -2937,10 +2932,7 @@ impl super::TrapDispatcher {
                 if function_code == SCSI_GET_VIRTUAL_ID_INFO_FUNCTION_CODE {
                     bus.write_byte(scsi_pb + SCSI_PB_EXISTS_OFFSET, 0);
                 } else {
-                    bus.write_word(
-                        scsi_pb + SCSI_PB_RESULT_OFFSET,
-                        SCSI_REQUEST_INVALID as u16,
-                    );
+                    bus.write_word(scsi_pb + SCSI_PB_RESULT_OFFSET, SCSI_REQUEST_INVALID as u16);
                     cpu.write_reg(Register::D0, SCSI_REQUEST_INVALID as u32);
                     return Some(Ok(()));
                 }
@@ -3355,9 +3347,7 @@ impl super::TrapDispatcher {
             //   src/trap/memory.rs::tests::vadbproc_preserves_d0_and_stack_and_updates_ccr
             //   a0ae_vadbproc_strict
             // VADBProc ($A0AE): Preserves caller D0/A7; per IM:Devices 5-39..5-40
-            (false, 0xAE) => {
-                Ok(())
-            }
+            (false, 0xAE) => Ok(()),
 
             // ========== Heap Zone Management ==========
 
@@ -4329,6 +4319,8 @@ mod tests {
     use super::super::test_helpers::{setup, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::MemoryBus;
+    use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
+    use std::collections::HashMap;
 
     // ==================== OS Traps (is_tool=false) ====================
 
@@ -4404,6 +4396,61 @@ mod tests {
             0,
             "DisposeHandle should set D0 to 0"
         );
+    }
+
+    #[test]
+    fn dispose_resource_handle_preserves_resource_backing_for_later_lookup() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let data_ptr = bus.alloc(4);
+        bus.write_bytes(data_ptr, &[0xDE, 0xAD, 0xBE, 0xEF]);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, data_ptr);
+
+        dispatcher
+            .loaded_handles
+            .insert(handle, (data_ptr, *b"RSRC", 7));
+        dispatcher.resource_handle_files.insert(handle, 0);
+        dispatcher.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"RSRC", 7), data_ptr)]),
+                    named: HashMap::new(),
+                    attrs: HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        cpu.write_reg(Register::A0, handle);
+        let result = dispatcher.dispatch_memory(false, 0x23, &mut cpu, &mut bus);
+        assert!(result.is_some(), "DisposeHandle should be handled");
+        assert!(result.unwrap().is_ok(), "DisposeHandle should return");
+
+        assert_eq!(
+            bus.get_alloc_size(handle),
+            None,
+            "DisposeHandle should still release the master-pointer slot"
+        );
+        assert_eq!(
+            bus.read_bytes(data_ptr, 4),
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            "resource backing must remain valid after its handle is disposed"
+        );
+        assert!(!dispatcher.loaded_handles.contains_key(&handle));
+        assert!(!dispatcher.resource_handle_files.contains_key(&handle));
+        assert_eq!(
+            dispatcher.find_resource_any(*b"RSRC", 7),
+            Some((0, data_ptr)),
+            "Resource Manager map should still point at live backing data"
+        );
+
+        let new_handle = dispatcher.get_or_create_resource_handle(&mut bus, *b"RSRC", 7, data_ptr);
+        assert_ne!(new_handle, 0);
+        assert_eq!(bus.read_long(new_handle), data_ptr);
     }
 
     #[test]
@@ -4748,7 +4795,11 @@ mod tests {
         let result = dispatcher.dispatch_memory(false, trap_num, &mut cpu, &mut bus);
         assert!(result.is_some(), "{trap_name} should be handled");
         assert!(result.unwrap().is_ok(), "{trap_name} should succeed");
-        assert_eq!(cpu.read_reg(Register::D0), 0, "{trap_name} should return noErr");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "{trap_name} should return noErr"
+        );
         assert_eq!(
             cpu.read_reg(Register::A7),
             sp_before,
@@ -6209,10 +6260,7 @@ mod tests {
             result.is_some(),
             "GetToolTrapAddress should handle DockingDispatch"
         );
-        assert!(
-            result.unwrap().is_ok(),
-            "GetToolTrapAddress should succeed"
-        );
+        assert!(result.unwrap().is_ok(), "GetToolTrapAddress should succeed");
         let docking_addr = cpu.read_reg(Register::A0);
 
         cpu.write_reg(Register::D0, 0x09F);
@@ -6257,7 +6305,10 @@ mod tests {
             "phantom GetToolTrapAddress should succeed"
         );
         let first_addr = cpu.read_reg(Register::A0);
-        assert_ne!(first_addr, 0, "tool-trap trampoline address should be nonzero");
+        assert_ne!(
+            first_addr, 0,
+            "tool-trap trampoline address should be nonzero"
+        );
 
         cpu.write_reg(Register::D0, 0xA89F);
         let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
@@ -7277,7 +7328,8 @@ mod tests {
     }
 
     #[test]
-    fn debugutil_debuggerpoll_five_call_composition_preserves_stack_across_repeated_selector_three_calls() {
+    fn debugutil_debuggerpoll_five_call_composition_preserves_stack_across_repeated_selector_three_calls(
+    ) {
         // Mirrors B4 of the a08d_debugutil_strict bake: five successive
         // DebuggerPoll calls preserve A7 in aggregate and continue to
         // return noErr across the repeated selector-3 path.
@@ -7395,20 +7447,76 @@ mod tests {
 
         let tramp = dispatcher.defer_user_fn_trampoline;
         assert_ne!(tramp, 0, "DeferUserFn should allocate a trampoline");
-        assert_eq!(cpu.read_reg(Register::PC), tramp, "trampoline PC should be installed");
-        assert_eq!(cpu.read_reg(Register::A7), sp_before - 4, "DeferUserFn should push a return address for the trampoline");
-        assert_eq!(bus.read_long(sp_before - 4), pc_after_trap, "trampoline should resume at the post-trap PC");
-        assert_eq!(cpu.read_reg(Register::D0), 0, "DeferUserFn should return noErr in D0");
-        assert_eq!(bus.read_word(tramp), 0x48E7, "trampoline should save scratch registers");
-        assert_eq!(bus.read_word(tramp + 2), 0xF0F0, "trampoline should save D0-D3/A0-A3");
-        assert_eq!(bus.read_word(tramp + 4), 0x207C, "trampoline should load the argument into A0");
-        assert_eq!(bus.read_long(tramp + 6), 0x00DE_ADBE, "trampoline should patch the argument literal");
-        assert_eq!(bus.read_word(tramp + 10), 0x4EB9, "trampoline should JSR to the user function");
-        assert_eq!(bus.read_long(tramp + 12), user_fn, "trampoline should patch the callback address");
-        assert_eq!(bus.read_word(tramp + 16), 0x4CDF, "trampoline should restore scratch registers");
-        assert_eq!(bus.read_word(tramp + 18), 0x0F0F, "trampoline should restore D0-D3/A0-A3");
-        assert_eq!(bus.read_word(tramp + 20), 0x7000, "trampoline should clear D0 to noErr");
-        assert_eq!(bus.read_word(tramp + 22), 0x4E75, "trampoline should RTS back to the caller");
+        assert_eq!(
+            cpu.read_reg(Register::PC),
+            tramp,
+            "trampoline PC should be installed"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp_before - 4,
+            "DeferUserFn should push a return address for the trampoline"
+        );
+        assert_eq!(
+            bus.read_long(sp_before - 4),
+            pc_after_trap,
+            "trampoline should resume at the post-trap PC"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "DeferUserFn should return noErr in D0"
+        );
+        assert_eq!(
+            bus.read_word(tramp),
+            0x48E7,
+            "trampoline should save scratch registers"
+        );
+        assert_eq!(
+            bus.read_word(tramp + 2),
+            0xF0F0,
+            "trampoline should save D0-D3/A0-A3"
+        );
+        assert_eq!(
+            bus.read_word(tramp + 4),
+            0x207C,
+            "trampoline should load the argument into A0"
+        );
+        assert_eq!(
+            bus.read_long(tramp + 6),
+            0x00DE_ADBE,
+            "trampoline should patch the argument literal"
+        );
+        assert_eq!(
+            bus.read_word(tramp + 10),
+            0x4EB9,
+            "trampoline should JSR to the user function"
+        );
+        assert_eq!(
+            bus.read_long(tramp + 12),
+            user_fn,
+            "trampoline should patch the callback address"
+        );
+        assert_eq!(
+            bus.read_word(tramp + 16),
+            0x4CDF,
+            "trampoline should restore scratch registers"
+        );
+        assert_eq!(
+            bus.read_word(tramp + 18),
+            0x0F0F,
+            "trampoline should restore D0-D3/A0-A3"
+        );
+        assert_eq!(
+            bus.read_word(tramp + 20),
+            0x7000,
+            "trampoline should clear D0 to noErr"
+        );
+        assert_eq!(
+            bus.read_word(tramp + 22),
+            0x4E75,
+            "trampoline should RTS back to the caller"
+        );
     }
 
     #[test]
@@ -8082,6 +8190,60 @@ mod tests {
     }
 
     #[test]
+    fn set_handle_size_in_place_growth_updates_logical_size_before_later_move() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 1);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let handle = cpu.read_reg(Register::A0);
+        let ptr = bus.read_long(handle);
+        bus.write_byte(ptr, 0xAA);
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 3);
+        dispatcher
+            .dispatch_memory(false, 0x24, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0, "noErr expected");
+        assert_eq!(
+            bus.read_long(handle),
+            ptr,
+            "growth within the same bucket should keep the handle data pointer stable"
+        );
+        assert_eq!(
+            bus.get_alloc_size(ptr),
+            Some(3),
+            "the logical handle size must be updated even when no move occurs"
+        );
+
+        bus.write_byte(ptr + 1, 0xBB);
+        bus.write_byte(ptr + 2, 0xCC);
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 9);
+        dispatcher
+            .dispatch_memory(false, 0x24, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0, "noErr expected");
+        let moved_ptr = bus.read_long(handle);
+        assert_ne!(
+            moved_ptr, ptr,
+            "growth beyond the current bucket should move the relocatable block"
+        );
+        assert_eq!(
+            bus.read_bytes(moved_ptr, 3),
+            vec![0xAA, 0xBB, 0xCC],
+            "later moves must copy the full logical size recorded by the in-place grow"
+        );
+        assert_eq!(bus.get_alloc_size(moved_ptr), Some(9));
+    }
+
+    #[test]
     fn test_reallocate_handle() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         // First create a handle via NewHandle
@@ -8231,6 +8393,34 @@ mod tests {
             128,
             "GetPtrSize on the original pointer must reflect the new logical size"
         );
+    }
+
+    #[test]
+    fn test_set_ptr_size_zero_allocation_can_grow_within_minimum_bucket() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 0);
+        dispatcher
+            .dispatch_memory(false, 0x1E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let ptr = cpu.read_reg(Register::A0);
+        assert_ne!(ptr, 0);
+
+        cpu.write_reg(Register::A0, ptr);
+        cpu.write_reg(Register::D0, 1);
+        dispatcher
+            .dispatch_memory(false, 0x20, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0, "noErr expected");
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            ptr,
+            "SetPtrSize within the minimum allocation bucket should not move the pointer"
+        );
+        assert_eq!(bus.get_alloc_size(ptr), Some(1));
     }
 
     // Attempting to grow a Ptr beyond its aligned capacity returns
@@ -8674,7 +8864,10 @@ mod tests {
 
         cpu.write_reg(Register::A0, get_ptr);
         let result = dispatcher.dispatch_memory(false, 0x7D, &mut cpu, &mut bus);
-        assert!(result.is_some(), "GetDefaultStartup should be handled after SetDefaultStartup");
+        assert!(
+            result.is_some(),
+            "GetDefaultStartup should be handled after SetDefaultStartup"
+        );
         assert!(
             result.unwrap().is_ok(),
             "GetDefaultStartup should return after SetDefaultStartup"
@@ -10672,7 +10865,10 @@ mod tests {
         cpu.write_reg(Register::D0, 0x00EC); // CopyBits tool-trap number
 
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
-        assert!(result.is_some(), "GetToolTrapAddress variant should be handled");
+        assert!(
+            result.is_some(),
+            "GetToolTrapAddress variant should be handled"
+        );
         assert!(
             result.unwrap().is_ok(),
             "GetToolTrapAddress variant should succeed"

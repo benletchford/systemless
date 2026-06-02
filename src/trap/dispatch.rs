@@ -47,7 +47,10 @@ fn trace_trap_pcs_sink() -> Option<&'static Mutex<std::io::BufWriter<std::fs::Fi
             let file = std::fs::File::create(&path).ok()?;
             let mut writer = std::io::BufWriter::new(file);
             use std::io::Write;
-            let _ = writeln!(writer, "# runtime trap-PC trace (SYSTEMLESS_TRACE_TRAP_PCS)");
+            let _ = writeln!(
+                writer,
+                "# runtime trap-PC trace (SYSTEMLESS_TRACE_TRAP_PCS)"
+            );
             let _ = writeln!(
                 writer,
                 "# format: B <segment_id> <base_addr_hex>  (segment load)"
@@ -147,7 +150,8 @@ static TRAP_HISTOGRAM_ENABLED: OnceLock<bool> = OnceLock::new();
 /// increments `TrapDispatcher::trap_histogram` (indexed by `trap & 0xFFF`).
 /// Dump via `TrapDispatcher::print_trap_histogram`.
 fn trap_histogram_enabled() -> bool {
-    *TRAP_HISTOGRAM_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_TRAP_COUNTS").is_some())
+    *TRAP_HISTOGRAM_ENABLED
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_TRAP_COUNTS").is_some())
 }
 
 static TRAP_TIMING_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -628,7 +632,7 @@ pub struct TrapDispatcher {
     /// Set of handle addresses we've already decompressed via
     /// injection so we don't redundantly `JSR $5BB2` if POD reads
     /// the same handle a second time.
-    pub(crate) ajcp_decompressed_handles: std::collections::HashSet<u32>,
+    pub(crate) ajcp_decompressed_resources: std::collections::HashSet<(u16, [u8; 4], i16)>,
     /// Ports that have already been queried through QDDone. BasiliskII
     /// reports TRUE for each query against a live port, so this state is
     /// currently unused by the HLE path.
@@ -1678,7 +1682,7 @@ impl TrapDispatcher {
             device_loop_trampoline: 0,
             defer_user_fn_trampoline: 0,
             ajcp_decompressor_ready: false,
-            ajcp_decompressed_handles: std::collections::HashSet::new(),
+            ajcp_decompressed_resources: std::collections::HashSet::new(),
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
@@ -1700,9 +1704,9 @@ impl TrapDispatcher {
             file_positions: HashMap::new(),
             locked_files: HashSet::new(),
             next_refnum: 100,
-            mmu_mode: 1,               // true32b — 32-bit addressing by default
-            default_video_rec: 0x0000, // no default video device selected
-            default_os_rec: 0x0001,    // Macintosh Operating System
+            mmu_mode: 1,                      // true32b — 32-bit addressing by default
+            default_video_rec: 0x0000,        // no default video device selected
+            default_os_rec: 0x0001,           // Macintosh Operating System
             default_startup_rec: 0x0000_0000, // zero-filled first-device startup default
             next_vfs_dir_id: 16,
             next_vfs_file_id: 32,

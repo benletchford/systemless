@@ -348,7 +348,11 @@ impl RamStorage {
         match self {
             RamStorage::Owned(v) => v.get(index..index + len),
             RamStorage::External(ptr, total_len) => {
-                if index.checked_add(len).map(|end| end <= *total_len).unwrap_or(false) {
+                if index
+                    .checked_add(len)
+                    .map(|end| end <= *total_len)
+                    .unwrap_or(false)
+                {
                     Some(unsafe { std::slice::from_raw_parts(ptr.add(index), len) })
                 } else {
                     None
@@ -367,7 +371,11 @@ impl RamStorage {
         match self {
             RamStorage::Owned(v) => v.get_mut(index..index + len),
             RamStorage::External(ptr, total_len) => {
-                if index.checked_add(len).map(|end| end <= *total_len).unwrap_or(false) {
+                if index
+                    .checked_add(len)
+                    .map(|end| end <= *total_len)
+                    .unwrap_or(false)
+                {
                     Some(unsafe { std::slice::from_raw_parts_mut(ptr.add(index), len) })
                 } else {
                     None
@@ -395,6 +403,10 @@ impl RamStorage {
 }
 
 impl MacMemoryBus {
+    pub(crate) fn allocation_bucket_size(size: u32) -> u32 {
+        ((size + 3) & !3).max(4)
+    }
+
     /// `BlockMove` fast path. Copies `count` bytes from `src` to
     /// `dst`, handling overlap correctly. When both ranges are fully
     /// inside RAM and no watchpoint is armed, uses `slice::copy_within`
@@ -406,8 +418,7 @@ impl MacMemoryBus {
             return;
         }
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none();
         let count_usize = count as usize;
@@ -527,7 +538,7 @@ impl MacMemoryBus {
     }
 
     pub fn alloc(&mut self, size: u32) -> u32 {
-        let aligned = (size + 3) & !3; // 4-byte align
+        let aligned = Self::allocation_bucket_size(size); // 4-byte align, unique zero-size blocks
 
         // Fast path: exact-size bucket.
         if let Some(blocks) = self.free_blocks.get_mut(&aligned) {
@@ -615,7 +626,7 @@ impl MacMemoryBus {
             let bucket = self
                 .alloc_bucket_sizes
                 .remove(&addr)
-                .unwrap_or_else(|| (size + 3) & !3);
+                .unwrap_or_else(|| Self::allocation_bucket_size(size));
             self.free_blocks.entry(bucket).or_default().push(addr);
         }
     }
@@ -755,13 +766,9 @@ impl MemoryBus for MacMemoryBus {
                 let pc = CURRENT_PC.with(|p| *p.borrow());
                 if pc != 0 && (pc as u64 + 8) <= self.ram_size as u64 {
                     let read = |off: u32| self.ram.get((pc + off) as usize);
-                    let opcode_word =
-                        ((read(0) as u16) << 8) | read(1) as u16;
-                    let (mnemonic, _size) = m68k::dasm::disassemble(
-                        pc,
-                        opcode_word,
-                        m68k::CpuType::M68000,
-                    );
+                    let opcode_word = ((read(0) as u16) << 8) | read(1) as u16;
+                    let (mnemonic, _size) =
+                        m68k::dasm::disassemble(pc, opcode_word, m68k::CpuType::M68000);
                     let _size = _size.clamp(2, 10);
                     // Annotate A-line traps with their canonical trap
                     // entry. The opcode word's bits 10/11 carry trap
@@ -782,8 +789,7 @@ impl MemoryBus for MacMemoryBus {
                             // OS trap: 8-bit index, re-OR $A000.
                             0xA000u16 | (opcode_word & 0x00FF)
                         };
-                        let auto_pop = (opcode_word & 0x0800) != 0
-                            && (opcode_word & 0x0400) != 0;
+                        let auto_pop = (opcode_word & 0x0800) != 0 && (opcode_word & 0x0400) != 0;
                         if canonical == opcode_word {
                             String::new()
                         } else if auto_pop {
@@ -817,8 +823,7 @@ impl MemoryBus for MacMemoryBus {
                             }
                             let op = ((self.ram.get(cur as usize) as u16) << 8)
                                 | self.ram.get(cur as usize + 1) as u16;
-                            let (m, sz) =
-                                m68k::dasm::disassemble(cur, op, m68k::CpuType::M68000);
+                            let (m, sz) = m68k::dasm::disassemble(cur, op, m68k::CpuType::M68000);
                             // Same A-line annotation as above.
                             let ann = if (op & 0xF000) == 0xA000 {
                                 let canonical = if (op & 0x0800) != 0 {
@@ -826,15 +831,11 @@ impl MemoryBus for MacMemoryBus {
                                 } else {
                                     0xA000u16 | (op & 0x00FF)
                                 };
-                                let auto_pop =
-                                    (op & 0x0800) != 0 && (op & 0x0400) != 0;
+                                let auto_pop = (op & 0x0800) != 0 && (op & 0x0400) != 0;
                                 if canonical == op {
                                     String::new()
                                 } else if auto_pop {
-                                    format!(
-                                        " (canonical=${:04X}, auto-pop)",
-                                        canonical
-                                    )
+                                    format!(" (canonical=${:04X}, auto-pop)", canonical)
                                 } else {
                                     format!(" (canonical=${:04X})", canonical)
                                 }
@@ -910,8 +911,7 @@ impl MemoryBus for MacMemoryBus {
     fn write_word(&mut self, address: u32, value: u16) {
         // Fast path: watchpoint disarmed + tracer disabled + write fully in-bounds.
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none();
         if fast && (address as u64) + 2 <= (self.ram_size as u64) {
@@ -931,8 +931,7 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn write_long(&mut self, address: u32, value: u32) {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none();
         if fast && (address as u64) + 4 <= (self.ram_size as u64) {
@@ -993,8 +992,7 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none();
         let end = (address as u64).saturating_add(data.len() as u64);
@@ -1012,8 +1010,7 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn fill_zeros(&mut self, address: u32, len: u32) {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none();
         let end = (address as u64).saturating_add(len as u64);
@@ -1065,6 +1062,33 @@ mod tests {
         assert_eq!(bus.read_pstring(0x100), b"Hello".to_vec());
     }
 
+    #[test]
+    fn zero_size_allocations_get_unique_slots() {
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+
+        let zero = bus.alloc(0);
+        let next = bus.alloc(4);
+
+        assert_ne!(zero, 0);
+        assert_ne!(
+            zero, next,
+            "zero-size allocations must not alias the following allocation"
+        );
+        assert_eq!(
+            bus.get_alloc_size(zero),
+            Some(0),
+            "the logical allocation size should remain zero"
+        );
+        assert_eq!(bus.get_alloc_size(next), Some(4));
+
+        bus.free(zero);
+        let reused = bus.alloc(1);
+        assert_eq!(
+            reused, zero,
+            "the minimum bucket for a freed zero-size allocation should be reusable"
+        );
+    }
+
     /// Pascal strings are length-byte + up-to-255-byte data; passing a
     /// longer source must clamp to 255 (the length byte's max value),
     /// never wrap or truncate via the unchecked `len as u8` cast.
@@ -1087,7 +1111,11 @@ mod tests {
         // Round-trip: read_bytes must return the same payload.
         assert_eq!(bus.read_bytes(0x1000, 1000), payload);
         // Sentinels untouched.
-        assert_eq!(bus.read_byte(0x0FFF), 0xCC, "byte before write_bytes window");
+        assert_eq!(
+            bus.read_byte(0x0FFF),
+            0xCC,
+            "byte before write_bytes window"
+        );
         assert_eq!(bus.read_byte(0x13E8), 0xCC, "byte after write_bytes window");
     }
 
@@ -1113,8 +1141,11 @@ mod tests {
         assert_eq!(bus.read_pstring(0x100).len(), 255);
         // The 256th byte (one past the clamped data) must NOT be 0x33.
         // The clamp must not have walked past byte 254 of the source.
-        assert_eq!(bus.read_byte(0x100 + 256), 0,
-            "byte after the clamped 255-byte payload must be untouched");
+        assert_eq!(
+            bus.read_byte(0x100 + 256),
+            0,
+            "byte after the clamped 255-byte payload must be untouched"
+        );
     }
 
     /// Byte-isomorphism gate for the `read_bytes_into` fast path. The
