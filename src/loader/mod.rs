@@ -59,6 +59,128 @@ pub struct JumpTableEntry {
     pub address: u32,
 }
 
+/// Header stored at the front of each nonzero `CODE` resource.
+///
+/// MPW-style near segments use the documented `tabOff, nEntries`
+/// format. Symantec/THINK far CODE uses the same four bytes differently:
+/// word 0 stores the first jump-table entry index plus the relocation
+/// flag, and word 1 has bit `$4000` set plus the entry count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeSegmentHeader {
+    /// MPW far-model segment with a 40-byte header (`$FFFF` marker).
+    MpwFar,
+    /// Standard near-model segment: byte offset from the current jump
+    /// table base, plus number of entries owned by the segment.
+    Near { table_offset: u16, entry_count: u16 },
+    /// Symantec/THINK far CODE segment.
+    ThinkFar {
+        has_relocations: bool,
+        first_entry_index: u16,
+        entry_count: u16,
+    },
+}
+
+impl CodeSegmentHeader {
+    const THINK_RELOC_FLAG: u16 = 0x8000;
+    const THINK_FAR_FLAG: u16 = 0x4000;
+
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < 4 {
+            return None;
+        }
+
+        let first = u16::from_be_bytes([data[0], data[1]]);
+        let second = u16::from_be_bytes([data[2], data[3]]);
+        Some(Self::from_words(first, second))
+    }
+
+    pub fn from_words(first: u16, second: u16) -> Self {
+        if first == 0xFFFF {
+            Self::MpwFar
+        } else if (second & Self::THINK_FAR_FLAG) != 0 {
+            Self::ThinkFar {
+                has_relocations: (first & Self::THINK_RELOC_FLAG) != 0,
+                first_entry_index: first & !Self::THINK_RELOC_FLAG,
+                entry_count: second & 0x3FFF,
+            }
+        } else {
+            Self::Near {
+                table_offset: first,
+                entry_count: second,
+            }
+        }
+    }
+
+    pub fn code_header_size(self) -> u32 {
+        match self {
+            Self::MpwFar => 40,
+            Self::Near { .. } | Self::ThinkFar { .. } => 4,
+        }
+    }
+
+    pub fn jump_table_start_offset(self) -> Option<u32> {
+        match self {
+            Self::MpwFar => None,
+            Self::Near { table_offset, .. } => Some(table_offset as u32),
+            Self::ThinkFar {
+                first_entry_index, ..
+            } => Some(first_entry_index as u32 * 8),
+        }
+    }
+
+    pub fn jump_table_entry_count(self) -> Option<u32> {
+        match self {
+            Self::MpwFar => None,
+            Self::Near { entry_count, .. } | Self::ThinkFar { entry_count, .. } => {
+                Some(entry_count as u32)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CodeSegmentHeader;
+
+    #[test]
+    fn parses_think_far_header_entry_index_and_count_flags() {
+        let header = CodeSegmentHeader::from_words(0x8051, 0x4085);
+
+        assert_eq!(
+            header,
+            CodeSegmentHeader::ThinkFar {
+                has_relocations: true,
+                first_entry_index: 0x0051,
+                entry_count: 0x0085,
+            }
+        );
+        assert_eq!(header.code_header_size(), 4);
+        assert_eq!(header.jump_table_start_offset(), Some(0x0051 * 8));
+        assert_eq!(header.jump_table_entry_count(), Some(0x0085));
+    }
+
+    #[test]
+    fn parses_near_and_mpw_far_segment_headers() {
+        let near = CodeSegmentHeader::from_words(0x0018, 0x0002);
+        assert_eq!(
+            near,
+            CodeSegmentHeader::Near {
+                table_offset: 0x0018,
+                entry_count: 2,
+            }
+        );
+        assert_eq!(near.code_header_size(), 4);
+        assert_eq!(near.jump_table_start_offset(), Some(0x0018));
+        assert_eq!(near.jump_table_entry_count(), Some(2));
+
+        let mpw_far = CodeSegmentHeader::from_words(0xFFFF, 0x0000);
+        assert_eq!(mpw_far, CodeSegmentHeader::MpwFar);
+        assert_eq!(mpw_far.code_header_size(), 40);
+        assert_eq!(mpw_far.jump_table_start_offset(), None);
+        assert_eq!(mpw_far.jump_table_entry_count(), None);
+    }
+}
+
 /// State produced by loading a 68k application: parsed CODE 0 header,
 /// resolved A5 placement, jump-table slot vector, per-segment load
 /// addresses, and the initial stack pointer the runner will seed.

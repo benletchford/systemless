@@ -40,6 +40,8 @@ pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
         load_web_pack(runner, file_data)
     } else if is_stuffit_archive(file_data) {
         load_stuffit(runner, file_data)
+    } else if crate::disk_image::looks_like_dc42_or_hfs(file_data) {
+        load_disk_image(runner, file_data)
     } else {
         load_macbinary(runner, file_data)
     }
@@ -53,16 +55,12 @@ pub fn pack_stuffit_for_web(file_data: &[u8]) -> Result<Vec<u8>, String> {
     let archive =
         SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
 
-    let file_entries: Vec<_> = archive.entries.iter().filter(|e| !e.is_folder).collect();
+    let file_entries = collect_stuffit_payload_files(&archive)?;
     let mut out = Vec::new();
     out.extend_from_slice(WEB_PACK_MAGIC);
     out.extend_from_slice(&(file_entries.len() as u32).to_be_bytes());
 
     for entry in file_entries {
-        let (data, rsrc) = entry
-            .decompressed_forks()
-            .map_err(|e| format!("Decompress error: {:?}", e))?;
-
         let name_bytes = entry.name.as_bytes();
         if name_bytes.len() > u16::MAX as usize {
             return Err(format!(
@@ -75,10 +73,10 @@ pub fn pack_stuffit_for_web(file_data: &[u8]) -> Result<Vec<u8>, String> {
         out.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
         out.extend_from_slice(name_bytes);
         out.extend_from_slice(&entry.file_type);
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        out.extend_from_slice(&data);
-        out.extend_from_slice(&(rsrc.len() as u32).to_be_bytes());
-        out.extend_from_slice(&rsrc);
+        out.extend_from_slice(&(entry.data.len() as u32).to_be_bytes());
+        out.extend_from_slice(&entry.data);
+        out.extend_from_slice(&(entry.rsrc.len() as u32).to_be_bytes());
+        out.extend_from_slice(&entry.rsrc);
     }
 
     Ok(out)
@@ -89,6 +87,19 @@ pub fn load_game_from_path(
     runner: &mut FixtureRunner,
     path: &std::path::Path,
 ) -> Result<LoadedApp, String> {
+    let file_data =
+        std::fs::read(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+    // Explicit containers in the data fork win over any host macOS resource
+    // fork. DiskCopy images extracted by unar, for example, can carry a small
+    // Finder metadata resource fork on the host; that is not the launchable app.
+    if file_data.starts_with(WEB_PACK_MAGIC)
+        || is_stuffit_archive(&file_data)
+        || crate::disk_image::looks_like_dc42_or_hfs(&file_data)
+    {
+        return load_game(runner, &file_data);
+    }
+
     // Try loading resource fork from macOS extended attribute path first
     let rsrc_path = path.join("..namedfork/rsrc");
     if let Ok(rsrc_data) = std::fs::read(&rsrc_path) {
@@ -108,9 +119,7 @@ pub fn load_game_from_path(
         }
     }
 
-    // Fall back to reading the file and detecting format
-    let file_data =
-        std::fs::read(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    // Fall back to detecting MacBinary/raw resource-fork style payloads.
     load_game(runner, &file_data)
 }
 
@@ -149,24 +158,15 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             .decompressed_forks()
             .map_err(|e| format!("Decompress error: {:?}", e))?;
 
-        let data_len = data.len();
-
-        insert_forks_into_vfs(
-            runner,
+        let payload = payload_from_forks(
             &entry.name,
             data,
-            rsrc.clone(),
+            rsrc,
             entry.file_type,
             entry.creator,
             entry.finder_flags,
-        );
-        maybe_select_executable(
-            &mut executable_entry,
-            &entry.name,
-            &rsrc,
-            &entry.file_type == b"APPL",
-            data_len,
-        );
+        )?;
+        insert_payload_into_vfs(runner, payload, &mut executable_entry);
     }
 
     log_vfs(runner);
@@ -211,6 +211,12 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
         }
         return load_stuffit(runner, data_fork);
     }
+    if crate::disk_image::looks_like_dc42_or_hfs(data_fork) {
+        if crate::runner::trace_load_enabled() {
+            eprintln!("[LOAD] MacBinary data fork contains HFS disk image");
+        }
+        return load_disk_image(runner, data_fork);
+    }
 
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Loading from MacBinary format");
@@ -226,6 +232,31 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
 
     let rsrc_data = &file_data[rsrc_start..rsrc_start + rsrc_len];
     let fork = ResourceFork::parse(rsrc_data).ok_or("Failed to parse resource fork")?;
+    runner
+        .load_app(&fork)
+        .ok_or_else(|| "Failed to load app".to_string())
+}
+
+fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
+    let image = crate::disk_image::extract_dc42_or_hfs(file_data)?
+        .ok_or_else(|| "Not a DC42/raw HFS disk image".to_string())?;
+
+    let mut executable_entry: Option<(String, Vec<u8>, bool, usize)> = None;
+    insert_payload_into_vfs(
+        runner,
+        payload_from_disk_image(image),
+        &mut executable_entry,
+    );
+    log_vfs(runner);
+
+    let (exe_name, rsrc_data, _, _) =
+        executable_entry.ok_or("No executable found in disk image")?;
+    if crate::runner::trace_load_enabled() {
+        eprintln!("[LOAD] Selected executable: {}", exe_name);
+    }
+    runner.dispatcher_mut().set_launched_app_path(&exe_name);
+
+    let fork = ResourceFork::parse(&rsrc_data).ok_or("Failed to parse resource fork")?;
     runner
         .load_app(&fork)
         .ok_or_else(|| "Failed to load app".to_string())
@@ -316,6 +347,135 @@ fn insert_forks_into_vfs(
         creator,
         finder_flags,
     );
+}
+
+#[derive(Debug)]
+struct Payload {
+    dirs: Vec<String>,
+    files: Vec<PayloadFile>,
+}
+
+#[derive(Debug)]
+struct PayloadFile {
+    name: String,
+    data: Vec<u8>,
+    rsrc: Vec<u8>,
+    file_type: [u8; 4],
+    creator: [u8; 4],
+    finder_flags: u16,
+}
+
+fn collect_stuffit_payload_files(archive: &SitArchive) -> Result<Vec<PayloadFile>, String> {
+    let mut files = Vec::new();
+    for entry in archive.entries.iter().filter(|entry| !entry.is_folder) {
+        let (data, rsrc) = entry
+            .decompressed_forks()
+            .map_err(|e| format!("Decompress error: {:?}", e))?;
+        let payload = payload_from_forks(
+            &entry.name,
+            data,
+            rsrc,
+            entry.file_type,
+            entry.creator,
+            entry.finder_flags,
+        )?;
+        files.extend(payload.files);
+    }
+    Ok(files)
+}
+
+fn payload_from_forks(
+    name: &str,
+    data: Vec<u8>,
+    rsrc: Vec<u8>,
+    file_type: [u8; 4],
+    creator: [u8; 4],
+    finder_flags: u16,
+) -> Result<Payload, String> {
+    if let Some(image) = crate::disk_image::extract_dc42_or_hfs(&data)
+        .map_err(|e| format!("Disk image {name}: {e}"))?
+    {
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Extracting HFS disk image \"{}\" from data fork: volume \"{}\", {} files",
+                name,
+                image.volume_name,
+                image.files.len()
+            );
+        }
+        return Ok(payload_from_disk_image(image));
+    }
+
+    if let Some(image) = crate::disk_image::extract_dc42_or_hfs(&rsrc)
+        .map_err(|e| format!("Disk image {name}: {e}"))?
+    {
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Extracting HFS disk image \"{}\" from resource fork: volume \"{}\", {} files",
+                name,
+                image.volume_name,
+                image.files.len()
+            );
+        }
+        return Ok(payload_from_disk_image(image));
+    }
+
+    Ok(Payload {
+        dirs: Vec::new(),
+        files: vec![PayloadFile {
+            name: name.to_string(),
+            data,
+            rsrc,
+            file_type,
+            creator,
+            finder_flags,
+        }],
+    })
+}
+
+fn payload_from_disk_image(image: crate::disk_image::DiskImageContents) -> Payload {
+    Payload {
+        dirs: image.dirs,
+        files: image
+            .files
+            .into_iter()
+            .map(|file| PayloadFile {
+                name: file.path,
+                data: file.data,
+                rsrc: file.rsrc,
+                file_type: file.file_type,
+                creator: file.creator,
+                finder_flags: file.finder_flags,
+            })
+            .collect(),
+    }
+}
+
+fn insert_payload_into_vfs(
+    runner: &mut FixtureRunner,
+    payload: Payload,
+    executable_entry: &mut Option<(String, Vec<u8>, bool, usize)>,
+) {
+    for dir in payload.dirs {
+        let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&dir);
+        runner.dispatcher_mut().ensure_vfs_directory(&normalized);
+    }
+
+    for file in payload.files {
+        let data_len = file.data.len();
+        let is_appl = file.file_type == *b"APPL";
+        let rsrc = file.rsrc;
+        insert_forks_into_vfs(
+            runner,
+            &file.name,
+            file.data,
+            rsrc.clone(),
+            file.file_type,
+            file.creator,
+            file.finder_flags,
+        );
+        maybe_select_executable(executable_entry, &file.name, &rsrc, is_appl, data_len);
+    }
 }
 
 fn maybe_select_executable(

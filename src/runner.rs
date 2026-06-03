@@ -1,7 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::cpu::{M68kCpu, Register, StepResult};
-use crate::loader::{Code0Header, JumpTableEntry, LoadedApp};
+use crate::loader::{Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp};
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::TrapDispatcher;
@@ -3354,12 +3354,15 @@ fn load_app_generic<M: MemoryBus>(
         if code_res.id == 0 || code_res.data.len() < 4 {
             continue;
         }
-        let first_word = u16::from_be_bytes([code_res.data[0], code_res.data[1]]);
-        if first_word == 0xFFFF {
+        let Some(segment_header) = CodeSegmentHeader::parse(&code_res.data) else {
             continue;
-        }
-        let tab_off = first_word as u32;
-        let n_entries = u16::from_be_bytes([code_res.data[2], code_res.data[3]]) as u32;
+        };
+        let Some(tab_off) = segment_header.jump_table_start_offset() else {
+            continue;
+        };
+        let Some(n_entries) = segment_header.jump_table_entry_count() else {
+            continue;
+        };
         let end = jt_base + tab_off + n_entries * 8;
         if end > max_jt_end {
             max_jt_end = end;
@@ -3405,19 +3408,22 @@ fn load_app_generic<M: MemoryBus>(
         let user_addr = current_load_ptr + 4;
 
         // Dump segment header info
-        let first_word = if code_res.data.len() >= 2 {
-            u16::from_be_bytes([code_res.data[0], code_res.data[1]])
-        } else {
-            0
-        };
-        let hdr_info = if first_word == 0xFFFF {
-            "far-model".to_string()
-        } else if code_res.data.len() >= 4 {
-            let tab_off = first_word;
-            let n_entries = u16::from_be_bytes([code_res.data[2], code_res.data[3]]);
-            format!("near-model taboff={} n={}", tab_off, n_entries)
-        } else {
-            "unknown".to_string()
+        let segment_header = CodeSegmentHeader::parse(&code_res.data);
+        let hdr_info = match segment_header {
+            Some(CodeSegmentHeader::MpwFar) => "mpw-far-model".to_string(),
+            Some(CodeSegmentHeader::Near {
+                table_offset,
+                entry_count,
+            }) => format!("near-model taboff={} n={}", table_offset, entry_count),
+            Some(CodeSegmentHeader::ThinkFar {
+                has_relocations,
+                first_entry_index,
+                entry_count,
+            }) => format!(
+                "think-far-model first_jt={} n={} relocs={}",
+                first_entry_index, entry_count, has_relocations
+            ),
+            None => "unknown".to_string(),
         };
         if trace_load_enabled() {
             eprintln!(
@@ -3435,12 +3441,7 @@ fn load_app_generic<M: MemoryBus>(
         // Only patch JT for CODE 0's entries (far-model segments from the
         // original CODE 0 parse). Near-model segments get their JT entries
         // populated by the app's startup code and patched by LoadSeg.
-        let first_word = if code_res.data.len() >= 2 {
-            u16::from_be_bytes([code_res.data[0], code_res.data[1]])
-        } else {
-            0
-        };
-        if first_word == 0xFFFF {
+        if matches!(segment_header, Some(CodeSegmentHeader::MpwFar)) {
             // Far-model CODE segment (40-byte header)
             let header_size = 40u32;
             for (i, entry) in jump_table.iter_mut().enumerate() {

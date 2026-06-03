@@ -1,6 +1,7 @@
 //! Resource Manager and File Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
+use crate::loader::CodeSegmentHeader;
 use crate::machine_profile::ORACLE_MACHINE_PROFILE;
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
@@ -171,6 +172,368 @@ impl super::TrapDispatcher {
         bus.write_word(entry_addr + 2, 0x4EF9); // JMP.L
         bus.write_long(entry_addr + 4, code_addr);
         code_addr
+    }
+
+    fn refresh_segment_from_resource(
+        &self,
+        bus: &mut MacMemoryBus,
+        seg_num: i16,
+        seg_addr: u32,
+        trace_loadseg: bool,
+    ) {
+        let Some(resources) = self.resources.as_ref() else {
+            return;
+        };
+
+        let code_key = (*b"CODE", seg_num);
+        let ptr = resources
+            .files
+            .get(&0)
+            .and_then(|file| file.loaded.get(&code_key))
+            .copied()
+            .or_else(|| {
+                self.resource_search_order().into_iter().find_map(|refnum| {
+                    resources
+                        .files
+                        .get(&refnum)
+                        .and_then(|file| file.loaded.get(&code_key))
+                        .copied()
+                })
+            });
+        let Some(ptr) = ptr else {
+            return;
+        };
+
+        let Some(resource_size) = bus.get_alloc_size(ptr) else {
+            return;
+        };
+        if resource_size == 0 {
+            return;
+        }
+
+        let loaded_size = if seg_addr >= 4 {
+            bus.read_long(seg_addr - 4)
+        } else {
+            0
+        };
+        let copy_len = resource_size.min(loaded_size);
+        if copy_len == 0 {
+            return;
+        }
+
+        let bytes = bus.read_bytes(ptr, copy_len as usize);
+        bus.write_bytes(seg_addr, &bytes);
+
+        if trace_loadseg {
+            let preview: Vec<String> = bytes
+                .iter()
+                .take(16)
+                .map(|byte| format!("{byte:02X}"))
+                .collect();
+            eprintln!(
+                "[TRAP] LoadSeg: refreshed CODE {} from resource ptr=${:08X} len={} copied={} preview={}",
+                seg_num,
+                ptr,
+                resource_size,
+                copy_len,
+                preview.join(" ")
+            );
+            if resource_size != loaded_size {
+                eprintln!(
+                    "[TRAP] LoadSeg: CODE {} resource size {} differs from segment buffer {}",
+                    seg_num, resource_size, loaded_size
+                );
+            }
+        }
+    }
+
+    fn allocate_loadseg_getresource_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if let Some(addr) = self.loadseg_getresource_trampoline_addr {
+            return addr;
+        }
+        let addr = bus.alloc(8);
+        bus.write_word(addr, 0x303C); // MOVE.W #imm, D0
+        bus.write_word(addr + 2, super::dispatch::LOADSEG_GETRESOURCE_SENTINEL);
+        bus.write_word(addr + 4, 0xA816); // _Pack8
+        self.loadseg_getresource_trampoline_addr = Some(addr);
+        addr
+    }
+
+    fn save_d_regs<C: CpuOps>(cpu: &C) -> [u32; 8] {
+        [
+            cpu.read_reg(Register::D0),
+            cpu.read_reg(Register::D1),
+            cpu.read_reg(Register::D2),
+            cpu.read_reg(Register::D3),
+            cpu.read_reg(Register::D4),
+            cpu.read_reg(Register::D5),
+            cpu.read_reg(Register::D6),
+            cpu.read_reg(Register::D7),
+        ]
+    }
+
+    fn save_a_regs<C: CpuOps>(cpu: &C) -> [u32; 8] {
+        [
+            cpu.read_reg(Register::A0),
+            cpu.read_reg(Register::A1),
+            cpu.read_reg(Register::A2),
+            cpu.read_reg(Register::A3),
+            cpu.read_reg(Register::A4),
+            cpu.read_reg(Register::A5),
+            cpu.read_reg(Register::A6),
+            cpu.read_reg(Register::A7),
+        ]
+    }
+
+    fn restore_regs<C: CpuOps>(cpu: &mut C, d_regs: [u32; 8], a_regs: [u32; 8]) {
+        for (index, value) in d_regs.into_iter().enumerate() {
+            cpu.write_reg(
+                match index {
+                    0 => Register::D0,
+                    1 => Register::D1,
+                    2 => Register::D2,
+                    3 => Register::D3,
+                    4 => Register::D4,
+                    5 => Register::D5,
+                    6 => Register::D6,
+                    _ => Register::D7,
+                },
+                value,
+            );
+        }
+        for (index, value) in a_regs.into_iter().enumerate() {
+            cpu.write_reg(
+                match index {
+                    0 => Register::A0,
+                    1 => Register::A1,
+                    2 => Register::A2,
+                    3 => Register::A3,
+                    4 => Register::A4,
+                    5 => Register::A5,
+                    6 => Register::A6,
+                    _ => Register::A7,
+                },
+                value,
+            );
+        }
+    }
+
+    fn maybe_inject_native_getresource_for_loadseg<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        seg_num: i16,
+        entry_addr: u32,
+        trace_loadseg: bool,
+    ) -> bool {
+        if self.loadseg_getresource_state.is_some() {
+            return false;
+        }
+
+        let Some(handler_addr) = self.native_trap_table.get(&0xA9A0).copied() else {
+            return false;
+        };
+
+        let trampoline = self.allocate_loadseg_getresource_trampoline(bus);
+        let saved_sp = cpu.read_reg(Register::A7);
+        let call_sp = saved_sp.wrapping_sub(14);
+
+        // Native trap handlers are entered as if the trap dispatcher did a
+        // JSR to them: return PC first, then the original Pascal arguments.
+        bus.write_long(call_sp, trampoline);
+        bus.write_word(call_sp + 4, seg_num as u16);
+        bus.write_long(call_sp + 6, u32::from_be_bytes(*b"CODE"));
+        bus.write_long(call_sp + 10, 0);
+
+        self.loadseg_getresource_state = Some(super::dispatch::LoadSegGetResourceState {
+            seg_num,
+            entry_addr,
+            result_sp: call_sp + 10,
+            d_regs: Self::save_d_regs(cpu),
+            a_regs: Self::save_a_regs(cpu),
+        });
+
+        cpu.write_reg(Register::A7, call_sp);
+        cpu.write_reg(Register::PC, handler_addr);
+
+        if trace_loadseg {
+            eprintln!(
+                "[TRAP] LoadSeg: invoking native GetResource('CODE', {}) handler=${:08X} trampoline=${:08X}",
+                seg_num, handler_addr, trampoline
+            );
+        }
+
+        true
+    }
+
+    pub(crate) fn resume_loadseg_after_getresource<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+    ) -> Result<()> {
+        let state = self
+            .loadseg_getresource_state
+            .take()
+            .expect("LoadSeg GetResource trampoline fired without saved state");
+        let trace_loadseg = trace_loadseg_enabled();
+        let handle = bus.read_long(state.result_sp);
+
+        if trace_loadseg {
+            let ptr = if handle == 0 {
+                0
+            } else {
+                bus.read_long(handle)
+            };
+            eprintln!(
+                "[TRAP] LoadSeg: native GetResource returned handle=${:08X} ptr=${:08X} for CODE {}",
+                handle, ptr, state.seg_num
+            );
+        }
+
+        Self::restore_regs(cpu, state.d_regs, state.a_regs);
+        self.finish_loadseg(bus, cpu, state.seg_num, state.entry_addr, true)
+    }
+
+    fn finish_loadseg<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        seg_num: i16,
+        entry_addr: u32,
+        refresh_from_resource: bool,
+    ) -> Result<()> {
+        let trace_loadseg = trace_loadseg_enabled();
+        if let Some(&seg_addr) = self.segment_map.get(&{ seg_num }) {
+            if refresh_from_resource {
+                self.refresh_segment_from_resource(bus, seg_num, seg_addr, trace_loadseg);
+            }
+
+            let segment_header =
+                CodeSegmentHeader::from_words(bus.read_word(seg_addr), bus.read_word(seg_addr + 2));
+            let header_size = segment_header.code_header_size();
+
+            // Read segment header. Standard near segments store byte offset
+            // + entry count. Symantec/THINK far segments store first
+            // jump-table entry index + entry count.
+            if let (Some(tab_off), Some(n_entries)) = (
+                segment_header.jump_table_start_offset(),
+                segment_header.jump_table_entry_count(),
+            ) {
+                let a5 = cpu.read_reg(Register::A5);
+                let cur_jt_offset = bus.read_word(addr::CUR_JT_OFFSET) as u32;
+                let ptr_base = a5 + tab_off + cur_jt_offset;
+
+                if trace_loadseg {
+                    let header_desc = match segment_header {
+                        CodeSegmentHeader::Near {
+                            table_offset,
+                            entry_count,
+                        } => format!("near taboff={} n={}", table_offset, entry_count),
+                        CodeSegmentHeader::ThinkFar {
+                            has_relocations,
+                            first_entry_index,
+                            entry_count,
+                        } => format!(
+                            "think-far first_jt={} n={} relocs={}",
+                            first_entry_index, entry_count, has_relocations
+                        ),
+                        CodeSegmentHeader::MpwFar => "mpw-far".to_string(),
+                    };
+                    eprintln!(
+                        "[TRAP] LoadSeg seg={}: {} ptr=${:08X}",
+                        seg_num, header_desc, ptr_base
+                    );
+                }
+
+                let mut patched = 0u32;
+                for i in 0..n_entries {
+                    let p = ptr_base + i * 8;
+                    // Skip already-loaded entries (JMP.L = 0x4EF9 at +2)
+                    if bus.read_word(p + 2) == 0x4EF9 {
+                        continue;
+                    }
+                    Self::patch_loadseg_entry(bus, seg_num, seg_addr, header_size, p);
+                    patched += 1;
+                }
+                if trace_loadseg {
+                    eprintln!(
+                        "[TRAP] LoadSeg: patched {}/{} entries for seg {}",
+                        patched, n_entries, seg_num
+                    );
+                }
+            }
+
+            // Ensure the calling entry itself was patched. In Think C format,
+            // the calling entry may lie outside the segment header's taboff
+            // range (entries for a given segment can be scattered across the JT).
+            if bus.read_word(entry_addr + 2) != 0x4EF9 {
+                let code_addr =
+                    Self::patch_loadseg_entry(bus, seg_num, seg_addr, header_size, entry_addr);
+                if trace_loadseg {
+                    eprintln!(
+                        "[TRAP] LoadSeg: patched calling entry at ${:08X} -> ${:08X}",
+                        entry_addr, code_addr
+                    );
+                }
+            }
+
+            // Apply environment-driven byte patches now that this segment's
+            // code is in RAM. Format:
+            //   SYSTEMLESS_PATCH_BYTES="0xADDR=HEXBYTES,0xADDR2=BYTES2"
+            // Used to short-circuit shareware-validation entry points that we
+            // don't have the keys for. POD MARS Master's "I'm evaluating" /
+            // "Register now" buttons share a click-validation function at
+            // $00258440 that wants a 16-char Name+Reg key combo we can't
+            // compute; patching the entry to `MOVEQ #1,D0 ; UNLK A6 ; RTS`
+            // (704E5E4E75) lets the click flow through to gameplay.
+            if let Ok(spec) = std::env::var("SYSTEMLESS_PATCH_BYTES") {
+                for chunk in spec.split(',') {
+                    let chunk = chunk.trim();
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    let Some((addr_str, bytes_str)) = chunk.split_once('=') else {
+                        continue;
+                    };
+                    let addr_str = addr_str
+                        .trim()
+                        .trim_start_matches("0x")
+                        .trim_start_matches("0X");
+                    let Ok(addr) = u32::from_str_radix(addr_str, 16) else {
+                        continue;
+                    };
+                    let bytes_str = bytes_str.trim();
+                    if bytes_str.len() % 2 != 0 {
+                        continue;
+                    }
+                    let mut written = 0u32;
+                    for i in 0..(bytes_str.len() / 2) {
+                        let hex = &bytes_str[i * 2..i * 2 + 2];
+                        let Ok(byte) = u8::from_str_radix(hex, 16) else {
+                            continue;
+                        };
+                        bus.write_byte(addr + written, byte);
+                        written += 1;
+                    }
+                    eprintln!(
+                        "[PATCH] Wrote {} bytes at ${:08X} (post-LoadSeg seg={})",
+                        written, addr, seg_num
+                    );
+                }
+            }
+
+            // Re-execute the calling JT entry. After patching, entry+2 =
+            // JMP.L instruction.
+            let jmp_addr = entry_addr + 2;
+            if trace_loadseg {
+                eprintln!("[TRAP] LoadSeg: re-executing JT entry at ${:08X}", jmp_addr);
+            }
+            cpu.write_reg(Register::PC, jmp_addr);
+            Ok(())
+        } else {
+            eprintln!("ERROR: LoadSeg unknown segment {}", seg_num);
+            Err(Error::Halted)
+        }
     }
 
     fn handle_data_starts_with_ajcp(&self, bus: &MacMemoryBus, handle: u32) -> bool {
@@ -1381,150 +1744,78 @@ impl super::TrapDispatcher {
                 let pc = cpu.read_reg(Register::PC); // past A9F0
                 let a9f0_addr = pc.wrapping_sub(2);
 
+                let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
+                let original_trap_return = self.current_trap_caller;
+
                 // Detect format: in standard format, [A9F0-4] = 3F3C (MOVE.W).
                 // In Think C format, A9F0 is at entry+0 and [A9F0+2] = 0x0000.
-                let word_before_seg = bus.read_word(a9f0_addr.wrapping_sub(4));
-                let is_standard = word_before_seg == 0x3F3C;
+                //
+                // Native LoadSeg handlers save the previous trap address via
+                // GetTrapAddress and later jump to its auto-pop form (e.g.
+                // $ADF0). At that point PC names the tiny old-trap stub, not
+                // the original jump-table entry. Use the auto-pop return
+                // address to recover the caller's entry instead.
+                let old_trap_standard = auto_pop_old_trap
+                    && original_trap_return.is_some_and(|return_pc| {
+                        bus.read_word(return_pc.wrapping_sub(6)) == 0x3F3C
+                            && (bus.read_word(return_pc.wrapping_sub(2)) & !0x0400u16) == 0xA9F0
+                    });
+                let old_trap_think = auto_pop_old_trap
+                    && !old_trap_standard
+                    && original_trap_return.is_some_and(|return_pc| {
+                        let trap_addr = return_pc.wrapping_sub(2);
+                        (bus.read_word(trap_addr) & !0x0400u16) == 0xA9F0
+                            && bus.read_word(trap_addr + 2) == 0x0000
+                    });
 
-                let (seg_num, entry_addr) = if is_standard {
+                let word_before_seg = bus.read_word(a9f0_addr.wrapping_sub(4));
+                let is_standard = old_trap_standard || word_before_seg == 0x3F3C;
+
+                let (seg_num, entry_addr, fmt, refresh_from_resource) = if old_trap_standard {
+                    let return_pc = original_trap_return.unwrap();
+                    let sn = bus.read_word(sp) as i16;
+                    cpu.write_reg(Register::A7, sp + 2);
+                    (sn, return_pc.wrapping_sub(8), "mpw-oldtrap", true)
+                } else if old_trap_think {
+                    let return_pc = original_trap_return.unwrap();
+                    let entry = return_pc.wrapping_sub(2);
+                    let sn = bus.read_word(entry + 6) as i16;
+                    (sn, entry, "thinkc-oldtrap", true)
+                } else if is_standard {
                     // Standard: seg# was pushed by MOVE.W, pop it
                     let sn = bus.read_word(sp) as i16;
                     cpu.write_reg(Register::A7, sp + 2);
                     // Entry starts 6 bytes before A9F0
-                    (sn, a9f0_addr.wrapping_sub(6))
+                    (sn, a9f0_addr.wrapping_sub(6), "mpw", false)
                 } else {
                     // Think C: A9F0 at entry+0, seg# at entry+6, offset at entry+4
                     // Stack has JSR return address (don't pop segment number)
                     let entry = a9f0_addr; // A9F0 IS entry+0
                     let sn = bus.read_word(entry + 6) as i16;
-                    (sn, entry)
+                    (sn, entry, "thinkc", false)
                 };
 
                 let trace_loadseg = trace_loadseg_enabled();
                 if trace_loadseg {
                     eprintln!(
                         "[TRAP] LoadSeg(seg={}, fmt={}) entry=${:08X}",
-                        seg_num,
-                        if is_standard { "mpw" } else { "thinkc" },
-                        entry_addr
+                        seg_num, fmt, entry_addr
                     );
                 }
 
-                if let Some(&seg_addr) = self.segment_map.get(&{ seg_num }) {
-                    let first_word = bus.read_word(seg_addr);
-                    let header_size: u32 = if first_word == 0xFFFF { 40 } else { 4 };
-
-                    // Read segment header: taboff and nentries
-                    // Inside Macintosh Volume II, II-61
-                    if first_word != 0xFFFF {
-                        let tab_off = bus.read_word(seg_addr) as u32;
-                        let n_entries = bus.read_word(seg_addr + 2) as u32;
-                        let a5 = cpu.read_reg(Register::A5);
-                        let cur_jt_offset = bus.read_word(0x0934) as u32;
-                        let ptr_base = a5 + tab_off + cur_jt_offset;
-
-                        if trace_loadseg {
-                            eprintln!(
-                                "[TRAP] LoadSeg seg={}: taboff={} n={} ptr=${:08X}",
-                                seg_num, tab_off, n_entries, ptr_base
-                            );
-                        }
-
-                        let mut patched = 0u32;
-                        for i in 0..n_entries {
-                            let p = ptr_base + i * 8;
-                            // Skip already-loaded entries (JMP.L = 0x4EF9 at +2)
-                            if bus.read_word(p + 2) == 0x4EF9 {
-                                continue;
-                            }
-                            Self::patch_loadseg_entry(bus, seg_num, seg_addr, header_size, p);
-                            patched += 1;
-                        }
-                        if trace_loadseg {
-                            eprintln!(
-                                "[TRAP] LoadSeg: patched {}/{} entries for seg {}",
-                                patched, n_entries, seg_num
-                            );
-                        }
-                    }
-
-                    // Ensure the calling entry itself was patched.
-                    // In Think C format, the calling entry may lie outside the
-                    // segment header's taboff range (entries for a given segment
-                    // can be scattered across the JT).
-                    if bus.read_word(entry_addr + 2) != 0x4EF9 {
-                        let code_addr = Self::patch_loadseg_entry(
-                            bus,
-                            seg_num,
-                            seg_addr,
-                            header_size,
-                            entry_addr,
-                        );
-                        if trace_loadseg {
-                            eprintln!(
-                                "[TRAP] LoadSeg: patched calling entry at ${:08X} -> ${:08X}",
-                                entry_addr, code_addr
-                            );
-                        }
-                    }
-
-                    // Apply environment-driven byte patches now that this
-                    // segment's code is in RAM. Format:
-                    //   SYSTEMLESS_PATCH_BYTES="0xADDR=HEXBYTES,0xADDR2=BYTES2"
-                    // Used to short-circuit shareware-validation entry
-                    // points that we don't have the keys for. POD MARS
-                    // Master's "I'm evaluating" / "Register now" buttons
-                    // share a click-validation function at $00258440 that
-                    // wants a 16-char Name+Reg key combo we can't compute;
-                    // patching the entry to `MOVEQ #1,D0 ; UNLK A6 ; RTS`
-                    // (704E5E4E75) lets the click flow through to gameplay.
-                    if let Ok(spec) = std::env::var("SYSTEMLESS_PATCH_BYTES") {
-                        for chunk in spec.split(',') {
-                            let chunk = chunk.trim();
-                            if chunk.is_empty() {
-                                continue;
-                            }
-                            let Some((addr_str, bytes_str)) = chunk.split_once('=') else {
-                                continue;
-                            };
-                            let addr_str = addr_str
-                                .trim()
-                                .trim_start_matches("0x")
-                                .trim_start_matches("0X");
-                            let Ok(addr) = u32::from_str_radix(addr_str, 16) else {
-                                continue;
-                            };
-                            let bytes_str = bytes_str.trim();
-                            if bytes_str.len() % 2 != 0 {
-                                continue;
-                            }
-                            let mut written = 0u32;
-                            for i in 0..(bytes_str.len() / 2) {
-                                let hex = &bytes_str[i * 2..i * 2 + 2];
-                                let Ok(byte) = u8::from_str_radix(hex, 16) else {
-                                    continue;
-                                };
-                                bus.write_byte(addr + written, byte);
-                                written += 1;
-                            }
-                            eprintln!(
-                                "[PATCH] Wrote {} bytes at ${:08X} (post-LoadSeg seg={})",
-                                written, addr, seg_num
-                            );
-                        }
-                    }
-
-                    // Re-execute the calling JT entry.
-                    // After patching, entry+2 = JMP.L instruction.
-                    let jmp_addr = entry_addr + 2;
-                    if trace_loadseg {
-                        eprintln!("[TRAP] LoadSeg: re-executing JT entry at ${:08X}", jmp_addr);
-                    }
-                    cpu.write_reg(Register::PC, jmp_addr);
+                if refresh_from_resource {
+                    self.preserve_auto_pop_pc_once = auto_pop_old_trap;
+                    self.finish_loadseg(bus, cpu, seg_num, entry_addr, true)
+                } else if self.maybe_inject_native_getresource_for_loadseg(
+                    bus,
+                    cpu,
+                    seg_num,
+                    entry_addr,
+                    trace_loadseg,
+                ) {
                     Ok(())
                 } else {
-                    eprintln!("ERROR: LoadSeg unknown segment {}", seg_num);
-                    Err(Error::Halted)
+                    self.finish_loadseg(bus, cpu, seg_num, entry_addr, false)
                 }
             }
 
@@ -8428,6 +8719,57 @@ mod tests {
     }
 
     #[test]
+    fn loadseg_auto_pop_old_trap_uses_original_mpw_caller_entry() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let seg_addr = 0x220000u32;
+        bus.write_word(seg_addr, 0x0000);
+        bus.write_word(seg_addr + 2, 0x0000);
+        disp.register_segments(HashMap::from([(2i16, seg_addr)]));
+        disp.native_trap_table.insert(0xA9A0, 0x310000);
+
+        let entry_addr = 0x240000u32;
+        bus.write_word(entry_addr, 0x0010);
+        bus.write_word(entry_addr + 2, 0x3F3C);
+        bus.write_word(entry_addr + 4, 0x0002);
+        bus.write_word(entry_addr + 6, 0xA9F0);
+
+        let old_trap_stub = 0x300000u32;
+        bus.write_word(old_trap_stub, 0xADF0);
+        bus.write_word(old_trap_stub + 2, 0x0000);
+        bus.write_word(old_trap_stub + 4, 0x4EB9);
+        bus.write_long(old_trap_stub + 6, 0x00011111);
+
+        bus.write_long(TEST_SP, entry_addr + 8);
+        bus.write_word(TEST_SP + 4, 2);
+        bus.write_word(TEST_SP + 6, 0xBEEF);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, old_trap_stub + 2);
+
+        call_trap_word(&mut disp, 0xADF0, &mut cpu, &mut bus).unwrap();
+
+        assert!(
+            disp.loadseg_getresource_state.is_none(),
+            "native LoadSeg old-trap fallback must not recursively invoke native GetResource"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            cpu.read_reg(Register::PC),
+            entry_addr + 2,
+            "LoadSeg should re-enter the patched original jump-table entry"
+        );
+        assert_eq!(bus.read_word(TEST_SP + 6), 0xBEEF);
+
+        assert_eq!(bus.read_word(entry_addr), 2);
+        assert_eq!(bus.read_word(entry_addr + 2), 0x4EF9);
+        assert_eq!(bus.read_long(entry_addr + 4), seg_addr + 4 + 0x0010);
+
+        assert_eq!(bus.read_word(old_trap_stub), 0xADF0);
+        assert_eq!(bus.read_word(old_trap_stub + 2), 0x0000);
+        assert_eq!(bus.read_word(old_trap_stub + 4), 0x4EB9);
+    }
+
+    #[test]
     fn loadseg_patches_all_entries_for_loaded_segment() {
         // Inside Macintosh Volume II (1985), pp. II-60 to II-61:
         // LoadSeg patches every unloaded jump-table entry for the segment
@@ -8465,6 +8807,218 @@ mod tests {
         assert_eq!(bus.read_word(island_addr + 8), 1);
         assert_eq!(bus.read_word(island_addr + 10), 0x4EF9);
         assert_eq!(bus.read_long(island_addr + 12), seg_addr + 8);
+    }
+
+    #[test]
+    fn loadseg_patches_think_far_header_entry_range() {
+        // Symantec/THINK far CODE reuses the first four bytes as
+        // first-JT-entry index and entry count, with flag bits set. LoadSeg
+        // must not treat the flagged count word as a raw near-model count.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let seg_addr = 0x230000u32;
+        bus.write_word(seg_addr, 0x8003); // reloc flag + first JT entry index
+        bus.write_word(seg_addr + 2, 0x4002); // far flag + 2 entries
+        disp.register_segments(HashMap::from([(1i16, seg_addr)]));
+
+        let jt_base = 0x240000u32;
+        bus.write_word(addr::CUR_JT_OFFSET, 0x20);
+        cpu.write_reg(Register::A5, jt_base - 0x20);
+
+        let entry_addr = jt_base + 3 * 8;
+        bus.write_word(entry_addr, 0xA9F0);
+        bus.write_word(entry_addr + 2, 0x0000);
+        bus.write_word(entry_addr + 4, 0x0000); // routine offset
+        bus.write_word(entry_addr + 6, 0x0001); // segment number
+
+        let next_entry_addr = entry_addr + 8;
+        bus.write_word(next_entry_addr, 0xA9F0);
+        bus.write_word(next_entry_addr + 2, 0x0000);
+        bus.write_word(next_entry_addr + 4, 0x0008); // routine offset
+        bus.write_word(next_entry_addr + 6, 0x0001); // segment number
+
+        bus.write_word(next_entry_addr + 8, 0xDEAD);
+
+        cpu.write_reg(Register::PC, entry_addr + 2);
+
+        call(&mut disp, true, 0x1F0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP,
+            "THINK-style LoadSeg entry does not pop a segment word"
+        );
+        assert_eq!(cpu.read_reg(Register::PC), entry_addr + 2);
+
+        assert_eq!(bus.read_word(entry_addr), 1);
+        assert_eq!(bus.read_word(entry_addr + 2), 0x4EF9);
+        assert_eq!(bus.read_long(entry_addr + 4), seg_addr + 4);
+
+        assert_eq!(bus.read_word(next_entry_addr), 1);
+        assert_eq!(bus.read_word(next_entry_addr + 2), 0x4EF9);
+        assert_eq!(bus.read_long(next_entry_addr + 4), seg_addr + 12);
+        assert_eq!(
+            bus.read_word(next_entry_addr + 8),
+            0xDEAD,
+            "flagged THINK entry count should be masked before patching"
+        );
+    }
+
+    #[test]
+    fn loadseg_defers_to_native_getresource_hook_when_installed() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let seg_addr = 0x230000u32;
+        bus.write_word(seg_addr, 0x0000);
+        bus.write_word(seg_addr + 2, 0x0000);
+        disp.register_segments(HashMap::from([(1i16, seg_addr)]));
+        disp.native_trap_table.insert(0xA9A0, 0x300000);
+
+        let island_addr = 0x240000u32;
+        bus.write_word(island_addr, 0x0000);
+        bus.write_word(island_addr + 2, 0x3F3C);
+        bus.write_word(island_addr + 4, 0x0001);
+        bus.write_word(island_addr + 6, 0xA9F0);
+
+        cpu.write_reg(Register::PC, island_addr + 8);
+        cpu.write_reg(Register::D3, 0xD3D3_D3D3);
+        cpu.write_reg(Register::A4, 0xA4A4_A4A4);
+        bus.write_word(TEST_SP, 1u16);
+
+        call(&mut disp, true, 0x1F0, &mut cpu, &mut bus).unwrap();
+
+        let state = disp
+            .loadseg_getresource_state
+            .as_ref()
+            .expect("LoadSeg should be waiting for native GetResource");
+        let call_sp = state.result_sp - 10;
+        assert_eq!(state.seg_num, 1);
+        assert_eq!(state.entry_addr, island_addr);
+        assert_eq!(state.d_regs[3], 0xD3D3_D3D3);
+        assert_eq!(state.a_regs[4], 0xA4A4_A4A4);
+        assert_eq!(state.a_regs[7], TEST_SP + 2);
+
+        assert_eq!(cpu.read_reg(Register::PC), 0x300000);
+        assert_eq!(cpu.read_reg(Register::A7), call_sp);
+        assert_eq!(
+            bus.read_long(call_sp),
+            disp.loadseg_getresource_trampoline_addr.unwrap()
+        );
+        assert_eq!(bus.read_word(call_sp + 4), 1);
+        assert_eq!(bus.read_long(call_sp + 6), u32::from_be_bytes(*b"CODE"));
+        assert_eq!(bus.read_long(state.result_sp), 0);
+
+        assert_eq!(bus.read_word(island_addr), 0x0000);
+        assert_eq!(bus.read_word(island_addr + 2), 0x3F3C);
+    }
+
+    #[test]
+    fn loadseg_getresource_continuation_refreshes_decoded_code_resource() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let seg_addr = 0x230000u32;
+        bus.write_long(seg_addr - 4, 8);
+        bus.write_word(seg_addr, 0x0000);
+        bus.write_word(seg_addr + 2, 0x4002); // encoded/undecoded header
+        disp.register_segments(HashMap::from([(1i16, seg_addr)]));
+
+        let decoded = [
+            0x00, 0x00, 0x00, 0x01, // near header: one entry
+            0x60, 0x00, 0x00, 0x02, // decoded code bytes
+        ];
+        let ptr = setup_resources(&mut disp, &mut bus, b"CODE", 1, &decoded);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"CODE", 1, ptr);
+
+        let island_addr = 0x240000u32;
+        bus.write_word(island_addr, 0x0000);
+        bus.write_word(island_addr + 2, 0x3F3C);
+        bus.write_word(island_addr + 4, 0x0001);
+        bus.write_word(island_addr + 6, 0xA9F0);
+        cpu.write_reg(Register::PC, 0x29CF00);
+        cpu.write_reg(Register::A5, island_addr);
+        cpu.write_reg(Register::A4, 0xA4A4_A4A4);
+
+        disp.loadseg_getresource_state = Some(super::super::dispatch::LoadSegGetResourceState {
+            seg_num: 1,
+            entry_addr: island_addr,
+            result_sp: TEST_SP - 4,
+            d_regs: [0x1010_1010; 8],
+            a_regs: [
+                0xA0A0_A0A0,
+                0xA1A1_A1A1,
+                0xA2A2_A2A2,
+                0xA3A3_A3A3,
+                0xA4A4_A4A4,
+                island_addr,
+                0xA6A6_A6A6,
+                TEST_SP,
+            ],
+        });
+        bus.write_long(TEST_SP - 4, handle);
+
+        disp.resume_loadseg_after_getresource(&mut bus, &mut cpu)
+            .unwrap();
+
+        assert_eq!(bus.read_word(seg_addr), 0x0000);
+        assert_eq!(bus.read_word(seg_addr + 2), 0x0001);
+        assert_eq!(bus.read_long(seg_addr + 4), 0x6000_0002);
+        assert_eq!(cpu.read_reg(Register::A4), 0xA4A4_A4A4);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(cpu.read_reg(Register::PC), island_addr + 2);
+        assert_eq!(bus.read_word(island_addr), 1);
+        assert_eq!(bus.read_word(island_addr + 2), 0x4EF9);
+        assert_eq!(bus.read_long(island_addr + 4), seg_addr + 4);
+    }
+
+    #[test]
+    fn tool_trampoline_bypasses_later_native_trap_handler() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        setup_resources(&mut disp, &mut bus, b"TEST", 7, &[0xAA, 0xBB]);
+
+        let trampoline = disp.get_or_create_tool_trap_trampoline(&mut bus, 0xA9A0);
+        disp.native_trap_table.insert(0xA9A0, 0x300000);
+
+        let return_pc = 0x12345678;
+        bus.write_long(TEST_SP, return_pc);
+        bus.write_word(TEST_SP + 4, 7);
+        bus.write_long(TEST_SP + 6, u32::from_be_bytes(*b"TEST"));
+        bus.write_long(TEST_SP + 10, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, trampoline + 2);
+
+        call_trap_word(&mut disp, 0xADA0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            cpu.read_reg(Register::PC),
+            return_pc,
+            "saved Systemless trampoline should call the original HLE trap"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_ne!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(bus.read_long(TEST_SP + 10), cpu.read_reg(Register::A0));
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn guest_auto_pop_old_trap_stub_bypasses_native_trap_handler() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        setup_resources(&mut disp, &mut bus, b"TEST", 7, &[0xAA, 0xBB]);
+        disp.native_trap_table.insert(0xA9A0, 0x300000);
+
+        let return_pc = 0x12345678;
+        bus.write_long(TEST_SP, return_pc);
+        bus.write_word(TEST_SP + 4, 7);
+        bus.write_long(TEST_SP + 6, u32::from_be_bytes(*b"TEST"));
+        bus.write_long(TEST_SP + 10, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, 0x0029D256);
+
+        call_trap_word(&mut disp, 0xADA0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_ne!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(bus.read_long(TEST_SP + 10), cpu.read_reg(Register::A0));
     }
 
     // ================================================================

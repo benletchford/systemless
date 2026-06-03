@@ -1015,6 +1015,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "hfs-reader"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36a822b987c359fdbdbd791c51a00bb4f7cec2d2b5c843de0288d4efbf212667"
+
+[[package]]
 name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2146,9 +2152,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stuffit"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c7175dc3d553a1f194650fb877e9f717f7b5b48592814f4dc5d02e8f5368974"
+version = "0.1.5"
 dependencies = [
  "clap",
  "encoding_rs",
@@ -2176,6 +2180,7 @@ name = "systemless"
 version = "0.1.9"
 dependencies = [
  "cpal",
+ "hfs-reader",
  "image",
  "libm",
  "m68k",

@@ -2513,6 +2513,10 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                if selector == super::dispatch::LOADSEG_GETRESOURCE_SENTINEL {
+                    return Some(self.resume_loadseg_after_getresource(bus, cpu));
+                }
+
                 // Trampoline selector — when an AE handler we dispatched
                 // returns, its `RTD` lands on a tiny `MOVE.W #$FEFE, D0;
                 // _Pack8` stub that re-enters Pack8 with this sentinel.

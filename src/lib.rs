@@ -46,6 +46,7 @@ pub mod runner;
 pub mod sound;
 pub mod trap;
 
+mod disk_image;
 mod error;
 
 pub use error::{Error, Result};

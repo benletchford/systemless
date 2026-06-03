@@ -31,6 +31,7 @@ static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
 static TRACE_RESFILE: OnceLock<bool> = OnceLock::new();
 static TRACE_QUICKTIME: OnceLock<bool> = OnceLock::new();
 static TRACE_PC_TARGET: OnceLock<Option<u32>> = OnceLock::new();
+static TRACE_NATIVE_TRAPS: OnceLock<bool> = OnceLock::new();
 
 /// File-backed sink for `SYSTEMLESS_TRACE_TRAP_PCS=<filepath>`. When set,
 /// every A-line trap dispatch appends a `<pc:08X> <trap:04X>\n` line to
@@ -122,6 +123,10 @@ pub(crate) fn trace_input_enabled() -> bool {
 
 fn trace_sound_enabled() -> bool {
     *TRACE_SOUND.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some())
+}
+
+fn trace_native_traps_enabled() -> bool {
+    *TRACE_NATIVE_TRAPS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_NATIVE_TRAPS").is_some())
 }
 
 /// `SYSTEMLESS_TRACE_RESFILE=1` enables verbose tracing of resource-file open
@@ -417,6 +422,23 @@ pub(crate) enum AjcpCallPhase {
     Decompress,
 }
 
+pub(crate) const LOADSEG_GETRESOURCE_SENTINEL: u16 = 0x51F0;
+
+/// In-flight Segment Loader native GetResource call.
+///
+/// Some protected/THINK-era apps install a native `_GetResource` hook that
+/// decodes `CODE` resources when the real Segment Loader asks for them.
+/// Systemless keeps CODE segments resident, so `_LoadSeg` has to explicitly
+/// route through that hook and then resume HLE jump-table patching.
+#[derive(Clone, Debug)]
+pub(crate) struct LoadSegGetResourceState {
+    pub seg_num: i16,
+    pub entry_addr: u32,
+    pub result_sp: u32,
+    pub d_regs: [u32; 8],
+    pub a_regs: [u32; 8],
+}
+
 /// In-flight AppleEvent handler call. Built by Pack8 routine 27
 /// (`AEProcessAppleEvent`) when it dispatches a registered handler;
 /// consumed by the trampoline trap when the handler `RTD`s back.
@@ -615,6 +637,18 @@ pub struct TrapDispatcher {
     /// `'ajcp'` decompressor returns. Holds
     /// `30 3C AC AC A8 16` (`MOVE.W #$ACAC, D0; _Pack8`).
     pub(crate) ajcp_trampoline_addr: Option<u32>,
+    /// State stashed while `_LoadSeg` is routing `GetResource('CODE', seg)`
+    /// through a native guest hook.
+    pub(crate) loadseg_getresource_state: Option<LoadSegGetResourceState>,
+    /// Address of the lazily-allocated 8-byte trampoline used to resume
+    /// HLE `_LoadSeg` after that native `_GetResource` hook returns.
+    pub(crate) loadseg_getresource_trampoline_addr: Option<u32>,
+    /// One-shot flag for auto-pop traps whose HLE handler deliberately
+    /// sets PC. `_LoadSeg` uses this when a guest native LoadSeg handler
+    /// jumps to its saved old `$ADF0` trap: the real trap patches the
+    /// original jump-table entry and resumes at that patched entry, not
+    /// at the auto-pop return address.
+    pub(crate) preserve_auto_pop_pc_once: bool,
     /// Address of the lazily-allocated trampoline used by DeviceLoop
     /// to call a guest drawing procedure for the current device.
     pub(crate) device_loop_trampoline: u32,
@@ -1679,6 +1713,9 @@ impl TrapDispatcher {
             mask_table_addr: None,
             ajcp_call_state: None,
             ajcp_trampoline_addr: None,
+            loadseg_getresource_state: None,
+            loadseg_getresource_trampoline_addr: None,
+            preserve_auto_pop_pc_once: false,
             device_loop_trampoline: 0,
             defer_user_fn_trampoline: 0,
             ajcp_decompressor_ready: false,
@@ -3702,25 +3739,23 @@ impl TrapDispatcher {
         } else {
             0xA000 | (trap & 0x00FF)
         };
-        if let Some(&handler_addr) = self.native_trap_table.get(&base_trap) {
-            // Undo auto-pop if we did it — the native handler manages its own stack
-            if let Some(ret_addr) = saved_return_addr {
+        if !auto_pop {
+            if let Some(&handler_addr) = self.native_trap_table.get(&base_trap) {
+                // Simulate JSR to native handler: push return PC, jump to handler
+                let return_pc = cpu.read_reg(Register::PC); // past A-line instruction
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_long(sp.wrapping_sub(4), ret_addr);
-                cpu.write_reg(Register::A7, sp.wrapping_sub(4));
+                let new_sp = sp.wrapping_sub(4);
+                bus.write_long(new_sp, return_pc);
+                cpu.write_reg(Register::A7, new_sp);
+                cpu.write_reg(Register::PC, handler_addr);
+                if trace_native_traps_enabled() {
+                    eprintln!(
+                        "[DISPATCH] -> native handler at ${:08X} for trap ${:04X}",
+                        handler_addr, base_trap
+                    );
+                }
+                return Ok(());
             }
-            // Simulate JSR to native handler: push return PC, jump to handler
-            let return_pc = cpu.read_reg(Register::PC); // past A-line instruction
-            let sp = cpu.read_reg(Register::A7);
-            let new_sp = sp.wrapping_sub(4);
-            bus.write_long(new_sp, return_pc);
-            cpu.write_reg(Register::A7, new_sp);
-            cpu.write_reg(Register::PC, handler_addr);
-            eprintln!(
-                "[DISPATCH] -> native handler at ${:08X} for trap ${:04X}",
-                handler_addr, base_trap
-            );
-            return Ok(());
         }
 
         // Track consecutive SANE and TickCount calls.
@@ -3765,8 +3800,13 @@ impl TrapDispatcher {
         // can never diverge on the match logic.
         if let Some(ret_addr) = saved_return_addr {
             if result.is_ok() && !self.is_tracking_refire(trap) {
-                cpu.write_reg(Register::PC, ret_addr);
+                if self.preserve_auto_pop_pc_once {
+                    self.preserve_auto_pop_pc_once = false;
+                } else {
+                    cpu.write_reg(Register::PC, ret_addr);
+                }
             } else {
+                self.preserve_auto_pop_pc_once = false;
                 // Push the return address back onto the stack.
                 // This covers two cases:
                 // 1. Tracking refire: the trap must re-fire next frame,
