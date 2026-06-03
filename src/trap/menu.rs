@@ -355,6 +355,55 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
+    pub(crate) fn is_popup_menu_proc_id(proc_id: i16) -> bool {
+        (1008..=1023).contains(&proc_id)
+    }
+
+    pub(crate) fn popup_menu_item_title(
+        &self,
+        bus: &MacMemoryBus,
+        menu_id: i16,
+        selected: usize,
+    ) -> Option<String> {
+        if selected == 0 {
+            return None;
+        }
+
+        self.menus
+            .iter()
+            .rev()
+            .find(|menu| menu.id == menu_id)
+            .and_then(|menu| menu.items.get(selected - 1))
+            .map(|item| item.text.clone())
+            .or_else(|| {
+                let (_, menu_ptr) = self.find_resource_any(*b"MENU", menu_id)?;
+                Self::popup_menu_item_title_from_resource(bus, menu_ptr, selected)
+            })
+    }
+
+    fn popup_menu_item_title_from_resource(
+        bus: &MacMemoryBus,
+        menu_ptr: u32,
+        selected: usize,
+    ) -> Option<String> {
+        let title_len = bus.read_byte(menu_ptr + 14) as u32;
+        let mut offset = menu_ptr + 15 + title_len;
+        let mut nth = 0usize;
+        loop {
+            let item_len = bus.read_byte(offset) as usize;
+            if item_len == 0 {
+                break;
+            }
+            nth += 1;
+            if nth == selected {
+                let bytes = bus.read_bytes(offset + 1, item_len);
+                return Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
+            offset += 1 + item_len as u32 + 4;
+        }
+        None
+    }
+
     fn ensure_menu_color_table_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
         let current = bus.read_long(addr::MENU_C_INFO);
         if current != 0 {
@@ -3080,32 +3129,42 @@ impl super::TrapDispatcher {
     }
 
     /// Invert a menu item row in the dropdown (for highlighting).
-    pub(super) fn invert_menu_item(&self, bus: &mut MacMemoryBus, item: i16) {
+    pub(super) fn invert_dropdown_item_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        item: i16,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        if let Some(ref tracking) = self.menu_tracking {
-            let (top, left, _bottom, right) = tracking.dropdown_rect;
-            let item_height: i16 = 16;
-            let item_top = top + 1 + (item - 1) * item_height;
-            let item_bottom = item_top + item_height;
-            // Invert pixels in the item row (inside the border)
-            for y in item_top..item_bottom {
-                for x in (left + 1)..(right - 1) {
-                    if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
-                        if pixel_size == 1 {
-                            let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
-                            let bit = 7 - (x as u32 % 8);
-                            let addr = screen_base + byte_offset;
-                            let b = bus.read_byte(addr);
-                            bus.write_byte(addr, b ^ (1 << bit));
-                        } else {
-                            let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                            let b = bus.read_byte(addr);
-                            bus.write_byte(addr, 255 - b);
-                        }
+        let (top, left, _bottom, right) = rect;
+        let item_height: i16 = 16;
+        let item_top = top + 1 + (item - 1) * item_height;
+        let item_bottom = item_top + item_height;
+        // Invert pixels in the item row (inside the border).
+        for y in item_top..item_bottom {
+            for x in (left + 1)..(right - 1) {
+                if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
+                    if pixel_size == 1 {
+                        let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
+                        let bit = 7 - (x as u32 % 8);
+                        let addr = screen_base + byte_offset;
+                        let b = bus.read_byte(addr);
+                        bus.write_byte(addr, b ^ (1 << bit));
+                    } else {
+                        let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+                        let b = bus.read_byte(addr);
+                        bus.write_byte(addr, 255 - b);
                     }
                 }
             }
+        }
+    }
+
+    /// Invert a menu item row in the dropdown (for highlighting).
+    pub(super) fn invert_menu_item(&self, bus: &mut MacMemoryBus, item: i16) {
+        if let Some(ref tracking) = self.menu_tracking {
+            self.invert_dropdown_item_rect(bus, tracking.dropdown_rect, item);
         }
     }
 
@@ -3160,7 +3219,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
-    use super::parse_appendmenu_items;
+    use super::{parse_appendmenu_items, Menu, MenuItem};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::MemoryBus;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4055,6 +4114,41 @@ mod tests {
         let items = parse_appendmenu_items(raw);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "Solo");
+    }
+
+    #[test]
+    fn popup_menu_item_title_prefers_live_menu_items() {
+        let (mut disp, _cpu, bus) = setup();
+        disp.menus.push(Menu {
+            id: 1008,
+            title: "Squadies1".to_string(),
+            items: vec![
+                MenuItem {
+                    text: "Brix".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+                MenuItem {
+                    text: "Ryan".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+            ],
+            enabled: true,
+            handle: 0x1234,
+            in_menu_bar: false,
+        });
+
+        assert_eq!(
+            disp.popup_menu_item_title(&bus, 1008, 2).as_deref(),
+            Some("Ryan")
+        );
     }
 
     // 0x130 — InitMenus: initializes the live MenuCInfo handle if needed.

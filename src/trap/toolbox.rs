@@ -7,7 +7,7 @@ use crate::quickdraw::text::get_font_metrics;
 use crate::{Error, Result};
 use std::sync::OnceLock;
 
-use super::types::{Rect, ShapeOp};
+use super::types::{decode_mac_roman, Rect, ShapeOp};
 
 static TRACE_MUNGER: OnceLock<bool> = OnceLock::new();
 static TRACE_LIST: OnceLock<bool> = OnceLock::new();
@@ -2133,7 +2133,7 @@ impl super::TrapDispatcher {
                 for (i, byte) in name_bytes.iter_mut().enumerate() {
                     *byte = bus.read_byte(name_ptr + 1 + i as u32);
                 }
-                let name = String::from_utf8_lossy(&name_bytes).to_string();
+                let name = decode_mac_roman(&name_bytes);
                 if super::dispatch::trace_resfile_enabled() {
                     eprintln!("[TRAP] OpenRFPerm(\"{}\")", name);
                 }
@@ -3748,7 +3748,7 @@ impl super::TrapDispatcher {
                 let _dir_id = bus.read_long(sp + 6);
                 let _v_ref = bus.read_word(sp + 10) as i16;
                 let name = if name_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(name_ptr)).into_owned()
+                    decode_mac_roman(&bus.read_pstring(name_ptr))
                 } else {
                     String::new()
                 };
@@ -3805,7 +3805,7 @@ impl super::TrapDispatcher {
                 let _dir_id = bus.read_long(sp + 4);
                 let _v_ref = bus.read_word(sp + 8) as i16;
                 let name = if name_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(name_ptr)).into_owned()
+                    decode_mac_roman(&bus.read_pstring(name_ptr))
                 } else {
                     String::new()
                 };
@@ -3845,7 +3845,7 @@ impl super::TrapDispatcher {
                 let name_ptr = bus.read_long(sp);
                 if name_ptr != 0 {
                     let bytes = bus.read_pstring(name_ptr);
-                    let name = String::from_utf8_lossy(&bytes);
+                    let name = decode_mac_roman(&bytes);
                     if super::dispatch::trace_resfile_enabled() {
                         eprintln!("[TRAP] OpenResFile(\"{}\")", name);
                     }
@@ -7420,8 +7420,12 @@ impl super::TrapDispatcher {
             //
             // Selector format (assembly-language note, IM:V V-408):
             //   bits 31-24 = routine selector
-            //   bits 23-16 = return value byte count
             //   bits 15-8  = parameter byte count (bytes to pop after selector)
+            //
+            // The second selector byte is not a generic stack-result byte
+            // count. For example PrintDefault is selector $20040480 and is a
+            // PROCEDURE, while PrOpenDoc is selector $04000C00 and returns a
+            // TPPrPort. Results are therefore routine-specific.
             //
             // In emulation, printing is not supported. All routines are no-ops
             // that pop their parameters and write default return values.
@@ -7446,10 +7450,7 @@ impl super::TrapDispatcher {
                 let selector = bus.read_long(sp);
                 let routine = (selector >> 24) & 0xFF;
 
-                // Extract param size and result size from the selector.
-                // IM:V V-408 encodes return size in bits 23-16 and
-                // parameter size in bits 15-8.
-                let result_bytes = (selector >> 16) & 0xFF;
+                // Extract the parameter size encoded in bits 15-8.
                 let param_bytes = (selector >> 8) & 0xFF;
 
                 let total_pop = 4 + param_bytes; // selector + params
@@ -7472,6 +7473,22 @@ impl super::TrapDispatcher {
                         self.printing_error = 0;
                         cpu.write_reg(Register::A7, sp + total_pop);
                     }
+                    0x10 | 0x18 => {
+                        // PrOpenPage / PrClosePage: procedures.
+                        self.printing_error = 0;
+                        cpu.write_reg(Register::A7, sp + total_pop);
+                    }
+                    0x20 => {
+                        // PrintDefault: PROCEDURE PrintDefault(hPrint).
+                        // Selector $20040480 has a non-zero second byte, but
+                        // that byte is not a result size; writing a stack
+                        // result here corrupts MPW compatibility shims whose
+                        // LINK frame sits immediately above the selector and
+                        // THPrint argument.
+                        self.printing_error = 0;
+                        cpu.write_reg(Register::D0, 0);
+                        cpu.write_reg(Register::A7, sp + total_pop);
+                    }
                     0xC8 | 0xD0 => {
                         // PrOpen / PrClose: procedures with no stack
                         // arguments. They consume only the selector long
@@ -7482,9 +7499,24 @@ impl super::TrapDispatcher {
                         // PrStlDialog / PrJobDialog: returns BOOLEAN (2 bytes)
                         // Return TRUE (user clicked OK) so games proceed past print dialogs
                         self.printing_error = 0;
-                        if result_bytes >= 2 {
-                            bus.write_word(sp + total_pop, 1); // TRUE
-                        }
+                        bus.write_word(sp + total_pop, 1); // TRUE
+                        cpu.write_reg(Register::D0, 1);
+                        cpu.write_reg(Register::A7, sp + total_pop);
+                    }
+                    0x3C | 0x44 => {
+                        // PrStlInit / PrJobInit: return TPPrDlg. No native
+                        // printer UI is available, so return NIL.
+                        self.printing_error = 0;
+                        bus.write_long(sp + total_pop, 0);
+                        cpu.write_reg(Register::D0, 0);
+                        cpu.write_reg(Register::A7, sp + total_pop);
+                    }
+                    0x4A => {
+                        // PrDlgMain: return TRUE so callers take the
+                        // confirmed path if they invoked a customized print
+                        // dialog.
+                        self.printing_error = 0;
+                        bus.write_word(sp + total_pop, 1);
                         cpu.write_reg(Register::D0, 1);
                         cpu.write_reg(Register::A7, sp + total_pop);
                     }
@@ -7492,9 +7524,30 @@ impl super::TrapDispatcher {
                         // PrValidate: returns BOOLEAN (2 bytes)
                         // Return FALSE (record is valid, no changes needed)
                         self.printing_error = 0;
-                        if result_bytes >= 2 {
-                            bus.write_word(sp + total_pop, 0); // FALSE
-                        }
+                        bus.write_word(sp + total_pop, 0); // FALSE
+                        cpu.write_reg(Register::D0, 0);
+                        cpu.write_reg(Register::A7, sp + total_pop);
+                    }
+                    0x58 | 0x60 | 0x70 | 0x80 | 0x88 | 0xA0 => {
+                        // PrJobMerge, PrPicFile, PrGeneral, PrDrvrOpen,
+                        // PrDrvrClose, PrCtlCall: procedures.
+                        self.printing_error = 0;
+                        cpu.write_reg(Register::D0, 0);
+                        cpu.write_reg(Register::A7, sp + total_pop);
+                    }
+                    0x94 => {
+                        // PrDrvrDCE: return a DCE Handle. Printing is not
+                        // supported, so return NIL.
+                        self.printing_error = 0;
+                        bus.write_long(sp + total_pop, 0);
+                        cpu.write_reg(Register::D0, 0);
+                        cpu.write_reg(Register::A7, sp + total_pop);
+                    }
+                    0x9A => {
+                        // PrDrvrVers: return driver version. No printer
+                        // driver is present.
+                        self.printing_error = 0;
+                        bus.write_word(sp + total_pop, 0);
                         cpu.write_reg(Register::D0, 0);
                         cpu.write_reg(Register::A7, sp + total_pop);
                     }
@@ -7518,13 +7571,11 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + total_pop);
                     }
                     _ => {
-                        // All other printing routines: pop params, write zero result
-                        if result_bytes == 4 {
-                            bus.write_long(sp + total_pop, 0);
-                        } else if result_bytes == 2 {
-                            bus.write_word(sp + total_pop, 0);
-                        }
+                        // Unknown printing routines: pop the documented
+                        // selector and parameter bytes, but do not infer a
+                        // result slot from the second selector byte.
                         self.printing_error = 0;
+                        cpu.write_reg(Register::D0, 0);
                         cpu.write_reg(Register::A7, sp + total_pop);
                     }
                 }
@@ -10856,6 +10907,25 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
         assert_eq!(bus.read_long(sp + 8), 0xCAFE_BABE);
+    }
+
+    #[test]
+    fn prglue_printdefault_consumes_thprint_without_function_result_slot() {
+        // Inside Macintosh: Imaging With QuickDraw (1994), p. 9-60:
+        // PrintDefault is PROCEDURE PrintDefault(hPrint) with selector
+        // $20040480. The selector's second byte is not a stack-result size.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_long(sp, 0x2004_0480);
+        bus.write_long(sp + 4, 0x0010_2000); // hPrint
+        bus.write_long(sp + 8, 0xCAFE_BABE); // saved-frame sentinel
+
+        let result = disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_long(sp + 8), 0xCAFE_BABE);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
     #[test]

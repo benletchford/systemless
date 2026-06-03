@@ -513,7 +513,8 @@ fn maybe_select_executable(
         _ => false,
     };
 
-    let (prev_is_appl, prev_data_len) = executable_entry
+    let score = data_len.max(rsrc.len());
+    let (prev_is_appl, prev_score) = executable_entry
         .as_ref()
         .map(|(_, _, appl, dlen)| (*appl, *dlen))
         .unwrap_or((false, 0));
@@ -525,11 +526,11 @@ fn maybe_select_executable(
     } else {
         executable_entry.is_none()
             || (is_appl && !prev_is_appl)
-            || (is_appl == prev_is_appl && data_len > prev_data_len)
+            || (is_appl == prev_is_appl && score > prev_score)
     };
 
     if take {
-        *executable_entry = Some((name.to_string(), rsrc.to_vec(), is_appl, data_len));
+        *executable_entry = Some((name.to_string(), rsrc.to_vec(), is_appl, score));
     }
 }
 

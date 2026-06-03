@@ -1,6 +1,6 @@
 //! Dialog Manager, Cursor Manager, and misc stub trap handlers.
 
-use super::dispatch::DialogItem;
+use super::dispatch::{DialogItem, DialogPopupTrackingState, DialogTrackingState};
 use super::types::{Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -1708,6 +1708,44 @@ impl super::TrapDispatcher {
                     })
                     .unwrap_or(0),
                 4..=6 => bus.read_long(item_handle_addr),
+                7 => self
+                    .find_resource_any(*b"CNTL", item.resource_id)
+                    .map(|(_, cntl_ptr)| {
+                        let value = bus.read_word(cntl_ptr + 8) as i16;
+                        let vis_word = bus.read_word(cntl_ptr + 10);
+                        let max = bus.read_word(cntl_ptr + 12) as i16;
+                        let min = bus.read_word(cntl_ptr + 14) as i16;
+                        let proc_id = bus.read_word(cntl_ptr + 16) as i16;
+                        let ref_con = bus.read_long(cntl_ptr + 18);
+                        let title_len = bus.read_byte(cntl_ptr + 22) as usize;
+                        let title = bus.read_bytes(cntl_ptr + 23, title_len.min(255));
+                        let ctrl_ptr = bus.alloc(296);
+                        let handle = bus.alloc(4);
+                        bus.write_long(handle, ctrl_ptr);
+                        self.initialize_control_record(
+                            bus,
+                            ctrl_ptr,
+                            dialog_ptr,
+                            item.rect,
+                            &title,
+                            vis_word != 0,
+                            value,
+                            min,
+                            max,
+                            proc_id,
+                            ref_con,
+                        );
+                        self.ensure_control_aux_record(bus, handle);
+                        let old_head = bus.read_long(dialog_ptr + 140);
+                        bus.write_long(ctrl_ptr, old_head);
+                        bus.write_long(dialog_ptr + 140, handle);
+                        self.dialog_control_handles
+                            .insert(handle, (dialog_ptr, item_no));
+                        self.dialog_control_values
+                            .insert((dialog_ptr, item_no), value);
+                        handle
+                    })
+                    .unwrap_or(0),
                 64 => self
                     .find_resource_any(*b"PICT", item.resource_id)
                     .map(|(_, ptr)| {
@@ -1969,6 +2007,53 @@ impl super::TrapDispatcher {
         (fallback, edit_item, default_item)
     }
 
+    fn sync_tracking_active_edit_item(tracking: &mut DialogTrackingState) {
+        let edit_item = tracking.edit_item;
+        if edit_item <= 0 {
+            return;
+        }
+        if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
+            if (item.item_type & 0x7F) == 16 {
+                item.text = tracking.edit_text.clone();
+            }
+        }
+    }
+
+    fn flush_dialog_edit_item_texts(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        items: &[DialogItem],
+        active_edit_item: i16,
+        active_edit_text: &str,
+    ) {
+        for (idx, item) in items.iter().enumerate() {
+            if (item.item_type & 0x7F) != 16 {
+                continue;
+            }
+            let item_no = (idx + 1) as i16;
+            let text = if item_no == active_edit_item {
+                active_edit_text
+            } else {
+                &item.text
+            };
+            let bytes = text.as_bytes();
+            let len = bytes.len().min(255);
+            let item_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+            if item_handle != 0 {
+                let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
+                if data_ptr != 0 && len > 0 {
+                    bus.write_bytes(data_ptr, &bytes[..len]);
+                }
+            }
+            if let Some(cached_items) = self.dialog_items.get_mut(&dialog_ptr) {
+                if idx < cached_items.len() {
+                    cached_items[idx].text = text.to_string();
+                }
+            }
+        }
+    }
+
     fn finish_dialog_creation<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2076,8 +2161,8 @@ impl super::TrapDispatcher {
                     8 => self.draw_static_text(
                         bus, abs_top, abs_left, abs_bottom, abs_right, &item.text,
                     ),
-                    16 => self.draw_edit_text(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    16 => self.draw_edit_text_with_cursor(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, false,
                     ),
                     _ => continue,
                 }
@@ -2619,14 +2704,15 @@ impl super::TrapDispatcher {
                     } else {
                         &item.text
                     };
-                    self.draw_edit_text(
+                    self.draw_edit_text_with_cursor(
                         bus,
                         abs_top,
                         abs_left,
                         abs_bottom,
                         abs_right,
                         display_text,
-                        true, // initially all text is selected
+                        item_num == edit_item,
+                        false,
                     );
                 }
                 // Icon (32)
@@ -2667,69 +2753,283 @@ impl super::TrapDispatcher {
                         }
                     }
                 }
-                // resCtrl — CNTL-resource control (popup menu, procID 1008)
-                // Macintosh Toolbox Essentials 1992, 3-31
+                // resCtrl — DITL item backed by a live CNTL resource.
+                // Macintosh Toolbox Essentials 1992, 3-31.
                 7 => {
-                    // Current selected item (1-based).  The game calls
-                    // SetControlValue when the dialog opens; fall back to 1.
-                    let selected = self
-                        .dialog_control_values
-                        .get(&(dialog_ptr, item_num))
-                        .copied()
-                        .unwrap_or(1)
-                        .max(1) as usize;
-
-                    let item_title = if let Some((_, cntl_ptr)) =
-                        self.find_resource_any(*b"CNTL", item.resource_id)
+                    if let Some(ctrl_handle) =
+                        self.dialog_control_handle_for_item(dialog_ptr, item_num)
                     {
-                        let proc_id_ctrl = bus.read_word(cntl_ptr + 16);
-                        // For popupMenuProc the min field stores the MENU resource ID.
-                        // Macintosh Toolbox Essentials 1992, 3-32
-                        let menu_id = bus.read_word(cntl_ptr + 14) as i16;
-                        if proc_id_ctrl == 1008 {
-                            if let Some((_, menu_ptr)) = self.find_resource_any(*b"MENU", menu_id) {
-                                // MENU resource layout:
-                                // menuID(2)+menuWidth(2)+menuHeight(2)+
-                                // menuProc(4)+enableFlags(4)+title(n+1)
-                                // Inside Macintosh Volume I, I-441
-                                let title_len = bus.read_byte(menu_ptr + 14) as u32;
-                                let mut off = menu_ptr + 15 + title_len;
-                                let mut nth = 0usize;
-                                let mut found = None;
-                                loop {
-                                    let item_len = bus.read_byte(off) as usize;
-                                    if item_len == 0 {
-                                        break;
-                                    }
-                                    nth += 1;
-                                    if nth == selected {
-                                        let bytes = bus.read_bytes(off + 1, item_len);
-                                        found = Some(String::from_utf8_lossy(&bytes).into_owned());
-                                        break;
-                                    }
-                                    off += 1 + item_len as u32 + 4;
-                                }
-                                found
-                            } else {
-                                None
+                        let ctrl_ptr = bus.read_long(ctrl_handle);
+                        let proc_id_ctrl =
+                            self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                        let value = self
+                            .dialog_control_values
+                            .get(&(dialog_ptr, item_num))
+                            .copied()
+                            .unwrap_or_else(|| bus.read_word(ctrl_ptr + 18) as i16);
+                        let min = bus.read_word(ctrl_ptr + 20) as i16;
+                        let max = bus.read_word(ctrl_ptr + 22) as i16;
+                        let hilite = bus.read_byte(ctrl_ptr + 17);
+                        let title =
+                            String::from_utf8_lossy(&Self::control_title_bytes(bus, ctrl_ptr))
+                                .into_owned();
+
+                        match proc_id_ctrl {
+                            0 => self.draw_button(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                item_num == default_item,
+                            ),
+                            1 => self.draw_checkbox(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                value != 0,
+                            ),
+                            2 => self.draw_radio(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                value != 0,
+                            ),
+                            16 => self.draw_scroll_bar(
+                                bus, abs_top, abs_left, abs_bottom, abs_right, value, min, max,
+                                hilite,
+                            ),
+                            proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let selected = value.max(1) as usize;
+                                let item_title = self.popup_menu_item_title(bus, min, selected);
+                                self.draw_popup_control(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &item_title.unwrap_or_default(),
+                                );
                             }
-                        } else {
-                            None
+                            _ => {
+                                self.draw_button(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &title,
+                                    item_num == default_item,
+                                );
+                            }
                         }
                     } else {
-                        None
-                    };
-
-                    // Always draw the popup button shape, even if the CNTL or
-                    // MENU resource wasn't found (shows an empty box + indicator).
-                    let title_str = item_title.unwrap_or_default();
-                    self.draw_popup_control(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &title_str,
-                    );
+                        self.draw_button(
+                            bus,
+                            abs_top,
+                            abs_left,
+                            abs_bottom,
+                            abs_right,
+                            "",
+                            item_num == default_item,
+                        );
+                    }
                 }
                 // userItem (0) and unknown: skip
                 _ => {}
             }
+        }
+    }
+
+    fn redraw_standard_dialog_items(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        items: &[DialogItem],
+        default_item: i16,
+        edit_text: &str,
+        edit_item: i16,
+        dialog_ptr: u32,
+    ) {
+        let (top, left, bottom, right) = bounds;
+        for (i, item) in items.iter().enumerate() {
+            let item_num = (i + 1) as i16;
+            let (it, il, ib, ir) = item.rect;
+            let abs_top = top + it;
+            let abs_left = left + il;
+            let abs_bottom = top + ib;
+            let abs_right = left + ir;
+            if abs_top >= bottom || abs_bottom <= top || abs_left >= right || abs_right <= left {
+                continue;
+            }
+
+            match item.item_type & 0x7F {
+                4 => self.draw_button(
+                    bus,
+                    abs_top,
+                    abs_left,
+                    abs_bottom,
+                    abs_right,
+                    &item.text,
+                    item_num == default_item,
+                ),
+                5 => {
+                    let checked = self
+                        .dialog_control_values
+                        .get(&(dialog_ptr, item_num))
+                        .copied()
+                        .unwrap_or(0)
+                        != 0;
+                    self.draw_checkbox(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
+                    );
+                }
+                6 => self.draw_radio(
+                    bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                ),
+                7 => {
+                    if let Some(ctrl_handle) =
+                        self.dialog_control_handle_for_item(dialog_ptr, item_num)
+                    {
+                        let ctrl_ptr = bus.read_long(ctrl_handle);
+                        let proc_id_ctrl =
+                            self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                        let value = self
+                            .dialog_control_values
+                            .get(&(dialog_ptr, item_num))
+                            .copied()
+                            .unwrap_or_else(|| bus.read_word(ctrl_ptr + 18) as i16);
+                        let min = bus.read_word(ctrl_ptr + 20) as i16;
+                        let max = bus.read_word(ctrl_ptr + 22) as i16;
+                        let hilite = bus.read_byte(ctrl_ptr + 17);
+                        let title =
+                            String::from_utf8_lossy(&Self::control_title_bytes(bus, ctrl_ptr))
+                                .into_owned();
+                        match proc_id_ctrl {
+                            0 => self.draw_button(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                item_num == default_item,
+                            ),
+                            1 => self.draw_checkbox(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                value != 0,
+                            ),
+                            2 => self.draw_radio(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                value != 0,
+                            ),
+                            16 => self.draw_scroll_bar(
+                                bus, abs_top, abs_left, abs_bottom, abs_right, value, min, max,
+                                hilite,
+                            ),
+                            proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let selected = value.max(1) as usize;
+                                let item_title = self.popup_menu_item_title(bus, min, selected);
+                                self.draw_popup_control(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &item_title.unwrap_or_default(),
+                                );
+                            }
+                            _ => self.draw_button(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                item_num == default_item,
+                            ),
+                        }
+                    } else {
+                        self.draw_button(
+                            bus,
+                            abs_top,
+                            abs_left,
+                            abs_bottom,
+                            abs_right,
+                            "",
+                            item_num == default_item,
+                        );
+                    }
+                }
+                8 => {
+                    self.draw_static_text(bus, abs_top, abs_left, abs_bottom, abs_right, &item.text)
+                }
+                16 => {
+                    let display_text = if item_num == edit_item {
+                        edit_text
+                    } else {
+                        &item.text
+                    };
+                    self.draw_edit_text_with_cursor(
+                        bus,
+                        abs_top,
+                        abs_left,
+                        abs_bottom,
+                        abs_right,
+                        display_text,
+                        item_num == edit_item,
+                        false,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn refresh_dialog_tracking_snapshot(&mut self, bus: &mut MacMemoryBus) {
+        let Some(tracking) = self.dialog_tracking.as_ref() else {
+            return;
+        };
+        if tracking.game_managed || !tracking.rendered_pixels_final {
+            return;
+        }
+        let bounds = tracking.bounds;
+        let items = tracking.items.clone();
+        let default_item = tracking.default_item;
+        let edit_text = tracking.edit_text.clone();
+        let edit_item = tracking.edit_item;
+        let dialog_ptr = tracking.dialog_ptr;
+        let popup_draws = tracking.popup_draws.clone();
+        self.redraw_standard_dialog_items(
+            bus,
+            bounds,
+            &items,
+            default_item,
+            &edit_text,
+            edit_item,
+            dialog_ptr,
+        );
+        self.redraw_dialog_popup_controls(bus, &popup_draws);
+        let rendered = self.save_dialog_pixels(bus, bounds);
+        if let Some(tracking) = self.dialog_tracking.as_mut() {
+            tracking.rendered_pixels = rendered;
         }
     }
 
@@ -2994,6 +3294,16 @@ impl super::TrapDispatcher {
                 font_id,
                 font_size,
             );
+        }
+    }
+
+    fn redraw_dialog_popup_controls(
+        &self,
+        bus: &mut MacMemoryBus,
+        popup_draws: &[(i16, i16, i16, i16, String)],
+    ) {
+        for (top, left, bottom, right, title) in popup_draws {
+            self.draw_popup_control(bus, *top, *left, *bottom, *right, title);
         }
     }
 
@@ -3352,6 +3662,9 @@ impl super::TrapDispatcher {
         let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
         let max_width = right - left;
         let mut y = top + metrics.ascent;
+        if y >= bottom && bottom > top {
+            y = bottom - 1;
+        }
 
         let substituted = self.apply_param_text(text);
         // Word-wrap text to fit within the display rect
@@ -3366,7 +3679,7 @@ impl super::TrapDispatcher {
             };
             let test_width = Self::fb_measure_string(&test_line, font_id, font_size);
             if test_width > max_width && !current_line.is_empty() {
-                if y < bottom {
+                if y <= bottom {
                     Self::fb_draw_string(
                         bus,
                         screen_base,
@@ -3388,7 +3701,7 @@ impl super::TrapDispatcher {
             }
         }
         // Draw the last line
-        if !current_line.is_empty() && y < bottom {
+        if !current_line.is_empty() && y <= bottom {
             Self::fb_draw_string(
                 bus,
                 screen_base,
@@ -3415,6 +3728,20 @@ impl super::TrapDispatcher {
         right: i16,
         text: &str,
         selected: bool,
+    ) {
+        self.draw_edit_text_with_cursor(bus, top, left, bottom, right, text, selected, !selected);
+    }
+
+    fn draw_edit_text_with_cursor(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        text: &str,
+        selected: bool,
+        show_cursor: bool,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -3459,7 +3786,7 @@ impl super::TrapDispatcher {
             if !text.is_empty() {
                 self.invert_button_rect(bus, top + 1, left + 1, bottom - 1, right - 1);
             }
-        } else {
+        } else if show_cursor {
             // Draw cursor bar at end of text
             let text_width = Self::fb_measure_string(text, font_id, font_size);
             let cursor_x = left + 3 + text_width;
@@ -3560,6 +3887,8 @@ impl super::TrapDispatcher {
 
     /// Hit-test a point against dialog items. Returns 1-based item number or 0.
     fn dialog_item_hit_test(
+        &self,
+        bus: &MacMemoryBus,
         items: &[DialogItem],
         bounds: (i16, i16, i16, i16),
         screen_v: i16,
@@ -3574,10 +3903,26 @@ impl super::TrapDispatcher {
             let item_no = (i + 1) as i16;
             // For popup userItems, use the original DITL rect (before SetDItem
             // narrowed it) so clicks on the full popup area register.
-            let (it, il, ib, ir) = popup_original_rects
+            let mut rect = popup_original_rects
                 .get(&(dialog_ptr, item_no))
                 .copied()
                 .unwrap_or(item.rect);
+            let base_type = item.item_type & 0x7F;
+            if (4..=7).contains(&base_type) {
+                if let Some(ctrl_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no)
+                {
+                    let ctrl_ptr = bus.read_long(ctrl_handle);
+                    if ctrl_ptr != 0 && bus.read_byte(ctrl_ptr + 16) != 0 {
+                        rect = (
+                            bus.read_word(ctrl_ptr + 8) as i16,
+                            bus.read_word(ctrl_ptr + 10) as i16,
+                            bus.read_word(ctrl_ptr + 12) as i16,
+                            bus.read_word(ctrl_ptr + 14) as i16,
+                        );
+                    }
+                }
+            }
+            let (it, il, ib, ir) = rect;
             if local_v >= it && local_v < ib && local_h >= il && local_h < ir {
                 return item_no;
             }
@@ -3622,6 +3967,165 @@ impl super::TrapDispatcher {
         if let Some(idx) = self.event_queue.iter().position(|e| e.what == 2) {
             self.event_queue.remove(idx);
         }
+    }
+
+    fn dialog_control_handle_for_item(&self, dialog_ptr: u32, item_no: i16) -> Option<u32> {
+        self.dialog_control_handles
+            .iter()
+            .find_map(|(&handle, &(dlg, item))| {
+                if dlg == dialog_ptr && item == item_no {
+                    Some(handle)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn begin_dialog_popup_tracking(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        item_no: i16,
+    ) -> bool {
+        let Some(ctrl_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no) else {
+            return false;
+        };
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        if ctrl_ptr == 0 {
+            return false;
+        }
+        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        if !Self::is_popup_menu_proc_id(proc_id) {
+            return false;
+        }
+        let menu_id = bus.read_word(ctrl_ptr + 20) as i16;
+        let Some(menu_idx) = self.menus.iter().position(|menu| menu.id == menu_id) else {
+            return false;
+        };
+
+        let dropdown_rect = self.popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
+        let saved_pixels = self.save_dropdown_pixels(bus, dropdown_rect);
+        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
+
+        if let Some(tracking) = self.dialog_tracking.as_mut() {
+            tracking.active_popup = Some(DialogPopupTrackingState {
+                item_no,
+                ctrl_handle,
+                ctrl_ptr,
+                active_menu: menu_idx,
+                highlighted_item: 0,
+                saved_pixels,
+                dropdown_rect,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    fn dialog_popup_item_at_point(&self, mouse_x: i16, mouse_y: i16) -> i16 {
+        let Some(popup) = self
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_popup.as_ref())
+        else {
+            return 0;
+        };
+        let (top, left, bottom, right) = popup.dropdown_rect;
+        if mouse_x < left || mouse_x >= right || mouse_y < top || mouse_y >= bottom {
+            return 0;
+        }
+        let Some(menu) = self.menus.get(popup.active_menu) else {
+            return 0;
+        };
+        let item_height: i16 = 16;
+        let item_idx = (mouse_y - top - 1) / item_height;
+        if item_idx < 0 || (item_idx as usize) >= menu.items.len() {
+            return 0;
+        }
+        let item = &menu.items[item_idx as usize];
+        if item.text == "-" || !item.enabled {
+            return 0;
+        }
+        item_idx + 1
+    }
+
+    fn handle_dialog_popup_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        if self.mouse_button {
+            let (mv, mh) = self.mouse_pos;
+            let new_item = self.dialog_popup_item_at_point(mh, mv);
+            let old_item = self
+                .dialog_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.active_popup.as_ref())
+                .map(|popup| popup.highlighted_item)
+                .unwrap_or(0);
+            if new_item != old_item {
+                let dropdown_rect = self
+                    .dialog_tracking
+                    .as_ref()
+                    .and_then(|tracking| tracking.active_popup.as_ref())
+                    .map(|popup| popup.dropdown_rect);
+                if let Some(dropdown_rect) = dropdown_rect {
+                    if old_item > 0 {
+                        self.invert_dropdown_item_rect(bus, dropdown_rect, old_item);
+                    }
+                    if let Some(popup) = self
+                        .dialog_tracking
+                        .as_mut()
+                        .and_then(|tracking| tracking.active_popup.as_mut())
+                    {
+                        popup.highlighted_item = new_item;
+                    }
+                    if new_item > 0 {
+                        self.invert_dropdown_item_rect(bus, dropdown_rect, new_item);
+                    }
+                }
+            }
+            return;
+        }
+
+        let Some(popup) = self
+            .dialog_tracking
+            .as_mut()
+            .and_then(|tracking| tracking.active_popup.take())
+        else {
+            return;
+        };
+        self.restore_dropdown_pixels(bus, popup.dropdown_rect, &popup.saved_pixels);
+        self.consume_dialog_mouse_up();
+
+        let selected_item = popup.highlighted_item;
+        if selected_item <= 0 {
+            return;
+        }
+
+        self.write_control_value(bus, popup.ctrl_handle, selected_item);
+        self.draw_control(cpu, bus, popup.ctrl_ptr);
+
+        if self.dialog_tracking.is_some() {
+            let (dialog_ptr, edit_item, edit_text, items) = {
+                let tracking = self.dialog_tracking.as_mut().unwrap();
+                Self::sync_tracking_active_edit_item(tracking);
+                (
+                    tracking.dialog_ptr,
+                    tracking.edit_item,
+                    tracking.edit_text.clone(),
+                    tracking.items.clone(),
+                )
+            };
+            self.flush_dialog_edit_item_texts(bus, dialog_ptr, &items, edit_item, &edit_text);
+        }
+
+        let Some(saved) = self.dialog_tracking.take() else {
+            return;
+        };
+        self.dialog_saved_pixels
+            .insert(saved.dialog_ptr, saved.saved_pixels);
+        if saved.item_hit_ptr != 0 {
+            bus.write_word(saved.item_hit_ptr, popup.item_no as u16);
+        }
+        cpu.write_reg(Register::A7, saved.stack_ptr + 8);
     }
 
     pub(crate) fn dispatch_dialog<C: CpuOps>(
@@ -4111,7 +4615,8 @@ impl super::TrapDispatcher {
                                 );
                             }
                             1 if Self::dialog_contains_screen_point(bounds, where_v, where_h) => {
-                                let hit = Self::dialog_item_hit_test(
+                                let hit = self.dialog_item_hit_test(
+                                    bus,
                                     &items,
                                     bounds,
                                     where_v,
@@ -4483,13 +4988,14 @@ impl super::TrapDispatcher {
                         bus.write_word(box_ptr + 4, item.rect.2 as u16);
                         bus.write_word(box_ptr + 6, item.rect.3 as u16);
                     }
-                    // If the item is a type-0 userItem and a menu was just
-                    // inserted via InsertMenu immediately before this GetDItem
-                    // call, record the menu ↔ dialog-item association.
-                    // Games (e.g. Marathon) use the pattern InsertMenu → GetDItem
-                    // to set up popup controls in dialogs.
-                    if (item.item_type & 0x7F) == 0 {
-                        if let Some(menu_id) = self.last_inserted_menu_id.take() {
+                    // Games (e.g. Marathon) use InsertMenu -> GetDItem to
+                    // associate a dynamic menu with an enabled userItem popup.
+                    // Keep the association one-shot; Damage Incorporated polls
+                    // disabled portrait userItems after menu setup.
+                    if let Some(menu_id) = self.last_inserted_menu_id.take() {
+                        let enabled_user_item =
+                            (item.item_type & 0x7F) == 0 && (item.item_type & 0x80) == 0;
+                        if enabled_user_item {
                             self.dialog_item_popup_menus
                                 .insert((dialog_ptr, item_no), menu_id);
                             // Save the original DITL rect before SetDItem narrows it.
@@ -4593,11 +5099,17 @@ impl super::TrapDispatcher {
                         self.dialog_item_handles
                             .insert(item_handle, (dialog_ptr, (item_no - 1) as usize));
                     }
-                } else if (base_type == 4 || base_type == 5 || base_type == 6) && item_handle != 0 {
+                } else if (base_type == 4 || base_type == 5 || base_type == 6 || base_type == 7)
+                    && item_handle != 0
+                {
                     self.dialog_control_handles
                         .insert(item_handle, (dialog_ptr, item_no));
                     let ctrl_ptr = bus.read_long(item_handle);
                     if ctrl_ptr != 0 {
+                        bus.write_word(ctrl_ptr + 8, box_top as u16);
+                        bus.write_word(ctrl_ptr + 10, box_left as u16);
+                        bus.write_word(ctrl_ptr + 12, box_bottom as u16);
+                        bus.write_word(ctrl_ptr + 14, box_right as u16);
                         self.dialog_control_values
                             .insert((dialog_ptr, item_no), bus.read_word(ctrl_ptr + 18) as i16);
                     }
@@ -4645,6 +5157,24 @@ impl super::TrapDispatcher {
                 if let Some(ref tracking) = self.dialog_tracking {
                     if !tracking.rendered_pixels_final {
                         let bounds = tracking.bounds;
+                        let items = tracking.items.clone();
+                        let default_item = tracking.default_item;
+                        let edit_text = tracking.edit_text.clone();
+                        let edit_item = tracking.edit_item;
+                        let dialog_ptr = tracking.dialog_ptr;
+                        let popup_draws = tracking.popup_draws.clone();
+                        if !tracking.game_managed {
+                            self.redraw_standard_dialog_items(
+                                bus,
+                                bounds,
+                                &items,
+                                default_item,
+                                &edit_text,
+                                edit_item,
+                                dialog_ptr,
+                            );
+                        }
+                        self.redraw_dialog_popup_controls(bus, &popup_draws);
                         let rendered = self.save_dialog_pixels(bus, bounds);
                         let t = self.dialog_tracking.as_mut().unwrap();
                         t.rendered_pixels = rendered;
@@ -4653,6 +5183,11 @@ impl super::TrapDispatcher {
                 }
 
                 if let Some(ref tracking) = self.dialog_tracking {
+                    if tracking.active_popup.is_some() {
+                        self.handle_dialog_popup_tracking(cpu, bus);
+                        return Some(Ok(()));
+                    }
+
                     // Fast path — when nothing can produce an item hit or visible
                     // update on this step (no filter proc, no flash animation, no
                     // pending event, no queued events), return Ok without running
@@ -4660,6 +5195,7 @@ impl super::TrapDispatcher {
                     // routes through the full handler below.
                     if tracking.filter_proc == 0
                         && tracking.flash_remaining == 0
+                        && tracking.active_popup.is_none()
                         && self.event_queue.is_empty()
                     {
                         return Some(Ok(()));
@@ -4704,6 +5240,19 @@ impl super::TrapDispatcher {
                                 .as_ref()
                                 .and_then(|t| t.last_filter_event.as_ref())
                                 .is_some_and(|e| e.what == 1);
+                            let (dialog_ptr, edit_item, edit_text, items) = {
+                                let tracking = self.dialog_tracking.as_mut().unwrap();
+                                Self::sync_tracking_active_edit_item(tracking);
+                                (
+                                    tracking.dialog_ptr,
+                                    tracking.edit_item,
+                                    tracking.edit_text.clone(),
+                                    tracking.items.clone(),
+                                )
+                            };
+                            self.flush_dialog_edit_item_texts(
+                                bus, dialog_ptr, &items, edit_item, &edit_text,
+                            );
                             // Filter handled the event — end tracking and return.
                             let saved = self.dialog_tracking.take().unwrap();
                             self.dialog_saved_pixels
@@ -4754,45 +5303,21 @@ impl super::TrapDispatcher {
                                 );
                             }
                         } else {
-                            // Flash complete — write result and clean up
-                            // Write edit text back to guest memory if there's an active editText
-                            let edit_item = self.dialog_tracking.as_ref().unwrap().edit_item;
-                            let edit_text =
-                                self.dialog_tracking.as_ref().unwrap().edit_text.clone();
-                            let dialog_ptr = self.dialog_tracking.as_ref().unwrap().dialog_ptr;
-
-                            if edit_item > 0 {
-                                let bytes = edit_text.as_bytes();
-                                let len = bytes.len().min(255);
-                                // Resolve the dialog item's handle via
-                                // dialog_item_handles reverse-lookup and write
-                                // edit_text to its master sized to len bytes.
-                                // Inside Macintosh Volume I, I-422
-                                // (GetDItem/SetDialogItemText contract); text
-                                // item handles store raw bytes sized to the
-                                // text length.
-                                let mut item_handle: u32 = 0;
-                                for (&h, &(dlg, idx)) in &self.dialog_item_handles {
-                                    if dlg == dialog_ptr && (idx as i16 + 1) == edit_item {
-                                        item_handle = h;
-                                        break;
-                                    }
-                                }
-                                if item_handle != 0 {
-                                    let data_ptr =
-                                        Self::ensure_text_handle_size(bus, item_handle, len);
-                                    if data_ptr != 0 && len > 0 {
-                                        bus.write_bytes(data_ptr, &bytes[..len]);
-                                    }
-                                }
-                                // Update the item's cached text so our own
-                                // dialog_items reflects the typed value.
-                                if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
-                                    if (edit_item as usize) <= items.len() {
-                                        items[(edit_item - 1) as usize].text = edit_text;
-                                    }
-                                }
-                            }
+                            // Flash complete — write all editText item handles
+                            // back before returning the hit item to the app.
+                            let (dialog_ptr, edit_item, edit_text, items) = {
+                                let tracking = self.dialog_tracking.as_mut().unwrap();
+                                Self::sync_tracking_active_edit_item(tracking);
+                                (
+                                    tracking.dialog_ptr,
+                                    tracking.edit_item,
+                                    tracking.edit_text.clone(),
+                                    tracking.items.clone(),
+                                )
+                            };
+                            self.flush_dialog_edit_item_texts(
+                                bus, dialog_ptr, &items, edit_item, &edit_text,
+                            );
 
                             let saved = self.dialog_tracking.take().unwrap();
                             self.restore_dialog_pixels(bus, saved.bounds, &saved.saved_pixels);
@@ -4838,10 +5363,19 @@ impl super::TrapDispatcher {
                             // taint the snapshot.
                             6 => {
                                 if let Some(ref t) = self.dialog_tracking {
-                                    let draws = t.popup_draws.clone();
-                                    for (pt, pl, pb, pr, ref title) in &draws {
-                                        self.draw_popup_control(bus, *pt, *pl, *pb, *pr, title);
+                                    if !t.game_managed {
+                                        self.redraw_standard_dialog_items(
+                                            bus,
+                                            bounds,
+                                            &t.items,
+                                            t.default_item,
+                                            &t.edit_text,
+                                            t.edit_item,
+                                            t.dialog_ptr,
+                                        );
                                     }
+                                    let popup_draws = t.popup_draws.clone();
+                                    self.redraw_dialog_popup_controls(bus, &popup_draws);
                                 }
                                 let rendered = self.save_dialog_pixels(bus, bounds);
                                 let t = self.dialog_tracking.as_mut().unwrap();
@@ -4857,7 +5391,8 @@ impl super::TrapDispatcher {
                                     .as_ref()
                                     .map(|t| t.items.clone())
                                     .unwrap_or_default();
-                                let hit = Self::dialog_item_hit_test(
+                                let hit = self.dialog_item_hit_test(
+                                    bus,
                                     &items_clone,
                                     bounds,
                                     e.where_v,
@@ -4892,21 +5427,20 @@ impl super::TrapDispatcher {
                                             // the checkbox value and calls ModalDialog again.
                                             // Inside Macintosh Volume I, I-415
                                             5 => {
-                                                let tracking =
-                                                    self.dialog_tracking.as_ref().unwrap();
-                                                let edit_item = tracking.edit_item;
-                                                let edit_text = tracking.edit_text.clone();
-                                                let dlg_ptr = tracking.dialog_ptr;
-                                                if edit_item > 0 {
-                                                    if let Some(items) =
-                                                        self.dialog_items.get_mut(&dlg_ptr)
-                                                    {
-                                                        if (edit_item as usize) <= items.len() {
-                                                            items[(edit_item - 1) as usize].text =
-                                                                edit_text;
-                                                        }
-                                                    }
-                                                }
+                                                let (dlg_ptr, edit_item, edit_text, items) = {
+                                                    let tracking =
+                                                        self.dialog_tracking.as_mut().unwrap();
+                                                    Self::sync_tracking_active_edit_item(tracking);
+                                                    (
+                                                        tracking.dialog_ptr,
+                                                        tracking.edit_item,
+                                                        tracking.edit_text.clone(),
+                                                        tracking.items.clone(),
+                                                    )
+                                                };
+                                                self.flush_dialog_edit_item_texts(
+                                                    bus, dlg_ptr, &items, edit_item, &edit_text,
+                                                );
                                                 // Preserve saved background pixels for re-entry
                                                 let saved = self.dialog_tracking.take().unwrap();
                                                 self.dialog_saved_pixels
@@ -4921,8 +5455,23 @@ impl super::TrapDispatcher {
                                             // EditText click: set as active
                                             16 => {
                                                 let t = self.dialog_tracking.as_mut().unwrap();
+                                                Self::sync_tracking_active_edit_item(t);
                                                 t.edit_item = hit;
+                                                t.edit_text = t
+                                                    .items
+                                                    .get((hit - 1) as usize)
+                                                    .map(|item| item.text.clone())
+                                                    .unwrap_or_default();
+                                                t.edit_text_modified = false;
+                                                bus.write_word(dialog_ptr + 164, (hit - 1) as u16);
+                                                self.refresh_dialog_tracking_snapshot(bus);
                                             }
+                                            // resCtrl popup controls are tracked by
+                                            // ModalDialog itself, matching the standard
+                                            // Dialog Manager control-item path.
+                                            7 if self.begin_dialog_popup_tracking(
+                                                bus, dialog_ptr, hit,
+                                            ) => {}
                                             // UserItem with popup menu: return item number.
                                             // Dialog stays on screen — the app calls
                                             // PopUpMenuSelect to show the popup dropdown.
@@ -4931,6 +5480,20 @@ impl super::TrapDispatcher {
                                                 .dialog_item_popup_menus
                                                 .contains_key(&(dialog_ptr, hit)) =>
                                             {
+                                                let (dlg_ptr, edit_item, edit_text, items) = {
+                                                    let tracking =
+                                                        self.dialog_tracking.as_mut().unwrap();
+                                                    Self::sync_tracking_active_edit_item(tracking);
+                                                    (
+                                                        tracking.dialog_ptr,
+                                                        tracking.edit_item,
+                                                        tracking.edit_text.clone(),
+                                                        tracking.items.clone(),
+                                                    )
+                                                };
+                                                self.flush_dialog_edit_item_texts(
+                                                    bus, dlg_ptr, &items, edit_item, &edit_text,
+                                                );
                                                 let saved = self.dialog_tracking.take().unwrap();
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
@@ -4943,6 +5506,20 @@ impl super::TrapDispatcher {
                                             // Any other enabled item: return item number immediately.
                                             // Inside Macintosh Volume I, I-428
                                             _ => {
+                                                let (dlg_ptr, edit_item, edit_text, items) = {
+                                                    let tracking =
+                                                        self.dialog_tracking.as_mut().unwrap();
+                                                    Self::sync_tracking_active_edit_item(tracking);
+                                                    (
+                                                        tracking.dialog_ptr,
+                                                        tracking.edit_item,
+                                                        tracking.edit_text.clone(),
+                                                        tracking.items.clone(),
+                                                    )
+                                                };
+                                                self.flush_dialog_edit_item_texts(
+                                                    bus, dlg_ptr, &items, edit_item, &edit_text,
+                                                );
                                                 let saved = self.dialog_tracking.take().unwrap();
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
@@ -5000,6 +5577,28 @@ impl super::TrapDispatcher {
                                             t.flash_item = cancel;
                                         }
                                     }
+                                    // Tab: move to the next editText item, wrapping.
+                                    0x09 => {
+                                        if tracking.edit_item > 0 {
+                                            Self::sync_tracking_active_edit_item(tracking);
+                                        }
+                                        let start = tracking.edit_item.max(0) as usize;
+                                        let next = (0..tracking.items.len()).find_map(|offset| {
+                                            let idx = (start + offset) % tracking.items.len();
+                                            if (tracking.items[idx].item_type & 0x7F) == 16 {
+                                                Some(idx)
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                        if let Some(idx) = next {
+                                            tracking.edit_item = (idx + 1) as i16;
+                                            tracking.edit_text = tracking.items[idx].text.clone();
+                                            tracking.edit_text_modified = false;
+                                            bus.write_word(dialog_ptr + 164, idx as u16);
+                                            self.refresh_dialog_tracking_snapshot(bus);
+                                        }
+                                    }
                                     // Backspace/Delete
                                     0x08 => {
                                         if tracking.edit_item > 0 {
@@ -5010,6 +5609,7 @@ impl super::TrapDispatcher {
                                             } else if !tracking.edit_text.is_empty() {
                                                 tracking.edit_text.pop();
                                             }
+                                            Self::sync_tracking_active_edit_item(tracking);
                                         }
                                     }
                                     // Printable ASCII
@@ -5021,6 +5621,7 @@ impl super::TrapDispatcher {
                                                 tracking.edit_text_modified = true;
                                             }
                                             tracking.edit_text.push(char_code as char);
+                                            Self::sync_tracking_active_edit_item(tracking);
                                         }
                                     }
                                     _ => {}
@@ -5157,18 +5758,7 @@ impl super::TrapDispatcher {
                                 ))
                             })
                             .collect();
-                        for (abs_top, abs_left, abs_bottom, abs_right, ref checked_text) in
-                            &popup_draws
-                        {
-                            self.draw_popup_control(
-                                bus,
-                                *abs_top,
-                                *abs_left,
-                                *abs_bottom,
-                                *abs_right,
-                                checked_text,
-                            );
-                        }
+                        self.redraw_dialog_popup_controls(bus, &popup_draws);
 
                         // Snapshot the fully rendered dialog (including PICTs) so
                         // redraw_chrome can restore it without re-parsing pictures.
@@ -5215,6 +5805,7 @@ impl super::TrapDispatcher {
                             game_managed: all_user_items,
                             last_filter_event: None,
                             popup_draws,
+                            active_popup: None,
                         });
                         // Don't pop stack or advance PC — re-fire pattern
                     } else {
@@ -8350,6 +8941,7 @@ impl super::TrapDispatcher {
                 let item_no = bus.read_word(sp) as i16;
                 let dialog_ptr = bus.read_long(sp + 2);
                 cpu.write_reg(Register::A7, sp + 6);
+                let mut updated_control_rect = None;
                 if dialog_ptr != 0 && item_no > 0 {
                     let key = (dialog_ptr, item_no);
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
@@ -8361,7 +8953,29 @@ impl super::TrapDispatcher {
                                 self.hidden_dialog_item_rects.entry(key).or_insert(rect);
                                 items[idx].rect.1 = rect.1.wrapping_add(16384);
                                 items[idx].rect.3 = rect.3.wrapping_add(16384);
+                                updated_control_rect = Some(items[idx].rect);
                                 self.invalidate_window_rect(bus, dialog_ptr, rect);
+                            }
+                        }
+                    }
+                    if let Some(rect) = updated_control_rect {
+                        if let Some(ctrl_handle) =
+                            self.dialog_control_handle_for_item(dialog_ptr, item_no)
+                        {
+                            let ctrl_ptr = bus.read_long(ctrl_handle);
+                            if ctrl_ptr != 0 {
+                                bus.write_word(ctrl_ptr + 8, rect.0 as u16);
+                                bus.write_word(ctrl_ptr + 10, rect.1 as u16);
+                                bus.write_word(ctrl_ptr + 12, rect.2 as u16);
+                                bus.write_word(ctrl_ptr + 14, rect.3 as u16);
+                            }
+                        }
+                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                            if tracking.dialog_ptr == dialog_ptr {
+                                let idx = (item_no as usize).wrapping_sub(1);
+                                if idx < tracking.items.len() {
+                                    tracking.items[idx].rect = rect;
+                                }
                             }
                         }
                     }
@@ -8382,6 +8996,7 @@ impl super::TrapDispatcher {
                 let item_no = bus.read_word(sp) as i16;
                 let dialog_ptr = bus.read_long(sp + 2);
                 cpu.write_reg(Register::A7, sp + 6);
+                let mut updated_control_rect = None;
                 if dialog_ptr != 0 && item_no > 0 {
                     let key = (dialog_ptr, item_no);
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
@@ -8403,7 +9018,29 @@ impl super::TrapDispatcher {
                                     )
                                 };
                                 items[idx].rect = restored_rect;
+                                updated_control_rect = Some(restored_rect);
                                 self.invalidate_window_rect(bus, dialog_ptr, restored_rect);
+                            }
+                        }
+                    }
+                    if let Some(rect) = updated_control_rect {
+                        if let Some(ctrl_handle) =
+                            self.dialog_control_handle_for_item(dialog_ptr, item_no)
+                        {
+                            let ctrl_ptr = bus.read_long(ctrl_handle);
+                            if ctrl_ptr != 0 {
+                                bus.write_word(ctrl_ptr + 8, rect.0 as u16);
+                                bus.write_word(ctrl_ptr + 10, rect.1 as u16);
+                                bus.write_word(ctrl_ptr + 12, rect.2 as u16);
+                                bus.write_word(ctrl_ptr + 14, rect.3 as u16);
+                            }
+                        }
+                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                            if tracking.dialog_ptr == dialog_ptr {
+                                let idx = (item_no as usize).wrapping_sub(1);
+                                if idx < tracking.items.len() {
+                                    tracking.items[idx].rect = rect;
+                                }
                             }
                         }
                     }
@@ -8917,6 +9554,7 @@ mod tests {
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::DialogItem;
+    use crate::trap::menu::{Menu, MenuItem};
     use crate::trap::TrapDispatcher;
     use std::collections::VecDeque;
 
@@ -9023,6 +9661,7 @@ mod tests {
             game_managed: false,
             last_filter_event: None,
             popup_draws: Vec::new(),
+            active_popup: None,
         });
 
         bus.write_word(TEST_SP, 9); // newItem
@@ -9073,6 +9712,7 @@ mod tests {
             game_managed: false,
             last_filter_event: None,
             popup_draws: Vec::new(),
+            active_popup: None,
         });
 
         bus.write_word(TEST_SP, 7); // newItem
@@ -11234,6 +11874,7 @@ mod tests {
             game_managed: false,
             last_filter_event: None,
             popup_draws: Vec::new(),
+            active_popup: None,
         });
 
         bus.write_long(TEST_SP, dialog_ptr);
@@ -11691,6 +12332,88 @@ mod tests {
         assert_eq!(bus.read_bytes(text_ptr, 5), b"Hello".to_vec());
     }
 
+    #[test]
+    fn get_ditem_associates_recent_inserted_menu_with_enabled_user_item() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let box_ptr = bus.alloc(8);
+        let item_ptr = bus.alloc(4);
+        let type_ptr = bus.alloc(2);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (10, 20, 30, 40),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.last_inserted_menu_id = Some(1234);
+
+        bus.write_long(TEST_SP, box_ptr);
+        bus.write_long(TEST_SP + 4, item_ptr);
+        bus.write_long(TEST_SP + 8, type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            disp.dialog_item_popup_menus.get(&(dialog_ptr, 1)),
+            Some(&1234)
+        );
+        assert_eq!(
+            disp.dialog_popup_original_rects.get(&(dialog_ptr, 1)),
+            Some(&(10, 20, 30, 40))
+        );
+        assert_eq!(disp.last_inserted_menu_id, None);
+    }
+
+    #[test]
+    fn get_ditem_ignores_recent_inserted_menu_for_disabled_user_item() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let box_ptr = bus.alloc(8);
+        let item_ptr = bus.alloc(4);
+        let type_ptr = bus.alloc(2);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80,
+                rect: (10, 20, 30, 40),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.last_inserted_menu_id = Some(1234);
+
+        bus.write_long(TEST_SP, box_ptr);
+        bus.write_long(TEST_SP + 4, item_ptr);
+        bus.write_long(TEST_SP + 8, type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(!disp.dialog_item_popup_menus.contains_key(&(dialog_ptr, 1)));
+        assert!(!disp
+            .dialog_popup_original_rects
+            .contains_key(&(dialog_ptr, 1)));
+        assert_eq!(disp.last_inserted_menu_id, None);
+    }
+
     // ---- SetDItem ($A98E) ----
 
     #[test]
@@ -11986,6 +12709,187 @@ mod tests {
     }
 
     #[test]
+    fn initialize_dialog_item_handles_creates_resctrl_control_handle() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(18);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 140);
+        bus.write_byte(ditl_ptr + 14, 7);
+        bus.write_byte(ditl_ptr + 15, 2);
+        bus.write_word(ditl_ptr + 16, 128);
+
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 110, 2, -1, 4, 1300, 1009] {
+            cntl.extend_from_slice(&(word as u16).to_be_bytes());
+        }
+        cntl.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+        cntl.push(4);
+        cntl.extend_from_slice(b"Team");
+        disp.install_test_resource(&mut bus, *b"CNTL", 128, &cntl);
+
+        let items = vec![DialogItem {
+            item_type: 7,
+            rect: (10, 20, 30, 140),
+            text: String::new(),
+            resource_id: 128,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        let handle = bus.read_long(ditl_ptr + 2);
+        let ctrl_ptr = bus.read_long(handle);
+        assert_ne!(handle, 0);
+        assert_ne!(ctrl_ptr, 0);
+        assert_eq!(bus.read_long(dialog_ptr + 140), handle);
+        assert_eq!(bus.read_long(ctrl_ptr + 4), dialog_ptr);
+        assert_eq!(bus.read_word(ctrl_ptr + 8) as i16, 10);
+        assert_eq!(bus.read_word(ctrl_ptr + 10) as i16, 20);
+        assert_eq!(bus.read_word(ctrl_ptr + 12) as i16, 30);
+        assert_eq!(bus.read_word(ctrl_ptr + 14) as i16, 140);
+        assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
+        assert_eq!(bus.read_word(ctrl_ptr + 20) as i16, 1300);
+        assert_eq!(disp.control_proc_ids.get(&ctrl_ptr), Some(&1009));
+        assert_eq!(
+            disp.dialog_control_handles.get(&handle),
+            Some(&(dialog_ptr, 1))
+        );
+        assert_eq!(disp.dialog_control_values.get(&(dialog_ptr, 1)), Some(&2));
+    }
+
+    #[test]
+    fn draw_dialog_resctrl_uses_cntl_proc_id_not_always_popup() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes: u32 = 640;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(18);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 20);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 40);
+        bus.write_word(ditl_ptr + 12, 120);
+        bus.write_byte(ditl_ptr + 14, 7);
+        bus.write_byte(ditl_ptr + 15, 2);
+        bus.write_word(ditl_ptr + 16, 128);
+
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 100, 0, -1, 0, 0, 0] {
+            cntl.extend_from_slice(&(word as u16).to_be_bytes());
+        }
+        cntl.extend_from_slice(&0u32.to_be_bytes());
+        cntl.push(2);
+        cntl.extend_from_slice(b"OK");
+        disp.install_test_resource(&mut bus, *b"CNTL", 128, &cntl);
+
+        let items = vec![DialogItem {
+            item_type: 7,
+            rect: (20, 20, 40, 120),
+            text: String::new(),
+            resource_id: 128,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        disp.draw_dialog(
+            &mut bus,
+            (100, 100, 180, 260),
+            3,
+            "",
+            &items,
+            0,
+            "",
+            0,
+            false,
+            dialog_ptr,
+        );
+
+        let old_popup_arrow_pixel = screen_base + 130 * row_bytes + 210;
+        assert_ne!(
+            bus.read_byte(old_popup_arrow_pixel),
+            0xFF,
+            "push-button resCtrl must not draw popup-menu arrow pixels"
+        );
+    }
+
+    #[test]
+    fn show_dialog_item_updates_live_resctrl_control_rect() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(18);
+        let hidden_rect = (20, 20 + 16384, 40, 120 + 16384);
+        let visible_rect = (20, 20, 40, 120);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, hidden_rect.0 as u16);
+        bus.write_word(ditl_ptr + 8, hidden_rect.1 as u16);
+        bus.write_word(ditl_ptr + 10, hidden_rect.2 as u16);
+        bus.write_word(ditl_ptr + 12, hidden_rect.3 as u16);
+        bus.write_byte(ditl_ptr + 14, 7);
+        bus.write_byte(ditl_ptr + 15, 2);
+        bus.write_word(ditl_ptr + 16, 128);
+
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 100, 0, -1, 0, 0, 0] {
+            cntl.extend_from_slice(&(word as u16).to_be_bytes());
+        }
+        cntl.extend_from_slice(&0u32.to_be_bytes());
+        cntl.push(2);
+        cntl.extend_from_slice(b"OK");
+        disp.install_test_resource(&mut bus, *b"CNTL", 128, &cntl);
+
+        let items = vec![DialogItem {
+            item_type: 7,
+            rect: hidden_rect,
+            text: String::new(),
+            resource_id: 128,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+        disp.dialog_items.insert(dialog_ptr, items);
+        disp.hidden_dialog_item_rects
+            .insert((dialog_ptr, 1), visible_rect);
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+        disp.dispatch_dialog(true, 0x028, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let ctrl_handle = disp.dialog_control_handle_for_item(dialog_ptr, 1).unwrap();
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        assert_eq!(bus.read_word(ctrl_ptr + 8) as i16, visible_rect.0);
+        assert_eq!(bus.read_word(ctrl_ptr + 10) as i16, visible_rect.1);
+        assert_eq!(bus.read_word(ctrl_ptr + 12) as i16, visible_rect.2);
+        assert_eq!(bus.read_word(ctrl_ptr + 14) as i16, visible_rect.3);
+    }
+
+    #[test]
     fn parse_ditl_ignores_user_item_placeholder_proc_ptr() {
         let (_disp, _cpu, mut bus) = setup();
         let ditl_ptr = bus.alloc(16);
@@ -12057,6 +12961,161 @@ mod tests {
     }
 
     #[test]
+    fn modal_dialog_popup_resctrl_tracks_selection_and_returns_item() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        for i in 0..800u32 * 600 {
+            bus.write_byte(screen_base + i, 0xFF);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        bus.write_word(dialog_ptr + 6, 0);
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 180);
+        bus.write_word(dialog_ptr + 22, 220);
+
+        let ctrl_ptr = bus.alloc(296);
+        let ctrl_handle = bus.alloc(4);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            ctrl_ptr,
+            dialog_ptr,
+            (10, 20, 30, 130),
+            b"",
+            true,
+            1,
+            900,
+            0,
+            1009,
+            0,
+        );
+        disp.dialog_control_handles
+            .insert(ctrl_handle, (dialog_ptr, 1));
+        disp.dialog_control_values.insert((dialog_ptr, 1), 1);
+        disp.menus.push(Menu {
+            id: 900,
+            title: "Squadies".to_string(),
+            items: vec![
+                MenuItem {
+                    text: "Duke".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+                MenuItem {
+                    text: "Carnage".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+            ],
+            enabled: true,
+            handle: 0,
+            in_menu_bar: false,
+        });
+
+        let item_hit_addr = 0x300000u32;
+        bus.write_word(item_hit_addr, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 100, 280, 320),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 7,
+                rect: (10, 20, 30, 130),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: item_hit_addr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+        });
+        disp.mouse_button = true;
+        disp.mouse_pos = (115, 125);
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 115,
+                where_h: 125,
+                modifiers: 0,
+            });
+
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_popup.as_ref())
+            .is_some());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        disp.mouse_pos = (148, 125);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disp.dialog_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.active_popup.as_ref())
+                .map(|popup| popup.highlighted_item),
+            Some(2)
+        );
+
+        disp.mouse_button = false;
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 148,
+                where_h: 125,
+                modifiers: 0,
+            });
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(disp.dialog_tracking.is_none());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_addr), 1);
+        assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
+        assert_eq!(disp.dialog_control_values.get(&(dialog_ptr, 1)), Some(&2));
+    }
+
+    #[test]
     fn modal_dialog_game_managed_dialog_still_queues_user_item_draw_procs() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;
@@ -12106,6 +13165,61 @@ mod tests {
     }
 
     #[test]
+    fn modal_dialog_resnapshot_redraws_popup_controls_after_user_item_draw_procs() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        for i in 0..800u32 * 600 {
+            bus.write_byte(screen_base + i, 0xFF);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr: 0x200000,
+            bounds: (0, 0, 100, 220),
+            title: String::new(),
+            proc_id: 2,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: vec![(20, 30, 42, 180, String::new())],
+            active_popup: None,
+        });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let interior = screen_base + 30 * 800 + 80;
+        assert_eq!(
+            bus.read_byte(interior),
+            0,
+            "popup interior must be redrawn over the guest userItem pixels"
+        );
+        assert!(
+            disp.dialog_tracking
+                .as_ref()
+                .is_some_and(|tracking| tracking.rendered_pixels_final),
+            "ModalDialog should re-snapshot after popup redraw"
+        );
+    }
+
+    #[test]
     fn modal_dialog_mouse_down_return_consumes_queued_mouse_up() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;
@@ -12144,6 +13258,7 @@ mod tests {
             game_managed: true,
             last_filter_event: None,
             popup_draws: Vec::new(),
+            active_popup: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
@@ -12218,6 +13333,7 @@ mod tests {
                 modifiers: 0,
             }),
             popup_draws: Vec::new(),
+            active_popup: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {

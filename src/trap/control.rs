@@ -1,6 +1,6 @@
 //! Control Manager trap handlers.
 
-use super::dispatch::ControlAuxRecordState;
+use super::dispatch::{ControlAuxRecordState, ControlTrackingState};
 use super::types::{Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -54,7 +54,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn control_title_bytes(bus: &MacMemoryBus, ctrl_ptr: u32) -> Vec<u8> {
+    pub(crate) fn control_title_bytes(bus: &MacMemoryBus, ctrl_ptr: u32) -> Vec<u8> {
         Self::read_pascal_string(bus, ctrl_ptr + 40)
     }
 
@@ -85,6 +85,146 @@ impl super::TrapDispatcher {
             1 | 2 => 11, // inCheckBox for checkbox and radio-button variants
             _ => 10,     // inButton for push buttons and the current fallback path
         }
+    }
+
+    pub(crate) fn write_control_value(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ctrl_handle: u32,
+        value: i16,
+    ) {
+        let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+        if ctrl_ptr == 0 {
+            return;
+        }
+        if let Some((dlg_ptr, item_no)) = self.dialog_control_handles.get(&ctrl_handle).copied() {
+            self.dialog_control_values.insert((dlg_ptr, item_no), value);
+        }
+        bus.write_word(ctrl_ptr + 18, value as u16);
+    }
+
+    fn sync_dialog_item_rect_for_control(&mut self, bus: &MacMemoryBus, ctrl_handle: u32) {
+        let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+        if ctrl_ptr == 0 {
+            return;
+        }
+        let Some((dialog_ptr, item_no)) = self.dialog_control_handles.get(&ctrl_handle).copied()
+        else {
+            return;
+        };
+        let rect = (
+            bus.read_word(ctrl_ptr + 8) as i16,
+            bus.read_word(ctrl_ptr + 10) as i16,
+            bus.read_word(ctrl_ptr + 12) as i16,
+            bus.read_word(ctrl_ptr + 14) as i16,
+        );
+        let idx = (item_no as usize).wrapping_sub(1);
+        if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+            if idx < items.len() {
+                items[idx].rect = rect;
+            }
+        }
+        if let Some(tracking) = self.dialog_tracking.as_mut() {
+            if tracking.dialog_ptr == dialog_ptr && idx < tracking.items.len() {
+                tracking.items[idx].rect = rect;
+            }
+        }
+    }
+
+    pub(crate) fn popup_control_dropdown_rect(
+        &self,
+        bus: &MacMemoryBus,
+        ctrl_ptr: u32,
+        menu_idx: usize,
+    ) -> (i16, i16, i16, i16) {
+        let (_, _, screen_width, screen_height, _) = self.get_screen_params();
+        let owner = bus.read_long(ctrl_ptr + 4);
+        let (owner_top, owner_left, _, _) = if owner != 0 {
+            Self::dialog_screen_bounds(bus, owner)
+        } else {
+            (0, 0, 0, 0)
+        };
+        let r_left = bus.read_word(ctrl_ptr + 10) as i16;
+        let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
+        let r_right = bus.read_word(ctrl_ptr + 14) as i16;
+        let abs_left = owner_left + r_left;
+        let abs_bottom = owner_top + r_bottom;
+        let item_height: i16 = 16;
+
+        let mut width = (r_right - r_left).max(80);
+        if let Some(menu) = self.menus.get(menu_idx) {
+            for item in &menu.items {
+                let w = Self::fb_measure_string(&item.text, 0, 12) + 30;
+                width = width.max(w);
+            }
+            let bottom =
+                (abs_bottom + menu.items.len() as i16 * item_height + 2).min(screen_height);
+            return (
+                abs_bottom,
+                abs_left,
+                bottom,
+                (abs_left + width).min(screen_width),
+            );
+        }
+
+        (
+            abs_bottom,
+            abs_left,
+            abs_bottom + 2,
+            (abs_left + width).min(screen_width),
+        )
+    }
+
+    fn control_tracking_item_at_point(&self, mouse_x: i16, mouse_y: i16) -> i16 {
+        let Some(tracking) = self.control_tracking.as_ref() else {
+            return 0;
+        };
+        let (top, left, bottom, right) = tracking.dropdown_rect;
+        if mouse_x < left || mouse_x >= right || mouse_y < top || mouse_y >= bottom {
+            return 0;
+        }
+        let Some(menu) = self.menus.get(tracking.active_menu) else {
+            return 0;
+        };
+        let item_height: i16 = 16;
+        let item_idx = (mouse_y - top - 1) / item_height;
+        if item_idx < 0 || (item_idx as usize) >= menu.items.len() {
+            return 0;
+        }
+        let item = &menu.items[item_idx as usize];
+        if item.text == "-" || !item.enabled {
+            return 0;
+        }
+        item_idx + 1
+    }
+
+    fn invert_control_tracking_item(&self, bus: &mut MacMemoryBus, item: i16) {
+        let Some(tracking) = self.control_tracking.as_ref() else {
+            return;
+        };
+        self.invert_dropdown_item_rect(bus, tracking.dropdown_rect, item);
+    }
+
+    fn finish_popup_control_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        selected_item: i16,
+    ) {
+        let Some(tracking) = self.control_tracking.take() else {
+            return;
+        };
+        self.restore_dropdown_pixels(bus, tracking.dropdown_rect, &tracking.saved_pixels);
+
+        let part = if selected_item > 0 {
+            self.write_control_value(bus, tracking.ctrl_handle, selected_item);
+            self.draw_control(cpu, bus, tracking.ctrl_ptr);
+            10u16
+        } else {
+            0u16
+        };
+        bus.write_word(tracking.stack_ptr + 12, part);
+        cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
     }
 
     fn standard_scrollbar_testcontrol_part_code(
@@ -183,7 +323,11 @@ impl super::TrapDispatcher {
         bus.read_long(gd_pixmap_ptr + 42)
     }
 
-    fn ensure_control_aux_record(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) -> u32 {
+    pub(crate) fn ensure_control_aux_record(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ctrl_handle: u32,
+    ) -> u32 {
         if ctrl_handle == 0 {
             return 0;
         }
@@ -264,7 +408,7 @@ impl super::TrapDispatcher {
         self.control_aux_records.get(&ctrl_handle).copied()
     }
 
-    fn initialize_control_record(
+    pub(crate) fn initialize_control_record(
         &mut self,
         bus: &mut MacMemoryBus,
         ctrl_ptr: u32,
@@ -521,33 +665,11 @@ impl super::TrapDispatcher {
                     bus, abs_top, abs_left, abs_bottom, abs_right, value, min, max, hilite,
                 );
             }
-            1008 => {
+            proc_id if Self::is_popup_menu_proc_id(proc_id) => {
                 // popupMenuProc — draw the CNTL-backed popup button using
                 // the selected MENU resource item.
                 let selected = value.max(1) as usize;
-                let item_title = if let Some((_, menu_ptr)) = self.find_resource_any(*b"MENU", min)
-                {
-                    let title_len = bus.read_byte(menu_ptr + 14) as u32;
-                    let mut off = menu_ptr + 15 + title_len;
-                    let mut nth = 0usize;
-                    let mut found = None;
-                    loop {
-                        let item_len = bus.read_byte(off) as usize;
-                        if item_len == 0 {
-                            break;
-                        }
-                        nth += 1;
-                        if nth == selected {
-                            let bytes = bus.read_bytes(off + 1, item_len);
-                            found = Some(String::from_utf8_lossy(&bytes).into_owned());
-                            break;
-                        }
-                        off += 1 + item_len as u32 + 4;
-                    }
-                    found
-                } else {
-                    None
-                };
+                let item_title = self.popup_menu_item_title(bus, min, selected);
                 self.draw_popup_control(
                     bus,
                     abs_top,
@@ -680,7 +802,7 @@ impl super::TrapDispatcher {
 
     /// Draw a scroll bar control.
     /// Inside Macintosh Volume I, I-332 (scroll bar CDEF)
-    fn draw_scroll_bar(
+    pub(crate) fn draw_scroll_bar(
         &self,
         bus: &mut MacMemoryBus,
         top: i16,
@@ -1596,6 +1718,7 @@ impl super::TrapDispatcher {
                         bus.write_word(ctrl_ptr + 10, h as u16);
                         bus.write_word(ctrl_ptr + 12, (v + height) as u16);
                         bus.write_word(ctrl_ptr + 14, (h + width) as u16);
+                        self.sync_dialog_item_rect_for_control(bus, ctrl_handle);
                     }
                 }
                 Ok(())
@@ -1651,6 +1774,7 @@ impl super::TrapDispatcher {
                     let left = bus.read_word(ctrl_ptr + 10) as i16;
                     bus.write_word(ctrl_ptr + 12, top.wrapping_add(height) as u16);
                     bus.write_word(ctrl_ptr + 14, left.wrapping_add(width) as u16);
+                    self.sync_dialog_item_rect_for_control(bus, ctrl_handle);
                 }
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
@@ -1765,10 +1889,13 @@ impl super::TrapDispatcher {
                 }
                 let min = bus.read_word(ctrl_ptr + 20) as i16;
                 let max = bus.read_word(ctrl_ptr + 22) as i16;
+                let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
                 // If min > max the control is degenerate — IM doesn't
                 // define the behaviour. Be conservative: take the
                 // requested value unchanged in that case.
-                let value = if min <= max {
+                let value = if Self::is_popup_menu_proc_id(proc_id) {
+                    requested
+                } else if min <= max {
                     requested.clamp(min, max)
                 } else {
                     requested
@@ -1816,8 +1943,9 @@ impl super::TrapDispatcher {
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
                 if ctrl_ptr != 0 {
                     bus.write_word(ctrl_ptr + 20, min as u16);
+                    let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
                     let value = bus.read_word(ctrl_ptr + 18) as i16;
-                    if value < min {
+                    if !Self::is_popup_menu_proc_id(proc_id) && value < min {
                         bus.write_word(ctrl_ptr + 18, min as u16);
                         if let Some((dlg_ptr, item_no)) =
                             self.dialog_control_handles.get(&ctrl_handle).copied()
@@ -1862,8 +1990,9 @@ impl super::TrapDispatcher {
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
                 if ctrl_ptr != 0 {
                     bus.write_word(ctrl_ptr + 22, max as u16);
+                    let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
                     let value = bus.read_word(ctrl_ptr + 18) as i16;
-                    if value > max {
+                    if !Self::is_popup_menu_proc_id(proc_id) && value > max {
                         bus.write_word(ctrl_ptr + 18, max as u16);
                         if let Some((dlg_ptr, item_no)) =
                             self.dialog_control_handles.get(&ctrl_handle).copied()
@@ -1928,6 +2057,37 @@ impl super::TrapDispatcher {
             // start-point hit test against contrlRect, returns part code
             // 10 (inButton) for visible active controls, else 0.
             (true, 0x168) => {
+                if self.control_tracking.is_some() {
+                    if self.mouse_button {
+                        let (mv, mh) = self.mouse_pos;
+                        let new_item = self.control_tracking_item_at_point(mh, mv);
+                        let old_item = self
+                            .control_tracking
+                            .as_ref()
+                            .map(|tracking| tracking.highlighted_item)
+                            .unwrap_or(0);
+                        if new_item != old_item {
+                            if old_item > 0 {
+                                self.invert_control_tracking_item(bus, old_item);
+                            }
+                            if let Some(tracking) = self.control_tracking.as_mut() {
+                                tracking.highlighted_item = new_item;
+                            }
+                            if new_item > 0 {
+                                self.invert_control_tracking_item(bus, new_item);
+                            }
+                        }
+                    } else {
+                        let selected_item = self
+                            .control_tracking
+                            .as_ref()
+                            .map(|tracking| tracking.highlighted_item)
+                            .unwrap_or(0);
+                        self.finish_popup_control_tracking(cpu, bus, selected_item);
+                    }
+                    return Some(Ok(()));
+                }
+
                 let sp = cpu.read_reg(Register::A7);
                 let ctrl_handle = bus.read_long(sp + 8);
                 let pt_v = bus.read_word(sp + 4) as i16;
@@ -1946,7 +2106,31 @@ impl super::TrapDispatcher {
                             let r_right = bus.read_word(ctrl_ptr + 14) as i16;
                             if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
                             {
-                                // Return inButton (10) for simple controls
+                                let proc_id =
+                                    self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                                if Self::is_popup_menu_proc_id(proc_id) {
+                                    let menu_id = bus.read_word(ctrl_ptr + 20) as i16;
+                                    if let Some(menu_idx) =
+                                        self.menus.iter().position(|menu| menu.id == menu_id)
+                                    {
+                                        let dropdown_rect = self
+                                            .popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
+                                        let saved = self.save_dropdown_pixels(bus, dropdown_rect);
+                                        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
+                                        self.control_tracking = Some(ControlTrackingState {
+                                            ctrl_handle,
+                                            ctrl_ptr,
+                                            active_menu: menu_idx,
+                                            highlighted_item: 0,
+                                            saved_pixels: saved,
+                                            dropdown_rect,
+                                            stack_ptr: sp,
+                                        });
+                                        return Some(Ok(()));
+                                    }
+                                }
+
+                                // Return inButton (10) for simple controls.
                                 // Inside Macintosh Volume I, I-316
                                 part = 10;
                             }
@@ -1984,7 +2168,7 @@ impl super::TrapDispatcher {
                     // Draw controls in reverse order (last added = bottom of list = drawn first)
                     for &ctrl_ptr in ctrl_ptrs.iter().rev() {
                         let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
-                        if proc_id == 1008 {
+                        if Self::is_popup_menu_proc_id(proc_id) {
                             // popupMenuProc needs special MENU resource lookup
                             let vis = bus.read_byte(ctrl_ptr + 16);
                             let hilite = bus.read_byte(ctrl_ptr + 17);
@@ -2002,31 +2186,7 @@ impl super::TrapDispatcher {
                                 let abs_bottom = scr_top + r_bottom;
                                 let abs_right = scr_left + r_right;
                                 let selected = ctrl_value.max(1) as usize;
-                                let item_title = if let Some((_, menu_ptr)) =
-                                    self.find_resource_any(*b"MENU", menu_id)
-                                {
-                                    let title_len = bus.read_byte(menu_ptr + 14) as u32;
-                                    let mut off = menu_ptr + 15 + title_len;
-                                    let mut nth = 0usize;
-                                    let mut found = None;
-                                    loop {
-                                        let item_len = bus.read_byte(off) as usize;
-                                        if item_len == 0 {
-                                            break;
-                                        }
-                                        nth += 1;
-                                        if nth == selected {
-                                            let bytes = bus.read_bytes(off + 1, item_len);
-                                            found =
-                                                Some(String::from_utf8_lossy(&bytes).into_owned());
-                                            break;
-                                        }
-                                        off += 1 + item_len as u32 + 4;
-                                    }
-                                    found
-                                } else {
-                                    None
-                                };
+                                let item_title = self.popup_menu_item_title(bus, menu_id, selected);
                                 self.draw_popup_control(
                                     bus,
                                     abs_top,
@@ -2491,6 +2651,7 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::trap::menu::{Menu, MenuItem};
     use crate::trap::TrapDispatcher;
 
     fn build_cntl_resource(
@@ -3351,6 +3512,27 @@ mod tests {
         assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 42);
     }
 
+    #[test]
+    fn setctlvalue_popupmenuproc_variant_does_not_clamp_to_menu_id_min() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = 0x300000u32;
+        cpu.write_reg(Register::A7, sp);
+        let ctrl_ptr = bus.alloc(40);
+        bus.write_word(ctrl_ptr + 20, 1300); // popupMenuProc stores MENU id in min
+        bus.write_word(ctrl_ptr + 22, 0);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, ctrl_ptr);
+        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        bus.write_word(sp, 3);
+        bus.write_long(sp + 2, handle);
+
+        disp.dispatch_control(true, 0x163, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 3);
+    }
+
     // SetCtlMin / SetCtlMax must bump the current value into the new range if it's outside.
     #[test]
     fn setctlmin_bumps_below_value_up() {
@@ -3532,6 +3714,85 @@ mod tests {
 
         assert_eq!(bus.read_word(sp + 12), 10);
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
+    #[test]
+    fn track_control_popup_menu_tracks_and_updates_value_on_release() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = 0x300000u32;
+        let owner = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+        let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 130), 255, 0);
+        bus.write_long(ctrl_ptr + 4, owner);
+        bus.write_word(ctrl_ptr + 18, 1);
+        bus.write_word(ctrl_ptr + 20, 900); // popupMenuProc stores MENU id in min
+        bus.write_word(ctrl_ptr + 22, 0);
+        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        disp.menus.push(Menu {
+            id: 900,
+            title: "Squadies".to_string(),
+            items: vec![
+                MenuItem {
+                    text: "Duke".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+                MenuItem {
+                    text: "Carnage".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+            ],
+            enabled: true,
+            handle: 0,
+            in_menu_bar: false,
+        });
+
+        disp.mouse_button = true;
+        disp.mouse_pos = (15, 25);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 15);
+        bus.write_word(sp + 6, 25);
+        bus.write_long(sp + 8, ctrl_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp,
+            "popup tracking should defer the TrackControl stack pop"
+        );
+        assert!(disp.control_tracking.is_some());
+        assert_eq!(bus.read_word(sp + 12), 0xBEEF);
+
+        disp.mouse_pos = (48, 25);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disp.control_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(2)
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 10);
+        assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
+        assert!(disp.control_tracking.is_none());
     }
 
     #[test]

@@ -1976,6 +1976,8 @@ impl super::TrapDispatcher {
                     let io_ref_num = bus.read_word(pb + 24);
                     let result = if io_ref_num == 0 {
                         NO_ERR
+                    } else if self.synthetic_drivers.contains_key(&io_ref_num) {
+                        NO_ERR
                     } else {
                         BAD_UNIT_ERR
                     };

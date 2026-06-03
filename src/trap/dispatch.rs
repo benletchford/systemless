@@ -305,6 +305,32 @@ pub struct DialogTrackingState {
     /// Stored so updateEvt re-snapshots can redraw popups on top of the
     /// game's narrow indicator rendering.
     pub popup_draws: Vec<(i16, i16, i16, i16, String)>,
+    /// Active popup-menu control tracking inside ModalDialog.
+    pub active_popup: Option<DialogPopupTrackingState>,
+}
+
+/// Popup-menu control state owned by an active ModalDialog loop.
+pub struct DialogPopupTrackingState {
+    pub item_no: i16,
+    pub ctrl_handle: u32,
+    pub ctrl_ptr: u32,
+    pub active_menu: usize,
+    pub highlighted_item: i16,
+    pub saved_pixels: Vec<u8>,
+    pub dropdown_rect: (i16, i16, i16, i16),
+}
+
+/// State for popup-menu controls tracked through TrackControl.
+/// The popup CDEF blocks until mouse-up, so HLE keeps the trap active
+/// across refires in the same style as MenuSelect and ModalDialog.
+pub(crate) struct ControlTrackingState {
+    pub ctrl_handle: u32,
+    pub ctrl_ptr: u32,
+    pub active_menu: usize,
+    pub highlighted_item: i16,
+    pub saved_pixels: Vec<u8>,
+    pub dropdown_rect: (i16, i16, i16, i16),
+    pub stack_ptr: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -742,6 +768,8 @@ pub struct TrapDispatcher {
     pub(crate) working_directories: HashMap<i16, WorkingDirectory>,
     /// Open file table: refnum -> filename
     pub(crate) open_files: HashMap<u16, String>,
+    /// Synthetic Device Manager drivers opened by name via PBOpen/OpenDriver.
+    pub(crate) synthetic_drivers: HashMap<u16, String>,
     /// Refnums opened with write permission (fsRdWrPerm=3 or fsWrPerm=2).
     /// Used to enforce opWrErr (-49) per IM:Files 9578.
     pub(crate) write_refnums: std::collections::HashSet<u16>,
@@ -906,6 +934,8 @@ pub struct TrapDispatcher {
     pub(crate) saved_menu_bars: HashMap<u32, Vec<super::menu::Menu>>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
     pub(crate) menu_tracking: Option<super::menu::MenuTrackingState>,
+    /// Active control tracking state (currently popup-menu TrackControl).
+    pub(crate) control_tracking: Option<ControlTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
     pub(crate) underline_info: Option<UnderlineInfo>,
     /// Current mouse position in Mac screen coordinates (v, h)
@@ -1737,6 +1767,7 @@ impl TrapDispatcher {
             vfs_directory_paths,
             working_directories: HashMap::new(),
             open_files: HashMap::new(),
+            synthetic_drivers: HashMap::new(),
             write_refnums: HashSet::new(),
             file_positions: HashMap::new(),
             locked_files: HashSet::new(),
@@ -1801,6 +1832,7 @@ impl TrapDispatcher {
             menus: Vec::new(),
             saved_menu_bars: HashMap::new(),
             menu_tracking: None,
+            control_tracking: None,
             underline_info: None,
             mouse_pos: (0, 0),
             mouse_button: false,
@@ -1906,6 +1938,11 @@ impl TrapDispatcher {
         self.dialog_tracking.is_some()
     }
 
+    /// Whether TrackControl is actively tracking a control.
+    pub fn is_control_tracking(&self) -> bool {
+        self.control_tracking.is_some()
+    }
+
     /// Shared check used by both dispatch.rs (auto-pop push-back) and
     /// runner.rs (PC rewind for refire). Returns true when the given trap
     /// word should refire next frame because menu or dialog tracking is
@@ -1916,8 +1953,10 @@ impl TrapDispatcher {
         let trap_no_autopop = opcode & !0x0400;
         let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
         let is_dialog_refire = trap_no_autopop == 0xA991;
+        let is_control_refire = trap_no_autopop == 0xA968;
         (is_menu_refire && self.is_menu_tracking())
             || (is_dialog_refire && self.is_dialog_tracking())
+            || (is_control_refire && self.is_control_tracking())
     }
 
     /// Generate the standard Mac 8-bit system palette as 16-bit RGB values.
@@ -3895,6 +3934,19 @@ mod tests {
             game_managed: false,
             last_filter_event: None,
             popup_draws: Vec::new(),
+            active_popup: None,
+        });
+    }
+
+    fn install_control_tracking(disp: &mut TrapDispatcher) {
+        disp.control_tracking = Some(ControlTrackingState {
+            ctrl_handle: 0,
+            ctrl_ptr: 0,
+            active_menu: 0,
+            highlighted_item: 0,
+            saved_pixels: Vec::new(),
+            dropdown_rect: (0, 0, 0, 0),
+            stack_ptr: 0,
         });
     }
 
@@ -3910,10 +3962,12 @@ mod tests {
         assert!(!disp.is_tracking_refire(0xA93D)); // MenuSelect
         assert!(!disp.is_tracking_refire(0xA80B)); // MenuKey
         assert!(!disp.is_tracking_refire(0xA991)); // ModalDialog
+        assert!(!disp.is_tracking_refire(0xA968)); // TrackControl
                                                    // Auto-pop variants too.
         assert!(!disp.is_tracking_refire(0xAD3D));
         assert!(!disp.is_tracking_refire(0xAC0B));
         assert!(!disp.is_tracking_refire(0xAD91));
+        assert!(!disp.is_tracking_refire(0xAD68));
     }
 
     #[test]
@@ -3933,6 +3987,14 @@ mod tests {
         install_dialog_tracking(&mut disp);
         assert!(disp.is_tracking_refire(0xA991));
         assert!(disp.is_tracking_refire(0xAD91));
+    }
+
+    #[test]
+    fn is_tracking_refire_true_for_trackcontrol_when_control_tracking() {
+        let mut disp = TrapDispatcher::new();
+        install_control_tracking(&mut disp);
+        assert!(disp.is_tracking_refire(0xA968));
+        assert!(disp.is_tracking_refire(0xAD68));
     }
 
     // Lock the `current_trap_caller` contract — preserved when an auto-pop

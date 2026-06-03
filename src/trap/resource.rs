@@ -6,7 +6,7 @@ use crate::machine_profile::ORACLE_MACHINE_PROFILE;
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::trap::types::read_fsspec_name;
+use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, read_fsspec_name};
 use crate::{Error, Result};
 
 use std::sync::OnceLock;
@@ -136,6 +136,13 @@ impl super::TrapDispatcher {
     pub(crate) const RES_CHANGED_ATTR: u16 = 0x0002;
     pub(crate) const RES_SYS_REF_ATTR: u16 = 0x0080;
     pub(crate) const RES_MAP_CHANGED_ATTR: u16 = 0x0020;
+
+    fn is_synthetic_driver_name(filename: &str) -> bool {
+        matches!(
+            filename,
+            ".AIn" | ".AOut" | ".BIn" | ".BOut" | ".MPP" | ".ATP" | ".XPP"
+        )
+    }
 
     /// Minimal serialized resource fork containing an empty resource map.
     fn empty_resource_fork_bytes() -> Vec<u8> {
@@ -2323,7 +2330,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let name_ptr = bus.read_long(sp);
                 let name = if name_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(name_ptr)).into_owned()
+                    decode_mac_roman(&bus.read_pstring(name_ptr))
                 } else {
                     String::new()
                 };
@@ -2858,6 +2865,17 @@ impl super::TrapDispatcher {
                     bus.write_word(pb + 16, 0); // noErr
                     cpu.write_reg(Register::D0, 0);
                     eprintln!("[TRAP] PBOpen -> refnum={} vfs=\"{}\"", refnum, vfs_name);
+                } else if Self::is_synthetic_driver_name(&filename) {
+                    let refnum = self.next_refnum;
+                    self.next_refnum += 1;
+                    self.synthetic_drivers.insert(refnum, filename.clone());
+                    bus.write_word(pb + 24, refnum);
+                    bus.write_word(pb + 16, 0);
+                    cpu.write_reg(Register::D0, 0);
+                    eprintln!(
+                        "[TRAP] PBOpen -> synthetic driver refnum={} name=\"{}\"",
+                        refnum, filename
+                    );
                 } else {
                     eprintln!("[TRAP] PBOpen: file not found in VFS");
                     bus.write_word(pb + 16, (-43i16) as u16); // fnfErr
@@ -2919,6 +2937,10 @@ impl super::TrapDispatcher {
                         bus.write_long(pb + 40, 0);
                         cpu.write_reg(Register::D0, (-43i32) as u32);
                     }
+                } else if self.synthetic_drivers.contains_key(&ref_num) {
+                    bus.write_word(pb + 16, 0);
+                    bus.write_long(pb + 40, 0);
+                    cpu.write_reg(Register::D0, 0);
                 } else {
                     eprintln!("[TRAP] FSRead -> rfNumErr (refnum {} not open)", ref_num);
                     bus.write_word(pb + 16, (-51i16) as u16); // rfNumErr
@@ -2943,6 +2965,12 @@ impl super::TrapDispatcher {
                 );
 
                 let Some(filename) = self.open_files.get(&ref_num).cloned() else {
+                    if self.synthetic_drivers.contains_key(&ref_num) {
+                        bus.write_long(pb + 40, request_count as u32);
+                        bus.write_word(pb + 16, 0);
+                        cpu.write_reg(Register::D0, 0);
+                        return Some(Ok(()));
+                    }
                     eprintln!("[TRAP] FSWrite -> rfNumErr (refnum {} not open)", ref_num);
                     bus.write_long(pb + 40, 0);
                     bus.write_word(pb + 16, (-51i16) as u16); // rfNumErr
@@ -3030,6 +3058,8 @@ impl super::TrapDispatcher {
                 let err: i16 = if self.open_files.remove(&ref_num).is_some() {
                     self.file_positions.remove(&ref_num);
                     self.write_refnums.remove(&ref_num);
+                    0
+                } else if self.synthetic_drivers.remove(&ref_num).is_some() {
                     0
                 } else {
                     -51
@@ -4828,7 +4858,7 @@ impl super::TrapDispatcher {
                             let n = bytes.len().min(63);
                             bus.write_byte(spec_ptr + 6, n as u8);
                             bus.write_bytes(spec_ptr + 7, &bytes[..n]);
-                            String::from_utf8_lossy(&bytes).to_string()
+                            decode_mac_roman(&bytes[..n])
                         } else {
                             bus.write_byte(spec_ptr + 6, 0);
                             String::new()
@@ -5674,6 +5704,7 @@ impl super::TrapDispatcher {
                             }
                         } else if let Some(metadata) = self.vfs_file_metadata(&entry.path) {
                             self.fill_file_catalog_info(bus, pb, &entry.path, metadata);
+                            bus.write_long(pb + 100, metadata.parent_dir_id);
                             eprintln!(
                                 "[TRAP] FSDispatch PBGetCatInfo file \"{}\" -> fileID={} parentDirID={}",
                                 entry.name, metadata.file_id, metadata.parent_dir_id
@@ -6004,18 +6035,18 @@ impl super::TrapDispatcher {
         if name_ptr == 0 {
             return String::new();
         }
-        String::from_utf8_lossy(&bus.read_pstring(name_ptr)).to_string()
+        decode_mac_roman(&bus.read_pstring(name_ptr))
     }
 
     fn write_pstring(bus: &mut MacMemoryBus, ptr: u32, value: &str) {
         if ptr == 0 {
             return;
         }
-        let bytes = value.as_bytes();
+        let bytes = encode_mac_roman_lossy(value);
         let len = bytes.len().min(63);
         bus.write_byte(ptr, len as u8);
-        for (idx, byte) in bytes.iter().take(len).enumerate() {
-            bus.write_byte(ptr + 1 + idx as u32, *byte);
+        for (idx, byte) in bytes.into_iter().take(len).enumerate() {
+            bus.write_byte(ptr + 1 + idx as u32, byte);
         }
     }
 
@@ -6066,9 +6097,6 @@ impl super::TrapDispatcher {
         bus.write_long(pb + 68, rsrc_len);
         bus.write_long(pb + 72, metadata.created_date);
         bus.write_long(pb + 76, metadata.modified_date);
-        // ioFlParID: parent directory ID.
-        // Files 1992, 2-192
-        bus.write_long(pb + 100, metadata.parent_dir_id);
     }
 
     fn fill_directory_catalog_info(
@@ -9841,6 +9869,36 @@ mod tests {
         assert!(disp.open_files.contains_key(&refnum));
     }
 
+    #[test]
+    fn pbopen_synthetic_driver_refnum_supports_read_write_close() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b".AIn");
+
+        call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let refnum = bus.read_word(pb + 24);
+        assert!(disp.synthetic_drivers.contains_key(&refnum));
+
+        let buffer = 0x310000u32;
+        bus.write_word(pb + 24, refnum);
+        bus.write_long(pb + 32, buffer);
+        bus.write_long(pb + 36, 8);
+        call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(pb + 40), 0);
+
+        bus.write_long(pb + 36, 4);
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(pb + 40), 4);
+
+        call(&mut disp, false, 0x01, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(!disp.synthetic_drivers.contains_key(&refnum));
+    }
+
     // ================================================================
     // 15b. PBOpen — file not found
     // ================================================================
@@ -10333,11 +10391,13 @@ mod tests {
 
         let pb = 0x300000u32;
         setup_param_block(&mut bus, &mut cpu, pb, b"InfoFile");
+        bus.write_long(pb + 100, 0xDEAD_BEEF);
 
         call(&mut disp, false, 0x0C, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 100), 0xDEAD_BEEF);
     }
 
     // ================================================================

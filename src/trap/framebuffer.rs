@@ -23,6 +23,67 @@ impl super::TrapDispatcher {
         (base, rb, w as i16, h as i16, ps)
     }
 
+    fn logical_white_pixel_index(bus: &MacMemoryBus) -> u8 {
+        let gdevice_handle = {
+            let current = bus.read_long(0x0CC8); // TheGDevice
+            if current != 0 {
+                current
+            } else {
+                bus.read_long(0x08A4) // MainDevice
+            }
+        };
+        if gdevice_handle == 0 {
+            return 0;
+        }
+        let gdevice = bus.read_long(gdevice_handle);
+        if gdevice == 0 {
+            return 0;
+        }
+        let pixmap_handle = bus.read_long(gdevice + 22);
+        if pixmap_handle == 0 {
+            return 0;
+        }
+        let pixmap = bus.read_long(pixmap_handle);
+        if pixmap == 0 {
+            return 0;
+        }
+        let ctab_handle = bus.read_long(pixmap + 42);
+        if ctab_handle == 0 {
+            return 0;
+        }
+        let ctab = bus.read_long(ctab_handle);
+        if ctab == 0 {
+            return 0;
+        }
+
+        let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+        let mut best_index = 0u8;
+        let mut best_luma = 0u32;
+        let mut found = false;
+        for ordinal in 0..count {
+            let entry = ctab + 8 + ordinal * 8;
+            let value = bus.read_word(entry);
+            if value > 255 {
+                continue;
+            }
+            let luma = u32::from(bus.read_word(entry + 2))
+                + u32::from(bus.read_word(entry + 4))
+                + u32::from(bus.read_word(entry + 6));
+            let index = value as u8;
+            if !found || luma > best_luma || (luma == best_luma && index < best_index) {
+                best_index = index;
+                best_luma = luma;
+                found = true;
+            }
+        }
+
+        if found {
+            best_index
+        } else {
+            0
+        }
+    }
+
     /// Set a single pixel in the framebuffer (screen coordinates).
     /// Works for both 1bpp and 8bpp screen modes.
     pub(crate) fn fb_set_pixel(
@@ -41,8 +102,14 @@ impl super::TrapDispatcher {
         }
         if pixel_size == 8 {
             let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-            // Mac 8bpp CLUT: index 255 = black, index 0 = white
-            bus.write_byte(addr, if black { 255 } else { 0 });
+            bus.write_byte(
+                addr,
+                if black {
+                    255
+                } else {
+                    Self::logical_white_pixel_index(bus)
+                },
+            );
         } else {
             let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
             let bit = 7 - (x as u32 % 8);
@@ -70,6 +137,27 @@ impl super::TrapDispatcher {
         right: i16,
         black: bool,
     ) {
+        if pixel_size == 8 {
+            let top = top.max(0).min(screen_height) as u32;
+            let left = left.max(0).min(screen_width) as u32;
+            let bottom = bottom.max(0).min(screen_height) as u32;
+            let right = right.max(0).min(screen_width) as u32;
+            if top >= bottom || left >= right {
+                return;
+            }
+            let fill = if black {
+                255
+            } else {
+                Self::logical_white_pixel_index(bus)
+            };
+            for y in top..bottom {
+                let row_addr = screen_base + y * row_bytes;
+                for x in left..right {
+                    bus.write_byte(row_addr + x, fill);
+                }
+            }
+            return;
+        }
         for y in top..bottom {
             for x in left..right {
                 Self::fb_set_pixel(
@@ -100,6 +188,26 @@ impl super::TrapDispatcher {
         x2: i16,
         black: bool,
     ) {
+        if pixel_size == 8 {
+            if y < 0 || y >= screen_height {
+                return;
+            }
+            let left = x1.max(0).min(screen_width) as u32;
+            let right = x2.max(0).min(screen_width) as u32;
+            if left >= right {
+                return;
+            }
+            let fill = if black {
+                255
+            } else {
+                Self::logical_white_pixel_index(bus)
+            };
+            let row_addr = screen_base + (y as u32) * row_bytes;
+            for x in left..right {
+                bus.write_byte(row_addr + x, fill);
+            }
+            return;
+        }
         for x in x1..x2 {
             Self::fb_set_pixel(
                 bus,
@@ -1198,7 +1306,20 @@ impl super::TrapDispatcher {
         // On real Mac OS the Window Manager composites windows to the screen.
         // In HLE, games draw to the window's GrafPort which may have a different
         // baseAddr than the screen. Copy the window content so screenshots work.
-        self.blit_window_to_screen(bus);
+        //
+        // ModalDialog's HLE first paints standard dialog content directly into
+        // the screen framebuffer, then injects any userItem draw procs and
+        // re-snapshots the completed result. While that snapshot is pending,
+        // the dialog's offscreen port may still be blank; blitting it here
+        // erases the partially rendered dialog before the draw procs can finish.
+        let pending_dialog_snapshot = self
+            .dialog_tracking
+            .as_ref()
+            .map(|tracking| !tracking.game_managed && !tracking.rendered_pixels_final)
+            .unwrap_or(false);
+        if !pending_dialog_snapshot {
+            self.blit_window_to_screen(bus);
+        }
 
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         let (_, _, screen_w, screen_h, _) = self.screen_mode;
@@ -1421,6 +1542,17 @@ impl super::TrapDispatcher {
                         }
                     }
                 }
+
+                if let Some(ref popup) = tracking.active_popup {
+                    self.draw_menu_dropdown(bus, popup.active_menu, popup.dropdown_rect);
+                    if popup.highlighted_item > 0 {
+                        self.invert_dropdown_item_rect(
+                            bus,
+                            popup.dropdown_rect,
+                            popup.highlighted_item,
+                        );
+                    }
+                }
             }
         }
 
@@ -1446,6 +1578,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod redraw_chrome_tests {
     use super::super::test_helpers::setup_with_port;
+    use super::super::TrapDispatcher;
     use crate::memory::MemoryBus;
 
     // Window/port layout from `setup_with_port`:
@@ -1763,6 +1896,106 @@ mod redraw_chrome_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn redraw_chrome_skips_window_blit_while_dialog_snapshot_pending() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let offscreen_base = bus.alloc(64 * 200);
+        bus.write_long(PORT_PTR + 2, offscreen_base);
+        bus.write_word(PORT_PTR + 6, 64);
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, 0);
+        bus.write_word(PORT_PTR + 12, 200);
+        bus.write_word(PORT_PTR + 14, 512);
+
+        let probe = screen_base + 10 * 800 + 10;
+        bus.write_byte(probe, 0x42);
+        bus.write_byte(offscreen_base + 10 * 64 + 1, 0x00);
+
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 200, 512);
+        disp.window_proc_id = 1;
+        disp.dialog_tracking = Some(super::super::dispatch::DialogTrackingState {
+            game_managed: false,
+            rendered_pixels_final: false,
+            ..Default::default()
+        });
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x42,
+            "pending ModalDialog snapshots must not be erased by blank offscreen port blits"
+        );
+
+        if let Some(tracking) = disp.dialog_tracking.as_mut() {
+            tracking.rendered_pixels_final = true;
+        }
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x00,
+            "once the dialog snapshot is final, normal port blitting should resume"
+        );
+    }
+
+    #[test]
+    fn fb_fill_rect_uses_active_ctab_brightest_entry_for_white() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(100 * 100);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+        let gdevice = bus.read_long(gdevice_handle);
+        let pixmap_handle = bus.read_long(gdevice + 22);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+        for index in 0u32..256 {
+            let entry = ctab + 8 + index * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, 0);
+            bus.write_word(entry + 4, 0);
+            bus.write_word(entry + 6, 0);
+        }
+        let white_entry = ctab + 8 + 8;
+        bus.write_word(white_entry, 1);
+        bus.write_word(white_entry + 2, 0xFFFF);
+        bus.write_word(white_entry + 4, 0xFFFF);
+        bus.write_word(white_entry + 6, 0xFFFF);
+
+        TrapDispatcher::fb_fill_rect(
+            &mut bus,
+            screen_base,
+            100,
+            8,
+            100,
+            100,
+            10,
+            10,
+            20,
+            20,
+            false,
+        );
+
+        assert_eq!(
+            bus.read_byte(screen_base + 10 * 100 + 10),
+            1,
+            "logical white must follow the active ColorTable, not hard-code CLUT index 0"
+        );
     }
 
     /// When a front window's port is 1bpp and the screen is 8bpp,

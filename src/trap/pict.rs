@@ -275,13 +275,17 @@ pub fn draw_picture(
     // FillPat (0x0A): PICT fill* use this pattern, NOT the pen pattern.
     // Imaging With QuickDraw 1994, Appendix A, A-7.
     let mut fill_pat: [u8; 8] = [0xFF; 8];
-    // PICT FgColor (0x0E) and BkColor (0x0F) tracked as 8bpp CLUT indices.
-    // Default fg=255 (black), bg=0 (white). Legacy QuickDraw color
-    // constants map per IM:I I-172: blackColor=33, whiteColor=30, plus the
-    // 6 canonical primaries. Unknown constants fall back to (color & 0xFF).
-    // IM:V V-66 (ForeColor).
-    let mut fg_idx: u8 = 255;
-    let mut bg_idx: u8 = 0;
+    // PICT FgColor (0x0E) and BkColor (0x0F) tracked as destination CLUT
+    // indices. Monochrome BitMap/PixMap sources map 1-bits through the
+    // foreground color and 0-bits through the background color; custom
+    // application palettes can place logical white somewhere other than 0.
+    let (black_idx, white_idx) = if screen_mode.4 == 1 {
+        (255, 0)
+    } else {
+        clut_black_white_indices(device_clut)
+    };
+    let mut fg_idx: u8 = black_idx;
+    let mut bg_idx: u8 = white_idx;
     // TxMode (PICT opcode 0x05). Default srcOr (1) per QuickDraw initPort
     // (IM:I I-171). Used by draw_picture_text to XOR glyph pixels when the
     // PICT sets mode srcXor (2).
@@ -381,19 +385,16 @@ pub fn draw_picture(
                 pos += 2;
             }
             0x0E => {
-                // FgColor (4 bytes) — map legacy QD color to an 8bpp CLUT
-                // index. blackColor (33) = 255, whiteColor (30) = 0, the 6
-                // canonical primaries map to fixed CLUT slots chosen to be
-                // visible on the standard Mac 8bpp CLUT. Unknown colors
-                // fall through to (color & 0xFF).
+                // FgColor (4 bytes) — map legacy QD colors into the active
+                // destination palette.
                 let c = bus.read_long(pos);
-                fg_idx = pict_qd_color_to_clut_index(c, 255);
+                fg_idx = pict_qd_color_to_clut_index(c, fg_idx, black_idx, white_idx);
                 pos += 4;
             }
             0x0F => {
                 // BkColor (4 bytes) — same mapping as FgColor.
                 let c = bus.read_long(pos);
-                bg_idx = pict_qd_color_to_clut_index(c, 0);
+                bg_idx = pict_qd_color_to_clut_index(c, bg_idx, black_idx, white_idx);
                 pos += 4;
             }
             0x10 => {
@@ -1066,6 +1067,8 @@ pub fn draw_picture(
                     scale_y,
                     screen_mode,
                     device_clut,
+                    fg_idx,
+                    bg_idx,
                     clip_region.as_ref(),
                 );
             }
@@ -1084,6 +1087,8 @@ pub fn draw_picture(
                     screen_mode,
                     device_clut,
                     device_ct_seed,
+                    fg_idx,
+                    bg_idx,
                     clip_region.as_ref(),
                 );
                 pos = new_pos;
@@ -1513,17 +1518,37 @@ fn write_pixel(
     }
 }
 
-/// Map a legacy Mac Pascal QuickDraw color constant to an 8bpp CLUT index.
-/// Inside Macintosh Volume I, I-172 defines the 8 canonical colors; the
-/// indices below match the Mac's standard 8bpp CLUT slots. Unknown
-/// constants fall through to `color & 0xFF` so games passing custom CLUT
-/// indices via FgColor still address the intended slot. `default_idx` is
-/// returned for color = 0 (Pascal sentinel for "no color change").
-fn pict_qd_color_to_clut_index(color: u32, default_idx: u8) -> u8 {
+fn clut_black_white_indices(clut: &[[u16; 3]; 256]) -> (u8, u8) {
+    let mut black_idx = 0u8;
+    let mut black_luma = u64::MAX;
+    let mut white_idx = 0u8;
+    let mut white_luma = 0u64;
+
+    for (idx, entry) in clut.iter().enumerate() {
+        let luma = u64::from(entry[0]) + u64::from(entry[1]) + u64::from(entry[2]);
+        if luma < black_luma || (luma == black_luma && idx as u8 > black_idx) {
+            black_idx = idx as u8;
+            black_luma = luma;
+        }
+        if luma > white_luma || (luma == white_luma && (idx as u8) < white_idx) {
+            white_idx = idx as u8;
+            white_luma = luma;
+        }
+    }
+
+    (black_idx, white_idx)
+}
+
+/// Map a legacy Mac Pascal QuickDraw color constant to a destination CLUT
+/// index. Inside Macintosh Volume I, I-172 defines the 8 canonical colors.
+/// `default_idx` is returned for color = 0 (Pascal sentinel for "no color
+/// change"). Unknown constants fall through to `color & 0xFF` so apps passing
+/// custom CLUT indices via FgColor still address the intended slot.
+fn pict_qd_color_to_clut_index(color: u32, default_idx: u8, black_idx: u8, white_idx: u8) -> u8 {
     match color {
         0 => default_idx,
-        30 => 0,    // whiteColor → white
-        33 => 255,  // blackColor → black
+        30 => white_idx,
+        33 => black_idx,
         205 => 35,  // redColor → red slot on std Mac 8bpp CLUT
         341 => 173, // greenColor
         409 => 210, // blueColor
@@ -3105,6 +3130,8 @@ fn parse_bits_rect(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     _device_clut: &[[u16; 3]; 256],
+    fg_idx: u8,
+    bg_idx: u8,
     clip_region: Option<&PictureRegion>,
 ) -> u32 {
     // Read BitMap structure (not full PixMap)
@@ -3183,36 +3210,39 @@ fn parse_bits_rect(
                 if px >= width {
                     continue;
                 }
-                let is_black = (byte & (1 << (7 - bit))) != 0;
-                if is_black {
-                    let Some(pic_y) = mapped_pic_y else {
-                        continue;
-                    };
-                    let src_x = i32::from(bounds_left) + px as i32;
-                    let Some(pic_x) =
-                        map_src_coord(src_x, src_left, src_right, pic_dst_left, pic_dst_right)
-                    else {
-                        continue;
-                    };
-                    if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
-                        continue;
-                    }
-                    let x =
-                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
-                    let y =
-                        ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32 + dst_top as i32;
-                    write_pixel(
-                        bus,
-                        screen_base,
-                        screen_rb,
-                        x,
-                        y,
-                        255,
-                        screen_w,
-                        screen_h,
-                        scrn_ps,
-                    );
+                let is_set = (byte & (1 << (7 - bit))) != 0;
+                let color_idx = if is_set {
+                    fg_idx
+                } else if mode == 0 {
+                    bg_idx
+                } else {
+                    continue;
+                };
+                let Some(pic_y) = mapped_pic_y else {
+                    continue;
+                };
+                let src_x = i32::from(bounds_left) + px as i32;
+                let Some(pic_x) =
+                    map_src_coord(src_x, src_left, src_right, pic_dst_left, pic_dst_right)
+                else {
+                    continue;
+                };
+                if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                    continue;
                 }
+                let x = ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32 + dst_top as i32;
+                write_pixel(
+                    bus,
+                    screen_base,
+                    screen_rb,
+                    x,
+                    y,
+                    color_idx,
+                    screen_w,
+                    screen_h,
+                    scrn_ps,
+                );
             }
         }
     }
@@ -3234,6 +3264,8 @@ fn parse_pack_bits_rect(
     screen_mode: (u32, u32, u16, u16, u16),
     device_clut: &[[u16; 3]; 256],
     device_ct_seed: u32,
+    fg_idx: u8,
+    bg_idx: u8,
     clip_region: Option<&PictureRegion>,
 ) -> (u32, Option<Vec<[u16; 3]>>) {
     // In PICT data, PackBitsRect starts with rowBytes directly (no baseAddr)
@@ -3415,6 +3447,8 @@ fn parse_pack_bits_rect(
                 screen_w,
                 screen_h,
                 scrn_ps,
+                fg_idx,
+                bg_idx,
                 clip_region,
             );
         }
@@ -3451,6 +3485,8 @@ fn parse_pack_bits_rect(
                 screen_w,
                 screen_h,
                 scrn_ps,
+                fg_idx,
+                bg_idx,
                 clip_region,
             );
         }
@@ -3496,6 +3532,8 @@ fn blit_row(
     screen_w: i32,
     screen_h: i32,
     scrn_ps: u16,
+    fg_idx: u8,
+    bg_idx: u8,
     clip_region: Option<&PictureRegion>,
 ) {
     let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
@@ -3517,7 +3555,13 @@ fn blit_row(
                 let bit = 7 - (px % 8);
                 if byte_idx < row_data.len() {
                     let is_set = (row_data[byte_idx] & (1 << bit)) != 0;
-                    let color_idx = if is_set { 255u8 } else { 0u8 };
+                    let color_idx = if is_set {
+                        fg_idx
+                    } else if mode_base == 0 {
+                        bg_idx
+                    } else {
+                        continue;
+                    };
                     let Some(pic_x) = map_x(px) else {
                         continue;
                     };
@@ -3984,6 +4028,63 @@ mod tests {
         let table = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(table[71], 71);
+    }
+
+    #[test]
+    fn one_bit_packbitsrect_uses_destination_clut_black_and_white() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_bytes(screen_base, &[0x42; 8]);
+
+        let mut clut = [[0x7777u16; 3]; 256];
+        clut[4] = [0x0000, 0x0000, 0x0000];
+        clut[7] = [0xFFFF, 0xFFFF, 0xFFFF];
+
+        let pic = 0x10_0000u32;
+        bus.write_word(pic, 42); // picSize
+        bus.write_word(pic + 2, 0); // frame top
+        bus.write_word(pic + 4, 0); // frame left
+        bus.write_word(pic + 6, 1); // frame bottom
+        bus.write_word(pic + 8, 8); // frame right
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1;
+        bus.write_byte(p, 0x01);
+        p += 1;
+        bus.write_byte(p, 0x98); // PackBitsRect
+        p += 1;
+        bus.write_word(p, 1); // rowBytes < 8: unpacked
+        p += 2;
+        for value in [0i16, 0, 1, 8] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+        for _ in 0..2 {
+            for value in [0i16, 0, 1, 8] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+        bus.write_word(p, 0); // srcCopy
+        p += 2;
+        bus.write_byte(p, 0b1010_0000);
+        p += 1;
+        bus.write_byte(p, 0xFF); // EndOfPicture
+
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            1,
+            8,
+            (screen_base, 8, 8, 1, 8),
+            &clut,
+            0,
+        );
+
+        assert!(ok);
+        assert_eq!(bus.read_bytes(screen_base, 8), vec![4, 7, 4, 7, 7, 7, 7, 7]);
     }
 
     /// fillRect ($0x34) honors FillPat (0x0A) rather than PnPat (0x09) —

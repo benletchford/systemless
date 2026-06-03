@@ -46,6 +46,55 @@ pub struct StringBuffer {
     pub pixels: Vec<u8>,
 }
 
+const MAC_ROMAN_HIGH: [char; 128] = [
+    '\u{00C4}', '\u{00C5}', '\u{00C7}', '\u{00C9}', '\u{00D1}', '\u{00D6}', '\u{00DC}', '\u{00E1}',
+    '\u{00E0}', '\u{00E2}', '\u{00E4}', '\u{00E3}', '\u{00E5}', '\u{00E7}', '\u{00E9}', '\u{00E8}',
+    '\u{00EA}', '\u{00EB}', '\u{00ED}', '\u{00EC}', '\u{00EE}', '\u{00EF}', '\u{00F1}', '\u{00F3}',
+    '\u{00F2}', '\u{00F4}', '\u{00F6}', '\u{00F5}', '\u{00FA}', '\u{00F9}', '\u{00FB}', '\u{00FC}',
+    '\u{2020}', '\u{00B0}', '\u{00A2}', '\u{00A3}', '\u{00A7}', '\u{2022}', '\u{00B6}', '\u{00DF}',
+    '\u{00AE}', '\u{00A9}', '\u{2122}', '\u{00B4}', '\u{00A8}', '\u{2260}', '\u{00C6}', '\u{00D8}',
+    '\u{221E}', '\u{00B1}', '\u{2264}', '\u{2265}', '\u{00A5}', '\u{00B5}', '\u{2202}', '\u{2211}',
+    '\u{220F}', '\u{03C0}', '\u{222B}', '\u{00AA}', '\u{00BA}', '\u{03A9}', '\u{00E6}', '\u{00F8}',
+    '\u{00BF}', '\u{00A1}', '\u{00AC}', '\u{221A}', '\u{0192}', '\u{2248}', '\u{2206}', '\u{00AB}',
+    '\u{00BB}', '\u{2026}', '\u{00A0}', '\u{00C0}', '\u{00C3}', '\u{00D5}', '\u{0152}', '\u{0153}',
+    '\u{2013}', '\u{2014}', '\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}', '\u{00F7}', '\u{25CA}',
+    '\u{00FF}', '\u{0178}', '\u{2044}', '\u{20AC}', '\u{2039}', '\u{203A}', '\u{FB01}', '\u{FB02}',
+    '\u{2021}', '\u{00B7}', '\u{201A}', '\u{201E}', '\u{2030}', '\u{00C2}', '\u{00CA}', '\u{00C1}',
+    '\u{00CB}', '\u{00C8}', '\u{00CD}', '\u{00CE}', '\u{00CF}', '\u{00CC}', '\u{00D3}', '\u{00D4}',
+    '\u{F8FF}', '\u{00D2}', '\u{00DA}', '\u{00DB}', '\u{00D9}', '\u{0131}', '\u{02C6}', '\u{02DC}',
+    '\u{00AF}', '\u{02D8}', '\u{02D9}', '\u{02DA}', '\u{00B8}', '\u{02DD}', '\u{02DB}', '\u{02C7}',
+];
+
+pub(crate) fn decode_mac_roman(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|&byte| {
+            if byte < 0x80 {
+                byte as char
+            } else {
+                MAC_ROMAN_HIGH[(byte - 0x80) as usize]
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn encode_mac_roman_lossy(value: &str) -> Vec<u8> {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() {
+                ch as u8
+            } else {
+                MAC_ROMAN_HIGH
+                    .iter()
+                    .position(|&candidate| candidate == ch)
+                    .map(|idx| idx as u8 + 0x80)
+                    .unwrap_or(b'?')
+            }
+        })
+        .collect()
+}
+
 #[allow(dead_code)]
 impl StringBuffer {
     pub fn new(width: i16, height: i16, baseline_y: i16) -> Self {
@@ -114,7 +163,20 @@ pub fn read_fsspec_name(bus: &MacMemoryBus, spec_ptr: u32) -> String {
     // the length byte is stale or out-of-spec.
     let bytes = bus.read_pstring(spec_ptr + 6);
     let n = bytes.len().min(63);
-    let name = String::from_utf8_lossy(&bytes[..n]).into_owned();
+    let name = decode_mac_roman(&bytes[..n]);
     // Strip "Unix:" volume prefix if present (MPW convention)
     name.strip_prefix("Unix:").unwrap_or(&name).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_mac_roman, encode_mac_roman_lossy};
+
+    #[test]
+    fn mac_roman_round_trips_classic_filename_symbols() {
+        let bytes = b"MORE\xAA Library";
+        let decoded = decode_mac_roman(bytes);
+        assert_eq!(decoded, "MORE\u{2122} Library");
+        assert_eq!(encode_mac_roman_lossy(&decoded), bytes);
+    }
 }

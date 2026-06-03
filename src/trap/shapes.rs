@@ -110,10 +110,14 @@ fn trace_all_shapes_enabled() -> bool {
 
 fn shape_palette_index_for_rgb(is_screen_port: bool, rgb: [u16; 3], clut: &[[u16; 3]; 256]) -> u8 {
     if is_screen_port {
+        // Keep canonical black drawing pinned to 255 for palette-transition
+        // frames, but let white follow the live CLUT. Some apps install a
+        // device table where entry 0 is black and entry 1 is white; forcing
+        // white to 0 turns EraseRect into a black fill.
         if rgb == [0, 0, 0] {
             return 255;
         }
-        if rgb == [0xFFFF, 0xFFFF, 0xFFFF] {
+        if rgb == [0xFFFF, 0xFFFF, 0xFFFF] && clut[0] == [0xFFFF, 0xFFFF, 0xFFFF] {
             return 0;
         }
     }

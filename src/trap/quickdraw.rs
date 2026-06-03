@@ -19714,6 +19714,53 @@ mod tests {
     }
 
     #[test]
+    fn screen_backed_erase_uses_live_clut_white_entry_when_index_zero_is_black() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd_ptr = bus.read_long(gdh);
+        let pixmap_handle = bus.read_long(gd_ptr + 22);
+        let pixmap_ptr = bus.read_long(pixmap_handle);
+        let screen_base = bus.read_long(pixmap_ptr);
+        let screen_row_bytes = (bus.read_word(pixmap_ptr + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
+        d.device_clut[255] = [0, 0, 0];
+
+        let port = bus.alloc(64);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_word(port + 16, 0);
+        bus.write_word(port + 18, 0);
+        bus.write_word(port + 20, 600);
+        bus.write_word(port + 22, 800);
+        make_rgn(&mut bus, 0x330000, 0x330100, 0, 0, 600, 800);
+        make_rgn(&mut bus, 0x330200, 0x330300, 0, 0, 600, 800);
+        bus.write_long(port + 24, 0x330100);
+        bus.write_long(port + 28, 0x330300);
+
+        d.set_current_port_state(&mut bus, &mut cpu, port, Some(gdh));
+        d.bg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+        d.bk_pat = [0x00; 8];
+        bus.write_byte(screen_base, 255);
+
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: 1,
+            right: 1,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Erase);
+
+        assert_eq!(
+            bus.read_byte(screen_base),
+            1,
+            "white erase must follow the live CLUT instead of hard-coding index 0"
+        );
+    }
+
+    #[test]
     fn test_screen_backed_black_shape_drawing_uses_index_255_during_palette_transition() {
         let (mut d, mut cpu, mut bus) = setup();
         let gdh = d.ensure_main_gdevice(&mut bus);

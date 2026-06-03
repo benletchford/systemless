@@ -39,6 +39,24 @@ fn trace_buffer_enabled() -> bool {
     *TRACE_BUFFER_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_BUFFER").is_some())
 }
 
+static TRACE_PC_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+fn trace_pc_range() -> Option<(u32, u32)> {
+    *TRACE_PC_RANGE.get_or_init(|| {
+        let value = std::env::var("SYSTEMLESS_TRACE_PC_RANGE").ok()?;
+        let mut parts = value.split(':');
+        let start = parts.next()?.trim();
+        let end = parts.next()?.trim();
+        let parse = |s: &str| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok();
+        Some((parse(start)?, parse(end)?))
+    })
+}
+
+fn trace_pc_range_contains(pc: u32) -> bool {
+    trace_pc_range()
+        .map(|(start, end)| pc >= start && pc <= end)
+        .unwrap_or(false)
+}
+
 // Gate the most-prominent startup/load chatter behind an env var.
 // Library consumers shouldn't see arbitrary debug stderr output by
 // default — these prints are useful when bring-up debugging a new game
@@ -1544,6 +1562,7 @@ impl FixtureRunner {
                         count
                     );
                 }
+                self.dump_trace();
                 self.halted = true;
                 self.halted_pc = Some(0);
                 self.halted_sp = Some(self.cpu.read_reg(Register::A7));
@@ -1611,6 +1630,19 @@ impl FixtureRunner {
             // Mirror PC for [FB-WRITE] trace; watchpoint above is debug-only.
             if crate::memory::bus::fb_write_trace_active() {
                 crate::memory::bus::set_current_pc(pc);
+            }
+
+            if trace_pc_range_contains(pc) {
+                eprintln!(
+                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} sp=${:08X} a6=${:08X} a5=${:08X} d0=${:08X} a0=${:08X}",
+                    pc,
+                    self.bus.read_word(pc),
+                    self.cpu.read_reg(Register::A7),
+                    self.cpu.read_reg(Register::A6),
+                    self.cpu.read_reg(Register::A5),
+                    self.cpu.read_reg(Register::D0),
+                    self.cpu.read_reg(Register::A0),
+                );
             }
 
             // Execute one instruction.
@@ -4040,6 +4072,7 @@ mod tests {
             game_managed: false,
             last_filter_event: None,
             popup_draws: Vec::new(),
+            active_popup: None,
         });
 
         let idx = (0xA991u16 & 0xFFF) as usize;
@@ -4261,6 +4294,7 @@ mod tests {
             game_managed: true,
             last_filter_event: None,
             popup_draws: Vec::new(),
+            active_popup: None,
         });
 
         assert!(runner.fire_dialog_filter_proc());
