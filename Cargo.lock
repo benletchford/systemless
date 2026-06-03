@@ -2153,6 +2153,8 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "stuffit"
 version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57edc3a1da54988ea4e192b9c7edc2b3102d5231315ada4dfc3745b95bc0af40"
 dependencies = [
  "clap",
  "encoding_rs",
@@ -2177,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "cpal",
  "hfs-reader",
