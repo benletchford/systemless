@@ -144,7 +144,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
     let archive =
         SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
 
-    let mut executable_entry: Option<(String, Vec<u8>, bool, usize)> = None;
+    let mut executable_entry: Option<ExecutableCandidate> = None;
 
     for entry in &archive.entries {
         if entry.is_folder {
@@ -171,13 +171,15 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
 
     log_vfs(runner);
 
-    let (exe_name, rsrc_data, _, _) = executable_entry.ok_or("No executable found in archive")?;
+    let executable = executable_entry.ok_or("No executable found in archive")?;
     if crate::runner::trace_load_enabled() {
-        eprintln!("[LOAD] Selected executable: {}", exe_name);
+        eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
-    runner.dispatcher_mut().set_launched_app_path(&exe_name);
+    runner
+        .dispatcher_mut()
+        .set_launched_app_path(&executable.name);
 
-    let fork = ResourceFork::parse(&rsrc_data).ok_or("Failed to parse resource fork")?;
+    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
     runner
         .load_app(&fork)
         .ok_or_else(|| "Failed to load app".to_string())
@@ -241,7 +243,7 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
     let image = crate::disk_image::extract_dc42_or_hfs(file_data)?
         .ok_or_else(|| "Not a DC42/raw HFS disk image".to_string())?;
 
-    let mut executable_entry: Option<(String, Vec<u8>, bool, usize)> = None;
+    let mut executable_entry: Option<ExecutableCandidate> = None;
     insert_payload_into_vfs(
         runner,
         payload_from_disk_image(image)?,
@@ -249,14 +251,15 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
     );
     log_vfs(runner);
 
-    let (exe_name, rsrc_data, _, _) =
-        executable_entry.ok_or("No executable found in disk image")?;
+    let executable = executable_entry.ok_or("No executable found in disk image")?;
     if crate::runner::trace_load_enabled() {
-        eprintln!("[LOAD] Selected executable: {}", exe_name);
+        eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
-    runner.dispatcher_mut().set_launched_app_path(&exe_name);
+    runner
+        .dispatcher_mut()
+        .set_launched_app_path(&executable.name);
 
-    let fork = ResourceFork::parse(&rsrc_data).ok_or("Failed to parse resource fork")?;
+    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
     runner
         .load_app(&fork)
         .ok_or_else(|| "Failed to load app".to_string())
@@ -265,7 +268,7 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
 fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
     let mut offset = WEB_PACK_MAGIC.len();
     let entry_count = read_u32_be(file_data, &mut offset)? as usize;
-    let mut executable_entry: Option<(String, Vec<u8>, bool, usize)> = None;
+    let mut executable_entry: Option<ExecutableCandidate> = None;
 
     for _ in 0..entry_count {
         let name_len = read_u16_be(file_data, &mut offset)? as usize;
@@ -298,13 +301,15 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
 
     log_vfs(runner);
 
-    let (exe_name, rsrc_data, _, _) = executable_entry.ok_or("No executable found in web pack")?;
+    let executable = executable_entry.ok_or("No executable found in web pack")?;
     if crate::runner::trace_load_enabled() {
-        eprintln!("[LOAD] Selected executable: {}", exe_name);
+        eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
-    runner.dispatcher_mut().set_launched_app_path(&exe_name);
+    runner
+        .dispatcher_mut()
+        .set_launched_app_path(&executable.name);
 
-    let fork = ResourceFork::parse(&rsrc_data).ok_or("Failed to parse resource fork")?;
+    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
     runner
         .load_app(&fork)
         .ok_or_else(|| "Failed to load app".to_string())
@@ -768,7 +773,7 @@ fn payload_from_disk_image(image: crate::disk_image::DiskImageContents) -> Resul
 fn insert_payload_into_vfs(
     runner: &mut FixtureRunner,
     payload: Payload,
-    executable_entry: &mut Option<(String, Vec<u8>, bool, usize)>,
+    executable_entry: &mut Option<ExecutableCandidate>,
 ) {
     for dir in payload.dirs {
         let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&dir);
@@ -793,7 +798,7 @@ fn insert_payload_into_vfs(
 }
 
 fn maybe_select_executable(
-    executable_entry: &mut Option<(String, Vec<u8>, bool, usize)>,
+    executable_entry: &mut Option<ExecutableCandidate>,
     name: &str,
     rsrc: &[u8],
     is_appl: bool,
@@ -823,28 +828,31 @@ fn maybe_select_executable(
         .map(|needle| name.contains(needle.as_str()))
         .unwrap_or(false);
     let prev_override_match = match (executable_entry.as_ref(), executable_name_override()) {
-        (Some((prev_name, _, _, _)), Some(needle)) => prev_name.contains(needle.as_str()),
+        (Some(prev), Some(needle)) => prev.name.contains(needle.as_str()),
         _ => false,
     };
 
-    let score = data_len.max(rsrc.len());
-    let (prev_is_appl, prev_score) = executable_entry
-        .as_ref()
-        .map(|(_, _, appl, dlen)| (*appl, *dlen))
-        .unwrap_or((false, 0));
+    let candidate = ExecutableCandidate {
+        name: name.to_string(),
+        rsrc: rsrc.to_vec(),
+        is_appl,
+        has_data_fork: data_len > 0,
+        score: data_len.max(rsrc.len()),
+    };
 
     let take = if override_match && !prev_override_match {
         true
     } else if !override_match && prev_override_match {
         false
     } else {
-        executable_entry.is_none()
-            || (is_appl && !prev_is_appl)
-            || (is_appl == prev_is_appl && score > prev_score)
+        match executable_entry.as_ref() {
+            Some(prev) => candidate.selection_key() > prev.selection_key(),
+            None => true,
+        }
     };
 
     if take {
-        *executable_entry = Some((name.to_string(), rsrc.to_vec(), is_appl, score));
+        *executable_entry = Some(candidate);
     }
 }
 
@@ -852,6 +860,21 @@ fn executable_name_override() -> Option<String> {
     std::env::var("SYSTEMLESS_LOAD_EXECUTABLE")
         .ok()
         .filter(|s| !s.is_empty())
+}
+
+#[derive(Clone, Debug)]
+struct ExecutableCandidate {
+    name: String,
+    rsrc: Vec<u8>,
+    is_appl: bool,
+    has_data_fork: bool,
+    score: usize,
+}
+
+impl ExecutableCandidate {
+    fn selection_key(&self) -> (bool, bool, usize) {
+        (self.is_appl, self.has_data_fork, self.score)
+    }
 }
 
 fn is_stuffit_archive(bytes: &[u8]) -> bool {
@@ -948,6 +971,31 @@ mod tests {
         bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
 
         bytes
+    }
+
+    #[test]
+    fn executable_selection_prefers_real_data_fork_app_over_larger_manual() {
+        let manual_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 1024]);
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let mut selected = None;
+
+        maybe_select_executable(
+            &mut selected,
+            "Marathon/Marathon Manual",
+            &manual_rsrc,
+            true,
+            0,
+        );
+        maybe_select_executable(
+            &mut selected,
+            "Marathon/Marathon v1.2",
+            &app_rsrc,
+            true,
+            322_352,
+        );
+
+        let selected = selected.expect("expected an executable candidate");
+        assert_eq!(selected.name, "Marathon/Marathon v1.2");
     }
 
     #[test]
