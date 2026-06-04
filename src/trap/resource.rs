@@ -101,7 +101,8 @@ const GESTALT_DUP_SELECTOR_ERR: u32 = 0xFFFF_EA50;
 fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
     matches!(
         sel,
-        b"sysv"
+        b"vers"
+            | b"sysv"
             | b"evnt"
             | b"cput"
             | b"proc"
@@ -119,6 +120,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"fs  "
             | b"fold"
             | b"qtim"
+            | b"drag"
             | b"os  "
             | b"powr"
             | b"appr"
@@ -2460,7 +2462,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Operating System Utilities 1994,
             // 1-31..1-35.
             //
-            // Gestalt ($A0AD): 24 documented selectors (sysv/evnt/cput/proc/mach/qd/qdrw/ram/fpu/mmu/snd/tmgr/alis/fs/fold/qtim/os/powr/appr/addr/sdev/stdf/help/vm); guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
+            // Gestalt ($A0AD): documented selectors including vers/sysv/evnt/cput/proc/mach/qd/qdrw/ram/fpu/mmu/snd/tmgr/alis/fs/fold/qtim/drag/os/powr/appr/addr/sdev/stdf/help/vm; guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
             (false, 0xAD) => {
                 let selector = cpu.read_reg(Register::D0);
                 let sel = selector.to_be_bytes();
@@ -2620,6 +2622,15 @@ impl super::TrapDispatcher {
                     cpu.read_reg(Register::PC)
                 );
                 match &sel {
+                    // gestaltVersion ('vers') -> Gestalt Manager version.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-25: current version is 1, returned as $0001 in
+                    // the low-order word. Marathon 1 probes this before
+                    // drawing its first visible frame.
+                    b"vers" => {
+                        cpu.write_reg(Register::A0, 0x0001);
+                        cpu.write_reg(Register::D0, 0);
+                    }
                     // gestaltSystemVersion ('sysv') -> System 7.5.3
                     b"sysv" => {
                         cpu.write_reg(
@@ -2750,6 +2761,17 @@ impl super::TrapDispatcher {
                     b"qtim" => {
                         cpu.write_reg(Register::A0, 0x0600_0000);
                         cpu.write_reg(Register::D0, 0); // noErr
+                    }
+                    // gestaltDragMgrAttr ('drag') -> Drag Manager attrs.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-17. Bit 0 is gestaltDragMgrPresent. Systemless
+                    // does not host Drag Manager traps, so report "known but
+                    // absent" instead of gestaltUndefSelectorErr; Marathon 1
+                    // probes this immediately after QuickDraw features and
+                    // otherwise can interpret stale A0 feature bits.
+                    b"drag" => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltOSAttr ('os  ') -> Mac OS attributes.
                     // Inside Macintosh: Operating System Utilities 1994,
@@ -9794,6 +9816,18 @@ mod tests {
     // 14a. Gestalt (0xAD) — sysv
     // ================================================================
     #[test]
+    fn gestalt_vers() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"vers"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 1);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
     fn gestalt_sysv() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -9837,6 +9871,19 @@ mod tests {
         cpu.write_reg(Register::D0, u32::from_be_bytes(*b"dply"));
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::A0), 0x0000_0007);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_drag_manager_absent_without_error() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0x000F);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"drag"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 

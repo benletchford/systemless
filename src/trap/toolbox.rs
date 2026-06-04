@@ -1484,8 +1484,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let x = bus.read_long(sp);
                 let hi = (x >> 16) as u16;
-                bus.write_word(sp + 2, hi);
-                cpu.write_reg(Register::A7, sp + 2);
+                bus.write_word(sp + 4, hi);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -1498,8 +1498,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let x = bus.read_long(sp);
                 let lo = (x & 0xFFFF) as u16;
-                bus.write_word(sp + 2, lo);
-                cpu.write_reg(Register::A7, sp + 2);
+                bus.write_word(sp + 4, lo);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -11166,31 +11166,33 @@ mod tests {
     // HiWord ($A86A) / LoWord ($A86B)
     // IM:I I-472 and OS Utils 1994 p.3-18: extract high/low word from LONGINT.
     #[test]
-    fn hiword_returns_high_order_word_and_pops_two_bytes() {
+    fn hiword_returns_high_order_word_and_pops_long_argument() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         bus.write_long(sp, 0x89ABCDEF);
+        bus.write_word(sp + 4, 0xBEEF);
 
         let result = disp.dispatch_toolbox(true, 0x06A, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 2), 0x89AB);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(bus.read_word(sp + 4), 0x89AB);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     #[test]
-    fn loword_returns_low_order_word_and_pops_two_bytes() {
+    fn loword_returns_low_order_word_and_pops_long_argument() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         bus.write_long(sp, 0x89ABCDEF);
+        bus.write_word(sp + 4, 0xBEEF);
 
         let result = disp.dispatch_toolbox(true, 0x06B, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 2), 0xCDEF);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(bus.read_word(sp + 4), 0xCDEF);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     // Random ($A861)
