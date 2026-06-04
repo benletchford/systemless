@@ -196,9 +196,8 @@ impl SndChannel {
         self.q_tail = 0;
     }
 
-    /// Stop playback and clear queue.
+    /// Stop playback without flushing queued commands.
     pub fn quiet(&mut self) {
-        self.flush();
         self.playing = None;
         self.playback_kind = None;
         self.pending_callback_cmds.clear();
@@ -343,13 +342,29 @@ impl SoundManager {
     /// Process pending commands on all channels, then mix `num_samples`
     /// of output into a buffer of unsigned 8-bit PCM (silence = 0x80).
     pub fn mix_frame(&mut self, num_samples: usize) -> Vec<u8> {
-        // Process queued commands on each channel.
+        // Process queued commands only on idle channels. SndDoCommand feeds
+        // the channel FIFO; SndDoImmediate is the bypass path for stopping
+        // playback immediately.
+        let mut queued_callbacks = Vec::new();
         for chan in &mut self.channels {
+            if chan.has_active_playback() || chan.double_buffer.is_some() {
+                continue;
+            }
+
             while let Some(cmd) = chan.dequeue() {
                 match cmd.cmd {
                     cmd::NULL => {}
                     cmd::QUIET => chan.quiet(),
                     cmd::FLUSH => chan.flush(),
+                    cmd::CALLBACK => {
+                        if chan.callback_addr != 0 {
+                            queued_callbacks.push(PendingSoundCallback::Command {
+                                callback_addr: chan.callback_addr,
+                                chan_ptr: chan.guest_ptr,
+                                cmd,
+                            });
+                        }
+                    }
                     cmd::BUFFER | cmd::SOUND => {
                         // Buffer data should already be loaded by the trap handler.
                     }
@@ -357,6 +372,7 @@ impl SoundManager {
                 }
             }
         }
+        self.pending_sound_callbacks.extend(queued_callbacks);
 
         // Mix all playing channels into the output buffer.
         let mut output = vec![0x80u8; num_samples];
@@ -588,21 +604,17 @@ mod tests {
         assert_eq!(cmd::GET_RATE, 85, "getRateCmd per IM:Sound 2-126");
     }
 
-    /// `mix_frame` processes queued QUIET/FLUSH commands
-    /// on each channel BEFORE mixing. A QUIET queued via
-    /// `enqueue` must stop playback before the current frame's
-    /// mix runs, resulting in an empty output (no active
-    /// channels). This exercises the command-drain path at
-    /// the top of mix_frame.
+    /// `mix_frame` leaves queued commands behind active playback.
+    /// `SndDoCommand` feeds a FIFO, so a queued `quietCmd` must not
+    /// preempt the current `bufferCmd`; `SndDoImmediate` is the
+    /// documented queue-bypass path.
     #[test]
-    fn mix_frame_drains_quiet_cmd_before_mixing() {
+    fn mix_frame_defers_queued_quiet_until_playback_finishes() {
         let mut sm = SoundManager::new();
         let mut chan = SndChannel::new(0x1234_0000, true);
         chan.play_buffer(vec![0x80; 128], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
         assert!(chan.is_playing(), "channel active pre-queue");
 
-        // Queue a QUIET command — mix_frame should drain it and
-        // clear playback before producing output.
         chan.enqueue(SndCommand {
             cmd: cmd::QUIET,
             param1: 0,
@@ -611,14 +623,29 @@ mod tests {
         sm.channels.push(chan);
 
         let output = sm.mix_frame(64);
+        assert_eq!(
+            output.len(),
+            64,
+            "active buffer must mix before queued QUIET"
+        );
+        assert_eq!(sm.debug_samples_mixed, 64);
+        assert_eq!(sm.channels[0].queue.len(), 1);
+        assert!(sm.channels[0].is_playing());
+
+        sm.mix_frame(64);
+        assert_eq!(
+            sm.channels[0].queue.len(),
+            1,
+            "command remains queued until the next idle drain"
+        );
+        assert!(!sm.channels[0].is_playing());
+
+        let output = sm.mix_frame(64);
         assert!(
             output.is_empty(),
-            "QUIET cmd must clear playback → empty mix output"
+            "idle queued QUIET drains with no playback"
         );
-        assert_eq!(sm.debug_samples_mixed, 0);
-        // And the queued QUIET has been drained from the channel.
         assert!(sm.channels[0].queue.is_empty());
-        assert!(!sm.channels[0].is_playing());
     }
 
     /// `SoundManager::mix_frame` positive case — an active playing
@@ -1106,8 +1133,8 @@ mod tests {
         );
     }
 
-    /// `SndChannel::quiet` resets MORE state than `SndChannel::flush`.
-    /// Specifically quiet also clears:
+    /// `SndChannel::quiet` stops active playback without flushing the FIFO.
+    /// Specifically quiet clears:
     ///   - `playing` (current playback buffer) → None
     ///   - `playback_kind` → None
     ///   - `pending_callback_cmds` → empty
@@ -1115,18 +1142,15 @@ mod tests {
     ///   - `file_paused` → false
     ///   - `rate_fixed` → UNITY_RATE_FIXED
     ///   - `double_buffer` → None
-    ///
-    /// plus everything flush clears (queue, `q_head`, `q_tail`).
     /// A regression that makes quiet a no-op (or that makes it only
-    /// call flush without the extra state clears) would silently
-    /// corrupt boot-time channel-reset flows.
+    /// call flush without the extra state clears) would silently corrupt
+    /// channel-reset flows.
     #[test]
     fn quiet_clears_all_playback_state() {
         let mut chan = SndChannel::new(0x1234_0000, true);
 
-        // Simulate an active channel: pending cmd in queue,
-        // active playback, file-play state, non-unity rate, and
-        // a double-buffer handle.
+        // Simulate an active channel: pending cmd in queue, active playback,
+        // file-play state, non-unity rate, and a double-buffer handle.
         chan.enqueue(SndCommand {
             cmd: 81,
             param1: 0,
@@ -1155,7 +1179,7 @@ mod tests {
 
         chan.quiet();
 
-        assert!(chan.queue.is_empty(), "quiet must clear queue");
+        assert_eq!(chan.queue.len(), 1, "quiet must not flush queued commands");
         assert_eq!(chan.q_head, 0);
         assert_eq!(chan.q_tail, 0);
         assert!(chan.playing.is_none(), "quiet must clear playing");
@@ -1993,38 +2017,33 @@ mod tests {
     fn mix_frame_flush_cmd_discards_subsequent_queued_cmds() {
         let mut sm = SoundManager::new();
         let mut chan = SndChannel::new(0x1234_0000, true);
+        chan.callback_addr = 0x00AB_CDEF;
 
-        // Install an active playback so we can observe whether a
-        // subsequent QUIET runs (which would set playing=None).
-        chan.play_buffer(vec![0x80; 128], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
-        assert!(chan.is_playing(), "channel active pre-queue");
-
-        // Queue [FLUSH, QUIET]. If both run, playing goes None. If
-        // FLUSH discards the QUIET per contract, playing stays set.
+        // Queue [FLUSH, CALLBACK]. If CALLBACK runs, it will post a
+        // pending sound callback. FLUSH must discard it instead.
         chan.enqueue(SndCommand {
             cmd: cmd::FLUSH,
             param1: 0,
             param2: 0,
         });
         chan.enqueue(SndCommand {
-            cmd: cmd::QUIET,
-            param1: 0,
-            param2: 0,
+            cmd: cmd::CALLBACK,
+            param1: 7,
+            param2: 0x1111_2222,
         });
         assert_eq!(chan.queue.len(), 2, "two cmds queued pre mix_frame");
         sm.channels.push(chan);
 
-        sm.mix_frame(64);
+        let output = sm.mix_frame(64);
 
-        // Queue drained to empty.
+        assert!(output.is_empty(), "idle command drain produces no audio");
         assert!(
             sm.channels[0].queue.is_empty(),
             "queue must be empty after mix_frame"
         );
-        // Crucial: the QUIET after FLUSH did NOT run — playback survived.
         assert!(
-            sm.channels[0].is_playing(),
-            "playback must survive — FLUSH discards subsequent QUIET"
+            sm.pending_sound_callbacks.is_empty(),
+            "callback after FLUSH must be discarded, not executed"
         );
     }
 

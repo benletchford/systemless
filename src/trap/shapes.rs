@@ -124,6 +124,44 @@ fn shape_palette_index_for_rgb(is_screen_port: bool, rgb: [u16; 3], clut: &[[u16
     super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], clut)
 }
 
+fn ctab_rgb_for_value(bus: &MacMemoryBus, ctab_handle: u32, wanted_value: u8) -> Option<[u16; 3]> {
+    if ctab_handle == 0 {
+        return None;
+    }
+    let ctab = bus.read_long(ctab_handle);
+    if ctab == 0 {
+        return None;
+    }
+    let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+    let ordinal = u32::from(wanted_value);
+    if ordinal < count {
+        let entry = ctab + 8 + ordinal * 8;
+        if bus.read_word(entry) == u16::from(wanted_value) {
+            return Some([
+                bus.read_word(entry + 2),
+                bus.read_word(entry + 4),
+                bus.read_word(entry + 6),
+            ]);
+        }
+    }
+    for ordinal in 0..count {
+        let entry = ctab + 8 + ordinal * 8;
+        if bus.read_word(entry) == u16::from(wanted_value) {
+            return Some([
+                bus.read_word(entry + 2),
+                bus.read_word(entry + 4),
+                bus.read_word(entry + 6),
+            ]);
+        }
+    }
+    None
+}
+
+fn ctab_uses_noncanonical_black(bus: &MacMemoryBus, ctab_handle: u32) -> bool {
+    ctab_rgb_for_value(bus, ctab_handle, 1) == Some([0, 0, 0])
+        && ctab_rgb_for_value(bus, ctab_handle, 255) != Some([0, 0, 0])
+}
+
 fn trace_menu_probe_points() -> [(&'static str, i16, i16); 2] {
     [("orb", 337, 220), ("enter_ship", 307, 500)]
 }
@@ -1121,7 +1159,7 @@ impl super::TrapDispatcher {
         let bg_idx;
         if pixel_size == 8 && is_color {
             let pix_map_handle = bus.read_long(port.wrapping_add(2));
-            let ctab_handle = if pix_map_handle != 0 {
+            let port_ctab_handle = if pix_map_handle != 0 {
                 let pix_map_ptr = bus.read_long(pix_map_handle);
                 if pix_map_ptr != 0 {
                     bus.read_long(pix_map_ptr + 42)
@@ -1138,8 +1176,22 @@ impl super::TrapDispatcher {
             let is_screen_port = pix_base == self.screen_mode.0
                 && pix_row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
+            let current_ctab_handle = if port == self.current_port {
+                self.current_gdevice_ctab_handle(bus)
+            } else {
+                0
+            };
+            let use_raw_current_ctab =
+                current_ctab_handle != 0 && ctab_uses_noncanonical_black(bus, current_ctab_handle);
+            let ctab_handle = if use_raw_current_ctab {
+                current_ctab_handle
+            } else {
+                port_ctab_handle
+            };
             let port_clut = if is_screen_port {
                 self.device_clut
+            } else if use_raw_current_ctab {
+                self.read_ctab_handle_clut(bus, ctab_handle)
             } else {
                 self.read_port_clut(bus, ctab_handle)
             };
@@ -1172,7 +1224,7 @@ impl super::TrapDispatcher {
         #[allow(unused_variables)]
         let glyph_clut = if pixel_size == 8 && is_color && matches!(op, ShapeOp::Glyph(_)) {
             let pix_map_handle = bus.read_long(port.wrapping_add(2));
-            let ctab_handle = if pix_map_handle != 0 {
+            let port_ctab_handle = if pix_map_handle != 0 {
                 let pix_map_ptr = bus.read_long(pix_map_handle);
                 if pix_map_ptr != 0 {
                     bus.read_long(pix_map_ptr + 42)
@@ -1185,8 +1237,22 @@ impl super::TrapDispatcher {
             let is_screen_port = pix_base == self.screen_mode.0
                 && pix_row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
+            let current_ctab_handle = if port == self.current_port {
+                self.current_gdevice_ctab_handle(bus)
+            } else {
+                0
+            };
+            let use_raw_current_ctab =
+                current_ctab_handle != 0 && ctab_uses_noncanonical_black(bus, current_ctab_handle);
+            let ctab_handle = if use_raw_current_ctab {
+                current_ctab_handle
+            } else {
+                port_ctab_handle
+            };
             Some(if is_screen_port {
                 self.device_clut
+            } else if use_raw_current_ctab {
+                self.read_ctab_handle_clut(bus, ctab_handle)
             } else {
                 self.read_port_clut(bus, ctab_handle)
             })

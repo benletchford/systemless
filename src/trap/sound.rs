@@ -474,11 +474,30 @@ impl super::TrapDispatcher {
 
                     // SndGetSysBeepState (routine $18, sel $00180008)
                     // Sound 1994, 2-202
+                    //
+                    // Sound Input Manager also uses routine byte $18 under
+                    // selector family $0014: SPBOpenDevice is $05180014.
+                    // Disambiguate on the low selector word before treating
+                    // this as the beep-state procedure.
                     0x18 => {
-                        // Write 1 (sysBeepEnable) to the VAR param
-                        let state_ptr = bus.read_long(sp);
-                        if state_ptr != 0 {
-                            bus.write_word(state_ptr, 1);
+                        if selector & 0xFFFF == 0x0014 {
+                            // SPBOpenDevice(deviceName, permission, VAR inRefNum): OSErr.
+                            // Stack: SP+0 inRefNum ptr, SP+4 permission,
+                            // SP+6 deviceName ptr, SP+10 result.
+                            let in_ref_num_ptr = bus.read_long(sp);
+                            let _permission = bus.read_word(sp + 4) as i16;
+                            let _device_name = bus.read_long(sp + 6);
+                            if in_ref_num_ptr != 0 {
+                                bus.write_long(in_ref_num_ptr, 1);
+                            }
+                            bus.write_word(sp + param_bytes, 0); // noErr
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        } else {
+                            // Write 1 (sysBeepEnable) to the VAR param.
+                            let state_ptr = bus.read_long(sp);
+                            if state_ptr != 0 {
+                                bus.write_word(state_ptr, 1);
+                            }
                         }
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -642,9 +661,10 @@ impl super::TrapDispatcher {
             // Stack: SP+0: noWait(2), SP+2: cmd(4, ptr), SP+6: chan(4), SP+10: result(2)
             // Sound 1994, 2-130
             // SndDoCommand ($A803): Public entry point rejects NIL/unknown
-            // channels with badChannel (-205); valid channels execute
-            // nullCmd, quietCmd, flushCmd, callBackCmd, volumeCmd,
-            // bufferCmd/soundCmd, rateCmd, getRateCmd; others logged.
+            // channels with badChannel (-205). On a busy channel, commands
+            // enter the channel FIFO; SndDoImmediate is the queue-bypass path.
+            // Idle-channel commands execute immediately in the HLE so query
+            // commands like getRateCmd still return observable results.
             (true, 0x003) => {
                 let sp = cpu.read_reg(Register::A7);
                 let no_wait = bus.read_word(sp) as i16;
@@ -667,8 +687,25 @@ impl super::TrapDispatcher {
                             chan_ptr, no_wait, cmd.cmd, cmd.param1, cmd.param2
                         );
                     }
-                    self.execute_sound_command(bus, chan_ptr, cmd);
-                    0
+                    let channel_busy = self
+                        .sound_manager
+                        .find_channel_mut(chan_ptr)
+                        .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
+                        .unwrap_or(false);
+                    if channel_busy {
+                        if self
+                            .sound_manager
+                            .find_channel_mut(chan_ptr)
+                            .is_some_and(|chan| chan.enqueue(cmd))
+                        {
+                            0
+                        } else {
+                            -203 // queueFull
+                        }
+                    } else {
+                        self.execute_sound_command(bus, chan_ptr, cmd);
+                        0
+                    }
                 } else {
                     -205 // badChannel
                 };
@@ -1024,7 +1061,7 @@ impl super::TrapDispatcher {
     }
 
     /// Handle bufferCmd: read SoundHeader from guest memory and start playback.
-    /// Supports stdSH (encode=$00) and extSH (encode=$FF).
+    /// Supports stdSH (encode=$00), extSH (encode=$FF), and MACE cmpSH (encode=$FE).
     ///
     /// stdSH layout (Sound 1994, 2-104):
     ///   +0: samplePtr (long), +4: length (long), +8: sampleRate (Fixed),
@@ -1038,6 +1075,11 @@ impl super::TrapDispatcher {
     ///   +36: markerChunk (4), +40: instrumentChunks (4), +44: AESRecording (4),
     ///   +48: sampleSize (word), +50: futureUse (14 bytes),
     ///   +64: sampleArea — interleaved, 8 or 16 bit
+    ///
+    /// cmpSH layout (Sound 1994, 2-109):
+    ///   +0: samplePtr, +4: numChannels, +8: sampleRate, +20: encode ($FE),
+    ///   +22: numFrames, +40: format, +56: compressionID, +58: packetSize,
+    ///   +62: sampleSize, +64: compressed sampleArea.
     fn execute_buffer_cmd(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32, cmd: &SndCommand) {
         self.sound_manager.debug_buffer_cmd_count += 1;
         let header_addr = cmd.param2;
@@ -1119,6 +1161,82 @@ impl super::TrapDispatcher {
                     *dst = (mixed + 128).clamp(0, 255) as u8;
                 }
                 buf
+            }
+            0xFE => {
+                // cmpSH: compressed sampled sound. Playroom stores most
+                // effects as mono MACE 3:1 packets (`compressionID` 3).
+                let num_channels = bus.read_long(header_addr + 4) as usize;
+                let num_frames = bus.read_long(header_addr + 22) as usize;
+                let format = bus.read_long(header_addr + 40);
+                let compression_id = bus.read_word(header_addr + 56) as i16;
+                let packet_size = bus.read_word(header_addr + 58) as usize;
+                let sample_size = bus.read_word(header_addr + 62) as usize;
+                if num_frames == 0 || num_channels == 0 {
+                    return;
+                }
+                let data_addr = if sample_ptr != 0 {
+                    sample_ptr
+                } else {
+                    header_addr + 64
+                };
+
+                let mace_kind = match (compression_id, format) {
+                    (3, _) | (-1, MACE3_FORMAT) => Some(MaceCompression::ThreeToOne),
+                    (4, _) | (-1, MACE6_FORMAT) => Some(MaceCompression::SixToOne),
+                    _ => None,
+                };
+                let Some(mace_kind) = mace_kind else {
+                    if trace_sound_enabled() {
+                        eprintln!(
+                            "[SOUND] bufferCmd: unsupported cmpSH compression={} format=${:08X} packet={} bits={} channels={}",
+                            compression_id, format, packet_size, sample_size, num_channels
+                        );
+                    }
+                    return;
+                };
+
+                if num_channels != 1 || sample_size != 8 {
+                    if trace_sound_enabled() {
+                        eprintln!(
+                            "[SOUND] bufferCmd: unsupported cmpSH layout compression={:?} channels={} bits={}",
+                            mace_kind, num_channels, sample_size
+                        );
+                    }
+                    return;
+                }
+
+                let expected_packet_bits = mace_kind.packet_size_bits();
+                let packet_size_bits = if packet_size == 0 {
+                    expected_packet_bits
+                } else {
+                    packet_size
+                };
+                if packet_size_bits != expected_packet_bits {
+                    if trace_sound_enabled() {
+                        eprintln!(
+                            "[SOUND] bufferCmd: unsupported cmpSH packet size compression={:?} packet={} expected={}",
+                            mace_kind, packet_size_bits, expected_packet_bits
+                        );
+                    }
+                    return;
+                }
+
+                let bytes_per_packet = packet_size_bits / 8;
+                let Some(total_bytes) = num_frames
+                    .checked_mul(num_channels)
+                    .and_then(|frames| frames.checked_mul(bytes_per_packet))
+                else {
+                    return;
+                };
+                let mut compressed = vec![0u8; total_bytes];
+                for (i, byte) in compressed.iter_mut().enumerate() {
+                    *byte = bus.read_byte(data_addr + i as u32);
+                }
+
+                match mace_kind {
+                    MaceCompression::ThreeToOne => decode_mace3_mono_to_u8(&compressed),
+                    MaceCompression::SixToOne => decode_mace6_mono_to_u8(&compressed),
+                }
             }
             _ => {
                 if trace_sound_enabled() {
@@ -1495,6 +1613,299 @@ impl super::TrapDispatcher {
     }
 }
 
+const MACE3_FORMAT: u32 = 0x4D41_4333; // 'MAC3'
+const MACE6_FORMAT: u32 = 0x4D41_4336; // 'MAC6'
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MaceCompression {
+    ThreeToOne,
+    SixToOne,
+}
+
+impl MaceCompression {
+    fn packet_size_bits(self) -> usize {
+        match self {
+            Self::ThreeToOne => 16,
+            Self::SixToOne => 8,
+        }
+    }
+}
+
+#[derive(Default)]
+struct MaceChannelState {
+    index: i32,
+    factor: i32,
+    prev2: i32,
+    previous: i32,
+    level: i32,
+}
+
+// MACE predictor tables, ported from FFmpeg's LGPL MACE decoder.
+const MACE_TAB1: [i32; 8] = [-13, 8, 76, 222, 222, 76, 8, -13];
+const MACE_TAB3: [i32; 4] = [-18, 140, 140, -18];
+
+const MACE_TAB2: &[[i32; 4]] = &[
+    [37, 116, 206, 330],
+    [39, 121, 216, 346],
+    [41, 127, 225, 361],
+    [42, 132, 235, 377],
+    [44, 137, 245, 392],
+    [46, 144, 256, 410],
+    [48, 150, 267, 428],
+    [51, 157, 280, 449],
+    [53, 165, 293, 470],
+    [55, 172, 306, 490],
+    [58, 179, 319, 511],
+    [60, 187, 333, 534],
+    [63, 195, 348, 557],
+    [66, 205, 364, 583],
+    [69, 214, 380, 609],
+    [72, 223, 396, 635],
+    [75, 233, 414, 663],
+    [79, 244, 433, 694],
+    [82, 254, 453, 725],
+    [86, 265, 472, 756],
+    [90, 278, 495, 792],
+    [94, 290, 516, 826],
+    [98, 303, 538, 862],
+    [102, 316, 562, 901],
+    [107, 331, 588, 942],
+    [112, 345, 614, 983],
+    [117, 361, 641, 1027],
+    [122, 377, 670, 1074],
+    [127, 394, 701, 1123],
+    [133, 411, 732, 1172],
+    [139, 430, 764, 1224],
+    [145, 449, 799, 1280],
+    [152, 469, 835, 1337],
+    [159, 490, 872, 1397],
+    [166, 512, 911, 1459],
+    [173, 535, 951, 1523],
+    [181, 558, 993, 1590],
+    [189, 584, 1038, 1663],
+    [197, 610, 1085, 1738],
+    [206, 637, 1133, 1815],
+    [215, 665, 1183, 1895],
+    [225, 695, 1237, 1980],
+    [235, 726, 1291, 2068],
+    [246, 759, 1349, 2161],
+    [257, 792, 1409, 2257],
+    [268, 828, 1472, 2357],
+    [280, 865, 1538, 2463],
+    [293, 903, 1606, 2572],
+    [306, 944, 1678, 2688],
+    [319, 986, 1753, 2807],
+    [334, 1030, 1832, 2933],
+    [349, 1076, 1914, 3065],
+    [364, 1124, 1999, 3202],
+    [380, 1174, 2088, 3344],
+    [398, 1227, 2182, 3494],
+    [415, 1281, 2278, 3649],
+    [434, 1339, 2380, 3811],
+    [453, 1398, 2486, 3982],
+    [473, 1461, 2598, 4160],
+    [495, 1526, 2714, 4346],
+    [517, 1594, 2835, 4540],
+    [540, 1665, 2961, 4741],
+    [564, 1740, 3093, 4953],
+    [589, 1818, 3232, 5175],
+    [615, 1898, 3375, 5405],
+    [643, 1984, 3527, 5647],
+    [671, 2072, 3683, 5898],
+    [701, 2164, 3848, 6161],
+    [733, 2261, 4020, 6438],
+    [766, 2362, 4199, 6724],
+    [800, 2467, 4386, 7024],
+    [836, 2578, 4583, 7339],
+    [873, 2692, 4786, 7664],
+    [912, 2813, 5001, 8008],
+    [952, 2938, 5223, 8364],
+    [995, 3070, 5457, 8739],
+    [1039, 3207, 5701, 9129],
+    [1086, 3350, 5956, 9537],
+    [1134, 3499, 6220, 9960],
+    [1185, 3655, 6497, 10404],
+    [1238, 3818, 6788, 10869],
+    [1293, 3989, 7091, 11355],
+    [1351, 4166, 7407, 11861],
+    [1411, 4352, 7738, 12390],
+    [1474, 4547, 8084, 12946],
+    [1540, 4750, 8444, 13522],
+    [1609, 4962, 8821, 14126],
+    [1680, 5183, 9215, 14756],
+    [1756, 5415, 9626, 15415],
+    [1834, 5657, 10057, 16104],
+    [1916, 5909, 10505, 16822],
+    [2001, 6173, 10975, 17574],
+    [2091, 6448, 11463, 18356],
+    [2184, 6736, 11974, 19175],
+    [2282, 7037, 12510, 20032],
+    [2383, 7351, 13068, 20926],
+    [2490, 7679, 13652, 21861],
+    [2601, 8021, 14260, 22834],
+    [2717, 8380, 14897, 23854],
+    [2838, 8753, 15561, 24918],
+    [2965, 9144, 16256, 26031],
+    [3097, 9553, 16982, 27193],
+    [3236, 9979, 17740, 28407],
+    [3380, 10424, 18532, 29675],
+    [3531, 10890, 19359, 31000],
+    [3688, 11375, 20222, 32382],
+    [3853, 11883, 21125, 32767],
+    [4025, 12414, 22069, 32767],
+    [4205, 12967, 23053, 32767],
+    [4392, 13546, 24082, 32767],
+    [4589, 14151, 25157, 32767],
+    [4793, 14783, 26280, 32767],
+    [5007, 15442, 27452, 32767],
+    [5231, 16132, 28678, 32767],
+    [5464, 16851, 29957, 32767],
+    [5708, 17603, 31294, 32767],
+    [5963, 18389, 32691, 32767],
+    [6229, 19210, 32767, 32767],
+    [6507, 20067, 32767, 32767],
+    [6797, 20963, 32767, 32767],
+    [7101, 21899, 32767, 32767],
+    [7418, 22876, 32767, 32767],
+    [7749, 23897, 32767, 32767],
+    [8095, 24964, 32767, 32767],
+    [8456, 26078, 32767, 32767],
+    [8833, 27242, 32767, 32767],
+    [9228, 28457, 32767, 32767],
+    [9639, 29727, 32767, 32767],
+];
+
+const MACE_TAB4: &[[i32; 2]] = &[
+    [64, 216],
+    [67, 226],
+    [70, 236],
+    [74, 246],
+    [77, 257],
+    [80, 268],
+    [84, 280],
+    [88, 294],
+    [92, 307],
+    [96, 321],
+    [100, 334],
+    [104, 350],
+    [109, 365],
+    [114, 382],
+    [119, 399],
+    [124, 416],
+    [130, 434],
+    [136, 454],
+    [142, 475],
+    [148, 495],
+    [155, 519],
+    [162, 541],
+    [169, 564],
+    [176, 590],
+    [185, 617],
+    [193, 644],
+    [201, 673],
+    [210, 703],
+    [220, 735],
+    [230, 767],
+    [240, 801],
+    [251, 838],
+    [262, 876],
+    [274, 914],
+    [286, 955],
+    [299, 997],
+    [312, 1041],
+    [326, 1089],
+    [341, 1138],
+    [356, 1188],
+    [372, 1241],
+    [388, 1297],
+    [406, 1354],
+    [424, 1415],
+    [443, 1478],
+    [462, 1544],
+    [483, 1613],
+    [505, 1684],
+    [527, 1760],
+    [551, 1838],
+    [576, 1921],
+    [601, 2007],
+    [628, 2097],
+    [656, 2190],
+    [686, 2288],
+    [716, 2389],
+    [748, 2496],
+    [781, 2607],
+    [816, 2724],
+    [853, 2846],
+    [891, 2973],
+    [930, 3104],
+    [972, 3243],
+    [1016, 3389],
+    [1061, 3539],
+    [1108, 3698],
+    [1158, 3862],
+    [1209, 4035],
+    [1264, 4216],
+    [1320, 4403],
+    [1379, 4599],
+    [1441, 4806],
+    [1505, 5019],
+    [1572, 5244],
+    [1642, 5477],
+    [1715, 5722],
+    [1792, 5978],
+    [1872, 6245],
+    [1955, 6522],
+    [2043, 6813],
+    [2134, 7118],
+    [2229, 7436],
+    [2329, 7767],
+    [2432, 8114],
+    [2541, 8477],
+    [2655, 8854],
+    [2773, 9250],
+    [2897, 9663],
+    [3026, 10094],
+    [3162, 10546],
+    [3303, 11016],
+    [3450, 11508],
+    [3604, 12020],
+    [3765, 12556],
+    [3933, 13118],
+    [4108, 13703],
+    [4292, 14315],
+    [4483, 14953],
+    [4683, 15621],
+    [4892, 16318],
+    [5111, 17046],
+    [5339, 17807],
+    [5577, 18602],
+    [5826, 19433],
+    [6086, 20300],
+    [6358, 21205],
+    [6642, 22152],
+    [6938, 23141],
+    [7248, 24173],
+    [7571, 25252],
+    [7909, 26380],
+    [8262, 27557],
+    [8631, 28786],
+    [9016, 30072],
+    [9419, 31413],
+    [9839, 32767],
+    [10278, 32767],
+    [10737, 32767],
+    [11216, 32767],
+    [11717, 32767],
+    [12240, 32767],
+    [12786, 32767],
+    [13356, 32767],
+    [13953, 32767],
+    [14576, 32767],
+    [15226, 32767],
+    [15906, 32767],
+    [16615, 32767],
+];
+
 fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
     if file_data.len() < 12 || &file_data[0..4] != b"FORM" {
         return None;
@@ -1667,14 +2078,118 @@ fn decode_double_buffer_samples(
     }
 }
 
+fn decode_mace3_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
+    let usable_len = compressed.len() & !1;
+    let mut state = MaceChannelState::default();
+    let mut out = Vec::with_capacity(usable_len * 3);
+
+    for &packet in &compressed[..usable_len] {
+        let values = [packet & 0x07, (packet >> 3) & 0x03, packet >> 5];
+        for (tab_idx, value) in values.into_iter().enumerate() {
+            out.push(mace3_chomp(&mut state, value, tab_idx));
+        }
+    }
+
+    out
+}
+
+fn decode_mace6_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
+    let mut state = MaceChannelState::default();
+    let mut out = Vec::with_capacity(compressed.len() * 6);
+
+    for &packet in compressed {
+        let values = [packet >> 5, (packet >> 3) & 0x03, packet & 0x07];
+        for (tab_idx, value) in values.into_iter().enumerate() {
+            out.extend_from_slice(&mace6_chomp(&mut state, value, tab_idx));
+        }
+    }
+
+    out
+}
+
+fn mace3_chomp(state: &mut MaceChannelState, value: u8, tab_idx: usize) -> u8 {
+    let current = mace_clip_i16(mace_read_table(state, value, tab_idx) + state.level);
+    state.level = current - (current >> 3);
+    mace_i16_to_u8(current)
+}
+
+fn mace6_chomp(state: &mut MaceChannelState, value: u8, tab_idx: usize) -> [u8; 2] {
+    let mut current = mace_read_table(state, value, tab_idx);
+
+    if (state.previous ^ current) >= 0 {
+        state.factor = (state.factor + 506).min(32767);
+    } else {
+        state.factor = (state.factor - 314).max(-32767);
+    }
+
+    current = mace_clip_i16(current + state.level);
+    state.level = (current * state.factor) >> 15;
+    current >>= 1;
+
+    let out0 = mace_clip_i16(state.previous + state.prev2 - ((state.prev2 - current) >> 2));
+    let out1 = mace_clip_i16(state.previous + current + ((state.prev2 - current) >> 2));
+    state.prev2 = state.previous;
+    state.previous = current;
+
+    [mace_i16_to_u8(out0), mace_i16_to_u8(out1)]
+}
+
+fn mace_read_table(state: &mut MaceChannelState, value: u8, tab_idx: usize) -> i32 {
+    let row = ((state.index & 0x7F0) >> 4) as usize;
+    let (stride, delta_table, current) = match tab_idx {
+        1 => {
+            let value = value as usize;
+            let current = if value < 2 {
+                MACE_TAB4[row][value]
+            } else {
+                -1 - MACE_TAB4[row][4 - value - 1]
+            };
+            (2, &MACE_TAB3[..], current)
+        }
+        _ => {
+            let value = value as usize;
+            let current = if value < 4 {
+                MACE_TAB2[row][value]
+            } else {
+                -1 - MACE_TAB2[row][8 - value - 1]
+            };
+            (4, &MACE_TAB1[..], current)
+        }
+    };
+
+    debug_assert!((value as usize) < stride * 2);
+    state.index += delta_table[value as usize] - (state.index >> 5);
+    if state.index < 0 {
+        state.index = 0;
+    }
+    current
+}
+
+fn mace_clip_i16(value: i32) -> i32 {
+    if value > 32767 {
+        32767
+    } else if value < -32768 {
+        -32767
+    } else {
+        value
+    }
+}
+
+fn mace_i16_to_u8(value: i32) -> u8 {
+    ((value >> 8) + 128).clamp(0, 255) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_double_buffer_samples, extended80_to_f64, parse_aiff_samples, GUEST_SND_CHANNEL_SIZE,
+        decode_double_buffer_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
+        extended80_to_f64, parse_aiff_samples, GUEST_SND_CHANNEL_SIZE,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
-    use crate::sound::{cmd, PendingDoubleBackCallback, PendingSoundCallback};
+    use crate::sound::{
+        cmd, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind, SndChannel, SndCommand,
+    };
     use crate::trap::test_helpers::{setup, TEST_SP};
 
     /// Assemble a minimal AIFF/AIFC file in memory.
@@ -2142,6 +2657,30 @@ mod tests {
     }
 
     #[test]
+    fn sounddispatch_spb_open_device_pops_frame_and_returns_refnum() {
+        // Sound Input Manager selector $05180014 shares routine byte $18
+        // with SndGetSysBeepState. It must still consume its 10-byte
+        // Pascal frame and write an input device refnum.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let refnum_ptr = 0x240000;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0518_0014);
+        bus.write_long(sp, refnum_ptr);
+        bus.write_word(sp + 4, 0); // permission
+        bus.write_long(sp + 6, 0); // default device name
+        bus.write_word(sp + 10, 0xFFFF);
+        bus.write_long(refnum_ptr, 0xDEAD_BEEF);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(bus.read_long(refnum_ptr), 1);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
     fn sndnewchannel_returns_noerr_and_writes_nonnull_channel_pointer() {
         // Inside Macintosh: Sound (1994), p. 2-195:
         // SndNewChannel stores a newly allocated channel pointer through
@@ -2452,6 +2991,58 @@ mod tests {
     }
 
     #[test]
+    fn snddocommand_queues_quiet_behind_active_buffer() {
+        // Inside Macintosh: Sound (1994), pp. 2-13 and 2-130:
+        // SndDoCommand enters the channel FIFO. It must not bypass an
+        // active bufferCmd; SndDoImmediate is the bypass path.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let create_sp = TEST_SP;
+        let chan_ptr_ptr = 0x220380;
+        bus.write_long(chan_ptr_ptr, 0);
+        bus.write_long(create_sp, 0);
+        bus.write_long(create_sp + 4, 0);
+        bus.write_word(create_sp + 8, 5);
+        bus.write_long(create_sp + 10, chan_ptr_ptr);
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let chan_ptr = bus.read_long(chan_ptr_ptr);
+        disp.sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .play_buffer(
+                vec![0x80; 128],
+                crate::sound::OUTPUT_RATE << 16,
+                PlaybackKind::Buffer,
+                0,
+            );
+
+        let cmd_ptr = 0x230040;
+        bus.write_word(cmd_ptr, cmd::QUIET);
+        bus.write_word(cmd_ptr + 2, 0);
+        bus.write_long(cmd_ptr + 4, 0);
+
+        let sp = TEST_SP + 0x40;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // noWait = TRUE
+        bus.write_long(sp + 2, cmd_ptr);
+        bus.write_long(sp + 6, chan_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x003, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert!(disp
+            .sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .is_playing());
+        assert_eq!(disp.sound_manager.mix_frame(64).len(), 64);
+    }
+
+    #[test]
     fn snddocommand_nil_channel_returns_badchannel() {
         // Inside Macintosh: Sound (1994), p. 2-130:
         // SndDoCommand requires a valid sound channel and returns
@@ -2638,6 +3229,62 @@ mod tests {
             decode_double_buffer_samples(&bus, data_addr, 2, 2, 8).expect("stereo 8-bit audio");
 
         assert_eq!(samples, vec![128, 128]);
+    }
+
+    #[test]
+    fn decode_mace3_mono_expands_packet_frame_to_unsigned_samples() {
+        let samples = decode_mace3_mono_to_u8(&[0x00, 0x00]);
+
+        assert_eq!(samples, vec![0x80; 6]);
+    }
+
+    #[test]
+    fn decode_mace6_mono_expands_packet_to_unsigned_samples() {
+        let samples = decode_mace6_mono_to_u8(&[0x00]);
+
+        assert_eq!(samples, vec![0x80; 6]);
+    }
+
+    #[test]
+    fn buffercmd_cmpsh_mace3_starts_buffer_playback() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let chan_ptr = 0x250000;
+        disp.sound_manager
+            .channels
+            .push(SndChannel::new(chan_ptr, false));
+
+        let header = 0x260000;
+        bus.write_long(header, 0); // samplePtr = NIL, data follows header
+        bus.write_long(header + 4, 1); // mono
+        bus.write_long(header + 8, crate::sound::OUTPUT_RATE << 16);
+        bus.write_long(header + 12, 0); // loopStart
+        bus.write_long(header + 16, 0); // loopEnd
+        bus.write_byte(header + 20, 0xFE); // cmpSH
+        bus.write_byte(header + 21, 60); // baseFrequency
+        bus.write_long(header + 22, 1); // one MACE3 packet frame = 2 bytes
+        bus.write_long(header + 40, super::MACE3_FORMAT);
+        bus.write_word(header + 56, 3); // threeToOne
+        bus.write_word(header + 58, 16); // threeToOnePacketSize
+        bus.write_word(header + 62, 8); // 8-bit samples after expansion
+        bus.write_byte(header + 64, 0x00);
+        bus.write_byte(header + 65, 0x00);
+
+        disp.execute_buffer_cmd(
+            &mut bus,
+            chan_ptr,
+            &SndCommand {
+                cmd: cmd::BUFFER,
+                param1: 0,
+                param2: header,
+            },
+        );
+
+        assert!(disp
+            .sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .is_playing());
+        assert_eq!(disp.sound_manager.mix_frame(6), vec![0x80; 6]);
     }
 
     /// Edge-case coverage for `decode_double_buffer_samples` — the

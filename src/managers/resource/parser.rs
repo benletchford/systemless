@@ -197,7 +197,30 @@ impl ResourceFork {
                     continue;
                 }
 
-                let res_data = data[res_data_start..res_data_start + res_len].to_vec();
+                let raw_res_data = &data[res_data_start..res_data_start + res_len];
+                let res_data = match super::compressed::decompress_if_needed(attrs, raw_res_data) {
+                    Ok(Some(decompressed)) => {
+                        tracing::debug!(
+                            "    ID {}: decompressed {} -> {} bytes, attrs=0x{:02X}",
+                            id,
+                            res_len,
+                            decompressed.len(),
+                            attrs
+                        );
+                        decompressed
+                    }
+                    Ok(None) => raw_res_data.to_vec(),
+                    Err(err) => {
+                        tracing::warn!(
+                                "    ID {}: failed to decompress compressed resource ({} bytes, attrs=0x{:02X}): {:?}",
+                                id,
+                                res_len,
+                                attrs,
+                                err
+                            );
+                        raw_res_data.to_vec()
+                    }
+                };
 
                 tracing::trace!("    ID {}: {} bytes, attrs=0x{:02X}", id, res_len, attrs);
 

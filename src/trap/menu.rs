@@ -625,8 +625,12 @@ impl super::TrapDispatcher {
                     if !self.menus.iter().any(|m| m.handle == handle) {
                         self.menus.push(parsed);
                     }
+                    bus.write_word(0x0A60, 0);
+                    cpu.write_reg(Register::D0, 0);
                     handle
                 } else {
+                    bus.write_word(0x0A60, (-192i16) as u16);
+                    cpu.write_reg(Register::D0, -192i32 as u32);
                     0
                 };
                 bus.write_long(sp + 2, handle);
@@ -955,6 +959,12 @@ impl super::TrapDispatcher {
                             mi.enabled = false;
                         }
                     }
+                    if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
+                        eprintln!(
+                            "[MENUKEY] DisableItem menu={} title=\"{}\" item={} enabled={}",
+                            menu.id, menu.title, item, menu.enabled
+                        );
+                    }
                     sync_enable_flags(bus, menu);
                 }
                 Ok(())
@@ -983,6 +993,12 @@ impl super::TrapDispatcher {
                         if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
                             mi.enabled = true;
                         }
+                    }
+                    if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
+                        eprintln!(
+                            "[MENUKEY] EnableItem menu={} title=\"{}\" item={} enabled={}",
+                            menu.id, menu.title, item, menu.enabled
+                        );
                     }
                     sync_enable_flags(bus, menu);
                 }
@@ -1331,6 +1347,29 @@ impl super::TrapDispatcher {
                     }
                     if result != 0 {
                         break;
+                    }
+                }
+
+                if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
+                    eprintln!(
+                        "[MENUKEY] MenuKey ch=${:02X} '{}' -> ${:08X}",
+                        ch,
+                        if ch.is_ascii_graphic() {
+                            ch as char
+                        } else {
+                            '.'
+                        },
+                        result
+                    );
+                    for menu in &self.menus {
+                        eprintln!(
+                            "[MENUKEY]   menu {} \"{}\" in_bar={} enabled={} items={}",
+                            menu.id,
+                            menu.title,
+                            menu.in_menu_bar,
+                            menu.enabled,
+                            menu.items.len()
+                        );
                     }
                 }
 
@@ -4240,6 +4279,7 @@ mod tests {
     #[test]
     fn test_get_menu_returns_nil_when_resource_missing() {
         let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(0x0A60, 0);
         bus.write_word(TEST_SP, 999); // menu_id = 999 (missing)
         let result = disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus);
         assert!(result.is_some(), "GetMenu should be handled");
@@ -4250,6 +4290,45 @@ mod tests {
             bus.read_long(sp),
             0,
             "GetMenu must return NIL when MENU resource is unavailable"
+        );
+        assert_eq!(
+            bus.read_word(0x0A60) as i16,
+            -192,
+            "GetMenu miss must set ResErr to resNotFound"
+        );
+    }
+
+    #[test]
+    fn getmenu_hit_clears_stale_reserror() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let menu_ptr = seed_menu_resource(&mut bus, 128, "Game");
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([((*b"MENU", 128), menu_ptr)]),
+                    named: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        bus.write_word(0x0A60, (-192i16) as u16);
+        bus.write_word(TEST_SP, 128);
+
+        let result = disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetMenu should be handled");
+        assert!(result.unwrap().is_ok(), "GetMenu should succeed");
+
+        let sp = cpu.read_reg(Register::A7);
+        assert_ne!(bus.read_long(sp), 0, "GetMenu hit should return a handle");
+        assert_eq!(
+            bus.read_word(0x0A60),
+            0,
+            "GetMenu hit must clear stale resource errors"
         );
     }
 

@@ -1119,6 +1119,30 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"clut" {
+                    if let Some(ptr) = self.synthesize_system_clut(bus, res_id) {
+                        if trace_getresource_enabled() {
+                            let preview: Vec<String> = bus
+                                .read_bytes(ptr, 16)
+                                .iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect();
+                            eprintln!(
+                                "[GETRESOURCE]   -> synthetic ptr=${:08X} preview={}",
+                                ptr,
+                                preview.join(" ")
+                            );
+                        }
+                        let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 cpu.write_reg(Register::A0, 0);
                 cpu.write_reg(Register::D0, -192i32 as u32);
                 bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound
@@ -2829,6 +2853,16 @@ impl super::TrapDispatcher {
                     b"vm  " => {
                         cpu.write_reg(Register::A0, 0);
                         cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltAUXVersion ('a/ux') -> not running under A/UX.
+                    // A/UX-aware installers sometimes use MPW-style Gestalt
+                    // glue that writes A0 into the response variable even
+                    // when D0 reports gestaltUndefSelectorErr. Clear A0 so
+                    // those probes cannot mistake a stale prior response for
+                    // an A/UX version number.
+                    b"a/ux" => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, GESTALT_UNDEF_SELECTOR_ERR);
                     }
                     _ => {
                         let s = std::str::from_utf8(&sel).unwrap_or("????");
@@ -6686,6 +6720,44 @@ mod tests {
     }
 
     #[test]
+    fn get_resource_synthesizes_system_clut_depth_id() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let sp = TEST_SP;
+        bus.write_word(sp, 4u16); // standard 4-bit System color table ID
+        bus.write_long(sp + 2, u32::from_be_bytes(*b"clut"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 6, "SP should advance by 6");
+        let handle = bus.read_long(new_sp);
+        assert_ne!(handle, 0, "synthetic clut must return a handle");
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(0x0A60), 0, "ResErr should be noErr");
+
+        let ctab = bus.read_long(handle);
+        assert_ne!(ctab, 0, "synthetic clut handle must be loaded");
+        assert_eq!(bus.read_long(ctab), 4, "ctSeed should match the depth ID");
+        assert_eq!(bus.read_word(ctab + 4), 0, "ctFlags should be zero");
+        assert_eq!(
+            bus.read_word(ctab + 6),
+            255,
+            "ctSize should hold 256 entries"
+        );
+        assert_eq!(bus.read_word(ctab + 8), 0, "entry 0 value");
+        assert_eq!(bus.read_word(ctab + 10), 0xFFFF, "entry 0 red");
+        assert_eq!(bus.read_word(ctab + 12), 0xFFFF, "entry 0 green");
+        assert_eq!(bus.read_word(ctab + 14), 0xFFFF, "entry 0 blue");
+        let black = ctab + 8 + 255 * 8;
+        assert_eq!(bus.read_word(black), 255, "entry 255 value");
+        assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
+        assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
+        assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
+    }
+
+    #[test]
     fn sethandlesize_resource_handle_keeps_resource_maps_current() {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"TEST", 77, &[1, 2, 3, 4]);
@@ -9779,6 +9851,19 @@ mod tests {
 
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
 
+        assert_eq!(cpu.read_reg(Register::D0), 0xFFFFEA51u32);
+    }
+
+    #[test]
+    fn gestalt_aux_absent_clears_response_register() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0x0753);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"a/ux"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0xFFFFEA51u32);
     }
 

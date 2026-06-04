@@ -945,9 +945,11 @@ impl super::TrapDispatcher {
             && wind_right >= screen_w as i16;
         if fullscreen_visible {
             // Real full-screen game windows start from an erased content area
-            // using the port background color (white by default), not from an
-            // all-black framebuffer. EV's title PICT leaves large transparent
-            // regions that should reveal the freshly-erased window contents.
+            // using the Window Manager desktop/background. In Systemless's
+            // default kiosk mode the Mac menu bar/desktop is suppressed, so
+            // exposed areas should stay on the black host stage rather than
+            // flash the classic white desktop. When callers opt into the menu
+            // bar, keep the normal Mac white background.
             Self::fb_fill_rect(
                 bus,
                 screen_base,
@@ -959,7 +961,7 @@ impl super::TrapDispatcher {
                 0,
                 screen_h as i16,
                 screen_w as i16,
-                false,
+                self.menu_bar_hidden,
             );
 
             // Classic full-screen game windows draw their own first frame
@@ -980,8 +982,11 @@ impl super::TrapDispatcher {
             window_ptr, pixmap, wind_top, wind_left, wind_bottom, wind_right, go_away_flag
         );
 
+        let suppress_document_chrome = self.menu_bar_hidden && matches!(wind_proc_id, 0 | 4);
         if visible && !fullscreen_visible {
-            self.draw_window_frame(bus);
+            if !suppress_document_chrome {
+                self.draw_window_frame(bus);
+            }
             self.queue_window_update_event(window_ptr);
         }
     }
@@ -1433,6 +1438,12 @@ impl super::TrapDispatcher {
             (true, 0x116) => {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
+                if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                    eprintln!(
+                        "[INVAL] HideWindow window=${:08X} tick={}",
+                        the_window, self.tick_count
+                    );
+                }
                 if the_window != 0 {
                     // Erase the window's chrome area BEFORE clearing
                     // visible so the screen doesn't retain stale chrome.
@@ -1464,8 +1475,10 @@ impl super::TrapDispatcher {
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0x00);
                     self.set_window_vis_clip_from_content(bus, the_window, false);
                     self.clear_queued_update_events(the_window);
-                    // Erase structure area (chrome + content). Title bar
-                    // is 19 px above wind_top.
+                    // Erase the exposed structure area. In a full Window
+                    // Manager this would be restored from the desktop or the
+                    // window behind; the game runner's desktop is black, so
+                    // avoid leaving a stale white backing rectangle.
                     let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
                         self.get_screen_params();
                     Self::fb_fill_rect(
@@ -1479,7 +1492,7 @@ impl super::TrapDispatcher {
                         (wind_left - 1).max(0),
                         (wind_bottom + 2).min(screen_height),
                         (wind_right + 2).min(screen_width),
-                        false,
+                        true,
                     );
                     if self.front_window == the_window {
                         // Find first visible window in the list (other
@@ -3617,12 +3630,46 @@ mod tests {
         // Verify it creates a CGrafPort: portVersion at offset +6 should have 0xC000
         let port_version = bus.read_word(window_ptr + 6);
         assert_eq!(port_version, 0xC000, "NewCWindow should set CGrafPort flag");
-        // Fullscreen NewCWindow erases the framebuffer to white (index 0).
-        // Mac 8bpp: index 0 = white, index 255 = black.
+        // In default kiosk mode the Mac desktop is hidden, so fullscreen
+        // windows erase exposed framebuffer areas to the black host stage.
         assert_eq!(
             bus.read_byte(screen_base),
-            0,
-            "fullscreen NewCWindow should erase framebuffer to white (index 0)"
+            255,
+            "fullscreen NewCWindow should erase framebuffer to the black kiosk stage"
+        );
+    }
+
+    #[test]
+    fn kiosk_new_cwindow_suppresses_initial_document_chrome_erase() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let probe = screen_base + 10 * 800 + 10;
+        bus.write_byte(probe, 0x42);
+
+        let bounds_rect_ptr = 0x301200u32;
+        bus.write_word(bounds_rect_ptr, 20); // below classic menu bar
+        bus.write_word(bounds_rect_ptr + 2, 0);
+        bus.write_word(bounds_rect_ptr + 4, 600);
+        bus.write_word(bounds_rect_ptr + 6, 800);
+
+        let sp = TEST_SP - 30;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..30u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_word(sp + 10, 4); // noGrowDocProc
+        bus.write_byte(sp + 12, 1); // visible
+        bus.write_long(sp + 18, bounds_rect_ptr);
+
+        let result = dispatch(&mut disp, 0x245, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(probe),
+            0x42,
+            "kiosk document-window creation must not white-erase the hidden desktop"
         );
     }
 

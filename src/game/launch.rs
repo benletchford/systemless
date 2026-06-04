@@ -244,7 +244,7 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
     let mut executable_entry: Option<(String, Vec<u8>, bool, usize)> = None;
     insert_payload_into_vfs(
         runner,
-        payload_from_disk_image(image),
+        payload_from_disk_image(image)?,
         &mut executable_entry,
     );
     log_vfs(runner);
@@ -334,11 +334,33 @@ fn insert_forks_into_vfs(
             .insert(normalized_name.clone(), data);
     }
 
+    let data_backed_rsrc = rsrc.is_empty()
+        && name.to_ascii_lowercase().ends_with(".rsrc")
+        && ResourceFork::parse(
+            runner
+                .dispatcher()
+                .vfs
+                .get(&normalized_name)
+                .map_or(&[][..], |bytes| bytes.as_slice()),
+        )
+        .is_some();
+
     if !rsrc.is_empty() {
         runner
             .dispatcher_mut()
             .vfs_rsrc
             .insert(normalized_name.clone(), rsrc);
+    } else if data_backed_rsrc {
+        let data = runner
+            .dispatcher()
+            .vfs
+            .get(&normalized_name)
+            .cloned()
+            .unwrap_or_default();
+        runner
+            .dispatcher_mut()
+            .vfs_rsrc
+            .insert(normalized_name.clone(), data);
     }
 
     runner.dispatcher_mut().set_vfs_entry_metadata(
@@ -384,6 +406,281 @@ fn collect_stuffit_payload_files(archive: &SitArchive) -> Result<Vec<PayloadFile
     Ok(files)
 }
 
+fn expand_squz_payload_file(
+    name: &str,
+    data: &[u8],
+    file_type: [u8; 4],
+    creator: [u8; 4],
+    finder_flags: u16,
+) -> Result<Option<PayloadFile>, String> {
+    if file_type != *b"SQUZ" || creator != *b"BrSq" {
+        return Ok(None);
+    }
+
+    let Some(magic_pos) = data.windows(2).position(|window| window == b"KG") else {
+        return Ok(None);
+    };
+    if magic_pos < 12 || magic_pos + 12 > data.len() {
+        return Err(format!("SQUZ {name}: invalid header"));
+    }
+    let method = [data[magic_pos + 2], data[magic_pos + 3]];
+
+    let mut target_type = [0u8; 4];
+    target_type.copy_from_slice(&data[4..8]);
+    let mut target_creator = [0u8; 4];
+    target_creator.copy_from_slice(&data[8..12]);
+    let header_finder_flags = u16::from_be_bytes([data[12], data[13]]);
+    let target_finder_flags = if header_finder_flags != 0 {
+        header_finder_flags
+    } else {
+        finder_flags
+    };
+    let resource_like_file = name.to_ascii_lowercase().ends_with(".rsrc");
+
+    let uncompressed_len = u32::from_be_bytes([
+        data[magic_pos + 4],
+        data[magic_pos + 5],
+        data[magic_pos + 6],
+        data[magic_pos + 7],
+    ]) as usize;
+    let compressed_len = u32::from_be_bytes([
+        data[magic_pos + 8],
+        data[magic_pos + 9],
+        data[magic_pos + 10],
+        data[magic_pos + 11],
+    ]) as usize;
+    let stream_start = magic_pos + 12;
+    let stream_end = stream_start
+        .checked_add(compressed_len)
+        .ok_or_else(|| format!("SQUZ {name}: compressed length overflow"))?;
+    if stream_end > data.len() {
+        return Err(format!(
+            "SQUZ {name}: compressed stream truncated ({} > {})",
+            stream_end,
+            data.len()
+        ));
+    }
+
+    let expanded = match method {
+        [0x00, 0x00] => {
+            if compressed_len != uncompressed_len {
+                return Err(format!(
+                    "SQUZ {name}: uncompressed stream length mismatch ({compressed_len} != {uncompressed_len})"
+                ));
+            }
+            data[stream_start..stream_end].to_vec()
+        }
+        [0x03, 0x03] => {
+            decode_broderbund_squz_0303_stream(&data[stream_start..stream_end], uncompressed_len)
+                .map_err(|err| format!("SQUZ {name}: {err}"))?
+        }
+        [0x03, 0x04] => {
+            decode_broderbund_squz_0304_stream(&data[stream_start..stream_end], uncompressed_len)
+                .map_err(|err| format!("SQUZ {name}: {err}"))?
+        }
+        _ => {
+            if target_type == *b"APPL" {
+                return Err(format!(
+                    "SQUZ {name}: unsupported KG method {:02X}{:02X}",
+                    method[0], method[1]
+                ));
+            }
+            if resource_like_file {
+                if crate::runner::trace_load_enabled() {
+                    eprintln!(
+                        "[LOAD] Mounting SQUZ \"{}\" as empty resource fork: unsupported KG method {:02X}{:02X}",
+                        name, method[0], method[1]
+                    );
+                }
+                return Ok(Some(PayloadFile {
+                    name: name.to_string(),
+                    data: Vec::new(),
+                    rsrc: empty_resource_fork_bytes(),
+                    file_type: target_type,
+                    creator: target_creator,
+                    finder_flags: target_finder_flags,
+                }));
+            }
+            if crate::runner::trace_load_enabled() {
+                eprintln!(
+                    "[LOAD] Leaving SQUZ \"{}\" packed: unsupported KG method {:02X}{:02X}",
+                    name, method[0], method[1]
+                );
+            }
+            return Ok(None);
+        }
+    };
+    let expanded_is_rsrc = ResourceFork::parse(&expanded).is_some();
+    if target_type == *b"APPL" && !expanded_is_rsrc {
+        return Err(format!(
+            "SQUZ {name}: decoded application resource fork is invalid"
+        ));
+    }
+    let rsrc = if expanded_is_rsrc {
+        expanded.clone()
+    } else if resource_like_file {
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Mounting SQUZ \"{}\" as empty resource fork: decoded payload is not a parseable resource fork",
+                name
+            );
+        }
+        empty_resource_fork_bytes()
+    } else {
+        Vec::new()
+    };
+    let data = if expanded_is_rsrc || resource_like_file {
+        Vec::new()
+    } else {
+        expanded
+    };
+
+    if crate::runner::trace_load_enabled() {
+        eprintln!(
+            "[LOAD] Expanded SQUZ \"{}\" {} -> {} bytes",
+            name, compressed_len, uncompressed_len
+        );
+    }
+
+    Ok(Some(PayloadFile {
+        name: name.to_string(),
+        data,
+        rsrc,
+        file_type: target_type,
+        creator: target_creator,
+        finder_flags: target_finder_flags,
+    }))
+}
+
+fn decode_broderbund_squz_0303_stream(
+    stream: &[u8],
+    expected_len: usize,
+) -> Result<Vec<u8>, String> {
+    const WINDOW_SIZE: usize = 8192;
+    const LOOKAHEAD_SIZE: usize = 10;
+
+    decode_broderbund_squz_lzss_stream(
+        stream,
+        expected_len,
+        WINDOW_SIZE,
+        LOOKAHEAD_SIZE,
+        |first, second| {
+            let copy_pos = (((first & 0x1F) as usize) << 8) | second as usize;
+            let copy_len = ((first >> 5) as usize) + 3;
+            (copy_pos, copy_len)
+        },
+    )
+}
+
+fn decode_broderbund_squz_0304_stream(
+    stream: &[u8],
+    expected_len: usize,
+) -> Result<Vec<u8>, String> {
+    const WINDOW_SIZE: usize = 4096;
+    const LOOKAHEAD_SIZE: usize = 18;
+
+    decode_broderbund_squz_lzss_stream(
+        stream,
+        expected_len,
+        WINDOW_SIZE,
+        LOOKAHEAD_SIZE,
+        |first, second| {
+            let copy_pos = (((first & 0x0F) as usize) << 8) | second as usize;
+            let copy_len = ((first >> 4) as usize) + 3;
+            (copy_pos, copy_len)
+        },
+    )
+}
+
+fn decode_broderbund_squz_lzss_stream<F>(
+    stream: &[u8],
+    expected_len: usize,
+    window_size: usize,
+    lookahead_size: usize,
+    decode_ref: F,
+) -> Result<Vec<u8>, String>
+where
+    F: Fn(u8, u8) -> (usize, usize),
+{
+    let mut window = vec![0u8; window_size];
+    let window_mask = window_size - 1;
+    let mut write_pos = window_size - lookahead_size;
+    let mut out = Vec::with_capacity(expected_len);
+    let mut pos = 0usize;
+
+    while pos < stream.len() && out.len() < expected_len {
+        let flags = stream[pos];
+        pos += 1;
+
+        for bit in 0..8 {
+            if out.len() >= expected_len {
+                break;
+            }
+
+            if (flags & (1 << bit)) != 0 {
+                let Some(&byte) = stream.get(pos) else {
+                    return Err("literal truncated".to_string());
+                };
+                pos += 1;
+                out.push(byte);
+                window[write_pos] = byte;
+                write_pos = (write_pos + 1) & window_mask;
+            } else {
+                if pos + 1 >= stream.len() {
+                    return Err("back-reference truncated".to_string());
+                }
+                let first = stream[pos];
+                let second = stream[pos + 1];
+                pos += 2;
+
+                let (copy_pos, copy_len) = decode_ref(first, second);
+                for i in 0..copy_len {
+                    if out.len() >= expected_len {
+                        break;
+                    }
+                    let byte = window[(copy_pos + i) & window_mask];
+                    out.push(byte);
+                    window[write_pos] = byte;
+                    write_pos = (write_pos + 1) & window_mask;
+                }
+            }
+        }
+    }
+
+    if out.len() != expected_len {
+        return Err(format!(
+            "decoded {} bytes, expected {}",
+            out.len(),
+            expected_len
+        ));
+    }
+
+    Ok(out)
+}
+
+fn empty_resource_fork_bytes() -> Vec<u8> {
+    let data_offset = 16u32;
+    let data_length = 0u32;
+    let map_offset = 16u32;
+    let map_length = 32u32;
+
+    let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+    let mut header = [0u8; 16];
+    header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+    header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+    header[8..12].copy_from_slice(&data_length.to_be_bytes());
+    header[12..16].copy_from_slice(&map_length.to_be_bytes());
+    bytes[0..16].copy_from_slice(&header);
+
+    let map_start = map_offset as usize;
+    bytes[map_start..map_start + 16].copy_from_slice(&header);
+    bytes[map_start + 24..map_start + 26].copy_from_slice(&30u16.to_be_bytes());
+    bytes[map_start + 26..map_start + 28].copy_from_slice(&32u16.to_be_bytes());
+    bytes[map_start + 28..map_start + 30].copy_from_slice(&0xFFFFu16.to_be_bytes());
+
+    bytes
+}
+
 fn payload_from_forks(
     name: &str,
     data: Vec<u8>,
@@ -392,6 +689,13 @@ fn payload_from_forks(
     creator: [u8; 4],
     finder_flags: u16,
 ) -> Result<Payload, String> {
+    if let Some(file) = expand_squz_payload_file(name, &data, file_type, creator, finder_flags)? {
+        return Ok(Payload {
+            dirs: Vec::new(),
+            files: vec![file],
+        });
+    }
+
     if let Some(image) = crate::disk_image::extract_dc42_or_hfs(&data)
         .map_err(|e| format!("Disk image {name}: {e}"))?
     {
@@ -403,7 +707,7 @@ fn payload_from_forks(
                 image.files.len()
             );
         }
-        return Ok(payload_from_disk_image(image));
+        return payload_from_disk_image(image);
     }
 
     if let Some(image) = crate::disk_image::extract_dc42_or_hfs(&rsrc)
@@ -417,7 +721,7 @@ fn payload_from_forks(
                 image.files.len()
             );
         }
-        return Ok(payload_from_disk_image(image));
+        return payload_from_disk_image(image);
     }
 
     Ok(Payload {
@@ -433,22 +737,32 @@ fn payload_from_forks(
     })
 }
 
-fn payload_from_disk_image(image: crate::disk_image::DiskImageContents) -> Payload {
-    Payload {
-        dirs: image.dirs,
-        files: image
-            .files
-            .into_iter()
-            .map(|file| PayloadFile {
+fn payload_from_disk_image(image: crate::disk_image::DiskImageContents) -> Result<Payload, String> {
+    let mut files = Vec::new();
+    for file in image.files {
+        if let Some(expanded) = expand_squz_payload_file(
+            &file.path,
+            &file.data,
+            file.file_type,
+            file.creator,
+            file.finder_flags,
+        )? {
+            files.push(expanded);
+        } else {
+            files.push(PayloadFile {
                 name: file.path,
                 data: file.data,
                 rsrc: file.rsrc,
                 file_type: file.file_type,
                 creator: file.creator,
                 finder_flags: file.finder_flags,
-            })
-            .collect(),
+            });
+        }
     }
+    Ok(Payload {
+        dirs: image.dirs,
+        files,
+    })
 }
 
 fn insert_payload_into_vfs(
@@ -589,4 +903,148 @@ fn read_u16_be(buf: &[u8], offset: &mut usize) -> Result<u16, String> {
 fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
     let bytes = read_exact(buf, offset, 4)?;
     Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
+        let data_offset = 16u32;
+        let data_length = (4 + data.len()) as u32;
+        let map_offset = data_offset + data_length;
+        let type_list_offset = 30u16;
+        let ref_list_offset = 10u16;
+        let name_list_offset = 40u16;
+        let map_length = 52u32;
+
+        let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+        header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+        header[8..12].copy_from_slice(&data_length.to_be_bytes());
+        header[12..16].copy_from_slice(&map_length.to_be_bytes());
+        bytes[0..16].copy_from_slice(&header);
+
+        let data_start = data_offset as usize;
+        bytes[data_start..data_start + 4].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes[data_start + 4..data_start + 4 + data.len()].copy_from_slice(data);
+
+        let map_start = map_offset as usize;
+        bytes[map_start..map_start + 16].copy_from_slice(&header);
+        bytes[map_start + 24..map_start + 26].copy_from_slice(&type_list_offset.to_be_bytes());
+        bytes[map_start + 26..map_start + 28].copy_from_slice(&name_list_offset.to_be_bytes());
+
+        let type_list_start = map_start + type_list_offset as usize;
+        bytes[type_list_start..type_list_start + 2].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 2..type_list_start + 6].copy_from_slice(&res_type);
+        bytes[type_list_start + 6..type_list_start + 8].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 8..type_list_start + 10]
+            .copy_from_slice(&ref_list_offset.to_be_bytes());
+
+        let ref_list_start = map_start + type_list_offset as usize + ref_list_offset as usize;
+        bytes[ref_list_start..ref_list_start + 2].copy_from_slice(&(res_id as u16).to_be_bytes());
+        bytes[ref_list_start + 2..ref_list_start + 4].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+
+        bytes
+    }
+
+    #[test]
+    fn broderbund_squz_0304_decodes_literals_and_backrefs() {
+        let stream = [
+            0xFF, b'A', b'B', b'C', b'D', b'E', b'F', b'G', b'H', 0x00, 0xFF, 0xEE,
+        ];
+
+        let decoded = decode_broderbund_squz_0304_stream(&stream, 26).unwrap();
+        assert_eq!(decoded, b"ABCDEFGHABCDEFGHABCDEFGHAB");
+    }
+
+    #[test]
+    fn broderbund_squz_0303_uses_8k_window_and_13_bit_offsets() {
+        let stream = [
+            0x4E, 0x1F, 0xF5, 0x02, 0x00, 0x01, 0x1F, 0xFA, 0x7F, 0xF3, 0x01,
+        ];
+
+        let decoded = decode_broderbund_squz_0303_stream(&stream, 16).unwrap();
+        assert_eq!(decoded, [0, 0, 0, 2, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn broderbund_squz_uncompressed_payload_becomes_resource_fork() {
+        let rsrc = make_single_resource_fork_bytes(*b"TEST", 128, b"payload");
+        let mut file = Vec::new();
+        file.extend_from_slice(&(rsrc.len() as u32).to_be_bytes());
+        file.extend_from_slice(b"PLR1");
+        file.extend_from_slice(b"PLRM");
+        file.extend_from_slice(&0x0500u16.to_be_bytes());
+        file.extend_from_slice(&[0; 42]);
+        file.extend_from_slice(b"KG\0\0");
+        file.extend_from_slice(&(rsrc.len() as u32).to_be_bytes());
+        file.extend_from_slice(&(rsrc.len() as u32).to_be_bytes());
+        file.extend_from_slice(&rsrc);
+
+        let expanded = expand_squz_payload_file("AllSounds1.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+            .unwrap()
+            .unwrap();
+
+        assert!(expanded.data.is_empty());
+        assert_eq!(expanded.rsrc, rsrc);
+        assert_eq!(expanded.file_type, *b"PLR1");
+        assert_eq!(expanded.creator, *b"PLRM");
+        assert_eq!(expanded.finder_flags, 0x0500);
+        assert!(ResourceFork::parse(&expanded.rsrc).is_some());
+    }
+
+    #[test]
+    fn broderbund_squz_compressed_non_resource_payload_stays_data_fork() {
+        let stream = [0xFF, b'H', b'e', b'l', b'l', b'o'];
+        let mut file = Vec::new();
+        file.extend_from_slice(&5u32.to_be_bytes());
+        file.extend_from_slice(b"TEXT");
+        file.extend_from_slice(b"PLRM");
+        file.extend_from_slice(&0x0100u16.to_be_bytes());
+        file.extend_from_slice(&[0; 42]);
+        file.extend_from_slice(b"KG\x03\x03");
+        file.extend_from_slice(&5u32.to_be_bytes());
+        file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
+        file.extend_from_slice(&stream);
+
+        let expanded = expand_squz_payload_file("PR Scrapbook", &file, *b"SQUZ", *b"BrSq", 0)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(expanded.data, b"Hello");
+        assert!(expanded.rsrc.is_empty());
+        assert_eq!(expanded.file_type, *b"TEXT");
+        assert_eq!(expanded.creator, *b"PLRM");
+        assert_eq!(expanded.finder_flags, 0x0100);
+    }
+
+    #[test]
+    fn empty_resource_fork_is_parseable() {
+        assert!(ResourceFork::parse(&empty_resource_fork_bytes()).is_some());
+    }
+
+    #[test]
+    fn broderbund_squz_unparseable_rsrc_payload_mounts_empty_resource_fork() {
+        let stream = [0xFF, b'H', b'e', b'l', b'l', b'o'];
+        let mut file = Vec::new();
+        file.extend_from_slice(&5u32.to_be_bytes());
+        file.extend_from_slice(b"PLR2");
+        file.extend_from_slice(b"PLRM");
+        file.extend_from_slice(&0x0500u16.to_be_bytes());
+        file.extend_from_slice(&[0; 42]);
+        file.extend_from_slice(b"KG\x03\x03");
+        file.extend_from_slice(&5u32.to_be_bytes());
+        file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
+        file.extend_from_slice(&stream);
+
+        let expanded = expand_squz_payload_file("ABCBook.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+            .unwrap()
+            .unwrap();
+
+        assert!(expanded.data.is_empty());
+        assert!(ResourceFork::parse(&expanded.rsrc).is_some());
+    }
 }

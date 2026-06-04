@@ -1535,6 +1535,13 @@ impl FixtureRunner {
                             Some(gdevice),
                         );
                     }
+                    if matches!(
+                        active_interrupt_callback.source,
+                        ActiveInterruptCallbackSource::DialogDrawProc
+                    ) {
+                        self.dispatcher
+                            .finalize_dialog_draw_procs_if_idle(&mut self.bus);
+                    }
                     self.active_interrupt_callback = None;
                 } else if trace_timer_enabled() {
                     eprintln!(
@@ -2534,30 +2541,38 @@ impl FixtureRunner {
 
                 // Sound 1994, 2-152
                 if self.sound_callback_trampoline == 0 {
-                    // Pascal callback: PROCEDURE MyCallBack(chan: SndChannelPtr; cmd: SndCommand)
-                    // Callee cleans SndCommand (8 bytes) via RTD #8, but chan_ptr (4 bytes)
-                    // remains on stack — we must clean it after JSR returns.
-                    let tramp = self.bus.alloc(38);
+                    // Sound callback:
+                    //   PROCEDURE MyCallBack(chan: SndChannelPtr; cmd: SndCommand);
+                    //
+                    // In practice shipped apps commonly receive `cmd` as a
+                    // pointer-sized argument and differ on how much stack they
+                    // pop on return. Push cmdPtr nearest SP and chan beneath it,
+                    // then reset SP to the saved-register frame after JSR so
+                    // one-arg, two-arg, and C-style cleanup all resume safely.
+                    let tramp = self.bus.alloc(42);
                     self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
                     self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
                     self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
-                    self.bus.write_word(tramp + 10, 0x2F3C); // MOVE.L #param2,-(SP)
-                    self.bus.write_word(tramp + 16, 0x3F3C); // MOVE.W #param1,-(SP)
-                    self.bus.write_word(tramp + 20, 0x3F3C); // MOVE.W #cmd,-(SP)
-                    self.bus.write_word(tramp + 24, 0x4EB9); // JSR abs.L
-                    self.bus.write_word(tramp + 30, 0x588F); // ADDQ.L #4,SP (clean chan_ptr)
-                    self.bus.write_word(tramp + 32, 0x4CDF); // MOVEM.L (SP)+,regs
-                    self.bus.write_word(tramp + 34, 0x0F0F); // D0-D3/A0-A3
-                    self.bus.write_word(tramp + 36, 0x4E75); // RTS
+                    self.bus.write_word(tramp + 10, 0x2F3C); // MOVE.L #cmdPtr,-(SP)
+                    self.bus.write_word(tramp + 16, 0x4EB9); // JSR abs.L
+                    self.bus.write_word(tramp + 22, 0x2E7C); // MOVEA.L #savedSP,A7
+                    self.bus.write_word(tramp + 28, 0x4CDF); // MOVEM.L (SP)+,regs
+                    self.bus.write_word(tramp + 30, 0x0F0F); // D0-D3/A0-A3
+                    self.bus.write_word(tramp + 32, 0x4E75); // RTS
                     self.sound_callback_trampoline = tramp;
                 }
 
                 let tramp = self.sound_callback_trampoline;
+                let cmd_ptr = tramp + 34;
+                let interrupted_sp = self.cpu.read_reg(Register::A7);
+                let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
                 self.bus.write_long(tramp + 6, chan_ptr);
-                self.bus.write_long(tramp + 12, cmd.param2);
-                self.bus.write_word(tramp + 18, cmd.param1 as u16);
-                self.bus.write_word(tramp + 22, cmd.cmd);
-                self.bus.write_long(tramp + 26, callback_addr);
+                self.bus.write_long(tramp + 12, cmd_ptr);
+                self.bus.write_long(tramp + 18, callback_addr);
+                self.bus.write_long(tramp + 24, saved_regs_sp);
+                self.bus.write_word(cmd_ptr, cmd.cmd);
+                self.bus.write_word(cmd_ptr + 2, cmd.param1 as u16);
+                self.bus.write_long(cmd_ptr + 4, cmd.param2);
                 self.inject_interrupt_callback(ActiveInterruptCallbackSource::SoundCallback, tramp);
             }
             crate::sound::PendingSoundCallback::FileCompletion {
@@ -2875,6 +2890,12 @@ impl FixtureRunner {
         // Inside Macintosh Volume I, I-415
         let entry = self.bus.read_word(filter_proc);
         if entry != 0x4E56 && entry != 0x48E7 && entry != 0x4EF9 && entry != 0x4EFA {
+            if trace_dialog_filter_enabled() {
+                eprintln!(
+                    "[DIALOG-FILTER] skip invalid-entry dialog=${:08X} proc=${:08X} entry=${:04X}",
+                    dialog_ptr, filter_proc, entry
+                );
+            }
             return false;
         }
 
@@ -3618,6 +3639,92 @@ mod tests {
         assert_eq!(steps, 3);
         assert_eq!(runner.cpu.read_reg(Register::D0), 2);
         assert!(runner.active_interrupt_callback.is_none());
+    }
+
+    #[test]
+    fn sound_command_callback_trampoline_passes_sndcommand_pointer() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(crate::sound::PendingSoundCallback::Command {
+                callback_addr: 0x0004_5678,
+                chan_ptr: 0x0039_38C8,
+                cmd: crate::sound::SndCommand {
+                    cmd: crate::sound::cmd::CALLBACK,
+                    param1: 0x1234,
+                    param2: 0x0001_43FC,
+                },
+            });
+
+        runner.fire_sound_callbacks();
+
+        let active = runner
+            .active_interrupt_callback
+            .expect("sound callback should have been armed");
+        assert!(matches!(
+            active.source,
+            ActiveInterruptCallbackSource::SoundCallback
+        ));
+        assert_eq!(active.resume_pc, interrupted_pc);
+        assert_eq!(active.resume_sp, interrupted_sp);
+
+        let tramp = runner.sound_callback_trampoline;
+        let cmd_ptr = tramp + 34;
+        let saved_regs_sp = interrupted_sp - 4 - 32;
+        assert_eq!(runner.bus.read_long(tramp + 6), 0x0039_38C8);
+        assert_eq!(runner.bus.read_long(tramp + 12), cmd_ptr);
+        assert_eq!(runner.bus.read_long(tramp + 18), 0x0004_5678);
+        assert_eq!(runner.bus.read_long(tramp + 24), saved_regs_sp);
+        assert_eq!(runner.bus.read_word(cmd_ptr), crate::sound::cmd::CALLBACK);
+        assert_eq!(runner.bus.read_word(cmd_ptr + 2), 0x1234);
+        assert_eq!(runner.bus.read_long(cmd_ptr + 4), 0x0001_43FC);
+    }
+
+    #[test]
+    fn sound_command_callback_trampoline_tolerates_one_long_pascal_cleanup() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = runner.bus.alloc(4);
+
+        // Playroom's callback epilogue has this shape: pop one long argument
+        // by copying the return address over it, then RTS.
+        runner.bus.write_word(callback_addr, 0x2E9F); // MOVE.L (SP)+,(SP)
+        runner.bus.write_word(callback_addr + 2, 0x4E75); // RTS
+        runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(crate::sound::PendingSoundCallback::Command {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                cmd: crate::sound::SndCommand {
+                    cmd: crate::sound::cmd::CALLBACK,
+                    param1: 0x1234,
+                    param2: 0x0001_43FC,
+                },
+            });
+
+        runner.fire_sound_callbacks();
+        let (steps, running) = runner.run_steps(10, None);
+
+        assert!(running, "callback trampoline should resume foreground code");
+        assert_eq!(steps, 10);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc + 2);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert!(!runner.is_halted());
     }
 
     #[test]

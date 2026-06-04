@@ -168,7 +168,7 @@ impl super::TrapDispatcher {
             .position(|event| Self::event_matches_mask(event_mask, event.what))
         {
             let event = self.event_queue.remove(idx).unwrap();
-            if trace_input_enabled() {
+            if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
                     "[INPUT] dequeue what={} message=${:08X} where=({}, {}) mask=${:04X}",
                     event.what, event.message, event.where_v, event.where_h, event_mask
@@ -280,7 +280,7 @@ impl super::TrapDispatcher {
             .position(|e| Self::event_matches_mask(event_mask, e.what))
         {
             let ev = self.event_queue.remove(idx).unwrap();
-            if trace_input_enabled() {
+            if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
                     "[INPUT] dequeue what={} message=${:08X} where=({}, {}) mask=${:04X}",
                     ev.what, ev.message, ev.where_v, ev.where_h, event_mask

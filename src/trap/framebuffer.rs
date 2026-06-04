@@ -23,7 +23,7 @@ impl super::TrapDispatcher {
         (base, rb, w as i16, h as i16, ps)
     }
 
-    fn logical_white_pixel_index(bus: &MacMemoryBus) -> u8 {
+    fn active_gdevice_ctab(bus: &MacMemoryBus) -> Option<u32> {
         let gdevice_handle = {
             let current = bus.read_long(0x0CC8); // TheGDevice
             if current != 0 {
@@ -33,29 +33,61 @@ impl super::TrapDispatcher {
             }
         };
         if gdevice_handle == 0 {
-            return 0;
+            return None;
         }
         let gdevice = bus.read_long(gdevice_handle);
         if gdevice == 0 {
-            return 0;
+            return None;
         }
         let pixmap_handle = bus.read_long(gdevice + 22);
         if pixmap_handle == 0 {
-            return 0;
+            return None;
         }
         let pixmap = bus.read_long(pixmap_handle);
         if pixmap == 0 {
-            return 0;
+            return None;
         }
         let ctab_handle = bus.read_long(pixmap + 42);
         if ctab_handle == 0 {
-            return 0;
+            return None;
         }
         let ctab = bus.read_long(ctab_handle);
         if ctab == 0 {
-            return 0;
+            return None;
+        }
+        Some(ctab)
+    }
+
+    fn ctab_value_luma(bus: &MacMemoryBus, ctab: u32, wanted_value: u8) -> Option<u32> {
+        let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+
+        let ordinal = u32::from(wanted_value);
+        if ordinal < count {
+            let entry = ctab + 8 + ordinal * 8;
+            if bus.read_word(entry) == u16::from(wanted_value) {
+                return Some(
+                    u32::from(bus.read_word(entry + 2))
+                        + u32::from(bus.read_word(entry + 4))
+                        + u32::from(bus.read_word(entry + 6)),
+                );
+            }
         }
 
+        for ordinal in 0..count {
+            let entry = ctab + 8 + ordinal * 8;
+            if bus.read_word(entry) != u16::from(wanted_value) {
+                continue;
+            }
+            return Some(
+                u32::from(bus.read_word(entry + 2))
+                    + u32::from(bus.read_word(entry + 4))
+                    + u32::from(bus.read_word(entry + 6)),
+            );
+        }
+        None
+    }
+
+    fn best_luma_pixel_index(bus: &MacMemoryBus, ctab: u32, brightest: bool) -> Option<u8> {
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
         let mut best_index = 0u8;
         let mut best_luma = 0u32;
@@ -70,18 +102,49 @@ impl super::TrapDispatcher {
                 + u32::from(bus.read_word(entry + 4))
                 + u32::from(bus.read_word(entry + 6));
             let index = value as u8;
-            if !found || luma > best_luma || (luma == best_luma && index < best_index) {
+            let better = if brightest {
+                luma > best_luma || (luma == best_luma && index < best_index)
+            } else {
+                luma < best_luma || (luma == best_luma && index < best_index)
+            };
+            if !found || better {
                 best_index = index;
                 best_luma = luma;
                 found = true;
             }
         }
 
-        if found {
-            best_index
-        } else {
-            0
+        found.then_some(best_index)
+    }
+
+    fn logical_white_pixel_index(bus: &MacMemoryBus) -> u8 {
+        let Some(ctab) = Self::active_gdevice_ctab(bus) else {
+            return 0;
+        };
+        if Self::ctab_value_luma(bus, ctab, 0) == Some(0xFFFF * 3) {
+            return 0;
         }
+        Self::best_luma_pixel_index(bus, ctab, true).unwrap_or(0)
+    }
+
+    fn logical_black_pixel_index(bus: &MacMemoryBus) -> u8 {
+        let Some(ctab) = Self::active_gdevice_ctab(bus) else {
+            return 255;
+        };
+        if Self::ctab_value_luma(bus, ctab, 1) == Some(0) {
+            return 1;
+        }
+        if Self::ctab_value_luma(bus, ctab, 255) == Some(0) {
+            return 255;
+        }
+        Self::best_luma_pixel_index(bus, ctab, false).unwrap_or(255)
+    }
+
+    fn logical_mono_pixel_indexes(bus: &MacMemoryBus) -> (u8, u8) {
+        (
+            Self::logical_white_pixel_index(bus),
+            Self::logical_black_pixel_index(bus),
+        )
     }
 
     /// Set a single pixel in the framebuffer (screen coordinates).
@@ -146,7 +209,7 @@ impl super::TrapDispatcher {
                 return;
             }
             let fill = if black {
-                255
+                Self::logical_black_pixel_index(bus)
             } else {
                 Self::logical_white_pixel_index(bus)
             };
@@ -198,7 +261,7 @@ impl super::TrapDispatcher {
                 return;
             }
             let fill = if black {
-                255
+                Self::logical_black_pixel_index(bus)
             } else {
                 Self::logical_white_pixel_index(bus)
             };
@@ -242,6 +305,11 @@ impl super::TrapDispatcher {
             let gy = y + glyph.origin_y as i16;
             let gw = glyph.width as usize;
             let gh = glyph.height as usize;
+            let black_index = if pixel_size == 8 {
+                Some(Self::logical_black_pixel_index(bus))
+            } else {
+                None
+            };
 
             // Glyph data is 8-bit coverage per pixel (row-major, one byte
             // per pixel). Threshold at >=128 (bitmap glyphs are exclusively
@@ -250,17 +318,26 @@ impl super::TrapDispatcher {
                 for col in 0..gw {
                     let byte_idx = glyph.data_offset + row * gw + col;
                     if byte_idx < data.len() && data[byte_idx] >= 128 {
-                        Self::fb_set_pixel(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            gx + col as i16,
-                            gy + row as i16,
-                            true,
-                        );
+                        let px = gx + col as i16;
+                        let py = gy + row as i16;
+                        if let Some(black_index) = black_index {
+                            if px >= 0 && py >= 0 && px < screen_width && py < screen_height {
+                                let addr = screen_base + (py as u32) * row_bytes + (px as u32);
+                                bus.write_byte(addr, black_index);
+                            }
+                        } else {
+                            Self::fb_set_pixel(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                px,
+                                py,
+                                true,
+                            );
+                        }
                     }
                 }
             }
@@ -385,7 +462,7 @@ impl super::TrapDispatcher {
     /// screen. In Systemless HLE, games draw to the window's GrafPort which
     /// may use a different baseAddr than the screen framebuffer. This copies
     /// the window content so that screen captures reflect the actual game state.
-    fn blit_window_to_screen(&self, bus: &mut MacMemoryBus) {
+    pub(crate) fn blit_window_to_screen(&self, bus: &mut MacMemoryBus) {
         let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = self.screen_mode;
         let trace = std::env::var_os("SYSTEMLESS_TRACE_BLIT_WINDOW").is_some();
         if self.front_window == 0 {
@@ -484,11 +561,11 @@ impl super::TrapDispatcher {
         let dst_x = src_x_offset;
 
         // 1bpp source → 8bpp screen via per-pixel bit extraction.
-        // For each source bit: 0 → idx 0 (white in standard Mac CLUT),
-        // 1 → idx 0xFF (black). Mirrors the typical QuickDraw default
-        // for monochrome→indexed without an explicit foreground/background
-        // color setup.
+        // For each source bit, resolve logical white/black through the
+        // active GDevice ColorTable. Applications can repurpose 0xFF away
+        // from black while still expecting mono source bits to scan out black.
         if port_pixel_size == 1 && pixel_size == 8 {
+            let (white_index, black_index) = Self::logical_mono_pixel_indexes(bus);
             // Games may set portRect MUCH larger than the actual BitMap
             // bounds (e.g. StuntCopter: portRect=(0,0..567,791) but
             // BitMap=(0,0..261,426)). Clamp source reads to the BitMap
@@ -511,7 +588,7 @@ impl super::TrapDispatcher {
                     let src_bit_x = src_x_offset + col;
                     let src_byte = bus.read_byte(src_row_addr + src_bit_x / 8);
                     let bit = (src_byte >> (7 - (src_bit_x & 7))) & 1;
-                    let dst_idx = if bit == 0 { 0u8 } else { 0xFFu8 };
+                    let dst_idx = if bit == 0 { white_index } else { black_index };
                     bus.write_byte(dst_row_addr + col, dst_idx);
                 }
             }
@@ -1084,6 +1161,45 @@ impl super::TrapDispatcher {
         );
     }
 
+    /// Erase only the frame/shadow area around content, leaving the content
+    /// pixels untouched. WDEFs erase their structure region before drawing
+    /// borders, but in the HLE framebuffer the content area may already hold
+    /// app-rendered pixels that should not be replaced with white.
+    fn erase_structure_frame_around_content(
+        &self,
+        bus: &mut MacMemoryBus,
+        structure: (i16, i16, i16, i16),
+        content: (i16, i16, i16, i16),
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (st, sl, sb, sr) = structure;
+        let (ct, cl, cb, cr) = content;
+        let mut erase = |top: i16, left: i16, bottom: i16, right: i16| {
+            if bottom <= top || right <= left {
+                return;
+            }
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                false,
+            );
+        };
+
+        erase(st, sl, ct.min(sb), sr);
+        erase(cb.max(st), sl, sb, sr);
+        erase(ct.max(st), sl, cb.min(sb), cl.min(sr));
+        erase(ct.max(st), cr.max(sl), cb.min(sb), sr);
+    }
+
     /// Draw the window frame/border for a given procID.
     /// Called when a visible window is created to render its frame to the screen.
     /// This implements the standard WDEF rendering for each window type:
@@ -1198,7 +1314,11 @@ impl super::TrapDispatcher {
                 let struc_left = wind_left - 8;
                 let struc_bottom = wind_bottom + 3;
                 let struc_right = wind_right + 8;
-                self.erase_structure_region(bus, struc_top, struc_left, struc_bottom, struc_right);
+                self.erase_structure_frame_around_content(
+                    bus,
+                    (struc_top, struc_left, struc_bottom, struc_right),
+                    (wind_top, wind_left, wind_bottom, wind_right),
+                );
                 // Outer 1px border
                 self.draw_rect_border(bus, struc_top, struc_left, struc_bottom, struc_right);
                 // Inner 2px border (content-5 top/left/right, content+3 bottom)
@@ -1212,12 +1332,10 @@ impl super::TrapDispatcher {
             }
             3 => {
                 // altDBoxProc: single border + 2px drop shadow
-                self.erase_structure_region(
+                self.erase_structure_frame_around_content(
                     bus,
-                    wind_top - 1,
-                    wind_left - 1,
-                    wind_bottom + 3,
-                    wind_right + 3,
+                    (wind_top - 1, wind_left - 1, wind_bottom + 3, wind_right + 3),
+                    (wind_top, wind_left, wind_bottom, wind_right),
                 );
                 self.draw_rect_border(
                     bus,
@@ -1244,7 +1362,11 @@ impl super::TrapDispatcher {
                 let struc_left = wind_left - 8;
                 let struc_bottom = wind_bottom + 8;
                 let struc_right = wind_right + 8;
-                self.erase_structure_region(bus, struc_top, struc_left, struc_bottom, struc_right);
+                self.erase_structure_frame_around_content(
+                    bus,
+                    (struc_top, struc_left, struc_bottom, struc_right),
+                    (wind_top, wind_left, wind_bottom, wind_right),
+                );
                 // Outer 1px border
                 self.draw_rect_border(bus, struc_top, struc_left, struc_bottom, struc_right);
                 // Inner 2px border around content area (±5)
@@ -1591,6 +1713,33 @@ mod redraw_chrome_tests {
     const PORT_PTR: u32 = 0x181000;
     const VIS_RGN: u32 = 0x182000;
     const CLIP_RGN: u32 = 0x182200;
+
+    fn install_twilight_style_black_index(
+        disp: &mut TrapDispatcher,
+        bus: &mut crate::memory::MacMemoryBus,
+    ) {
+        let gdevice_handle = disp.ensure_main_gdevice(bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let gdevice = bus.read_long(gdevice_handle);
+        let pixmap_handle = bus.read_long(gdevice + 22);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+
+        let black_entry = ctab + 8 + 8;
+        bus.write_word(black_entry, 1);
+        bus.write_word(black_entry + 2, 0);
+        bus.write_word(black_entry + 4, 0);
+        bus.write_word(black_entry + 6, 0);
+
+        let repurposed_entry = ctab + 8 + 255 * 8;
+        bus.write_word(repurposed_entry, 255);
+        bus.write_word(repurposed_entry + 2, 0xFFFF);
+        bus.write_word(repurposed_entry + 4, 0xFFFF);
+        bus.write_word(repurposed_entry + 6, 0xCCCC);
+    }
 
     /// When the menu bar is visible (MBarHeight > 0), the per-frame visRgn
     /// auto-expansion in `redraw_chrome` MUST NOT fire for a documentProc
@@ -1998,6 +2147,36 @@ mod redraw_chrome_tests {
         );
     }
 
+    #[test]
+    fn fb_fill_rect_uses_active_ctab_darkest_entry_for_black() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(100 * 100);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+        bus.write_long(0x0824, screen_base);
+        install_twilight_style_black_index(&mut disp, &mut bus);
+
+        TrapDispatcher::fb_fill_rect(
+            &mut bus,
+            screen_base,
+            100,
+            8,
+            100,
+            100,
+            10,
+            10,
+            20,
+            20,
+            true,
+        );
+
+        assert_eq!(
+            bus.read_byte(screen_base + 10 * 100 + 10),
+            1,
+            "logical black must follow the active ColorTable when index 255 is not black"
+        );
+    }
+
     /// When a front window's port is 1bpp and the screen is 8bpp,
     /// `blit_window_to_screen` MUST do per-pixel bit extraction (each src
     /// bit → 0 or 0xFF). Falling through to the same-depth `block_move`
@@ -2059,6 +2238,50 @@ mod redraw_chrome_tests {
             bus.read_byte(row30_x97),
             0x00,
             "1bpp src bit=0 must map to 8bpp screen idx 0x00 (blit MUST fire)"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blit_1bpp_to_8bpp_uses_active_ctab_black_entry() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+        install_twilight_style_black_index(&mut disp, &mut bus);
+
+        let offscreen_base = bus.alloc(64 * 200);
+        bus.write_long(PORT_PTR + 2, offscreen_base);
+        bus.write_word(PORT_PTR + 6, 64);
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, 0);
+        bus.write_word(PORT_PTR + 12, 200);
+        bus.write_word(PORT_PTR + 14, 512);
+
+        bus.write_byte(offscreen_base + 30 * 64 + 12, 0b10000000);
+
+        let row30_x96 = screen_base + 30 * 800 + 96;
+        let row30_x97 = screen_base + 30 * 800 + 97;
+        bus.write_byte(row30_x96, 0xAB);
+        bus.write_byte(row30_x97, 0xAB);
+
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 200, 400);
+        disp.window_proc_id = 1;
+        disp.fullscreen_locked = false;
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(row30_x96),
+            1,
+            "1bpp src bit=1 must use the active ColorTable's black index"
+        );
+        assert_eq!(
+            bus.read_byte(row30_x97),
+            0,
+            "1bpp src bit=0 must still use the active ColorTable's white index"
         );
     }
 }

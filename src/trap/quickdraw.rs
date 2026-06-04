@@ -70,6 +70,7 @@ static PICT_SEED_CLUT_DISABLED: OnceLock<bool> = OnceLock::new();
 static TRACE_QD_COLORS: OnceLock<bool> = OnceLock::new();
 static TRACE_TITLE_DIAG: OnceLock<bool> = OnceLock::new();
 static TRACE_GDEVICE_TRAPS: OnceLock<bool> = OnceLock::new();
+static TRACE_FONT_TRAPS: OnceLock<bool> = OnceLock::new();
 
 fn trace_menu_redraw_enabled() -> bool {
     *TRACE_MENU_REDRAW.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_REDRAWS").is_some())
@@ -154,6 +155,10 @@ fn trace_gdevice_traps_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_GDEVICE_TRAPS").is_some())
 }
 
+fn trace_font_traps_enabled() -> bool {
+    *TRACE_FONT_TRAPS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_FONT_TRAPS").is_some())
+}
+
 // Hot-path tracer helpers (CopyBits/DrawPicture/EraseRect/CTab seed fire
 // every frame or every PICT).
 static TRACE_ERASERECT: OnceLock<bool> = OnceLock::new();
@@ -161,6 +166,7 @@ static TRACE_OFFSCREEN_002EAD50: OnceLock<bool> = OnceLock::new();
 static TRACE_COPYBITS_ALL: OnceLock<bool> = OnceLock::new();
 static TRACE_COPYBITS: OnceLock<bool> = OnceLock::new();
 static TRACE_COPYBITS_HUD_PROBE: OnceLock<Option<String>> = OnceLock::new();
+static TRACE_COPYBITS_HUD_PROBE_POINTS: OnceLock<Vec<(i16, i16)>> = OnceLock::new();
 static TRACE_DRAWPICTURE: OnceLock<bool> = OnceLock::new();
 static TRACE_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_FADE_BRANCH: OnceLock<bool> = OnceLock::new();
@@ -190,6 +196,26 @@ fn trace_copybits_hud_probe() -> Option<&'static str> {
                 .and_then(|os| os.into_string().ok())
         })
         .as_deref()
+}
+
+fn trace_copybits_hud_probe_points() -> &'static [(i16, i16)] {
+    TRACE_COPYBITS_HUD_PROBE_POINTS
+        .get_or_init(|| {
+            let raw = trace_copybits_hud_probe().unwrap_or_default();
+            let parsed: Vec<(i16, i16)> = raw
+                .split(';')
+                .filter_map(|part| {
+                    let (x, y) = part.split_once(',')?;
+                    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+                })
+                .collect();
+            if parsed.is_empty() {
+                vec![(720, 100), (720, 185), (720, 320), (720, 500)]
+            } else {
+                parsed
+            }
+        })
+        .as_slice()
 }
 
 fn trace_drawpicture_enabled() -> bool {
@@ -297,6 +323,40 @@ fn encode_text_face_style(face: i16) -> u16 {
 }
 
 impl super::TrapDispatcher {
+    fn loaded_font_id_for_name(&self, name: &str) -> Option<i16> {
+        let needle = name.trim();
+        if needle.is_empty() {
+            return None;
+        }
+        let resources = self.resources.as_ref()?;
+        for refnum in self.resource_search_order() {
+            let Some(file) = resources.files.get(&refnum) else {
+                continue;
+            };
+            for ((res_type, res_name), (res_id, _)) in &file.named {
+                if res_type == b"FOND" && res_name.trim().eq_ignore_ascii_case(needle) {
+                    return Some(*res_id);
+                }
+            }
+        }
+        None
+    }
+
+    fn loaded_font_name_for_id(&self, font_id: i16) -> Option<&str> {
+        let resources = self.resources.as_ref()?;
+        for refnum in self.resource_search_order() {
+            let Some(file) = resources.files.get(&refnum) else {
+                continue;
+            };
+            for ((res_type, res_name), (res_id, _)) in &file.named {
+                if res_type == b"FOND" && *res_id == font_id {
+                    return Some(res_name.as_str());
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn dispatch_quickdraw<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -3275,6 +3335,7 @@ impl super::TrapDispatcher {
                 let src_clut = src_clut.as_ref();
                 let dst_clut = dst_clut.as_ref();
                 let palette_translation = palette_translation.as_ref();
+                let (copy_fg_rgb, copy_bg_rgb) = self.copy_bits_port_draw_colors(bus, port);
 
                 // Identity-blit fast path: when nothing in the inner loop
                 // transforms the pixel, replace per-pixel read+write with
@@ -3364,10 +3425,14 @@ impl super::TrapDispatcher {
                 // disambiguate "offscreen bitmap already holds the wrong
                 // index" vs "CopyBits translated a correct src to the wrong
                 // dst".
-                let copybits_hud_probe = trace_copybits_hud_probe().is_some()
+                let copybits_hud_probe_points = if trace_copybits_hud_probe().is_some()
                     && src_info.pixel_size == 8
                     && dst_info.pixel_size == 8
-                    && dst_info.base == self.screen_mode.0;
+                {
+                    Some(trace_copybits_hud_probe_points())
+                } else {
+                    None
+                };
                 if log_copybits {
                     // PC is the post-trap address; subtract 2 to get
                     // the trap-instruction address that the FB-WRITE-
@@ -3413,21 +3478,18 @@ impl super::TrapDispatcher {
                     );
                 }
                 let fg_index = dst_clut.as_ref().map(|clut| {
-                    self.palette_index_for_rgb(
-                        bus,
-                        dst_ctab_handle,
-                        clut,
-                        [self.fg_color.0, self.fg_color.1, self.fg_color.2],
-                    )
+                    self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_fg_rgb)
                 });
                 let bg_index = dst_clut.as_ref().map(|clut| {
-                    self.palette_index_for_rgb(
-                        bus,
-                        dst_ctab_handle,
-                        clut,
-                        [self.bg_color.0, self.bg_color.1, self.bg_color.2],
-                    )
+                    self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_bg_rgb)
                 });
+                let transparent_src_index = if mode_base == 36 {
+                    src_clut.map(|clut| {
+                        self.palette_index_for_rgb(bus, src_info.ctab_handle, clut, copy_bg_rgb)
+                    })
+                } else {
+                    None
+                };
                 // CopyBits must preserve source pixels for overlapping blits.
                 // Snapshot the touched source rows when src and dst share storage
                 // so later writes don't affect subsequent reads.
@@ -3575,9 +3637,34 @@ impl super::TrapDispatcher {
                                 let src_pixel = read_src_byte(bus, src_addr);
                                 if mode_base == 36 {
                                     let src_rgb = src_clut.unwrap()[src_pixel as usize];
-                                    if src_rgb
-                                        == [self.bg_color.0, self.bg_color.1, self.bg_color.2]
-                                    {
+                                    if transparent_src_index == Some(src_pixel) {
+                                        if let Some(points) = copybits_hud_probe_points {
+                                            if points.iter().any(|&(probe_x, probe_y)| {
+                                                dx == probe_x && dy == probe_y
+                                            }) {
+                                                eprintln!(
+                                                    "[COPYBITS-HUD] tick={} dx={} dy={} mode={} src_idx={} src_rgb=({:04X},{:04X},{:04X}) transparent=true bg_rgb=({:04X},{:04X},{:04X}) transparent_src_idx={:?} srcBase=${:08X} dstBase=${:08X} srcCTab=${:08X} dstCTab=${:08X} srcSeed={:?} dstSeed={:?}",
+                                                    self.tick_count,
+                                                    dx,
+                                                    dy,
+                                                    mode_base,
+                                                    src_pixel,
+                                                    src_rgb[0],
+                                                    src_rgb[1],
+                                                    src_rgb[2],
+                                                    copy_bg_rgb[0],
+                                                    copy_bg_rgb[1],
+                                                    copy_bg_rgb[2],
+                                                    transparent_src_index,
+                                                    src_info.base,
+                                                    dst_info.base,
+                                                    src_info.ctab_handle,
+                                                    dst_ctab_handle,
+                                                    src_ctab_seed,
+                                                    dst_ctab_seed,
+                                                );
+                                            }
+                                        }
                                         continue;
                                     }
                                 }
@@ -3592,8 +3679,8 @@ impl super::TrapDispatcher {
                                             let src_rgb = src_clut[src_pixel as usize];
                                             let colorized = Self::colorize_src_copy_rgb(
                                                 src_rgb,
-                                                [self.bg_color.0, self.bg_color.1, self.bg_color.2],
-                                                [self.fg_color.0, self.fg_color.1, self.fg_color.2],
+                                                copy_bg_rgb,
+                                                copy_fg_rgb,
                                             );
                                             Self::nearest_palette_index(dst_clut, colorized)
                                         } else {
@@ -3606,37 +3693,47 @@ impl super::TrapDispatcher {
                                         .map(|translation| translation[src_pixel as usize])
                                         .unwrap_or(src_pixel),
                                 };
-                                if copybits_hud_probe
-                                    && dx == 720
-                                    && matches!(dy, 100 | 185 | 320 | 500)
-                                {
-                                    let src_rgb = src_clut
-                                        .map(|c| c[src_pixel as usize])
-                                        .unwrap_or([0, 0, 0]);
-                                    let dst_rgb = dst_clut
-                                        .map(|c| c[dst_pixel as usize])
-                                        .unwrap_or([0, 0, 0]);
-                                    eprintln!(
-                                        "[COPYBITS-HUD] tick={} dx={} dy={} mode={} src_idx={} src_rgb=({:04X},{:04X},{:04X}) dst_idx={} dst_rgb=({:04X},{:04X},{:04X}) translate={} srcBase=${:08X} srcCTab=${:08X} dstCTab=${:08X} srcSeed={:?} dstSeed={:?}",
-                                        self.tick_count,
-                                        dx,
-                                        dy,
-                                        mode_base,
-                                        src_pixel,
-                                        src_rgb[0],
-                                        src_rgb[1],
-                                        src_rgb[2],
-                                        dst_pixel,
-                                        dst_rgb[0],
-                                        dst_rgb[1],
-                                        dst_rgb[2],
-                                        palette_translation.is_some(),
-                                        src_info.base,
-                                        src_info.ctab_handle,
-                                        dst_ctab_handle,
-                                        src_ctab_seed,
-                                        dst_ctab_seed,
-                                    );
+                                if let Some(points) = copybits_hud_probe_points {
+                                    if !points
+                                        .iter()
+                                        .any(|&(probe_x, probe_y)| dx == probe_x && dy == probe_y)
+                                    {
+                                        bus.write_byte(dst_addr, dst_pixel);
+                                        continue;
+                                    }
+                                    {
+                                        let src_rgb = src_clut
+                                            .map(|c| c[src_pixel as usize])
+                                            .unwrap_or([0, 0, 0]);
+                                        let dst_rgb = dst_clut
+                                            .map(|c| c[dst_pixel as usize])
+                                            .unwrap_or([0, 0, 0]);
+                                        eprintln!(
+                                            "[COPYBITS-HUD] tick={} dx={} dy={} mode={} src_idx={} src_rgb=({:04X},{:04X},{:04X}) dst_idx={} dst_rgb=({:04X},{:04X},{:04X}) translate={} bg_rgb=({:04X},{:04X},{:04X}) srcBase=${:08X} dstBase=${:08X} srcCTab=${:08X} dstCTab=${:08X} srcSeed={:?} dstSeed={:?}",
+                                            self.tick_count,
+                                            dx,
+                                            dy,
+                                            mode_base,
+                                            src_pixel,
+                                            src_rgb[0],
+                                            src_rgb[1],
+                                            src_rgb[2],
+                                            dst_pixel,
+                                            dst_rgb[0],
+                                            dst_rgb[1],
+                                            dst_rgb[2],
+                                            palette_translation.is_some(),
+                                            copy_bg_rgb[0],
+                                            copy_bg_rgb[1],
+                                            copy_bg_rgb[2],
+                                            src_info.base,
+                                            dst_info.base,
+                                            src_info.ctab_handle,
+                                            dst_ctab_handle,
+                                            src_ctab_seed,
+                                            dst_ctab_seed,
+                                        );
+                                    }
                                 }
                                 bus.write_byte(dst_addr, dst_pixel);
                             }
@@ -4699,6 +4796,12 @@ impl super::TrapDispatcher {
                 let src_index = bus.read_word(sp + 4);
                 let src_ctab = bus.read_long(sp + 6);
                 let window = bus.read_long(sp + 10);
+                if trace_palette_enabled() {
+                    eprintln!(
+                        "[PALETTE] AnimatePalette window=${:08X} srcCTab=${:08X} srcIndex={} dstEntry={} dstLength={}",
+                        window, src_ctab, src_index, dst_entry, dst_length
+                    );
+                }
                 // Guard the signed Pascal INTEGER span before the unsigned loop
                 // logic can treat a negative value as a huge copy count.
                 if (dst_length as i16) < 0 || (dst_entry as i16) < 0 || (src_index as i16) < 0 {
@@ -4883,6 +4986,12 @@ impl super::TrapDispatcher {
                 let src_usage = bus.read_word(sp + 2) as i16;
                 let palette = bus.read_long(sp + 4);
                 let src_ctab = bus.read_long(sp + 8);
+                if trace_palette_enabled() {
+                    eprintln!(
+                        "[PALETTE] CTab2Palette srcCTab=${:08X} dstPalette=${:08X} usage={} tolerance={}",
+                        src_ctab, palette, src_usage, src_tolerance
+                    );
+                }
                 self.copy_ctab_to_palette(bus, src_ctab, palette, src_usage, src_tolerance);
                 cpu.write_reg(Register::A7, sp + 12);
                 Ok(())
@@ -4897,6 +5006,12 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_ctab = bus.read_long(sp);
                 let palette = bus.read_long(sp + 4);
+                if trace_palette_enabled() {
+                    eprintln!(
+                        "[PALETTE] Palette2CTab srcPalette=${:08X} dstCTab=${:08X}",
+                        palette, dst_ctab
+                    );
+                }
                 self.copy_palette_to_ctab(bus, palette, dst_ctab, "Palette2CTab");
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
@@ -6393,8 +6508,23 @@ impl super::TrapDispatcher {
                             bus.write_long(gworld_ptr_ptr, port);
                         }
                         if trace_dialog_gworld_enabled() {
+                            let ctab_ptr = if ctab_handle != 0 {
+                                bus.read_long(ctab_handle)
+                            } else {
+                                0
+                            };
+                            let ctab_seed = if ctab_ptr != 0 {
+                                bus.read_long(ctab_ptr)
+                            } else {
+                                0
+                            };
+                            let ctab_entries = if ctab_ptr != 0 {
+                                bus.read_word(ctab_ptr + 6).saturating_add(1)
+                            } else {
+                                0
+                            };
                             eprintln!(
-                                "[DIALOG-GWORLD] NewGWorld port=${:08X} pixmap=${:08X} base=${:08X} bounds=({},{},{},{}) depth={} rowBytes={} flags=${:08X} gdh=${:08X}",
+                                "[DIALOG-GWORLD] NewGWorld port=${:08X} pixmap=${:08X} base=${:08X} bounds=({},{},{},{}) depth={} rowBytes={} flags=${:08X} ctabParam=${:08X} ctab=${:08X} ctabSeed=${:08X} entries={} gdh=${:08X}",
                                 port,
                                 pixmap,
                                 pixel_buf,
@@ -6405,6 +6535,10 @@ impl super::TrapDispatcher {
                                 depth,
                                 row_bytes,
                                 flags,
+                                ctab_param,
+                                ctab_handle,
+                                ctab_seed,
+                                ctab_entries,
                                 associated_gdevice,
                             );
                         }
@@ -7502,6 +7636,22 @@ impl super::TrapDispatcher {
                     // wrong after the palette reverts to standard system colors.
                     // Inside Macintosh: Imaging With QuickDraw 1994, p. 7-14
                     let draw_port_clut = recent_resource_ctable_clut.as_ref().unwrap_or(&port_clut);
+                    let is_screen_picture_target =
+                        port_base == self.screen_mode.0 && port_rb == self.screen_mode.1;
+                    if !is_screen_picture_target {
+                        if let (Some(fetch), Some(fetch_clut)) = (
+                            recent_resource_ctable_fetch.as_ref(),
+                            recent_resource_ctable_clut.as_ref(),
+                        ) {
+                            self.apply_fetched_ctable_to_offscreen_drawpicture_port(
+                                bus,
+                                port,
+                                port_ctab_handle,
+                                fetch,
+                                fetch_clut,
+                            );
+                        }
+                    }
 
                     let device_ct_seed =
                         Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus)).unwrap_or(0);
@@ -7533,8 +7683,6 @@ impl super::TrapDispatcher {
                             pic_handle,
                         );
                     }
-                    let is_screen_picture_target =
-                        port_base == self.screen_mode.0 && port_rb == self.screen_mode.1;
                     if ok && port_ps == 8 && is_screen_picture_target {
                         if let (Some(fetch), Some(fetch_clut)) = (
                             recent_resource_ctable_fetch.as_ref(),
@@ -8656,7 +8804,9 @@ impl super::TrapDispatcher {
                 let font_num = bus.read_word(sp + 4) as i16;
                 cpu.write_reg(Register::A7, sp + 6);
                 if name_ptr != 0 {
-                    let name = font_name_for_id(font_num).unwrap_or("");
+                    let name = font_name_for_id(font_num)
+                        .or_else(|| self.loaded_font_name_for_id(font_num))
+                        .unwrap_or("");
                     // Str255 length byte is clamped to 255; all recognized
                     // font names are well under that so the truncate is
                     // purely defensive.
@@ -8695,6 +8845,7 @@ impl super::TrapDispatcher {
                 let name_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 if num_ptr != 0 {
+                    let mut requested_name: Option<String> = None;
                     let font_id = if name_ptr != 0 {
                         // Read Pascal Str255: length byte + chars.
                         let len = bus.read_byte(name_ptr) as usize;
@@ -8703,12 +8854,24 @@ impl super::TrapDispatcher {
                             name_bytes.push(bus.read_byte(name_ptr + 1 + i as u32));
                         }
                         match std::str::from_utf8(&name_bytes) {
-                            Ok(name) => font_id_for_name(name).unwrap_or(0),
+                            Ok(name) => {
+                                requested_name = Some(name.to_string());
+                                font_id_for_name(name)
+                                    .or_else(|| self.loaded_font_id_for_name(name))
+                                    .unwrap_or(0)
+                            }
                             Err(_) => 0,
                         }
                     } else {
                         0
                     };
+                    if trace_font_traps_enabled() {
+                        eprintln!(
+                            "[TRAP] GetFNum({:?}) -> {}",
+                            requested_name.as_deref().unwrap_or("<null>"),
+                            font_id
+                        );
+                    }
                     bus.write_word(num_ptr, font_id as u16);
                 }
                 Ok(())
@@ -11909,6 +12072,12 @@ impl super::TrapDispatcher {
                 let src_entry = bus.read_word(sp + 4) as i16;
                 let dst_palette = bus.read_long(sp + 6);
                 let src_palette = bus.read_long(sp + 10);
+                if trace_palette_enabled() {
+                    eprintln!(
+                        "[PALETTE] CopyPalette srcPalette=${:08X} dstPalette=${:08X} srcEntry={} dstEntry={} dstLength={}",
+                        src_palette, dst_palette, src_entry, dst_entry, dst_length
+                    );
+                }
                 cpu.write_reg(Register::A7, sp + 14);
 
                 if src_palette == 0
@@ -14941,7 +15110,11 @@ impl super::TrapDispatcher {
         clut
     }
 
-    fn read_ctab_handle_clut(&self, bus: &MacMemoryBus, ctab_handle: u32) -> [[u16; 3]; 256] {
+    pub(super) fn read_ctab_handle_clut(
+        &self,
+        bus: &MacMemoryBus,
+        ctab_handle: u32,
+    ) -> [[u16; 3]; 256] {
         if ctab_handle == 0 {
             return self.color_manager_clut;
         }
@@ -15160,8 +15333,8 @@ impl super::TrapDispatcher {
     fn take_recent_drawpicture_resource_ctable_fetch(
         &mut self,
         port: u32,
-        port_base: u32,
-        port_rb: u32,
+        _port_base: u32,
+        _port_rb: u32,
         port_ps: u16,
     ) -> Option<RecentColorTableFetch> {
         let recent = self.recent_resource_ctable_fetch?;
@@ -15170,14 +15343,60 @@ impl super::TrapDispatcher {
             self.recent_resource_ctable_fetch = None;
             return None;
         }
-        let eligible = port_ps == 8
-            && port_base == self.screen_mode.0
-            && port_rb == self.screen_mode.1
-            && port == recent.port;
+        let eligible = port_ps == 8 && port == recent.port;
         if eligible {
             return self.recent_resource_ctable_fetch.take();
         }
         None
+    }
+
+    fn apply_fetched_ctable_to_offscreen_drawpicture_port(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        port: u32,
+        port_ctab_handle: u32,
+        fetch: &RecentColorTableFetch,
+        clut: &[[u16; 3]; 256],
+    ) {
+        if port_ctab_handle != 0 {
+            let ctab_ptr = bus.read_long(port_ctab_handle);
+            let ct_flags = if ctab_ptr != 0 {
+                bus.read_word(ctab_ptr + 4)
+            } else {
+                0x8000
+            };
+            let _ =
+                self.overwrite_color_table_handle_with_clut(bus, port_ctab_handle, clut, ct_flags);
+        }
+
+        let entries = Self::color_table_entry_count(bus, fetch.ctab_handle);
+        let current_screen_is_application_palette =
+            !Self::uses_canonical_system_8bpp_clut(&self.color_manager_clut)
+                && !Self::uses_scaled_canonical_system_8bpp_clut(&self.color_manager_clut);
+        if entries < 16 || !current_screen_is_application_palette {
+            return;
+        }
+
+        self.install_application_clut(bus, *clut);
+        self.seeded_picture_palette = *clut;
+        self.seeded_picture_palette_until_tick =
+            self.seeded_picture_palette_until_tick_for_seed(64, true);
+        if trace_palette_enabled() {
+            eprintln!(
+                "[PALETTE] PublishFetchedCTableForOffscreenDrawPicture tick={} port=${:08X} ct_id={} entries={} ctab=${:08X} device[8]=({:04X},{:04X},{:04X}) device[9]=({:04X},{:04X},{:04X})",
+                self.tick_count,
+                port,
+                fetch.ct_id,
+                entries,
+                port_ctab_handle,
+                self.device_clut[8][0],
+                self.device_clut[8][1],
+                self.device_clut[8][2],
+                self.device_clut[9][0],
+                self.device_clut[9][1],
+                self.device_clut[9][2],
+            );
+        }
     }
 
     fn seed_screen_palette_from_picture_clut(
@@ -16317,6 +16536,37 @@ impl super::TrapDispatcher {
         true
     }
 
+    fn copy_bits_port_draw_colors(&self, bus: &MacMemoryBus, port: u32) -> ([u16; 3], [u16; 3]) {
+        if port != 0 {
+            let port_version = bus.read_word(port + 6);
+            if (port_version & 0xC000) == 0xC000 {
+                return (
+                    [
+                        bus.read_word(port + 36),
+                        bus.read_word(port + 38),
+                        bus.read_word(port + 40),
+                    ],
+                    [
+                        bus.read_word(port + 42),
+                        bus.read_word(port + 44),
+                        bus.read_word(port + 46),
+                    ],
+                );
+            }
+            if let Some(state) = self.port_draw_states.get(&port) {
+                return (
+                    [state.fg_color.0, state.fg_color.1, state.fg_color.2],
+                    [state.bg_color.0, state.bg_color.1, state.bg_color.2],
+                );
+            }
+        }
+
+        (
+            [self.fg_color.0, self.fg_color.1, self.fg_color.2],
+            [self.bg_color.0, self.bg_color.1, self.bg_color.2],
+        )
+    }
+
     /// Apply the side effects of `SetDepth(depth)` from the Graphics
     /// Devices Manager. Updates ScrnBase, screenBits, the QD globals
     /// copy of screenBits, and `self.screen_mode`, then clears the
@@ -16760,6 +17010,7 @@ impl super::TrapDispatcher {
         let src_clut = src_clut.as_ref();
         let dst_clut = dst_clut.as_ref();
         let palette_translation = palette_translation.as_ref();
+        let (copy_fg_rgb, copy_bg_rgb) = self.copy_bits_port_draw_colors(bus, port);
         if trace_copybits_enabled()
             && (mask_rgn != 0
                 || src_info.pixel_size != dst_info.pixel_size
@@ -16786,22 +17037,19 @@ impl super::TrapDispatcher {
                 dst_ctab_seed,
             );
         }
-        let fg_index = dst_clut.as_ref().map(|clut| {
-            self.palette_index_for_rgb(
-                bus,
-                dst_ctab_handle,
-                clut,
-                [self.fg_color.0, self.fg_color.1, self.fg_color.2],
-            )
-        });
-        let bg_index = dst_clut.as_ref().map(|clut| {
-            self.palette_index_for_rgb(
-                bus,
-                dst_ctab_handle,
-                clut,
-                [self.bg_color.0, self.bg_color.1, self.bg_color.2],
-            )
-        });
+        let fg_index = dst_clut
+            .as_ref()
+            .map(|clut| self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_fg_rgb));
+        let bg_index = dst_clut
+            .as_ref()
+            .map(|clut| self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_bg_rgb));
+        let transparent_src_index = if mode_base == 36 {
+            src_clut.map(|clut| {
+                self.palette_index_for_rgb(bus, src_info.ctab_handle, clut, copy_bg_rgb)
+            })
+        } else {
+            None
+        };
         // no_scaling precompute, same pattern as the primary CopyBits path.
         // Skips mul/div in scale_coord when src/dst dimensions match.
         let src_w = i32::from(src_right) - i32::from(src_left);
@@ -16948,8 +17196,7 @@ impl super::TrapDispatcher {
                         let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
                         let src_pixel = read_src_byte(bus, src_addr);
                         if mode_base == 36 {
-                            let src_rgb = src_clut.unwrap()[src_pixel as usize];
-                            if src_rgb == [self.bg_color.0, self.bg_color.1, self.bg_color.2] {
+                            if transparent_src_index == Some(src_pixel) {
                                 continue;
                             }
                         }
@@ -16962,8 +17209,8 @@ impl super::TrapDispatcher {
                                     let src_rgb = src_clut[src_pixel as usize];
                                     let colorized = Self::colorize_src_copy_rgb(
                                         src_rgb,
-                                        [self.bg_color.0, self.bg_color.1, self.bg_color.2],
-                                        [self.fg_color.0, self.fg_color.1, self.fg_color.2],
+                                        copy_bg_rgb,
+                                        copy_fg_rgb,
                                     );
                                     Self::nearest_palette_index(dst_clut, colorized)
                                 } else {
@@ -18513,9 +18760,11 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::trap::dispatch::{LoadedResources, RecentColorTableFetch, ResourceFileMap};
     use crate::trap::quickdraw::CopyBitmapInfo;
     use crate::trap::types::{Rect, ShapeOp};
     use crate::trap::TrapDispatcher;
+    use std::collections::HashMap;
 
     /// Helper: write a rect (top, left, bottom, right) at addr.
     fn write_rect(
@@ -19801,6 +20050,70 @@ mod tests {
         d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
 
         assert_eq!(bus.read_byte(screen_base), 255);
+    }
+
+    #[test]
+    fn current_window_shape_drawing_uses_current_gdevice_ctab_not_stale_pixmap_ctab() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd_ptr = bus.read_long(gdh);
+        let gd_pixmap_handle = bus.read_long(gd_ptr + 22);
+        let gd_pixmap_ptr = bus.read_long(gd_pixmap_handle);
+        let gd_ctab_handle = bus.read_long(gd_pixmap_ptr + 42);
+        let gd_ctab_ptr = bus.read_long(gd_ctab_handle);
+
+        let gd_black = gd_ctab_ptr + 8 + 8;
+        bus.write_word(gd_black, 1);
+        bus.write_word(gd_black + 2, 0);
+        bus.write_word(gd_black + 4, 0);
+        bus.write_word(gd_black + 6, 0);
+        let gd_repurposed = gd_ctab_ptr + 8 + 255 * 8;
+        bus.write_word(gd_repurposed, 255);
+        bus.write_word(gd_repurposed + 2, 0xFFFF);
+        bus.write_word(gd_repurposed + 4, 0xFFFF);
+        bus.write_word(gd_repurposed + 6, 0xCCCC);
+
+        let mut stale_entries = TrapDispatcher::standard_mac_8bpp_clut();
+        stale_entries[1] = [0xFFFF, 0xFFFF, 0xCCCC];
+        stale_entries[255] = [0, 0, 0];
+        let stale_ctab = make_test_ctab_handle(&mut bus, &stale_entries, 0x1234, 0);
+
+        let window_base = bus.alloc(16 * 16);
+        let window_pixmap_handle = bus.alloc(4);
+        let window_pixmap_ptr = bus.alloc(50);
+        bus.write_long(window_pixmap_handle, window_pixmap_ptr);
+        write_pixmap_8(&mut bus, window_pixmap_ptr, window_base, 16, 16, stale_ctab);
+
+        let port = bus.alloc(96);
+        bus.write_long(port + 2, window_pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_word(port + 16, 0);
+        bus.write_word(port + 18, 0);
+        bus.write_word(port + 20, 16);
+        bus.write_word(port + 22, 16);
+        make_rgn(&mut bus, 0x340000, 0x340100, 0, 0, 16, 16);
+        make_rgn(&mut bus, 0x340200, 0x340300, 0, 0, 16, 16);
+        bus.write_long(port + 24, 0x340100);
+        bus.write_long(port + 28, 0x340300);
+
+        d.set_current_port_state(&mut bus, &mut cpu, port, Some(gdh));
+        d.fg_color = (0, 0, 0);
+        d.pn_mode = 0;
+        d.pn_pat = [0xFF; 8];
+
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: 1,
+            right: 1,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+
+        assert_eq!(
+            bus.read_byte(window_base),
+            1,
+            "current window drawing must use the current GDevice CTable when its PixMap table is stale"
+        );
     }
 
     #[test]
@@ -21097,6 +21410,34 @@ mod tests {
     }
 
     #[test]
+    fn getfontname_loaded_fond_returns_resource_name() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let mut file = ResourceFileMap::default();
+        file.named
+            .insert((*b"FOND", "twiwindy".to_string()), (700, 0x1234));
+        d.resources = Some(LoadedResources {
+            files: HashMap::from([(0, file)]),
+            names: HashMap::from([(0, "Application".to_string())]),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        let name_ptr = 0x300000u32;
+        bus.write_long(TEST_SP, name_ptr);
+        bus.write_word(TEST_SP + 4, 700u16);
+
+        let result = d.dispatch_quickdraw(true, 0x0FF, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+
+        let len = bus.read_byte(name_ptr) as usize;
+        let mut bytes = vec![0u8; len];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = bus.read_byte(name_ptr + 1 + i as u32);
+        }
+        assert_eq!(std::str::from_utf8(&bytes).unwrap(), "twiwindy");
+    }
+
+    #[test]
     fn getfontname_pops_six_bytes() {
         let (mut d, mut cpu, mut bus) = setup();
         bus.write_long(TEST_SP, 0);
@@ -21149,6 +21490,35 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(num_ptr), 0);
+    }
+
+    #[test]
+    fn getfnum_loaded_fond_returns_family_id() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let mut file = ResourceFileMap::default();
+        file.named
+            .insert((*b"FOND", "twiapple".to_string()), (701, 0x1234));
+        d.resources = Some(LoadedResources {
+            files: HashMap::from([(0, file)]),
+            names: HashMap::from([(0, "Application".to_string())]),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        let num_ptr = 0x300000u32;
+        let name_ptr = 0x300100u32;
+        let name = b"  TwiApple ";
+        bus.write_word(num_ptr, 0xFFFF);
+        bus.write_byte(name_ptr, name.len() as u8);
+        for (i, b) in name.iter().enumerate() {
+            bus.write_byte(name_ptr + 1 + i as u32, *b);
+        }
+        bus.write_long(TEST_SP, num_ptr);
+        bus.write_long(TEST_SP + 4, name_ptr);
+
+        let result = d.dispatch_quickdraw(true, 0x100, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(num_ptr) as i16, 701);
     }
 
     #[test]
@@ -24809,6 +25179,80 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_byte(dst_base), 7);
         assert_eq!(bus.read_byte(dst_base + 1), 42);
+    }
+
+    #[test]
+    fn test_copy_bits_transparent_uses_cgrafport_background_color() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let dst_pixmap_handle = 0x300280u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        let src_ctab_handle = 0x303000u32;
+        let dst_ctab_handle = 0x304000u32;
+        let src_rect = 0x305000u32;
+        let dst_rect = 0x305010u32;
+        let matte_src_rgb = (0x7FFF, 0x0000, 0xB332);
+        let matte_bg_rgb = (0x7F7F, 0x0000, 0xB3B3);
+        let opaque_rgb = (0x1111, 0xCCCC, 0x3333);
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[
+                (5, matte_src_rgb.0, matte_src_rgb.1, matte_src_rgb.2),
+                (9, opaque_rgb.0, opaque_rgb.1, opaque_rgb.2),
+            ],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[
+                (7, 0x0000, 0x0000, 0x0000),
+                (9, opaque_rgb.0, opaque_rgb.1, opaque_rgb.2),
+                (55, matte_src_rgb.0, matte_src_rgb.1, matte_src_rgb.2),
+            ],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 2, 1, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 2, 1, dst_ctab_handle);
+        bus.write_byte(src_base, 5);
+        bus.write_byte(src_base + 1, 9);
+        bus.write_byte(dst_base, 7);
+        bus.write_byte(dst_base + 1, 7);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        let port_ptr = bus.read_long(globals_ptr);
+        bus.write_long(dst_pixmap_handle, dst_pixmap);
+        bus.write_long(port_ptr + 2, dst_pixmap_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+        bus.write_word(port_ptr + 36, 0);
+        bus.write_word(port_ptr + 38, 0);
+        bus.write_word(port_ptr + 40, 0);
+        bus.write_word(port_ptr + 42, matte_bg_rgb.0);
+        bus.write_word(port_ptr + 44, matte_bg_rgb.1);
+        bus.write_word(port_ptr + 46, matte_bg_rgb.2);
+        d.bg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 36u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(dst_base),
+            7,
+            "transparent source pixel should preserve the destination"
+        );
+        assert_eq!(bus.read_byte(dst_base + 1), 9);
     }
 
     #[test]
@@ -30529,7 +30973,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recent_resource_ctable_fetch_ignored_for_offscreen_drawpicture() {
+    fn test_recent_resource_ctable_fetch_consumed_for_immediate_offscreen_drawpicture() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
         d.current_port = 0x00284CFC;
@@ -30548,8 +30992,100 @@ mod tests {
         let fetch =
             d.take_recent_drawpicture_resource_ctable_fetch(d.current_port, 0x00ABD000, 512, 8);
 
+        assert_eq!(
+            fetch
+                .expect("immediate same-port offscreen DrawPicture should consume the fetched CLUT")
+                .ct_id,
+            1001
+        );
+        assert!(d.recent_resource_ctable_fetch.is_none());
+    }
+
+    #[test]
+    fn test_recent_resource_ctable_fetch_ignored_for_different_drawpicture_port() {
+        let (mut d, _cpu, mut bus) = setup();
+        d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
+        d.current_port = 0x00284CFC;
+        d.tick_count = 33;
+        d.trap_count = 400;
+
+        let ctab_ptr = bus.alloc(8 + 256 * 8);
+        bus.write_long(ctab_ptr, 1);
+        bus.write_word(ctab_ptr + 4, 0);
+        bus.write_word(ctab_ptr + 6, 255);
+        let ctab_handle = bus.alloc(4);
+        bus.write_long(ctab_handle, ctab_ptr);
+
+        d.remember_recent_resource_ctable_fetch(1001, ctab_handle);
+
+        let fetch = d.take_recent_drawpicture_resource_ctable_fetch(0x00284D00, 0x00ABD000, 512, 8);
+
         assert!(fetch.is_none());
         assert!(d.recent_resource_ctable_fetch.is_some());
+    }
+
+    #[test]
+    fn test_fetched_ctable_offscreen_drawpicture_publishes_application_palette() {
+        let (mut d, _cpu, mut bus) = setup();
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+
+        let mut active_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        active_clut[8] = [0xFFFF, 0xCCCC, 0x0000];
+        active_clut[9] = [0xB332, 0x0000, 0xFFFF];
+        active_clut[42] = [0x1111, 0x2222, 0x3333];
+        d.install_application_clut(&mut bus, active_clut);
+
+        let mut fetched_entries = [[0u16; 3]; 16];
+        fetched_entries[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        fetched_entries[8] = [0x3333, 0xFFFF, 0x3333];
+        fetched_entries[9] = [0x0000, 0x9999, 0x0000];
+        fetched_entries[15] = [0x0000, 0x0000, 0x0000];
+        let fetched_ctab = make_test_ctab_handle(&mut bus, &fetched_entries, 0x2222_2222, 0);
+        let fetched_clut = d.read_ctab_handle_clut(&bus, fetched_ctab);
+
+        let offscreen_ctab =
+            d.allocate_color_table_handle_with_clut(&mut bus, 8, &active_clut, 0x8000);
+        let pixmap = bus.alloc(50);
+        write_pixmap_8(&mut bus, pixmap, 0x0030_0000, 64, 64, offscreen_ctab);
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap);
+        let port = bus.alloc(170);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_long(port + 2, pixmap_handle);
+        let gdh = d.create_offscreen_gdevice(&mut bus, pixmap_handle, 0, 0, 64, 64);
+        d.gworld_devices.insert(port, gdh);
+        d.current_port = port;
+        d.current_gdevice = gdh;
+
+        let fetch = RecentColorTableFetch {
+            ct_id: 131,
+            ctab_handle: fetched_ctab,
+            port,
+            tick: d.tick_count,
+        };
+        d.apply_fetched_ctable_to_offscreen_drawpicture_port(
+            &mut bus,
+            port,
+            offscreen_ctab,
+            &fetch,
+            &fetched_clut,
+        );
+
+        assert_eq!(d.device_clut[8], [0x3333, 0xFFFF, 0x3333]);
+        assert_eq!(d.color_manager_clut[9], [0x0000, 0x9999, 0x0000]);
+
+        let main_ctab = TrapDispatcher::gdevice_ctab_handle(&bus, main_gdh);
+        let main_ctab_ptr = bus.read_long(main_ctab);
+        let main_entry8 = main_ctab_ptr + 8 + 8 * 8;
+        assert_eq!(bus.read_word(main_entry8 + 2), 0x3333);
+        assert_eq!(bus.read_word(main_entry8 + 4), 0xFFFF);
+        assert_eq!(bus.read_word(main_entry8 + 6), 0x3333);
+
+        let offscreen_ctab_ptr = bus.read_long(offscreen_ctab);
+        let offscreen_entry9 = offscreen_ctab_ptr + 8 + 9 * 8;
+        assert_eq!(bus.read_word(offscreen_entry9 + 2), 0x0000);
+        assert_eq!(bus.read_word(offscreen_entry9 + 4), 0x9999);
+        assert_eq!(bus.read_word(offscreen_entry9 + 6), 0x0000);
     }
 
     #[test]

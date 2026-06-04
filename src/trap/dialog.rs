@@ -1987,11 +1987,24 @@ impl super::TrapDispatcher {
         };
 
         let edit_field = bus.read_word(dialog_ptr + 164) as i16;
-        if edit_field < 0 {
+        let stored_edit_item = if edit_field >= 0 { edit_field + 1 } else { 0 };
+        let stored_is_valid = stored_edit_item > 0
+            && items
+                .get((stored_edit_item - 1) as usize)
+                .is_some_and(|item| (item.item_type & 0x7F) == 16 && (item.item_type & 0x80) == 0);
+        let edit_item = if stored_is_valid {
+            stored_edit_item
+        } else {
+            items
+                .iter()
+                .position(|item| (item.item_type & 0x7F) == 16 && (item.item_type & 0x80) == 0)
+                .map(|idx| (idx + 1) as i16)
+                .unwrap_or(0)
+        };
+        if edit_item <= 0 {
             return (String::new(), 0, default_item);
         }
 
-        let edit_item = edit_field + 1;
         let edit_text = Self::text_item_string_from_handle(
             bus,
             Self::dialog_item_handle(bus, dialog_ptr, edit_item),
@@ -2001,7 +2014,7 @@ impl super::TrapDispatcher {
         }
 
         let fallback = items
-            .get(edit_field as usize)
+            .get((edit_item - 1) as usize)
             .map(|item| item.text.clone())
             .unwrap_or_default();
         (fallback, edit_item, default_item)
@@ -3030,6 +3043,47 @@ impl super::TrapDispatcher {
         let rendered = self.save_dialog_pixels(bus, bounds);
         if let Some(tracking) = self.dialog_tracking.as_mut() {
             tracking.rendered_pixels = rendered;
+        }
+    }
+
+    pub(crate) fn finalize_dialog_draw_procs_if_idle(&mut self, bus: &mut MacMemoryBus) {
+        let Some(tracking) = self.dialog_tracking.as_ref() else {
+            return;
+        };
+        if tracking.draw_procs_done || !tracking.draw_proc_queue.is_empty() {
+            return;
+        }
+
+        let bounds = tracking.bounds;
+        let items = tracking.items.clone();
+        let default_item = tracking.default_item;
+        let edit_text = tracking.edit_text.clone();
+        let edit_item = tracking.edit_item;
+        let dialog_ptr = tracking.dialog_ptr;
+        let popup_draws = tracking.popup_draws.clone();
+        let game_managed = tracking.game_managed;
+
+        if !game_managed {
+            if self.front_window == dialog_ptr {
+                self.blit_window_to_screen(bus);
+            }
+            self.redraw_standard_dialog_items(
+                bus,
+                bounds,
+                &items,
+                default_item,
+                &edit_text,
+                edit_item,
+                dialog_ptr,
+            );
+        }
+        self.redraw_dialog_popup_controls(bus, &popup_draws);
+        let rendered = self.save_dialog_pixels(bus, bounds);
+
+        if let Some(tracking) = self.dialog_tracking.as_mut() {
+            tracking.rendered_pixels = rendered;
+            tracking.rendered_pixels_final = true;
+            tracking.draw_procs_done = true;
         }
     }
 
@@ -5164,6 +5218,9 @@ impl super::TrapDispatcher {
                         let dialog_ptr = tracking.dialog_ptr;
                         let popup_draws = tracking.popup_draws.clone();
                         if !tracking.game_managed {
+                            if self.front_window == dialog_ptr {
+                                self.blit_window_to_screen(bus);
+                            }
                             self.redraw_standard_dialog_items(
                                 bus,
                                 bounds,
@@ -5362,6 +5419,15 @@ impl super::TrapDispatcher {
                             // may have drawn narrow indicator boxes that would
                             // taint the snapshot.
                             6 => {
+                                let previous_rendered = self
+                                    .dialog_tracking
+                                    .as_ref()
+                                    .filter(|t| t.rendered_pixels_final)
+                                    .map(|t| t.rendered_pixels.clone())
+                                    .unwrap_or_default();
+                                if !previous_rendered.is_empty() {
+                                    self.restore_dialog_pixels(bus, bounds, &previous_rendered);
+                                }
                                 if let Some(ref t) = self.dialog_tracking {
                                     if !t.game_managed {
                                         self.redraw_standard_dialog_items(
@@ -5537,6 +5603,7 @@ impl super::TrapDispatcher {
                             3 => {
                                 let char_code = (e.message & 0xFF) as u8;
                                 let tracking = self.dialog_tracking.as_mut().unwrap();
+                                let mut refresh_after_key = false;
 
                                 match char_code {
                                     // Return or Enter: trigger default button
@@ -5610,6 +5677,7 @@ impl super::TrapDispatcher {
                                                 tracking.edit_text.pop();
                                             }
                                             Self::sync_tracking_active_edit_item(tracking);
+                                            refresh_after_key = true;
                                         }
                                     }
                                     // Printable ASCII
@@ -5622,9 +5690,13 @@ impl super::TrapDispatcher {
                                             }
                                             tracking.edit_text.push(char_code as char);
                                             Self::sync_tracking_active_edit_item(tracking);
+                                            refresh_after_key = true;
                                         }
                                     }
                                     _ => {}
+                                }
+                                if refresh_after_key {
+                                    self.refresh_dialog_tracking_snapshot(bus);
                                 }
                             }
                             _ => {}
@@ -5642,6 +5714,15 @@ impl super::TrapDispatcher {
                     // Find the most recently created dialog's items
                     let dialog_ptr = self.front_window;
                     if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
+                        if trace_dialog_filter_enabled() {
+                            eprintln!(
+                                "[DIALOG-FILTER] init dialog=${:08X} items={} filter_proc=${:08X} item_hit_ptr=${:08X}",
+                                dialog_ptr,
+                                items.len(),
+                                filter_proc,
+                                item_hit_ptr
+                            );
+                        }
                         // Re-read userItem proc pointers from guest memory.
                         // The game may have written them directly to the DITL
                         // handle data after GetNewDialog returned.
@@ -9571,6 +9652,38 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
     }
 
+    #[test]
+    fn dialog_edit_state_falls_back_to_first_valid_edit_text_item() {
+        let (_disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        bus.write_word(dialog_ptr + 164, 0); // stale/default editField points at item 1
+        bus.write_word(dialog_ptr + 168, 1); // default OK button
+        let items = vec![
+            DialogItem {
+                item_type: 4,
+                text: "OK".to_string(),
+                ..Default::default()
+            },
+            DialogItem {
+                item_type: 4,
+                text: "Cancel".to_string(),
+                ..Default::default()
+            },
+            DialogItem {
+                item_type: 16,
+                text: "answer".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let (text, edit_item, default_item) =
+            TrapDispatcher::dialog_edit_state(&bus, dialog_ptr, &items);
+
+        assert_eq!(text, "answer");
+        assert_eq!(edit_item, 3);
+        assert_eq!(default_item, 1);
+    }
+
     // ---- DialogDispatch ($AA68) ----
     // Macintosh Toolbox Essentials (1992), pp. 6-162 to 6-167.
 
@@ -13217,6 +13330,200 @@ mod tests {
                 .is_some_and(|tracking| tracking.rendered_pixels_final),
             "ModalDialog should re-snapshot after popup redraw"
         );
+    }
+
+    #[test]
+    fn modal_dialog_resnapshot_blits_dialog_port_after_user_item_draw_procs() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((32 * 32) as u32);
+        for i in 0..32u32 * 32 {
+            bus.write_byte(screen_base + i, 0xFF);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 32, 32, 32, 8);
+
+        let dialog_ptr = bus.alloc(64);
+        let offscreen_base = bus.alloc(20 * 20);
+        for i in 0..20u32 * 20 {
+            bus.write_byte(offscreen_base + i, 0x00);
+        }
+        let pixmap_handle = bus.alloc(4);
+        let pixmap_ptr = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap_ptr);
+        bus.write_long(pixmap_ptr, offscreen_base);
+        bus.write_word(pixmap_ptr + 4, 0x8000 | 20);
+        bus.write_word(pixmap_ptr + 32, 8);
+        bus.write_long(dialog_ptr + 2, pixmap_handle);
+        bus.write_word(dialog_ptr + 6, 0xC000);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 20);
+        bus.write_word(dialog_ptr + 22, 20);
+
+        bus.write_byte(offscreen_base + 7 * 20 + 9, 0x44);
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = (0, 0, 20, 20);
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 20, 20),
+            title: String::new(),
+            proc_id: 2,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+        });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let screen_pixel = screen_base + 7 * 32 + 9;
+        assert_eq!(
+            bus.read_byte(screen_pixel),
+            0x44,
+            "ModalDialog should composite dialog-port userItem pixels before snapshot"
+        );
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert!(tracking.rendered_pixels_final);
+        assert_eq!(tracking.rendered_pixels.len(), 30 * 30);
+        let snapshot_index = (7 + 5) * 30 + (9 + 5);
+        assert_eq!(tracking.rendered_pixels[snapshot_index], 0x44);
+    }
+
+    #[test]
+    fn modal_dialog_update_event_restores_existing_snapshot_before_resnapshot() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((32 * 32) as u32);
+        for i in 0..32u32 * 32 {
+            bus.write_byte(screen_base + i, 0x00);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 32, 32, 32, 8);
+
+        let dialog_ptr = bus.alloc(64);
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = (0, 0, 20, 20);
+
+        let mut rendered_pixels = vec![0x00; 30 * 30];
+        let snapshot_index = (7 + 5) * 30 + (9 + 5);
+        rendered_pixels[snapshot_index] = 0x44;
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 20, 20),
+            title: String::new(),
+            proc_id: 2,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+        });
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 6,
+                message: dialog_ptr,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let screen_pixel = screen_base + 7 * 32 + 9;
+        assert_eq!(
+            bus.read_byte(screen_pixel),
+            0x44,
+            "ModalDialog update events must preserve userItem-rendered dialog pixels"
+        );
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert_eq!(tracking.rendered_pixels[snapshot_index], 0x44);
+    }
+
+    #[test]
+    fn finalize_dialog_draw_procs_snapshots_completed_user_item_pixels() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((32 * 32) as u32);
+        for i in 0..32u32 * 32 {
+            bus.write_byte(screen_base + i, 0x00);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 32, 32, 32, 8);
+
+        let dialog_ptr = bus.alloc(64);
+        let screen_pixel = screen_base + 7 * 32 + 9;
+        bus.write_byte(screen_pixel, 0x44);
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = (0, 0, 20, 20);
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 20, 20),
+            title: String::new(),
+            proc_id: 2,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: false,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+        });
+
+        disp.finalize_dialog_draw_procs_if_idle(&mut bus);
+
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert!(tracking.draw_procs_done);
+        assert!(tracking.rendered_pixels_final);
+        let snapshot_index = (7 + 5) * 30 + (9 + 5);
+        assert_eq!(tracking.rendered_pixels[snapshot_index], 0x44);
     }
 
     #[test]

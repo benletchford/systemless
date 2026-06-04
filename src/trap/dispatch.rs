@@ -27,6 +27,7 @@ use std::sync::{Mutex, OnceLock};
 static TRACE_GUEST_PC_TRAPS: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_TRAPS: OnceLock<bool> = OnceLock::new();
 static TRACE_INPUT: OnceLock<bool> = OnceLock::new();
+static TRACE_DELIVERED_EVENTS: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
 static TRACE_RESFILE: OnceLock<bool> = OnceLock::new();
 static TRACE_QUICKTIME: OnceLock<bool> = OnceLock::new();
@@ -119,6 +120,11 @@ pub(crate) fn trace_dialog_traps_enabled() -> bool {
 
 pub(crate) fn trace_input_enabled() -> bool {
     *TRACE_INPUT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_INPUT").is_some())
+}
+
+pub(crate) fn trace_delivered_events_enabled() -> bool {
+    *TRACE_DELIVERED_EVENTS
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DELIVERED_EVENTS").is_some())
 }
 
 fn trace_sound_enabled() -> bool {
@@ -739,6 +745,11 @@ pub struct TrapDispatcher {
     /// allocation per call would leak a 68-byte block per frame.
     /// Inside Macintosh Volume I, I-474.
     pub(crate) system_cursor_cache: HashMap<i16, u32>,
+    /// Cache of synthetic System-file `'clut'` resource pointers for
+    /// standard indexed depths. Systemless does not mount the System
+    /// resource fork, but some installers call `GetResource('clut', depth)`
+    /// directly instead of `GetCTable`.
+    pub(crate) system_clut_cache: HashMap<i16, u32>,
     /// Cache of allocated tool-trap trampolines for GetTrapAddress.
     /// Each entry is a 2-byte allocation containing the auto-pop
     /// variant of the canonical tool-trap word. When the guest does
@@ -1758,6 +1769,7 @@ impl TrapDispatcher {
             fired_oapp_handler: false,
             system_str_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
+            system_clut_cache: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             vfs: HashMap::new(),
@@ -2480,7 +2492,9 @@ impl TrapDispatcher {
             }
         }
         if normalized.contains('/') {
-            return Self::find_case_insensitive_key(self.vfs.keys(), &normalized);
+            if let Some(found) = Self::find_case_insensitive_key(self.vfs.keys(), &normalized) {
+                return Some(found);
+            }
         }
         self.find_vfs_file(&normalized)
     }
@@ -2503,7 +2517,10 @@ impl TrapDispatcher {
             }
         }
         if normalized.contains('/') {
-            return Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &normalized);
+            if let Some(found) = Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &normalized)
+            {
+                return Some(found);
+            }
         }
         self.find_vfs_rsrc_file(&normalized)
     }
@@ -3159,6 +3176,39 @@ impl TrapDispatcher {
         Some(ptr)
     }
 
+    /// Allocate (and cache) a synthetic System-file `'clut'` resource for
+    /// the standard indexed color-table IDs. The resource body is a
+    /// ColorTable record, matching what `GetCTable(depth)` exposes through
+    /// the Color Manager in Systemless.
+    pub(crate) fn synthesize_system_clut(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_clut_cache.get(&res_id) {
+            return Some(ptr);
+        }
+        if !matches!(res_id, 1 | 2 | 4 | 8) {
+            return None;
+        }
+
+        let std_clut = Self::standard_mac_8bpp_clut();
+        let ptr = bus.alloc(8 + 256 * 8);
+        bus.write_long(ptr, res_id as u32); // ctSeed follows the standard depth ID.
+        bus.write_word(ptr + 4, 0); // ctFlags
+        bus.write_word(ptr + 6, 255); // ctSize
+        for index in 0u32..256 {
+            let entry = ptr + 8 + index * 8;
+            let [r, g, b] = std_clut[index as usize];
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, r);
+            bus.write_word(entry + 4, g);
+            bus.write_word(entry + 6, b);
+        }
+        self.system_clut_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
     /// Synthesize (and cache) a 68-byte CURS-shaped block for one of
     /// the standard system cursor IDs (1 iBeamCursor, 2 crossCursor,
     /// 3 plusCursor, 4 watchCursor per IM:I I-475..I-477). Returns
@@ -3402,7 +3452,7 @@ impl TrapDispatcher {
             // Dialog Manager IDs are useful when investigating
             // launch-time alerts whose message text we'd otherwise
             // have no visibility into.
-            for ttype in &[b"ALRT", b"DITL", b"DLOG"] {
+            for ttype in &[b"ALRT", b"DITL", b"DLOG", b"MENU"] {
                 let mut ids: Vec<i16> = file
                     .loaded
                     .keys()
@@ -3948,6 +3998,36 @@ mod tests {
             dropdown_rect: (0, 0, 0, 0),
             stack_ptr: 0,
         });
+    }
+
+    #[test]
+    fn find_vfs_file_in_directory_falls_back_from_colon_path_to_basename() {
+        let mut disp = TrapDispatcher::new();
+        disp.vfs.insert(
+            "Color Disk 1/Color Playroom/PR Settings".to_string(),
+            vec![1, 2, 3],
+        );
+        let dir_id = disp.ensure_vfs_directory("Color Disk 1/Color Playroom");
+
+        assert_eq!(
+            disp.find_vfs_file_in_directory(dir_id, ":PR Resources:PR Settings"),
+            Some("Color Disk 1/Color Playroom/PR Settings".to_string())
+        );
+    }
+
+    #[test]
+    fn find_vfs_rsrc_file_in_directory_falls_back_from_colon_path_to_basename() {
+        let mut disp = TrapDispatcher::new();
+        disp.vfs_rsrc.insert(
+            "Color Disk 1/Color Playroom/AllSounds2.rsrc".to_string(),
+            vec![1, 2, 3],
+        );
+        let dir_id = disp.ensure_vfs_directory("Color Disk 1/Color Playroom");
+
+        assert_eq!(
+            disp.find_vfs_rsrc_file_in_directory(dir_id, ":PR Resources:AllSounds2.rsrc"),
+            Some("Color Disk 1/Color Playroom/AllSounds2.rsrc".to_string())
+        );
     }
 
     // Lock the `is_tracking_refire` contract — returns true exactly when
