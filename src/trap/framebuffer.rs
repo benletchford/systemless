@@ -168,7 +168,7 @@ impl super::TrapDispatcher {
             bus.write_byte(
                 addr,
                 if black {
-                    255
+                    Self::logical_black_pixel_index(bus)
                 } else {
                     Self::logical_white_pixel_index(bus)
                 },

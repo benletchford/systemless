@@ -1,7 +1,7 @@
 //! QuickDraw trap handlers (initialization, port management, pen state,
 //! coordinate transforms, region ops, drawing commands).
 
-use super::types::{read_rect, ShapeOp};
+use super::types::{read_rect, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::ORACLE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -989,6 +989,16 @@ impl super::TrapDispatcher {
                         for i in 0..size {
                             bus.write_byte(dst_ptr + i, bus.read_byte(src_ptr + i));
                         }
+                        if trace_dialog_ports_enabled() {
+                            let top = bus.read_word(src_ptr + 2) as i16;
+                            let left = bus.read_word(src_ptr + 4) as i16;
+                            let bottom = bus.read_word(src_ptr + 6) as i16;
+                            let right = bus.read_word(src_ptr + 8) as i16;
+                            eprintln!(
+                                "[DIALOG-PORT] SetClip port=${:08X} rect=({},{},{},{})",
+                                port_ptr, top, left, bottom, right
+                            );
+                        }
                     }
                 }
                 Ok(())
@@ -1011,6 +1021,16 @@ impl super::TrapDispatcher {
                 let rgn_size = bus.read_word(clip_rgn_ptr) as u32;
                 for i in 0..rgn_size {
                     bus.write_byte(dest_ptr + i, bus.read_byte(clip_rgn_ptr + i));
+                }
+                if trace_dialog_ports_enabled() {
+                    let top = bus.read_word(clip_rgn_ptr + 2) as i16;
+                    let left = bus.read_word(clip_rgn_ptr + 4) as i16;
+                    let bottom = bus.read_word(clip_rgn_ptr + 6) as i16;
+                    let right = bus.read_word(clip_rgn_ptr + 8) as i16;
+                    eprintln!(
+                        "[DIALOG-PORT] GetClip port=${:08X} rect=({},{},{},{})",
+                        port_ptr, top, left, bottom, right
+                    );
                 }
                 Ok(())
             }
@@ -2677,6 +2697,24 @@ impl super::TrapDispatcher {
                             pat = override_pat;
                         }
                     }
+                }
+                if trace_qd_colors_enabled() {
+                    eprintln!(
+                        "[QD-COLOR] FillRect port=${:08X} rect=({},{},{},{}) pat={:02X?} fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) tick={}",
+                        self.current_port,
+                        r.top,
+                        r.left,
+                        r.bottom,
+                        r.right,
+                        pat,
+                        self.fg_color.0,
+                        self.fg_color.1,
+                        self.fg_color.2,
+                        self.bg_color.0,
+                        self.bg_color.1,
+                        self.bg_color.2,
+                        self.tick_count,
+                    );
                 }
                 self.draw_rect(cpu, bus, &r, ShapeOp::Fill(pat));
                 Ok(())
@@ -4757,6 +4795,18 @@ impl super::TrapDispatcher {
                     } else {
                         (rgb[0], rgb[1], rgb[2])
                     };
+                    self.sync_current_port_draw_state(bus);
+                    if trace_qd_colors_enabled() {
+                        eprintln!(
+                            "[QD-COLOR] PmForeColor port=${:08X} entry={} rgb=({:04X},{:04X},{:04X}) tick={}",
+                            self.current_port,
+                            entry,
+                            self.fg_color.0,
+                            self.fg_color.1,
+                            self.fg_color.2,
+                            self.tick_count,
+                        );
+                    }
                 }
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -4779,6 +4829,17 @@ impl super::TrapDispatcher {
                         (rgb[0], rgb[1], rgb[2])
                     };
                     self.sync_current_port_draw_state(bus);
+                    if trace_qd_colors_enabled() {
+                        eprintln!(
+                            "[QD-COLOR] PmBackColor port=${:08X} entry={} rgb=({:04X},{:04X},{:04X}) tick={}",
+                            self.current_port,
+                            entry,
+                            self.bg_color.0,
+                            self.bg_color.1,
+                            self.bg_color.2,
+                            self.tick_count,
+                        );
+                    }
                 }
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -12399,9 +12460,55 @@ impl super::TrapDispatcher {
                 let pp_handle = bus.read_long(sp);
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if let Some(pat) = Self::read_pixpat_pat1data(bus, pp_handle) {
-                    let r = read_rect(bus, rect_ptr);
-                    self.draw_rect(cpu, bus, &r, ShapeOp::Fill(pat));
+                let r = read_rect(bus, rect_ptr);
+                let raw_filled = self.fill_rect_with_raw_pixpat(bus, &r, pp_handle);
+                if trace_qd_colors_enabled() {
+                    let pp_ptr = if pp_handle != 0 {
+                        bus.read_long(pp_handle)
+                    } else {
+                        0
+                    };
+                    let pat_type = if pp_ptr != 0 {
+                        bus.read_word(pp_ptr)
+                    } else {
+                        0
+                    };
+                    let pat_map = if pp_ptr != 0 {
+                        bus.read_long(pp_ptr + 2)
+                    } else {
+                        0
+                    };
+                    let pat_data = if pp_ptr != 0 {
+                        bus.read_long(pp_ptr + 6)
+                    } else {
+                        0
+                    };
+                    let mut pat1 = [0u8; 8];
+                    if pp_ptr != 0 {
+                        for (i, byte) in pat1.iter_mut().enumerate() {
+                            *byte = bus.read_byte(pp_ptr + 20 + i as u32);
+                        }
+                    }
+                    eprintln!(
+                        "[QD-COLOR] FillCRect port=${:08X} rect=({},{},{},{}) pp=${:08X}->${:08X} patType={} patMap=${:08X} patData=${:08X} pat1={:02X?} raw={}",
+                        self.current_port,
+                        r.top,
+                        r.left,
+                        r.bottom,
+                        r.right,
+                        pp_handle,
+                        pp_ptr,
+                        pat_type,
+                        pat_map,
+                        pat_data,
+                        pat1,
+                        raw_filled,
+                    );
+                }
+                if !raw_filled {
+                    if let Some(pat) = Self::read_pixpat_pat1data(bus, pp_handle) {
+                        self.draw_rect(cpu, bus, &r, ShapeOp::Fill(pat));
+                    }
                 }
                 Ok(())
             }
@@ -18603,6 +18710,348 @@ impl super::TrapDispatcher {
         Some(pat)
     }
 
+    fn read_raw_pixpat_color_table(
+        &self,
+        bus: &MacMemoryBus,
+        table_ptr: u32,
+    ) -> Option<[[u16; 3]; 256]> {
+        if table_ptr == 0 {
+            return None;
+        }
+        let count = usize::from(bus.read_word(table_ptr + 6)).saturating_add(1);
+        if count == 0 || count > 256 {
+            return None;
+        }
+        let mut clut = self.device_clut;
+        for ordinal in 0..count {
+            let entry = table_ptr + 8 + ordinal as u32 * 8;
+            let value = usize::from(bus.read_word(entry));
+            if value < 256 {
+                clut[value] = [
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ];
+            }
+        }
+        Some(clut)
+    }
+
+    fn raw_pixpat_pixel_value(
+        bus: &MacMemoryBus,
+        data_ptr: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        x: u32,
+        y: u32,
+    ) -> Option<u8> {
+        let row = data_ptr + y.checked_mul(row_bytes)?;
+        match pixel_size {
+            1 => {
+                let byte = bus.read_byte(row + x / 8);
+                Some((byte >> (7 - (x & 7))) & 1)
+            }
+            2 => {
+                let byte = bus.read_byte(row + x / 4);
+                Some((byte >> (6 - 2 * (x & 3))) & 0x03)
+            }
+            4 => {
+                let byte = bus.read_byte(row + x / 2);
+                if x & 1 == 0 {
+                    Some(byte >> 4)
+                } else {
+                    Some(byte & 0x0F)
+                }
+            }
+            8 => Some(bus.read_byte(row + x)),
+            _ => None,
+        }
+    }
+
+    fn fill_rect_with_raw_pixpat(&self, bus: &mut MacMemoryBus, r: &Rect, pp_handle: u32) -> bool {
+        macro_rules! reject {
+            ($($arg:tt)*) => {{
+                if trace_qd_colors_enabled() {
+                    eprintln!(
+                        "[QD-COLOR] FillCRect raw PixPat reject pp=${:08X}: {}",
+                        pp_handle,
+                        format_args!($($arg)*),
+                    );
+                }
+                return false;
+            }};
+        }
+
+        if self.pn_vis < 0 || pp_handle == 0 {
+            return self.pn_vis < 0;
+        }
+        let pp_ptr = bus.read_long(pp_handle);
+        if pp_ptr == 0 {
+            reject!("nil master pointer");
+        }
+
+        // 'ppat' resources store offsets from the start of the PixPat
+        // resource instead of live Handles. NewPixPat-created records store
+        // actual handles here; those continue down the pat1Data fallback path.
+        let pat_map_offset = bus.read_long(pp_ptr + 2);
+        let pat_data_offset = bus.read_long(pp_ptr + 6);
+        if !(28..=0x10000).contains(&pat_map_offset)
+            || !(pat_map_offset + 50..=0x200000).contains(&pat_data_offset)
+        {
+            reject!(
+                "unsupported offsets patMap=${:08X} patData=${:08X}",
+                pat_map_offset,
+                pat_data_offset
+            );
+        }
+
+        let pat_map_ptr = pp_ptr + pat_map_offset;
+        let pat_data_ptr = pp_ptr + pat_data_offset;
+        let read_map = |base_offset: u32| {
+            let row_bytes = u32::from(bus.read_word(pat_map_ptr + base_offset) & 0x3FFF);
+            let top = bus.read_word(pat_map_ptr + base_offset + 2) as i16;
+            let left = bus.read_word(pat_map_ptr + base_offset + 4) as i16;
+            let bottom = bus.read_word(pat_map_ptr + base_offset + 6) as i16;
+            let right = bus.read_word(pat_map_ptr + base_offset + 8) as i16;
+            let pixel_size = bus.read_word(pat_map_ptr + base_offset + 28);
+            let table_offset = bus.read_long(pat_map_ptr + base_offset + 38);
+            (
+                row_bytes,
+                top,
+                left,
+                bottom,
+                right,
+                pixel_size,
+                table_offset,
+            )
+        };
+        let map_valid = |candidate: &(u32, i16, i16, i16, i16, u16, u32)| {
+            let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *candidate;
+            row_bytes != 0
+                && i32::from(bottom) > i32::from(top)
+                && i32::from(right) > i32::from(left)
+                && matches!(pixel_size, 1 | 2 | 4 | 8)
+                && table_offset != 0
+                && table_offset <= 0x200000
+        };
+
+        // Raw 'ppat' resources store the pattern map without baseAddr
+        // (rowBytes at +0). GetPixPat-expanded records can hold a full
+        // live PixMap with baseAddr inserted (rowBytes at +4). Accept both.
+        let raw_map = read_map(0);
+        let live_map = read_map(4);
+        let (src_row_bytes, src_top, src_left, src_bottom, src_right, src_pixel_size, table_offset) =
+            if map_valid(&raw_map) {
+                raw_map
+            } else if map_valid(&live_map) {
+                live_map
+            } else {
+                let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = raw_map;
+                reject!(
+                    "invalid source map raw(rowBytes={} bounds=({},{},{},{}) pixelSize={} table=${:08X}) live(rowBytes={} bounds=({},{},{},{}) pixelSize={} table=${:08X})",
+                    row_bytes,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    pixel_size,
+                    table_offset,
+                    live_map.0,
+                    live_map.1,
+                    live_map.2,
+                    live_map.3,
+                    live_map.4,
+                    live_map.5,
+                    live_map.6,
+                );
+            };
+        let src_height = i32::from(src_bottom) - i32::from(src_top);
+        let src_width = i32::from(src_right) - i32::from(src_left);
+
+        if table_offset == 0 || table_offset > 0x200000 {
+            reject!("invalid table offset ${:08X}", table_offset);
+        }
+        let Some(src_clut) = self.read_raw_pixpat_color_table(bus, pp_ptr + table_offset) else {
+            reject!("invalid color table at offset ${:08X}", table_offset);
+        };
+
+        let port = self.current_port;
+        if port == 0 {
+            reject!("no current port");
+        }
+        let port_version = bus.read_word(port.wrapping_add(6));
+        if (port_version & 0xC000) == 0 {
+            reject!(
+                "current port ${:08X} is not a CGrafPort version=${:04X}",
+                port,
+                port_version
+            );
+        }
+        let pix_map_handle = bus.read_long(port.wrapping_add(2));
+        if pix_map_handle == 0 {
+            reject!("current port has nil PixMap handle");
+        }
+        let pix_map_ptr = bus.read_long(pix_map_handle);
+        if pix_map_ptr == 0 {
+            reject!("current port PixMap handle has nil master pointer");
+        }
+        let dst_base = bus.read_long(pix_map_ptr);
+        let dst_row_bytes = u32::from(bus.read_word(pix_map_ptr + 4) & 0x3FFF);
+        let bounds_top = bus.read_word(pix_map_ptr + 6) as i16;
+        let bounds_left = bus.read_word(pix_map_ptr + 8) as i16;
+        let bounds_bottom = bus.read_word(pix_map_ptr + 10) as i16;
+        let bounds_right = bus.read_word(pix_map_ptr + 12) as i16;
+        let dst_pixel_size = bus.read_word(pix_map_ptr + 32);
+        if dst_pixel_size != 8 || dst_base == 0 || dst_row_bytes == 0 {
+            reject!(
+                "unsupported destination base=${:08X} rowBytes={} pixelSize={}",
+                dst_base,
+                dst_row_bytes,
+                dst_pixel_size
+            );
+        }
+
+        let is_screen_port = dst_base == self.screen_mode.0
+            && dst_row_bytes == self.screen_mode.1
+            && dst_pixel_size == self.screen_mode.4;
+        let dst_height = i32::from(bounds_bottom) - i32::from(bounds_top);
+        let dst_width = i32::from(bounds_right) - i32::from(bounds_left);
+        let rect_height = i32::from(r.bottom) - i32::from(r.top);
+        let rect_width = i32::from(r.right) - i32::from(r.left);
+        let fills_destination_bounds = r.top <= bounds_top
+            && r.left <= bounds_left
+            && r.bottom >= bounds_bottom
+            && r.right >= bounds_right;
+        let fills_hidden_menu_screen_bounds = self.menu_bar_hidden
+            && is_screen_port
+            && port == self.front_window
+            && dst_height == self.screen_mode.3 as i32
+            && dst_width == self.screen_mode.2 as i32
+            && rect_height >= dst_height.saturating_sub(1)
+            && rect_width >= dst_width.saturating_sub(2)
+            && r.top <= bounds_top
+            && r.left <= bounds_left
+            && r.bottom <= bounds_bottom
+            && r.right <= bounds_right;
+        let skips_region_clip = fills_destination_bounds || fills_hidden_menu_screen_bounds;
+        let (fill_top, fill_left, fill_bottom, fill_right) = if fills_hidden_menu_screen_bounds {
+            (bounds_top, bounds_left, bounds_bottom, bounds_right)
+        } else {
+            (r.top, r.left, r.bottom, r.right)
+        };
+
+        let mut clip_top = bounds_top;
+        let mut clip_left = bounds_left;
+        let mut clip_bottom = bounds_bottom;
+        let mut clip_right = bounds_right;
+        let mut trace_vis = None;
+        let mut trace_clip = None;
+        if !skips_region_clip {
+            let vis_rgn_handle = bus.read_long(port.wrapping_add(24));
+            if vis_rgn_handle != 0 {
+                let vis_rgn_ptr = bus.read_long(vis_rgn_handle);
+                if vis_rgn_ptr != 0 {
+                    let vt = bus.read_word(vis_rgn_ptr + 2) as i16;
+                    let vl = bus.read_word(vis_rgn_ptr + 4) as i16;
+                    let vb = bus.read_word(vis_rgn_ptr + 6) as i16;
+                    let vr = bus.read_word(vis_rgn_ptr + 8) as i16;
+                    trace_vis = Some((vt, vl, vb, vr));
+                    if vb > vt && vr > vl {
+                        clip_top = clip_top.max(vt);
+                        clip_left = clip_left.max(vl);
+                        clip_bottom = clip_bottom.min(vb);
+                        clip_right = clip_right.min(vr);
+                    }
+                }
+            }
+            let clip_rgn_handle = bus.read_long(port.wrapping_add(28));
+            if clip_rgn_handle != 0 {
+                let clip_rgn_ptr = bus.read_long(clip_rgn_handle);
+                if clip_rgn_ptr != 0 {
+                    let ct = bus.read_word(clip_rgn_ptr + 2) as i16;
+                    let cl = bus.read_word(clip_rgn_ptr + 4) as i16;
+                    let cb = bus.read_word(clip_rgn_ptr + 6) as i16;
+                    let cr = bus.read_word(clip_rgn_ptr + 8) as i16;
+                    trace_clip = Some((ct, cl, cb, cr));
+                    if cb > ct && cr > cl {
+                        clip_top = clip_top.max(ct);
+                        clip_left = clip_left.max(cl);
+                        clip_bottom = clip_bottom.min(cb);
+                        clip_right = clip_right.min(cr);
+                    }
+                }
+            }
+        }
+
+        let dst_clut = if is_screen_port {
+            self.device_clut
+        } else {
+            self.read_port_clut(bus, bus.read_long(pix_map_ptr + 42))
+        };
+        let mut src_to_dst = [0u8; 256];
+        for (value, dst) in src_to_dst.iter_mut().enumerate() {
+            let rgb = src_clut[value];
+            *dst = super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &dst_clut);
+        }
+
+        let top = fill_top.max(clip_top);
+        let left = fill_left.max(clip_left);
+        let bottom = fill_bottom.min(clip_bottom);
+        let right = fill_right.min(clip_right);
+        if trace_qd_colors_enabled() {
+            eprintln!(
+                "[QD-COLOR] FillCRect raw PixPat geometry dst_bounds=({},{},{},{}) vis={:?} clip_rgn={:?} combined=({},{},{},{}) final=({},{},{},{}) full_bounds={} base=${:08X} rowBytes={}",
+                bounds_top,
+                bounds_left,
+                bounds_bottom,
+                bounds_right,
+                trace_vis,
+                trace_clip,
+                clip_top,
+                clip_left,
+                clip_bottom,
+                clip_right,
+                top,
+                left,
+                bottom,
+                right,
+                fills_destination_bounds,
+                dst_base,
+                dst_row_bytes,
+            );
+        }
+        if bottom <= top || right <= left {
+            return true;
+        }
+
+        for y in top..bottom {
+            let dy = (y - bounds_top) as u32;
+            let tile_y = i32::from(y).rem_euclid(src_height) as u32;
+            for x in left..right {
+                let dx = (x - bounds_left) as u32;
+                if dx >= dst_row_bytes {
+                    continue;
+                }
+                let tile_x = i32::from(x).rem_euclid(src_width) as u32;
+                let Some(src_value) = Self::raw_pixpat_pixel_value(
+                    bus,
+                    pat_data_ptr,
+                    src_row_bytes,
+                    src_pixel_size,
+                    tile_x,
+                    tile_y,
+                ) else {
+                    continue;
+                };
+                bus.write_byte(
+                    dst_base + dy * dst_row_bytes + dx,
+                    src_to_dst[usize::from(src_value)],
+                );
+            }
+        }
+        true
+    }
+
     /// CLUT used for SetCPixel/GetCPixel pixel matching. Per Inside
     /// Macintosh Volume V, V-70, both traps must consult the "current
     /// device's CLUT", which maps to `device_clut` — the live hardware
@@ -18878,6 +19327,58 @@ mod tests {
         bus.fill_zeros(pp_ptr, 28);
         bus.write_word(pp_ptr, 1); // patType=color
         bus.write_bytes(pp_ptr + 20, &pat1_data); // pat1Data fallback pattern
+        pp_handle
+    }
+
+    fn make_raw_color_pixpat_handle(bus: &mut crate::memory::MacMemoryBus) -> u32 {
+        let pp_handle = bus.alloc(4);
+        let pp_ptr = bus.alloc(128);
+        bus.write_long(pp_handle, pp_ptr);
+        bus.fill_zeros(pp_ptr, 128);
+
+        const PAT_MAP_OFFSET: u32 = 28;
+        const PAT_DATA_OFFSET: u32 = 78;
+        const CTAB_OFFSET: u32 = 80;
+
+        bus.write_word(pp_ptr, 1); // patType = color
+        bus.write_long(pp_ptr + 2, PAT_MAP_OFFSET);
+        bus.write_long(pp_ptr + 6, PAT_DATA_OFFSET);
+        bus.write_word(pp_ptr + 14, 0xFFFF); // patXValid
+        bus.write_bytes(pp_ptr + 20, &[0xAA; 8]); // fallback unused on color path
+
+        let pixmap = pp_ptr + PAT_MAP_OFFSET;
+        bus.write_word(pixmap, 0x8001); // 1 byte/row, color PixMap rowBytes flag set
+        bus.write_word(pixmap + 2, 0);
+        bus.write_word(pixmap + 4, 0);
+        bus.write_word(pixmap + 6, 2);
+        bus.write_word(pixmap + 8, 4);
+        bus.write_long(pixmap + 14, 0x0048_0000); // hRes
+        bus.write_long(pixmap + 18, 0x0048_0000); // vRes
+        bus.write_word(pixmap + 28, 2); // pixelSize
+        bus.write_word(pixmap + 30, 1); // cmpCount
+        bus.write_word(pixmap + 32, 2); // cmpSize
+        bus.write_long(pixmap + 38, CTAB_OFFSET);
+
+        // Two rows of 2bpp source pixels:
+        // row 0 = values 0,1,2,1; row 1 = 2,1,0,1.
+        bus.write_byte(pp_ptr + PAT_DATA_OFFSET, 0x19);
+        bus.write_byte(pp_ptr + PAT_DATA_OFFSET + 1, 0x91);
+
+        let ctab = pp_ptr + CTAB_OFFSET;
+        bus.write_word(ctab + 6, 2); // 3 entries
+        let entries = [
+            (0u16, [0x1111, 0x0000, 0x0000]),
+            (1u16, [0x0000, 0x2222, 0x0000]),
+            (2u16, [0x0000, 0x0000, 0x3333]),
+        ];
+        for (idx, (value, rgb)) in entries.iter().enumerate() {
+            let entry = ctab + 8 + idx as u32 * 8;
+            bus.write_word(entry, *value);
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
+
         pp_handle
     }
 
@@ -20010,7 +20511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_screen_backed_black_shape_drawing_uses_index_255_during_palette_transition() {
+    fn screen_backed_black_shape_drawing_prefers_255_when_entry_255_is_black() {
         let (mut d, mut cpu, mut bus) = setup();
         let gdh = d.ensure_main_gdevice(&mut bus);
         let gd_ptr = bus.read_long(gdh);
@@ -20022,7 +20523,7 @@ mod tests {
 
         d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
         d.device_clut[71] = [0, 0, 0];
-        d.device_clut[255] = [0x2E2E, 0, 0x3333];
+        d.device_clut[255] = [0, 0, 0];
 
         let port = bus.alloc(64);
         bus.write_long(port + 2, pixmap_handle);
@@ -20050,6 +20551,53 @@ mod tests {
         d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
 
         assert_eq!(bus.read_byte(screen_base), 255);
+    }
+
+    #[test]
+    fn screen_backed_black_shape_drawing_uses_live_clut_black_entry_when_255_is_not_black() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd_ptr = bus.read_long(gdh);
+        let pixmap_handle = bus.read_long(gd_ptr + 22);
+        let pixmap_ptr = bus.read_long(pixmap_handle);
+        let screen_base = bus.read_long(pixmap_ptr);
+        let screen_row_bytes = (bus.read_word(pixmap_ptr + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        d.device_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        d.device_clut[1] = [0, 0, 0];
+        d.device_clut[255] = [0xFFFF, 0xFFFF, 0xCCCC];
+
+        let port = bus.alloc(64);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_word(port + 16, 0);
+        bus.write_word(port + 18, 0);
+        bus.write_word(port + 20, 600);
+        bus.write_word(port + 22, 800);
+        make_rgn(&mut bus, 0x350000, 0x350100, 0, 0, 600, 800);
+        make_rgn(&mut bus, 0x350200, 0x350300, 0, 0, 600, 800);
+        bus.write_long(port + 24, 0x350100);
+        bus.write_long(port + 28, 0x350300);
+
+        d.set_current_port_state(&mut bus, &mut cpu, port, Some(gdh));
+        d.fg_color = (0, 0, 0);
+        d.pn_mode = 0;
+        d.pn_pat = [0xFF; 8];
+
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: 1,
+            right: 1,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+
+        assert_eq!(
+            bus.read_byte(screen_base),
+            1,
+            "RGB black must follow the live CLUT when index 255 is not black"
+        );
     }
 
     #[test]
@@ -24276,6 +24824,219 @@ mod tests {
     }
 
     #[test]
+    fn fillcrect_tiles_raw_color_pixpat_resource_on_8bpp_cgrafport() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let row_bytes = 64u32;
+        let screen_base = bus.alloc(row_bytes * 64);
+        bus.fill_zeros(screen_base, row_bytes * 64);
+        d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
+        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
+        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+
+        let port = bus.alloc(128);
+        let pixmap_handle = bus.alloc(4);
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+        bus.write_word(pixmap + 6, 0);
+        bus.write_word(pixmap + 8, 0);
+        bus.write_word(pixmap + 10, 64);
+        bus.write_word(pixmap + 12, 64);
+        bus.write_word(pixmap + 32, 8);
+
+        let vis = bus.alloc(10);
+        bus.write_word(vis, 10);
+        bus.write_word(vis + 6, 64);
+        bus.write_word(vis + 8, 64);
+        let vis_handle = bus.alloc(4);
+        bus.write_long(vis_handle, vis);
+        bus.write_long(port + 24, vis_handle);
+
+        let clip = bus.alloc(10);
+        bus.write_word(clip, 10);
+        bus.write_word(clip + 6, 64);
+        bus.write_word(clip + 8, 64);
+        let clip_handle = bus.alloc(4);
+        bus.write_long(clip_handle, clip);
+        bus.write_long(port + 28, clip_handle);
+
+        d.current_port = port;
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals_ptr, port);
+
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, 0, 0, 2, 4);
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = d.dispatch_quickdraw(true, 0x20E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 0, 0), 7);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 1, 0), 8);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 2, 0), 9);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 3, 0), 8);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 0, 1), 9);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 1, 1), 8);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 2, 1), 7);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 3, 1), 8);
+    }
+
+    #[test]
+    fn fillcrect_full_bounds_raw_pixpat_repaints_offset_backing_store() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let row_bytes = 64u32;
+        let screen_base = bus.alloc(row_bytes * 64);
+        bus.fill_zeros(screen_base, row_bytes * 64);
+        d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
+        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
+        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+
+        let port = bus.alloc(128);
+        let pixmap_handle = bus.alloc(4);
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+        bus.write_word(pixmap + 6, (-2i16) as u16);
+        bus.write_word(pixmap + 8, (-3i16) as u16);
+        bus.write_word(pixmap + 10, 2);
+        bus.write_word(pixmap + 12, 5);
+        bus.write_word(pixmap + 32, 8);
+
+        let vis = bus.alloc(10);
+        bus.write_word(vis, 10);
+        bus.write_word(vis + 2, 0);
+        bus.write_word(vis + 4, 0);
+        bus.write_word(vis + 6, 1);
+        bus.write_word(vis + 8, 1);
+        let vis_handle = bus.alloc(4);
+        bus.write_long(vis_handle, vis);
+        bus.write_long(port + 24, vis_handle);
+
+        let clip = bus.alloc(10);
+        bus.write_word(clip, 10);
+        bus.write_word(clip + 2, 0);
+        bus.write_word(clip + 4, 0);
+        bus.write_word(clip + 6, 1);
+        bus.write_word(clip + 8, 1);
+        let clip_handle = bus.alloc(4);
+        bus.write_long(clip_handle, clip);
+        bus.write_long(port + 28, clip_handle);
+
+        d.current_port = port;
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals_ptr, port);
+
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, -2, -3, 0, -1);
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = d.dispatch_quickdraw(true, 0x20E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 0, 0),
+            0,
+            "non-full raw PixPat fills still honor the current clip region"
+        );
+
+        write_rect(&mut bus, rect_ptr, -2, -3, 2, 5);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = d.dispatch_quickdraw(true, 0x20E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 0, 0),
+            8,
+            "full-bounds raw PixPat fills repaint offset backing pixels outside stale clip bounds"
+        );
+    }
+
+    #[test]
+    fn fillcrect_hidden_menu_screen_sized_raw_pixpat_repaints_full_backing_store() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let row_bytes = 64u32;
+        let screen_base = bus.alloc(row_bytes * 64);
+        bus.fill_zeros(screen_base, row_bytes * 64);
+        d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
+        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
+        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+
+        let port = bus.alloc(128);
+        let pixmap_handle = bus.alloc(4);
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+        bus.write_word(pixmap + 6, (-20i16) as u16);
+        bus.write_word(pixmap + 8, (-1i16) as u16);
+        bus.write_word(pixmap + 10, 44);
+        bus.write_word(pixmap + 12, 63);
+        bus.write_word(pixmap + 32, 8);
+
+        let vis = bus.alloc(10);
+        bus.write_word(vis, 10);
+        bus.write_word(vis + 2, (-20i16) as u16);
+        bus.write_word(vis + 4, (-1i16) as u16);
+        bus.write_word(vis + 6, 44);
+        bus.write_word(vis + 8, 63);
+        let vis_handle = bus.alloc(4);
+        bus.write_long(vis_handle, vis);
+        bus.write_long(port + 24, vis_handle);
+
+        let clip = bus.alloc(10);
+        bus.write_word(clip, 10);
+        bus.write_word(clip + 2, 0);
+        bus.write_word(clip + 4, 0);
+        bus.write_word(clip + 6, 24);
+        bus.write_word(clip + 8, 62);
+        let clip_handle = bus.alloc(4);
+        bus.write_long(clip_handle, clip);
+        bus.write_long(port + 28, clip_handle);
+
+        d.current_port = port;
+        d.front_window = port;
+        d.menu_bar_hidden = true;
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals_ptr, port);
+
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, -40, -2, 24, 62);
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = d.dispatch_quickdraw(true, 0x20E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_ne!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 0, 0),
+            0,
+            "hidden-menu screen-sized backdrop fills must repaint the exposed top row"
+        );
+        assert_ne!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 63, 63),
+            0,
+            "hidden-menu screen-sized backdrop fills must repaint the exposed bottom row"
+        );
+    }
+
+    #[test]
     fn fillcpoly_consumes_pp_and_polyhandle_arguments() {
         // IM:V 1986 p. V-74: FillCPoly consumes PixPatHandle +
         // PolyHandle (8 bytes total) as a procedure call.
@@ -26791,6 +27552,45 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x296, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_long(TEST_SP + 4), 0);
+    }
+
+    #[test]
+    fn pmforecolor_syncs_rgb_into_current_cgrafport() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        bus.write_word(port + 6, 0xC000);
+        bus.write_word(port + 36, 0);
+        bus.write_word(port + 38, 0);
+        bus.write_word(port + 40, 0);
+
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        let palette = d.create_palette_from_ctab(&mut bus, 2, 0, super::PM_TOLERANT, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            1,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_TOLERANT,
+            0,
+        );
+        d.set_window_palette_association(port, palette, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        let result = d.dispatch_quickdraw(true, 0x297, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(d.fg_color, (0x1234, 0x5678, 0x9ABC));
+        assert_eq!(bus.read_word(port + 36), 0x1234);
+        assert_eq!(bus.read_word(port + 38), 0x5678);
+        assert_eq!(bus.read_word(port + 40), 0x9ABC);
+
+        d.set_current_port_state(&mut bus, &mut cpu, 0, None);
+        d.fg_color = (0, 0, 0);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+
+        assert_eq!(d.fg_color, (0x1234, 0x5678, 0x9ABC));
     }
 
     #[test]

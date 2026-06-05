@@ -313,6 +313,8 @@ pub struct DialogTrackingState {
     pub popup_draws: Vec<(i16, i16, i16, i16, String)>,
     /// Active popup-menu control tracking inside ModalDialog.
     pub active_popup: Option<DialogPopupTrackingState>,
+    /// Active push-button tracking inside ModalDialog.
+    pub active_button: Option<DialogButtonTrackingState>,
 }
 
 /// Popup-menu control state owned by an active ModalDialog loop.
@@ -324,6 +326,13 @@ pub struct DialogPopupTrackingState {
     pub highlighted_item: i16,
     pub saved_pixels: Vec<u8>,
     pub dropdown_rect: (i16, i16, i16, i16),
+}
+
+/// Push-button tracking owned by an active ModalDialog loop.
+pub struct DialogButtonTrackingState {
+    pub item_no: i16,
+    pub rect: (i16, i16, i16, i16),
+    pub highlighted: bool,
 }
 
 /// State for popup-menu controls tracked through TrackControl.
@@ -3985,6 +3994,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
     }
 

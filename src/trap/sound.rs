@@ -693,7 +693,14 @@ impl super::TrapDispatcher {
                         .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
                         .unwrap_or(false);
                     if channel_busy {
-                        if self
+                        if cmd.cmd == sound::cmd::CALLBACK {
+                            if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
+                                chan.queue_callback(cmd);
+                                0
+                            } else {
+                                -205 // badChannel
+                            }
+                        } else if self
                             .sound_manager
                             .find_channel_mut(chan_ptr)
                             .is_some_and(|chan| chan.enqueue(cmd))
@@ -3075,6 +3082,74 @@ mod tests {
             .expect("channel exists")
             .is_playing());
         assert_eq!(disp.sound_manager.mix_frame(64).len(), 64);
+    }
+
+    #[test]
+    fn snddocommand_callbackcmd_on_busy_channel_fires_after_buffer_exhaustion() {
+        // callBackCmd is completion work for the active sound command. If
+        // it sits in the generic FIFO until after playback goes idle, games
+        // that poll their channel userInfo miss the buffer boundary.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let create_sp = TEST_SP;
+        let chan_ptr_ptr = 0x2203C0;
+        let user_routine = 0x00AB_CDEF;
+        bus.write_long(chan_ptr_ptr, 0);
+        bus.write_long(create_sp, user_routine);
+        bus.write_long(create_sp + 4, 0);
+        bus.write_word(create_sp + 8, 5);
+        bus.write_long(create_sp + 10, chan_ptr_ptr);
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let chan_ptr = bus.read_long(chan_ptr_ptr);
+        disp.sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .play_buffer(
+                vec![0x80, 0x80],
+                crate::sound::OUTPUT_RATE << 16,
+                PlaybackKind::Buffer,
+                0,
+            );
+
+        let cmd_ptr = 0x230060;
+        bus.write_word(cmd_ptr, cmd::CALLBACK);
+        bus.write_word(cmd_ptr + 2, 7);
+        bus.write_long(cmd_ptr + 4, 0x1122_3344);
+
+        let sp = TEST_SP + 0x40;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // noWait = TRUE
+        bus.write_long(sp + 2, cmd_ptr);
+        bus.write_long(sp + 6, chan_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x003, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert!(
+            disp.sound_manager.pending_sound_callbacks.is_empty(),
+            "callback must wait for the active buffer to finish"
+        );
+
+        disp.sound_manager.mix_frame(4);
+
+        assert_eq!(disp.sound_manager.pending_sound_callbacks.len(), 1);
+        match &disp.sound_manager.pending_sound_callbacks[0] {
+            PendingSoundCallback::Command {
+                callback_addr,
+                chan_ptr: callback_chan,
+                cmd,
+            } => {
+                assert_eq!(*callback_addr, user_routine);
+                assert_eq!(*callback_chan, chan_ptr);
+                assert_eq!(cmd.cmd, cmd::CALLBACK);
+                assert_eq!(cmd.param1, 7);
+                assert_eq!(cmd.param2, 0x1122_3344);
+            }
+            other => panic!("unexpected callback variant: {other:?}"),
+        }
     }
 
     #[test]

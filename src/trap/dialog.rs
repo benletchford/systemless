@@ -4023,6 +4023,33 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn dialog_item_screen_rect(
+        bounds: (i16, i16, i16, i16),
+        rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16, i16) {
+        let (it, il, ib, ir) = rect;
+        (bounds.0 + it, bounds.1 + il, bounds.0 + ib, bounds.1 + ir)
+    }
+
+    fn start_dialog_button_flash(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        item_no: i16,
+        rect: (i16, i16, i16, i16),
+        highlighted: bool,
+    ) {
+        if !highlighted {
+            let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
+            self.invert_button_rect(bus, top, left, bottom, right);
+        }
+        if let Some(t) = self.dialog_tracking.as_mut() {
+            t.flash_remaining = 6;
+            t.flash_delay = 3;
+            t.flash_item = item_no;
+        }
+    }
+
     fn dialog_control_handle_for_item(&self, dialog_ptr: u32, item_no: i16) -> Option<u32> {
         self.dialog_control_handles
             .iter()
@@ -4180,6 +4207,52 @@ impl super::TrapDispatcher {
             bus.write_word(saved.item_hit_ptr, popup.item_no as u16);
         }
         cpu.write_reg(Register::A7, saved.stack_ptr + 8);
+    }
+
+    fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
+        let Some((bounds, item_no, rect, highlighted)) =
+            self.dialog_tracking.as_ref().and_then(|tracking| {
+                tracking.active_button.as_ref().map(|button| {
+                    (
+                        tracking.bounds,
+                        button.item_no,
+                        button.rect,
+                        button.highlighted,
+                    )
+                })
+            })
+        else {
+            return;
+        };
+
+        let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
+        let (mouse_v, mouse_h) = self.mouse_pos;
+        let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
+
+        if self.mouse_button {
+            if inside != highlighted {
+                self.invert_button_rect(bus, top, left, bottom, right);
+                if let Some(button) = self
+                    .dialog_tracking
+                    .as_mut()
+                    .and_then(|tracking| tracking.active_button.as_mut())
+                {
+                    button.highlighted = inside;
+                }
+            }
+            return;
+        }
+
+        self.consume_dialog_mouse_up();
+        if let Some(t) = self.dialog_tracking.as_mut() {
+            t.active_button = None;
+        }
+
+        if inside {
+            self.start_dialog_button_flash(bus, bounds, item_no, rect, highlighted);
+        } else if highlighted {
+            self.invert_button_rect(bus, top, left, bottom, right);
+        }
     }
 
     pub(crate) fn dispatch_dialog<C: CpuOps>(
@@ -5240,6 +5313,11 @@ impl super::TrapDispatcher {
                 }
 
                 if let Some(ref tracking) = self.dialog_tracking {
+                    if tracking.active_button.is_some() {
+                        self.handle_dialog_button_tracking(bus);
+                        return Some(Ok(()));
+                    }
+
                     if tracking.active_popup.is_some() {
                         self.handle_dialog_popup_tracking(cpu, bus);
                         return Some(Ok(()));
@@ -5252,6 +5330,7 @@ impl super::TrapDispatcher {
                     // routes through the full handler below.
                     if tracking.filter_proc == 0
                         && tracking.flash_remaining == 0
+                        && tracking.active_button.is_none()
                         && tracking.active_popup.is_none()
                         && self.event_queue.is_empty()
                     {
@@ -5475,18 +5554,27 @@ impl super::TrapDispatcher {
                                         match base_type {
                                             // Button click: start flash
                                             4 => {
-                                                let (it, il, ib, ir) = item.rect;
-                                                let abs_top = bounds.0 + it;
-                                                let abs_left = bounds.1 + il;
-                                                let abs_bottom = bounds.0 + ib;
-                                                let abs_right = bounds.1 + ir;
+                                                let (abs_top, abs_left, abs_bottom, abs_right) =
+                                                    Self::dialog_item_screen_rect(
+                                                        bounds, item.rect,
+                                                    );
                                                 self.invert_button_rect(
                                                     bus, abs_top, abs_left, abs_bottom, abs_right,
                                                 );
-                                                let t = self.dialog_tracking.as_mut().unwrap();
-                                                t.flash_remaining = 6;
-                                                t.flash_delay = 3;
-                                                t.flash_item = hit;
+                                                if self.mouse_button {
+                                                    let t = self.dialog_tracking.as_mut().unwrap();
+                                                    t.active_button = Some(
+                                                        super::dispatch::DialogButtonTrackingState {
+                                                            item_no: hit,
+                                                            rect: item.rect,
+                                                            highlighted: true,
+                                                        },
+                                                    );
+                                                } else {
+                                                    self.start_dialog_button_flash(
+                                                        bus, bounds, hit, item.rect, true,
+                                                    );
+                                                }
                                             }
                                             // Checkbox click: return item number immediately
                                             // The dialog stays on screen — the app toggles
@@ -5887,6 +5975,7 @@ impl super::TrapDispatcher {
                             last_filter_event: None,
                             popup_draws,
                             active_popup: None,
+                            active_button: None,
                         });
                         // Don't pop stack or advance PC — re-fire pattern
                     } else {
@@ -9775,6 +9864,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
 
         bus.write_word(TEST_SP, 9); // newItem
@@ -9826,6 +9916,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
 
         bus.write_word(TEST_SP, 7); // newItem
@@ -11988,6 +12079,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
 
         bus.write_long(TEST_SP, dialog_ptr);
@@ -13174,6 +13266,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
         disp.mouse_button = true;
         disp.mouse_pos = (115, 125);
@@ -13313,6 +13406,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: vec![(20, 30, 42, 180, String::new())],
             active_popup: None,
+            active_button: None,
         });
 
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
@@ -13389,6 +13483,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
 
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
@@ -13451,6 +13546,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
@@ -13515,6 +13611,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
 
         disp.finalize_dialog_draw_procs_if_idle(&mut bus);
@@ -13566,6 +13663,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
@@ -13589,6 +13687,99 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
         assert!(disp.event_queue.iter().all(|event| event.what != 2));
+    }
+
+    #[test]
+    fn modal_dialog_button_waits_for_late_mouse_up_before_returning() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 4,
+                rect: (20, 30, 60, 110),
+                text: String::from("OK"),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: true,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+        });
+        disp.mouse_button = true;
+        disp.mouse_pos = (130, 240);
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0,
+            });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(item_hit_ptr), 0);
+        assert!(disp
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_button.as_ref())
+            .is_some());
+
+        disp.mouse_button = false;
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0x0080,
+            });
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+        assert!(disp
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_button.as_ref())
+            .is_none());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        {
+            let tracking = disp.dialog_tracking.as_mut().unwrap();
+            tracking.flash_remaining = 1;
+            tracking.flash_delay = 0;
+        }
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
     }
 
     #[test]
@@ -13641,6 +13832,7 @@ mod tests {
             }),
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {

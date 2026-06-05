@@ -434,20 +434,13 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn set_window_vis_clip_from_content(
-        &self,
-        bus: &mut MacMemoryBus,
-        window_ptr: u32,
-        visible: bool,
-    ) {
+    fn set_window_vis_from_content(&self, bus: &mut MacMemoryBus, window_ptr: u32, visible: bool) {
         let rect = if visible {
             self.window_content_rect(bus, window_ptr)
         } else {
             None
         };
-        for offset in [24u32, 28u32] {
-            Self::write_region_handle_rect(bus, bus.read_long(window_ptr + offset), rect);
-        }
+        Self::write_region_handle_rect(bus, bus.read_long(window_ptr + 24), rect);
     }
 
     fn recalculate_window_regions_from_rect(
@@ -509,7 +502,7 @@ impl super::TrapDispatcher {
         bus.write_long(window_ptr + Self::WINDOW_CONTROL_LIST_OFFSET, 0);
         bus.write_long(window_ptr + Self::WINDOW_PIC_OFFSET, 0);
         bus.write_long(window_ptr + Self::WINDOW_REFCON_OFFSET, ref_con);
-        self.set_window_vis_clip_from_content(bus, window_ptr, visible);
+        self.set_window_vis_from_content(bus, window_ptr, visible);
         self.track_window_front(bus, window_ptr);
     }
 
@@ -867,7 +860,16 @@ impl super::TrapDispatcher {
         // In local coordinates, the menu bar is at y = mbar_h - wind_top.
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         let vis_top_local = (mbar_h - wind_top).max(0);
-        let content_rect = (vis_top_local, 0, port_height, port_width);
+        let mut content_rect = (vis_top_local, 0, port_height, port_width);
+        if self.menu_bar_hidden
+            && matches!(wind_proc_id, 1 | 2 | 3 | 5)
+            && wind_top <= mbar_h.saturating_add(2)
+            && wind_left <= 2
+            && wind_bottom >= screen_h as i16 - 2
+            && wind_right >= screen_w as i16 - 2
+        {
+            content_rect = (bounds_top, bounds_left, bounds_bottom, bounds_right);
+        }
         eprintln!(
             "[WINDOW-INIT] init_cgraf_window: window=${:08X} bounds=({},{},{},{}) MBarHeight={} → visRgn.top={}",
             window_ptr,
@@ -914,6 +916,13 @@ impl super::TrapDispatcher {
             visible,
             go_away_flag,
             ref_con,
+        );
+        // OpenPort/OpenCPort initializes clipRgn to an arbitrarily large
+        // rectangle; only visRgn is constrained to the visible content.
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(window_ptr + 28),
+            Some((-32767, -32767, 32767, 32767)),
         );
 
         // Allocate a StringHandle for the title and store it in the window record.
@@ -1403,7 +1412,7 @@ impl super::TrapDispatcher {
                 }
                 if the_window != 0 {
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
-                    self.set_window_vis_clip_from_content(bus, the_window, true);
+                    self.set_window_vis_from_content(bus, the_window, true);
                     if let Some(content_rect) = self.window_content_rect(bus, the_window) {
                         Self::write_region_handle_rect(
                             bus,
@@ -1473,7 +1482,7 @@ impl super::TrapDispatcher {
                         (wt, wl, wt.wrapping_add(pb), wl.wrapping_add(pr))
                     };
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0x00);
-                    self.set_window_vis_clip_from_content(bus, the_window, false);
+                    self.set_window_vis_from_content(bus, the_window, false);
                     self.clear_queued_update_events(the_window);
                     // Erase the exposed structure area. In a full Window
                     // Manager this would be restored from the desktop or the
@@ -1676,10 +1685,18 @@ impl super::TrapDispatcher {
                     {
                         self.saved_vis_regions.insert(window, saved_vis);
                     }
+                    let update_rect = self.window_update_rect(bus, window).unwrap_or((0, 0, 0, 0));
+                    let (port_top, port_left, _, _) = self.window_port_rect(bus, window);
+                    let update_rect = (
+                        update_rect.0.wrapping_add(port_top),
+                        update_rect.1.wrapping_add(port_left),
+                        update_rect.2.wrapping_add(port_top),
+                        update_rect.3.wrapping_add(port_left),
+                    );
                     let new_vis = Self::rect_intersection(
                         Self::region_handle_rect(bus, bus.read_long(window + 24))
                             .unwrap_or((0, 0, 0, 0)),
-                        self.window_update_rect(bus, window).unwrap_or((0, 0, 0, 0)),
+                        update_rect,
                     );
                     Self::write_region_handle_rect(bus, bus.read_long(window + 24), new_vis);
                     Self::write_region_handle_rect(
@@ -2079,7 +2096,7 @@ impl super::TrapDispatcher {
                         the_window + Self::WINDOW_VISIBLE_OFFSET,
                         if show_flag { 0xFF } else { 0x00 },
                     );
-                    self.set_window_vis_clip_from_content(bus, the_window, show_flag);
+                    self.set_window_vis_from_content(bus, the_window, show_flag);
                     if show_flag {
                         if let Some(content_rect) = self.window_content_rect(bus, the_window) {
                             Self::write_region_handle_rect(
@@ -2930,6 +2947,137 @@ mod tests {
         bus.write_word(data_addr + 6, bbox.2 as u16);
         bus.write_word(data_addr + 8, bbox.3 as u16);
         handle_addr
+    }
+
+    fn read_window_region_rect(
+        bus: &crate::memory::MacMemoryBus,
+        window_ptr: u32,
+        offset: u32,
+    ) -> (i16, i16, i16, i16) {
+        let handle = bus.read_long(window_ptr + offset);
+        let ptr = bus.read_long(handle);
+        (
+            bus.read_word(ptr + 2) as i16,
+            bus.read_word(ptr + 4) as i16,
+            bus.read_word(ptr + 6) as i16,
+            bus.read_word(ptr + 8) as i16,
+        )
+    }
+
+    #[test]
+    fn init_cgraf_window_starts_with_large_clip_region() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            21,
+            1,
+            599,
+            799,
+            "",
+            2,
+            true,
+            false,
+            0,
+        );
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 578, 798),
+            "visible window region should cover the content rect"
+        );
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 28),
+            (-32767, -32767, 32767, 32767),
+            "new windows should inherit QuickDraw's arbitrarily large default clipRgn"
+        );
+    }
+
+    #[test]
+    fn init_cgraf_window_expands_near_fullscreen_plain_window_when_host_hides_menu_bar() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = true;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            21,
+            1,
+            599,
+            799,
+            "",
+            2,
+            true,
+            false,
+            0,
+        );
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (-21, -1, 579, 799),
+            "host-hidden menu bar should expose the full screen-backed PixMap"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET
+            ),
+            (-21, -1, 579, 799),
+            "initial update region should match the expanded visible region"
+        );
+    }
+
+    #[test]
+    fn showwindow_setorigin_preserves_expanded_near_fullscreen_clip_region() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = true;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            21,
+            1,
+            599,
+            799,
+            "",
+            2,
+            true,
+            false,
+            0,
+        );
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window_addr);
+        let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, (-86i16) as u16);
+        bus.write_word(sp + 2, (-143i16) as u16);
+        let result = disp.dispatch_quickdraw(true, 0x078, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 28),
+            (-32767, -32767, 32767, 32767),
+            "SetOrigin must not collapse a window's clipRgn"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -4548,11 +4696,11 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let window_addr: u32 = 0x300000;
         let (vis_rgn_data, _clip_rgn_data) =
-            setup_window_with_regions(&mut bus, window_addr, 10, 20, 110, 210);
+            setup_window_with_regions(&mut bus, window_addr, 0, 0, 110, 210);
         let (_cont_rgn_data, update_rgn_data) =
-            setup_full_window_with_regions(&mut bus, window_addr, 10, 20, 110, 210);
+            setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 110, 210);
 
-        // updateRgn = (40, 50, 140, 120), visRgn = (10, 20, 110, 210)
+        // updateRgn = (40, 50, 140, 120), visRgn = (0, 0, 110, 210)
         bus.write_word(update_rgn_data + 2, 40);
         bus.write_word(update_rgn_data + 4, 50);
         bus.write_word(update_rgn_data + 6, 140);
@@ -4573,6 +4721,49 @@ mod tests {
         assert_eq!(bus.read_word(vis_rgn_data + 8) as i16, 120, "visRgn.right");
 
         // updateRgn should be empty.
+        assert_eq!(bus.read_word(update_rgn_data + 2), 0, "updateRgn.top");
+        assert_eq!(bus.read_word(update_rgn_data + 4), 0, "updateRgn.left");
+        assert_eq!(bus.read_word(update_rgn_data + 6), 0, "updateRgn.bottom");
+        assert_eq!(bus.read_word(update_rgn_data + 8), 0, "updateRgn.right");
+    }
+
+    // Systems Twilight shifts the port origin before servicing the
+    // window update. BeginUpdate must intersect updateRgn in that shifted
+    // coordinate space so the stale pixels outside local (0,0) repaint.
+    #[test]
+    fn beginupdate_intersects_shifted_port_visrgn_with_shifted_updatergn() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr: u32 = 0x300000;
+        let (_cont_rgn_data, update_rgn_data) =
+            setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 578, 798);
+        let vis_rgn_data = 0x301000;
+
+        bus.write_word(window_addr + 16, (-86i16) as u16);
+        bus.write_word(window_addr + 18, (-143i16) as u16);
+        bus.write_word(window_addr + 20, 492);
+        bus.write_word(window_addr + 22, 655);
+        bus.write_word(vis_rgn_data + 2, (-86i16) as u16);
+        bus.write_word(vis_rgn_data + 4, (-143i16) as u16);
+        bus.write_word(vis_rgn_data + 6, 492);
+        bus.write_word(vis_rgn_data + 8, 655);
+        bus.write_word(update_rgn_data + 2, 0);
+        bus.write_word(update_rgn_data + 4, 0);
+        bus.write_word(update_rgn_data + 6, 578);
+        bus.write_word(update_rgn_data + 8, 798);
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window_addr);
+
+        let result = dispatch(&mut disp, 0x122, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        assert_eq!(bus.read_word(vis_rgn_data + 2) as i16, -86);
+        assert_eq!(bus.read_word(vis_rgn_data + 4) as i16, -143);
+        assert_eq!(bus.read_word(vis_rgn_data + 6) as i16, 492);
+        assert_eq!(bus.read_word(vis_rgn_data + 8) as i16, 655);
+
         assert_eq!(bus.read_word(update_rgn_data + 2), 0, "updateRgn.top");
         assert_eq!(bus.read_word(update_rgn_data + 4), 0, "updateRgn.left");
         assert_eq!(bus.read_word(update_rgn_data + 6), 0, "updateRgn.bottom");
@@ -4601,9 +4792,9 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let window_addr: u32 = 0x300000;
         let (vis_rgn_data, _clip_rgn_data) =
-            setup_window_with_regions(&mut bus, window_addr, 10, 20, 110, 210);
+            setup_window_with_regions(&mut bus, window_addr, 0, 0, 110, 210);
         let (_cont_rgn_data, update_rgn_data) =
-            setup_full_window_with_regions(&mut bus, window_addr, 10, 20, 110, 210);
+            setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 110, 210);
 
         // Narrow visRgn during BeginUpdate via updateRgn intersection.
         bus.write_word(update_rgn_data + 2, 30);
@@ -4630,8 +4821,8 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
 
         // Restored original visRgn from before BeginUpdate.
-        assert_eq!(bus.read_word(vis_rgn_data + 2) as i16, 10);
-        assert_eq!(bus.read_word(vis_rgn_data + 4) as i16, 20);
+        assert_eq!(bus.read_word(vis_rgn_data + 2) as i16, 0);
+        assert_eq!(bus.read_word(vis_rgn_data + 4) as i16, 0);
         assert_eq!(bus.read_word(vis_rgn_data + 6) as i16, 110);
         assert_eq!(bus.read_word(vis_rgn_data + 8) as i16, 210);
     }

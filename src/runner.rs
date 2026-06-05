@@ -4286,6 +4286,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
 
         let idx = (0xA991u16 & 0xFFF) as usize;
@@ -4508,6 +4509,7 @@ mod tests {
             last_filter_event: None,
             popup_draws: Vec::new(),
             active_popup: None,
+            active_button: None,
         });
 
         assert!(runner.fire_dialog_filter_proc());
