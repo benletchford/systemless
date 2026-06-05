@@ -131,11 +131,6 @@ fn trace_hot_pc_enabled() -> bool {
     *TRACE_HOT_PC.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_HOT_PC").is_some())
 }
 
-static TRACE_HOT_PC_FAST: OnceLock<bool> = OnceLock::new();
-fn trace_hot_pc_fast_enabled() -> bool {
-    *TRACE_HOT_PC_FAST.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_HOT_PC_FAST").is_some())
-}
-
 // Generic TickCount spin-wait fast-forward. Tri-state default:
 // headless callers (scripted harnesses, no real-time pacing) get the fast-
 // forward by default — they gain the spin-elimination win. GUI
@@ -183,93 +178,6 @@ fn spin_wait_fastfwd_gate(force_on: bool, force_off: bool, yield_for_ui: bool) -
         return true;
     }
     !yield_for_ui
-}
-
-static BATCH_SIMPLE_ENABLED: OnceLock<bool> = OnceLock::new();
-fn batch_simple_enabled() -> bool {
-    *BATCH_SIMPLE_ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("SYSTEMLESS_BATCH_SIMPLE").ok().as_deref(),
-            Some("1" | "true" | "True" | "TRUE" | "on" | "On" | "ON")
-        )
-    })
-}
-
-static FAST_BYTE_LOOPS_OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
-fn fast_byte_loops_override() -> Option<bool> {
-    *FAST_BYTE_LOOPS_OVERRIDE.get_or_init(|| env_bool("SYSTEMLESS_FAST_BYTE_LOOPS"))
-}
-
-fn fast_byte_loops_enabled_with_runner_override(
-    yield_for_ui: bool,
-    runner_override: Option<bool>,
-) -> bool {
-    fast_path_gate_with_runner_override(fast_byte_loops_override(), runner_override, yield_for_ui)
-}
-
-static FAST_PTINRECT_SCAN_OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
-fn fast_ptinrect_scan_override() -> Option<bool> {
-    *FAST_PTINRECT_SCAN_OVERRIDE.get_or_init(|| env_bool("SYSTEMLESS_FAST_PTINRECT_SCAN"))
-}
-
-fn fast_ptinrect_scan_enabled_with_runner_override(
-    yield_for_ui: bool,
-    runner_override: Option<bool>,
-) -> bool {
-    fast_path_gate_with_runner_override(
-        fast_ptinrect_scan_override(),
-        runner_override,
-        yield_for_ui,
-    )
-}
-
-static INLINE_PTINRECT_ENABLED: OnceLock<bool> = OnceLock::new();
-fn inline_ptinrect_enabled() -> bool {
-    *INLINE_PTINRECT_ENABLED.get_or_init(|| {
-        !matches!(
-            std::env::var("SYSTEMLESS_INLINE_PTINRECT").ok().as_deref(),
-            Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF")
-        )
-    })
-}
-
-fn env_bool(name: &str) -> Option<bool> {
-    match std::env::var(name).ok().as_deref() {
-        Some("1" | "true" | "True" | "TRUE" | "on" | "On" | "ON") => Some(true),
-        Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF") => Some(false),
-        _ => None,
-    }
-}
-
-fn fast_path_gate(override_value: Option<bool>, yield_for_ui: bool) -> bool {
-    override_value.unwrap_or(!yield_for_ui)
-}
-
-fn fast_path_gate_with_runner_override(
-    env_override: Option<bool>,
-    runner_override: Option<bool>,
-    yield_for_ui: bool,
-) -> bool {
-    let runner_override = if yield_for_ui { runner_override } else { None };
-    fast_path_gate(env_override.or(runner_override), yield_for_ui)
-}
-
-fn cmp_word_ccr(dest: u16, src: u16) -> u8 {
-    let result = dest.wrapping_sub(src);
-    let mut ccr = 0;
-    if (result & 0x8000) != 0 {
-        ccr |= 0x08;
-    }
-    if result == 0 {
-        ccr |= 0x04;
-    }
-    if ((dest ^ src) & (dest ^ result) & 0x8000) != 0 {
-        ccr |= 0x02;
-    }
-    if src > dest {
-        ccr |= 0x01;
-    }
-    ccr
 }
 
 /// Pure decision function for the ModalDialog noop-refire skip. ALL
@@ -458,13 +366,6 @@ pub struct FixtureRunner {
     total_instructions: u64,
     /// Number of interpreted guest instructions per `Ticks` increment.
     instructions_per_tick: u32,
-    /// Optional per-runner override for realtime byte-loop acceleration.
-    /// Environment variables still take precedence. This lets browser
-    /// frontends opt specific titles into a known-good fast path without
-    /// globally re-enabling speculative probes for every GUI workload.
-    realtime_fast_byte_loops: Option<bool>,
-    /// Optional per-runner override for realtime PtInRect scan acceleration.
-    realtime_fast_ptinrect_scan: Option<bool>,
     /// Optional cap on per-WaitNextEvent-call sleep tick advance in headless
     /// mode (when `run_steps` is called without a `tick_override`). `None`
     /// keeps the legacy drain-all behavior. `Some(n)` advances at most `n`
@@ -566,8 +467,6 @@ impl FixtureRunner {
             halted_d0: None,
             total_instructions: 0,
             instructions_per_tick: INSTRUCTIONS_PER_TICK,
-            realtime_fast_byte_loops: None,
-            realtime_fast_ptinrect_scan: None,
             wait_sleep_cap_in_headless: None,
             tick_budget: INSTRUCTIONS_PER_TICK as i32,
             frozen_ticks: None,
@@ -778,13 +677,12 @@ impl FixtureRunner {
     }
 
     /// Dump the top-N hottest PCs by sampled hit count. No-op when
-    /// `SYSTEMLESS_TRACE_HOT_PC` / `SYSTEMLESS_TRACE_HOT_PC_FAST` is unset.
-    /// Each count represents one
+    /// `SYSTEMLESS_TRACE_HOT_PC` is unset. Each count represents one
     /// `PC_SAMPLE_INTERVAL` (=1000) M68K instructions; multiply by
     /// 1000 for an approximate instruction count attributed to that
     /// PC.
     pub fn print_pc_histogram(&self, top_n: usize) {
-        if !trace_hot_pc_enabled() && !trace_hot_pc_fast_enabled() {
+        if !trace_hot_pc_enabled() {
             return;
         }
         let mut entries: Vec<(u32, u64)> =
@@ -965,14 +863,6 @@ impl FixtureRunner {
 
     pub fn instructions_per_tick(&self) -> u32 {
         self.instructions_per_tick
-    }
-
-    pub fn set_realtime_fast_byte_loops_enabled(&mut self, enabled: bool) {
-        self.realtime_fast_byte_loops = Some(enabled);
-    }
-
-    pub fn set_realtime_fast_ptinrect_scan_enabled(&mut self, enabled: bool) {
-        self.realtime_fast_ptinrect_scan = Some(enabled);
     }
 
     /// Cap the per-WaitNextEvent-call sleep tick advance in headless mode.
@@ -1577,33 +1467,6 @@ impl FixtureRunner {
         self.dispatcher.instruction_count = self.total_instructions;
         let mut count = 0;
         let mut tick_cap_reached = false;
-        let batch_simple_base_enabled = batch_simple_enabled()
-            && !trace_buffer_enabled()
-            && !trace_opcode_counts_enabled()
-            && !trace_hot_pc_enabled()
-            && trace_pc_range().is_none();
-        let fast_byte_loop_base_enabled = fast_byte_loops_enabled_with_runner_override(
-            yield_for_ui,
-            self.realtime_fast_byte_loops,
-        ) && !trace_buffer_enabled()
-            && !trace_opcode_counts_enabled()
-            && !trace_hot_pc_enabled()
-            && trace_pc_range().is_none();
-        let fast_ptinrect_scan_base_enabled = fast_ptinrect_scan_enabled_with_runner_override(
-            yield_for_ui,
-            self.realtime_fast_ptinrect_scan,
-        ) && !trace_buffer_enabled()
-            && !trace_opcode_counts_enabled()
-            && !trace_hot_pc_enabled()
-            && trace_pc_range().is_none();
-        let trace_batch_simple = std::env::var_os("SYSTEMLESS_TRACE_BATCH_SIMPLE").is_some();
-        let mut batch_simple_attempts = 0u64;
-        let mut batch_simple_hits = 0u64;
-        let mut batch_simple_instructions = 0u64;
-        let mut fast_byte_loop_hits = 0u64;
-        let mut fast_byte_loop_instructions = 0u64;
-        let mut fast_ptinrect_scan_hits = 0u64;
-        let mut fast_ptinrect_scan_instructions = 0u64;
 
         while count < max_steps && !self.halted && !tick_cap_reached {
             // Sound callbacks are interrupt work. If a previous slice queued
@@ -1775,105 +1638,6 @@ impl FixtureRunner {
                 return (count, false);
             }
 
-            if fast_byte_loop_base_enabled
-                && self.frozen_ticks.is_none()
-                && self.active_interrupt_callback.is_none()
-                && self.tick_budget > 1
-                && !crate::memory::bus::fb_write_trace_active()
-            {
-                #[cfg(debug_assertions)]
-                let watchpoint_clear = !crate::memory::bus::watchpoint_armed();
-                #[cfg(not(debug_assertions))]
-                let watchpoint_clear = true;
-
-                if watchpoint_clear {
-                    let remaining_steps = max_steps - count;
-                    let tick_room = (self.tick_budget - 1) as usize;
-                    let limit = remaining_steps.min(tick_room);
-                    let first_word = self.bus.read_word(pc);
-                    let fast = match first_word {
-                        0x161B => self.try_fast_byte_translate_loop(pc, limit),
-                        0x4218 | 0x10C0 => self.try_fast_byte_fill_loop(pc, limit),
-                        _ => 0,
-                    };
-                    if fast > 0 {
-                        fast_byte_loop_hits = fast_byte_loop_hits.wrapping_add(1);
-                        fast_byte_loop_instructions =
-                            fast_byte_loop_instructions.wrapping_add(fast as u64);
-                        self.tick_budget -= fast as i32;
-                        count += fast;
-                        self.total_instructions = self.total_instructions.wrapping_add(fast as u64);
-                        self.dispatcher.instruction_count = self.total_instructions;
-                        continue;
-                    }
-                }
-            }
-
-            if fast_ptinrect_scan_base_enabled
-                && self.frozen_ticks.is_none()
-                && self.active_interrupt_callback.is_none()
-                && self.tick_budget > 1
-                && !crate::memory::bus::fb_write_trace_active()
-            {
-                #[cfg(debug_assertions)]
-                let watchpoint_clear = !crate::memory::bus::watchpoint_armed();
-                #[cfg(not(debug_assertions))]
-                let watchpoint_clear = true;
-
-                if watchpoint_clear {
-                    let remaining_steps = max_steps - count;
-                    let tick_room = (self.tick_budget - 1) as usize;
-                    let fast = self.try_fast_ptinrect_scan_loop(pc, remaining_steps.min(tick_room));
-                    if fast > 0 {
-                        fast_ptinrect_scan_hits = fast_ptinrect_scan_hits.wrapping_add(1);
-                        fast_ptinrect_scan_instructions =
-                            fast_ptinrect_scan_instructions.wrapping_add(fast as u64);
-                        self.tick_budget -= fast as i32;
-                        count += fast;
-                        self.total_instructions = self.total_instructions.wrapping_add(fast as u64);
-                        self.dispatcher.instruction_count = self.total_instructions;
-                        continue;
-                    }
-                }
-            }
-
-            if batch_simple_base_enabled
-                && self.frozen_ticks.is_none()
-                && self.active_interrupt_callback.is_none()
-                && self.tick_budget > 1
-                && !crate::memory::bus::fb_write_trace_active()
-            {
-                #[cfg(debug_assertions)]
-                let watchpoint_clear = !crate::memory::bus::watchpoint_armed();
-                #[cfg(not(debug_assertions))]
-                let watchpoint_clear = true;
-
-                if watchpoint_clear {
-                    let remaining_steps = max_steps - count;
-                    let tick_room = (self.tick_budget - 1) as usize;
-                    let batch_limit = remaining_steps.min(tick_room);
-                    let ram_size = self.bus.ram_size();
-                    batch_simple_attempts = batch_simple_attempts.wrapping_add(1);
-                    let batch = self.cpu.step_decoded_simple_batch_in_range(
-                        &mut self.bus,
-                        batch_limit,
-                        0x60,
-                        ram_size,
-                    );
-                    if batch > 0 {
-                        batch_simple_hits = batch_simple_hits.wrapping_add(1);
-                        batch_simple_instructions =
-                            batch_simple_instructions.wrapping_add(batch as u64);
-                        self.tick_budget -= batch as i32;
-                        count += batch;
-                        self.total_instructions =
-                            self.total_instructions.wrapping_add(batch as u64);
-                        self.dispatcher.instruction_count = self.total_instructions;
-                        continue;
-                    }
-                }
-            }
-
             // Tick advancement: deduct 1 instruction; when the budget hits
             // zero, advance $016A and refill from instructions_per_tick.
             self.tick_budget -= 1;
@@ -1940,7 +1704,7 @@ impl FixtureRunner {
                     }
                     // Sampled PC histogram. 1/1000 sampling keeps the
                     // HashMap cost bounded.
-                    if (trace_hot_pc_enabled() || trace_hot_pc_fast_enabled())
+                    if trace_hot_pc_enabled()
                         && self.total_instructions.is_multiple_of(PC_SAMPLE_INTERVAL)
                     {
                         *self.pc_histogram.entry(pc).or_insert(0) += 1;
@@ -1978,21 +1742,18 @@ impl FixtureRunner {
 
                     // --- Runner-inline fast paths for hot traps ---
                     //
-                    // Rule of thumb: inline only tiny, pure trap bodies
-                    // that are proven hot in a reference workload, or that
-                    // are part of a larger fused loop below. Low-count
-                    // handlers with real side effects should stay in the
-                    // dispatcher so this run loop does not become the whole
-                    // Toolbox.
+                    // Rule of thumb: only inline a trap's body here if
+                    // BOTH hold:
+                    //   (a) per-call saving > ~100ns (handler does
+                    //       non-trivial work relative to dispatch
+                    //       overhead), AND
+                    //   (b) call count > ~5M per reference workload.
+                    // Below either threshold, the dispatch-cost
+                    // saving is swamped by I-cache pressure from
+                    // adding more code to this hot loop.
                     //
                     // Current inlines:
-                    //   $A860 WaitNextEvent
-                    //   $A8A7 SetRect
-                    //   $A8A8 OffsetRect
-                    //   $A8AD PtInRect
                     //   $A975 TickCount
-                    //   $A972 GetMouse
-                    //   $A976 GetKeys
                     //   $A991 ModalDialog no-op
                     // plus:
                     //   $A975 spin-wait fast-fwd — detects TickCount
@@ -2125,141 +1886,6 @@ impl FixtureRunner {
                             self.cpu.write_reg(Register::PC, pc);
                             continue;
                         }
-                    }
-
-                    if opcode == 0xA860
-                        && !crate::trap::dispatch::trace_input_enabled()
-                        && !self.dispatcher.is_oracle_recording()
-                    {
-                        let sp = self.cpu.core.a(7);
-                        let sleep = (self.bus.read_long(sp + 4) as i32).max(0) as u32;
-                        let event_ptr = self.bus.read_long(sp + 8);
-                        let event_mask = self.bus.read_word(sp + 12);
-
-                        self.dispatcher.event_counter =
-                            self.dispatcher.event_counter.wrapping_add(1);
-                        let (what, message, where_v, where_h, modifiers, has_event) =
-                            self.dispatcher.dequeue_toolbox_event(event_mask);
-                        if !has_event && sleep != 0 {
-                            self.dispatcher.pending_wait_sleep_ticks = self
-                                .dispatcher
-                                .pending_wait_sleep_ticks
-                                .saturating_add(sleep);
-                        }
-                        self.dispatcher.write_event_record(
-                            &mut self.bus,
-                            event_ptr,
-                            what,
-                            message,
-                            where_v,
-                            where_h,
-                            modifiers,
-                        );
-                        self.bus
-                            .write_word(sp + 14, if has_event { 0xFFFF } else { 0 });
-                        self.cpu.write_reg(Register::A7, sp + 14);
-                        self.note_inline_trap(opcode, pc, true);
-                        continue;
-                    }
-
-                    if opcode == 0xA8A7 {
-                        let sp = self.cpu.core.a(7);
-                        let bottom = self.bus.read_word(sp);
-                        let right = self.bus.read_word(sp + 2);
-                        let top = self.bus.read_word(sp + 4);
-                        let left = self.bus.read_word(sp + 6);
-                        let rect_ptr = self.bus.read_long(sp + 8);
-                        self.cpu.write_reg(Register::A7, sp + 12);
-                        self.bus.write_word(rect_ptr, top);
-                        self.bus.write_word(rect_ptr + 2, left);
-                        self.bus.write_word(rect_ptr + 4, bottom);
-                        self.bus.write_word(rect_ptr + 6, right);
-                        self.note_inline_trap(opcode, pc, false);
-                        continue;
-                    }
-
-                    if opcode == 0xA8A8 {
-                        let sp = self.cpu.core.a(7);
-                        let dv = self.bus.read_word(sp) as i16;
-                        let dh = self.bus.read_word(sp + 2) as i16;
-                        let rect_ptr = self.bus.read_long(sp + 4);
-                        self.cpu.write_reg(Register::A7, sp + 8);
-                        let top = self.bus.read_word(rect_ptr) as i16;
-                        let left = self.bus.read_word(rect_ptr + 2) as i16;
-                        let bottom = self.bus.read_word(rect_ptr + 4) as i16;
-                        let right = self.bus.read_word(rect_ptr + 6) as i16;
-                        self.bus.write_word(rect_ptr, top.wrapping_add(dv) as u16);
-                        self.bus
-                            .write_word(rect_ptr + 2, left.wrapping_add(dh) as u16);
-                        self.bus
-                            .write_word(rect_ptr + 4, bottom.wrapping_add(dv) as u16);
-                        self.bus
-                            .write_word(rect_ptr + 6, right.wrapping_add(dh) as u16);
-                        self.note_inline_trap(opcode, pc, false);
-                        continue;
-                    }
-
-                    // PtInRect ($A8AD) is a tiny pure stack/memory predicate,
-                    // but EV calls it inside a tight rectangle scan. Inlining
-                    // preserves the exact handler body while skipping the
-                    // generic trap-dispatch match chain.
-                    if opcode == 0xA8AD && inline_ptinrect_enabled() {
-                        let sp = self.cpu.core.a(7);
-                        let rect_ptr = self.bus.read_long(sp);
-                        let pt_v = self.bus.read_word(sp + 4) as i16;
-                        let pt_h = self.bus.read_word(sp + 6) as i16;
-                        let top = self.bus.read_word(rect_ptr) as i16;
-                        let left = self.bus.read_word(rect_ptr + 2) as i16;
-                        let bottom = self.bus.read_word(rect_ptr + 4) as i16;
-                        let right = self.bus.read_word(rect_ptr + 6) as i16;
-                        let in_rect = pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right;
-                        self.bus
-                            .write_word(sp + 8, if in_rect { 0x0100 } else { 0 });
-                        self.cpu.write_reg(Register::A7, sp + 8);
-
-                        self.dispatcher.trap_count += 1;
-                        self.dispatcher.current_trap_word = opcode;
-                        if pc.wrapping_add(2) < 0x0080_0000
-                            && self.dispatcher.menu_tracking.is_none()
-                            && self.dispatcher.dialog_tracking.is_none()
-                        {
-                            self.dispatcher.game_trap_count += 1;
-                        }
-                        let idx = (opcode & 0xFFF) as usize;
-                        self.dispatcher.trap_histogram[idx] =
-                            self.dispatcher.trap_histogram[idx].saturating_add(1);
-                        self.dispatcher.inline_skipped[idx] =
-                            self.dispatcher.inline_skipped[idx].saturating_add(1);
-                        continue;
-                    }
-
-                    if opcode == 0xA972 && !crate::trap::dispatch::trace_input_enabled() {
-                        let sp = self.cpu.core.a(7);
-                        let pt_ptr = self.bus.read_long(sp);
-                        let a5 = self.cpu.read_reg(Register::A5);
-                        let global_ptr = self.bus.read_long(a5);
-                        let port = self.bus.read_long(global_ptr);
-                        let (bounds_top, bounds_left) =
-                            self.dispatcher.port_bounds_top_left(&self.bus, port);
-                        let (mouse_v, mouse_h) = self.dispatcher.mouse_pos;
-                        self.bus
-                            .write_word(pt_ptr, mouse_v.wrapping_add(bounds_top) as u16);
-                        self.bus
-                            .write_word(pt_ptr + 2, mouse_h.wrapping_add(bounds_left) as u16);
-                        self.cpu.write_reg(Register::A7, sp + 4);
-                        self.note_inline_trap(opcode, pc, false);
-                        continue;
-                    }
-
-                    if opcode == 0xA976 && !crate::trap::dispatch::trace_input_enabled() {
-                        let sp = self.cpu.core.a(7);
-                        let keys_ptr = self.bus.read_long(sp);
-                        if keys_ptr != 0 {
-                            self.bus.write_bytes(keys_ptr, &self.dispatcher.key_map);
-                        }
-                        self.cpu.write_reg(Register::A7, sp + 4);
-                        self.note_inline_trap(opcode, pc, false);
-                        continue;
                     }
 
                     match self
@@ -2406,294 +2032,7 @@ impl FixtureRunner {
 
         self.finish_host_frame(audio_samples);
 
-        if trace_batch_simple {
-            eprintln!(
-                "[BATCH-SIMPLE] attempts={} hits={} instructions={} fast_byte_hits={} fast_byte_instructions={} fast_ptinrect_scan_hits={} fast_ptinrect_scan_instructions={}",
-                batch_simple_attempts,
-                batch_simple_hits,
-                batch_simple_instructions,
-                fast_byte_loop_hits,
-                fast_byte_loop_instructions,
-                fast_ptinrect_scan_hits,
-                fast_ptinrect_scan_instructions
-            );
-        }
-
         (count, !self.halted)
-    }
-
-    fn note_inline_trap(&mut self, opcode: u16, trap_pc: u32, idle_trap: bool) {
-        self.dispatcher.trap_count = self.dispatcher.trap_count.wrapping_add(1);
-        self.dispatcher.current_trap_word = opcode;
-        if !idle_trap
-            && trap_pc.wrapping_add(2) < 0x0080_0000
-            && self.dispatcher.menu_tracking.is_none()
-            && self.dispatcher.dialog_tracking.is_none()
-        {
-            self.dispatcher.game_trap_count = self.dispatcher.game_trap_count.wrapping_add(1);
-        }
-        let idx = (opcode & 0xFFF) as usize;
-        self.dispatcher.trap_histogram[idx] = self.dispatcher.trap_histogram[idx].saturating_add(1);
-        self.dispatcher.inline_skipped[idx] = self.dispatcher.inline_skipped[idx].saturating_add(1);
-    }
-
-    fn try_fast_ptinrect_scan_loop(&mut self, pc: u32, max_instructions: usize) -> usize {
-        const LOOP_BYTES: u32 = 38;
-        const MIN_ITER_INSTRUCTIONS: usize = 14;
-        if max_instructions < MIN_ITER_INSTRUCTIONS {
-            return 0;
-        }
-
-        if self.bus.read_word(pc) != 0x554F
-            || self.bus.read_word(pc.wrapping_add(2)) != 0x2F2E
-            || self.bus.read_word(pc.wrapping_add(6)) != 0x3043
-            || self.bus.read_word(pc.wrapping_add(8)) != 0x2008
-            || self.bus.read_word(pc.wrapping_add(10)) != 0xE788
-            || self.bus.read_word(pc.wrapping_add(12)) != 0x41F9
-            || self.bus.read_word(pc.wrapping_add(18)) != 0xD1C0
-            || self.bus.read_word(pc.wrapping_add(20)) != 0x4850
-            || self.bus.read_word(pc.wrapping_add(22)) != 0xA8AD
-            || self.bus.read_word(pc.wrapping_add(24)) != 0x101F
-            || self.bus.read_word(pc.wrapping_add(26)) != 0x6702
-            || self.bus.read_word(pc.wrapping_add(28)) != 0x3803
-            || self.bus.read_word(pc.wrapping_add(30)) != 0x5243
-            || self.bus.read_word(pc.wrapping_add(32)) != 0x0C43
-            || self.bus.read_word(pc.wrapping_add(36)) != 0x6FDA
-        {
-            return 0;
-        }
-
-        let point_disp = self.bus.read_word(pc.wrapping_add(4)) as i16 as i32 as u32;
-        let rect_base = ((self.bus.read_word(pc.wrapping_add(14)) as u32) << 16)
-            | self.bus.read_word(pc.wrapping_add(16)) as u32;
-        let limit_word = self.bus.read_word(pc.wrapping_add(34));
-        let start_word = self.cpu.read_reg(Register::D3) as u16;
-        let start_index = start_word as i16;
-        let limit = limit_word as i16;
-        if start_index > limit {
-            return 0;
-        }
-
-        let iterations = (limit as i32 - start_index as i32 + 1) as usize;
-        if iterations == 0 || iterations > 1024 {
-            return 0;
-        }
-
-        let a6 = self.cpu.read_reg(Register::A6);
-        let initial_sp = self.cpu.read_reg(Register::A7);
-        let d3_initial = self.cpu.read_reg(Register::D3);
-        let mut d4 = self.cpu.read_reg(Register::D4);
-        let mut d0 = self.cpu.read_reg(Register::D0);
-        let mut a0 = self.cpu.read_reg(Register::A0);
-        let mut instruction_count = 0usize;
-        let mut scanned = Vec::with_capacity(iterations);
-
-        for i in 0..iterations {
-            let index_word = start_word.wrapping_add(i as u16);
-            let index = index_word as i16 as i32 as u32;
-            let offset = index.wrapping_mul(8);
-            let rect_ptr = rect_base.wrapping_add(offset);
-            let point = self.bus.read_long(a6.wrapping_add(point_disp));
-
-            let pt_v = (point >> 16) as u16 as i16;
-            let pt_h = point as u16 as i16;
-            let top = self.bus.read_word(rect_ptr) as i16;
-            let left = self.bus.read_word(rect_ptr + 2) as i16;
-            let bottom = self.bus.read_word(rect_ptr + 4) as i16;
-            let right = self.bus.read_word(rect_ptr + 6) as i16;
-            let in_rect = pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right;
-            instruction_count += MIN_ITER_INSTRUCTIONS + usize::from(in_rect);
-            if instruction_count > max_instructions {
-                return 0;
-            }
-            scanned.push((index_word, offset, rect_ptr, point, in_rect));
-        }
-
-        let stack_sp = initial_sp.wrapping_sub(10);
-        for (index_word, offset, rect_ptr, point, in_rect) in scanned {
-            self.bus.write_long(initial_sp.wrapping_sub(6), point);
-            self.bus.write_long(stack_sp, rect_ptr);
-            self.bus
-                .write_word(stack_sp.wrapping_add(8), if in_rect { 0x0100 } else { 0 });
-
-            a0 = rect_ptr;
-            d0 = (offset & 0xFFFF_FF00) | u32::from(in_rect);
-            if in_rect {
-                d4 = (d4 & 0xFFFF_0000) | index_word as u32;
-            }
-        }
-
-        let final_word = start_word.wrapping_add(iterations as u16);
-        self.cpu.write_reg(Register::A0, a0);
-        self.cpu.write_reg(Register::A7, initial_sp);
-        self.cpu.write_reg(Register::D0, d0);
-        self.cpu
-            .write_reg(Register::D3, (d3_initial & 0xFFFF_0000) | final_word as u32);
-        self.cpu.write_reg(Register::D4, d4);
-
-        let x = self.cpu.core.get_ccr() & 0x10;
-        self.cpu
-            .core
-            .set_ccr(x | cmp_word_ccr(final_word, limit_word));
-        self.cpu.core.ppc = pc.wrapping_add(36);
-        self.cpu.core.ir = 0x6FDA;
-        self.cpu
-            .write_reg(Register::PC, pc.wrapping_add(LOOP_BYTES));
-
-        let trap_count = iterations as u64;
-        self.dispatcher.trap_count = self.dispatcher.trap_count.wrapping_add(trap_count);
-        self.dispatcher.current_trap_word = 0xA8AD;
-        if pc.wrapping_add(24) < 0x0080_0000
-            && self.dispatcher.menu_tracking.is_none()
-            && self.dispatcher.dialog_tracking.is_none()
-        {
-            self.dispatcher.game_trap_count =
-                self.dispatcher.game_trap_count.wrapping_add(trap_count);
-        }
-        let idx = (0xA8ADu16 & 0xFFF) as usize;
-        self.dispatcher.trap_histogram[idx] =
-            self.dispatcher.trap_histogram[idx].saturating_add(trap_count);
-        self.dispatcher.inline_skipped[idx] =
-            self.dispatcher.inline_skipped[idx].saturating_add(trap_count);
-
-        instruction_count
-    }
-
-    fn try_fast_byte_fill_loop(&mut self, pc: u32, max_instructions: usize) -> usize {
-        if max_instructions >= 4
-            && self.bus.read_word(pc) == 0x4218
-            && self.bus.read_word(pc.wrapping_add(2)) == 0x5380
-            && self.bus.read_word(pc.wrapping_add(4)) == 0x4A80
-            && self.bus.read_word(pc.wrapping_add(6)) == 0x66F8
-        {
-            let iterations = self.cpu.read_reg(Register::D0) as usize;
-            let instruction_count = iterations.saturating_mul(4);
-            if iterations == 0 || instruction_count > max_instructions {
-                return 0;
-            }
-            let mut a0 = self.cpu.read_reg(Register::A0);
-            for _ in 0..iterations {
-                self.bus.write_byte(a0, 0);
-                a0 = a0.wrapping_add(1);
-            }
-            self.cpu.write_reg(Register::A0, a0);
-            self.cpu.write_reg(Register::D0, 0);
-            let x = self.cpu.core.get_ccr() & 0x10;
-            self.cpu.core.set_ccr(x | 0x04);
-            self.cpu.core.ppc = pc.wrapping_add(6);
-            self.cpu.core.ir = 0x66F8;
-            self.cpu.write_reg(Register::PC, pc.wrapping_add(8));
-            return instruction_count;
-        }
-
-        if max_instructions >= 3
-            && self.bus.read_word(pc) == 0x10C0
-            && self.bus.read_word(pc.wrapping_add(2)) == 0xB1C9
-            && self.bus.read_word(pc.wrapping_add(4)) == 0x6DFA
-        {
-            let a0_initial = self.cpu.read_reg(Register::A0);
-            let a1 = self.cpu.read_reg(Register::A1);
-            if a1 <= a0_initial {
-                return 0;
-            }
-            let iterations = a1.wrapping_sub(a0_initial) as usize;
-            let instruction_count = iterations.saturating_mul(3);
-            if instruction_count > max_instructions {
-                return 0;
-            }
-            let value = self.cpu.read_reg(Register::D0) as u8;
-            let mut a0 = a0_initial;
-            for _ in 0..iterations {
-                self.bus.write_byte(a0, value);
-                a0 = a0.wrapping_add(1);
-            }
-            self.cpu.write_reg(Register::A0, a0);
-            let x = self.cpu.core.get_ccr() & 0x10;
-            self.cpu.core.set_ccr(x | 0x04);
-            self.cpu.core.ppc = pc.wrapping_add(4);
-            self.cpu.core.ir = 0x6DFA;
-            self.cpu.write_reg(Register::PC, pc.wrapping_add(6));
-            return instruction_count;
-        }
-
-        0
-    }
-
-    fn try_fast_byte_translate_loop(&mut self, pc: u32, max_instructions: usize) -> usize {
-        const LOOP_INSTRUCTIONS: usize = 10;
-        const LOOP_BYTES: u32 = 22;
-        if max_instructions < LOOP_INSTRUCTIONS {
-            return 0;
-        }
-
-        if self.bus.read_word(pc) != 0x161B
-            || self.bus.read_word(pc.wrapping_add(2)) != 0x7800
-            || self.bus.read_word(pc.wrapping_add(4)) != 0x1803
-            || self.bus.read_word(pc.wrapping_add(6)) != 0x0644
-            || self.bus.read_word(pc.wrapping_add(10)) != 0x1604
-            || self.bus.read_word(pc.wrapping_add(12)) != 0x18C3
-            || self.bus.read_word(pc.wrapping_add(14)) != 0x2005
-            || self.bus.read_word(pc.wrapping_add(16)) != 0x5385
-            || self.bus.read_word(pc.wrapping_add(18)) != 0x4A80
-            || self.bus.read_word(pc.wrapping_add(20)) != 0x66EA
-        {
-            return 0;
-        }
-
-        let immediate = self.bus.read_word(pc.wrapping_add(8));
-        let max_iterations = max_instructions / LOOP_INSTRUCTIONS;
-        let initial_d5 = self.cpu.read_reg(Register::D5);
-        let iterations_to_exit = initial_d5 as u64 + 1;
-        let iterations = max_iterations.min(iterations_to_exit.min(usize::MAX as u64) as usize);
-        if iterations == 0 {
-            return 0;
-        }
-
-        let mut a3 = self.cpu.read_reg(Register::A3);
-        let mut a4 = self.cpu.read_reg(Register::A4);
-        let add = immediate as u8;
-        let mut last_old_d5 = initial_d5;
-        let mut last_out = self.cpu.read_reg(Register::D3) as u8;
-        for i in 0..iterations {
-            last_old_d5 = initial_d5.wrapping_sub(i as u32);
-            let input = self.bus.read_byte(a3);
-            a3 = a3.wrapping_add(1);
-            last_out = input.wrapping_add(add);
-            self.bus.write_byte(a4, last_out);
-            a4 = a4.wrapping_add(1);
-        }
-
-        let new_d5 = initial_d5.wrapping_sub(iterations as u32);
-        let d4 = (last_out.wrapping_sub(add) as u16).wrapping_add(immediate) as u32;
-        self.cpu.write_reg(Register::A3, a3);
-        self.cpu.write_reg(Register::A4, a4);
-        self.cpu.write_reg(Register::D0, last_old_d5);
-        self.cpu.write_reg(
-            Register::D3,
-            (self.cpu.read_reg(Register::D3) & !0xFF) | last_out as u32,
-        );
-        self.cpu.write_reg(Register::D4, d4 & 0xFFFF);
-        self.cpu.write_reg(Register::D5, new_d5);
-
-        let x = self.cpu.core.get_ccr() & 0x10;
-        let nz = if last_old_d5 == 0 {
-            0x04
-        } else if (last_old_d5 & 0x8000_0000) != 0 {
-            0x08
-        } else {
-            0
-        };
-        self.cpu.core.set_ccr(x | nz);
-        self.cpu.core.ppc = pc.wrapping_add(20);
-        self.cpu.core.ir = 0x66EA;
-        if last_old_d5 == 0 {
-            self.cpu
-                .write_reg(Register::PC, pc.wrapping_add(LOOP_BYTES));
-        } else {
-            self.cpu.write_reg(Register::PC, pc);
-        }
-
-        iterations * LOOP_INSTRUCTIONS
     }
 
     /// Run for a specific number of steps and mix the supplied amount of host audio.
@@ -4784,38 +4123,6 @@ mod tests {
         assert!(spin_wait_fastfwd_gate(true, false, true));
     }
 
-    #[test]
-    fn fast_probe_gate_defaults_headless_on_gui_off() {
-        // The speculative byte/PtInRect loop probes add miss-path reads
-        // around every instruction. Keep them for headless benchmark/play
-        // harnesses, but avoid the browser/native-GUI default where those
-        // extra reads can starve realtime audio.
-        assert!(fast_path_gate(None, false));
-        assert!(!fast_path_gate(None, true));
-        assert!(fast_path_gate(Some(true), true));
-        assert!(!fast_path_gate(Some(false), false));
-    }
-
-    #[test]
-    fn fast_probe_gate_honors_runner_override_when_env_unset() {
-        assert!(fast_path_gate_with_runner_override(None, Some(true), true));
-        assert!(!fast_path_gate_with_runner_override(
-            None,
-            Some(false),
-            true
-        ));
-        assert!(fast_path_gate_with_runner_override(
-            None,
-            Some(false),
-            false
-        ));
-        assert!(!fast_path_gate_with_runner_override(
-            Some(false),
-            Some(true),
-            true
-        ));
-    }
-
     /// Regression gates for the ModalDialog noop-refire skip. The GUI
     /// gate is the most critical because tick-driven animations
     /// require real refires.
@@ -4955,191 +4262,6 @@ mod tests {
             runner.dispatcher.trap_histogram[idx], 1,
             "the same path must also increment trap_histogram[$0175]"
         );
-    }
-
-    #[test]
-    fn ptinrect_inline_preserves_result_stack_and_counters() {
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        let base = 0x0001_0000u32;
-        let sp = 0x0010_0000u32;
-        let rect_ptr = 0x0011_0000u32;
-
-        runner.bus.write_word(base, 0xA8AD); // _PtInRect
-        runner.bus.write_word(base + 2, 0x4E71); // NOP sentinel
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
-        runner.set_instructions_per_tick(1_000_000);
-
-        runner.bus.write_word(rect_ptr, 10); // top
-        runner.bus.write_word(rect_ptr + 2, 20); // left
-        runner.bus.write_word(rect_ptr + 4, 30); // bottom
-        runner.bus.write_word(rect_ptr + 6, 40); // right
-        runner.bus.write_long(sp, rect_ptr);
-        runner.bus.write_word(sp + 4, 15); // pt.v
-        runner.bus.write_word(sp + 6, 25); // pt.h
-        runner.bus.write_word(sp + 8, 0xDEAD);
-
-        let idx = (0xA8ADu16 & 0xFFF) as usize;
-        let before_inline = runner.dispatcher.inline_skipped[idx];
-        let before_hist = runner.dispatcher.trap_histogram[idx];
-        let before_game_traps = runner.dispatcher.game_trap_count;
-
-        let (steps, running) = runner.run_steps(1, None);
-
-        assert!(running, "runner should not halt on inline PtInRect");
-        assert_eq!(steps, 1);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 8);
-        assert_eq!(runner.bus.read_word(sp + 8), 0x0100);
-        assert_eq!(runner.dispatcher.current_trap_word, 0xA8AD);
-        assert_eq!(runner.dispatcher.game_trap_count - before_game_traps, 1);
-        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 1);
-        assert_eq!(runner.dispatcher.trap_histogram[idx] - before_hist, 1);
-    }
-
-    #[test]
-    fn ptinrect_scan_fast_path_preserves_loop_state() {
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        let base = 0x0001_0000u32;
-        let rect_base = 0x0011_0000u32;
-        let a6 = 0x0012_0010u32;
-        let sp = 0x0013_0000u32;
-        let point = ((15u32) << 16) | 25;
-
-        let words = [
-            0x554F,
-            0x2F2E,
-            0xFFFC,
-            0x3043,
-            0x2008,
-            0xE788,
-            0x41F9,
-            (rect_base >> 16) as u16,
-            rect_base as u16,
-            0xD1C0,
-            0x4850,
-            0xA8AD,
-            0x101F,
-            0x6702,
-            0x3803,
-            0x5243,
-            0x0C43,
-            0x0005,
-            0x6FDA,
-        ];
-        for (i, word) in words.iter().copied().enumerate() {
-            runner.bus.write_word(base + (i as u32) * 2, word);
-        }
-
-        let rects = [
-            (0, 0, 10, 10),
-            (10, 20, 30, 40),
-            (0, 0, 20, 30),
-            (20, 0, 30, 30),
-            (12, 24, 16, 26),
-            (40, 40, 50, 50),
-        ];
-        for (i, (top, left, bottom, right)) in rects.iter().copied().enumerate() {
-            let rect = rect_base + (i as u32) * 8;
-            runner.bus.write_word(rect, top as u16);
-            runner.bus.write_word(rect + 2, left as u16);
-            runner.bus.write_word(rect + 4, bottom as u16);
-            runner.bus.write_word(rect + 6, right as u16);
-        }
-        runner.bus.write_long(a6 - 4, point);
-
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A6, a6);
-        runner.cpu.write_reg(Register::A7, sp);
-        runner.cpu.write_reg(Register::D3, 0);
-        runner.cpu.write_reg(Register::D4, 0xFFFF_FFFF);
-        runner.cpu.core.set_ccr(0x10);
-        runner.set_instructions_per_tick(1_000_000);
-
-        let idx = (0xA8ADu16 & 0xFFF) as usize;
-        let before_inline = runner.dispatcher.inline_skipped[idx];
-        let before_hist = runner.dispatcher.trap_histogram[idx];
-        let before_game_traps = runner.dispatcher.game_trap_count;
-
-        let (steps, running) = runner.run_steps(87, None);
-
-        assert!(running, "runner should not halt on fast PtInRect scan");
-        assert_eq!(steps, 87);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 38);
-        assert_eq!(runner.cpu.read_reg(Register::A0), rect_base + 5 * 8);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0);
-        assert_eq!(runner.cpu.read_reg(Register::D3), 6);
-        assert_eq!(runner.cpu.read_reg(Register::D4), 0xFFFF_0004);
-        assert_eq!(runner.cpu.core.get_ccr(), 0x10);
-        assert_eq!(runner.bus.read_long(sp - 10), rect_base + 5 * 8);
-        assert_eq!(runner.bus.read_long(sp - 6), point);
-        assert_eq!(runner.bus.read_word(sp - 2), 0);
-        assert_eq!(runner.dispatcher.current_trap_word, 0xA8AD);
-        assert_eq!(runner.dispatcher.game_trap_count - before_game_traps, 6);
-        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 6);
-        assert_eq!(runner.dispatcher.trap_histogram[idx] - before_hist, 6);
-    }
-
-    #[test]
-    fn byte_zero_fill_fast_path_preserves_loop_state() {
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        let base = 0x0001_0000u32;
-        let dst = 0x0010_0000u32;
-
-        runner.bus.write_word(base, 0x4218); // CLR.B (A0)+
-        runner.bus.write_word(base + 2, 0x5380); // SUBQ.L #1,D0
-        runner.bus.write_word(base + 4, 0x4A80); // TST.L D0
-        runner.bus.write_word(base + 6, 0x66F8); // BNE.S loop
-        for i in 0..4 {
-            runner.bus.write_byte(dst + i, 0xA5);
-        }
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A0, dst);
-        runner.cpu.write_reg(Register::D0, 4);
-        runner.cpu.core.set_ccr(0x10);
-        runner.set_instructions_per_tick(1_000_000);
-
-        let (steps, running) = runner.run_steps(16, None);
-
-        assert!(running);
-        assert_eq!(steps, 16);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 8);
-        assert_eq!(runner.cpu.read_reg(Register::A0), dst + 4);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0);
-        assert_eq!(runner.cpu.core.get_ccr(), 0x14);
-        for i in 0..4 {
-            assert_eq!(runner.bus.read_byte(dst + i), 0);
-        }
-    }
-
-    #[test]
-    fn byte_value_fill_fast_path_preserves_loop_state() {
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        let base = 0x0001_0000u32;
-        let dst = 0x0010_0000u32;
-
-        runner.bus.write_word(base, 0x10C0); // MOVE.B D0,(A0)+
-        runner.bus.write_word(base + 2, 0xB1C9); // CMPA.L A1,A0
-        runner.bus.write_word(base + 4, 0x6DFA); // BLT.S loop
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A0, dst);
-        runner.cpu.write_reg(Register::A1, dst + 4);
-        runner.cpu.write_reg(Register::D0, 0x0000_00AB);
-        runner.cpu.core.set_ccr(0x10);
-        runner.set_instructions_per_tick(1_000_000);
-
-        let (steps, running) = runner.run_steps(12, None);
-
-        assert!(running);
-        assert_eq!(steps, 12);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 6);
-        assert_eq!(runner.cpu.read_reg(Register::A0), dst + 4);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0x0000_00AB);
-        assert_eq!(runner.cpu.core.get_ccr(), 0x14);
-        for i in 0..4 {
-            assert_eq!(runner.bus.read_byte(dst + i), 0xAB);
-        }
     }
 
     /// Regression gate for the `inline_skipped` counter on the
