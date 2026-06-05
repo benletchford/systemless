@@ -195,26 +195,22 @@ fn batch_simple_enabled() -> bool {
     })
 }
 
-static FAST_BYTE_LOOPS_ENABLED: OnceLock<bool> = OnceLock::new();
-fn fast_byte_loops_enabled() -> bool {
-    *FAST_BYTE_LOOPS_ENABLED.get_or_init(|| {
-        !matches!(
-            std::env::var("SYSTEMLESS_FAST_BYTE_LOOPS").ok().as_deref(),
-            Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF")
-        )
-    })
+static FAST_BYTE_LOOPS_OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
+fn fast_byte_loops_override() -> Option<bool> {
+    *FAST_BYTE_LOOPS_OVERRIDE.get_or_init(|| env_bool("SYSTEMLESS_FAST_BYTE_LOOPS"))
 }
 
-static FAST_PTINRECT_SCAN_ENABLED: OnceLock<bool> = OnceLock::new();
-fn fast_ptinrect_scan_enabled() -> bool {
-    *FAST_PTINRECT_SCAN_ENABLED.get_or_init(|| {
-        !matches!(
-            std::env::var("SYSTEMLESS_FAST_PTINRECT_SCAN")
-                .ok()
-                .as_deref(),
-            Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF")
-        )
-    })
+fn fast_byte_loops_enabled_for(yield_for_ui: bool) -> bool {
+    fast_path_gate(fast_byte_loops_override(), yield_for_ui)
+}
+
+static FAST_PTINRECT_SCAN_OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
+fn fast_ptinrect_scan_override() -> Option<bool> {
+    *FAST_PTINRECT_SCAN_OVERRIDE.get_or_init(|| env_bool("SYSTEMLESS_FAST_PTINRECT_SCAN"))
+}
+
+fn fast_ptinrect_scan_enabled_for(yield_for_ui: bool) -> bool {
+    fast_path_gate(fast_ptinrect_scan_override(), yield_for_ui)
 }
 
 static INLINE_PTINRECT_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -225,6 +221,18 @@ fn inline_ptinrect_enabled() -> bool {
             Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF")
         )
     })
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    match std::env::var(name).ok().as_deref() {
+        Some("1" | "true" | "True" | "TRUE" | "on" | "On" | "ON") => Some(true),
+        Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF") => Some(false),
+        _ => None,
+    }
+}
+
+fn fast_path_gate(override_value: Option<bool>, yield_for_ui: bool) -> bool {
+    override_value.unwrap_or(!yield_for_ui)
 }
 
 fn cmp_word_ccr(dest: u16, src: u16) -> u8 {
@@ -1538,12 +1546,12 @@ impl FixtureRunner {
             && !trace_opcode_counts_enabled()
             && !trace_hot_pc_enabled()
             && trace_pc_range().is_none();
-        let fast_byte_loop_base_enabled = fast_byte_loops_enabled()
+        let fast_byte_loop_base_enabled = fast_byte_loops_enabled_for(yield_for_ui)
             && !trace_buffer_enabled()
             && !trace_opcode_counts_enabled()
             && !trace_hot_pc_enabled()
             && trace_pc_range().is_none();
-        let fast_ptinrect_scan_base_enabled = fast_ptinrect_scan_enabled()
+        let fast_ptinrect_scan_base_enabled = fast_ptinrect_scan_enabled_for(yield_for_ui)
             && !trace_buffer_enabled()
             && !trace_opcode_counts_enabled()
             && !trace_hot_pc_enabled()
@@ -4734,6 +4742,18 @@ mod tests {
         // force_on (without force_off) flips GUI from off → on.
         assert!(spin_wait_fastfwd_gate(true, false, false));
         assert!(spin_wait_fastfwd_gate(true, false, true));
+    }
+
+    #[test]
+    fn fast_probe_gate_defaults_headless_on_gui_off() {
+        // The speculative byte/PtInRect loop probes add miss-path reads
+        // around every instruction. Keep them for headless benchmark/play
+        // harnesses, but avoid the browser/native-GUI default where those
+        // extra reads can starve realtime audio.
+        assert!(fast_path_gate(None, false));
+        assert!(!fast_path_gate(None, true));
+        assert!(fast_path_gate(Some(true), true));
+        assert!(!fast_path_gate(Some(false), false));
     }
 
     /// Regression gates for the ModalDialog noop-refire skip. The GUI
