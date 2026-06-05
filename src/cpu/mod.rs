@@ -167,6 +167,19 @@ impl M68kCpu {
             }
         }
     }
+
+    #[inline]
+    pub fn step_decoded_simple_batch_in_range(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        max_instructions: usize,
+        min_pc: u32,
+        max_pc_exclusive: u32,
+    ) -> usize {
+        self.core
+            .step_decoded_simple_batch_in_range(bus, max_instructions, min_pc, max_pc_exclusive)
+            .0
+    }
 }
 
 impl Default for M68kCpu {
