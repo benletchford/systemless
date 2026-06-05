@@ -206,6 +206,17 @@ fn modaldialog_refire_is_noop(
         && rendered_pixels_final
         && event_queue_empty
 }
+
+/// Some tracking traps should block the application's foreground event
+/// loop without advancing the app-visible tick clock in GUI mode. ModalDialog
+/// is different: the dialog manager is itself the active event loop, and
+/// Sound/VBL/Time Manager work must keep advancing while it tracks input.
+fn tracking_refire_should_freeze_ticks(opcode: u16) -> bool {
+    let trap_no_autopop = opcode & !0x0400;
+    trap_no_autopop == 0xA93D // MenuSelect
+        || trap_no_autopop == 0xA80B // PopUpMenuSelect / MenuKey tracking
+        || trap_no_autopop == 0xA968 // TrackControl
+}
 // Cap how many ticks the fast-forward will advance in one shot,
 // to protect against pathological target values (e.g. overflowed
 // unsigned register values being misinterpreted as huge-future
@@ -1440,11 +1451,13 @@ impl FixtureRunner {
         audio_samples: usize,
         yield_for_ui: bool,
     ) -> (usize, bool) {
-        // Freeze ticks while menu tracking is active — mirrors real Mac behavior
-        // where MenuSelect blocks the app event loop and the game never sees
-        // the ticks that pass.  On entry, cap tick_cap to the frozen value;
-        // when tracking ends mid-frame, snap $016A to wall-clock time so there's
-        // no gap to catch up on.
+        // Freeze ticks while menu/control tracking is active. ModalDialog
+        // refires still return to the GUI for intermediate rendering, but
+        // they must not freeze ticks: EV's pilot dialogs keep Sound/VBL/Time
+        // Manager work alive through the dialog manager's event loop.
+        // On entry, cap tick_cap to the frozen value; when tracking ends
+        // mid-frame, snap $016A to wall-clock time so there's no gap to catch
+        // up on.
         let real_tick_cap = tick_cap;
         let tick_cap = match self.frozen_ticks {
             Some(frozen) => tick_cap.map(|_| frozen),
@@ -1902,7 +1915,10 @@ impl FixtureRunner {
                                 // $016A on each re-fire, which consumes ticks at a
                                 // different rate than real hardware where ModalDialog's
                                 // WNE loop paces against the VBL.
-                                if yield_for_ui && self.frozen_ticks.is_none() {
+                                if yield_for_ui
+                                    && self.frozen_ticks.is_none()
+                                    && tracking_refire_should_freeze_ticks(opcode)
+                                {
                                     self.frozen_ticks = Some(self.bus.read_long(0x016A));
                                 }
                                 self.cpu.write_reg(Register::PC, pc);
@@ -4132,6 +4148,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn tracking_refire_freeze_policy_keeps_modaldialog_ticks_live() {
+        // Menu/control tracking may freeze app-visible ticks while the GUI
+        // renders intermediate tracking frames.
+        assert!(tracking_refire_should_freeze_ticks(0xA93D));
+        assert!(tracking_refire_should_freeze_ticks(0xAD3D));
+        assert!(tracking_refire_should_freeze_ticks(0xA80B));
+        assert!(tracking_refire_should_freeze_ticks(0xAC0B));
+        assert!(tracking_refire_should_freeze_ticks(0xA968));
+        assert!(tracking_refire_should_freeze_ticks(0xAD68));
+
+        // ModalDialog must keep ticks/VBL/sound callbacks live. EV's pilot
+        // dialog flow plays music through this path.
+        assert!(!tracking_refire_should_freeze_ticks(0xA991));
+        assert!(!tracking_refire_should_freeze_ticks(0xAD91));
     }
 
     #[test]
