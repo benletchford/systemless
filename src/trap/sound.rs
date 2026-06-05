@@ -1921,7 +1921,7 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
     let mut sample_rate_hz: Option<f64> = None;
     let mut ssnd_data: Option<&[u8]> = None;
 
-    while offset + 8 <= file_data.len() {
+    while file_data.len().saturating_sub(offset) >= 8 {
         let chunk_id = &file_data[offset..offset + 4];
         let chunk_size = u32::from_be_bytes([
             file_data[offset + 4],
@@ -1930,10 +1930,11 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
             file_data[offset + 7],
         ]) as usize;
         offset += 8;
-        if offset + chunk_size > file_data.len() {
+        let chunk_end = offset.checked_add(chunk_size)?;
+        if chunk_end > file_data.len() {
             return None;
         }
-        let chunk = &file_data[offset..offset + chunk_size];
+        let chunk = &file_data[offset..chunk_end];
         match chunk_id {
             b"COMM" => {
                 if chunk.len() < 18 {
@@ -1958,14 +1959,16 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
                 }
                 let data_offset =
                     u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as usize;
-                if 8 + data_offset > chunk.len() {
+                let data_start = 8usize.checked_add(data_offset)?;
+                if data_start > chunk.len() {
                     return None;
                 }
-                ssnd_data = Some(&chunk[8 + data_offset..]);
+                ssnd_data = Some(&chunk[data_start..]);
             }
             _ => {}
         }
-        offset += chunk_size + (chunk_size & 1);
+        let padded_size = chunk_size.checked_add(chunk_size & 1)?;
+        offset = offset.checked_add(padded_size)?;
     }
 
     let channels = channels?;
@@ -2309,6 +2312,37 @@ mod tests {
 
         // Case 6: too short for FORM header → None.
         assert!(parse_aiff_samples(b"FOR").is_none());
+    }
+
+    #[test]
+    fn parse_aiff_samples_rejects_overflowing_chunk_bounds() {
+        // SndStartFilePlay can be pointed at files that are not valid AIFF.
+        // On wasm32, unchecked `offset + chunk_size` / `8 + data_offset`
+        // arithmetic overflows before the parser can reject the file.
+        let mut huge_chunk = Vec::new();
+        huge_chunk.extend_from_slice(b"FORM");
+        huge_chunk.extend_from_slice(&12u32.to_be_bytes());
+        huge_chunk.extend_from_slice(b"AIFF");
+        huge_chunk.extend_from_slice(b"JUNK");
+        huge_chunk.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(parse_aiff_samples(&huge_chunk).is_none());
+
+        let one_hz = [0x3F, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let mut ssnd_overflow = Vec::new();
+        ssnd_overflow.extend_from_slice(b"FORM");
+        ssnd_overflow.extend_from_slice(&42u32.to_be_bytes());
+        ssnd_overflow.extend_from_slice(b"AIFF");
+        ssnd_overflow.extend_from_slice(b"COMM");
+        ssnd_overflow.extend_from_slice(&18u32.to_be_bytes());
+        ssnd_overflow.extend_from_slice(&1u16.to_be_bytes());
+        ssnd_overflow.extend_from_slice(&0u32.to_be_bytes());
+        ssnd_overflow.extend_from_slice(&8u16.to_be_bytes());
+        ssnd_overflow.extend_from_slice(&one_hz);
+        ssnd_overflow.extend_from_slice(b"SSND");
+        ssnd_overflow.extend_from_slice(&8u32.to_be_bytes());
+        ssnd_overflow.extend_from_slice(&u32::MAX.to_be_bytes());
+        ssnd_overflow.extend_from_slice(&0u32.to_be_bytes());
+        assert!(parse_aiff_samples(&ssnd_overflow).is_none());
     }
 
     /// Locks in the Apple-SANE extended-80 → f64 conversion used by
