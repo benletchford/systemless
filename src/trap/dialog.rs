@@ -214,6 +214,36 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn resolve_dispos_dialog_ptr(&self, dialog_ptr: u32) -> u32 {
+        if dialog_ptr == 0
+            || dialog_ptr == self.front_window
+            || self.dialog_items.contains_key(&dialog_ptr)
+        {
+            return dialog_ptr;
+        }
+
+        let front = self.front_window;
+        if front == 0 {
+            return dialog_ptr;
+        }
+
+        let Some(items) = self.dialog_items.get(&front) else {
+            return dialog_ptr;
+        };
+
+        // EV Override's registration panel can hand DisposDialog a userItem
+        // draw proc address from the current front dialog. Treat that as a
+        // request to close the front dialog instead of leaving stale window state.
+        if items
+            .iter()
+            .any(|item| (item.item_type & 0x7F) == 0 && item.proc_ptr == dialog_ptr)
+        {
+            return front;
+        }
+
+        dialog_ptr
+    }
+
     fn allocate_te_handle(bus: &mut MacMemoryBus) -> u32 {
         // TENew returns a handle to a zeroed TERec owned by the caller.
         // Text 1993, 2-85 to 2-86
@@ -4792,8 +4822,15 @@ impl super::TrapDispatcher {
             // DisposDialog ($A983): Frees dialog, cleans up dialog_items, restores saved background pixels (IM:I I-425 PaintBehind)
             (true, 0x183) => {
                 let sp = cpu.read_reg(Register::A7);
-                let dialog_ptr = bus.read_long(sp);
-                eprintln!("[TRAP] DisposDialog(${:08X})", dialog_ptr);
+                let requested_dialog_ptr = bus.read_long(sp);
+                let dialog_ptr = self.resolve_dispos_dialog_ptr(requested_dialog_ptr);
+                eprintln!("[TRAP] DisposDialog(${:08X})", requested_dialog_ptr);
+                if dialog_ptr != requested_dialog_ptr && trace_dialog_items_enabled() {
+                    eprintln!(
+                        "[DIALOG-ITEM] DisposDialog resolved userItem proc ${:08X} to front dialog ${:08X}",
+                        requested_dialog_ptr, dialog_ptr
+                    );
+                }
                 let was_front = self.front_window == dialog_ptr;
                 let exposed_rect = self.window_bounds;
 
@@ -11956,6 +11993,38 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.window_list, vec![prev_window]);
         assert_eq!(disp.front_window, prev_window);
+    }
+
+    #[test]
+    fn dispos_dialog_resolves_front_user_item_proc_argument() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let prev_window = 0x181000u32;
+        let user_item_proc = 0x00016178u32;
+
+        seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
+        disp.window_list = vec![dialog_ptr, prev_window];
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = (110, 155, 380, 645);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80,
+                proc_ptr: user_item_proc,
+                ..DialogItem::default()
+            }],
+        );
+        disp.window_stack
+            .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
+
+        bus.write_long(TEST_SP, user_item_proc);
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(disp.window_list, vec![prev_window]);
+        assert_eq!(disp.front_window, prev_window);
+        assert!(!disp.dialog_items.contains_key(&dialog_ptr));
     }
 
     #[test]
