@@ -88,6 +88,10 @@ struct App {
     current_screen_height: u32,
     /// Frame counter for diagnostic screenshots
     frame_count: u64,
+    /// Guest tick last presented to the host window.
+    last_presented_guest_tick: Option<u32>,
+    /// Force the next host present even if the guest tick has not advanced.
+    force_next_render: bool,
     /// Remap arrow keys to numpad equivalents (for keyboards without a numpad)
     arrows_as_numpad: bool,
     /// Optional GUI CPU cap in instructions per second (cpu_mhz × 1_000_000).
@@ -128,6 +132,8 @@ impl App {
             current_screen_width: INITIAL_SCREEN_WIDTH,
             current_screen_height: INITIAL_SCREEN_HEIGHT,
             frame_count: 0,
+            last_presented_guest_tick: None,
+            force_next_render: true,
             arrows_as_numpad,
             emulated_ips: cpu_mhz.map(|mhz| mhz * 1_000_000.0),
             show_menu_bar,
@@ -381,6 +387,18 @@ impl App {
         }
     }
 
+    fn should_render_frame(&self) -> bool {
+        if self.force_next_render {
+            return true;
+        }
+        let Some(runner) = self.runner.as_ref() else {
+            return false;
+        };
+        runner.is_halted()
+            || runner.is_ui_tracking_active()
+            || self.last_presented_guest_tick != Some(runner.guest_tick())
+    }
+
     fn render_frame(&mut self) {
         let render_start = std::time::Instant::now();
         let size = {
@@ -396,6 +414,7 @@ impl App {
             return;
         };
         runner.composite_frame();
+        let presented_tick = runner.guest_tick();
 
         let (_, _, scrn_right, scrn_bottom, _) = runner.dispatcher().screen_mode;
         let game_w = scrn_right as u32;
@@ -469,6 +488,8 @@ impl App {
         self.frame_argb = frame_argb;
         self.scaled_row = scaled_row;
         buffer.present().expect("Failed to present buffer");
+        self.last_presented_guest_tick = Some(presented_tick);
+        self.force_next_render = false;
         self.render_headroom = Self::next_render_headroom(render_start.elapsed());
     }
 }
@@ -514,6 +535,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
+                self.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
                 let (v, h) = self.physical_to_mac(position.x, position.y);
                 if let Some(runner) = self.runner.as_mut() {
@@ -527,6 +549,7 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.force_next_render = true;
                 let (v, h) = self.physical_to_mac(self.mouse_physical.0, self.mouse_physical.1);
                 if let Some(runner) = self.runner.as_mut() {
                     match state {
@@ -541,6 +564,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
+                self.force_next_render = true;
                 if let Some(runner) = self.runner.as_mut() {
                     let mac_key = keycode_to_mac(&event.physical_key);
                     // Control keys (Enter / Tab / Escape / arrows /
@@ -587,6 +611,10 @@ impl ApplicationHandler for App {
                 }
             }
 
+            WindowEvent::Resized(_) => {
+                self.force_next_render = true;
+            }
+
             WindowEvent::RedrawRequested => {}
             _ => {}
         }
@@ -629,10 +657,13 @@ impl ApplicationHandler for App {
                     let _ = window
                         .request_inner_size(winit::dpi::LogicalSize::new(sw * SCALE, sh * SCALE));
                 }
+                self.force_next_render = true;
             }
         }
 
-        self.render_frame();
+        if self.should_render_frame() {
+            self.render_frame();
+        }
         self.frame_count += 1;
     }
 }
@@ -961,6 +992,38 @@ mod tests {
         assert_eq!(
             App::next_render_headroom(std::time::Duration::from_micros(20_000)),
             MAX_RENDER_HEADROOM
+        );
+    }
+
+    #[test]
+    fn render_gate_waits_for_guest_tick_unless_forced() {
+        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        app.runner = Some(FixtureRunner::new(
+            8 * 1024 * 1024,
+            systemless::runner::FixtureRunnerConfig::default(),
+        ));
+
+        assert!(
+            app.should_render_frame(),
+            "initial forced render should present the first frame"
+        );
+
+        let tick = app.runner.as_ref().unwrap().guest_tick();
+        app.last_presented_guest_tick = Some(tick);
+        app.force_next_render = false;
+        assert!(
+            !app.should_render_frame(),
+            "same guest tick should not present another partial frame"
+        );
+
+        app.force_next_render = true;
+        assert!(app.should_render_frame(), "host input can force a present");
+        app.force_next_render = false;
+
+        app.runner.as_mut().unwrap().force_advance_guest_tick();
+        assert!(
+            app.should_render_frame(),
+            "a new guest tick is a fresh VBL presentation point"
         );
     }
 }

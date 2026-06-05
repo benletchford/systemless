@@ -22,13 +22,13 @@ impl AudioBackend for NullAudioBackend {
 }
 
 #[cfg(feature = "gui")]
-const HOST_AUDIO_PREFILL_MSEC: usize = 250;
+const HOST_AUDIO_PREFILL_MSEC: usize = 90;
 
 /// Maximum buffered audio in seconds. Larger = more latency but more
 /// resilience to host scheduling jitter; smaller = lower latency but
 /// more underruns under load.
 #[cfg(feature = "gui")]
-const HOST_AUDIO_MAX_BUFFER_SECS: f32 = 0.5;
+const HOST_AUDIO_MAX_BUFFER_SECS: f32 = 0.25;
 
 #[cfg(feature = "gui")]
 fn host_audio_prefill_samples() -> usize {
@@ -298,8 +298,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_audio_prefill_matches_250ms_target() {
-        // 250ms × 22050 Hz = 5512 samples
-        assert_eq!(host_audio_prefill_samples(), 5512);
+    fn host_audio_prefill_matches_90ms_target() {
+        // 90ms × 22050 Hz = 1984 samples
+        assert_eq!(host_audio_prefill_samples(), 1984);
     }
 }

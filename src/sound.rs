@@ -471,6 +471,30 @@ impl SoundManager {
             Vec::new()
         }
     }
+
+    /// Return the nearest output-sample boundary where an active playback
+    /// buffer will exhaust. Callers that can load a queued follow-up buffer
+    /// should split mixing at this point to avoid emitting silence between
+    /// back-to-back Sound Manager buffers.
+    pub fn samples_until_next_exhaustion(&self) -> Option<usize> {
+        self.channels
+            .iter()
+            .filter_map(|chan| {
+                let playing = chan.playing.as_ref()?;
+                if playing.step == 0 {
+                    return None;
+                }
+                let end = (playing.samples.len() as u128) << 32;
+                let position = playing.position as u128;
+                if position >= end {
+                    return Some(0);
+                }
+                let step = playing.step as u128;
+                let samples = (end - position).div_ceil(step);
+                Some(samples.min(usize::MAX as u128) as usize)
+            })
+            .min()
+    }
 }
 
 /// Fixed-point division: (x / y) with 32 fractional bits.
@@ -1335,6 +1359,33 @@ mod tests {
         // debug_samples_mixed accumulates across the two active
         // frames (2 + 2 = 4), not the empty third.
         assert_eq!(sm.debug_samples_mixed, 4);
+    }
+
+    #[test]
+    fn samples_until_next_exhaustion_tracks_resampled_boundary() {
+        let mut sm = SoundManager::new();
+        let mut chan = SndChannel::new(0x1234_0000, true);
+        chan.play_buffer(
+            vec![0x90, 0xA0],
+            (OUTPUT_RATE / 2) << 16,
+            PlaybackKind::Buffer,
+            0,
+        );
+        sm.channels.push(chan);
+
+        assert_eq!(
+            sm.samples_until_next_exhaustion(),
+            Some(4),
+            "half-rate two-sample buffer emits four output samples"
+        );
+
+        let output = sm.mix_frame(1);
+        assert_eq!(output, vec![0x90]);
+        assert_eq!(
+            sm.samples_until_next_exhaustion(),
+            Some(3),
+            "boundary query must follow playback position across calls"
+        );
     }
 
     /// Locks in the integration between `mix_frame` and

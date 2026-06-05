@@ -905,6 +905,13 @@ impl FixtureRunner {
             || !self.dispatcher.sound_manager.pending_callbacks.is_empty()
     }
 
+    pub fn is_ui_tracking_active(&self) -> bool {
+        self.frozen_ticks.is_some()
+            || self.dispatcher.is_menu_tracking()
+            || self.dispatcher.is_dialog_tracking()
+            || self.dispatcher.is_control_tracking()
+    }
+
     /// Advance the guest tick counter by one, firing VBL and timer tasks.
     /// Used by the GUI runner to force-advance ticks when the CPU can't
     /// keep up with wall-clock time (e.g. during expensive PICT draws).
@@ -1190,17 +1197,37 @@ impl FixtureRunner {
     /// Mix and queue audio samples without full frame finalization.
     /// Used to keep the audio buffer fed during long CPU frames.
     pub fn mix_audio(&mut self, num_samples: usize) {
-        if num_samples == 0 {
+        self.mix_host_audio(num_samples);
+    }
+
+    fn queue_mixed_audio(&mut self, samples: &[u8]) {
+        if samples.is_empty() {
             return;
         }
-        self.try_load_pending_double_buffers();
-        self.dispatcher.service_guest_sound_queues(&mut self.bus);
-        let samples = self.dispatcher.sound_manager.mix_frame(num_samples);
-        if !samples.is_empty() {
-            if let Some(ref mut audio) = self.audio {
-                audio.queue_samples(&samples);
+        if let Some(ref mut audio) = self.audio {
+            audio.queue_samples(samples);
+        }
+        self.audio_buffer.extend_from_slice(samples);
+    }
+
+    fn mix_host_audio(&mut self, mut remaining_samples: usize) {
+        while remaining_samples > 0 {
+            self.try_load_pending_double_buffers();
+            self.dispatcher.service_guest_sound_queues(&mut self.bus);
+
+            let chunk = self
+                .dispatcher
+                .sound_manager
+                .samples_until_next_exhaustion()
+                .map(|samples| samples.max(1).min(remaining_samples))
+                .unwrap_or(remaining_samples);
+
+            let samples = self.dispatcher.sound_manager.mix_frame(chunk);
+            if samples.is_empty() {
+                break;
             }
-            self.audio_buffer.extend_from_slice(&samples);
+            self.queue_mixed_audio(&samples);
+            remaining_samples -= chunk;
         }
     }
 
@@ -1220,13 +1247,7 @@ impl FixtureRunner {
 
         // Mix and output audio for this frame.
         if audio_samples > 0 {
-            let samples = self.dispatcher.sound_manager.mix_frame(audio_samples);
-            if !samples.is_empty() {
-                if let Some(ref mut audio) = self.audio {
-                    audio.queue_samples(&samples);
-                }
-                self.audio_buffer.extend_from_slice(&samples);
-            }
+            self.mix_host_audio(audio_samples);
         }
 
         self.dispatcher
@@ -1891,6 +1912,7 @@ impl FixtureRunner {
                                 // 68K draw proc; when it RTS's, PC returns to
                                 // the ModalDialog A-line for the next re-fire.
                                 let fired_draw_proc = self.fire_dialog_draw_procs();
+                                let mut fired_filter_proc = false;
                                 if !fired_draw_proc {
                                     // Fire the filter proc for any dialog that has one,
                                     // once draw procs are complete. On a real Mac,
@@ -1905,14 +1927,16 @@ impl FixtureRunner {
                                         .unwrap_or(false);
                                     if should_fire_filter {
                                         self.fire_dialog_filter_proc();
+                                        fired_filter_proc = true;
                                     }
                                 }
 
-                                // In realtime frontends, return to let the host
-                                // render the partially updated framebuffer. In
-                                // headless mode, keep executing — no GUI needs
-                                // the intermediate state.
-                                if yield_for_ui {
+                                // In realtime frontends, yield only once the
+                                // tracking trap is idle. A just-scheduled
+                                // dialog draw/filter proc has not run yet, so
+                                // presenting here shows half-painted screens.
+                                // Headless mode keeps executing as before.
+                                if yield_for_ui && !fired_draw_proc && !fired_filter_proc {
                                     self.finish_host_frame(audio_samples);
                                     return (count, true);
                                 }
@@ -2456,7 +2480,7 @@ impl FixtureRunner {
                 continue; // not ready yet
             }
             crate::trap::TrapDispatcher::load_double_buffer_samples(
-                &self.bus,
+                &mut self.bus,
                 chan,
                 buf_ptr,
                 sample_rate,
@@ -3535,8 +3559,16 @@ fn load_app_generic<M: MemoryBus>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sound::PendingDoubleBackCallback;
+    use crate::sound::{DoubleBufferState, PendingDoubleBackCallback, SndChannel, OUTPUT_RATE};
     use crate::trap::dispatch::{TimerTask, VblTask};
+
+    fn write_double_buffer(bus: &mut MacMemoryBus, ptr: u32, samples: &[u8]) {
+        bus.write_long(ptr, samples.len() as u32);
+        bus.write_long(ptr + 4, 0x0000_0001);
+        for (offset, sample) in samples.iter().copied().enumerate() {
+            bus.write_byte(ptr + 16 + offset as u32, sample);
+        }
+    }
 
     #[test]
     fn timer_callback_snapshot_preserves_interrupted_sp() {
@@ -3639,6 +3671,80 @@ mod tests {
         assert_eq!(steps, 3);
         assert_eq!(runner.cpu.read_reg(Register::D0), 2);
         assert!(runner.active_interrupt_callback.is_none());
+    }
+
+    #[test]
+    fn mix_audio_loads_ready_double_buffer_without_boundary_silence() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let chan_ptr = 0x0039_38C8;
+        let callback_addr = 0x0004_1234;
+        let header_ptr = runner.bus.alloc(24);
+        let buf0_ptr = runner.bus.alloc(18);
+        let buf1_ptr = runner.bus.alloc(18);
+
+        runner.bus.write_word(header_ptr, 1);
+        runner.bus.write_word(header_ptr + 2, 8);
+        runner.bus.write_long(header_ptr + 8, OUTPUT_RATE << 16);
+        runner.bus.write_long(header_ptr + 12, buf0_ptr);
+        runner.bus.write_long(header_ptr + 16, buf1_ptr);
+        runner.bus.write_long(header_ptr + 20, callback_addr);
+        write_double_buffer(&mut runner.bus, buf0_ptr, &[0x90, 0x91]);
+        write_double_buffer(&mut runner.bus, buf1_ptr, &[0xA0, 0xA1]);
+
+        let mut chan = SndChannel::new(chan_ptr, false);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr,
+            current_buffer: 0,
+            callback_addr,
+            chan_ptr,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: false,
+        });
+        crate::trap::TrapDispatcher::load_double_buffer_samples(
+            &mut runner.bus,
+            &mut chan,
+            buf0_ptr,
+            OUTPUT_RATE << 16,
+            1,
+            8,
+        );
+        runner.dispatcher.sound_manager.channels.push(chan);
+
+        runner.mix_audio(3);
+
+        assert_eq!(
+            runner.audio_buffer,
+            vec![0x90, 0x91, 0xA0],
+            "host mixing must continue into the ready paired buffer, not emit boundary silence"
+        );
+        assert_eq!(
+            runner.bus.read_long(buf0_ptr + 4) & 0x01,
+            0,
+            "loaded buffers are consumed by clearing dbBufferReady"
+        );
+        assert_eq!(
+            runner.bus.read_long(buf1_ptr + 4) & 0x01,
+            0,
+            "the immediately loaded paired buffer is consumed too"
+        );
+        assert_eq!(
+            runner.dispatcher.sound_manager.pending_callbacks.len(),
+            1,
+            "exhausting buffer 0 still queues its doubleback refill"
+        );
+        assert_eq!(
+            runner.dispatcher.sound_manager.pending_callbacks[0].exhausted_buffer_index,
+            0
+        );
+
+        let chan = &runner.dispatcher.sound_manager.channels[0];
+        assert!(chan.is_playing(), "buffer 1 should still be playing");
+        let db = chan.double_buffer.as_ref().expect("double-buffer active");
+        assert_eq!(db.current_buffer, 1);
+        assert!(db.waiting_for_callback);
     }
 
     #[test]

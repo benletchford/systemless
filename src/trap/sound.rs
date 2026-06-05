@@ -1418,7 +1418,7 @@ impl super::TrapDispatcher {
     ///   +8:  `dbUserInfo[0]` (4)
     ///   +12: `dbUserInfo[1]` (4)
     ///   +16: dbSoundData[...]
-    fn snd_play_double_buffer(&mut self, bus: &MacMemoryBus, chan_ptr: u32, header_ptr: u32) {
+    fn snd_play_double_buffer(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32, header_ptr: u32) {
         if header_ptr == 0 {
             return;
         }
@@ -1478,7 +1478,7 @@ impl super::TrapDispatcher {
     /// Read samples from a SndDoubleBuffer record into the channel's PlayingBuffer.
     /// Called when starting double-buffer playback and after a callback refills a buffer.
     pub fn load_double_buffer_samples(
-        bus: &MacMemoryBus,
+        bus: &mut MacMemoryBus,
         chan: &mut SndChannel,
         buf_ptr: u32,
         sample_rate: u32,
@@ -1521,6 +1521,7 @@ impl super::TrapDispatcher {
             return;
         };
 
+        bus.write_long(buf_ptr + 4, flags & !0x01);
         chan.play_buffer(samples, sample_rate, sound::PlaybackKind::Buffer, 0);
 
         // Check for last buffer flag.
