@@ -200,8 +200,11 @@ fn fast_byte_loops_override() -> Option<bool> {
     *FAST_BYTE_LOOPS_OVERRIDE.get_or_init(|| env_bool("SYSTEMLESS_FAST_BYTE_LOOPS"))
 }
 
-fn fast_byte_loops_enabled_for(yield_for_ui: bool) -> bool {
-    fast_path_gate(fast_byte_loops_override(), yield_for_ui)
+fn fast_byte_loops_enabled_with_runner_override(
+    yield_for_ui: bool,
+    runner_override: Option<bool>,
+) -> bool {
+    fast_path_gate_with_runner_override(fast_byte_loops_override(), runner_override, yield_for_ui)
 }
 
 static FAST_PTINRECT_SCAN_OVERRIDE: OnceLock<Option<bool>> = OnceLock::new();
@@ -209,8 +212,15 @@ fn fast_ptinrect_scan_override() -> Option<bool> {
     *FAST_PTINRECT_SCAN_OVERRIDE.get_or_init(|| env_bool("SYSTEMLESS_FAST_PTINRECT_SCAN"))
 }
 
-fn fast_ptinrect_scan_enabled_for(yield_for_ui: bool) -> bool {
-    fast_path_gate(fast_ptinrect_scan_override(), yield_for_ui)
+fn fast_ptinrect_scan_enabled_with_runner_override(
+    yield_for_ui: bool,
+    runner_override: Option<bool>,
+) -> bool {
+    fast_path_gate_with_runner_override(
+        fast_ptinrect_scan_override(),
+        runner_override,
+        yield_for_ui,
+    )
 }
 
 static INLINE_PTINRECT_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -233,6 +243,15 @@ fn env_bool(name: &str) -> Option<bool> {
 
 fn fast_path_gate(override_value: Option<bool>, yield_for_ui: bool) -> bool {
     override_value.unwrap_or(!yield_for_ui)
+}
+
+fn fast_path_gate_with_runner_override(
+    env_override: Option<bool>,
+    runner_override: Option<bool>,
+    yield_for_ui: bool,
+) -> bool {
+    let runner_override = if yield_for_ui { runner_override } else { None };
+    fast_path_gate(env_override.or(runner_override), yield_for_ui)
 }
 
 fn cmp_word_ccr(dest: u16, src: u16) -> u8 {
@@ -439,6 +458,13 @@ pub struct FixtureRunner {
     total_instructions: u64,
     /// Number of interpreted guest instructions per `Ticks` increment.
     instructions_per_tick: u32,
+    /// Optional per-runner override for realtime byte-loop acceleration.
+    /// Environment variables still take precedence. This lets browser
+    /// frontends opt specific titles into a known-good fast path without
+    /// globally re-enabling speculative probes for every GUI workload.
+    realtime_fast_byte_loops: Option<bool>,
+    /// Optional per-runner override for realtime PtInRect scan acceleration.
+    realtime_fast_ptinrect_scan: Option<bool>,
     /// Optional cap on per-WaitNextEvent-call sleep tick advance in headless
     /// mode (when `run_steps` is called without a `tick_override`). `None`
     /// keeps the legacy drain-all behavior. `Some(n)` advances at most `n`
@@ -540,6 +566,8 @@ impl FixtureRunner {
             halted_d0: None,
             total_instructions: 0,
             instructions_per_tick: INSTRUCTIONS_PER_TICK,
+            realtime_fast_byte_loops: None,
+            realtime_fast_ptinrect_scan: None,
             wait_sleep_cap_in_headless: None,
             tick_budget: INSTRUCTIONS_PER_TICK as i32,
             frozen_ticks: None,
@@ -937,6 +965,14 @@ impl FixtureRunner {
 
     pub fn instructions_per_tick(&self) -> u32 {
         self.instructions_per_tick
+    }
+
+    pub fn set_realtime_fast_byte_loops_enabled(&mut self, enabled: bool) {
+        self.realtime_fast_byte_loops = Some(enabled);
+    }
+
+    pub fn set_realtime_fast_ptinrect_scan_enabled(&mut self, enabled: bool) {
+        self.realtime_fast_ptinrect_scan = Some(enabled);
     }
 
     /// Cap the per-WaitNextEvent-call sleep tick advance in headless mode.
@@ -1546,13 +1582,17 @@ impl FixtureRunner {
             && !trace_opcode_counts_enabled()
             && !trace_hot_pc_enabled()
             && trace_pc_range().is_none();
-        let fast_byte_loop_base_enabled = fast_byte_loops_enabled_for(yield_for_ui)
-            && !trace_buffer_enabled()
+        let fast_byte_loop_base_enabled = fast_byte_loops_enabled_with_runner_override(
+            yield_for_ui,
+            self.realtime_fast_byte_loops,
+        ) && !trace_buffer_enabled()
             && !trace_opcode_counts_enabled()
             && !trace_hot_pc_enabled()
             && trace_pc_range().is_none();
-        let fast_ptinrect_scan_base_enabled = fast_ptinrect_scan_enabled_for(yield_for_ui)
-            && !trace_buffer_enabled()
+        let fast_ptinrect_scan_base_enabled = fast_ptinrect_scan_enabled_with_runner_override(
+            yield_for_ui,
+            self.realtime_fast_ptinrect_scan,
+        ) && !trace_buffer_enabled()
             && !trace_opcode_counts_enabled()
             && !trace_hot_pc_enabled()
             && trace_pc_range().is_none();
@@ -4754,6 +4794,26 @@ mod tests {
         assert!(!fast_path_gate(None, true));
         assert!(fast_path_gate(Some(true), true));
         assert!(!fast_path_gate(Some(false), false));
+    }
+
+    #[test]
+    fn fast_probe_gate_honors_runner_override_when_env_unset() {
+        assert!(fast_path_gate_with_runner_override(None, Some(true), true));
+        assert!(!fast_path_gate_with_runner_override(
+            None,
+            Some(false),
+            true
+        ));
+        assert!(fast_path_gate_with_runner_override(
+            None,
+            Some(false),
+            false
+        ));
+        assert!(!fast_path_gate_with_runner_override(
+            Some(false),
+            Some(true),
+            true
+        ));
     }
 
     /// Regression gates for the ModalDialog noop-refire skip. The GUI
