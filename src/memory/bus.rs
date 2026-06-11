@@ -102,8 +102,10 @@ fn fb_write_disasm_enabled() -> bool {
 // Both inclusive. Each byte read whose address falls in [start, end]
 // logs the guest PC + address + value to stderr. Cheap when unset
 // (one atomic load + None branch on the hot path).
+#[cfg(not(target_arch = "wasm32"))]
 static MEM_READ_TRACE_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
 
+#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn mem_read_trace_range() -> Option<(u32, u32)> {
     *MEM_READ_TRACE_RANGE.get_or_init(|| {
@@ -122,6 +124,11 @@ fn mem_read_trace_range() -> Option<(u32, u32)> {
 
 #[inline]
 fn maybe_log_mem_read(address: u32, width: u8, value: u32) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (address, width, value);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some((start, end)) = mem_read_trace_range() {
         if address >= start && address <= end {
             let pc = CURRENT_PC.with(|p| *p.borrow());
