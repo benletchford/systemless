@@ -38,6 +38,11 @@ fn fb_write_trace_range() -> Option<(u32, u32)> {
 /// to decide whether to mirror guest PC into [`CURRENT_PC`] in release.
 #[inline]
 pub fn fb_write_trace_active() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     fb_write_trace_range().is_some()
 }
 

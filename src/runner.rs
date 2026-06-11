@@ -34,12 +34,20 @@ fn trace_vbl_enabled() -> bool {
 // `VecDeque` pop_front + push_back + an extra `bus.read_word` + 6
 // register reads. Enable with `SYSTEMLESS_TRACE_BUFFER=1` when diagnosing
 // a crash.
+#[cfg(not(target_arch = "wasm32"))]
 static TRACE_BUFFER_ENABLED: OnceLock<bool> = OnceLock::new();
 fn trace_buffer_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     *TRACE_BUFFER_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_BUFFER").is_some())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 static TRACE_PC_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+#[cfg(not(target_arch = "wasm32"))]
 fn trace_pc_range() -> Option<(u32, u32)> {
     *TRACE_PC_RANGE.get_or_init(|| {
         let value = std::env::var("SYSTEMLESS_TRACE_PC_RANGE").ok()?;
@@ -52,6 +60,12 @@ fn trace_pc_range() -> Option<(u32, u32)> {
 }
 
 fn trace_pc_range_contains(pc: u32) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = pc;
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     trace_pc_range()
         .map(|(start, end)| pc >= start && pc <= end)
         .unwrap_or(false)
@@ -114,8 +128,14 @@ pub fn decode_fakeptr_pc(pc: u32) -> Option<String> {
 // after each step succeeds. Use to prioritize decode-table / super-
 // instruction-fusion work — the instruction mix is the input to that
 // kind of optimization.
+#[cfg(not(target_arch = "wasm32"))]
 static TRACE_OPCODE_COUNTS: OnceLock<bool> = OnceLock::new();
 fn trace_opcode_counts_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     *TRACE_OPCODE_COUNTS
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_OPCODE_COUNTS").is_some())
 }
@@ -126,8 +146,14 @@ fn trace_opcode_counts_enabled() -> bool {
 // overhead negligible while still giving high-confidence attribution
 // for any loop that takes more than ~0.1% of runtime.
 const PC_SAMPLE_INTERVAL: u64 = 1000;
+#[cfg(not(target_arch = "wasm32"))]
 static TRACE_HOT_PC: OnceLock<bool> = OnceLock::new();
 fn trace_hot_pc_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     *TRACE_HOT_PC.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_HOT_PC").is_some())
 }
 
