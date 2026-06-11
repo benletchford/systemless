@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
 use super::globals::LowMemGlobals;
@@ -16,8 +17,16 @@ use super::globals::LowMemGlobals;
 // Both inclusive. Each write to an address in [start, end] logs the
 // guest PC + address + value to stderr. Cheap when unset (one atomic
 // load + branch on the hot path).
+#[cfg(not(target_arch = "wasm32"))]
 static FB_WRITE_TRACE_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
 
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn fb_write_trace_range() -> Option<(u32, u32)> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn fb_write_trace_range() -> Option<(u32, u32)> {
     *FB_WRITE_TRACE_RANGE.get_or_init(|| {
@@ -74,8 +83,16 @@ fn maybe_log_fb_write(address: u32, value: u8) {
 /// branch back instead of just the one trapping/writing instruction.
 /// Lets us identify the 68k blit loop responsible for a stuck-pixel
 /// divergence without a full debug-build watchpoint.
+#[cfg(not(target_arch = "wasm32"))]
 static FB_WRITE_DISASM_COUNT: OnceLock<usize> = OnceLock::new();
 
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn fb_write_disasm_count() -> usize {
+    0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn fb_write_disasm_count() -> usize {
     *FB_WRITE_DISASM_COUNT.get_or_init(|| {
