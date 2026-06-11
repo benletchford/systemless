@@ -376,6 +376,80 @@ impl RamStorage {
         }
     }
 
+    #[inline]
+    fn set_in_bounds(&mut self, index: usize, value: u8) {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                *v.as_mut_ptr().add(index) = value;
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                *ptr.add(index) = value;
+            },
+        }
+    }
+
+    #[inline]
+    fn write_word_in_bounds(&mut self, index: usize, value: u16) {
+        let bytes = value.to_be_bytes();
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                let ptr = v.as_mut_ptr().add(index);
+                *ptr = bytes[0];
+                *ptr.add(1) = bytes[1];
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                let ptr = ptr.add(index);
+                *ptr = bytes[0];
+                *ptr.add(1) = bytes[1];
+            },
+        }
+    }
+
+    #[inline]
+    fn write_long_in_bounds(&mut self, index: usize, value: u32) {
+        let bytes = value.to_be_bytes();
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                let ptr = v.as_mut_ptr().add(index);
+                *ptr = bytes[0];
+                *ptr.add(1) = bytes[1];
+                *ptr.add(2) = bytes[2];
+                *ptr.add(3) = bytes[3];
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                let ptr = ptr.add(index);
+                *ptr = bytes[0];
+                *ptr.add(1) = bytes[1];
+                *ptr.add(2) = bytes[2];
+                *ptr.add(3) = bytes[3];
+            },
+        }
+    }
+
+    #[inline]
+    fn write_bytes_in_bounds(&mut self, index: usize, data: &[u8]) {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), v.as_mut_ptr().add(index), data.len());
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(index), data.len());
+            },
+        }
+    }
+
+    #[inline]
+    fn fill_zeros_in_bounds(&mut self, index: usize, len: usize) {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                std::ptr::write_bytes(v.as_mut_ptr().add(index), 0, len);
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                std::ptr::write_bytes(ptr.add(index), 0, len);
+            },
+        }
+    }
+
     /// Borrow `len` bytes starting at `index` if the range lies
     /// entirely within RAM. Returns `None` when the read would straddle
     /// the RAM boundary or fall fully outside; callers fall back to the
@@ -912,7 +986,7 @@ impl MemoryBus for MacMemoryBus {
         }
 
         if address < self.ram_size {
-            self.ram.set(address as usize, value);
+            self.ram.set_in_bounds(address as usize, value);
         } else {
             tracing::warn!(
                 "Write to unmapped address ${:08X} = ${:02X}",
@@ -937,11 +1011,8 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none();
         if fast && (address as u64) + 2 <= (self.ram_size as u64) {
-            if let Some(slice) = self.ram.slice_at_mut(address as usize, 2) {
-                slice[0] = (value >> 8) as u8;
-                slice[1] = value as u8;
-                return;
-            }
+            self.ram.write_word_in_bounds(address as usize, value);
+            return;
         }
         self.write_byte(address, (value >> 8) as u8);
         self.write_byte(address.wrapping_add(1), value as u8);
@@ -957,13 +1028,8 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none();
         if fast && (address as u64) + 4 <= (self.ram_size as u64) {
-            if let Some(slice) = self.ram.slice_at_mut(address as usize, 4) {
-                slice[0] = (value >> 24) as u8;
-                slice[1] = (value >> 16) as u8;
-                slice[2] = (value >> 8) as u8;
-                slice[3] = value as u8;
-                return;
-            }
+            self.ram.write_long_in_bounds(address as usize, value);
+            return;
         }
         self.write_word(address, (value >> 16) as u16);
         self.write_word(address.wrapping_add(2), value as u16);
@@ -1019,10 +1085,8 @@ impl MemoryBus for MacMemoryBus {
         let fast = fb_write_trace_range().is_none();
         let end = (address as u64).saturating_add(data.len() as u64);
         if fast && end <= self.ram_size as u64 {
-            if let Some(slice) = self.ram.slice_at_mut(address as usize, data.len()) {
-                slice.copy_from_slice(data);
-                return;
-            }
+            self.ram.write_bytes_in_bounds(address as usize, data);
+            return;
         }
         for (i, &byte) in data.iter().enumerate() {
             self.write_byte(address.wrapping_add(i as u32), byte);
@@ -1037,10 +1101,9 @@ impl MemoryBus for MacMemoryBus {
         let fast = fb_write_trace_range().is_none();
         let end = (address as u64).saturating_add(len as u64);
         if fast && end <= self.ram_size as u64 {
-            if let Some(slice) = self.ram.slice_at_mut(address as usize, len as usize) {
-                slice.fill(0);
-                return;
-            }
+            self.ram
+                .fill_zeros_in_bounds(address as usize, len as usize);
+            return;
         }
         for i in 0..len {
             self.write_byte(address.wrapping_add(i), 0);
