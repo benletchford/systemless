@@ -3,7 +3,7 @@
 //! Produces RGBA `Vec<u8>` pixel buffers from emulator screen memory,
 //! supporting both 1bpp monochrome and 8bpp color modes.
 
-use crate::memory::MacMemoryBus;
+use crate::memory::{MacMemoryBus, MemoryBus};
 
 const BLACK_ARGB: u32 = 0xFF000000;
 const WHITE_ARGB: u32 = 0xFFFFFFFF;
@@ -77,6 +77,44 @@ pub fn render_screen_into(
                 write_rgba_word(pixels, idx, rgba);
             }
         }
+    }
+}
+
+/// Sample a single screen pixel as gamma-corrected RGB.
+///
+/// This uses the same framebuffer and CLUT semantics as `render_screen_into`
+/// without allocating or rendering the full frame.
+pub fn screen_pixel_rgb(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    x: u32,
+    y: u32,
+) -> Option<[u8; 3]> {
+    let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
+    let w = scrn_w as u32;
+    let h = scrn_h as u32;
+    if x >= w || y >= h || row_bytes == 0 {
+        return None;
+    }
+
+    match pixel_size {
+        8 => {
+            let addr = scrn_base + y * row_bytes + x;
+            let pixel = bus.read_byte(addr);
+            Some(clut_to_rgba8(device_clut, pixel))
+        }
+        1 => {
+            let addr = scrn_base + y * row_bytes + x / 8;
+            let byte = bus.read_byte(addr);
+            let bit = 7 - (x % 8);
+            if (byte & (1 << bit)) != 0 {
+                Some([0, 0, 0])
+            } else {
+                Some([255, 255, 255])
+            }
+        }
+        _ => None,
     }
 }
 
@@ -293,7 +331,7 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{clut_component_to_u8, clut_to_argb, render_screen_into};
+    use super::{clut_component_to_u8, clut_to_argb, render_screen_into, screen_pixel_rgb};
     use crate::memory::{MacMemoryBus, MemoryBus};
 
     #[test]
@@ -343,6 +381,25 @@ mod tests {
     }
 
     #[test]
+    fn screen_pixel_rgb_samples_8bpp_with_gamma() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = 128;
+        bus.write_byte(base, 0);
+        bus.write_byte(base + 1, 7);
+        let mut clut = [[0u16; 3]; 256];
+        clut[7] = [0x4444, 0x8888, 0xCCCC];
+
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 4, 2, 1, 8), &clut, 1, 0),
+            Some([0x66, 0xA5, 0xDA])
+        );
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 4, 2, 1, 8), &clut, 2, 0),
+            None
+        );
+    }
+
+    #[test]
     fn render_screen_into_1bpp_writes_rgba_bytes() {
         let mut bus = MacMemoryBus::new(1024);
         let base = 128;
@@ -360,6 +417,27 @@ mod tests {
                 0x00, 0x00, 0x00, 0xFF, //
                 0xFF, 0xFF, 0xFF, 0xFF,
             ]
+        );
+    }
+
+    #[test]
+    fn screen_pixel_rgb_samples_1bpp() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = 128;
+        bus.write_byte(base, 0b1010_0000);
+        let clut = [[0u16; 3]; 256];
+
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 0, 0),
+            Some([0, 0, 0])
+        );
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 1, 0),
+            Some([255, 255, 255])
+        );
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 4, 0),
+            None
         );
     }
 }
