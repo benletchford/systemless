@@ -7,6 +7,8 @@ use crate::memory::MacMemoryBus;
 
 const BLACK_ARGB: u32 = 0xFF000000;
 const WHITE_ARGB: u32 = 0xFFFFFFFF;
+const BLACK_RGBA_WORD: u32 = u32::from_le_bytes([0x00, 0x00, 0x00, 0xFF]);
+const WHITE_RGBA_WORD: u32 = u32::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF]);
 
 /// Render the current screen to an RGBA pixel buffer (4 bytes per pixel).
 ///
@@ -46,7 +48,8 @@ pub fn render_screen_into(
     let palette = is_8bpp.then(|| {
         let mut palette = [0u32; 256];
         for (index, slot) in palette.iter_mut().enumerate() {
-            *slot = clut_to_argb(device_clut, index as u8);
+            let [r, g, b] = clut_to_rgba8(device_clut, index as u8);
+            *slot = rgba_word(r, g, b);
         }
         palette
     });
@@ -58,30 +61,20 @@ pub fn render_screen_into(
             let palette = palette.as_ref().expect("palette cache for 8bpp render");
             for gx in 0..w {
                 let pixel = fb[row_start + gx as usize];
-                let argb = palette[pixel as usize];
                 let idx = px_row + (gx * 4) as usize;
-                pixels[idx] = ((argb >> 16) & 0xFF) as u8;
-                pixels[idx + 1] = ((argb >> 8) & 0xFF) as u8;
-                pixels[idx + 2] = (argb & 0xFF) as u8;
-                pixels[idx + 3] = 0xFF;
+                write_rgba_word(pixels, idx, palette[pixel as usize]);
             }
         } else {
             for gx in 0..w {
                 let byte = fb[row_start + (gx / 8) as usize];
                 let bit = 7 - (gx % 8);
                 let idx = px_row + (gx * 4) as usize;
-                if (byte & (1 << bit)) != 0 {
-                    // black
-                    pixels[idx] = 0;
-                    pixels[idx + 1] = 0;
-                    pixels[idx + 2] = 0;
+                let rgba = if (byte & (1 << bit)) != 0 {
+                    BLACK_RGBA_WORD
                 } else {
-                    // white
-                    pixels[idx] = 0xFF;
-                    pixels[idx + 1] = 0xFF;
-                    pixels[idx + 2] = 0xFF;
-                }
-                pixels[idx + 3] = 0xFF;
+                    WHITE_RGBA_WORD
+                };
+                write_rgba_word(pixels, idx, rgba);
             }
         }
     }
@@ -236,11 +229,30 @@ pub fn render_cursor_argb(
 
 /// Convert a 16-bit Mac CLUT entry to 0xAARRGGBB.
 pub fn clut_to_argb(clut: &[[u16; 3]; 256], index: u8) -> u32 {
+    let [r8, g8, b8] = clut_to_rgba8(clut, index);
+    0xFF000000 | (u32::from(r8) << 16) | (u32::from(g8) << 8) | u32::from(b8)
+}
+
+fn clut_to_rgba8(clut: &[[u16; 3]; 256], index: u8) -> [u8; 3] {
     let [r, g, b] = clut[index as usize];
-    let r8 = u32::from(clut_component_to_u8(r));
-    let g8 = u32::from(clut_component_to_u8(g));
-    let b8 = u32::from(clut_component_to_u8(b));
-    0xFF000000 | (r8 << 16) | (g8 << 8) | b8
+    [
+        clut_component_to_u8(r),
+        clut_component_to_u8(g),
+        clut_component_to_u8(b),
+    ]
+}
+
+#[inline]
+fn rgba_word(r: u8, g: u8, b: u8) -> u32 {
+    u32::from_le_bytes([r, g, b, 0xFF])
+}
+
+#[inline]
+fn write_rgba_word(pixels: &mut [u8], idx: usize, rgba: u32) {
+    debug_assert!(idx + 4 <= pixels.len());
+    unsafe {
+        std::ptr::write_unaligned(pixels.as_mut_ptr().add(idx).cast::<u32>(), rgba);
+    }
 }
 
 fn clut_component_to_u8(component: u16) -> u8 {
@@ -281,7 +293,8 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{clut_component_to_u8, clut_to_argb};
+    use super::{clut_component_to_u8, clut_to_argb, render_screen_into};
+    use crate::memory::{MacMemoryBus, MemoryBus};
 
     #[test]
     fn clut_component_applies_mac_rom_gamma() {
@@ -302,5 +315,51 @@ mod tests {
         clut[7] = [0x4444, 0x8888, 0xCCCC];
         let argb = clut_to_argb(&clut, 7);
         assert_eq!(argb, 0xFF66A5DA);
+    }
+
+    #[test]
+    fn render_screen_into_8bpp_writes_rgba_bytes() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = 128;
+        bus.write_byte(base, 0);
+        bus.write_byte(base + 1, 1);
+        bus.write_byte(base + 2, 2);
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0x0000, 0x0000, 0x0000];
+        clut[1] = [0xFFFF, 0x0000, 0x0000];
+        clut[2] = [0x0000, 0xFFFF, 0x0000];
+
+        let mut pixels = Vec::new();
+        render_screen_into(&bus, (base, 4, 3, 1, 8), &clut, &mut pixels);
+
+        assert_eq!(
+            pixels,
+            vec![
+                0x00, 0x00, 0x00, 0xFF, //
+                0xFF, 0x00, 0x00, 0xFF, //
+                0x00, 0xFF, 0x00, 0xFF,
+            ]
+        );
+    }
+
+    #[test]
+    fn render_screen_into_1bpp_writes_rgba_bytes() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = 128;
+        bus.write_byte(base, 0b1010_0000);
+        let clut = [[0u16; 3]; 256];
+
+        let mut pixels = Vec::new();
+        render_screen_into(&bus, (base, 1, 4, 1, 1), &clut, &mut pixels);
+
+        assert_eq!(
+            pixels,
+            vec![
+                0x00, 0x00, 0x00, 0xFF, //
+                0xFF, 0xFF, 0xFF, 0xFF, //
+                0x00, 0x00, 0x00, 0xFF, //
+                0xFF, 0xFF, 0xFF, 0xFF,
+            ]
+        );
     }
 }
