@@ -338,6 +338,44 @@ impl RamStorage {
         }
     }
 
+    #[inline]
+    fn get_in_bounds(&self, index: usize) -> u8 {
+        // Callers have already checked the access against `ram_size`;
+        // avoid repeating slice bounds checks on the instruction hot path.
+        match self {
+            RamStorage::Owned(v) => unsafe { *v.as_ptr().add(index) },
+            RamStorage::External(ptr, _) => unsafe { *ptr.add(index) },
+        }
+    }
+
+    #[inline]
+    fn read_word_in_bounds(&self, index: usize) -> u16 {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                let ptr = v.as_ptr().add(index);
+                u16::from_be_bytes([*ptr, *ptr.add(1)])
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                let ptr = ptr.add(index);
+                u16::from_be_bytes([*ptr, *ptr.add(1)])
+            },
+        }
+    }
+
+    #[inline]
+    fn read_long_in_bounds(&self, index: usize) -> u32 {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                let ptr = v.as_ptr().add(index);
+                u32::from_be_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)])
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                let ptr = ptr.add(index);
+                u32::from_be_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)])
+            },
+        }
+    }
+
     /// Borrow `len` bytes starting at `index` if the range lies
     /// entirely within RAM. Returns `None` when the read would straddle
     /// the RAM boundary or fall fully outside; callers fall back to the
@@ -689,7 +727,7 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_byte(&self, address: u32) -> u8 {
         let v = if address < self.ram_size {
-            self.ram.get(address as usize)
+            self.ram.get_in_bounds(address as usize)
         } else {
             tracing::warn!("Read from unmapped address ${:08X}", address);
             0
@@ -708,14 +746,7 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_word(&self, address: u32) -> u16 {
         let v = if (address as u64) + 2 <= (self.ram_size as u64) {
-            if let Some(slice) = self.ram.slice_at(address as usize, 2) {
-                ((slice[0] as u16) << 8) | (slice[1] as u16)
-            } else {
-                // Fallback: cross-boundary or out-of-bounds
-                let hi = self.read_byte(address) as u16;
-                let lo = self.read_byte(address.wrapping_add(1)) as u16;
-                (hi << 8) | lo
-            }
+            self.ram.read_word_in_bounds(address as usize)
         } else {
             let hi = self.read_byte(address) as u16;
             let lo = self.read_byte(address.wrapping_add(1)) as u16;
@@ -732,16 +763,7 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_long(&self, address: u32) -> u32 {
         let v = if (address as u64) + 4 <= (self.ram_size as u64) {
-            if let Some(slice) = self.ram.slice_at(address as usize, 4) {
-                ((slice[0] as u32) << 24)
-                    | ((slice[1] as u32) << 16)
-                    | ((slice[2] as u32) << 8)
-                    | (slice[3] as u32)
-            } else {
-                let hi = self.read_word(address) as u32;
-                let lo = self.read_word(address.wrapping_add(2)) as u32;
-                (hi << 16) | lo
-            }
+            self.ram.read_long_in_bounds(address as usize)
         } else {
             let hi = self.read_word(address) as u32;
             let lo = self.read_word(address.wrapping_add(2)) as u32;
