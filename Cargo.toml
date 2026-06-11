@@ -13,7 +13,7 @@ documentation = "https://docs.rs/systemless"
 default-run = "systemless"
 
 [dependencies]
-m68k = "0.1.8"
+m68k = { git = "https://github.com/benletchford/m68k-rs.git", rev = "9f5dab4cbd8ad2588f4bdfdaa3628fe7b38d6b39" }
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }

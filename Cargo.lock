@@ -1180,9 +1180,8 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "m68k"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74e58670827a843ed89a094dff6ead8170cbf072ee757a8ccd1079b01657eb6a"
+version = "0.1.12"
+source = "git+https://github.com/benletchford/m68k-rs.git?rev=9f5dab4cbd8ad2588f4bdfdaa3628fe7b38d6b39#9f5dab4cbd8ad2588f4bdfdaa3628fe7b38d6b39"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
