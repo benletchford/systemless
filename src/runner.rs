@@ -1483,6 +1483,9 @@ impl FixtureRunner {
             if self.service_delay_ticks(tick_cap) {
                 break;
             }
+            if yield_for_ui && self.service_gui_dialog_wall_tick(tick_cap) {
+                break;
+            }
 
             if self.cpu.is_stopped() {
                 self.halted = true;
@@ -1921,6 +1924,12 @@ impl FixtureRunner {
                                 {
                                     self.frozen_ticks = Some(self.bus.read_long(0x016A));
                                 }
+                                if yield_for_ui
+                                    && self.frozen_ticks.is_some()
+                                    && !tracking_refire_should_freeze_ticks(opcode)
+                                {
+                                    self.unfreeze_ticks_to(real_tick_cap);
+                                }
                                 self.cpu.write_reg(Register::PC, pc);
 
                                 // Fire pending dialog userItem draw procs.
@@ -1942,6 +1951,19 @@ impl FixtureRunner {
                                         .map(|t| t.filter_proc != 0 && t.draw_procs_done)
                                         .unwrap_or(false);
                                     if should_fire_filter {
+                                        let has_input_event = self
+                                            .dispatcher
+                                            .event_queue
+                                            .iter()
+                                            .any(|e| matches!(e.what, 1 | 2 | 3 | 4));
+                                        if yield_for_ui
+                                            && (opcode & !0x0400) == 0xA991
+                                            && !has_input_event
+                                            && self.service_gui_modal_dialog_idle_tick(tick_cap)
+                                        {
+                                            self.finish_host_frame(audio_samples);
+                                            return (count, true);
+                                        }
                                         self.fire_dialog_filter_proc();
                                         fired_filter_proc = true;
                                     }
@@ -1953,6 +1975,11 @@ impl FixtureRunner {
                                 // presenting here shows half-painted screens.
                                 // Headless mode keeps executing as before.
                                 if yield_for_ui && !fired_draw_proc && !fired_filter_proc {
+                                    if (opcode & !0x0400) == 0xA991
+                                        && !self.service_gui_modal_dialog_idle_tick(tick_cap)
+                                    {
+                                        continue;
+                                    }
                                     self.finish_host_frame(audio_samples);
                                     return (count, true);
                                 }
@@ -1962,18 +1989,7 @@ impl FixtureRunner {
                             // $016A to wall-clock time so the game doesn't
                             // fast-forward through the pause gap.
                             if self.frozen_ticks.is_some() {
-                                self.frozen_ticks = None;
-                                if let Some(real_target) = real_tick_cap {
-                                    self.bus.write_long(0x016A, real_target);
-                                    // Keep `dispatcher.tick_count` in sync
-                                    // with $016A. `advance_guest_tick`
-                                    // does this; without this assignment
-                                    // the unfreeze path would write the
-                                    // bus but leave `self.tick_count`
-                                    // stale, breaking the TickCount
-                                    // handler's fast path.
-                                    self.dispatcher.tick_count = real_target;
-                                }
+                                self.unfreeze_ticks_to(real_tick_cap);
                             }
 
                             // Service any pending Delay ticks immediately after
@@ -2259,6 +2275,54 @@ impl FixtureRunner {
         }
 
         false
+    }
+
+    fn service_gui_modal_dialog_idle_tick(&mut self, tick_cap: Option<u32>) -> bool {
+        if self.active_interrupt_callback.is_some() || self.frozen_ticks.is_some() {
+            return true;
+        }
+
+        if let Some(cap) = tick_cap {
+            if self.bus.read_long(0x016A) >= cap {
+                return true;
+            }
+        }
+
+        self.advance_guest_tick();
+        self.tick_budget = self.instructions_per_tick as i32;
+
+        tick_cap
+            .map(|cap| self.bus.read_long(0x016A) >= cap)
+            .unwrap_or(true)
+    }
+
+    fn service_gui_dialog_wall_tick(&mut self, tick_cap: Option<u32>) -> bool {
+        if tick_cap.is_none()
+            || self.active_interrupt_callback.is_some()
+            || self.frozen_ticks.is_some()
+            || !self.dispatcher.is_dialog_tracking()
+        {
+            return false;
+        }
+
+        let cap = tick_cap.unwrap();
+        if self.bus.read_long(0x016A) >= cap {
+            return true;
+        }
+
+        self.advance_guest_tick();
+        self.tick_budget = self.instructions_per_tick as i32;
+        false
+    }
+
+    fn unfreeze_ticks_to(&mut self, target_tick: Option<u32>) {
+        self.frozen_ticks = None;
+        if let Some(target_tick) = target_tick {
+            self.bus.write_long(0x016A, target_tick);
+            // Keep `dispatcher.tick_count` in sync with $016A.
+            // `advance_guest_tick` does this during ordinary advancement.
+            self.dispatcher.tick_count = target_tick;
+        }
     }
 
     /// Fire the next due Vertical Retrace Manager task.
@@ -3576,13 +3640,45 @@ fn load_app_generic<M: MemoryBus>(
 mod tests {
     use super::*;
     use crate::sound::{DoubleBufferState, PendingDoubleBackCallback, SndChannel, OUTPUT_RATE};
-    use crate::trap::dispatch::{TimerTask, VblTask};
+    use crate::trap::dispatch::{DialogTrackingState, QueuedEvent, TimerTask, VblTask};
+    use std::collections::VecDeque;
 
     fn write_double_buffer(bus: &mut MacMemoryBus, ptr: u32, samples: &[u8]) {
         bus.write_long(ptr, samples.len() as u32);
         bus.write_long(ptr + 4, 0x0000_0001);
         for (offset, sample) in samples.iter().copied().enumerate() {
             bus.write_byte(ptr + 16 + offset as u32, sample);
+        }
+    }
+
+    fn dialog_tracking_for_test(filter_proc: u32, item_hit_ptr: u32) -> DialogTrackingState {
+        DialogTrackingState {
+            dialog_ptr: 0x0020_0000,
+            bounds: (0, 0, 32, 32),
+            title: String::new(),
+            proc_id: 1,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: 0,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
         }
     }
 
@@ -4165,6 +4261,126 @@ mod tests {
         // dialog flow plays music through this path.
         assert!(!tracking_refire_should_freeze_ticks(0xA991));
         assert!(!tracking_refire_should_freeze_ticks(0xAD91));
+    }
+
+    #[test]
+    fn gui_modaldialog_idle_refire_advances_one_tick() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0;
+        runner.set_instructions_per_tick(1_000_000);
+        runner.dispatcher.dialog_tracking = Some(dialog_tracking_for_test(0, 0));
+
+        let (steps, running) = runner.run_gui_slice_with_audio(1, 1, 0);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(runner.guest_tick(), 1);
+        assert_eq!(
+            runner.tick_budget,
+            runner.instructions_per_tick() as i32 - 1
+        );
+        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+    }
+
+    #[test]
+    fn gui_modaldialog_idle_refire_runs_until_tick_cap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0;
+        runner.set_instructions_per_tick(1_000_000);
+        runner.dispatcher.dialog_tracking = Some(dialog_tracking_for_test(0, 0));
+
+        let (steps, running) = runner.run_gui_slice_with_audio(16, 2, 0);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(runner.guest_tick(), 2);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+    }
+
+    #[test]
+    fn gui_modaldialog_refire_unfreezes_prior_control_tracking() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 182);
+        runner.dispatcher.tick_count = 182;
+        runner.frozen_ticks = Some(182);
+        runner.set_instructions_per_tick(1_000_000);
+        runner.dispatcher.dialog_tracking = Some(dialog_tracking_for_test(0, 0));
+
+        let (steps, running) = runner.run_gui_slice_with_audio(16, 184, 0);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(runner.frozen_ticks, None);
+        assert_eq!(runner.guest_tick(), 184);
+        assert_eq!(runner.dispatcher.tick_count, 184);
+    }
+
+    #[test]
+    fn gui_modaldialog_null_filter_waits_at_tick_cap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let filter_proc = 0x0001_1000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0;
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0010_0100));
+
+        let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
+
+        assert!(running);
+        assert_eq!(steps, 0);
+        assert_eq!(runner.guest_tick(), 0);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+        assert!(!runner.has_pending_sound_work());
+        assert!(runner.active_interrupt_callback.is_none());
+    }
+
+    #[test]
+    fn gui_modaldialog_update_filter_waits_at_tick_cap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let filter_proc = 0x0001_1000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0;
+        runner.dispatcher.event_queue.push_back(QueuedEvent {
+            what: 6,
+            message: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0010_0100));
+
+        let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
+
+        assert!(running);
+        assert_eq!(steps, 0);
+        assert_eq!(runner.guest_tick(), 0);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+        assert!(runner.active_interrupt_callback.is_none());
     }
 
     #[test]
