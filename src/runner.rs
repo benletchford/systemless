@@ -130,8 +130,12 @@ pub fn decode_fakeptr_pc(pc: u32) -> Option<String> {
 // kind of optimization.
 #[cfg(not(target_arch = "wasm32"))]
 static TRACE_OPCODE_COUNTS: OnceLock<bool> = OnceLock::new();
-#[cfg(not(target_arch = "wasm32"))]
 fn trace_opcode_counts_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     *TRACE_OPCODE_COUNTS
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_OPCODE_COUNTS").is_some())
 }
@@ -141,12 +145,15 @@ fn trace_opcode_counts_enabled() -> bool {
 // code address of a hot game loop. 1/1000 sampling keeps `HashMap`
 // overhead negligible while still giving high-confidence attribution
 // for any loop that takes more than ~0.1% of runtime.
-#[cfg(not(target_arch = "wasm32"))]
 const PC_SAMPLE_INTERVAL: u64 = 1000;
 #[cfg(not(target_arch = "wasm32"))]
 static TRACE_HOT_PC: OnceLock<bool> = OnceLock::new();
-#[cfg(not(target_arch = "wasm32"))]
 fn trace_hot_pc_enabled() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     *TRACE_HOT_PC.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_HOT_PC").is_some())
 }
 
@@ -445,7 +452,6 @@ pub struct FixtureRunner {
     /// sees A-line opcodes; this captures MOVE/ADD/Bcc/etc. too,
     /// which is what decode-table or super-instruction-fusion work
     /// needs to prioritize.
-    #[cfg(not(target_arch = "wasm32"))]
     opcode_histogram: Box<[u64; 65536]>,
     /// Sampled PC histogram. When `SYSTEMLESS_TRACE_HOT_PC=1` is set,
     /// every 1000th step's PC increments a `HashMap` bucket. Answers
@@ -453,7 +459,6 @@ pub struct FixtureRunner {
     /// hot loops by routine. Sampling (1/1000) keeps `HashMap`
     /// overhead low; a million hot samples still fits in tens of
     /// unique addresses.
-    #[cfg(not(target_arch = "wasm32"))]
     pc_histogram: HashMap<u32, u64>,
 }
 
@@ -503,9 +508,7 @@ impl FixtureRunner {
             dialog_filter_trampoline: 0,
             dialog_filter_event: 0,
             app_start_time: None,
-            #[cfg(not(target_arch = "wasm32"))]
             opcode_histogram: Box::new([0u64; 65536]),
-            #[cfg(not(target_arch = "wasm32"))]
             pc_histogram: HashMap::new(),
         }
     }
@@ -654,55 +657,48 @@ impl FixtureRunner {
     ///   [OPCODE-HIST]   43210123  $3F3C  MOVE.W #imm,-(SP)
     /// Unknown opcodes fall back to showing just the hex word.
     pub fn print_opcode_histogram(&self, top_n: usize) {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = top_n;
+        if !trace_opcode_counts_enabled() {
+            return;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if !trace_opcode_counts_enabled() {
-                return;
-            }
-            let mut entries: Vec<(u16, u64)> = self
-                .opcode_histogram
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &c)| if c > 0 { Some((i as u16, c)) } else { None })
-                .collect();
-            entries.sort_by_key(|e| std::cmp::Reverse(e.1));
-            let total: u64 = entries.iter().map(|(_, c)| c).sum();
+        let mut entries: Vec<(u16, u64)> = self
+            .opcode_histogram
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| if c > 0 { Some((i as u16, c)) } else { None })
+            .collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.1));
+        let total: u64 = entries.iter().map(|(_, c)| c).sum();
+        eprintln!(
+            "[OPCODE-HIST] top {} of {} distinct opcodes ({} total non-Aline instructions)",
+            top_n.min(entries.len()),
+            entries.len(),
+            total
+        );
+        for (opcode, count) in entries.iter().take(top_n) {
+            let group = (opcode >> 12) & 0xF;
+            let group_name = match group {
+                0x0 => "bit-op/MOVEP/immediate",
+                0x1 => "MOVE.B",
+                0x2 => "MOVE.L",
+                0x3 => "MOVE.W",
+                0x4 => "misc (LEA/JSR/etc.)",
+                0x5 => "ADDQ/SUBQ/Scc/DBcc",
+                0x6 => "Bcc/BSR",
+                0x7 => "MOVEQ",
+                0x8 => "OR/DIV/SBCD",
+                0x9 => "SUB/SUBX",
+                0xA => "A-line (should be in trap-hist)",
+                0xB => "CMP/EOR",
+                0xC => "AND/MUL/ABCD/EXG",
+                0xD => "ADD/ADDX",
+                0xE => "shift/rotate",
+                0xF => "F-line (FPU/coproc)",
+                _ => "?",
+            };
             eprintln!(
-                "[OPCODE-HIST] top {} of {} distinct opcodes ({} total non-Aline instructions)",
-                top_n.min(entries.len()),
-                entries.len(),
-                total
+                "[OPCODE-HIST]   {:>10}  ${:04X}  group {:X}: {}",
+                count, opcode, group, group_name
             );
-            for (opcode, count) in entries.iter().take(top_n) {
-                let group = (opcode >> 12) & 0xF;
-                let group_name = match group {
-                    0x0 => "bit-op/MOVEP/immediate",
-                    0x1 => "MOVE.B",
-                    0x2 => "MOVE.L",
-                    0x3 => "MOVE.W",
-                    0x4 => "misc (LEA/JSR/etc.)",
-                    0x5 => "ADDQ/SUBQ/Scc/DBcc",
-                    0x6 => "Bcc/BSR",
-                    0x7 => "MOVEQ",
-                    0x8 => "OR/DIV/SBCD",
-                    0x9 => "SUB/SUBX",
-                    0xA => "A-line (should be in trap-hist)",
-                    0xB => "CMP/EOR",
-                    0xC => "AND/MUL/ABCD/EXG",
-                    0xD => "ADD/ADDX",
-                    0xE => "shift/rotate",
-                    0xF => "F-line (FPU/coproc)",
-                    _ => "?",
-                };
-                eprintln!(
-                    "[OPCODE-HIST]   {:>10}  ${:04X}  group {:X}: {}",
-                    count, opcode, group, group_name
-                );
-            }
         }
     }
 
@@ -712,43 +708,33 @@ impl FixtureRunner {
     /// 1000 for an approximate instruction count attributed to that
     /// PC.
     pub fn print_pc_histogram(&self, top_n: usize) {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = top_n;
+        if !trace_hot_pc_enabled() {
+            return;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if !trace_hot_pc_enabled() {
-                return;
-            }
-            let mut entries: Vec<(u32, u64)> =
-                self.pc_histogram.iter().map(|(&a, &c)| (a, c)).collect();
-            entries.sort_by_key(|e| std::cmp::Reverse(e.1));
-            let total: u64 = entries.iter().map(|(_, c)| c).sum();
-            eprintln!(
-                "[PC-HIST] top {} of {} distinct PCs ({} samples × {} = ~{} instructions)",
-                top_n.min(entries.len()),
-                entries.len(),
-                total,
-                PC_SAMPLE_INTERVAL,
-                total * PC_SAMPLE_INTERVAL
-            );
-            for (pc, count) in entries.iter().take(top_n) {
-                // Classify by address region: the common Mac-app
-                // convention for loaded segments is roughly $00010000-
-                // $00600000 (game code) and $01000000+ (ROM).
-                let region = match *pc {
-                    0x0000_0000..=0x0000_FFFF => "low-mem",
-                    0x0001_0000..=0x005F_FFFF => "app code",
-                    0x0060_0000..=0x00FF_FFFF => "heap/data",
-                    0x0100_0000..=0x01FF_FFFF => "ROM",
-                    _ => "other",
-                };
-                eprintln!(
-                    "[PC-HIST]   {:>8}  PC=${:08X}  ({})",
-                    count, pc, region
-                );
-            }
+        let mut entries: Vec<(u32, u64)> =
+            self.pc_histogram.iter().map(|(&a, &c)| (a, c)).collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.1));
+        let total: u64 = entries.iter().map(|(_, c)| c).sum();
+        eprintln!(
+            "[PC-HIST] top {} of {} distinct PCs ({} samples × {} = ~{} instructions)",
+            top_n.min(entries.len()),
+            entries.len(),
+            total,
+            PC_SAMPLE_INTERVAL,
+            total * PC_SAMPLE_INTERVAL
+        );
+        for (pc, count) in entries.iter().take(top_n) {
+            // Classify by address region: the common Mac-app
+            // convention for loaded segments is roughly $00010000-
+            // $00600000 (game code) and $01000000+ (ROM).
+            let region = match *pc {
+                0x0000_0000..=0x0000_FFFF => "low-mem",
+                0x0001_0000..=0x005F_FFFF => "app code",
+                0x0060_0000..=0x00FF_FFFF => "heap/data",
+                0x0100_0000..=0x01FF_FFFF => "ROM",
+                _ => "other",
+            };
+            eprintln!("[PC-HIST]   {:>8}  PC=${:08X}  ({})", count, pc, region);
         }
     }
 
@@ -1740,23 +1726,17 @@ impl FixtureRunner {
                     // steps here; A-line opcodes go through the trap
                     // histogram instead. Zero cost when disabled
                     // (cached bool).
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        if trace_opcode_counts_enabled() {
-                            let opcode = self.cpu.core.ir as u16 as usize;
-                            self.opcode_histogram[opcode] =
-                                self.opcode_histogram[opcode].saturating_add(1);
-                        }
+                    if trace_opcode_counts_enabled() {
+                        let opcode = self.cpu.core.ir as u16 as usize;
+                        self.opcode_histogram[opcode] =
+                            self.opcode_histogram[opcode].saturating_add(1);
                     }
                     // Sampled PC histogram. 1/1000 sampling keeps the
                     // HashMap cost bounded.
-                    #[cfg(not(target_arch = "wasm32"))]
+                    if trace_hot_pc_enabled()
+                        && self.total_instructions.is_multiple_of(PC_SAMPLE_INTERVAL)
                     {
-                        if trace_hot_pc_enabled()
-                            && self.total_instructions.is_multiple_of(PC_SAMPLE_INTERVAL)
-                        {
-                            *self.pc_histogram.entry(pc).or_insert(0) += 1;
-                        }
+                        *self.pc_histogram.entry(pc).or_insert(0) += 1;
                     }
                 }
                 StepResult::Stopped => {
