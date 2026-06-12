@@ -1917,6 +1917,87 @@ impl FixtureRunner {
                         }
                     }
 
+                    // Pre-dispatch fast path for EventAvail ($A971).
+                    // Marathon polls this heavily while waiting at terminal
+                    // panels. Reuse the dispatcher helpers so event filtering
+                    // and EventRecord layout stay centralized.
+                    if opcode == 0xA971 {
+                        let sp = self.cpu.core.a(7);
+                        let event_ptr = self.bus.read_long(sp);
+                        let event_mask = self.bus.read_word(sp + 4);
+
+                        if let Some(ev) = self.dispatcher.peek_toolbox_event(&self.bus, event_mask)
+                        {
+                            self.dispatcher.write_event_record(
+                                &mut self.bus,
+                                event_ptr,
+                                ev.what,
+                                ev.message,
+                                ev.where_v,
+                                ev.where_h,
+                                ev.modifiers,
+                            );
+                            self.bus.write_word(sp + 6, 0xFFFF);
+                        } else {
+                            self.dispatcher.write_event_record(
+                                &mut self.bus,
+                                event_ptr,
+                                0,
+                                0,
+                                self.dispatcher.mouse_pos.0,
+                                self.dispatcher.mouse_pos.1,
+                                self.dispatcher.current_event_modifiers(),
+                            );
+                            self.bus.write_word(sp + 6, 0);
+                        }
+                        self.cpu.write_reg(Register::A7, sp + 6);
+
+                        self.dispatcher.trap_count += 1;
+                        self.dispatcher.current_trap_word = opcode;
+                        let idx = (opcode & 0xFFF) as usize;
+                        self.dispatcher.trap_histogram[idx] =
+                            self.dispatcher.trap_histogram[idx].saturating_add(1);
+                        self.dispatcher.inline_skipped[idx] =
+                            self.dispatcher.inline_skipped[idx].saturating_add(1);
+                        continue;
+                    }
+
+                    // Pre-dispatch fast path for PtInRect ($A8AD).
+                    // EV calls this millions of times while walking dialog
+                    // controls. The handler is pure stack/Rect arithmetic, so
+                    // inline the exact Pascal ABI and keep accounting aligned
+                    // with TrapDispatcher::dispatch.
+                    if opcode == 0xA8AD {
+                        let sp = self.cpu.core.a(7);
+                        let rect_ptr = self.bus.read_long(sp);
+                        let pt_v = self.bus.read_word(sp + 4) as i16;
+                        let pt_h = self.bus.read_word(sp + 6) as i16;
+                        let top = self.bus.read_word(rect_ptr) as i16;
+                        let left = self.bus.read_word(rect_ptr + 2) as i16;
+                        let bottom = self.bus.read_word(rect_ptr + 4) as i16;
+                        let right = self.bus.read_word(rect_ptr + 6) as i16;
+                        let in_rect = pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right;
+                        self.bus
+                            .write_word(sp + 8, if in_rect { 0x0100 } else { 0 });
+                        self.cpu.write_reg(Register::A7, sp + 8);
+
+                        self.dispatcher.trap_count += 1;
+                        self.dispatcher.current_trap_word = opcode;
+                        if pc < 0x0080_0000
+                            && !self.dispatcher.is_menu_tracking()
+                            && !self.dispatcher.is_dialog_tracking()
+                            && !self.dispatcher.is_control_tracking()
+                        {
+                            self.dispatcher.game_trap_count += 1;
+                        }
+                        let idx = (opcode & 0xFFF) as usize;
+                        self.dispatcher.trap_histogram[idx] =
+                            self.dispatcher.trap_histogram[idx].saturating_add(1);
+                        self.dispatcher.inline_skipped[idx] =
+                            self.dispatcher.inline_skipped[idx].saturating_add(1);
+                        continue;
+                    }
+
                     match self
                         .dispatcher
                         .dispatch(opcode, &mut self.cpu, &mut self.bus)
@@ -4503,6 +4584,86 @@ mod tests {
         assert_eq!(
             runner.dispatcher.trap_histogram[idx], 1,
             "the same path must also increment trap_histogram[$0175]"
+        );
+    }
+
+    #[test]
+    fn ptinrect_inline_path_matches_pascal_stack_contract() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let rect = 0x0020_0000u32;
+
+        runner.bus.write_word(base, 0xA8AD); // _PtInRect
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.set_instructions_per_tick(1_000_000);
+
+        runner.bus.write_long(sp, rect);
+        runner.bus.write_word(sp + 4, 20); // pt.v
+        runner.bus.write_word(sp + 6, 30); // pt.h
+        runner.bus.write_word(rect, 10); // top
+        runner.bus.write_word(rect + 2, 25); // left
+        runner.bus.write_word(rect + 4, 40); // bottom
+        runner.bus.write_word(rect + 6, 50); // right
+
+        let idx = (0xA8ADu16 & 0xFFF) as usize;
+        let before_inline = runner.dispatcher.inline_skipped[idx];
+        let before_game = runner.dispatcher.game_trap_count;
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert!(running, "runner should not halt on PtInRect inline path");
+        assert_eq!(steps, 1);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(runner.bus.read_word(sp + 8), 0x0100);
+        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 1);
+        assert_eq!(runner.dispatcher.trap_histogram[idx], 1);
+        assert_eq!(runner.dispatcher.game_trap_count - before_game, 1);
+    }
+
+    #[test]
+    fn eventavail_inline_path_peeks_without_dequeueing() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let event = 0x0020_0000u32;
+
+        runner.bus.write_word(base, 0xA971); // _EventAvail
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.set_instructions_per_tick(1_000_000);
+        runner.bus.write_long(sp, event);
+        runner.bus.write_word(sp + 4, 0x0008); // keyDownMask
+        runner.dispatcher.push_key_down(0x31, b' ');
+
+        let idx = (0xA971u16 & 0xFFF) as usize;
+        let before_inline = runner.dispatcher.inline_skipped[idx];
+        let before_game = runner.dispatcher.game_trap_count;
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert!(running, "runner should not halt on EventAvail inline path");
+        assert_eq!(steps, 1);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(runner.bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(runner.bus.read_word(event), 3);
+        assert_eq!(
+            runner.bus.read_long(event + 2),
+            (0x31u32 << 8) | u32::from(b' ')
+        );
+        assert_eq!(
+            runner.dispatcher.event_queue.len(),
+            1,
+            "EventAvail must not dequeue the matching event"
+        );
+        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 1);
+        assert_eq!(runner.dispatcher.trap_histogram[idx], 1);
+        assert_eq!(
+            runner.dispatcher.game_trap_count, before_game,
+            "EventAvail remains excluded from game_trap_count as an idle trap"
         );
     }
 
