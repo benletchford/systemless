@@ -1782,7 +1782,7 @@ impl super::TrapDispatcher {
                         self.get_or_create_resource_handle(bus, *b"PICT", item.resource_id, ptr)
                     })
                     .unwrap_or(0),
-                0 => 0,
+                0 => item.proc_ptr,
                 _ => 0,
             };
 
@@ -1853,7 +1853,7 @@ impl super::TrapDispatcher {
             // For userItem types, the game may write a procedure pointer here
             // via SetDItem or direct memory manipulation.
             // Inside Macintosh Volume I, I-427
-            let _item_handle = bus.read_long(ptr + offset);
+            let item_handle = bus.read_long(ptr + offset);
             offset += 4;
             // Read display rectangle
             let top = bus.read_word(ptr + offset) as i16;
@@ -1890,11 +1890,12 @@ impl super::TrapDispatcher {
             let padded = (data_len_byte + 1) & !1;
             offset += padded;
 
-            // The DITL stores only a placeholder for userItem procedures.
-            // Applications install the live ProcPtr after dialog creation via
-            // SetDItem or direct writes to the duplicated DITL.
-            // Inside Macintosh Volume I, I-426 to I-427
-            let proc_ptr = 0;
+            // For userItems, itmhand is a ProcPtr, not a relocatable handle.
+            // Dialog Manager preserves it in the duplicated DITL and calls it
+            // during update/redraw. Some apps replace it later via SetDItem or
+            // by writing the duplicated DITL directly.
+            // Inside Macintosh Volume I, I-405, I-426 to I-427.
+            let proc_ptr = if base_type == 0 { item_handle } else { 0 };
 
             items.push(DialogItem {
                 item_type,
@@ -13245,7 +13246,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_ditl_ignores_user_item_placeholder_proc_ptr() {
+    fn parse_ditl_preserves_user_item_proc_ptr() {
         let (_disp, _cpu, mut bus) = setup();
         let ditl_ptr = bus.alloc(16);
 
@@ -13260,7 +13261,40 @@ mod tests {
 
         let items = TrapDispatcher::parse_ditl(&bus, ditl_ptr, 16);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].proc_ptr, 0);
+        assert_eq!(items[0].proc_ptr, 0x12345678);
+    }
+
+    #[test]
+    fn initialize_dialog_item_handles_preserves_user_item_proc_ptr() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 0);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        let items = vec![DialogItem {
+            item_type: 0,
+            rect: (10, 20, 30, 40),
+            text: String::new(),
+            resource_id: 0,
+            proc_ptr: 0x12345678,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        assert_eq!(bus.read_long(ditl_ptr + 2), 0x12345678);
     }
 
     #[test]
