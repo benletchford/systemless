@@ -1917,6 +1917,42 @@ impl FixtureRunner {
                         }
                     }
 
+                    // Pre-dispatch fast path for PtInRect ($A8AD).
+                    // EV calls this millions of times while walking dialog
+                    // controls. The handler is pure stack/Rect arithmetic, so
+                    // inline the exact Pascal ABI and keep accounting aligned
+                    // with TrapDispatcher::dispatch.
+                    if opcode == 0xA8AD {
+                        let sp = self.cpu.core.a(7);
+                        let rect_ptr = self.bus.read_long(sp);
+                        let pt_v = self.bus.read_word(sp + 4) as i16;
+                        let pt_h = self.bus.read_word(sp + 6) as i16;
+                        let top = self.bus.read_word(rect_ptr) as i16;
+                        let left = self.bus.read_word(rect_ptr + 2) as i16;
+                        let bottom = self.bus.read_word(rect_ptr + 4) as i16;
+                        let right = self.bus.read_word(rect_ptr + 6) as i16;
+                        let in_rect = pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right;
+                        self.bus
+                            .write_word(sp + 8, if in_rect { 0x0100 } else { 0 });
+                        self.cpu.write_reg(Register::A7, sp + 8);
+
+                        self.dispatcher.trap_count += 1;
+                        self.dispatcher.current_trap_word = opcode;
+                        if pc < 0x0080_0000
+                            && !self.dispatcher.is_menu_tracking()
+                            && !self.dispatcher.is_dialog_tracking()
+                            && !self.dispatcher.is_control_tracking()
+                        {
+                            self.dispatcher.game_trap_count += 1;
+                        }
+                        let idx = (opcode & 0xFFF) as usize;
+                        self.dispatcher.trap_histogram[idx] =
+                            self.dispatcher.trap_histogram[idx].saturating_add(1);
+                        self.dispatcher.inline_skipped[idx] =
+                            self.dispatcher.inline_skipped[idx].saturating_add(1);
+                        continue;
+                    }
+
                     // Pre-dispatch fast path for EventAvail ($A971).
                     // Marathon polls this heavily while waiting at terminal
                     // panels. Reuse the dispatcher helpers so event filtering
@@ -1954,42 +1990,6 @@ impl FixtureRunner {
 
                         self.dispatcher.trap_count += 1;
                         self.dispatcher.current_trap_word = opcode;
-                        let idx = (opcode & 0xFFF) as usize;
-                        self.dispatcher.trap_histogram[idx] =
-                            self.dispatcher.trap_histogram[idx].saturating_add(1);
-                        self.dispatcher.inline_skipped[idx] =
-                            self.dispatcher.inline_skipped[idx].saturating_add(1);
-                        continue;
-                    }
-
-                    // Pre-dispatch fast path for PtInRect ($A8AD).
-                    // EV calls this millions of times while walking dialog
-                    // controls. The handler is pure stack/Rect arithmetic, so
-                    // inline the exact Pascal ABI and keep accounting aligned
-                    // with TrapDispatcher::dispatch.
-                    if opcode == 0xA8AD {
-                        let sp = self.cpu.core.a(7);
-                        let rect_ptr = self.bus.read_long(sp);
-                        let pt_v = self.bus.read_word(sp + 4) as i16;
-                        let pt_h = self.bus.read_word(sp + 6) as i16;
-                        let top = self.bus.read_word(rect_ptr) as i16;
-                        let left = self.bus.read_word(rect_ptr + 2) as i16;
-                        let bottom = self.bus.read_word(rect_ptr + 4) as i16;
-                        let right = self.bus.read_word(rect_ptr + 6) as i16;
-                        let in_rect = pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right;
-                        self.bus
-                            .write_word(sp + 8, if in_rect { 0x0100 } else { 0 });
-                        self.cpu.write_reg(Register::A7, sp + 8);
-
-                        self.dispatcher.trap_count += 1;
-                        self.dispatcher.current_trap_word = opcode;
-                        if pc < 0x0080_0000
-                            && !self.dispatcher.is_menu_tracking()
-                            && !self.dispatcher.is_dialog_tracking()
-                            && !self.dispatcher.is_control_tracking()
-                        {
-                            self.dispatcher.game_trap_count += 1;
-                        }
                         let idx = (opcode & 0xFFF) as usize;
                         self.dispatcher.trap_histogram[idx] =
                             self.dispatcher.trap_histogram[idx].saturating_add(1);
