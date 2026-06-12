@@ -2408,12 +2408,16 @@ impl super::TrapDispatcher {
         bounds: (i16, i16, i16, i16),
         items: &[DialogItem],
         skip_popup_user_items: bool,
+        skip_disabled_placeholders: bool,
     ) -> Vec<((i16, i16, i16, i16), bool)> {
         items
             .iter()
             .enumerate()
             .filter(|(i, it)| {
                 (it.item_type & 0x7F) == 0
+                    && (!skip_disabled_placeholders
+                        || (it.item_type & 0x80) == 0
+                        || it.proc_ptr != 0)
                     && (!skip_popup_user_items
                         || !self
                             .dialog_item_popup_menus
@@ -2435,14 +2439,81 @@ impl super::TrapDispatcher {
     fn restore_user_item_preserved_pixels(
         &self,
         bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        dialog_background: Option<&[u8]>,
         rects: &[((i16, i16, i16, i16), bool)],
         backups: &[Vec<u8>],
     ) {
         for ((rect, always_restore), pixels) in rects.iter().zip(backups.iter()) {
+            if self.rect_matches_saved_dialog_background(
+                dialog_ptr,
+                bounds,
+                dialog_background,
+                *rect,
+                pixels,
+            ) {
+                continue;
+            }
             if *always_restore || self.saved_rect_has_non_background_content(pixels) {
                 self.restore_rect_pixels(bus, *rect, pixels);
             }
         }
+    }
+
+    fn rect_matches_saved_dialog_background(
+        &self,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        dialog_background: Option<&[u8]>,
+        rect: (i16, i16, i16, i16),
+        pixels: &[u8],
+    ) -> bool {
+        let (_, _, _, _, pixel_size) = self.get_screen_params();
+        if pixel_size != 8 {
+            return false;
+        }
+        let background = dialog_background
+            .or_else(|| self.dialog_saved_pixels.get(&dialog_ptr).map(Vec::as_slice));
+        let Some(background) = background else {
+            return false;
+        };
+
+        let (top, left, bottom, right) = rect;
+        if bottom <= top || right <= left {
+            return pixels.is_empty();
+        }
+        let save_top = bounds.0 - 5;
+        let save_left = bounds.1 - 5;
+        let save_bottom = bounds.2 + 5;
+        let save_right = bounds.3 + 5;
+        if top < save_top || left < save_left || bottom > save_bottom || right > save_right {
+            return false;
+        }
+
+        let rect_width = (right - left) as usize;
+        let rect_height = (bottom - top) as usize;
+        if pixels.len() != rect_width.saturating_mul(rect_height) {
+            return false;
+        }
+        let bg_width = (save_right - save_left) as usize;
+        let expected_bg_len = bg_width.saturating_mul((save_bottom - save_top) as usize);
+        if background.len() < expected_bg_len {
+            return false;
+        }
+
+        for row in 0..rect_height {
+            let bg_y = (top - save_top) as usize + row;
+            let bg_x = (left - save_left) as usize;
+            let bg_start = bg_y * bg_width + bg_x;
+            let px_start = row * rect_width;
+            if background[bg_start..bg_start + rect_width]
+                != pixels[px_start..px_start + rect_width]
+            {
+                return false;
+            }
+        }
+        true
     }
 
     fn draw_dialog_preserving_user_items(
@@ -2458,9 +2529,16 @@ impl super::TrapDispatcher {
         skip_pictures: bool,
         dialog_ptr: u32,
         skip_popup_user_items: bool,
+        skip_disabled_placeholders: bool,
+        dialog_background: Option<&[u8]>,
     ) {
-        let user_item_rects =
-            self.user_item_preserve_rects(dialog_ptr, bounds, items, skip_popup_user_items);
+        let user_item_rects = self.user_item_preserve_rects(
+            dialog_ptr,
+            bounds,
+            items,
+            skip_popup_user_items,
+            skip_disabled_placeholders,
+        );
         let user_item_backups: Vec<Vec<u8>> = user_item_rects
             .iter()
             .map(|&(r, _)| self.save_rect_pixels(bus, r))
@@ -2479,7 +2557,14 @@ impl super::TrapDispatcher {
             dialog_ptr,
         );
 
-        self.restore_user_item_preserved_pixels(bus, &user_item_rects, &user_item_backups);
+        self.restore_user_item_preserved_pixels(
+            bus,
+            dialog_ptr,
+            bounds,
+            dialog_background,
+            &user_item_rects,
+            &user_item_backups,
+        );
     }
 
     /// Restore framebuffer pixels to an exact rectangle (no margin).
@@ -4842,6 +4927,11 @@ impl super::TrapDispatcher {
                     let proc_id = bus.read_word(dialog_ptr + 108) as i16;
                     let (edit_text, edit_item, default_item) =
                         Self::dialog_edit_state(bus, dialog_ptr, &items);
+                    let tracking_background = self
+                        .dialog_tracking
+                        .as_ref()
+                        .filter(|tracking| tracking.dialog_ptr == dialog_ptr)
+                        .map(|tracking| tracking.saved_pixels.clone());
                     self.draw_dialog_preserving_user_items(
                         bus,
                         bounds,
@@ -4854,6 +4944,8 @@ impl super::TrapDispatcher {
                         false,
                         dialog_ptr,
                         false,
+                        false,
+                        tracking_background.as_deref(),
                     );
                     self.dialog_items.insert(dialog_ptr, items);
                 }
@@ -5919,6 +6011,8 @@ impl super::TrapDispatcher {
                                 false,
                                 dialog_ptr,
                                 true,
+                                true,
+                                Some(&saved_pixels),
                             );
                         }
 
