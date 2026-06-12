@@ -76,26 +76,55 @@ pub fn render_screen_with_rgba_palette_into(
 
     let fb = bus.ram_slice(scrn_base, row_bytes * h);
 
-    for gy in 0..h {
-        let row_start = (gy * row_bytes) as usize;
-        let px_row = (gy * w * 4) as usize;
-        if is_8bpp {
-            for gx in 0..w {
-                let pixel = fb[row_start + gx as usize];
-                let idx = px_row + (gx * 4) as usize;
-                write_rgba_word(pixels, idx, palette[pixel as usize]);
+    if is_8bpp {
+        render_8bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels);
+    } else {
+        render_1bpp_rgba_rows(fb, row_bytes, w, h, pixels);
+    }
+}
+
+#[inline]
+fn render_8bpp_rgba_rows(
+    fb: &[u8],
+    row_bytes: u32,
+    w: u32,
+    h: u32,
+    palette: &RgbaPalette,
+    pixels: &mut [u8],
+) {
+    let dst = pixels.as_mut_ptr().cast::<u32>();
+    let w = w as usize;
+    let row_bytes = row_bytes as usize;
+    for gy in 0..h as usize {
+        let src_row = &fb[gy * row_bytes..];
+        let dst_row = unsafe { dst.add(gy * w) };
+        for gx in 0..w {
+            let rgba = palette[src_row[gx] as usize];
+            unsafe {
+                std::ptr::write_unaligned(dst_row.add(gx), rgba);
             }
-        } else {
-            for gx in 0..w {
-                let byte = fb[row_start + (gx / 8) as usize];
-                let bit = 7 - (gx % 8);
-                let idx = px_row + (gx * 4) as usize;
-                let rgba = if (byte & (1 << bit)) != 0 {
-                    BLACK_RGBA_WORD
-                } else {
-                    WHITE_RGBA_WORD
-                };
-                write_rgba_word(pixels, idx, rgba);
+        }
+    }
+}
+
+#[inline]
+fn render_1bpp_rgba_rows(fb: &[u8], row_bytes: u32, w: u32, h: u32, pixels: &mut [u8]) {
+    let dst = pixels.as_mut_ptr().cast::<u32>();
+    let w = w as usize;
+    let row_bytes = row_bytes as usize;
+    for gy in 0..h as usize {
+        let src_row = &fb[gy * row_bytes..];
+        let dst_row = unsafe { dst.add(gy * w) };
+        for gx in 0..w {
+            let byte = src_row[gx / 8];
+            let bit = 7 - (gx & 7);
+            let rgba = if (byte & (1 << bit)) != 0 {
+                BLACK_RGBA_WORD
+            } else {
+                WHITE_RGBA_WORD
+            };
+            unsafe {
+                std::ptr::write_unaligned(dst_row.add(gx), rgba);
             }
         }
     }
@@ -304,14 +333,6 @@ fn clut_to_rgba8(clut: &[[u16; 3]; 256], index: u8) -> [u8; 3] {
 #[inline]
 fn rgba_word(r: u8, g: u8, b: u8) -> u32 {
     u32::from_le_bytes([r, g, b, 0xFF])
-}
-
-#[inline]
-fn write_rgba_word(pixels: &mut [u8], idx: usize, rgba: u32) {
-    debug_assert!(idx + 4 <= pixels.len());
-    unsafe {
-        std::ptr::write_unaligned(pixels.as_mut_ptr().add(idx).cast::<u32>(), rgba);
-    }
 }
 
 fn clut_component_to_u8(component: u16) -> u8 {
