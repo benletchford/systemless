@@ -312,15 +312,22 @@ pub trait MemoryBus {
         }
     }
 
+    /// Fill a region of memory with a byte value. Default impl is a
+    /// byte-by-byte loop; the [`MacMemoryBus`] override uses a single
+    /// `write_bytes`-style fast path on the underlying RAM.
+    fn fill_bytes(&mut self, address: u32, value: u8, len: u32) {
+        for i in 0..len {
+            self.write_byte(address.wrapping_add(i), value);
+        }
+    }
+
     /// Zero-fill a region of memory. Default impl is a byte-by-byte
     /// loop; the [`MacMemoryBus`] override uses a single slice fill on
     /// the underlying RAM. Used by Memory Manager `_NewPtrClear` /
     /// `_NewHandleClear` allocators to avoid an intermediate
     /// `vec![0u8; size]` allocation.
     fn fill_zeros(&mut self, address: u32, len: u32) {
-        for i in 0..len {
-            self.write_byte(address.wrapping_add(i), 0);
-        }
+        self.fill_bytes(address, 0, len);
     }
 }
 
@@ -468,13 +475,13 @@ impl RamStorage {
     }
 
     #[inline]
-    fn fill_zeros_in_bounds(&mut self, index: usize, len: usize) {
+    fn fill_bytes_in_bounds(&mut self, index: usize, value: u8, len: usize) {
         match self {
             RamStorage::Owned(v) => unsafe {
-                std::ptr::write_bytes(v.as_mut_ptr().add(index), 0, len);
+                std::ptr::write_bytes(v.as_mut_ptr().add(index), value, len);
             },
             RamStorage::External(ptr, _) => unsafe {
-                std::ptr::write_bytes(ptr.add(index), 0, len);
+                std::ptr::write_bytes(ptr.add(index), value, len);
             },
         }
     }
@@ -1123,7 +1130,7 @@ impl MemoryBus for MacMemoryBus {
     }
 
     #[inline]
-    fn fill_zeros(&mut self, address: u32, len: u32) {
+    fn fill_bytes(&mut self, address: u32, value: u8, len: u32) {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
         #[cfg(not(debug_assertions))]
@@ -1131,12 +1138,17 @@ impl MemoryBus for MacMemoryBus {
         let end = (address as u64).saturating_add(len as u64);
         if fast && end <= self.ram_size as u64 {
             self.ram
-                .fill_zeros_in_bounds(address as usize, len as usize);
+                .fill_bytes_in_bounds(address as usize, value, len as usize);
             return;
         }
         for i in 0..len {
-            self.write_byte(address.wrapping_add(i), 0);
+            self.write_byte(address.wrapping_add(i), value);
         }
+    }
+
+    #[inline]
+    fn fill_zeros(&mut self, address: u32, len: u32) {
+        self.fill_bytes(address, 0, len);
     }
 
     fn ram_size(&self) -> u32 {
@@ -1349,5 +1361,28 @@ mod tests {
                 "in-RAM tail of straddling fill_zeros"
             );
         }
+    }
+
+    #[test]
+    fn fill_bytes_writes_value_and_preserves_neighbors() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        for i in 0..128u32 {
+            bus.write_byte(0x2000 + i, 0x11);
+        }
+
+        bus.fill_bytes(0x2020, 0xA5, 48);
+
+        for i in 0..0x20u32 {
+            assert_eq!(bus.read_byte(0x2000 + i), 0x11, "prefix untouched");
+        }
+        for i in 0..48u32 {
+            assert_eq!(bus.read_byte(0x2020 + i), 0xA5, "filled byte");
+        }
+        for i in 0x50..128u32 {
+            assert_eq!(bus.read_byte(0x2000 + i), 0x11, "suffix untouched");
+        }
+
+        bus.fill_bytes(0x2000, 0xCC, 0);
+        assert_eq!(bus.read_byte(0x2000), 0x11);
     }
 }
