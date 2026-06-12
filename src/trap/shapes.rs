@@ -1217,9 +1217,10 @@ impl super::TrapDispatcher {
                     let dx = (left - bounds_left) as u32;
                     let width = (right - left) as u32;
                     if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
+                        let row = vec![fill_idx; width as usize];
                         for y in top..bottom {
                             let dy = (y - bounds_top) as u32;
-                            bus.fill_bytes(pix_base + dy * pix_row_bytes + dx, fill_idx, width);
+                            bus.write_bytes(pix_base + dy * pix_row_bytes + dx, &row);
                         }
                         return;
                     }

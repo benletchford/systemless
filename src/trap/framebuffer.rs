@@ -215,7 +215,9 @@ impl super::TrapDispatcher {
             };
             for y in top..bottom {
                 let row_addr = screen_base + y * row_bytes;
-                bus.fill_bytes(row_addr + left, fill, right - left);
+                for x in left..right {
+                    bus.write_byte(row_addr + x, fill);
+                }
             }
             return;
         }
@@ -264,7 +266,9 @@ impl super::TrapDispatcher {
                 Self::logical_white_pixel_index(bus)
             };
             let row_addr = screen_base + (y as u32) * row_bytes;
-            bus.fill_bytes(row_addr + left, fill, right - left);
+            for x in left..right {
+                bus.write_byte(row_addr + x, fill);
+            }
             return;
         }
         for x in x1..x2 {
