@@ -1,6 +1,6 @@
 [package]
 name = "systemless"
-version = "0.1.25"
+version = "0.1.26"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "High-Level Emulation for classic Macintosh applications"
@@ -13,7 +13,7 @@ documentation = "https://docs.rs/systemless"
 default-run = "systemless"
 
 [dependencies]
-m68k = { git = "https://github.com/benletchford/m68k-rs.git", rev = "61bf70cc104f9ea44a8f72885a538a9380504a0f" }
+m68k = { git = "https://github.com/benletchford/m68k-rs.git", rev = "f57eeb01b02797a0b159f232da07b6cc378ae2d8" }
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
