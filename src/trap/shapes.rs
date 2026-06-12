@@ -323,7 +323,7 @@ impl super::TrapDispatcher {
             }
         }
         let (pen_h, pen_w) = self.pn_size;
-        self.draw_generic_shape(cpu, bus, r, op, |y, x| {
+        self.draw_generic_shape(cpu, bus, r, op, true, |y, x| {
             if y < r.top || y >= r.bottom || x < r.left || x >= r.right {
                 return 0;
             }
@@ -436,7 +436,7 @@ impl super::TrapDispatcher {
             .collect();
 
         // For each scanline, compute edge intersections and fill spans
-        self.draw_generic_shape(cpu, bus, &bbox, op, |y, x| {
+        self.draw_generic_shape(cpu, bus, &bbox, op, false, |y, x| {
             // Count edge crossings to the left of (or at) x using even-odd rule
             let mut crossings = 0u32;
             for edge in &edge_data {
@@ -502,7 +502,7 @@ impl super::TrapDispatcher {
 
         let (pen_h, pen_w) = self.pn_size;
 
-        self.draw_generic_shape(cpu, bus, r, op, |y, x| {
+        self.draw_generic_shape(cpu, bus, r, op, false, |y, x| {
             // Check if point is inside the oval
             let dx = (x as f64 - cx + 0.5) / rx;
             let dy = (y as f64 - cy + 0.5) / ry;
@@ -603,7 +603,7 @@ impl super::TrapDispatcher {
         // and persists until the next y-entry changes it.  See IM:I I-142 and
         // build_region_membership_cache in quickdraw.rs for the full parser.
         let cache = Self::build_region_membership_cache(bus, rgn_handle, bbox.top, bbox.bottom);
-        self.draw_generic_shape(cpu, bus, &bbox, op, |y, x| {
+        self.draw_generic_shape(cpu, bus, &bbox, op, false, |y, x| {
             if let Some(c) = &cache {
                 let row = (y - c.top) as usize;
                 if row < c.rows.len() && Self::endpoints_contain_point(&c.rows[row], x) {
@@ -700,7 +700,7 @@ impl super::TrapDispatcher {
         let spans_inset =
             self.compute_oval_spans(r_inset.right - r_inset.left, r_inset.bottom - r_inset.top);
 
-        self.draw_generic_shape(cpu, bus, r, op, |y, x| {
+        self.draw_generic_shape(cpu, bus, r, op, false, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -806,7 +806,7 @@ impl super::TrapDispatcher {
         };
         let spans_inset = self.compute_rrect_spans(&r_inset, ow - 2 * pen_w, oh - 2 * pen_h);
 
-        self.draw_generic_shape(cpu, bus, r, op, |y, x| {
+        self.draw_generic_shape(cpu, bus, r, op, false, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -974,6 +974,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         r: &Rect,
         op: ShapeOp,
+        full_rect_coverage: bool,
         coverage_at: F,
     ) where
         F: Fn(i16, i16) -> u8,
@@ -1206,6 +1207,27 @@ impl super::TrapDispatcher {
             bg_idx = 0;
         }
 
+        if pixel_size == 8 && full_rect_coverage {
+            if let Some(fill_idx) = self.solid_src_copy_fill_index(&op, fg_idx, bg_idx) {
+                let top = r.top.max(clip_top);
+                let left = r.left.max(clip_left);
+                let bottom = r.bottom.min(clip_bottom);
+                let right = r.right.min(clip_right);
+                if top < bottom && left < right {
+                    let dx = (left - bounds_left) as u32;
+                    let width = (right - left) as u32;
+                    if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
+                        let row = vec![fill_idx; width as usize];
+                        for y in top..bottom {
+                            let dy = (y - bounds_top) as u32;
+                            bus.write_bytes(pix_base + dy * pix_row_bytes + dx, &row);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
         // Resolve the port's CLUT once. `glyph_clut` is currently unused
         // (Bayer-dither path superseded the blend) but kept for a future
         // smarter blend path.
@@ -1419,6 +1441,23 @@ impl super::TrapDispatcher {
                     eprintln!("[MENU-REDRAW] Shape probe={} pixel={}", label, pixel);
                 }
             }
+        }
+    }
+
+    #[inline]
+    fn solid_src_copy_fill_index(&self, op: &ShapeOp, fg_idx: u8, bg_idx: u8) -> Option<u8> {
+        let pattern = match op {
+            ShapeOp::Paint if normalize_boolean_transfer_mode(self.pn_mode) == 0 => self.pn_pat,
+            ShapeOp::Erase => self.bk_pat,
+            ShapeOp::Fill(pattern) => *pattern,
+            _ => return None,
+        };
+        if pattern == [0xFF; 8] {
+            Some(fg_idx)
+        } else if pattern == [0x00; 8] {
+            Some(bg_idx)
+        } else {
+            None
         }
     }
 }

@@ -302,7 +302,7 @@ impl super::TrapDispatcher {
             right: buf_right,
         };
 
-        self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(self.tx_mode), |y, x| {
+        self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(self.tx_mode), false, |y, x| {
             // QuickDraw shadow/outline algorithm (from draw_char lines 2964-2974):
             // for dy in -1..=smear_max:
             //     for dx in -1..=smear_max:
@@ -829,7 +829,7 @@ impl super::TrapDispatcher {
                 .as_ref()
                 .map(|info| (info.start_x, info.end_x, info.breaks.clone()));
 
-            self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(self.tx_mode), |y, x| {
+            self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(self.tx_mode), false, |y, x| {
                 // All helper closures below return the per-pixel coverage
                 // byte (0=off, 255=fully on, 1..254=partial). Bold smear
                 // and underline clamp to full alpha where they set a pixel
