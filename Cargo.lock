@@ -1180,8 +1180,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "m68k"
-version = "0.1.12"
-source = "git+https://github.com/benletchford/m68k-rs.git?rev=f57eeb01b02797a0b159f232da07b6cc378ae2d8#f57eeb01b02797a0b159f232da07b6cc378ae2d8"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7d8ef3172275ea78d8f26510b4e9f68a80af2106b9711e483cecd3ebe800e82"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -2178,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "cpal",
  "hfs-reader",
