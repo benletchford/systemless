@@ -26,6 +26,7 @@ fn trace_sane_enabled() -> bool {
     *TRACE_SANE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SANE").is_some())
 }
 
+#[inline]
 fn trace_sane_bytes(bus: &MacMemoryBus, addr: u32, len: u32) -> String {
     use std::fmt::Write;
 
@@ -192,15 +193,22 @@ impl super::TrapDispatcher {
             0x18 |                         // scalb (scale binary, two-address)
             0x1C // class (classify, two-address: src=ext, dst=int16)
         );
-        // PC reflects the post-trap address (m68k step advances pc += 2
-        // past the A-line word). Subtract 2 to get the actual trap call
-        // site for diagnostics.
-        let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
-        // When the trap was called via auto-pop (e.g. through a jump-table
-        // trampoline), surface the original JSR-er PC too.
-        let trap_caller = self.current_trap_caller;
         let trace_sane = trace_sane_enabled();
         let trace_sane_nan = trace_sane_nan_enabled();
+        // PC reflects the post-trap address (m68k step advances pc += 2
+        // past the A-line word). Only read it when diagnostics need it.
+        let trap_pc = if trace_sane || trace_sane_nan {
+            cpu.read_reg(Register::PC).wrapping_sub(2)
+        } else {
+            0
+        };
+        // When the trap was called via auto-pop (e.g. through a jump-table
+        // trampoline), surface the original JSR-er PC too.
+        let trap_caller = if trace_sane || trace_sane_nan {
+            self.current_trap_caller
+        } else {
+            None
+        };
 
         use super::extended80::Extended80;
 
@@ -209,6 +217,38 @@ impl super::TrapDispatcher {
             let dst_ptr = bus.read_long(sp + 2);
             let src_ptr = bus.read_long(sp + 6);
             cpu.write_reg(Register::A7, sp + 10);
+
+            if !trace_sane && !trace_sane_nan {
+                match op {
+                    0x0E => {
+                        // FZ2X: convert src format to extended dst. The generic
+                        // path also reads the old extended dst even though this
+                        // operation overwrites it.
+                        Extended80::read_format(bus, src_ptr, fmt).write_to_bus(bus, dst_ptr);
+                        return Ok(());
+                    }
+                    0x10 => {
+                        // FX2Z: convert extended src to dst format. Avoid the
+                        // generic path's unused dst and src-format reads.
+                        Extended80::read_from_bus(bus, src_ptr).write_format(bus, dst_ptr, fmt);
+                        return Ok(());
+                    }
+                    0x18 => {
+                        // FSCALB: src is an int16 scale, not a formatted float.
+                        let dst_f = f64::from(Extended80::read_from_bus(bus, dst_ptr));
+                        let n = bus.read_word(src_ptr) as i16;
+                        Extended80::from(libm::scalbn(dst_f, n as i32)).write_to_bus(bus, dst_ptr);
+                        return Ok(());
+                    }
+                    0x1C => {
+                        // FCLASS: writes an int16 classification of src.
+                        let src_ext = Extended80::read_format(bus, src_ptr, fmt);
+                        bus.write_word(dst_ptr, src_ext.classify() as u16);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
 
             let src_ext = Extended80::read_format(bus, src_ptr, fmt);
             let dst_ext = Extended80::read_from_bus(bus, dst_ptr);
@@ -236,14 +276,7 @@ impl super::TrapDispatcher {
             // Report any non-finite SANE input load.
             if trace_sane_nan {
                 let src_fmt = format!("{}", fmt);
-                report_loaded_nan_if_enabled(
-                    trap_pc,
-                    trap_caller,
-                    src_ptr,
-                    &src_fmt,
-                    "src",
-                    src_f,
-                );
+                report_loaded_nan_if_enabled(trap_pc, trap_caller, src_ptr, &src_fmt, "src", src_f);
                 report_loaded_nan_if_enabled(trap_pc, trap_caller, dst_ptr, "ext", "dst", dst_f);
             }
 
