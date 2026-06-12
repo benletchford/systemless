@@ -15,6 +15,11 @@ fn no_visrgn_auto_expand_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_NO_VISRGN_AUTO_EXPAND").is_some())
 }
 
+static TRACE_BLIT_WINDOW: OnceLock<bool> = OnceLock::new();
+fn trace_blit_window_enabled() -> bool {
+    *TRACE_BLIT_WINDOW.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_BLIT_WINDOW").is_some())
+}
+
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
     /// Returns (screen_base, row_bytes, width, height, pixel_size).
@@ -464,7 +469,7 @@ impl super::TrapDispatcher {
     /// the window content so that screen captures reflect the actual game state.
     pub(crate) fn blit_window_to_screen(&self, bus: &mut MacMemoryBus) {
         let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = self.screen_mode;
-        let trace = std::env::var_os("SYSTEMLESS_TRACE_BLIT_WINDOW").is_some();
+        let trace = trace_blit_window_enabled();
         if self.front_window == 0 {
             if trace {
                 eprintln!("[BLIT] skip: front_window=0");
