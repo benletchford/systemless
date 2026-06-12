@@ -10,6 +10,9 @@ const WHITE_ARGB: u32 = 0xFFFFFFFF;
 const BLACK_RGBA_WORD: u32 = u32::from_le_bytes([0x00, 0x00, 0x00, 0xFF]);
 const WHITE_RGBA_WORD: u32 = u32::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF]);
 
+pub type RgbaPalette = [u32; 256];
+const UNUSED_RGBA_PALETTE: RgbaPalette = [0; 256];
+
 /// Render the current screen to an RGBA pixel buffer (4 bytes per pixel).
 ///
 /// Uses `ram_slice()` for bulk memory access. Supports both 1bpp and 8bpp modes.
@@ -32,6 +35,33 @@ pub fn render_screen_into(
     device_clut: &[[u16; 3]; 256],
     pixels: &mut Vec<u8>,
 ) {
+    if screen_mode.4 == 8 {
+        let palette = rgba_palette_from_clut(device_clut);
+        render_screen_with_rgba_palette_into(bus, screen_mode, &palette, pixels);
+    } else {
+        render_screen_with_rgba_palette_into(bus, screen_mode, &UNUSED_RGBA_PALETTE, pixels);
+    }
+}
+
+pub fn rgba_palette_from_clut(device_clut: &[[u16; 3]; 256]) -> RgbaPalette {
+    let mut palette = [0u32; 256];
+    for (index, slot) in palette.iter_mut().enumerate() {
+        let [r, g, b] = clut_to_rgba8(device_clut, index as u8);
+        *slot = rgba_word(r, g, b);
+    }
+    palette
+}
+
+/// Render the current screen with a precomputed 8bpp RGBA palette.
+///
+/// This is useful for interactive frontends where the framebuffer is
+/// converted every host frame but the CLUT changes much less often.
+pub fn render_screen_with_rgba_palette_into(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    palette: &RgbaPalette,
+    pixels: &mut Vec<u8>,
+) {
     let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
     let w = scrn_w as u32;
     let h = scrn_h as u32;
@@ -45,20 +75,11 @@ pub fn render_screen_into(
     }
 
     let fb = bus.ram_slice(scrn_base, row_bytes * h);
-    let palette = is_8bpp.then(|| {
-        let mut palette = [0u32; 256];
-        for (index, slot) in palette.iter_mut().enumerate() {
-            let [r, g, b] = clut_to_rgba8(device_clut, index as u8);
-            *slot = rgba_word(r, g, b);
-        }
-        palette
-    });
 
     for gy in 0..h {
         let row_start = (gy * row_bytes) as usize;
         let px_row = (gy * w * 4) as usize;
         if is_8bpp {
-            let palette = palette.as_ref().expect("palette cache for 8bpp render");
             for gx in 0..w {
                 let pixel = fb[row_start + gx as usize];
                 let idx = px_row + (gx * 4) as usize;
@@ -331,7 +352,10 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{clut_component_to_u8, clut_to_argb, render_screen_into, screen_pixel_rgb};
+    use super::{
+        clut_component_to_u8, clut_to_argb, render_screen_into,
+        render_screen_with_rgba_palette_into, rgba_palette_from_clut, screen_pixel_rgb,
+    };
     use crate::memory::{MacMemoryBus, MemoryBus};
 
     #[test]
@@ -378,6 +402,28 @@ mod tests {
                 0x00, 0xFF, 0x00, 0xFF,
             ]
         );
+    }
+
+    #[test]
+    fn render_screen_with_precomputed_palette_matches_clut_path() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = 128;
+        bus.write_byte(base, 0);
+        bus.write_byte(base + 1, 1);
+        bus.write_byte(base + 2, 2);
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0x0000, 0x0000, 0x0000];
+        clut[1] = [0xFFFF, 0x0000, 0x0000];
+        clut[2] = [0x0000, 0xFFFF, 0x0000];
+
+        let mut direct = Vec::new();
+        render_screen_into(&bus, (base, 4, 3, 1, 8), &clut, &mut direct);
+
+        let palette = rgba_palette_from_clut(&clut);
+        let mut precomputed = Vec::new();
+        render_screen_with_rgba_palette_into(&bus, (base, 4, 3, 1, 8), &palette, &mut precomputed);
+
+        assert_eq!(precomputed, direct);
     }
 
     #[test]
