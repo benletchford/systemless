@@ -200,6 +200,7 @@ impl super::TrapDispatcher {
         // trampoline), surface the original JSR-er PC too.
         let trap_caller = self.current_trap_caller;
         let trace_sane = trace_sane_enabled();
+        let trace_sane_nan = trace_sane_nan_enabled();
 
         use super::extended80::Extended80;
 
@@ -233,19 +234,24 @@ impl super::TrapDispatcher {
                 );
             }
             // Report any non-finite SANE input load.
-            report_loaded_nan_if_enabled(
-                trap_pc,
-                trap_caller,
-                src_ptr,
-                &format!("{}", fmt),
-                "src",
-                src_f,
-            );
-            report_loaded_nan_if_enabled(trap_pc, trap_caller, dst_ptr, "ext", "dst", dst_f);
+            if trace_sane_nan {
+                let src_fmt = format!("{}", fmt);
+                report_loaded_nan_if_enabled(
+                    trap_pc,
+                    trap_caller,
+                    src_ptr,
+                    &src_fmt,
+                    "src",
+                    src_f,
+                );
+                report_loaded_nan_if_enabled(trap_pc, trap_caller, dst_ptr, "ext", "dst", dst_f);
+            }
 
             // Helper for the FP68K result + NaN/inf report.
             let fp_result = |op_name: &str, r: f64| {
-                report_nan_if_enabled(trap_pc, trap_caller, op_name, dst_f, Some(src_f), r);
+                if trace_sane_nan {
+                    report_nan_if_enabled(trap_pc, trap_caller, op_name, dst_f, Some(src_f), r);
+                }
                 Some(Extended80::from(r))
             };
             let result = match op {
@@ -333,11 +339,15 @@ impl super::TrapDispatcher {
                 );
             }
             // Report any non-finite SANE input load.
-            report_loaded_nan_if_enabled(trap_pc, trap_caller, dst_ptr, "ext", "dst", dst_f);
+            if trace_sane_nan {
+                report_loaded_nan_if_enabled(trap_pc, trap_caller, dst_ptr, "ext", "dst", dst_f);
+            }
 
             // Same NaN/inf reporter for one-address FP68K ops.
             let fp1_result = |op_name: &str, r: f64| {
-                report_nan_if_enabled(trap_pc, trap_caller, op_name, dst_f, None, r);
+                if trace_sane_nan {
+                    report_nan_if_enabled(trap_pc, trap_caller, op_name, dst_f, None, r);
+                }
                 Some(Extended80::from(r))
             };
             let result = match op {
@@ -400,19 +410,17 @@ impl super::TrapDispatcher {
         let op = opcode & 0x00FF;
         let fmt = (opcode >> 11) & 0x07;
 
-        static ELEMS_LOG_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let log_count = ELEMS_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if log_count < 20 {
+        // Same trap-PC capture as in handle_fp68k.
+        let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+        let trap_caller = self.current_trap_caller;
+        let trace_sane = trace_sane_enabled();
+        let trace_sane_nan = trace_sane_nan_enabled();
+        if trace_sane {
             eprintln!(
                 "[SANE] Elems68K opcode=0x{:04X} op=0x{:02X} fmt={} SP=${:08X}",
                 opcode, op, fmt, sp
             );
         }
-
-        // Same trap-PC capture as in handle_fp68k.
-        let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
-        let trap_caller = self.current_trap_caller;
-        let trace_sane = trace_sane_enabled();
 
         use super::extended80::Extended80;
 
@@ -448,22 +456,25 @@ impl super::TrapDispatcher {
                 );
             }
             // Report any non-finite SANE input load.
-            report_loaded_nan_if_enabled(
-                trap_pc,
-                trap_caller,
-                src_ptr,
-                &format!("{}", fmt),
-                "src",
-                f64::from(src_val),
-            );
-            report_loaded_nan_if_enabled(
-                trap_pc,
-                trap_caller,
-                dst_ptr,
-                "ext",
-                "dst",
-                f64::from(dst_val),
-            );
+            if trace_sane_nan {
+                let src_fmt = format!("{}", fmt);
+                report_loaded_nan_if_enabled(
+                    trap_pc,
+                    trap_caller,
+                    src_ptr,
+                    &src_fmt,
+                    "src",
+                    f64::from(src_val),
+                );
+                report_loaded_nan_if_enabled(
+                    trap_pc,
+                    trap_caller,
+                    dst_ptr,
+                    "ext",
+                    "dst",
+                    f64::from(dst_val),
+                );
+            }
 
             let result = match op {
                 0x10 if (opcode & 0x8000) != 0 => {
@@ -473,7 +484,16 @@ impl super::TrapDispatcher {
                     let base = f64::from(dst_val);
                     let i = f64::from(src_val) as i32;
                     let r = libm::pow(base, i as f64);
-                    report_nan_if_enabled(trap_pc, trap_caller, "FXPWRI", base, Some(i as f64), r);
+                    if trace_sane_nan {
+                        report_nan_if_enabled(
+                            trap_pc,
+                            trap_caller,
+                            "FXPWRI",
+                            base,
+                            Some(i as f64),
+                            r,
+                        );
+                    }
                     Extended80::from(r)
                 }
                 0x12 if (opcode & 0x8000) != 0 => {
@@ -483,7 +503,7 @@ impl super::TrapDispatcher {
                     cpu.set_ccr(0x08);
                     dst_val
                 }
-                _ => Self::apply_elems_op(trap_pc, trap_caller, op, src_val),
+                _ => Self::apply_elems_op(trace_sane_nan, trap_pc, trap_caller, op, src_val),
             };
 
             if trace_sane {
@@ -521,8 +541,17 @@ impl super::TrapDispatcher {
             );
         }
         // Report any non-finite SANE input load.
-        report_loaded_nan_if_enabled(trap_pc, trap_caller, dst_ptr, "ext", "dst", f64::from(val));
-        let result = Self::apply_elems_op(trap_pc, trap_caller, op, val);
+        if trace_sane_nan {
+            report_loaded_nan_if_enabled(
+                trap_pc,
+                trap_caller,
+                dst_ptr,
+                "ext",
+                "dst",
+                f64::from(val),
+            );
+        }
+        let result = Self::apply_elems_op(trace_sane_nan, trap_pc, trap_caller, op, val);
 
         if trace_sane {
             eprintln!(
@@ -542,6 +571,7 @@ impl super::TrapDispatcher {
     /// This matches the libm-bridge's ext80_elems_op pipeline exactly:
     /// Extended80 → f64 → libm function → f64 → Extended80
     fn apply_elems_op(
+        trace_sane_nan: bool,
         pc: u32,
         caller: Option<u32>,
         op: u16,
@@ -565,7 +595,9 @@ impl super::TrapDispatcher {
             _ => return val,
         };
         // Warn when result is NaN/inf via the shared reporter.
-        report_nan_if_enabled(pc, caller, sane_op_name(op), x, None, result);
+        if trace_sane_nan {
+            report_nan_if_enabled(pc, caller, sane_op_name(op), x, None, result);
+        }
         Extended80::from(result)
     }
 
