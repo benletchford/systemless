@@ -4886,6 +4886,14 @@ impl super::TrapDispatcher {
                         keys_ptr, self.key_map
                     );
                 }
+                if std::env::var_os("SYSTEMLESS_TRACE_GETKEYS_NONZERO").is_some()
+                    && self.key_map.iter().any(|&byte| byte != 0)
+                {
+                    eprintln!(
+                        "[INPUT] GetKeys nonzero tick={} ptr=${:08X} key_map={:02X?}",
+                        self.tick_count, keys_ptr, self.key_map
+                    );
+                }
                 if keys_ptr != 0 {
                     bus.write_bytes(keys_ptr, &self.key_map);
                 }
