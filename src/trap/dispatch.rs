@@ -250,6 +250,20 @@ pub struct DialogItem {
     pub sel_end: i16,
 }
 
+/// Candidate popup-menu association observed while a dialog is being
+/// initialized. Some apps create custom popup controls by inserting a MENU,
+/// querying a userItem with GetDItem, then installing a userItem draw proc via
+/// SetDItem. Keep this pending until the SetDItem proc installation confirms it;
+/// arbitrary userItem grids also call GetDItem heavily and must not be promoted
+/// to popup controls merely because a menu was inserted earlier.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingDialogPopupMenu {
+    pub dialog_ptr: u32,
+    pub item_no: i16,
+    pub menu_id: i16,
+    pub rect: (i16, i16, i16, i16),
+}
+
 /// State for ModalDialog mouse/key tracking across frames.
 /// Mirrors MenuTrackingState; follows the same re-fire pattern.
 /// Inside Macintosh Volume I, I-415
@@ -315,6 +329,8 @@ pub struct DialogTrackingState {
     pub active_popup: Option<DialogPopupTrackingState>,
     /// Active push-button tracking inside ModalDialog.
     pub active_button: Option<DialogButtonTrackingState>,
+    /// Active plain userItem tracking inside ModalDialog.
+    pub active_user_item: Option<DialogUserItemTrackingState>,
 }
 
 /// Popup-menu control state owned by an active ModalDialog loop.
@@ -333,6 +349,20 @@ pub struct DialogButtonTrackingState {
     pub item_no: i16,
     pub rect: (i16, i16, i16, i16),
     pub highlighted: bool,
+}
+
+/// Plain userItem tracking owned by an active ModalDialog loop.
+pub struct DialogUserItemTrackingState {
+    pub item_no: i16,
+    pub rect: (i16, i16, i16, i16),
+}
+
+/// Rendered pixels for a dialog window after ModalDialog has returned
+/// an item hit but before the app disposes the dialog.
+#[derive(Clone, Debug)]
+pub(crate) struct PersistentDialogSnapshot {
+    pub bounds: (i16, i16, i16, i16),
+    pub pixels: Vec<u8>,
 }
 
 /// State for popup-menu controls tracked through TrackControl.
@@ -1164,6 +1194,9 @@ pub struct TrapDispatcher {
     /// Saved background pixels for dialogs that returned a non-dismissing item
     /// (e.g., checkbox click). Keyed by dialog_ptr. Reused when ModalDialog re-enters.
     pub(crate) dialog_saved_pixels: HashMap<u32, Vec<u8>>,
+    /// Rendered front-dialog pixels retained after ModalDialog returns
+    /// an item but before DisposDialog closes the window.
+    pub(crate) dialog_visible_snapshots: HashMap<u32, PersistentDialogSnapshot>,
     /// Dialogs for which ModalDialog has completed its first-call setup (drew
     /// controls, snapshotted pixels). On re-entry we skip draw_dialog to
     /// preserve game-drawn custom content (e.g. PICT titles, group boxes).
@@ -1187,12 +1220,14 @@ pub struct TrapDispatcher {
     /// Inside Macintosh Volume I, I-331
     pub(crate) control_proc_ids: HashMap<u32, i16>,
     /// The menu ID of the most recently inserted menu (via InsertMenu).
-    /// Cleared when a type-0 userItem GetDItem is called immediately after,
-    /// establishing the popup menu ↔ dialog-item association.
+    /// Cleared when a type-0 userItem GetDItem is called immediately after.
     pub(crate) last_inserted_menu_id: Option<i16>,
+    /// Pending InsertMenu → GetDItem popup association. Confirmed only when
+    /// the app installs a draw proc for that same userItem with SetDItem.
+    pub(crate) pending_dialog_popup_menu: Option<PendingDialogPopupMenu>,
     /// Associates type-0 (userItem) dialog slots with popup menu IDs.
-    /// Established by the InsertMenu → GetDItem pairing that games use when
-    /// setting up popup controls in dialogs.
+    /// Established by the InsertMenu → GetDItem → SetDItem pattern that games
+    /// use when setting up custom popup controls in dialogs.
     /// Key: (dialog_ptr, 1-based item_no), Value: menu_id
     pub(crate) dialog_item_popup_menus: HashMap<(u32, i16), i16>,
     /// Original DITL rects for popup userItems, saved before SetDItem narrows them.
@@ -1924,6 +1959,7 @@ impl TrapDispatcher {
             dialog_cancel_items: HashMap::new(),
             dialog_filter_result_addr: 0,
             dialog_saved_pixels: HashMap::new(),
+            dialog_visible_snapshots: HashMap::new(),
             dialog_modal_entered: std::collections::HashSet::new(),
             window_stack: Vec::new(),
             saved_vis_regions: HashMap::new(),
@@ -1931,6 +1967,7 @@ impl TrapDispatcher {
             textedit_states: HashMap::new(),
             control_proc_ids: HashMap::new(),
             last_inserted_menu_id: None,
+            pending_dialog_popup_menu: None,
             dialog_item_popup_menus: HashMap::new(),
             dialog_popup_original_rects: HashMap::new(),
             scrap_entries: Vec::new(),
@@ -3995,6 +4032,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
     }
 

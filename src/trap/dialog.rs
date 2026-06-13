@@ -1,6 +1,9 @@
 //! Dialog Manager, Cursor Manager, and misc stub trap handlers.
 
-use super::dispatch::{DialogItem, DialogPopupTrackingState, DialogTrackingState};
+use super::dispatch::{
+    DialogItem, DialogPopupTrackingState, DialogTrackingState, DialogUserItemTrackingState,
+    PendingDialogPopupMenu, PersistentDialogSnapshot,
+};
 use super::types::{Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -2138,6 +2141,7 @@ impl super::TrapDispatcher {
             title,
             proc_id,
             visible,
+            false,
             go_away_flag,
             ref_con,
         );
@@ -2162,6 +2166,7 @@ impl super::TrapDispatcher {
             // and restoring them leaves button-text artefacts on screen.
             let background = self.save_dialog_pixels(bus, bounds);
             self.dialog_saved_pixels.insert(dlg_ptr, background);
+            self.draw_window_frame(bus);
 
             // Fill the dialog area with white immediately so that any
             // QuickDraw calls the game makes before ModalDialog (e.g.,
@@ -3038,6 +3043,21 @@ impl super::TrapDispatcher {
                     }
                 }
                 8 => {
+                    let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+                        self.get_screen_params();
+                    Self::fb_fill_rect(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        abs_top,
+                        abs_left,
+                        abs_bottom,
+                        abs_right,
+                        false,
+                    );
                     self.draw_static_text(bus, abs_top, abs_left, abs_bottom, abs_right, &item.text)
                 }
                 16 => {
@@ -3076,6 +3096,10 @@ impl super::TrapDispatcher {
         let edit_item = tracking.edit_item;
         let dialog_ptr = tracking.dialog_ptr;
         let popup_draws = tracking.popup_draws.clone();
+        let rendered_pixels = tracking.rendered_pixels.clone();
+        if !rendered_pixels.is_empty() {
+            self.restore_dialog_pixels(bus, bounds, &rendered_pixels);
+        }
         self.redraw_standard_dialog_items(
             bus,
             bounds,
@@ -3090,6 +3114,25 @@ impl super::TrapDispatcher {
         if let Some(tracking) = self.dialog_tracking.as_mut() {
             tracking.rendered_pixels = rendered;
         }
+    }
+
+    fn persist_visible_dialog_snapshot(
+        &mut self,
+        bus: &MacMemoryBus,
+        tracking: &DialogTrackingState,
+    ) {
+        let pixels = if tracking.rendered_pixels.is_empty() {
+            self.save_dialog_pixels(bus, tracking.bounds)
+        } else {
+            tracking.rendered_pixels.clone()
+        };
+        self.dialog_visible_snapshots.insert(
+            tracking.dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds: tracking.bounds,
+                pixels,
+            },
+        );
     }
 
     pub(crate) fn finalize_dialog_draw_procs_if_idle(&mut self, bus: &mut MacMemoryBus) {
@@ -4030,6 +4073,130 @@ impl super::TrapDispatcher {
         0
     }
 
+    fn dialog_button_hit_test(
+        items: &[DialogItem],
+        bounds: (i16, i16, i16, i16),
+        screen_v: i16,
+        screen_h: i16,
+    ) -> i16 {
+        for (i, item) in items.iter().enumerate() {
+            let base_type = item.item_type & 0x7F;
+            let is_disabled = (item.item_type & 0x80) != 0;
+            if base_type != 4 || is_disabled {
+                continue;
+            }
+            let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, item.rect);
+            if screen_v >= top && screen_v < bottom && screen_h >= left && screen_h < right {
+                return (i + 1) as i16;
+            }
+        }
+        0
+    }
+
+    fn is_plain_modal_user_item(
+        &self,
+        tracking: &DialogTrackingState,
+        item_no: i16,
+        item: &DialogItem,
+    ) -> bool {
+        let base_type = item.item_type & 0x7F;
+        let is_disabled = (item.item_type & 0x80) != 0;
+        base_type == 0
+            && !is_disabled
+            && item.proc_ptr == 0
+            && !tracking.game_managed
+            && !self
+                .dialog_item_popup_menus
+                .contains_key(&(tracking.dialog_ptr, item_no))
+    }
+
+    fn dialog_plain_user_item_hit_test(
+        &self,
+        tracking: &DialogTrackingState,
+        screen_v: i16,
+        screen_h: i16,
+    ) -> i16 {
+        for (i, item) in tracking.items.iter().enumerate() {
+            let item_no = (i + 1) as i16;
+            if !self.is_plain_modal_user_item(tracking, item_no, item) {
+                continue;
+            }
+            let (top, left, bottom, right) =
+                Self::dialog_item_screen_rect(tracking.bounds, item.rect);
+            if screen_v >= top && screen_v < bottom && screen_h >= left && screen_h < right {
+                return item_no;
+            }
+        }
+        0
+    }
+
+    pub(crate) fn pending_dialog_button_mouse_down(&self) -> bool {
+        let Some(tracking) = self.dialog_tracking.as_ref() else {
+            return false;
+        };
+        let Some(event) = self
+            .event_queue
+            .iter()
+            .find(|event| matches!(event.what, 1 | 2 | 3 | 4 | 6))
+        else {
+            return false;
+        };
+        if event.what != 1 {
+            return false;
+        }
+        Self::dialog_button_hit_test(
+            &tracking.items,
+            tracking.bounds,
+            event.where_v,
+            event.where_h,
+        ) > 0
+    }
+
+    pub(crate) fn pending_dialog_plain_user_item_mouse_down(&self) -> bool {
+        let Some(tracking) = self.dialog_tracking.as_ref() else {
+            return false;
+        };
+        if tracking.active_user_item.is_some() {
+            return true;
+        }
+        let Some(event) = self
+            .event_queue
+            .iter()
+            .find(|event| matches!(event.what, 1 | 2 | 3 | 4 | 6))
+        else {
+            return false;
+        };
+        event.what == 1
+            && self.dialog_plain_user_item_hit_test(tracking, event.where_v, event.where_h) > 0
+    }
+
+    pub(crate) fn mouse_down_over_dialog_button(&self) -> bool {
+        if !self.mouse_button {
+            return false;
+        }
+        let Some(tracking) = self.dialog_tracking.as_ref() else {
+            return false;
+        };
+        Self::dialog_button_hit_test(
+            &tracking.items,
+            tracking.bounds,
+            self.mouse_pos.0,
+            self.mouse_pos.1,
+        ) > 0
+    }
+
+    pub(crate) fn mouse_down_over_dialog_plain_user_item(&self) -> bool {
+        if !self.mouse_button {
+            return false;
+        }
+        let Some(tracking) = self.dialog_tracking.as_ref() else {
+            return false;
+        };
+        tracking.active_user_item.is_some()
+            || self.dialog_plain_user_item_hit_test(tracking, self.mouse_pos.0, self.mouse_pos.1)
+                > 0
+    }
+
     fn read_guest_event_record(bus: &MacMemoryBus, event_ptr: u32) -> (u16, u32, i16, i16, u16) {
         if event_ptr == 0 {
             return (0, 0, 0, 0, 0);
@@ -4247,6 +4414,7 @@ impl super::TrapDispatcher {
         let Some(saved) = self.dialog_tracking.take() else {
             return;
         };
+        self.persist_visible_dialog_snapshot(bus, &saved);
         self.dialog_saved_pixels
             .insert(saved.dialog_ptr, saved.saved_pixels);
         if saved.item_hit_ptr != 0 {
@@ -4299,6 +4467,53 @@ impl super::TrapDispatcher {
         } else if highlighted {
             self.invert_button_rect(bus, top, left, bottom, right);
         }
+    }
+
+    fn handle_dialog_user_item_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        let Some((bounds, item_no, rect)) = self.dialog_tracking.as_ref().and_then(|tracking| {
+            tracking
+                .active_user_item
+                .as_ref()
+                .map(|user_item| (tracking.bounds, user_item.item_no, user_item.rect))
+        }) else {
+            return;
+        };
+
+        if self.mouse_button {
+            return;
+        }
+
+        self.consume_dialog_mouse_up();
+        if let Some(t) = self.dialog_tracking.as_mut() {
+            t.active_user_item = None;
+        }
+
+        let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
+        let (mouse_v, mouse_h) = self.mouse_pos;
+        let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
+        if !inside {
+            return;
+        }
+
+        let (dlg_ptr, edit_item, edit_text, items) = {
+            let tracking = self.dialog_tracking.as_mut().unwrap();
+            Self::sync_tracking_active_edit_item(tracking);
+            (
+                tracking.dialog_ptr,
+                tracking.edit_item,
+                tracking.edit_text.clone(),
+                tracking.items.clone(),
+            )
+        };
+        self.flush_dialog_edit_item_texts(bus, dlg_ptr, &items, edit_item, &edit_text);
+        let saved = self.dialog_tracking.take().unwrap();
+        self.persist_visible_dialog_snapshot(bus, &saved);
+        self.dialog_saved_pixels
+            .insert(saved.dialog_ptr, saved.saved_pixels);
+        if saved.item_hit_ptr != 0 {
+            bus.write_word(saved.item_hit_ptr, item_no as u16);
+        }
+        cpu.write_reg(Register::A7, saved.stack_ptr + 8);
     }
 
     pub(crate) fn dispatch_dialog<C: CpuOps>(
@@ -4946,6 +5161,7 @@ impl super::TrapDispatcher {
                 self.dialog_control_values
                     .retain(|(dlg, _), _| *dlg != dialog_ptr);
                 self.dialog_cancel_items.remove(&dialog_ptr);
+                self.dialog_visible_snapshots.remove(&dialog_ptr);
                 self.dialog_modal_entered.remove(&dialog_ptr);
                 self.untrack_window(bus, dialog_ptr);
 
@@ -5170,19 +5386,31 @@ impl super::TrapDispatcher {
                         bus.write_word(box_ptr + 4, item.rect.2 as u16);
                         bus.write_word(box_ptr + 6, item.rect.3 as u16);
                     }
-                    // Games (e.g. Marathon) use InsertMenu -> GetDItem to
-                    // associate a dynamic menu with an enabled userItem popup.
-                    // Keep the association one-shot; Damage Incorporated polls
-                    // disabled portrait userItems after menu setup.
+                    // Some apps use InsertMenu -> GetDItem -> SetDItem to
+                    // build a custom popup control backed by a userItem. Do
+                    // not promote on GetDItem alone: plain userItem grids also
+                    // query their item rectangles and must not inherit a stale
+                    // popup-menu association.
                     if let Some(menu_id) = self.last_inserted_menu_id.take() {
                         let enabled_user_item =
                             (item.item_type & 0x7F) == 0 && (item.item_type & 0x80) == 0;
                         if enabled_user_item {
-                            self.dialog_item_popup_menus
-                                .insert((dialog_ptr, item_no), menu_id);
-                            // Save the original DITL rect before SetDItem narrows it.
-                            self.dialog_popup_original_rects
-                                .insert((dialog_ptr, item_no), item.rect);
+                            if item.proc_ptr != 0 {
+                                self.dialog_item_popup_menus
+                                    .insert((dialog_ptr, item_no), menu_id);
+                                self.dialog_popup_original_rects
+                                    .insert((dialog_ptr, item_no), item.rect);
+                                self.pending_dialog_popup_menu = None;
+                            } else {
+                                self.pending_dialog_popup_menu = Some(PendingDialogPopupMenu {
+                                    dialog_ptr,
+                                    item_no,
+                                    menu_id,
+                                    rect: item.rect,
+                                });
+                            }
+                        } else {
+                            self.pending_dialog_popup_menu = None;
                         }
                     }
                 } else {
@@ -5273,6 +5501,18 @@ impl super::TrapDispatcher {
                         } else if base_type == 8 || base_type == 16 {
                             item.text = Self::text_item_string_from_handle(bus, item_handle);
                         }
+                    }
+                }
+
+                if let Some(pending) = self.pending_dialog_popup_menu {
+                    if pending.dialog_ptr == dialog_ptr && pending.item_no == item_no {
+                        if base_type == 0 && (item_type & 0x80) == 0 && item_handle != 0 {
+                            self.dialog_item_popup_menus
+                                .insert((dialog_ptr, item_no), pending.menu_id);
+                            self.dialog_popup_original_rects
+                                .insert((dialog_ptr, item_no), pending.rect);
+                        }
+                        self.pending_dialog_popup_menu = None;
                     }
                 }
 
@@ -5378,6 +5618,11 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
 
+                    if tracking.active_user_item.is_some() {
+                        self.handle_dialog_user_item_tracking(cpu, bus);
+                        return Some(Ok(()));
+                    }
+
                     // Fast path — when nothing can produce an item hit or visible
                     // update on this step (no filter proc, no flash animation, no
                     // pending event, no queued events), return Ok without running
@@ -5387,6 +5632,7 @@ impl super::TrapDispatcher {
                         && tracking.flash_remaining == 0
                         && tracking.active_button.is_none()
                         && tracking.active_popup.is_none()
+                        && tracking.active_user_item.is_none()
                         && self.event_queue.is_empty()
                     {
                         return Some(Ok(()));
@@ -5408,6 +5654,7 @@ impl super::TrapDispatcher {
                     // FALSE means ModalDialog should process the event itself.
                     if filter_proc != 0 {
                         let result_addr = self.dialog_filter_result_addr;
+                        let tracking_dialog_ptr = tracking.dialog_ptr;
                         let filter_returned_true = if result_addr != 0 {
                             bus.read_word(result_addr) != 0
                         } else {
@@ -5418,19 +5665,20 @@ impl super::TrapDispatcher {
                         if filter_returned_true && item_hit_ptr != 0 {
                             hit = bus.read_word(item_hit_ptr) as i16;
                         }
+                        let filter_event = self
+                            .dialog_tracking
+                            .as_mut()
+                            .and_then(|t| t.last_filter_event.take());
                         if trace_dialog_filter_enabled() {
                             eprintln!(
                                 "[DIALOG-FILTER] result dialog=${:08X} returned_true={} item_hit={} item_hit_ptr=${:08X}",
-                                tracking.dialog_ptr, filter_returned_true, hit, item_hit_ptr
+                                tracking_dialog_ptr, filter_returned_true, hit, item_hit_ptr
                             );
                         }
 
                         if hit > 0 {
-                            let handled_mouse_down = self
-                                .dialog_tracking
-                                .as_ref()
-                                .and_then(|t| t.last_filter_event.as_ref())
-                                .is_some_and(|e| e.what == 1);
+                            let handled_mouse_down =
+                                filter_event.as_ref().is_some_and(|e| e.what == 1);
                             let (dialog_ptr, edit_item, edit_text, items) = {
                                 let tracking = self.dialog_tracking.as_mut().unwrap();
                                 Self::sync_tracking_active_edit_item(tracking);
@@ -5441,11 +5689,18 @@ impl super::TrapDispatcher {
                                     tracking.items.clone(),
                                 )
                             };
+                            let keep_dialog_visible = items
+                                .get((hit - 1) as usize)
+                                .map(|item| (item.item_type & 0x7F) != 4)
+                                .unwrap_or(true);
                             self.flush_dialog_edit_item_texts(
                                 bus, dialog_ptr, &items, edit_item, &edit_text,
                             );
                             // Filter handled the event — end tracking and return.
                             let saved = self.dialog_tracking.take().unwrap();
+                            if keep_dialog_visible {
+                                self.persist_visible_dialog_snapshot(bus, &saved);
+                            }
                             self.dialog_saved_pixels
                                 .insert(saved.dialog_ptr, saved.saved_pixels);
                             if handled_mouse_down {
@@ -5461,10 +5716,10 @@ impl super::TrapDispatcher {
                             cpu.write_reg(Register::A7, stack_ptr + 8);
                             return Some(Ok(()));
                         }
-                        pending_event = self
-                            .dialog_tracking
-                            .as_mut()
-                            .and_then(|t| t.last_filter_event.take());
+                        if filter_returned_true {
+                            return Some(Ok(()));
+                        }
+                        pending_event = filter_event;
                     }
 
                     if flash_remaining > 0 {
@@ -5511,7 +5766,9 @@ impl super::TrapDispatcher {
                             );
 
                             let saved = self.dialog_tracking.take().unwrap();
-                            self.restore_dialog_pixels(bus, saved.bounds, &saved.saved_pixels);
+                            self.persist_visible_dialog_snapshot(bus, &saved);
+                            self.dialog_saved_pixels
+                                .insert(saved.dialog_ptr, saved.saved_pixels);
 
                             // ModalDialog button clicks should consume the
                             // matching mouseUp before returning to the app.
@@ -5546,7 +5803,12 @@ impl super::TrapDispatcher {
                         None
                     };
 
-                    if let Some(e) = event {
+                    if let Some(mut e) = event {
+                        if e.what == 0 && self.mouse_button {
+                            e.what = 1;
+                            e.where_v = self.mouse_pos.0;
+                            e.where_h = self.mouse_pos.1;
+                        }
                         match e.what {
                             // updateEvt — re-snapshot rendered_pixels.
                             // Redraw HLE popup controls first, since the game
@@ -5591,7 +5853,7 @@ impl super::TrapDispatcher {
                                     .as_ref()
                                     .map(|t| t.items.clone())
                                     .unwrap_or_default();
-                                let hit = self.dialog_item_hit_test(
+                                let mut hit = self.dialog_item_hit_test(
                                     bus,
                                     &items_clone,
                                     bounds,
@@ -5600,6 +5862,14 @@ impl super::TrapDispatcher {
                                     &self.dialog_popup_original_rects,
                                     dialog_ptr,
                                 );
+                                if hit <= 0 {
+                                    hit = Self::dialog_button_hit_test(
+                                        &items_clone,
+                                        bounds,
+                                        e.where_v,
+                                        e.where_h,
+                                    );
+                                }
                                 if hit > 0 {
                                     let item = &items_clone[(hit - 1) as usize];
                                     let base_type = item.item_type & 0x7F;
@@ -5652,6 +5922,7 @@ impl super::TrapDispatcher {
                                                 );
                                                 // Preserve saved background pixels for re-entry
                                                 let saved = self.dialog_tracking.take().unwrap();
+                                                self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(dlg_ptr, saved.saved_pixels);
                                                 self.consume_dialog_mouse_up();
@@ -5704,6 +5975,7 @@ impl super::TrapDispatcher {
                                                     bus, dlg_ptr, &items, edit_item, &edit_text,
                                                 );
                                                 let saved = self.dialog_tracking.take().unwrap();
+                                                self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
                                                 self.consume_dialog_mouse_up();
@@ -5711,6 +5983,27 @@ impl super::TrapDispatcher {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
                                                 cpu.write_reg(Register::A7, stack_ptr + 8);
+                                            }
+                                            // Plain userItems in standard dialogs are custom
+                                            // hit targets. Track the physical click until
+                                            // release so the application receives the item
+                                            // hit after the completed click, matching the
+                                            // standard control paths above.
+                                            0 if self.dialog_tracking.as_ref().is_some_and(
+                                                |tracking| {
+                                                    self.is_plain_modal_user_item(
+                                                        tracking, hit, item,
+                                                    )
+                                                },
+                                            ) && self.mouse_button =>
+                                            {
+                                                if let Some(t) = self.dialog_tracking.as_mut() {
+                                                    t.active_user_item =
+                                                        Some(DialogUserItemTrackingState {
+                                                            item_no: hit,
+                                                            rect: item.rect,
+                                                        });
+                                                }
                                             }
                                             // Any other enabled item: return item number immediately.
                                             // Inside Macintosh Volume I, I-428
@@ -5730,6 +6023,7 @@ impl super::TrapDispatcher {
                                                     bus, dlg_ptr, &items, edit_item, &edit_text,
                                                 );
                                                 let saved = self.dialog_tracking.take().unwrap();
+                                                self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
                                                 self.consume_dialog_mouse_up();
@@ -5854,8 +6148,30 @@ impl super::TrapDispatcher {
                         bus.write_word(item_hit_ptr, 0);
                     }
 
-                    // Find the most recently created dialog's items
-                    let dialog_ptr = self.front_window;
+                    // Find the modal dialog's items. Most callers keep the
+                    // dialog as the front window, but games can temporarily
+                    // select another port/window between ModalDialog returns
+                    // and re-entry (for example while tracking a popup menu).
+                    // A real modal dialog remains the Dialog Manager target
+                    // until DisposDialog, so prefer the retained visible
+                    // modal snapshot when the current front window is not a
+                    // known dialog.
+                    let mut dialog_ptr = self.front_window;
+                    if !self.dialog_items.contains_key(&dialog_ptr) {
+                        if let Some((&retained_dialog_ptr, snapshot)) =
+                            self.dialog_visible_snapshots.iter().next()
+                        {
+                            dialog_ptr = retained_dialog_ptr;
+                            self.front_window = retained_dialog_ptr;
+                            self.window_bounds = snapshot.bounds;
+                            self.window_proc_id = self
+                                .window_proc_ids
+                                .get(&retained_dialog_ptr)
+                                .copied()
+                                .unwrap_or(self.window_proc_id);
+                            self.window_title.clear();
+                        }
+                    }
                     if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                         if trace_dialog_filter_enabled() {
                             eprintln!(
@@ -5911,11 +6227,16 @@ impl super::TrapDispatcher {
                         // (e.g., popup click), reuse those instead of capturing the
                         // currently visible dialog as "background."
                         let is_reentry = self.dialog_modal_entered.contains(&dialog_ptr);
-                        let preserved_saved_pixels = self.dialog_saved_pixels.remove(&dialog_ptr);
+                        let preserved_visible_snapshot =
+                            self.dialog_visible_snapshots.remove(&dialog_ptr);
+                        let preserved_saved_pixels =
+                            self.dialog_saved_pixels.get(&dialog_ptr).cloned();
                         let preserve_user_items = preserved_saved_pixels.is_some();
                         let saved_pixels = preserved_saved_pixels
                             .unwrap_or_else(|| self.save_dialog_pixels(bus, bounds));
-                        if !all_user_items && !is_reentry {
+                        if let Some(snapshot) = preserved_visible_snapshot {
+                            self.restore_dialog_pixels(bus, snapshot.bounds, &snapshot.pixels);
+                        } else if !all_user_items && !is_reentry {
                             // First entry: draw the dialog chrome and controls.
                             // Before draw_dialog fills the dialog area white, save the
                             // pixel content of every userItem rect. Games (e.g. Marathon)
@@ -6033,6 +6354,7 @@ impl super::TrapDispatcher {
                             popup_draws,
                             active_popup: None,
                             active_button: None,
+                            active_user_item: None,
                         });
                         // Don't pop stack or advance PC — re-fire pattern
                     } else {
@@ -9033,6 +9355,16 @@ impl super::TrapDispatcher {
                 let was_front = self.front_window == dialog_ptr;
                 let exposed_rect = self.window_bounds;
 
+                if was_front {
+                    if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
+                        self.restore_dialog_pixels(bus, self.window_bounds, &saved);
+                    }
+                } else {
+                    self.dialog_saved_pixels.remove(&dialog_ptr);
+                }
+                self.dialog_visible_snapshots.remove(&dialog_ptr);
+                self.dialog_modal_entered.remove(&dialog_ptr);
+
                 // IM:I I-413: deletes the dialog window from the window list.
                 self.untrack_window(bus, dialog_ptr);
 
@@ -9410,12 +9742,6 @@ impl super::TrapDispatcher {
                     let bytes = bus.read_pstring(text_str_ptr);
                     let len = bytes.len();
                     let text = String::from_utf8_lossy(&bytes).to_string();
-                    if let Some(ref mut tracking) = self.dialog_tracking {
-                        // Dialog tracking active — update live edit text
-                        if tracking.edit_item > 0 {
-                            tracking.edit_text = text.clone();
-                        }
-                    }
 
                     if item_handle != 0 {
                         let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
@@ -9428,20 +9754,35 @@ impl super::TrapDispatcher {
                     if let Some((dlg_ptr, idx)) =
                         self.dialog_item_handles.get(&item_handle).copied()
                     {
+                        let item_no = (idx + 1) as i16;
                         if trace_dialog_items_enabled() {
                             eprintln!(
                                 "[DIALOG-ITEM] SetDialogItemText pc=${:08X} dialog=${:08X} item={} handle=${:08X} text={:?}",
                                 pc,
                                 dlg_ptr,
-                                idx + 1,
+                                item_no,
                                 item_handle,
                                 text
                             );
                         }
                         if let Some(items) = self.dialog_items.get_mut(&dlg_ptr) {
                             if idx < items.len() {
-                                items[idx].text = text;
+                                items[idx].text = text.clone();
                             }
+                        }
+                        let mut refresh_tracking = false;
+                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                            if tracking.dialog_ptr == dlg_ptr && idx < tracking.items.len() {
+                                tracking.items[idx].text = text.clone();
+                                if tracking.edit_item == item_no {
+                                    tracking.edit_text = text;
+                                    tracking.edit_text_modified = false;
+                                }
+                                refresh_tracking = !tracking.game_managed;
+                            }
+                        }
+                        if refresh_tracking {
+                            self.refresh_dialog_tracking_snapshot(bus);
                         }
                     } else if trace_dialog_items_enabled() {
                         eprintln!(
@@ -9922,6 +10263,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         bus.write_word(TEST_SP, 9); // newItem
@@ -9974,6 +10316,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         bus.write_word(TEST_SP, 7); // newItem
@@ -12051,6 +12394,46 @@ mod tests {
     }
 
     #[test]
+    fn close_dialog_restores_saved_background_pixels() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes: u32 = 640;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let bounds = (100i16, 100i16, 150i16, 200i16);
+        let dialog_ptr = 0x200000u32;
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0xCC);
+            }
+        }
+
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x33; 60 * 110]);
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        for y in 95u32..155 {
+            for x in 95u32..205 {
+                assert_eq!(
+                    bus.read_byte(screen_base + y * row_bytes + x),
+                    0x33,
+                    "CloseDialog should restore saved background at ({x},{y})"
+                );
+            }
+        }
+        assert!(
+            !disp.dialog_saved_pixels.contains_key(&dialog_ptr),
+            "saved pixels must be consumed after CloseDialog"
+        );
+    }
+
+    #[test]
     fn close_dialog_non_front_dialog_leaves_front_window_and_port_unchanged() {
         // CloseWindow front-promotion only applies when the closed window
         // was frontmost (IM:I I-283); CloseDialog inherits that behavior.
@@ -12231,6 +12614,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         bus.write_long(TEST_SP, dialog_ptr);
@@ -12689,7 +13073,7 @@ mod tests {
     }
 
     #[test]
-    fn get_ditem_associates_recent_inserted_menu_with_enabled_user_item() {
+    fn get_ditem_records_pending_popup_candidate_without_associating() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
         let box_ptr = bus.alloc(8);
@@ -12720,14 +13104,17 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(
-            disp.dialog_item_popup_menus.get(&(dialog_ptr, 1)),
-            Some(&1234)
-        );
-        assert_eq!(
-            disp.dialog_popup_original_rects.get(&(dialog_ptr, 1)),
-            Some(&(10, 20, 30, 40))
-        );
+        assert!(!disp.dialog_item_popup_menus.contains_key(&(dialog_ptr, 1)));
+        assert!(!disp
+            .dialog_popup_original_rects
+            .contains_key(&(dialog_ptr, 1)));
+        let pending = disp
+            .pending_dialog_popup_menu
+            .expect("enabled userItem should leave a pending popup candidate");
+        assert_eq!(pending.dialog_ptr, dialog_ptr);
+        assert_eq!(pending.item_no, 1);
+        assert_eq!(pending.menu_id, 1234);
+        assert_eq!(pending.rect, (10, 20, 30, 40));
         assert_eq!(disp.last_inserted_menu_id, None);
     }
 
@@ -12767,7 +13154,66 @@ mod tests {
         assert!(!disp
             .dialog_popup_original_rects
             .contains_key(&(dialog_ptr, 1)));
+        assert!(disp.pending_dialog_popup_menu.is_none());
         assert_eq!(disp.last_inserted_menu_id, None);
+    }
+
+    #[test]
+    fn set_ditem_confirms_pending_popup_user_item_when_proc_installed() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let get_box_ptr = bus.alloc(8);
+        let get_item_ptr = bus.alloc(4);
+        let get_type_ptr = bus.alloc(2);
+        let set_box_ptr = bus.alloc(8);
+        let proc_ptr = 0x00AB_CDEF;
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (10, 20, 30, 40),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.last_inserted_menu_id = Some(1234);
+
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(set_box_ptr, 12);
+        bus.write_word(set_box_ptr + 2, 22);
+        bus.write_word(set_box_ptr + 4, 32);
+        bus.write_word(set_box_ptr + 6, 42);
+        bus.write_long(TEST_SP, set_box_ptr);
+        bus.write_long(TEST_SP + 4, proc_ptr);
+        bus.write_word(TEST_SP + 8, 0);
+        bus.write_word(TEST_SP + 10, 1);
+        bus.write_long(TEST_SP + 12, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            disp.dialog_item_popup_menus.get(&(dialog_ptr, 1)),
+            Some(&1234)
+        );
+        assert_eq!(
+            disp.dialog_popup_original_rects.get(&(dialog_ptr, 1)),
+            Some(&(10, 20, 30, 40))
+        );
+        assert!(disp.pending_dialog_popup_menu.is_none());
     }
 
     // ---- SetDItem ($A98E) ----
@@ -13451,6 +13897,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
         disp.mouse_button = true;
         disp.mouse_pos = (115, 125);
@@ -13591,6 +14038,7 @@ mod tests {
             popup_draws: vec![(20, 30, 42, 180, String::new())],
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
@@ -13668,6 +14116,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
@@ -13731,6 +14180,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
@@ -13796,6 +14246,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         disp.finalize_dialog_draw_procs_if_idle(&mut bus);
@@ -13848,6 +14299,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
@@ -13866,6 +14318,86 @@ mod tests {
                 modifiers: 0x0080,
             });
 
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+    }
+
+    #[test]
+    fn modal_dialog_plain_user_item_waits_for_mouse_up_before_returning() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 0,
+                rect: (20, 30, 60, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+        disp.mouse_button = true;
+        disp.mouse_pos = (130, 240);
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0,
+            });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(item_hit_ptr), 0);
+        assert!(disp
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_user_item.as_ref())
+            .is_some());
+
+        disp.mouse_button = false;
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0x0080,
+            });
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
@@ -13914,6 +14446,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
         disp.mouse_button = true;
         disp.mouse_pos = (130, 240);
@@ -14017,6 +14550,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {

@@ -1509,10 +1509,6 @@ impl FixtureRunner {
             if self.service_delay_ticks(tick_cap) {
                 break;
             }
-            if yield_for_ui && self.service_gui_dialog_wall_tick(tick_cap) {
-                break;
-            }
-
             if self.cpu.is_stopped() {
                 self.halted = true;
                 self.halted_pc = Some(self.cpu.read_reg(Register::PC));
@@ -2055,22 +2051,23 @@ impl FixtureRunner {
                                         .dispatcher
                                         .dialog_tracking
                                         .as_ref()
-                                        .map(|t| t.filter_proc != 0 && t.draw_procs_done)
+                                        .map(|t| {
+                                            t.filter_proc != 0
+                                                && t.draw_procs_done
+                                                && t.last_filter_event.is_none()
+                                                && !self
+                                                    .dispatcher
+                                                    .pending_dialog_button_mouse_down()
+                                                && !self
+                                                    .dispatcher
+                                                    .pending_dialog_plain_user_item_mouse_down()
+                                                && !self.dispatcher.mouse_down_over_dialog_button()
+                                                && !self
+                                                    .dispatcher
+                                                    .mouse_down_over_dialog_plain_user_item()
+                                        })
                                         .unwrap_or(false);
                                     if should_fire_filter {
-                                        let has_input_event = self
-                                            .dispatcher
-                                            .event_queue
-                                            .iter()
-                                            .any(|e| matches!(e.what, 1 | 2 | 3 | 4));
-                                        if yield_for_ui
-                                            && (opcode & !0x0400) == 0xA991
-                                            && !has_input_event
-                                            && self.service_gui_modal_dialog_idle_tick(tick_cap)
-                                        {
-                                            self.finish_host_frame(audio_samples);
-                                            return (count, true);
-                                        }
                                         self.fire_dialog_filter_proc();
                                         fired_filter_proc = true;
                                     }
@@ -2297,6 +2294,19 @@ impl FixtureRunner {
             return false;
         }
 
+        // If a modal dialog is visibly retained between ModalDialog calls,
+        // treat WaitNextEvent sleep as an app-yield hint rather than a
+        // wall-clock delay. Apps can return from ModalDialog, do modal control
+        // work from their filter proc, then re-enter the modal loop while the
+        // dialog remains frontmost.
+        if tick_cap.is_some()
+            && (self.dispatcher.is_dialog_tracking()
+                || !self.dispatcher.dialog_visible_snapshots.is_empty())
+        {
+            self.dispatcher.pending_wait_sleep_ticks = 0;
+            return false;
+        }
+
         // In GUI mode (tick_cap present), cap the effective sleep to 1 tick.
         // The sleep parameter in WaitNextEvent is a hint to the OS about how
         // long the app is willing to wait; on a real Mac the Process Manager
@@ -2401,25 +2411,6 @@ impl FixtureRunner {
         tick_cap
             .map(|cap| self.bus.read_long(0x016A) >= cap)
             .unwrap_or(true)
-    }
-
-    fn service_gui_dialog_wall_tick(&mut self, tick_cap: Option<u32>) -> bool {
-        if tick_cap.is_none()
-            || self.active_interrupt_callback.is_some()
-            || self.frozen_ticks.is_some()
-            || !self.dispatcher.is_dialog_tracking()
-        {
-            return false;
-        }
-
-        let cap = tick_cap.unwrap();
-        if self.bus.read_long(0x016A) >= cap {
-            return true;
-        }
-
-        self.advance_guest_tick();
-        self.tick_budget = self.instructions_per_tick as i32;
-        false
     }
 
     fn unfreeze_ticks_to(&mut self, target_tick: Option<u32>) {
@@ -3786,6 +3777,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         }
     }
 
@@ -4387,10 +4379,7 @@ mod tests {
         assert!(running);
         assert_eq!(steps, 1);
         assert_eq!(runner.guest_tick(), 1);
-        assert_eq!(
-            runner.tick_budget,
-            runner.instructions_per_tick() as i32 - 1
-        );
+        assert_eq!(runner.tick_budget, runner.instructions_per_tick() as i32);
         assert_eq!(runner.cpu.read_reg(Register::PC), base);
     }
 
@@ -4409,7 +4398,7 @@ mod tests {
         let (steps, running) = runner.run_gui_slice_with_audio(16, 2, 0);
 
         assert!(running);
-        assert_eq!(steps, 1);
+        assert_eq!(steps, 2);
         assert_eq!(runner.guest_tick(), 2);
         assert_eq!(runner.cpu.read_reg(Register::PC), base);
     }
@@ -4437,7 +4426,7 @@ mod tests {
     }
 
     #[test]
-    fn gui_modaldialog_null_filter_waits_at_tick_cap() {
+    fn gui_modaldialog_null_filter_fires_at_tick_cap() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         let filter_proc = 0x0001_1000u32;
@@ -4453,15 +4442,22 @@ mod tests {
         let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
 
         assert!(running);
-        assert_eq!(steps, 0);
+        assert_eq!(steps, 1);
         assert_eq!(runner.guest_tick(), 0);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+        assert_ne!(runner.cpu.read_reg(Register::PC), base);
         assert!(!runner.has_pending_sound_work());
-        assert!(runner.active_interrupt_callback.is_none());
+        assert!(
+            !runner
+                .dispatcher
+                .dialog_tracking
+                .as_ref()
+                .unwrap()
+                .rendered_pixels_final
+        );
     }
 
     #[test]
-    fn gui_modaldialog_update_filter_waits_at_tick_cap() {
+    fn gui_modaldialog_update_filter_fires_at_tick_cap() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         let filter_proc = 0x0001_1000u32;
@@ -4484,10 +4480,17 @@ mod tests {
         let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
 
         assert!(running);
-        assert_eq!(steps, 0);
+        assert_eq!(steps, 1);
         assert_eq!(runner.guest_tick(), 0);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base);
-        assert!(runner.active_interrupt_callback.is_none());
+        assert_ne!(runner.cpu.read_reg(Register::PC), base);
+        assert!(
+            !runner
+                .dispatcher
+                .dialog_tracking
+                .as_ref()
+                .unwrap()
+                .rendered_pixels_final
+        );
     }
 
     #[test]
@@ -4723,6 +4726,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         let idx = (0xA991u16 & 0xFFF) as usize;
@@ -4946,6 +4950,7 @@ mod tests {
             popup_draws: Vec::new(),
             active_popup: None,
             active_button: None,
+            active_user_item: None,
         });
 
         assert!(runner.fire_dialog_filter_proc());

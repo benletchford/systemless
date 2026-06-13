@@ -798,6 +798,7 @@ impl super::TrapDispatcher {
         wind_title: &str,
         wind_proc_id: i16,
         visible: bool,
+        draw_initial_frame: bool,
         go_away_flag: bool,
         ref_con: u32,
     ) {
@@ -993,7 +994,7 @@ impl super::TrapDispatcher {
 
         let suppress_document_chrome = self.menu_bar_hidden && matches!(wind_proc_id, 0 | 4);
         if visible && !fullscreen_visible {
-            if !suppress_document_chrome {
+            if draw_initial_frame && !suppress_document_chrome {
                 self.draw_window_frame(bus);
             }
             self.queue_window_update_event(window_ptr);
@@ -1097,6 +1098,7 @@ impl super::TrapDispatcher {
                     &title,
                     proc_id,
                     visible,
+                    true,
                     go_away,
                     ref_con,
                 );
@@ -1174,6 +1176,7 @@ impl super::TrapDispatcher {
                     &title,
                     proc_id,
                     visible,
+                    true,
                     go_away,
                     ref_con,
                 );
@@ -1257,6 +1260,7 @@ impl super::TrapDispatcher {
                     &wind_title,
                     wind_proc_id,
                     visible,
+                    true,
                     go_away_flag,
                     ref_con,
                 );
@@ -1326,6 +1330,7 @@ impl super::TrapDispatcher {
                     &title,
                     proc_id,
                     visible,
+                    true,
                     go_away,
                     ref_con,
                 );
@@ -2982,6 +2987,7 @@ mod tests {
             "",
             2,
             true,
+            true,
             false,
             0,
         );
@@ -3016,6 +3022,7 @@ mod tests {
             799,
             "",
             2,
+            true,
             true,
             false,
             0,
@@ -3055,6 +3062,7 @@ mod tests {
             799,
             "",
             2,
+            true,
             true,
             false,
             0,
@@ -5282,6 +5290,7 @@ mod tests {
             "",
             0,
             true,
+            true,
             false,
             0,
         );
@@ -5374,6 +5383,7 @@ mod tests {
             200,
             "",
             0,
+            true,
             true,
             false,
             0,

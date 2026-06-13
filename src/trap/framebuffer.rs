@@ -1417,6 +1417,29 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn restore_visible_dialog_snapshots(&mut self, bus: &mut MacMemoryBus) {
+        if self.dialog_visible_snapshots.is_empty() {
+            return;
+        }
+        let front_window = self.front_window;
+        let front_is_dialog = front_window != 0 && self.dialog_items.contains_key(&front_window);
+        let snapshots: Vec<_> = self
+            .dialog_visible_snapshots
+            .iter()
+            .filter_map(|(&dialog_ptr, snapshot)| {
+                if front_is_dialog && dialog_ptr != front_window {
+                    None
+                } else {
+                    Some(snapshot.clone())
+                }
+            })
+            .collect();
+        for snapshot in snapshots {
+            let bounds = snapshot.bounds;
+            self.restore_dialog_pixels(bus, bounds, &snapshot.pixels);
+        }
+    }
+
     /// Redraw the menu bar and window chrome into the framebuffer.
     ///
     /// On a real Mac, the Window Manager maintains these UI elements and redraws
@@ -1624,7 +1647,9 @@ impl super::TrapDispatcher {
         // After all draw procs complete, ModalDialog re-snapshots the final state
         // and sets rendered_pixels_final=true before we begin restoring.
         if let Some(ref tracking) = self.dialog_tracking {
-            if !tracking.game_managed && tracking.rendered_pixels_final {
+            let restore_tracking_snapshot = tracking.rendered_pixels_final
+                || (tracking.draw_procs_done && !tracking.rendered_pixels.is_empty());
+            if !tracking.game_managed && restore_tracking_snapshot {
                 // Blit the pre-rendered dialog snapshot (includes pictures)
                 self.restore_dialog_pixels(bus, tracking.bounds, &tracking.rendered_pixels);
 
@@ -1676,6 +1701,8 @@ impl super::TrapDispatcher {
                     }
                 }
             }
+        } else {
+            self.restore_visible_dialog_snapshots(bus);
         }
 
         // If a menu dropdown is open, redraw it on top of the menu bar
@@ -2094,6 +2121,113 @@ mod redraw_chrome_tests {
             bus.read_byte(probe),
             0x00,
             "once the dialog snapshot is final, normal port blitting should resume"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_restores_visible_dialog_snapshot_after_modaldialog_returns() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let offscreen_base = bus.alloc(64 * 200);
+        bus.write_long(PORT_PTR + 2, offscreen_base);
+        bus.write_word(PORT_PTR + 6, 64);
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, 0);
+        bus.write_word(PORT_PTR + 12, 200);
+        bus.write_word(PORT_PTR + 14, 512);
+
+        let probe = screen_base + 10 * 800 + 10;
+        bus.write_byte(probe, 0x11);
+        bus.write_byte(offscreen_base + 10 * 64 + 1, 0x00);
+
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 200, 512);
+        disp.window_proc_id = 1;
+        for y in 0..20u32 {
+            for x in 0..20u32 {
+                bus.write_byte(screen_base + y * 800 + x, 0x77);
+            }
+        }
+        let pixels = disp.save_dialog_pixels(&bus, (5, 5, 15, 15));
+        for y in 0..20u32 {
+            for x in 0..20u32 {
+                bus.write_byte(screen_base + y * 800 + x, 0x11);
+            }
+        }
+        let dialog_ptr = 0x00D1_A106;
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            super::super::dispatch::PersistentDialogSnapshot {
+                bounds: (5, 5, 15, 15),
+                pixels,
+            },
+        );
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x77,
+            "visible dialog snapshot should remain composited even when the front port changes"
+        );
+    }
+
+    #[test]
+    fn restore_visible_dialog_snapshots_skips_parent_when_child_dialog_is_front() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+
+        for y in 0..40u32 {
+            for x in 0..40u32 {
+                bus.write_byte(screen_base + y * 800 + x, 0x77);
+            }
+        }
+        let parent_pixels = disp.save_dialog_pixels(&bus, (5, 5, 15, 15));
+        let child_pixels = disp.save_dialog_pixels(&bus, (20, 20, 30, 30));
+        for y in 0..40u32 {
+            for x in 0..40u32 {
+                bus.write_byte(screen_base + y * 800 + x, 0x11);
+            }
+        }
+
+        let parent_dialog = 0x00D1_A106;
+        let child_dialog = 0x00D1_A107;
+        disp.dialog_visible_snapshots.insert(
+            parent_dialog,
+            super::super::dispatch::PersistentDialogSnapshot {
+                bounds: (5, 5, 15, 15),
+                pixels: parent_pixels,
+            },
+        );
+        disp.dialog_visible_snapshots.insert(
+            child_dialog,
+            super::super::dispatch::PersistentDialogSnapshot {
+                bounds: (20, 20, 30, 30),
+                pixels: child_pixels,
+            },
+        );
+        disp.front_window = child_dialog;
+        disp.dialog_items.insert(child_dialog, Vec::new());
+
+        disp.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 10 * 800 + 10),
+            0x11,
+            "retained parent dialog snapshot must not overpaint the front child dialog"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 25 * 800 + 25),
+            0x77,
+            "front child dialog snapshot should still be restored"
         );
     }
 

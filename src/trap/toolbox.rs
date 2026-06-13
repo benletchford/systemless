@@ -14979,6 +14979,7 @@ mod tests {
             "",
             0,
             true,
+            true,
             false,
             0,
         );
@@ -15096,6 +15097,7 @@ mod tests {
             128,
             "",
             0,
+            true,
             true,
             false,
             0,

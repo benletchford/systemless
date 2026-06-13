@@ -1156,6 +1156,7 @@ impl super::TrapDispatcher {
                                 saved.dropdown_rect,
                                 &saved.saved_pixels,
                             );
+                            self.restore_visible_dialog_snapshots(bus);
                             // Stack: popUpItem(2) + left(2) + top(2) + menu(4) = 10 bytes
                             bus.write_long(sp + 10, result);
                             cpu.write_reg(Register::A7, sp + 10);
@@ -1177,6 +1178,7 @@ impl super::TrapDispatcher {
                                 saved.dropdown_rect,
                                 &saved.saved_pixels,
                             );
+                            self.restore_visible_dialog_snapshots(bus);
                             self.finish_menu_no_hit(bus, cpu, sp, 10);
                         }
                     } else {
@@ -1227,6 +1229,7 @@ impl super::TrapDispatcher {
                         let dd_right = (dd_left + max_width).min(screen_width);
                         let dd_rect = (dd_top, dd_left, dd_bottom, dd_right);
 
+                        self.restore_visible_dialog_snapshots(bus);
                         let saved = self.save_dropdown_pixels(bus, dd_rect);
                         self.draw_menu_dropdown(bus, menu_idx, dd_rect);
 
