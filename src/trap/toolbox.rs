@@ -9533,7 +9533,7 @@ mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
     use crate::cpu::{CpuOps, Register};
-    use crate::memory::MemoryBus;
+    use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
     use crate::trap::extended80::Extended80;
     use std::collections::HashMap;
@@ -10586,9 +10586,12 @@ mod tests {
         let sp = TEST_SP;
         let keys_ptr = 0x200100u32;
 
-        // Press left arrow (0x7B) and space (0x31)
+        // Press left arrow (0x7B), space (0x31), and the EVO hyperspace
+        // controls whose KeyMap word layout matters in-game.
         disp.push_key_down(0x7B, 28);
         disp.push_key_down(0x31, 32);
+        disp.push_key_down(0x26, b'j');
+        disp.push_key_down(0x7E, 30);
 
         bus.write_long(sp, keys_ptr);
         let result = disp.dispatch_toolbox(true, 0x176, &mut cpu, &mut bus);
@@ -10596,13 +10599,22 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
-        let left_byte = (0x7B / 8) as u32;
-        let left_bit = 1u8 << (0x7B % 8);
-        assert_ne!(bus.read_byte(keys_ptr + left_byte) & left_bit, 0);
+        let key_word = |bus: &MacMemoryBus, key: u8| {
+            let byte = keys_ptr + ((key / 16) as u32) * 2;
+            bus.read_word(byte)
+        };
+        let key_mask = |key: u8| 1u16 << (key % 16);
 
-        let space_byte = (0x31 / 8) as u32;
-        let space_bit = 1u8 << (0x31 % 8);
-        assert_ne!(bus.read_byte(keys_ptr + space_byte) & space_bit, 0);
+        assert_ne!(key_word(&bus, 0x7B) & key_mask(0x7B), 0);
+        assert_ne!(key_word(&bus, 0x31) & key_mask(0x31), 0);
+        assert_ne!(key_word(&bus, 0x26) & key_mask(0x26), 0);
+        assert_ne!(key_word(&bus, 0x7E) & key_mask(0x7E), 0);
+        assert_eq!(bus.read_word(keys_ptr + 4), 0x0040, "J key word");
+        assert_eq!(
+            bus.read_word(keys_ptr + 14) & 0x4000,
+            0x4000,
+            "up arrow word"
+        );
 
         // Release left arrow and verify it clears.
         disp.push_key_up(0x7B, 28);
@@ -10610,8 +10622,10 @@ mod tests {
         bus.write_long(sp, keys_ptr);
         let result = disp.dispatch_toolbox(true, 0x176, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_byte(keys_ptr + left_byte) & left_bit, 0);
-        assert_ne!(bus.read_byte(keys_ptr + space_byte) & space_bit, 0);
+        assert_eq!(key_word(&bus, 0x7B) & key_mask(0x7B), 0);
+        assert_ne!(key_word(&bus, 0x31) & key_mask(0x31), 0);
+        assert_ne!(key_word(&bus, 0x26) & key_mask(0x26), 0);
+        assert_ne!(key_word(&bus, 0x7E) & key_mask(0x7E), 0);
     }
 
     // GetMouse ($A972)

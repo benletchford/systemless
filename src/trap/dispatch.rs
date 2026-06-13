@@ -127,6 +127,40 @@ pub(crate) fn trace_delivered_events_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DELIVERED_EVENTS").is_some())
 }
 
+fn key_map_word_mask(key_code: u8) -> Option<(usize, u16)> {
+    if key_code >= 128 {
+        return None;
+    }
+    let word_idx = (key_code / 16) as usize;
+    let mask = 1u16 << (key_code % 16);
+    Some((word_idx, mask))
+}
+
+fn key_map_key_is_down(key_map: &[u8; 16], key_code: u8) -> bool {
+    let Some((word_idx, mask)) = key_map_word_mask(key_code) else {
+        return false;
+    };
+    let byte_idx = word_idx * 2;
+    let word = u16::from_be_bytes([key_map[byte_idx], key_map[byte_idx + 1]]);
+    (word & mask) != 0
+}
+
+fn set_key_map_key(key_map: &mut [u8; 16], key_code: u8, down: bool) {
+    let Some((word_idx, mask)) = key_map_word_mask(key_code) else {
+        return;
+    };
+    let byte_idx = word_idx * 2;
+    let mut word = u16::from_be_bytes([key_map[byte_idx], key_map[byte_idx + 1]]);
+    if down {
+        word |= mask;
+    } else {
+        word &= !mask;
+    }
+    let bytes = word.to_be_bytes();
+    key_map[byte_idx] = bytes[0];
+    key_map[byte_idx + 1] = bytes[1];
+}
+
 fn trace_sound_enabled() -> bool {
     *TRACE_SOUND.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some())
 }
@@ -1657,12 +1691,7 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn key_is_down(&self, key_code: u8) -> bool {
-        if key_code >= 128 {
-            return false;
-        }
-        let idx = (key_code / 8) as usize;
-        let bit = 1u8 << (key_code % 8);
-        (self.key_map[idx] & bit) != 0
+        key_map_key_is_down(&self.key_map, key_code)
     }
 
     pub(crate) fn current_event_modifiers(&self) -> u16 {
@@ -2884,11 +2913,7 @@ impl TrapDispatcher {
 
     /// Push a key-down event into the event queue.
     pub fn push_key_down(&mut self, key_code: u8, char_code: u8) {
-        if key_code < 128 {
-            let idx = (key_code / 8) as usize;
-            let bit = 1u8 << (key_code % 8);
-            self.key_map[idx] |= bit;
-        }
+        set_key_map_key(&mut self.key_map, key_code, true);
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
             eprintln!(
@@ -2910,11 +2935,7 @@ impl TrapDispatcher {
 
     /// Push a key-up event into the event queue.
     pub fn push_key_up(&mut self, key_code: u8, char_code: u8) {
-        if key_code < 128 {
-            let idx = (key_code / 8) as usize;
-            let bit = 1u8 << (key_code % 8);
-            self.key_map[idx] &= !bit;
-        }
+        set_key_map_key(&mut self.key_map, key_code, false);
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
             eprintln!(
