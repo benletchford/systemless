@@ -1702,12 +1702,13 @@ impl FixtureRunner {
 
             if trace_pc_range_contains(pc) {
                 eprintln!(
-                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} sp=${:08X} a6=${:08X} a5=${:08X} d0=${:08X} a0=${:08X}",
+                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} sp=${:08X} a6=${:08X} a5=${:08X} a2=${:08X} d0=${:08X} a0=${:08X}",
                     pc,
                     self.bus.read_word(pc),
                     self.cpu.read_reg(Register::A7),
                     self.cpu.read_reg(Register::A6),
                     self.cpu.read_reg(Register::A5),
+                    self.cpu.read_reg(Register::A2),
                     self.cpu.read_reg(Register::D0),
                     self.cpu.read_reg(Register::A0),
                 );
