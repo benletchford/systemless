@@ -1644,6 +1644,7 @@ impl FixtureRunner {
                     "[RUN_STEPS] Invalid PC ${:08X} at count={} sp=${:08X} op=${:04X}",
                     pc, count, sp, opcode
                 );
+                self.dump_invalid_pc_state();
                 if let Some(hint) = decode_fakeptr_pc(pc) {
                     eprintln!("[RUN_STEPS]   {}", hint);
                 } else if let Some((entry_pc, hint)) = self.trace_find_fakeptr_entry() {
@@ -2668,6 +2669,45 @@ impl FixtureRunner {
         }
     }
 
+    fn dump_invalid_pc_state(&self) {
+        let d_regs = [
+            self.cpu.read_reg(Register::D0),
+            self.cpu.read_reg(Register::D1),
+            self.cpu.read_reg(Register::D2),
+            self.cpu.read_reg(Register::D3),
+            self.cpu.read_reg(Register::D4),
+            self.cpu.read_reg(Register::D5),
+            self.cpu.read_reg(Register::D6),
+            self.cpu.read_reg(Register::D7),
+        ];
+        let a_regs = [
+            self.cpu.read_reg(Register::A0),
+            self.cpu.read_reg(Register::A1),
+            self.cpu.read_reg(Register::A2),
+            self.cpu.read_reg(Register::A3),
+            self.cpu.read_reg(Register::A4),
+            self.cpu.read_reg(Register::A5),
+            self.cpu.read_reg(Register::A6),
+            self.cpu.read_reg(Register::A7),
+        ];
+        eprintln!(
+            "[RUN_STEPS]   D0-D7: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+            d_regs[0], d_regs[1], d_regs[2], d_regs[3], d_regs[4], d_regs[5], d_regs[6], d_regs[7]
+        );
+        eprintln!(
+            "[RUN_STEPS]   A0-A7: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+            a_regs[0], a_regs[1], a_regs[2], a_regs[3], a_regs[4], a_regs[5], a_regs[6], a_regs[7]
+        );
+        eprintln!("[RUN_STEPS]   CCR=${:02X}", self.cpu.core.get_ccr());
+        if let Some(active) = self.active_interrupt_callback {
+            eprintln!(
+                "[RUN_STEPS]   active_callback={:?} resume_pc=${:08X} resume_sp=${:08X}",
+                active.source, active.resume_pc, active.resume_sp
+            );
+        }
+        self.bus.dump_stack(a_regs[7], "invalid PC");
+    }
+
     fn inject_interrupt_callback(
         &mut self,
         source: ActiveInterruptCallbackSource,
@@ -2787,20 +2827,24 @@ impl FixtureRunner {
 
                 // Sound 1994, 2-151
                 if self.sound_file_completion_trampoline == 0 {
-                    let tramp = self.bus.alloc(22);
+                    let tramp = self.bus.alloc(28);
                     self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
                     self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
                     self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
                     self.bus.write_word(tramp + 10, 0x4EB9); // JSR abs.L
-                    self.bus.write_word(tramp + 16, 0x4CDF); // MOVEM.L (SP)+,regs
-                    self.bus.write_word(tramp + 18, 0x0F0F); // D0-D3/A0-A3
-                    self.bus.write_word(tramp + 20, 0x4E75); // RTS
+                    self.bus.write_word(tramp + 16, 0x2E7C); // MOVEA.L #savedSP,A7
+                    self.bus.write_word(tramp + 22, 0x4CDF); // MOVEM.L (SP)+,regs
+                    self.bus.write_word(tramp + 24, 0x0F0F); // D0-D3/A0-A3
+                    self.bus.write_word(tramp + 26, 0x4E75); // RTS
                     self.sound_file_completion_trampoline = tramp;
                 }
 
                 let tramp = self.sound_file_completion_trampoline;
+                let interrupted_sp = self.cpu.read_reg(Register::A7);
+                let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
                 self.bus.write_long(tramp + 6, chan_ptr);
                 self.bus.write_long(tramp + 12, callback_addr);
+                self.bus.write_long(tramp + 18, saved_regs_sp);
                 self.inject_interrupt_callback(
                     ActiveInterruptCallbackSource::SoundFileCompletion,
                     tramp,
@@ -2858,73 +2902,44 @@ impl FixtureRunner {
         //   PROCEDURE MyDoubleBackProc(chan: SndChannelPtr;
         //                              exhaustedBuffer: SndDoubleBufferPtr);
         //
-        // Trampoline layout (28 bytes):
+        // Trampoline layout (34 bytes):
         //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)  ; 48E7 F0F0 (save regs)
         //   +4:  MOVE.L  #chanPtr,-(SP)       ; 2F3C xxxx xxxx (push param1 first = deeper)
         //   +10: MOVE.L  #exhaustedBuf,-(SP) ; 2F3C xxxx xxxx (push param2 last = top)
         //   +16: JSR     callback             ; 4EB9 xxxx xxxx
-        //   +22: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F (restore regs)
-        //   +26: RTS                          ; 4E75
+        //   +22: MOVEA.L #savedRegsSP,A7      ; ignore guest callback cleanup convention
+        //   +28: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F (restore regs)
+        //   +32: RTS                          ; 4E75
         if self.sound_doubleback_trampoline == 0 {
-            let tramp = self.bus.alloc(28);
+            let tramp = self.bus.alloc(34);
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
             self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
             self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                    // +6..+9: exhausted buf ptr (patched)
+                                                    // +6..+9: chan ptr (patched)
             self.bus.write_word(tramp + 10, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                     // +12..+15: chan ptr (patched)
+                                                     // +12..+15: exhausted buf ptr (patched)
             self.bus.write_word(tramp + 16, 0x4EB9); // JSR abs.L
                                                      // +18..+21: callback addr (patched)
-            self.bus.write_word(tramp + 22, 0x4CDF); // MOVEM.L (SP)+,regs
-            self.bus.write_word(tramp + 24, 0x0F0F); // D0-D3/A0-A3
-            self.bus.write_word(tramp + 26, 0x4E75); // RTS
+            self.bus.write_word(tramp + 22, 0x2E7C); // MOVEA.L #savedSP,A7
+                                                     // +24..+27: saved regs SP (patched)
+            self.bus.write_word(tramp + 28, 0x4CDF); // MOVEM.L (SP)+,regs
+            self.bus.write_word(tramp + 30, 0x0F0F); // D0-D3/A0-A3
+            self.bus.write_word(tramp + 32, 0x4E75); // RTS
             self.sound_doubleback_trampoline = tramp;
         }
 
         let tramp = self.sound_doubleback_trampoline;
+        let interrupted_sp = self.cpu.read_reg(Register::A7);
+        let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
         self.bus.write_long(tramp + 6, cb.chan_ptr);
         self.bus.write_long(tramp + 12, exhausted_buf_ptr);
         self.bus.write_long(tramp + 18, cb.callback_addr);
+        self.bus.write_long(tramp + 24, saved_regs_sp);
 
         // Doubleback procedures execute at interrupt time, so the interrupted
         // guest CPU state must be restored after the callback unwinds.
         // Sound 1994, 2-72
-        let current_pc = self.cpu.read_reg(Register::PC);
-        let sp = self.cpu.read_reg(Register::A7);
-        let d_regs = [
-            self.cpu.read_reg(Register::D0),
-            self.cpu.read_reg(Register::D1),
-            self.cpu.read_reg(Register::D2),
-            self.cpu.read_reg(Register::D3),
-            self.cpu.read_reg(Register::D4),
-            self.cpu.read_reg(Register::D5),
-            self.cpu.read_reg(Register::D6),
-            self.cpu.read_reg(Register::D7),
-        ];
-        let a_regs = [
-            self.cpu.read_reg(Register::A0),
-            self.cpu.read_reg(Register::A1),
-            self.cpu.read_reg(Register::A2),
-            self.cpu.read_reg(Register::A3),
-            self.cpu.read_reg(Register::A4),
-            self.cpu.read_reg(Register::A5),
-            self.cpu.read_reg(Register::A6),
-            sp,
-        ];
-        let ccr = self.cpu.core.get_ccr();
-        let new_sp = sp.wrapping_sub(4);
-        self.bus.write_long(new_sp, current_pc);
-        self.cpu.write_reg(Register::A7, new_sp);
-        self.active_interrupt_callback = Some(ActiveInterruptCallback {
-            source: ActiveInterruptCallbackSource::SoundDoubleBack,
-            resume_pc: current_pc,
-            resume_sp: sp,
-            d_regs,
-            a_regs,
-            ccr,
-            restore_port: None,
-        });
-        self.cpu.write_reg(Register::PC, tramp);
+        self.inject_interrupt_callback(ActiveInterruptCallbackSource::SoundDoubleBack, tramp);
     }
 
     fn dialog_callback_scratch_base(&self) -> u32 {
@@ -2940,11 +2955,13 @@ impl FixtureRunner {
     ///
     /// We simulate this by writing a small 68K trampoline that:
     ///   1. Saves D0-D3/A0-A3 via MOVEM.L to the stack
-    ///   2. Pushes params in Pascal order: theWindow, then itemNo
-    ///      (callee cleans up)
+    ///   2. Pushes params so MPW-style Pascal prologues see theWindow at
+    ///      8(A6) and itemNo at 12(A6)
     ///   3. JSR to draw proc address
-    ///   4. Restores D0-D3/A0-A3
-    ///   5. RTS back to interrupted code (the ModalDialog A-line)
+    ///   4. Resets A7 to the saved-register frame, tolerating callbacks
+    ///      that return with either `RTD #6` or plain `RTS`
+    ///   5. Restores D0-D3/A0-A3
+    ///   6. RTS back to interrupted code (the ModalDialog A-line)
     fn fire_dialog_draw_procs(&mut self) -> bool {
         if self.active_interrupt_callback.is_some() {
             return false;
@@ -2976,33 +2993,35 @@ impl FixtureRunner {
             return false;
         }
 
-        // Allocate trampoline on first use (26 bytes):
+        // Allocate trampoline on first use (32 bytes):
         //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)   ; 48E7 F0F0
-        //   +4:  MOVE.L  #dialogPtr,-(SP)      ; 2F3C xxxx xxxx
-        //   +10: MOVE.W  #itemNo,-(SP)         ; 3F3C xxxx
+        //   +4:  MOVE.W  #itemNo,-(SP)         ; 3F3C xxxx
+        //   +8:  MOVE.L  #dialogPtr,-(SP)      ; 2F3C xxxx xxxx
         //   +14: JSR     proc_addr              ; 4EB9 xxxx xxxx
-        //   +20: MOVEM.L (SP)+,D0-D3/A0-A3    ; 4CDF 0F0F
-        //   +24: RTS                            ; 4E75
-        // Pascal calling convention: callee pops the 6 bytes of params.
+        //   +20: MOVEA.L #savedRegsSP,A7       ; 4FF9 xxxx xxxx
+        //   +26: MOVEM.L (SP)+,D0-D3/A0-A3    ; 4CDF 0F0F
+        //   +30: RTS                            ; 4E75
         if self.dialog_draw_trampoline == 0 {
             let tramp = self.dialog_callback_scratch_base() + DIALOG_DRAW_TRAMPOLINE_OFFSET;
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
             self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
-            self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                    // +6..+9: dialogPtr (patched per-fire)
-            self.bus.write_word(tramp + 10, 0x3F3C); // MOVE.W #imm,-(SP)
-                                                     // +12..+13: itemNo (patched per-fire)
+            self.bus.write_word(tramp + 4, 0x3F3C); // MOVE.W #imm,-(SP)
+                                                    // +6..+7: itemNo (patched per-fire)
+            self.bus.write_word(tramp + 8, 0x2F3C); // MOVE.L #imm,-(SP)
+                                                    // +10..+13: dialogPtr (patched per-fire)
             self.bus.write_word(tramp + 14, 0x4EB9); // JSR abs.L
                                                      // +16..+19: proc_addr (patched per-fire)
-            self.bus.write_word(tramp + 20, 0x4CDF); // MOVEM.L (SP)+,regs
-            self.bus.write_word(tramp + 22, 0x0F0F); // D0-D3/A0-A3
-            self.bus.write_word(tramp + 24, 0x4E75); // RTS
+            self.bus.write_word(tramp + 20, 0x4FF9); // MOVEA.L #imm,A7
+                                                     // +22..+25: savedRegsSP (patched per-fire)
+            self.bus.write_word(tramp + 26, 0x4CDF); // MOVEM.L (SP)+,regs
+            self.bus.write_word(tramp + 28, 0x0F0F); // D0-D3/A0-A3
+            self.bus.write_word(tramp + 30, 0x4E75); // RTS
             self.dialog_draw_trampoline = tramp;
         }
 
         let tramp = self.dialog_draw_trampoline;
-        self.bus.write_long(tramp + 6, dialog_ptr);
-        self.bus.write_word(tramp + 12, item_no as u16);
+        self.bus.write_word(tramp + 6, item_no as u16);
+        self.bus.write_long(tramp + 10, dialog_ptr);
         self.bus.write_long(tramp + 16, proc_addr);
 
         let previous_port = self.dispatcher.current_port;
@@ -3035,6 +3054,8 @@ impl FixtureRunner {
         ];
         let ccr = self.cpu.core.get_ccr();
         let new_sp = sp.wrapping_sub(4);
+        let saved_regs_sp = new_sp.wrapping_sub(32);
+        self.bus.write_long(tramp + 22, saved_regs_sp);
         self.bus.write_long(new_sp, current_pc);
         self.cpu.write_reg(Register::A7, new_sp);
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
@@ -3639,14 +3660,27 @@ fn load_app_generic<M: MemoryBus>(
         // fixtures where CODE 0 carries the canonical layout.
         for i in 0..n_entries {
             let entry = jt_base + tab_off + i * 8;
-            let already_set = bus.read_long(entry) != 0 || bus.read_long(entry + 4) != 0;
-            if already_set {
+            let is_empty = bus.read_long(entry) == 0 && bus.read_long(entry + 4) == 0;
+            let is_null_placeholder = bus.read_word(entry + 2) == 0xFFFF;
+            if !is_empty && !is_null_placeholder {
                 continue;
             }
-            bus.write_word(entry, 0);
-            bus.write_word(entry + 2, 0x3F3C);
-            bus.write_word(entry + 4, code_res.id as u16);
-            bus.write_word(entry + 6, 0xA9F0);
+            if is_null_placeholder {
+                // Some near-model apps leave segment-owned CODE 0 entries as
+                // `offset, FFFF, FFFF, FFFF` placeholders and call the slot at
+                // entry+0. Materialize a Think-style unload stub so that first
+                // call enters LoadSeg instead of executing the placeholder.
+                let routine_offset = bus.read_word(entry);
+                bus.write_word(entry, 0xA9F0);
+                bus.write_word(entry + 2, 0);
+                bus.write_word(entry + 4, routine_offset);
+                bus.write_word(entry + 6, code_res.id as u16);
+            } else {
+                bus.write_word(entry, 0);
+                bus.write_word(entry + 2, 0x3F3C);
+                bus.write_word(entry + 4, code_res.id as u16);
+                bus.write_word(entry + 6, 0xA9F0);
+            }
         }
     }
 
@@ -4040,6 +4074,80 @@ mod tests {
         assert_eq!(steps, 10);
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc + 2);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert!(!runner.is_halted());
+    }
+
+    #[test]
+    fn sound_file_completion_callback_trampoline_tolerates_c_style_cleanup() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = runner.bus.alloc(2);
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping chan.
+        runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(crate::sound::PendingSoundCallback::FileCompletion {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+            });
+
+        runner.fire_sound_callbacks();
+        let (steps, running) = runner.run_steps(10, None);
+
+        assert!(
+            running,
+            "file completion trampoline should resume foreground code"
+        );
+        assert_eq!(steps, 10);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert!(!runner.is_halted());
+    }
+
+    #[test]
+    fn sound_doubleback_callback_trampoline_tolerates_c_style_cleanup() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = runner.bus.alloc(2);
+        let header_ptr = 0x0020_0000;
+        let exhausted_buf_ptr = 0x0020_1000;
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping args.
+        runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.bus.write_long(header_ptr + 12, exhausted_buf_ptr);
+        runner.bus.write_long(exhausted_buf_ptr + 4, 0x0000_0001);
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_callbacks
+            .push(PendingDoubleBackCallback {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                header_ptr,
+                exhausted_buffer_index: 0,
+            });
+
+        runner.fire_sound_doubleback_callbacks();
+        let (steps, running) = runner.run_steps(12, None);
+
+        assert!(
+            running,
+            "doubleback trampoline should resume foreground code"
+        );
+        assert_eq!(steps, 12);
+        assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
     }
@@ -4962,6 +5070,80 @@ mod tests {
             runner.bus.read_word(event_ptr + 14),
             runner.dispatcher.current_event_modifiers()
         );
+    }
+
+    #[test]
+    fn dialog_draw_proc_trampoline_passes_dialog_first_and_tolerates_plain_rts() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let dialog_ptr = 0x0020_0000u32;
+        let proc_addr = 0x0004_2000u32;
+        let item_no = 5i16;
+
+        // Keep foreground execution stable after the callback returns.
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        // MPW-style proc prologue shape. It returns with plain RTS, leaving
+        // callback parameters on the stack; the trampoline must restore A7.
+        runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
+        runner.bus.write_word(proc_addr + 2, 0x0000);
+        runner.bus.write_word(proc_addr + 4, 0x4E5E); // UNLK A6
+        runner.bus.write_word(proc_addr + 6, 0x4E75); // RTS
+
+        runner.dispatcher.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 64, 64),
+            title: String::new(),
+            proc_id: 1,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: interrupted_sp,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::from([(proc_addr, item_no)]),
+            draw_procs_done: false,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        assert!(runner.fire_dialog_draw_procs());
+        let tramp = runner.dialog_draw_trampoline;
+        assert_eq!(runner.bus.read_word(tramp), 0x48E7);
+        assert_eq!(runner.bus.read_word(tramp + 4), 0x3F3C);
+        assert_eq!(runner.bus.read_word(tramp + 6), item_no as u16);
+        assert_eq!(runner.bus.read_word(tramp + 8), 0x2F3C);
+        assert_eq!(runner.bus.read_long(tramp + 10), dialog_ptr);
+        assert_eq!(runner.bus.read_word(tramp + 14), 0x4EB9);
+        assert_eq!(runner.bus.read_long(tramp + 16), proc_addr);
+        assert_eq!(runner.bus.read_word(tramp + 20), 0x4FF9);
+        assert_eq!(runner.bus.read_long(tramp + 22), interrupted_sp - 36);
+
+        let (_steps, running) = runner.run_steps(16, None);
+
+        assert!(running);
+        assert!(
+            runner.active_interrupt_callback.is_none(),
+            "dialog callback should have resumed foreground code"
+        );
+        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]

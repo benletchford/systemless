@@ -7,7 +7,7 @@ use crate::quickdraw::text::get_font_metrics;
 use crate::{Error, Result};
 use std::sync::OnceLock;
 
-use super::types::{decode_mac_roman, Rect, ShapeOp};
+use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
 static TRACE_MUNGER: OnceLock<bool> = OnceLock::new();
 static TRACE_LIST: OnceLock<bool> = OnceLock::new();
@@ -224,6 +224,12 @@ impl super::TrapDispatcher {
     const LIST_CELL_ARRAY_OFFSET: u32 = 86;
     const LIST_RECORD_SIZE: u32 = 88;
     const LIST_DOUBLE_CLICK_TICKS: u32 = 20;
+    const ALIAS_RECORD_FIXED_SIZE: usize = 150;
+    const ALIAS_RECORD_VERSION: u16 = 2;
+    const ALIAS_KIND_FILE: u16 = 0;
+    const ALIAS_KIND_FOLDER: u16 = 1;
+    const ALIAS_EXTRA_PARENT_DIR_NAME: i16 = 0;
+    const ALIAS_EXTRA_END: i16 = -1;
 
     fn stack_bool_slot(bus: &MacMemoryBus, addr: u32) -> bool {
         // MPW Pascal callers store BOOLEAN in the high byte of the
@@ -251,6 +257,107 @@ impl super::TrapDispatcher {
         bus.write_word(addr + 2, rect.1 as u16);
         bus.write_word(addr + 4, rect.2 as u16);
         bus.write_word(addr + 6, rect.3 as u16);
+    }
+
+    fn build_alias_record(&mut self, bus: &MacMemoryBus, target_ptr: u32) -> Vec<u8> {
+        let vref = bus.read_word(target_ptr) as i16;
+        let dir_id = bus.read_long(target_ptr + 2);
+        let target_name = crate::trap::types::read_fsspec_name(bus, target_ptr);
+        let resolved_dir_id = self.resolve_directory_id(vref, dir_id);
+        let target_key = self.vfs_key_for_fsspec(vref, dir_id, &target_name);
+        let target_directory = target_key
+            .as_ref()
+            .and_then(|key| self.vfs_directories.get(key).cloned());
+        let target_metadata = target_key
+            .as_ref()
+            .and_then(|key| self.vfs_file_metadata(key));
+
+        let alias_kind = if target_directory.is_some() {
+            Self::ALIAS_KIND_FOLDER
+        } else {
+            Self::ALIAS_KIND_FILE
+        };
+        let parent_dir_id = target_metadata
+            .map(|metadata| metadata.parent_dir_id)
+            .or_else(|| target_directory.as_ref().map(|dir| dir.parent_dir_id))
+            .unwrap_or(resolved_dir_id);
+        let file_id = target_metadata
+            .map(|metadata| metadata.file_id)
+            .or_else(|| target_directory.as_ref().map(|dir| dir.dir_id))
+            .unwrap_or(0);
+        let created_date = target_metadata
+            .map(|metadata| metadata.created_date)
+            .unwrap_or(0);
+        let file_type = target_metadata
+            .map(|metadata| metadata.file_type)
+            .unwrap_or(0);
+        let creator = target_metadata
+            .map(|metadata| metadata.creator)
+            .unwrap_or(0);
+
+        let mut record = vec![0; Self::ALIAS_RECORD_FIXED_SIZE];
+        Self::alias_write_u32(&mut record, 0, 0); // userType
+        Self::alias_write_u16(&mut record, 6, Self::ALIAS_RECORD_VERSION);
+        Self::alias_write_u16(&mut record, 8, alias_kind);
+        Self::alias_write_pstring(&mut record, 10, 28, Self::boot_volume_name());
+        Self::alias_write_u32(&mut record, 38, 0); // volume creation date
+        Self::alias_write_u16(&mut record, 42, 0x4244); // HFS volume signature 'BD'
+        Self::alias_write_u16(&mut record, 44, 0); // fixed hard disk
+        Self::alias_write_u32(&mut record, 46, parent_dir_id);
+        Self::alias_write_pstring(&mut record, 50, 64, &target_name);
+        Self::alias_write_u32(&mut record, 114, file_id);
+        Self::alias_write_u32(&mut record, 118, created_date);
+        Self::alias_write_u32(&mut record, 122, file_type);
+        Self::alias_write_u32(&mut record, 126, creator);
+        Self::alias_write_i16(&mut record, 130, -1); // no relative source file
+        Self::alias_write_i16(&mut record, 132, -1);
+        Self::alias_write_u32(&mut record, 134, 0);
+        Self::alias_write_u16(&mut record, 138, 0);
+
+        let parent_name = self
+            .directory_path_for_id(parent_dir_id)
+            .map(Self::vfs_basename)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| Self::boot_volume_name().to_string());
+        Self::append_alias_extra(
+            &mut record,
+            Self::ALIAS_EXTRA_PARENT_DIR_NAME,
+            &encode_mac_roman_lossy(&parent_name),
+        );
+        Self::append_alias_extra(&mut record, Self::ALIAS_EXTRA_END, &[]);
+
+        let size = record.len().min(u16::MAX as usize) as u16;
+        Self::alias_write_u16(&mut record, 4, size);
+        record
+    }
+
+    fn alias_write_u16(record: &mut [u8], offset: usize, value: u16) {
+        record[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+
+    fn alias_write_i16(record: &mut [u8], offset: usize, value: i16) {
+        Self::alias_write_u16(record, offset, value as u16);
+    }
+
+    fn alias_write_u32(record: &mut [u8], offset: usize, value: u32) {
+        record[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+    }
+
+    fn alias_write_pstring(record: &mut [u8], offset: usize, field_len: usize, value: &str) {
+        let bytes = encode_mac_roman_lossy(value);
+        let len = bytes.len().min(field_len.saturating_sub(1));
+        record[offset] = len as u8;
+        record[offset + 1..offset + 1 + len].copy_from_slice(&bytes[..len]);
+    }
+
+    fn append_alias_extra(record: &mut Vec<u8>, kind: i16, data: &[u8]) {
+        record.extend_from_slice(&(kind as u16).to_be_bytes());
+        record.extend_from_slice(&(data.len().min(u16::MAX as usize) as u16).to_be_bytes());
+        record.extend_from_slice(&data[..data.len().min(u16::MAX as usize)]);
+        if data.len() % 2 != 0 {
+            record.push(0);
+        }
     }
 
     fn write_point_words(bus: &mut MacMemoryBus, addr: u32, point: (i16, i16)) {
@@ -7306,14 +7413,14 @@ impl super::TrapDispatcher {
                         let target_name = crate::trap::types::read_fsspec_name(bus, target_ptr);
                         eprintln!("[ALIAS] NewAlias target='{}'", target_name);
 
-                        // Create a tiny placeholder alias handle so callers that check for
-                        // a non-NULL handle continue to run.
+                        let alias_data_bytes = self.build_alias_record(bus, target_ptr);
                         if alias_ptr != 0 {
-                            let alias_data = bus.alloc(16);
-                            bus.write_word(alias_data, 16); // minimal length marker
+                            let alias_data = bus.alloc(alias_data_bytes.len() as u32);
+                            bus.write_bytes(alias_data, &alias_data_bytes);
                             let alias_handle = bus.alloc(4);
                             bus.write_long(alias_handle, alias_data);
                             bus.write_long(alias_ptr, alias_handle);
+                            self.ptr_to_handle.insert(alias_data, alias_handle);
                         }
 
                         bus.write_word(sp + 12, 0); // noErr
@@ -16523,7 +16630,22 @@ mod tests {
         assert_ne!(alias_handle, 0);
         let alias_data_ptr = bus.read_long(alias_handle);
         assert_ne!(alias_data_ptr, 0);
-        assert_eq!(bus.read_word(alias_data_ptr), 16);
+        let alias_size = bus.read_word(alias_data_ptr + 4) as usize;
+        assert!(
+            alias_size >= 150,
+            "alias record should use the classic fixed header size"
+        );
+        assert_eq!(bus.read_word(alias_data_ptr + 6), 2);
+        assert_eq!(bus.read_word(alias_data_ptr + 8), 0);
+        assert_eq!(
+            bus.read_pstring(alias_data_ptr + 10),
+            b"MacintoshHD".to_vec()
+        );
+        assert_eq!(bus.read_pstring(alias_data_ptr + 50), b"Prefs".to_vec());
+        assert_eq!(bus.read_word(alias_data_ptr + 150) as i16, 0);
+        let parent_len = bus.read_word(alias_data_ptr + 152) as usize;
+        let end_offset = 154 + parent_len + (parent_len % 2);
+        assert_eq!(bus.read_word(alias_data_ptr + end_offset as u32) as i16, -1);
     }
 
     // AliasDispatch ($A823) / selector $000C ResolveAliasFile

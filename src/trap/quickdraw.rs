@@ -680,6 +680,12 @@ impl super::TrapDispatcher {
                 if trace_dialog_ports_enabled() {
                     eprintln!("[DIALOG-PORT] SetPort port=${:08X}", port);
                 }
+                if port != 0 && !self.port_allows_draw_state_memory_sync(bus, port) {
+                    if trace_dialog_ports_enabled() {
+                        eprintln!("[DIALOG-PORT] SetPort ignored invalid port=${:08X}", port);
+                    }
+                    return Some(Ok(()));
+                }
                 self.set_current_port_state(bus, cpu, port, None);
                 Ok(())
             }
@@ -16580,6 +16586,10 @@ impl super::TrapDispatcher {
             return;
         }
 
+        if !self.port_allows_draw_state_memory_sync(bus, port) {
+            return;
+        }
+
         let state = self
             .port_draw_states
             .get(&port)
@@ -16606,6 +16616,9 @@ impl super::TrapDispatcher {
 
         let port_version = bus.read_word(port + 6);
         if (port_version & 0xC000) != 0xC000 {
+            return false;
+        }
+        if !self.known_port(port) && !Self::looks_like_cgraf_port(bus, port) {
             return false;
         }
 
@@ -16801,6 +16814,9 @@ impl super::TrapDispatcher {
         if self.current_port == 0 {
             return;
         }
+        if !self.port_allows_draw_state_memory_sync(bus, self.current_port) {
+            return;
+        }
         let state = self.current_draw_state();
         self.port_draw_states.insert(self.current_port, state);
         self.sync_port_draw_state(bus, self.current_port);
@@ -16808,6 +16824,9 @@ impl super::TrapDispatcher {
 
     fn sync_port_draw_state(&self, bus: &mut MacMemoryBus, port: u32) {
         if port == 0 {
+            return;
+        }
+        if !self.port_allows_draw_state_memory_sync(bus, port) {
             return;
         }
         let port_version = bus.read_word(port + 6);
@@ -16865,6 +16884,88 @@ impl super::TrapDispatcher {
         };
         bus.write_long(port + 80, fg_legacy);
         bus.write_long(port + 84, bg_legacy);
+    }
+
+    fn known_port(&self, port: u32) -> bool {
+        self.port_draw_states.contains_key(&port)
+            || self.cport_ports.contains(&port)
+            || self.gworld_devices.contains_key(&port)
+            || self.window_list.contains(&port)
+            || self.front_window == port
+            || self
+                .window_stack
+                .iter()
+                .any(|(window, _, _, _)| *window == port)
+    }
+
+    fn port_allows_draw_state_memory_sync(&self, bus: &MacMemoryBus, port: u32) -> bool {
+        if !Self::guest_range_in_ram(bus, port, 88) {
+            return false;
+        }
+        if self.known_port(port) {
+            return true;
+        }
+        !Self::looks_like_68k_entry_point(bus, port)
+    }
+
+    fn guest_range_in_ram(bus: &MacMemoryBus, addr: u32, len: u32) -> bool {
+        addr.checked_add(len)
+            .is_some_and(|end| end <= bus.ram_size())
+    }
+
+    fn looks_like_68k_entry_point(bus: &MacMemoryBus, addr: u32) -> bool {
+        if !Self::guest_range_in_ram(bus, addr, 2) {
+            return false;
+        }
+        match bus.read_word(addr) {
+            // Common procedure starts and jump-table stubs. A GrafPort's
+            // first word is the device field, so accepting one of these as
+            // a port would let QuickDraw state writes corrupt executable
+            // memory when an app accidentally passes a proc pointer.
+            0x4EF9 | // JMP absolute long
+            0x4EFA | // JMP PC-relative
+            0x4EB9 | // JSR absolute long
+            0x4E56 | // LINK
+            0x48E7 | // MOVEM predecrement
+            0xA9F0 | // LoadSeg
+            0x3F3C => true, // MOVE.W #imm,-(SP) jump-table glue
+            op if (op & 0xF000) == 0x6000 => true, // BRA/BSR/Bcc
+            _ => false,
+        }
+    }
+
+    fn handle_points_to_guest_range(bus: &MacMemoryBus, handle: u32, min_len: u32) -> bool {
+        if !Self::guest_range_in_ram(bus, handle, 4) {
+            return false;
+        }
+        let ptr = bus.read_long(handle);
+        ptr != 0 && Self::guest_range_in_ram(bus, ptr, min_len)
+    }
+
+    fn sane_bitmap_geometry(row_bytes: u16, top: i16, left: i16, bottom: i16, right: i16) -> bool {
+        let row_bytes = row_bytes & 0x3FFF;
+        row_bytes > 0 && row_bytes <= 8192 && bottom >= top && right >= left
+    }
+
+    fn looks_like_cgraf_port(bus: &MacMemoryBus, port: u32) -> bool {
+        if !Self::guest_range_in_ram(bus, port, 92) {
+            return false;
+        }
+        if (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+            return false;
+        }
+        let pixmap_handle = bus.read_long(port + 2);
+        if !Self::handle_points_to_guest_range(bus, pixmap_handle, 50) {
+            return false;
+        }
+        let pixmap = bus.read_long(pixmap_handle);
+        Self::sane_bitmap_geometry(
+            bus.read_word(pixmap + 4),
+            bus.read_word(pixmap + 6) as i16,
+            bus.read_word(pixmap + 8) as i16,
+            bus.read_word(pixmap + 10) as i16,
+            bus.read_word(pixmap + 12) as i16,
+        )
     }
 
     fn bitmap_ptr_for_port(&self, bus: &MacMemoryBus, port: u32) -> u32 {
@@ -20083,6 +20184,35 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn setport_ignores_invalid_proc_pointer_without_syncing_draw_state() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let original_port = d.current_port;
+        let invalid_port = 0x0001_6178u32;
+        let watched = invalid_port + 56;
+
+        // Shape this like a loaded jump-table/proc pointer, not a GrafPort.
+        bus.write_word(invalid_port, 0x4EF9);
+        bus.write_long(invalid_port + 2, 0x0026_B0B0);
+        bus.write_long(watched, 0xDEAD_BEEF);
+
+        bus.write_long(TEST_SP, invalid_port);
+        let result = d.dispatch_quickdraw(true, 0x073, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(d.current_port, original_port);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            original_port
+        );
+        assert_eq!(
+            bus.read_long(watched),
+            0xDEAD_BEEF,
+            "SetPort must not synthesize pen state into non-port memory"
+        );
     }
 
     #[test]

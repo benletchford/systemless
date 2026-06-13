@@ -162,6 +162,18 @@ impl super::TrapDispatcher {
         bytes
     }
 
+    fn loadseg_entry_is_loaded(bus: &MacMemoryBus, entry_addr: u32) -> bool {
+        bus.read_word(entry_addr) == 0x4EF9 || bus.read_word(entry_addr + 2) == 0x4EF9
+    }
+
+    fn loadseg_entry_dispatch_pc(bus: &MacMemoryBus, entry_addr: u32) -> u32 {
+        if bus.read_word(entry_addr) == 0x4EF9 {
+            entry_addr
+        } else {
+            entry_addr + 2
+        }
+    }
+
     fn patch_loadseg_entry(
         bus: &mut MacMemoryBus,
         seg_num: i16,
@@ -177,9 +189,17 @@ impl super::TrapDispatcher {
             bus.read_word(entry_addr) as u32
         };
         let code_addr = seg_addr + header_size + routine_offset;
-        bus.write_word(entry_addr, seg_num as u16);
-        bus.write_word(entry_addr + 2, 0x4EF9); // JMP.L
-        bus.write_long(entry_addr + 4, code_addr);
+        if bus.read_word(entry_addr) == 0xA9F0 {
+            // Think C format entries are called at entry+0, so the loaded
+            // entry must also begin with the JMP instruction.
+            bus.write_word(entry_addr, 0x4EF9); // JMP.L
+            bus.write_long(entry_addr + 2, code_addr);
+            bus.write_word(entry_addr + 6, 0);
+        } else {
+            bus.write_word(entry_addr, seg_num as u16);
+            bus.write_word(entry_addr + 2, 0x4EF9); // JMP.L
+            bus.write_long(entry_addr + 4, code_addr);
+        }
         code_addr
     }
 
@@ -457,8 +477,9 @@ impl super::TrapDispatcher {
                 let mut patched = 0u32;
                 for i in 0..n_entries {
                     let p = ptr_base + i * 8;
-                    // Skip already-loaded entries (JMP.L = 0x4EF9 at +2)
-                    if bus.read_word(p + 2) == 0x4EF9 {
+                    // Skip already-loaded entries. MPW-style entries place
+                    // JMP.L at +2; Think-style entries place it at +0.
+                    if Self::loadseg_entry_is_loaded(bus, p) {
                         continue;
                     }
                     Self::patch_loadseg_entry(bus, seg_num, seg_addr, header_size, p);
@@ -475,7 +496,7 @@ impl super::TrapDispatcher {
             // Ensure the calling entry itself was patched. In Think C format,
             // the calling entry may lie outside the segment header's taboff
             // range (entries for a given segment can be scattered across the JT).
-            if bus.read_word(entry_addr + 2) != 0x4EF9 {
+            if !Self::loadseg_entry_is_loaded(bus, entry_addr) {
                 let code_addr =
                     Self::patch_loadseg_entry(bus, seg_num, seg_addr, header_size, entry_addr);
                 if trace_loadseg {
@@ -531,9 +552,9 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // Re-execute the calling JT entry. After patching, entry+2 =
-            // JMP.L instruction.
-            let jmp_addr = entry_addr + 2;
+            // Re-execute the calling JT entry at the JMP instruction. MPW
+            // entries dispatch at entry+2; Think C entries dispatch at entry+0.
+            let jmp_addr = Self::loadseg_entry_dispatch_pc(bus, entry_addr);
             if trace_loadseg {
                 eprintln!("[TRAP] LoadSeg: re-executing JT entry at ${:08X}", jmp_addr);
             }
@@ -740,6 +761,9 @@ impl super::TrapDispatcher {
         bus.write_long(handle, if self.res_load { ptr } else { 0 });
         self.loaded_handles.insert(handle, (ptr, res_type, res_id));
         self.resource_handle_files.insert(handle, refnum);
+        if self.res_load && ptr != 0 {
+            self.ptr_to_handle.insert(ptr, handle);
+        }
         handle
     }
 
@@ -1323,11 +1347,13 @@ impl super::TrapDispatcher {
             }
 
             // ReleaseResource ($A9A3)
-            // Releases the memory occupied by a resource while preserving the
-            // handle's resource identity for later LoadResource/GetResource.
+            // Releases the memory occupied by a resource and invalidates the
+            // caller's handle-to-resource association. The canonical resource
+            // bytes remain in Systemless's resource map, so a later GetResource
+            // allocates a fresh handle for the same resource data.
             // PROCEDURE ReleaseResource(theResource: Handle);
             // Inside Macintosh Volume I, I-120 to I-121
-            // ReleaseResource ($A9A3): Clears a resource handle's master pointer but preserves Resource Manager metadata so it can be reloaded; returns `resNotFound` for non-resource handles
+            // ReleaseResource ($A9A3): Clears a resource handle's master pointer and invalidates its Resource Manager handle identity; returns `resNotFound` for non-resource handles
             (true, 0x1A3) => {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
@@ -1341,6 +1367,9 @@ impl super::TrapDispatcher {
                     if (attrs & Self::RES_CHANGED_ATTR) == 0 {
                         bus.write_long(handle, 0);
                         self.ptr_to_handle.remove(&ptr);
+                        self.loaded_handles.remove(&handle);
+                        self.resource_handle_files.remove(&handle);
+                        self.handle_state_bits.remove(&handle);
                     }
                     bus.write_word(0x0A60, 0);
                 } else {
@@ -7399,7 +7428,7 @@ mod tests {
     // 5. ReleaseResource (0x1A3)
     // ================================================================
     #[test]
-    fn release_resource_keeps_handle_reloadable() {
+    fn release_resource_invalidates_handle_and_getresource_allocates_fresh_handle() {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"DLOG", 200, &[0xAB; 8]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"DLOG", 200, data_ptr);
@@ -7411,14 +7440,13 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(bus.read_long(handle), 0);
-        assert_eq!(
-            disp.loaded_handles.get(&handle).copied(),
-            Some((data_ptr, *b"DLOG", 200)),
-            "ReleaseResource should preserve the resource identity"
+        assert!(
+            !disp.loaded_handles.contains_key(&handle),
+            "ReleaseResource should invalidate the old handle's resource identity"
         );
         assert!(
-            disp.resource_handle_files.contains_key(&handle),
-            "ReleaseResource should preserve the resource file binding"
+            !disp.resource_handle_files.contains_key(&handle),
+            "ReleaseResource should remove the old handle's resource file binding"
         );
         assert_eq!(
             disp.ptr_to_handle.get(&data_ptr).copied(),
@@ -7429,14 +7457,32 @@ mod tests {
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, handle);
-        call(&mut disp, true, 0x1A2, &mut cpu, &mut bus).unwrap();
+        call(&mut disp, true, 0x1A3, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(bus.read_long(handle), data_ptr);
+        assert_eq!(
+            bus.read_word(0x0A60) as i16,
+            -192,
+            "a stale released handle is no longer a resource handle"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 200u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"DLOG"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        let reloaded_handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(reloaded_handle, 0);
+        assert_ne!(
+            reloaded_handle, handle,
+            "GetResource after ReleaseResource should allocate a fresh handle"
+        );
+        assert_eq!(bus.read_long(reloaded_handle), data_ptr);
         assert_eq!(
             disp.ptr_to_handle.get(&data_ptr).copied(),
-            Some(handle),
-            "LoadResource should restore RecoverHandle ownership"
+            Some(reloaded_handle),
+            "GetResource should restore RecoverHandle ownership through the fresh handle"
         );
         assert_eq!(bus.read_word(0x0A60), 0);
     }
@@ -8970,15 +9016,15 @@ mod tests {
             TEST_SP,
             "THINK-style LoadSeg entry does not pop a segment word"
         );
-        assert_eq!(cpu.read_reg(Register::PC), entry_addr + 2);
+        assert_eq!(cpu.read_reg(Register::PC), entry_addr);
 
-        assert_eq!(bus.read_word(entry_addr), 1);
-        assert_eq!(bus.read_word(entry_addr + 2), 0x4EF9);
-        assert_eq!(bus.read_long(entry_addr + 4), seg_addr + 4);
+        assert_eq!(bus.read_word(entry_addr), 0x4EF9);
+        assert_eq!(bus.read_long(entry_addr + 2), seg_addr + 4);
+        assert_eq!(bus.read_word(entry_addr + 6), 0);
 
-        assert_eq!(bus.read_word(next_entry_addr), 1);
-        assert_eq!(bus.read_word(next_entry_addr + 2), 0x4EF9);
-        assert_eq!(bus.read_long(next_entry_addr + 4), seg_addr + 12);
+        assert_eq!(bus.read_word(next_entry_addr), 0x4EF9);
+        assert_eq!(bus.read_long(next_entry_addr + 2), seg_addr + 12);
+        assert_eq!(bus.read_word(next_entry_addr + 6), 0);
         assert_eq!(
             bus.read_word(next_entry_addr + 8),
             0xDEAD,
