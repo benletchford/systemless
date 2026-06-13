@@ -1702,15 +1702,26 @@ impl FixtureRunner {
 
             if trace_pc_range_contains(pc) {
                 eprintln!(
-                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} sp=${:08X} a6=${:08X} a5=${:08X} a2=${:08X} d0=${:08X} a0=${:08X}",
+                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} ccr=${:02X} d0=${:08X} d1=${:08X} d2=${:08X} d3=${:08X} d4=${:08X} d5=${:08X} d6=${:08X} d7=${:08X} a0=${:08X} a1=${:08X} a2=${:08X} a3=${:08X} a4=${:08X} a5=${:08X} a6=${:08X} sp=${:08X}",
                     pc,
                     self.bus.read_word(pc),
-                    self.cpu.read_reg(Register::A7),
-                    self.cpu.read_reg(Register::A6),
-                    self.cpu.read_reg(Register::A5),
-                    self.cpu.read_reg(Register::A2),
+                    self.cpu.core.get_ccr(),
                     self.cpu.read_reg(Register::D0),
+                    self.cpu.read_reg(Register::D1),
+                    self.cpu.read_reg(Register::D2),
+                    self.cpu.read_reg(Register::D3),
+                    self.cpu.read_reg(Register::D4),
+                    self.cpu.read_reg(Register::D5),
+                    self.cpu.read_reg(Register::D6),
+                    self.cpu.read_reg(Register::D7),
                     self.cpu.read_reg(Register::A0),
+                    self.cpu.read_reg(Register::A1),
+                    self.cpu.read_reg(Register::A2),
+                    self.cpu.read_reg(Register::A3),
+                    self.cpu.read_reg(Register::A4),
+                    self.cpu.read_reg(Register::A5),
+                    self.cpu.read_reg(Register::A6),
+                    self.cpu.read_reg(Register::A7),
                 );
             }
 

@@ -15,6 +15,7 @@ use crate::Result;
 // Cheap when unset.
 static TRACE_SANE_NAN: OnceLock<bool> = OnceLock::new();
 static TRACE_SANE: OnceLock<bool> = OnceLock::new();
+static TRACE_SANE_PC_FILTER: OnceLock<Option<Vec<u32>>> = OnceLock::new();
 
 #[inline]
 fn trace_sane_nan_enabled() -> bool {
@@ -24,6 +25,30 @@ fn trace_sane_nan_enabled() -> bool {
 #[inline]
 fn trace_sane_enabled() -> bool {
     *TRACE_SANE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SANE").is_some())
+}
+
+#[inline]
+fn trace_sane_pc_matches(pc: u32) -> bool {
+    TRACE_SANE_PC_FILTER
+        .get_or_init(|| {
+            let value = std::env::var("SYSTEMLESS_TRACE_SANE_PC").ok()?;
+            let pcs = value
+                .split(',')
+                .filter_map(|part| {
+                    u32::from_str_radix(
+                        part.trim()
+                            .trim_start_matches("0x")
+                            .trim_start_matches("0X"),
+                        16,
+                    )
+                    .ok()
+                })
+                .collect::<Vec<_>>();
+            (!pcs.is_empty()).then_some(pcs)
+        })
+        .as_ref()
+        .map(|pcs| pcs.contains(&pc))
+        .unwrap_or(true)
 }
 
 #[inline]
@@ -193,18 +218,19 @@ impl super::TrapDispatcher {
             0x18 |                         // scalb (scale binary, two-address)
             0x1C // class (classify, two-address: src=ext, dst=int16)
         );
-        let trace_sane = trace_sane_enabled();
+        let trace_sane_env = trace_sane_enabled();
         let trace_sane_nan = trace_sane_nan_enabled();
         // PC reflects the post-trap address (m68k step advances pc += 2
         // past the A-line word). Only read it when diagnostics need it.
-        let trap_pc = if trace_sane || trace_sane_nan {
+        let trap_pc = if trace_sane_env || trace_sane_nan {
             cpu.read_reg(Register::PC).wrapping_sub(2)
         } else {
             0
         };
+        let trace_sane = trace_sane_env && trace_sane_pc_matches(trap_pc);
         // When the trap was called via auto-pop (e.g. through a jump-table
         // trampoline), surface the original JSR-er PC too.
-        let trap_caller = if trace_sane || trace_sane_nan {
+        let trap_caller = if trace_sane_env || trace_sane_nan {
             self.current_trap_caller
         } else {
             None
@@ -446,7 +472,7 @@ impl super::TrapDispatcher {
         // Same trap-PC capture as in handle_fp68k.
         let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
         let trap_caller = self.current_trap_caller;
-        let trace_sane = trace_sane_enabled();
+        let trace_sane = trace_sane_enabled() && trace_sane_pc_matches(trap_pc);
         let trace_sane_nan = trace_sane_nan_enabled();
         if trace_sane {
             eprintln!(
