@@ -723,6 +723,9 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline used by DeviceLoop
     /// to call a guest drawing procedure for the current device.
     pub(crate) device_loop_trampoline: u32,
+    /// Address of the lazily-allocated trampoline template used by the
+    /// List Manager to call a guest LDEF drawing procedure.
+    pub(crate) list_def_trampoline: u32,
     /// Address of the lazily-allocated trampoline used by DeferUserFn
     /// to call a callable userFunction immediately. Holds
     /// `48E7 F0F0 207C xxxx xxxx 4EB9 xxxx xxxx 4CDF 0F0F 7000 4E75`.
@@ -1278,7 +1281,13 @@ pub(crate) struct ResourceFileMap {
     /// Map of (type, id) -> memory address of resource data.
     pub loaded: HashMap<([u8; 4], i16), u32>,
     /// Map of (type, name) -> (id, memory address) for named resources.
+    /// Name lookups on classic Mac OS are not a uniqueness constraint:
+    /// several resources may share a display name. This map intentionally
+    /// keeps the historical lookup path, while `names_by_id` below preserves
+    /// the exact name returned by GetResInfo for each resource ID.
     pub named: HashMap<([u8; 4], String), (i16, u32)>,
+    /// Map of (type, id) -> resource name for GetResInfo.
+    pub names_by_id: HashMap<([u8; 4], i16), String>,
     /// Map of (type, id) -> resource attribute bits from the resource map.
     pub attrs: HashMap<([u8; 4], i16), u8>,
     /// Resource-map-level attribute bits (mapReadOnly = 0x80,
@@ -1473,6 +1482,7 @@ impl TrapDispatcher {
             let file = resources.files.entry(refnum).or_default();
             file.named
                 .insert((res_type, name.to_string()), (id, data_ptr));
+            file.names_by_id.insert((res_type, id), name.to_string());
         }
         data_ptr
     }
@@ -1802,6 +1812,7 @@ impl TrapDispatcher {
             loadseg_getresource_trampoline_addr: None,
             preserve_auto_pop_pc_once: false,
             device_loop_trampoline: 0,
+            list_def_trampoline: 0,
             defer_user_fn_trampoline: 0,
             ajcp_decompressor_ready: false,
             ajcp_decompressed_resources: std::collections::HashSet::new(),
@@ -3032,6 +3043,7 @@ impl TrapDispatcher {
     ) -> ResourceFileMap {
         let mut loaded = HashMap::new();
         let mut named = HashMap::new();
+        let mut names_by_id = HashMap::new();
         let mut attrs = HashMap::new();
         // Sort resources by (type, id) for deterministic heap layout across runs.
         let mut sorted_resources: Vec<_> = fork.resources().iter().collect();
@@ -3043,11 +3055,13 @@ impl TrapDispatcher {
             attrs.insert((*res_type, *id), res.attrs);
             if let Some(ref name) = res.name {
                 named.insert((*res_type, name.clone()), (*id, ptr));
+                names_by_id.insert((*res_type, *id), name.clone());
             }
         }
         ResourceFileMap {
             loaded,
             named,
+            names_by_id,
             attrs,
             map_attrs: 0,
         }

@@ -874,6 +874,7 @@ impl super::TrapDispatcher {
                     if let Some(file) = resources.files.get_mut(&refnum) {
                         file.loaded.remove(&(res_type, res_id));
                         file.attrs.remove(&(res_type, res_id));
+                        file.names_by_id.remove(&(res_type, res_id));
                         file.named
                             .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
                     }
@@ -885,6 +886,7 @@ impl super::TrapDispatcher {
                     if let Some(file) = resources.files.get_mut(&current_refnum) {
                         file.loaded.remove(&(res_type, res_id));
                         file.attrs.remove(&(res_type, res_id));
+                        file.names_by_id.remove(&(res_type, res_id));
                         file.named
                             .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
                     }
@@ -965,7 +967,8 @@ impl super::TrapDispatcher {
             let name_bytes = bus.read_pstring(name_ptr);
             if let Ok(name) = String::from_utf8(name_bytes) {
                 if !name.is_empty() {
-                    file.named.insert((res_type, name), (new_id, ptr));
+                    file.named.insert((res_type, name.clone()), (new_id, ptr));
+                    file.names_by_id.insert((res_type, new_id), name);
                 }
             }
         }
@@ -1001,13 +1004,10 @@ impl super::TrapDispatcher {
         let (refnum, res_type, res_id) = self.resource_record_for_handle(handle)?;
 
         let name = self.resources.as_ref().and_then(|resources| {
-            resources.files.get(&refnum).and_then(|file| {
-                file.named
-                    .iter()
-                    .find_map(|((name_type, name), (name_id, _))| {
-                        (*name_type == res_type && *name_id == res_id).then(|| name.clone())
-                    })
-            })
+            resources
+                .files
+                .get(&refnum)
+                .and_then(|file| file.names_by_id.get(&(res_type, res_id)).cloned())
         });
 
         Some((res_type, res_id, name))
@@ -2181,6 +2181,7 @@ impl super::TrapDispatcher {
                                 if let Some(a) = file.attrs.remove(&(res_type, old_id)) {
                                     file.attrs.insert((res_type, new_id), a);
                                 }
+                                let old_name = file.names_by_id.remove(&(res_type, old_id));
                                 // Update name if name_ptr != 0 (assembly-language note)
                                 if name_ptr != 0 {
                                     // Remove old named entry for this resource
@@ -2196,11 +2197,17 @@ impl super::TrapDispatcher {
                                                 .get(&(res_type, new_id))
                                                 .copied()
                                                 .unwrap_or(0);
-                                            file.named
-                                                .insert((res_type, name_str), (new_id, ptr_val));
+                                            file.named.insert(
+                                                (res_type, name_str.clone()),
+                                                (new_id, ptr_val),
+                                            );
+                                            file.names_by_id.insert((res_type, new_id), name_str);
                                         }
                                     }
                                 } else {
+                                    if let Some(name_str) = old_name {
+                                        file.names_by_id.insert((res_type, new_id), name_str);
+                                    }
                                     // name_ptr == 0: update existing named entries to new ID
                                     for ((t, _), (id, _)) in file.named.iter_mut() {
                                         if *t == res_type && *id == old_id {
@@ -2275,7 +2282,9 @@ impl super::TrapDispatcher {
                                 let name_bytes = bus.read_pstring(name_ptr);
                                 if let Ok(name_str) = String::from_utf8(name_bytes) {
                                     if !name_str.is_empty() {
-                                        file.named.insert((res_type, name_str), (res_id, ptr));
+                                        file.named
+                                            .insert((res_type, name_str.clone()), (res_id, ptr));
+                                        file.names_by_id.insert((res_type, res_id), name_str);
                                     }
                                 }
                             }
@@ -6545,6 +6554,7 @@ mod tests {
         let file = ResourceFileMap {
             loaded,
             named: HashMap::new(),
+            names_by_id: HashMap::new(),
             attrs: HashMap::new(),
             map_attrs: 0,
         };
@@ -7009,6 +7019,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::from([((*b"PICT", 300), chain_ptr)]),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::new(),
                         map_attrs: 0,
                     },
@@ -7018,6 +7029,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::new(),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::new(),
                         map_attrs: 0,
                     },
@@ -7078,6 +7090,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::from([((*b"PICT", 1114), app_ptr)]),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::new(),
                         map_attrs: 0,
                     },
@@ -7087,6 +7100,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::from([((*b"PICT", 1114), images_ptr)]),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::new(),
                         map_attrs: 0,
                     },
@@ -7860,6 +7874,7 @@ mod tests {
         let mut file0 = ResourceFileMap {
             loaded: file0_loaded,
             named: HashMap::new(),
+            names_by_id: HashMap::new(),
             attrs: HashMap::from([((*b"CURS", 1), 0x0004u8)]),
             map_attrs: 0,
         };
@@ -8182,12 +8197,15 @@ mod tests {
         loaded.insert((*b"STR ", 500i16), data_ptr);
         let mut named = HashMap::new();
         named.insert((*b"STR ", "MyString".to_string()), (500i16, data_ptr));
+        let mut names_by_id = HashMap::new();
+        names_by_id.insert((*b"STR ", 500i16), "MyString".to_string());
         disp.resources = Some(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
                     loaded,
                     named,
+                    names_by_id,
                     attrs: HashMap::new(),
                     map_attrs: 0,
                 },
@@ -8232,6 +8250,14 @@ mod tests {
             .unwrap()
             .named
             .insert((*b"STR ", "MyString".to_string()), (500, data_ptr));
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .names_by_id
+            .insert((*b"STR ", 500), "MyString".to_string());
 
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"STR ", 500, data_ptr);
         let name_ptr = 0x200000u32;
@@ -8252,6 +8278,58 @@ mod tests {
         assert_eq!(bus.read_byte(name_ptr), 8);
         assert_eq!(bus.read_bytes(name_ptr + 1, 8), b"MyString");
         assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn get_res_info_preserves_duplicate_resource_names_by_id() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let first_ptr = setup_resources(&mut disp, &mut bus, b"m\x95sn", 128, &[0x11; 4]);
+        let second_ptr = disp.install_named_test_resource_in_file(
+            &mut bus,
+            0,
+            *b"m\x95sn",
+            129,
+            "Ferry Passengers to <DST>",
+            &[0x22; 4],
+        );
+        let file = disp.resources.as_mut().unwrap().files.get_mut(&0).unwrap();
+        file.named.insert(
+            (*b"m\x95sn", "Ferry Passengers to <DST>".to_string()),
+            (128, first_ptr),
+        );
+        file.names_by_id
+            .insert((*b"m\x95sn", 128), "Ferry Passengers to <DST>".to_string());
+
+        let first_handle =
+            disp.get_or_create_resource_handle(&mut bus, *b"m\x95sn", 128, first_ptr);
+        let second_handle =
+            disp.get_or_create_resource_handle(&mut bus, *b"m\x95sn", 129, second_ptr);
+        let name_ptr = 0x200000u32;
+        let type_ptr = 0x200100u32;
+        let id_ptr = 0x200104u32;
+        let sp = TEST_SP;
+
+        for (handle, expected_id) in [(first_handle, 128i16), (second_handle, 129i16)] {
+            bus.write_byte(name_ptr, 0);
+            bus.write_long(sp, name_ptr);
+            bus.write_long(sp + 4, type_ptr);
+            bus.write_long(sp + 8, id_ptr);
+            bus.write_long(sp + 12, handle);
+
+            call(&mut disp, true, 0x1A8, &mut cpu, &mut bus).unwrap();
+
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+            assert_eq!(bus.read_word(id_ptr) as i16, expected_id);
+            assert_eq!(bus.read_long(type_ptr), u32::from_be_bytes(*b"m\x95sn"));
+            let name_len = bus.read_byte(name_ptr) as usize;
+            assert_eq!(
+                bus.read_bytes(name_ptr + 1, name_len),
+                b"Ferry Passengers to <DST>"
+            );
+            assert_eq!(bus.read_word(0x0A60), 0);
+            cpu.write_reg(Register::A7, TEST_SP);
+        }
     }
 
     // ================================================================

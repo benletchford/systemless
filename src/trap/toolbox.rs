@@ -5,6 +5,7 @@ use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::text::get_font_metrics;
 use crate::{Error, Result};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
@@ -224,6 +225,9 @@ impl super::TrapDispatcher {
     const LIST_CELL_ARRAY_OFFSET: u32 = 86;
     const LIST_RECORD_SIZE: u32 = 88;
     const LIST_DOUBLE_CLICK_TICKS: u32 = 20;
+    const LIST_LDRAW_MSG: i16 = 1;
+    const LIST_LHILITE_MSG: i16 = 2;
+    const LIST_DEF_TRAMPOLINE_SIZE: u32 = 60;
     const ALIAS_RECORD_FIXED_SIZE: usize = 150;
     const ALIAS_RECORD_VERSION: u16 = 2;
     const ALIAS_KIND_FILE: u16 = 0;
@@ -623,6 +627,275 @@ impl super::TrapDispatcher {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    fn list_def_proc_addr(bus: &MacMemoryBus, list_handle: u32) -> u32 {
+        let list_ptr = Self::list_record_ptr(bus, list_handle);
+        if list_ptr == 0 {
+            return 0;
+        }
+        let def_handle = bus.read_long(list_ptr + Self::LIST_DEF_PROC_OFFSET);
+        if def_handle == 0 {
+            return 0;
+        }
+        let def_ptr = bus.read_long(def_handle);
+        if def_ptr != 0 {
+            def_ptr
+        } else {
+            def_handle
+        }
+    }
+
+    fn proc_entry_looks_callable(bus: &MacMemoryBus, proc_addr: u32) -> bool {
+        if proc_addr == 0 {
+            return false;
+        }
+        matches!(
+            bus.read_word(proc_addr),
+            0x4E56 // LINK.W A6,#imm
+                | 0x48E7 // MOVEM.L regs,-(SP)
+                | 0x4EF9 // JMP abs.L
+                | 0x4EFA // JMP pc-relative
+                | 0x6000..=0x60FF // BRA/BRA.S to the real entry
+        )
+    }
+
+    fn get_or_create_list_def_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if self.list_def_trampoline != 0 {
+            return self.list_def_trampoline;
+        }
+
+        let tramp = bus.alloc(Self::LIST_DEF_TRAMPOLINE_SIZE);
+        bus.write_word(tramp, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        bus.write_word(tramp + 2, 0xF0F0);
+        bus.write_word(tramp + 4, 0x3F3C); // MOVE.W #lMessage,-(SP)
+        bus.write_word(tramp + 8, 0x3F3C); // MOVE.W #lSelect,-(SP)
+        bus.write_word(tramp + 12, 0x2F3C); // MOVE.L #lRect,-(SP)
+        bus.write_word(tramp + 18, 0x2F3C); // MOVE.L #lCell,-(SP)
+        bus.write_word(tramp + 24, 0x3F3C); // MOVE.W #lDataOffset,-(SP)
+        bus.write_word(tramp + 28, 0x3F3C); // MOVE.W #lDataLen,-(SP)
+        bus.write_word(tramp + 32, 0x2F3C); // MOVE.L #lHandle,-(SP)
+        bus.write_word(tramp + 38, 0x4EB9); // JSR abs.L
+        bus.write_word(tramp + 44, 0x2E7C); // MOVEA.L #savedRegsSP,A7
+        bus.write_word(tramp + 50, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+        bus.write_word(tramp + 52, 0x0F0F);
+        bus.write_word(tramp + 54, 0x4E75); // RTS (patched to JMP for chains)
+        self.list_def_trampoline = tramp;
+        tramp
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_list_def_trampoline(
+        bus: &mut MacMemoryBus,
+        tramp: u32,
+        list_handle: u32,
+        data_len: i16,
+        data_offset: i16,
+        cell: (i16, i16),
+        rect_ptr: u32,
+        selected: bool,
+        message: i16,
+        proc_addr: u32,
+        return_slot: u32,
+        next_trampoline: Option<u32>,
+    ) {
+        bus.write_word(tramp, 0x48E7);
+        bus.write_word(tramp + 2, 0xF0F0);
+        bus.write_word(tramp + 4, 0x3F3C);
+        bus.write_word(tramp + 6, message as u16);
+        bus.write_word(tramp + 8, 0x3F3C);
+        bus.write_word(tramp + 10, if selected { 0x0100 } else { 0x0000 });
+        bus.write_word(tramp + 12, 0x2F3C);
+        bus.write_long(tramp + 14, rect_ptr);
+        bus.write_word(tramp + 18, 0x2F3C);
+        bus.write_long(
+            tramp + 20,
+            ((cell.0 as u16 as u32) << 16) | (cell.1 as u16 as u32),
+        );
+        bus.write_word(tramp + 24, 0x3F3C);
+        bus.write_word(tramp + 26, data_offset as u16);
+        bus.write_word(tramp + 28, 0x3F3C);
+        bus.write_word(tramp + 30, data_len as u16);
+        bus.write_word(tramp + 32, 0x2F3C);
+        bus.write_long(tramp + 34, list_handle);
+        bus.write_word(tramp + 38, 0x4EB9);
+        bus.write_long(tramp + 40, proc_addr);
+        bus.write_word(tramp + 44, 0x2E7C);
+        bus.write_long(tramp + 46, return_slot.wrapping_sub(32));
+        bus.write_word(tramp + 50, 0x4CDF);
+        bus.write_word(tramp + 52, 0x0F0F);
+        match next_trampoline {
+            Some(next) => {
+                bus.write_word(tramp + 54, 0x4EF9); // JMP abs.L
+                bus.write_long(tramp + 56, next);
+            }
+            None => {
+                bus.write_word(tramp + 54, 0x4E75); // RTS
+                bus.write_long(tramp + 56, 0);
+            }
+        }
+    }
+
+    fn list_cells_to_draw(
+        state: &super::dispatch::ListState,
+        only_cell: Option<(i16, i16)>,
+    ) -> Vec<(i16, i16)> {
+        if let Some(cell) = only_cell {
+            return Self::list_cell_is_valid(state, cell.0, cell.1)
+                .then_some(cell)
+                .into_iter()
+                .collect();
+        }
+
+        let mut cells = Vec::new();
+        for row in state.visible.0..state.visible.2 {
+            for col in state.visible.1..state.visible.3 {
+                cells.push((row, col));
+            }
+        }
+        cells
+    }
+
+    fn sync_list_cell_data_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        list_handle: u32,
+        state: &super::dispatch::ListState,
+    ) -> HashMap<(i16, i16), (i16, i16)> {
+        let list_ptr = Self::list_record_ptr(bus, list_handle);
+        if list_ptr == 0 {
+            return HashMap::new();
+        }
+        let cells_handle = bus.read_long(list_ptr + Self::LIST_CELLS_OFFSET);
+        if cells_handle == 0 {
+            return HashMap::new();
+        }
+
+        let mut packed = Vec::new();
+        let mut offsets = HashMap::new();
+        let mut entries: Vec<_> = state.cells.iter().collect();
+        entries.sort_by_key(|(&(row, col), _)| (row, col));
+        for (&cell, data) in entries {
+            if data.is_empty() {
+                continue;
+            }
+            let offset = packed.len().min(i16::MAX as usize) as i16;
+            let copy_len = data.len().min(i16::MAX as usize - offset as usize);
+            if copy_len == 0 {
+                continue;
+            }
+            packed.extend_from_slice(&data[..copy_len]);
+            offsets.insert(cell, (offset, copy_len as i16));
+        }
+
+        self.write_bytes_to_handle(bus, cells_handle, &packed);
+        offsets
+    }
+
+    fn draw_list_cells_with_ldef_message<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        list_handle: u32,
+        state: &super::dispatch::ListState,
+        cells: Vec<(i16, i16)>,
+        message: i16,
+        trap_pop_bytes: u32,
+    ) -> bool {
+        let proc_addr = Self::list_def_proc_addr(bus, list_handle);
+        if !Self::proc_entry_looks_callable(bus, proc_addr) {
+            if trace_list_manager_enabled() && proc_addr != 0 {
+                eprintln!(
+                    "[LIST] LDEF ${:08X} not callable, entry=${:04X}; using fallback",
+                    proc_addr,
+                    bus.read_word(proc_addr),
+                );
+            }
+            return false;
+        }
+
+        if cells.is_empty() {
+            return false;
+        }
+        let cell_data = self.sync_list_cell_data_handle(bus, list_handle, state);
+
+        if state.port != 0 {
+            self.set_current_port_state(bus, cpu, state.port, None);
+        }
+
+        let sp = cpu.read_reg(Register::A7);
+        let return_pc = cpu.read_reg(Register::PC);
+        let return_slot = sp.wrapping_add(trap_pop_bytes.saturating_sub(4));
+        let trampolines: Vec<u32> = (0..cells.len())
+            .map(|idx| {
+                if idx == 0 {
+                    self.get_or_create_list_def_trampoline(bus)
+                } else {
+                    bus.alloc(Self::LIST_DEF_TRAMPOLINE_SIZE)
+                }
+            })
+            .collect();
+
+        for (idx, &(row, col)) in cells.iter().enumerate() {
+            let Some(rect) = Self::list_cell_rect(state, row, col) else {
+                continue;
+            };
+            let rect_ptr = bus.alloc(8);
+            Self::write_rect_words(bus, rect_ptr, rect);
+            let (data_offset, data_len) = cell_data.get(&(row, col)).copied().unwrap_or((0, 0));
+            let next = trampolines.get(idx + 1).copied();
+            Self::write_list_def_trampoline(
+                bus,
+                trampolines[idx],
+                list_handle,
+                data_len,
+                data_offset,
+                (row, col),
+                rect_ptr,
+                state.selected.contains(&(row, col)),
+                message,
+                proc_addr,
+                return_slot,
+                next,
+            );
+        }
+
+        if trace_list_manager_enabled() {
+            eprintln!(
+                "[LIST] LDEF draw handle=${:08X} proc=${:08X} msg={} cells={} first_tramp=${:08X}",
+                list_handle,
+                proc_addr,
+                message,
+                cells.len(),
+                trampolines[0],
+            );
+        }
+
+        bus.write_long(return_slot, return_pc);
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, trampolines[0]);
+        true
+    }
+
+    fn draw_list_with_ldef<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        list_handle: u32,
+        state: &super::dispatch::ListState,
+        only_cell: Option<(i16, i16)>,
+        trap_pop_bytes: u32,
+    ) -> bool {
+        let cells = Self::list_cells_to_draw(state, only_cell);
+        self.draw_list_cells_with_ldef_message(
+            cpu,
+            bus,
+            list_handle,
+            state,
+            cells,
+            Self::LIST_LDRAW_MSG,
+            trap_pop_bytes,
+        )
     }
 
     fn qd_state_snapshot(&self) -> super::dispatch::PortDrawState {
@@ -5813,6 +6086,8 @@ impl super::TrapDispatcher {
                         let cell = Self::read_stack_point(bus, sp + 6);
                         let set_it = Self::stack_bool_slot(bus, sp + 10);
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
+                        let mut draw_state = None;
+                        let mut draw_cells = Vec::new();
                         if let Some(state) = self.list_states.get_mut(&list_handle) {
                             let valid = Self::list_cell_is_valid(state, cell.0, cell.1);
                             if trace_list_manager_enabled() {
@@ -5822,6 +6097,7 @@ impl super::TrapDispatcher {
                                 );
                             }
                             if valid {
+                                let previous_selected = state.selected.clone();
                                 let single_select = list_ptr != 0
                                     && (bus.read_byte(list_ptr + Self::LIST_SEL_FLAGS_OFFSET)
                                         & 0x80)
@@ -5834,6 +6110,31 @@ impl super::TrapDispatcher {
                                 } else {
                                     state.selected.remove(&(cell.0, cell.1));
                                 }
+                                if state.draw_enabled {
+                                    draw_cells = previous_selected
+                                        .symmetric_difference(&state.selected)
+                                        .copied()
+                                        .collect();
+                                    if !draw_cells.is_empty() {
+                                        draw_state = Some(state.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(state) = draw_state {
+                            if self.draw_list_cells_with_ldef_message(
+                                cpu,
+                                bus,
+                                list_handle,
+                                &state,
+                                draw_cells.clone(),
+                                Self::LIST_LHILITE_MSG,
+                                12,
+                            ) {
+                                return Some(Ok(()));
+                            }
+                            for cell in draw_cells {
+                                self.draw_list_fallback(cpu, bus, &state, Some(cell));
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 12);
@@ -5918,9 +6219,12 @@ impl super::TrapDispatcher {
                         let result_addr = sp + 12;
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
                         let mut double_click = false;
+                        let mut draw_state = None;
+                        let mut draw_cells = Vec::new();
 
                         if let Some(state) = self.list_states.get_mut(&list_handle) {
                             if let Some(cell) = Self::list_cell_from_point(state, point) {
+                                let previous_selected = state.selected.clone();
                                 let single_select = list_ptr != 0
                                     && (bus.read_byte(list_ptr + Self::LIST_SEL_FLAGS_OFFSET)
                                         & 0x80)
@@ -5934,6 +6238,15 @@ impl super::TrapDispatcher {
                                         <= Self::LIST_DOUBLE_CLICK_TICKS;
                                 state.last_click = cell;
                                 state.last_click_tick = self.tick_count;
+                                if state.draw_enabled {
+                                    draw_cells = previous_selected
+                                        .symmetric_difference(&state.selected)
+                                        .copied()
+                                        .collect();
+                                    if !draw_cells.is_empty() {
+                                        draw_state = Some(state.clone());
+                                    }
+                                }
                                 Self::sync_list_state_to_guest(bus, list_handle, state);
                             } else {
                                 state.last_click = Self::list_no_click_cell();
@@ -5943,6 +6256,22 @@ impl super::TrapDispatcher {
                         }
 
                         bus.write_word(result_addr, if double_click { 0x0100 } else { 0 });
+                        if let Some(state) = draw_state {
+                            if self.draw_list_cells_with_ldef_message(
+                                cpu,
+                                bus,
+                                list_handle,
+                                &state,
+                                draw_cells.clone(),
+                                Self::LIST_LHILITE_MSG,
+                                12,
+                            ) {
+                                return Some(Ok(()));
+                            }
+                            for cell in draw_cells {
+                                self.draw_list_fallback(cpu, bus, &state, Some(cell));
+                            }
+                        }
                         cpu.write_reg(Register::A7, result_addr);
                         Ok(())
                     }
@@ -5955,6 +6284,16 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let cell = Self::read_stack_point(bus, sp + 6);
                         if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                            if self.draw_list_with_ldef(
+                                cpu,
+                                bus,
+                                list_handle,
+                                &state,
+                                Some((cell.0, cell.1)),
+                                10,
+                            ) {
+                                return Some(Ok(()));
+                            }
                             self.draw_list_fallback(cpu, bus, &state, Some((cell.0, cell.1)));
                         }
                         cpu.write_reg(Register::A7, sp + 10);
@@ -5971,6 +6310,10 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         if let Some(state) = self.list_states.get(&list_handle).cloned() {
                             if state.draw_enabled {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
+                                {
+                                    return Some(Ok(()));
+                                }
                                 self.draw_list_fallback(cpu, bus, &state, None);
                             }
                         }
@@ -11404,6 +11747,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::from([((*b"STR#", 128i16), data_ptr)]),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::new(),
                         map_attrs: 0,
                     },
@@ -13502,6 +13846,7 @@ mod tests {
                 ResourceFileMap {
                     loaded: HashMap::from([((*b"TEST", 7), data_ptr)]),
                     named: HashMap::from([((*b"TEST", "Sample".to_string()), (7, data_ptr))]),
+                    names_by_id: HashMap::new(),
                     attrs: HashMap::from([((*b"TEST", 7), 0u8)]),
                     map_attrs: 0,
                 },
@@ -13545,6 +13890,7 @@ mod tests {
                 ResourceFileMap {
                     loaded: HashMap::from([((*b"PROT", 9), data_ptr)]),
                     named: HashMap::new(),
+                    names_by_id: HashMap::new(),
                     attrs: HashMap::from([((*b"PROT", 9), 0x0008u8)]),
                     map_attrs: 0,
                 },
@@ -13587,6 +13933,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::from([((*b"OTHR", 3), data_ptr)]),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::from([((*b"OTHR", 3), 0u8)]),
                         map_attrs: 0,
                     },
@@ -13650,6 +13997,7 @@ mod tests {
                 ResourceFileMap {
                     loaded: HashMap::from([((*b"TEST", 7), data_ptr)]),
                     named: HashMap::from([((*b"TEST", "Sample".to_string()), (7, data_ptr))]),
+                    names_by_id: HashMap::new(),
                     attrs: HashMap::from([((*b"TEST", 7), 0u8)]),
                     map_attrs: 0,
                 },
@@ -13692,6 +14040,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::from([((*b"CURR", 1), 0x1000)]),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::from([((*b"CURR", 1), changed)]),
                         map_attrs: 0,
                     },
@@ -13701,6 +14050,7 @@ mod tests {
                     ResourceFileMap {
                         loaded: HashMap::from([((*b"TARG", 2), 0x2000)]),
                         named: HashMap::new(),
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::from([((*b"TARG", 2), changed | 0x0008u8)]),
                         map_attrs: 0,
                     },
@@ -13896,6 +14246,7 @@ mod tests {
                     ResourceFileMap {
                         loaded,
                         named,
+                        names_by_id: HashMap::new(),
                         attrs: HashMap::new(),
                         map_attrs: 0,
                     },
@@ -13943,6 +14294,7 @@ mod tests {
                 ResourceFileMap {
                     loaded: HashMap::from([((*b"TEST", 7), data_ptr)]),
                     named: HashMap::new(),
+                    names_by_id: HashMap::new(),
                     attrs: HashMap::from([((*b"TEST", 7), 0x002Cu8)]),
                     map_attrs: 0,
                 },
@@ -15259,6 +15611,208 @@ mod tests {
         assert_eq!(
             interior, 42,
             "selected list cells should paint with HiliteColor, not plain white"
+        );
+    }
+
+    #[test]
+    fn pack0_lupdate_custom_ldef_arms_draw_proc_trampoline() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let view_rect_ptr = 0x357000u32;
+        let data_bounds_ptr = 0x357100u32;
+        let window_ptr = 0x210000u32;
+        let return_pc = 0x1234_5678;
+
+        bus.write_word(view_rect_ptr, 10);
+        bus.write_word(view_rect_ptr + 2, 20);
+        bus.write_word(view_rect_ptr + 4, 22);
+        bus.write_word(view_rect_ptr + 6, 120);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 1);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, window_ptr);
+        bus.write_word(sp + 14, 128);
+        bus.write_word(sp + 16, 12);
+        bus.write_word(sp + 18, 100);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        let create = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(create.is_some());
+        assert!(create.unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+        let list_ptr = bus.read_long(list_handle);
+
+        let proc_addr = bus.alloc(2);
+        bus.write_word(proc_addr, 0x4E56); // plausible 68k proc entry
+        let proc_handle = bus.alloc(4);
+        bus.write_long(proc_handle, proc_addr);
+        bus.write_long(
+            list_ptr + super::super::TrapDispatcher::LIST_DEF_PROC_OFFSET,
+            proc_handle,
+        );
+
+        let cell_text_ptr = 0x357200u32;
+        bus.write_bytes(cell_text_ptr, b"Hi");
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0058); // LSetCell
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 2);
+        bus.write_long(sp + 12, cell_text_ptr);
+        let set_cell = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(set_cell.is_some());
+        assert!(set_cell.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x005C); // LSetSelect
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 0x0100);
+        let select = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(select.is_some());
+        assert!(select.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_word(sp, 0x0064); // LUpdate
+        bus.write_long(sp + 2, list_handle);
+        bus.write_long(sp + 6, 0);
+        let update = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(update.is_some());
+        assert!(update.unwrap().is_ok());
+
+        let tramp = cpu.read_reg(Register::PC);
+        assert_eq!(tramp, disp.list_def_trampoline);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(bus.read_long(sp + 6), return_pc);
+        assert_eq!(
+            bus.read_word(tramp + 6),
+            super::super::TrapDispatcher::LIST_LDRAW_MSG as u16
+        );
+        assert_eq!(bus.read_word(tramp + 10), 0x0100);
+        assert_eq!(bus.read_long(tramp + 40), proc_addr);
+        assert_eq!(bus.read_long(tramp + 34), list_handle);
+        assert_eq!(bus.read_word(tramp + 26), 0);
+        assert_eq!(bus.read_word(tramp + 30), 2);
+        assert_eq!(bus.read_long(tramp + 20), 0);
+        let cells_handle =
+            bus.read_long(list_ptr + super::super::TrapDispatcher::LIST_CELLS_OFFSET);
+        let cells_ptr = bus.read_long(cells_handle);
+        assert_eq!(bus.read_bytes(cells_ptr, 2), b"Hi");
+        let rect_ptr = bus.read_long(tramp + 14);
+        assert_eq!(bus.read_word(rect_ptr), 10);
+        assert_eq!(bus.read_word(rect_ptr + 2), 20);
+        assert_eq!(bus.read_word(rect_ptr + 4), 22);
+        assert_eq!(bus.read_word(rect_ptr + 6), 120);
+        assert_eq!(bus.read_word(tramp + 54), 0x4E75);
+    }
+
+    #[test]
+    fn pack0_lclick_custom_ldef_arms_hilite_for_selection_delta() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let view_rect_ptr = 0x357300u32;
+        let data_bounds_ptr = 0x357400u32;
+        let window_ptr = 0x210000u32;
+        let return_pc = 0x2233_4455;
+
+        bus.write_word(view_rect_ptr, 0);
+        bus.write_word(view_rect_ptr + 2, 0);
+        bus.write_word(view_rect_ptr + 4, 20);
+        bus.write_word(view_rect_ptr + 6, 80);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 2);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, window_ptr);
+        bus.write_word(sp + 14, 128);
+        bus.write_word(sp + 16, 10);
+        bus.write_word(sp + 18, 80);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        let create = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(create.is_some());
+        assert!(create.unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+        let list_ptr = bus.read_long(list_handle);
+
+        let proc_addr = bus.alloc(2);
+        bus.write_word(proc_addr, 0x4E56); // plausible 68k proc entry
+        let proc_handle = bus.alloc(4);
+        bus.write_long(proc_handle, proc_addr);
+        bus.write_long(
+            list_ptr + super::super::TrapDispatcher::LIST_DEF_PROC_OFFSET,
+            proc_handle,
+        );
+        bus.write_byte(
+            list_ptr + super::super::TrapDispatcher::LIST_SEL_FLAGS_OFFSET,
+            0x80,
+        );
+        disp.list_states
+            .get_mut(&list_handle)
+            .unwrap()
+            .selected
+            .insert((0, 0));
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_word(sp, 0x0018); // LClick
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0); // modifiers
+        bus.write_word(sp + 8, 15); // pt.v in row 1
+        bus.write_word(sp + 10, 5); // pt.h in col 0
+        bus.write_word(sp + 12, 0xBEEF);
+        let click = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(click.is_some());
+        assert!(click.unwrap().is_ok());
+
+        let first_tramp = disp.list_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), first_tramp);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_long(sp + 8), return_pc);
+        assert_eq!(bus.read_word(sp + 12), 0);
+        assert_eq!(
+            bus.read_word(first_tramp + 6),
+            super::super::TrapDispatcher::LIST_LHILITE_MSG as u16
+        );
+        assert_eq!(bus.read_word(first_tramp + 10), 0);
+        assert_eq!(bus.read_long(first_tramp + 20), 0);
+        assert_eq!(bus.read_word(first_tramp + 54), 0x4EF9);
+
+        let second_tramp = bus.read_long(first_tramp + 56);
+        assert_ne!(second_tramp, 0);
+        assert_eq!(
+            bus.read_word(second_tramp + 6),
+            super::super::TrapDispatcher::LIST_LHILITE_MSG as u16
+        );
+        assert_eq!(bus.read_word(second_tramp + 10), 0x0100);
+        assert_eq!(bus.read_long(second_tramp + 20), 0x0001_0000);
+        assert_eq!(bus.read_word(second_tramp + 54), 0x4E75);
+        let expected = [(1, 0)]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            &disp.list_states.get(&list_handle).unwrap().selected,
+            &expected
         );
     }
 

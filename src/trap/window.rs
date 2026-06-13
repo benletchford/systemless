@@ -2894,6 +2894,7 @@ mod tests {
         let file = ResourceFileMap {
             loaded,
             named: HashMap::new(),
+            names_by_id: HashMap::new(),
             attrs: HashMap::new(),
             map_attrs: 0,
         };

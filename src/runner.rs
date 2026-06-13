@@ -3121,7 +3121,6 @@ impl FixtureRunner {
             }
             return false;
         }
-
         // Allocate EventRecord scratch space on first use.
         // EventRecord = what(2), message(4), when(4), where(4), modifiers(2)
         if self.dialog_filter_event == 0 {
@@ -3154,6 +3153,20 @@ impl FixtureRunner {
 
         let filter_event = if let Some(e) = next_event {
             e
+        } else if let Some(update_event) = self
+            .dispatcher
+            .pending_update_event(&self.bus, 1u16 << 6)
+            .filter(|event| event.message == dialog_ptr)
+        {
+            // `GetNextEvent` normally obtains updateEvt records from the
+            // Window Manager's invalid region state. The queued-event path is
+            // a one-shot approximation, but apps can flush that queued event
+            // before entering a nested ModalDialog filter. If the active dialog
+            // itself is still invalid, deliver that real pending update to the
+            // filter rather than falling through to a null event. Restrict this
+            // to the current dialog so unrelated behind-window invalid regions
+            // cannot flood modal filters.
+            update_event
         } else {
             // Modal filters are called on null events too; many apps render
             // their dialog content from this path (e.g., idle redraw).
@@ -5070,6 +5083,47 @@ mod tests {
             runner.bus.read_word(event_ptr + 14),
             runner.dispatcher.current_event_modifiers()
         );
+    }
+
+    #[test]
+    fn dialog_filter_uses_active_dialog_pending_update_before_null_event() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let filter_proc = 0x0004_2000u32;
+        let dialog_ptr = runner.bus.alloc(170);
+
+        runner.bus.write_word(filter_proc, 0x4E56);
+        runner.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            dialog_ptr,
+            0,
+            100,
+            120,
+            220,
+            360,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner.dispatcher.event_queue.clear();
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
+        runner
+            .dispatcher
+            .dialog_tracking
+            .as_mut()
+            .unwrap()
+            .dialog_ptr = dialog_ptr;
+
+        assert!(runner.fire_dialog_filter_proc());
+        let event_ptr = runner.dialog_filter_event;
+        assert_eq!(runner.bus.read_word(event_ptr), 6);
+        assert_eq!(runner.bus.read_long(event_ptr + 2), dialog_ptr);
     }
 
     #[test]

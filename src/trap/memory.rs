@@ -4418,6 +4418,7 @@ mod tests {
                 ResourceFileMap {
                     loaded: HashMap::from([((*b"RSRC", 7), data_ptr)]),
                     named: HashMap::new(),
+                    names_by_id: HashMap::new(),
                     attrs: HashMap::new(),
                     map_attrs: 0,
                 },

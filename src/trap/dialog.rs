@@ -2177,11 +2177,12 @@ impl super::TrapDispatcher {
             // and items on top of this, with the game's custom content
             // preserved by the userItem save/restore mechanism there.
             // Inside Macintosh Volume I, I-413
-            // Only fill with white if the dialog has standard controls.
-            // Game-managed dialogs (all userItems) handle their own background
-            // and filling white would overwrite game content (e.g. HUD panels).
-            let all_user_items = items.iter().all(|item| (item.item_type & 0x7F) == 0);
-            if !all_user_items {
+            // Only fill with white if the dialog has standard visible items.
+            // Game-managed dialogs (in-bounds userItems, with possible
+            // offscreen placeholders) handle their own background and filling
+            // white would overwrite game content (e.g. HUD panels).
+            let game_managed = Self::dialog_is_game_managed(bounds, &items);
+            if !game_managed {
                 let (sb, rb, sw, sh, ps) = self.get_screen_params();
                 let (top, left, bottom, right) = bounds;
                 Self::fb_fill_rect(bus, sb, rb, ps, sw, sh, top, left, bottom, right, false);
@@ -2588,10 +2589,10 @@ impl super::TrapDispatcher {
         let (top, left, bottom, right) = bounds;
 
         // Fill dialog background with white — but skip for game-managed
-        // dialogs (all userItems) since the game draws its own background
-        // and the white fill would overwrite game content outside the item rects.
-        let all_user_items = items.iter().all(|item| (item.item_type & 0x7F) == 0);
-        if !all_user_items {
+        // dialogs whose in-bounds items are userItems, since the game draws
+        // its own background and the white fill would overwrite that content.
+        let game_managed = Self::dialog_is_game_managed(bounds, items);
+        if !game_managed {
             Self::fb_fill_rect(
                 bus,
                 screen_base,
@@ -4242,6 +4243,28 @@ impl super::TrapDispatcher {
     ) -> (i16, i16, i16, i16) {
         let (it, il, ib, ir) = rect;
         (bounds.0 + it, bounds.1 + il, bounds.0 + ib, bounds.1 + ir)
+    }
+
+    fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
+        a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
+    }
+
+    fn dialog_item_intersects_bounds(bounds: (i16, i16, i16, i16), item: &DialogItem) -> bool {
+        Self::rects_intersect(Self::dialog_item_screen_rect(bounds, item.rect), bounds)
+    }
+
+    fn dialog_is_game_managed(bounds: (i16, i16, i16, i16), items: &[DialogItem]) -> bool {
+        let mut has_visible_item = false;
+        for item in items {
+            if !Self::dialog_item_intersects_bounds(bounds, item) {
+                continue;
+            }
+            has_visible_item = true;
+            if (item.item_type & 0x7F) != 0 {
+                return false;
+            }
+        }
+        has_visible_item
     }
 
     fn start_dialog_button_flash(
@@ -6198,9 +6221,10 @@ impl super::TrapDispatcher {
                             .copied()
                             .unwrap_or(2);
 
-                        // If all items are userItem type, the game manages drawing
-                        // itself — skip our draw to avoid overwriting game content.
-                        let all_user_items = items.iter().all(|it| (it.item_type & 0x7F) == 0);
+                        // If in-bounds items are all userItems, the game
+                        // manages drawing itself; offscreen placeholders do
+                        // not make this a standard dialog.
+                        let game_managed = Self::dialog_is_game_managed(bounds, &items);
 
                         if trace_dialog_procs_enabled() {
                             for (i, item) in items.iter().enumerate() {
@@ -6236,7 +6260,7 @@ impl super::TrapDispatcher {
                             .unwrap_or_else(|| self.save_dialog_pixels(bus, bounds));
                         if let Some(snapshot) = preserved_visible_snapshot {
                             self.restore_dialog_pixels(bus, snapshot.bounds, &snapshot.pixels);
-                        } else if !all_user_items && !is_reentry {
+                        } else if !game_managed && !is_reentry {
                             // First entry: draw the dialog chrome and controls.
                             // Before draw_dialog fills the dialog area white, save the
                             // pixel content of every userItem rect. Games (e.g. Marathon)
@@ -6349,7 +6373,7 @@ impl super::TrapDispatcher {
                             draw_procs_done: !has_draw_procs,
                             rendered_pixels_final: !has_draw_procs,
                             filter_proc,
-                            game_managed: all_user_items,
+                            game_managed,
                             last_filter_event: None,
                             popup_draws,
                             active_popup: None,
@@ -14002,6 +14026,57 @@ mod tests {
     }
 
     #[test]
+    fn dialog_game_managed_ignores_offscreen_placeholder_items() {
+        let bounds = (200, 146, 400, 510);
+        let items = vec![
+            DialogItem {
+                item_type: 0,
+                rect: (167, 279, 192, 357),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 0xC0, // disabled picture placeholder outside bounds
+                rect: (217, 179, 247, 247),
+                text: String::new(),
+                resource_id: 1431,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 0x80, // disabled userItem inside bounds
+                rect: (7, 8, 157, 358),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
+
+        assert!(TrapDispatcher::dialog_is_game_managed(bounds, &items));
+
+        let mut standard_items = items;
+        standard_items.push(DialogItem {
+            item_type: 8,
+            rect: (20, 20, 40, 100),
+            text: "Standard".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        });
+        assert!(!TrapDispatcher::dialog_is_game_managed(
+            bounds,
+            &standard_items
+        ));
+    }
+
+    #[test]
     fn modal_dialog_resnapshot_redraws_popup_controls_after_user_item_draw_procs() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc((800 * 600) as u32);
@@ -17772,6 +17847,7 @@ mod tests {
                 crate::trap::dispatch::ResourceFileMap {
                     loaded: std::collections::HashMap::from([((*b"STR ", 1), str_ptr)]),
                     named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
                     attrs: std::collections::HashMap::new(),
                     map_attrs: 0,
                 },
