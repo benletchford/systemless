@@ -301,6 +301,7 @@ enum ActiveInterruptCallbackSource {
     SoundFileCompletion,
     SoundDoubleBack,
     DialogDrawProc,
+    DialogFilterProc,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3254,9 +3255,35 @@ impl FixtureRunner {
         self.bus.write_long(tramp + 26, filter_proc);
         self.bus.write_long(tramp + 32, result_addr);
 
+        let previous_port = self.dispatcher.current_port;
+        let previous_gdevice = self.dispatcher.current_gdevice;
+        self.dispatcher
+            .set_current_port_state(&mut self.bus, &mut self.cpu, dialog_ptr, None);
+
         // Inject callback execution.
         let current_pc = self.cpu.read_reg(Register::PC);
         let sp = self.cpu.read_reg(Register::A7);
+        let d_regs = [
+            self.cpu.read_reg(Register::D0),
+            self.cpu.read_reg(Register::D1),
+            self.cpu.read_reg(Register::D2),
+            self.cpu.read_reg(Register::D3),
+            self.cpu.read_reg(Register::D4),
+            self.cpu.read_reg(Register::D5),
+            self.cpu.read_reg(Register::D6),
+            self.cpu.read_reg(Register::D7),
+        ];
+        let a_regs = [
+            self.cpu.read_reg(Register::A0),
+            self.cpu.read_reg(Register::A1),
+            self.cpu.read_reg(Register::A2),
+            self.cpu.read_reg(Register::A3),
+            self.cpu.read_reg(Register::A4),
+            self.cpu.read_reg(Register::A5),
+            self.cpu.read_reg(Register::A6),
+            sp,
+        ];
+        let ccr = self.cpu.core.get_ccr();
         let new_sp = sp.wrapping_sub(4);
         let saved_sp = new_sp.wrapping_sub(32); // SP after MOVEM save at trampoline entry
 
@@ -3283,6 +3310,15 @@ impl FixtureRunner {
         self.bus.write_long(tramp + 38, saved_sp);
         self.bus.write_long(new_sp, current_pc);
         self.cpu.write_reg(Register::A7, new_sp);
+        self.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source: ActiveInterruptCallbackSource::DialogFilterProc,
+            resume_pc: current_pc,
+            resume_sp: sp,
+            d_regs,
+            a_regs,
+            ccr,
+            restore_port: Some((previous_port, previous_gdevice)),
+        });
         self.cpu.write_reg(Register::PC, tramp);
 
         // Mark rendered_pixels stale while the filter proc is executing so
@@ -5124,6 +5160,85 @@ mod tests {
         let event_ptr = runner.dialog_filter_event;
         assert_eq!(runner.bus.read_word(event_ptr), 6);
         assert_eq!(runner.bus.read_long(event_ptr + 2), dialog_ptr);
+    }
+
+    #[test]
+    fn dialog_filter_proc_selects_dialog_port_and_restores_previous_port() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let main_port = runner.bus.alloc(170);
+        let dialog_ptr = runner.bus.alloc(170);
+
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            main_port,
+            0,
+            0,
+            0,
+            600,
+            800,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            dialog_ptr,
+            0,
+            120,
+            180,
+            240,
+            420,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner
+            .dispatcher
+            .set_current_port_state(&mut runner.bus, &mut runner.cpu, main_port, None);
+        let previous_gdevice = runner.dispatcher.current_gdevice;
+        let filter_proc = runner.bus.alloc(8);
+        runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
+
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
+        runner
+            .dispatcher
+            .dialog_tracking
+            .as_mut()
+            .unwrap()
+            .dialog_ptr = dialog_ptr;
+
+        assert!(runner.fire_dialog_filter_proc());
+        assert_eq!(runner.dispatcher.current_port, dialog_ptr);
+        assert_eq!(
+            runner
+                .active_interrupt_callback
+                .as_ref()
+                .and_then(|callback| callback.restore_port),
+            Some((main_port, previous_gdevice))
+        );
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        let (_steps, running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert_eq!(runner.dispatcher.current_port, main_port);
+        assert!(runner.active_interrupt_callback.is_none());
     }
 
     #[test]

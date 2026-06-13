@@ -1802,7 +1802,7 @@ impl super::TrapDispatcher {
     fn parse_dlog(
         bus: &MacMemoryBus,
         ptr: u32,
-        _data_len: u32,
+        data_len: u32,
     ) -> ((i16, i16, i16, i16), i16, bool, i16, String, u16) {
         let top = bus.read_word(ptr) as i16;
         let left = bus.read_word(ptr + 2) as i16;
@@ -1828,7 +1828,11 @@ impl super::TrapDispatcher {
         // The position word follows the title, padded to an even boundary.
         let title_end = 21 + title_len as u32;
         let padded_end = (title_end + 1) & !1;
-        let position = bus.read_word(ptr + padded_end);
+        let position = if padded_end + 2 <= data_len {
+            bus.read_word(ptr + padded_end)
+        } else {
+            0
+        };
 
         (
             (top, left, bottom, right),
@@ -4617,10 +4621,27 @@ impl super::TrapDispatcher {
                     .map(|(_, ptr)| ptr);
 
                 if let Some(dlog_data) = dlog_ptr {
+                    let dlog_len = bus.get_alloc_size(dlog_data).unwrap_or(0);
                     let (mut bounds, proc_id, visible, items_id, title, position) =
-                        Self::parse_dlog(bus, dlog_data, 256);
+                        Self::parse_dlog(bus, dlog_data, dlog_len);
 
-                    // Apply positioning constant
+                    // Look up DITL resource
+                    let ditl_info = self
+                        .find_resource_any(*b"DITL", items_id)
+                        .map(|(_, ptr)| ptr);
+
+                    let items = if let Some(ditl_data) = ditl_info {
+                        let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
+                        Self::parse_ditl(bus, ditl_data, ditl_len)
+                    } else {
+                        eprintln!(
+                            "[TRAP] GetNewDialog({}): DITL {} not found",
+                            dialog_id, items_id
+                        );
+                        Vec::new()
+                    };
+
+                    // Apply positioning constant.
                     // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
                     // references/executor/src/dial/dialCreate.cpp, dialog_compute_rect()
                     match position {
@@ -4646,22 +4667,6 @@ impl super::TrapDispatcher {
                         }
                         _ => {} // noAutoCenter (0x0000) or unknown: use raw bounds
                     }
-
-                    // Look up DITL resource
-                    let ditl_info = self
-                        .find_resource_any(*b"DITL", items_id)
-                        .map(|(_, ptr)| ptr);
-
-                    let items = if let Some(ditl_data) = ditl_info {
-                        // Estimate DITL data length (generous upper bound)
-                        Self::parse_ditl(bus, ditl_data, 4096)
-                    } else {
-                        eprintln!(
-                            "[TRAP] GetNewDialog({}): DITL {} not found",
-                            dialog_id, items_id
-                        );
-                        Vec::new()
-                    };
 
                     eprintln!(
                         "[TRAP] GetNewDialog({}) bounds=({},{},{},{}) procID={} items={} title=\"{}\"",
@@ -4945,7 +4950,8 @@ impl super::TrapDispatcher {
                                 }
                             ));
                             if let Some((_, ditl_data)) = ditl_match {
-                                let items = Self::parse_ditl(bus, ditl_data, 4096);
+                                let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
+                                let items = Self::parse_ditl(bus, ditl_data, ditl_len);
                                 for (i, item) in items.iter().enumerate() {
                                     if !item.text.is_empty() {
                                         detail.push_str(&format!(
@@ -6344,7 +6350,10 @@ impl super::TrapDispatcher {
                         let mut draw_proc_queue = VecDeque::new();
                         for (i, item) in items.iter().enumerate() {
                             let base_type = item.item_type & 0x7F;
-                            if base_type == 0 && item.proc_ptr != 0 {
+                            if base_type == 0
+                                && item.proc_ptr != 0
+                                && Self::dialog_item_intersects_bounds(bounds, item)
+                            {
                                 draw_proc_queue.push_back((item.proc_ptr, (i + 1) as i16));
                             }
                         }
@@ -10195,6 +10204,95 @@ mod tests {
         assert_eq!(default_item, 1);
     }
 
+    #[test]
+    fn parse_dlog_ignores_position_word_when_resource_is_classic_length() {
+        let (_disp, _cpu, mut bus) = setup();
+        let ptr = bus.alloc(24);
+        bus.write_word(ptr, 228); // top
+        bus.write_word(ptr + 2, 198); // left
+        bus.write_word(ptr + 4, 372); // bottom
+        bus.write_word(ptr + 6, 455); // right
+        bus.write_word(ptr + 8, 2); // procID
+        bus.write_byte(ptr + 10, 1); // visible
+        bus.write_byte(ptr + 12, 0); // goAway
+        bus.write_long(ptr + 14, 0); // refCon
+        bus.write_word(ptr + 18, 1013); // itemsID
+        bus.write_byte(ptr + 20, 0); // empty title
+        bus.write_byte(ptr + 21, 0); // padding only, not a position field
+        bus.write_word(ptr + 22, 0x280A); // poison: centerMainScreen if over-read
+
+        let (bounds, proc_id, visible, items_id, title, position) =
+            TrapDispatcher::parse_dlog(&bus, ptr, 22);
+
+        assert_eq!(bounds, (228, 198, 372, 455));
+        assert_eq!(proc_id, 2);
+        assert!(visible);
+        assert_eq!(items_id, 1013);
+        assert_eq!(title, "");
+        assert_eq!(position, 0);
+    }
+
+    #[test]
+    fn parse_dlog_reads_position_word_when_resource_contains_it() {
+        let (_disp, _cpu, mut bus) = setup();
+        let ptr = bus.alloc(24);
+        bus.write_word(ptr, 10);
+        bus.write_word(ptr + 2, 20);
+        bus.write_word(ptr + 4, 110);
+        bus.write_word(ptr + 6, 220);
+        bus.write_word(ptr + 8, 2);
+        bus.write_byte(ptr + 10, 1);
+        bus.write_long(ptr + 14, 0);
+        bus.write_word(ptr + 18, 42);
+        bus.write_byte(ptr + 20, 0);
+        bus.write_byte(ptr + 21, 0);
+        bus.write_word(ptr + 22, 0x280A);
+
+        let (_, _, _, _, _, position) = TrapDispatcher::parse_dlog(&bus, ptr, 24);
+
+        assert_eq!(position, 0x280A);
+    }
+
+    fn build_test_dlog(bounds: (i16, i16, i16, i16), items_id: i16, position: u16) -> Vec<u8> {
+        let mut data = Vec::with_capacity(24);
+        data.extend_from_slice(&bounds.0.to_be_bytes());
+        data.extend_from_slice(&bounds.1.to_be_bytes());
+        data.extend_from_slice(&bounds.2.to_be_bytes());
+        data.extend_from_slice(&bounds.3.to_be_bytes());
+        data.extend_from_slice(&2i16.to_be_bytes()); // procID: plainDBox
+        data.push(0); // invisible; geometry-only tests do not need drawing
+        data.push(0); // filler
+        data.push(0); // goAwayFlag
+        data.push(0); // filler
+        data.extend_from_slice(&0u32.to_be_bytes()); // refCon
+        data.extend_from_slice(&items_id.to_be_bytes());
+        data.push(0); // empty title
+        data.push(0); // title padding
+        data.extend_from_slice(&position.to_be_bytes());
+        data
+    }
+
+    fn build_test_ditl_item(
+        item_type: u8,
+        rect: (i16, i16, i16, i16),
+        item_data: &[u8],
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(16 + item_data.len() + (item_data.len() & 1));
+        data.extend_from_slice(&0u16.to_be_bytes()); // one item: dlgMaxIndex = 0
+        data.extend_from_slice(&0u32.to_be_bytes()); // itmHandle / userItem proc ptr
+        data.extend_from_slice(&rect.0.to_be_bytes());
+        data.extend_from_slice(&rect.1.to_be_bytes());
+        data.extend_from_slice(&rect.2.to_be_bytes());
+        data.extend_from_slice(&rect.3.to_be_bytes());
+        data.push(item_type);
+        data.push(item_data.len() as u8);
+        data.extend_from_slice(item_data);
+        if item_data.len() % 2 != 0 {
+            data.push(0);
+        }
+        data
+    }
+
     // ---- DialogDispatch ($AA68) ----
     // Macintosh Toolbox Essentials (1992), pp. 6-162 to 6-167.
 
@@ -10440,6 +10538,29 @@ mod tests {
             dlg_ptr, 0,
             "GetNewDialog must return NIL when DLOG is missing"
         );
+    }
+
+    #[test]
+    fn get_new_dialog_centers_standard_dlog_with_position_constant() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let dlog = build_test_dlog((10, 20, 110, 220), 1503, 0x280A);
+        let ditl = build_test_ditl_item(4, (20, 20, 40, 80), b"OK");
+        disp.install_test_resource(&mut bus, *b"DLOG", 1502, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1503, &ditl);
+        bus.write_long(TEST_SP, 0); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1502); // dialogID
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let dlg_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dlg_ptr, 0);
+        assert_eq!(disp.window_bounds, (250, 300, 350, 500));
     }
 
     // save_dialog_pixels / restore_dialog_pixels must guard against off-screen y
@@ -14007,6 +14128,15 @@ mod tests {
                     sel_start: 0,
                     sel_end: 0,
                 },
+                DialogItem {
+                    item_type: 0x80,
+                    rect: (324, 650, 349, 771),
+                    text: String::new(),
+                    resource_id: 0,
+                    proc_ptr: 0x500200,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
             ],
         );
 
@@ -14021,6 +14151,14 @@ mod tests {
         assert!(tracking.game_managed);
         assert_eq!(tracking.filter_proc, 0x149F0);
         assert_eq!(tracking.draw_proc_queue.len(), 2);
+        assert_eq!(
+            tracking
+                .draw_proc_queue
+                .iter()
+                .map(|(_, item_no)| *item_no)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert!(!tracking.draw_procs_done);
         assert!(!tracking.rendered_pixels_final);
     }

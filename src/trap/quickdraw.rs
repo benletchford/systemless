@@ -7543,6 +7543,32 @@ impl super::TrapDispatcher {
                             (dst_top, dst_left, dst_bottom, dst_right)
                         };
 
+                    if !Self::drawpicture_rect_intersects_current_port_clip(
+                        bus, port, use_top, use_left, use_bottom, use_right,
+                    ) {
+                        if trace_dialog_draw_enabled() && self.dialog_tracking.is_some() {
+                            if let Some((_, res_type, res_id)) =
+                                self.loaded_handles.get(&pic_handle).copied()
+                            {
+                                eprintln!(
+                                    "[DIALOG-DRAW] DrawPicture '{}' {} skipped outside current port clip rect=({},{}..{},{})",
+                                    String::from_utf8_lossy(&res_type),
+                                    res_id,
+                                    use_top,
+                                    use_left,
+                                    use_bottom,
+                                    use_right,
+                                );
+                            } else {
+                                eprintln!(
+                                    "[DIALOG-DRAW] DrawPicture skipped outside current port clip rect=({},{}..{},{})",
+                                    use_top, use_left, use_bottom, use_right,
+                                );
+                            }
+                        }
+                        return Some(Ok(()));
+                    }
+
                     if trace_drawpicture_enabled() {
                         let res_info = self.loaded_handles.get(&pic_handle).copied();
                         // Dump first 20 bytes of PICT data to verify integrity
@@ -17682,6 +17708,36 @@ impl super::TrapDispatcher {
         let bottom = bus.read_word(rgn_ptr + 6) as i16;
         let right = bus.read_word(rgn_ptr + 8) as i16;
         (bottom > top && right > left).then_some((top, left, bottom, right))
+    }
+
+    fn drawpicture_rect_intersects_current_port_clip(
+        bus: &MacMemoryBus,
+        port: u32,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> bool {
+        if port == 0 || bottom <= top || right <= left {
+            return false;
+        }
+
+        for region_offset in [24u32, 28u32] {
+            let rgn_handle = bus.read_long(port.wrapping_add(region_offset));
+            if rgn_handle == 0 {
+                continue;
+            }
+            let Some((rgn_top, rgn_left, rgn_bottom, rgn_right)) =
+                Self::region_bbox(bus, rgn_handle)
+            else {
+                return false;
+            };
+            if top >= rgn_bottom || bottom <= rgn_top || left >= rgn_right || right <= rgn_left {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn ensure_region_capacity(bus: &mut MacMemoryBus, rgn_handle: u32, size: u32) -> Option<u32> {
@@ -30998,6 +31054,65 @@ mod tests {
         // Imaging With QuickDraw 1994 p. 7-44: dstRect is local to current port.
         // The top-left destination pixel should land at framebuffer coordinate (0,0).
         assert_eq!(bus.read_byte(screen_base), 0x80);
+    }
+
+    #[test]
+    fn drawpicture_skips_rect_outside_current_port_visible_region() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let a5 = cpu.read_reg(Register::A5);
+        let qd_globals = bus.read_long(a5);
+        let port_ptr = bus.read_long(qd_globals);
+
+        let row_bytes = 25u32; // 200 one-bit pixels per row.
+        let screen_base = bus.alloc(row_bytes * 200);
+        bus.fill_zeros(screen_base, row_bytes * 200);
+        bus.write_long(port_ptr + 2, screen_base);
+        bus.write_word(port_ptr + 6, row_bytes as u16);
+        bus.write_word(port_ptr + 8, (-100i16) as u16); // bounds.top
+        bus.write_word(port_ptr + 10, 0); // bounds.left
+        bus.write_word(port_ptr + 12, 100); // bounds.bottom
+        bus.write_word(port_ptr + 14, 200); // bounds.right
+        write_rect(&mut bus, port_ptr + 16, 0, 0, 8, 8);
+
+        let vis_rgn = bus.read_long(port_ptr + 24);
+        let clip_rgn = bus.read_long(port_ptr + 28);
+        let vis_rgn_ptr = bus.read_long(vis_rgn);
+        let clip_rgn_ptr = bus.read_long(clip_rgn);
+        write_rect(&mut bus, vis_rgn_ptr + 2, 0, 0, 8, 8);
+        write_rect(&mut bus, clip_rgn_ptr + 2, -32767, -32767, 32767, 32767);
+
+        let pic = bus.alloc(32);
+        write_v1_paintrect_picture(&mut bus, pic, (0, 0, 1, 1), (0, 0, 1, 1));
+        let pic_handle = bus.alloc(4);
+        bus.write_long(pic_handle, pic);
+
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, dst_rect, 12, 0, 13, 1);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, pic_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x0F6, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(
+            bus.read_byte(screen_base + 112 * row_bytes),
+            0,
+            "DrawPicture outside visRgn must not write into the backing bitmap"
+        );
+
+        write_rect(&mut bus, dst_rect, 2, 0, 3, 1);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, pic_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x0F6, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(screen_base + 102 * row_bytes),
+            0x80,
+            "DrawPicture inside visRgn should still render"
+        );
     }
 
     #[test]
