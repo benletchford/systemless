@@ -10599,22 +10599,19 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
-        let key_word = |bus: &MacMemoryBus, key: u8| {
-            let byte = keys_ptr + ((key / 16) as u32) * 2;
-            bus.read_word(byte)
+        let key_byte = |bus: &MacMemoryBus, key: u8| {
+            let byte = keys_ptr + (key / 8) as u32;
+            bus.read_byte(byte)
         };
-        let key_mask = |key: u8| 1u16 << (key % 16);
+        let key_mask = |key: u8| 1u8 << (key % 8);
 
-        assert_ne!(key_word(&bus, 0x7B) & key_mask(0x7B), 0);
-        assert_ne!(key_word(&bus, 0x31) & key_mask(0x31), 0);
-        assert_ne!(key_word(&bus, 0x26) & key_mask(0x26), 0);
-        assert_ne!(key_word(&bus, 0x7E) & key_mask(0x7E), 0);
-        assert_eq!(bus.read_word(keys_ptr + 4), 0x0040, "J key word");
-        assert_eq!(
-            bus.read_word(keys_ptr + 14) & 0x4000,
-            0x4000,
-            "up arrow word"
-        );
+        assert_ne!(key_byte(&bus, 0x7B) & key_mask(0x7B), 0);
+        assert_ne!(key_byte(&bus, 0x31) & key_mask(0x31), 0);
+        assert_ne!(key_byte(&bus, 0x26) & key_mask(0x26), 0);
+        assert_ne!(key_byte(&bus, 0x7E) & key_mask(0x7E), 0);
+        assert_eq!(bus.read_byte(keys_ptr + 4), 0x40, "J key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 6), 0x02, "space key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 15), 0x48, "left/up arrow byte");
 
         // Release left arrow and verify it clears.
         disp.push_key_up(0x7B, 28);
@@ -10622,10 +10619,10 @@ mod tests {
         bus.write_long(sp, keys_ptr);
         let result = disp.dispatch_toolbox(true, 0x176, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(key_word(&bus, 0x7B) & key_mask(0x7B), 0);
-        assert_ne!(key_word(&bus, 0x31) & key_mask(0x31), 0);
-        assert_ne!(key_word(&bus, 0x26) & key_mask(0x26), 0);
-        assert_ne!(key_word(&bus, 0x7E) & key_mask(0x7E), 0);
+        assert_eq!(key_byte(&bus, 0x7B) & key_mask(0x7B), 0);
+        assert_ne!(key_byte(&bus, 0x31) & key_mask(0x31), 0);
+        assert_ne!(key_byte(&bus, 0x26) & key_mask(0x26), 0);
+        assert_ne!(key_byte(&bus, 0x7E) & key_mask(0x7E), 0);
     }
 
     // GetMouse ($A972)

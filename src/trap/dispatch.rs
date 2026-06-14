@@ -127,38 +127,31 @@ pub(crate) fn trace_delivered_events_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DELIVERED_EVENTS").is_some())
 }
 
-fn key_map_word_mask(key_code: u8) -> Option<(usize, u16)> {
+fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
     if key_code >= 128 {
         return None;
     }
-    let word_idx = (key_code / 16) as usize;
-    let mask = 1u16 << (key_code % 16);
-    Some((word_idx, mask))
+    let byte_idx = (key_code / 8) as usize;
+    let mask = 1u8 << (key_code % 8);
+    Some((byte_idx, mask))
 }
 
 fn key_map_key_is_down(key_map: &[u8; 16], key_code: u8) -> bool {
-    let Some((word_idx, mask)) = key_map_word_mask(key_code) else {
+    let Some((byte_idx, mask)) = key_map_byte_mask(key_code) else {
         return false;
     };
-    let byte_idx = word_idx * 2;
-    let word = u16::from_be_bytes([key_map[byte_idx], key_map[byte_idx + 1]]);
-    (word & mask) != 0
+    (key_map[byte_idx] & mask) != 0
 }
 
 fn set_key_map_key(key_map: &mut [u8; 16], key_code: u8, down: bool) {
-    let Some((word_idx, mask)) = key_map_word_mask(key_code) else {
+    let Some((byte_idx, mask)) = key_map_byte_mask(key_code) else {
         return;
     };
-    let byte_idx = word_idx * 2;
-    let mut word = u16::from_be_bytes([key_map[byte_idx], key_map[byte_idx + 1]]);
     if down {
-        word |= mask;
+        key_map[byte_idx] |= mask;
     } else {
-        word &= !mask;
+        key_map[byte_idx] &= !mask;
     }
-    let bytes = word.to_be_bytes();
-    key_map[byte_idx] = bytes[0];
-    key_map[byte_idx + 1] = bytes[1];
 }
 
 fn trace_sound_enabled() -> bool {

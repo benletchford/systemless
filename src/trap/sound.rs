@@ -272,8 +272,8 @@ impl super::TrapDispatcher {
                                 chan_ptr, params_ptr
                             );
                         }
-                        self.snd_play_double_buffer(bus, chan_ptr, params_ptr);
-                        bus.write_word(sp + param_bytes, 0); // noErr
+                        let err = self.snd_play_double_buffer(bus, chan_ptr, params_ptr);
+                        bus.write_word(sp + param_bytes, err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
 
@@ -1425,15 +1425,15 @@ impl super::TrapDispatcher {
     ///   +8:  `dbUserInfo[0]` (4)
     ///   +12: `dbUserInfo[1]` (4)
     ///   +16: dbSoundData[...]
-    fn snd_play_double_buffer(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32, header_ptr: u32) {
+    fn snd_play_double_buffer(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        chan_ptr: u32,
+        header_ptr: u32,
+    ) -> i16 {
         if header_ptr == 0 {
-            return;
+            return -50; // paramErr
         }
-
-        // Track double-buffer submissions separately from bufferCmd-style
-        // single-buffer ones. Both feed mix_frame but through different
-        // code paths.
-        self.sound_manager.debug_double_buffer_count += 1;
 
         let num_channels = bus.read_word(header_ptr) as usize;
         let sample_size = bus.read_word(header_ptr + 2) as usize;
@@ -1447,6 +1447,14 @@ impl super::TrapDispatcher {
                 chan_ptr, header_ptr, num_channels, sample_size, sample_rate, buf0_ptr, buf1_ptr, callback_addr
             );
         }
+        if sample_rate == 0 {
+            return -206; // badFormat
+        }
+
+        // Track valid double-buffer submissions separately from bufferCmd-style
+        // single-buffer ones. Both feed mix_frame but through different
+        // code paths.
+        self.sound_manager.debug_double_buffer_count += 1;
 
         // Find or create the channel.
         let chan = if let Some(c) = self.sound_manager.find_channel_mut(chan_ptr) {
@@ -1480,6 +1488,7 @@ impl super::TrapDispatcher {
             num_channels,
             sample_size,
         );
+        0
     }
 
     /// Read samples from a SndDoubleBuffer record into the channel's PlayingBuffer.
@@ -3395,6 +3404,39 @@ mod tests {
             .expect("channel exists")
             .is_playing());
         assert_eq!(disp.sound_manager.mix_frame(6), vec![0x80; 6]);
+    }
+
+    #[test]
+    fn sndplaydoublebuffer_zero_sample_rate_returns_badformat_without_playback() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let chan_ptr = 0x250000;
+        let header_ptr = 0x260000;
+        let buf0_ptr = 0x270000;
+        let buf1_ptr = 0x280000;
+
+        bus.write_word(header_ptr, 1); // dbhNumChannels
+        bus.write_word(header_ptr + 2, 8); // dbhSampleSize
+        bus.write_word(header_ptr + 4, 0); // dbhCompressionID
+        bus.write_word(header_ptr + 6, 0); // dbhPacketSize
+        bus.write_long(header_ptr + 8, 0); // dbhSampleRate: invalid Fixed 16.16
+        bus.write_long(header_ptr + 12, buf0_ptr);
+        bus.write_long(header_ptr + 16, buf1_ptr);
+        bus.write_long(header_ptr + 20, 0x1234_5678); // dbhDoubleBack
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0420_0008); // SndPlayDoubleBuffer selector
+        bus.write_long(sp, header_ptr);
+        bus.write_long(sp + 4, chan_ptr);
+        bus.write_word(sp + 8, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(sp + 8), (-206i16) as u16);
+        assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_none());
+        assert_eq!(disp.sound_manager.debug_double_buffer_count, 0);
     }
 
     /// Edge-case coverage for `decode_double_buffer_samples` — the

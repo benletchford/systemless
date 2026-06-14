@@ -1005,20 +1005,12 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume II, II-378; Operating System Utilities 1994, 4-17
             //
             // Per IM:II II-378: "ReadDateTime copies the current date-time information
-            // from the clock chip into low memory." The RTC chip is authoritative;
-            // ReadDateTime first reads the chip, then writes to the Time global ($020C),
-            // then returns the value. On BasiliskII the RTC chip is the host clock, so
-            // ReadDateTime always returns the host time regardless of any prior
-            // SetDateTime write. Systemless matches this by reading from the host clock too.
+            // from the clock chip into low memory." In Systemless the runner owns that
+            // synthetic clock: init_app seeds Time ($020C), then advance_guest_tick
+            // increments it once per 60 ticks. ReadDateTime returns the current lowmem
+            // value so deterministic play runs and SetDateTime remain authoritative.
             (false, 0x39) => {
-                // Mac epoch = Jan 1, 1904. Unix epoch = Jan 1, 1970.
-                // Offset = 66 years = 2082844800 seconds.
-                const MAC_UNIX_OFFSET: u32 = 2_082_844_800;
-                let unix_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let mac_time = (unix_secs as u32).wrapping_add(MAC_UNIX_OFFSET);
+                let mac_time = bus.read_long(0x020C);
                 bus.write_long(0x020C, mac_time); // Time global
                 let a0 = cpu.read_reg(Register::A0);
                 if a0 != 0 {
@@ -5027,6 +5019,35 @@ mod tests {
             cpu.read_reg(Register::D0) & 0x20,
             0,
             "HGetState should report the resource bit clear after HClrRBit"
+        );
+    }
+
+    #[test]
+    fn readdatetime_returns_current_time_global_without_host_clock_reset() {
+        // The runner advances low-memory Time ($020C). ReadDateTime should
+        // expose that synthetic clock instead of replacing it with host time.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let secs = 0x1234_5678u32;
+        let out_ptr = bus.alloc(4);
+        let sp_before = cpu.read_reg(Register::A7);
+        bus.write_long(0x020C, secs);
+        bus.write_long(out_ptr, 0);
+        cpu.write_reg(Register::A0, out_ptr);
+
+        let result = dispatcher.dispatch_memory(false, 0x39, &mut cpu, &mut bus);
+
+        assert!(result.is_some(), "ReadDateTime should be handled");
+        assert!(
+            result.unwrap().is_ok(),
+            "ReadDateTime should return cleanly"
+        );
+        assert_eq!(bus.read_long(out_ptr), secs);
+        assert_eq!(bus.read_long(0x020C), secs);
+        assert_eq!(cpu.read_reg(Register::D0), 0, "ReadDateTime returns noErr");
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp_before,
+            "ReadDateTime should use register calling convention and preserve A7"
         );
     }
 

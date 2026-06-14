@@ -1853,13 +1853,15 @@ impl super::TrapDispatcher {
                 let str_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 if trace_dialog_text_enabled() {
+                    let pc = cpu.read_reg(Register::PC);
                     let len = bus.read_byte(str_ptr) as usize;
                     let mut bytes = vec![0u8; len];
                     for (i, byte) in bytes.iter_mut().enumerate() {
                         *byte = bus.read_byte(str_ptr + 1 + i as u32);
                     }
                     eprintln!(
-                        "[DIALOG-TEXT] DrawString current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} text=\"{}\"",
+                        "[DIALOG-TEXT] DrawString pc=${:08X} current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} text=\"{}\"",
+                        pc,
                         self.current_port,
                         self.pn_loc.0,
                         self.pn_loc.1,
@@ -1890,13 +1892,15 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 8);
                 let start = text_buf + first_byte as u32;
                 if trace_dialog_text_enabled() {
+                    let pc = cpu.read_reg(Register::PC);
                     let safe_count = byte_count.max(0) as usize;
                     let mut bytes = vec![0u8; safe_count];
                     for (i, byte) in bytes.iter_mut().enumerate() {
                         *byte = bus.read_byte(start + i as u32);
                     }
                     eprintln!(
-                        "[DIALOG-TEXT] DrawText current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} text=\"{}\"",
+                        "[DIALOG-TEXT] DrawText pc=${:08X} current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} text=\"{}\"",
+                        pc,
                         self.current_port,
                         self.pn_loc.0,
                         self.pn_loc.1,
@@ -1944,13 +1948,15 @@ impl super::TrapDispatcher {
                 }
 
                 if trace_dialog_text_enabled() {
+                    let pc = cpu.read_reg(Register::PC);
                     let safe_count = byte_count.max(0) as usize;
                     let mut bytes = vec![0u8; safe_count];
                     for (i, byte) in bytes.iter_mut().enumerate() {
                         *byte = bus.read_byte(text_buf + i as u32);
                     }
                     eprintln!(
-                        "[DIALOG-TEXT] StdText current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} numer=({}, {}) denom=({}, {}) text=\"{}\"",
+                        "[DIALOG-TEXT] StdText pc=${:08X} current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} numer=({}, {}) denom=({}, {}) text=\"{}\"",
+                        pc,
                         self.current_port,
                         self.pn_loc.0,
                         self.pn_loc.1,
@@ -2146,10 +2152,10 @@ impl super::TrapDispatcher {
                 let left = bus.read_word(rect_ptr + 2) as i16;
                 let bottom = bus.read_word(rect_ptr + 4) as i16;
                 let right = bus.read_word(rect_ptr + 6) as i16;
-                bus.write_word(rect_ptr, (top + dv) as u16);
-                bus.write_word(rect_ptr + 2, (left + dh) as u16);
-                bus.write_word(rect_ptr + 4, (bottom - dv) as u16);
-                bus.write_word(rect_ptr + 6, (right - dh) as u16);
+                bus.write_word(rect_ptr, top.wrapping_add(dv) as u16);
+                bus.write_word(rect_ptr + 2, left.wrapping_add(dh) as u16);
+                bus.write_word(rect_ptr + 4, bottom.wrapping_sub(dv) as u16);
+                bus.write_word(rect_ptr + 6, right.wrapping_sub(dh) as u16);
                 Ok(())
             }
 

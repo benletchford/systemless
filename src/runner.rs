@@ -846,13 +846,13 @@ impl FixtureRunner {
 
     /// Inject a key-down event, applying arrow→numpad remapping if configured.
     pub fn push_key_down(&mut self, mac_key: u8, char_code: u8) {
-        let key = self.remap_key(mac_key);
+        let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.push_key_down(key, char_code);
     }
 
     /// Inject a key-up event, applying arrow→numpad remapping if configured.
     pub fn push_key_up(&mut self, mac_key: u8, char_code: u8) {
-        let key = self.remap_key(mac_key);
+        let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.push_key_up(key, char_code);
     }
 
@@ -860,17 +860,17 @@ impl FixtureRunner {
     /// Arrow keys: Left=0x7B, Right=0x7C, Down=0x7D, Up=0x7E
     /// Numpad dirs: 4(left)=0x56, 6(right)=0x58, 5(down)=0x57, 8(up)=0x5B
     /// Inside Macintosh Volume V, V-191
-    fn remap_key(&self, mac_key: u8) -> u8 {
+    fn remap_key(&self, mac_key: u8, char_code: u8) -> (u8, u8) {
         if self.config.arrows_as_numpad {
             match mac_key {
-                0x7B => 0x56, // Left  → Numpad4
-                0x7C => 0x58, // Right → Numpad6
-                0x7D => 0x57, // Down  → Numpad5
-                0x7E => 0x5B, // Up    → Numpad8
-                _ => mac_key,
+                0x7B => (0x56, b'4'), // Left  -> Numpad4
+                0x7C => (0x58, b'6'), // Right -> Numpad6
+                0x7D => (0x57, b'5'), // Down  -> Numpad5
+                0x7E => (0x5B, b'8'), // Up    -> Numpad8
+                _ => (mac_key, char_code),
             }
         } else {
-            mac_key
+            (mac_key, char_code)
         }
     }
 
@@ -1724,7 +1724,6 @@ impl FixtureRunner {
                     self.cpu.read_reg(Register::A7),
                 );
             }
-
             // Execute one instruction.
             match self.cpu.step(&mut self.bus) {
                 StepResult::Ok => {
@@ -3874,6 +3873,27 @@ mod tests {
             active_button: None,
             active_user_item: None,
         }
+    }
+
+    #[test]
+    fn arrows_as_numpad_remaps_key_and_char_together() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_arrows_as_numpad(true);
+
+        assert_eq!(runner.remap_key(0x7B, 28), (0x56, b'4'));
+        assert_eq!(runner.remap_key(0x7C, 29), (0x58, b'6'));
+        assert_eq!(runner.remap_key(0x7D, 31), (0x57, b'5'));
+        assert_eq!(runner.remap_key(0x7E, 30), (0x5B, b'8'));
+        assert_eq!(runner.remap_key(0x2E, b'm'), (0x2E, b'm'));
+    }
+
+    #[test]
+    fn arrows_not_remapped_by_default() {
+        let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        assert_eq!(runner.remap_key(0x7B, 28), (0x7B, 28));
+        assert_eq!(runner.remap_key(0x7C, 29), (0x7C, 29));
+        assert_eq!(runner.remap_key(0x2E, b'm'), (0x2E, b'm'));
     }
 
     #[test]
