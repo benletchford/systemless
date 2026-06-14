@@ -682,12 +682,13 @@ impl MacMemoryBus {
         let aligned = Self::allocation_bucket_size(size); // 4-byte align, unique zero-size blocks
 
         // Fast path: exact-size bucket.
-        if let Some(blocks) = self.free_blocks.get_mut(&aligned) {
-            if let Some(addr) = blocks.pop() {
-                self.fill_zeros(addr, aligned);
-                self.alloc_sizes.insert(addr, size);
-                return addr;
-            }
+        let exact = self
+            .free_blocks
+            .get_mut(&aligned)
+            .and_then(|blocks| blocks.pop());
+        if let Some(addr) = exact {
+            self.alloc_sizes.insert(addr, size);
+            return addr;
         }
 
         // Best-fit fallback: find the smallest free bucket whose size
@@ -704,19 +705,17 @@ impl MacMemoryBus {
             .map(|(&k, _)| k)
             .min();
         if let Some(bucket) = best {
-            if let Some(blocks) = self.free_blocks.get_mut(&bucket) {
-                if let Some(addr) = blocks.pop() {
-                    // Zero only the requested span; the remainder is
-                    // wasted (no splitting). Splitting would mean tracking
-                    // adjacency for coalescing — out of scope here.
-                    self.fill_zeros(addr, aligned);
-                    // Record the *requested* size, not the bucket size,
-                    // so GetPtrSize/GetHandleSize return the user-visible
-                    // size. The full bucket capacity is recovered on free.
-                    self.alloc_sizes.insert(addr, size);
-                    self.alloc_bucket_sizes.insert(addr, bucket);
-                    return addr;
-                }
+            let recycled = self
+                .free_blocks
+                .get_mut(&bucket)
+                .and_then(|blocks| blocks.pop());
+            if let Some(addr) = recycled {
+                // Record the *requested* size, not the bucket size,
+                // so GetPtrSize/GetHandleSize return the user-visible
+                // size. The full bucket capacity is recovered on free.
+                self.alloc_sizes.insert(addr, size);
+                self.alloc_bucket_sizes.insert(addr, bucket);
+                return addr;
             }
         }
 

@@ -70,6 +70,18 @@ fn init_zone_header(
     bus.write_long(start + 48, start.wrapping_add(52)); // allocPtr
 }
 
+fn scribble_uninitialized_allocation(bus: &mut MacMemoryBus, address: u32, size: u32) {
+    if size == 0 {
+        return;
+    }
+    // IM:Memory 1992 / IM:II document that regular NewPtr/NewHandle
+    // allocations leave contents undefined; only CLEAR variants are
+    // guaranteed to return zero-filled memory.
+    for offset in 0..size {
+        bus.write_byte(address.wrapping_add(offset), 0xA5);
+    }
+}
+
 const NO_ERR: u32 = 0;
 const BAD_UNIT_ERR: u32 = (-21i32) as u32;
 const PARAM_ERR: u32 = (-50i32) as u32;
@@ -355,6 +367,8 @@ impl super::TrapDispatcher {
                     // Check CLEAR bit (bit 9 = 0x0200 in trap word)
                     if (self.current_trap_word & 0x0200) != 0 && size > 0 {
                         bus.fill_zeros(ptr, size);
+                    } else {
+                        scribble_uninitialized_allocation(bus, ptr, size);
                     }
                     cpu.write_reg(Register::A0, ptr);
                     cpu.write_reg(Register::D0, 0);
@@ -377,6 +391,8 @@ impl super::TrapDispatcher {
                 // Check CLEAR bit (bit 9 = 0x0200 in trap word)
                 if (self.current_trap_word & 0x0200) != 0 && size > 0 {
                     bus.fill_zeros(ptr, size);
+                } else {
+                    scribble_uninitialized_allocation(bus, ptr, size);
                 }
                 let handle = bus.alloc(4);
                 bus.write_long(handle, ptr);
@@ -4361,6 +4377,57 @@ mod tests {
             cpu.read_reg(Register::D0),
             0,
             "NewHandle should set D0 to 0 (noErr)"
+        );
+    }
+
+    #[test]
+    fn new_allocations_follow_clear_contracts() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 64);
+        dispatcher.current_trap_word = 0xA01E; // NewPtr
+        let ptr_result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+        assert!(ptr_result.is_some() && ptr_result.unwrap().is_ok());
+        let ptr = cpu.read_reg(Register::A0);
+        assert_ne!(
+            bus.read_long(ptr),
+            0,
+            "regular NewPtr allocations should not be zero-filled"
+        );
+
+        cpu.write_reg(Register::D0, 64);
+        dispatcher.current_trap_word = 0xA31E; // NewPtrClear
+        let clear_ptr_result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+        assert!(clear_ptr_result.is_some() && clear_ptr_result.unwrap().is_ok());
+        let clear_ptr = cpu.read_reg(Register::A0);
+        assert_eq!(
+            bus.read_long(clear_ptr),
+            0,
+            "NewPtrClear allocations should be zero-filled"
+        );
+
+        cpu.write_reg(Register::D0, 64);
+        dispatcher.current_trap_word = 0xA022; // NewHandle
+        let handle_result = dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus);
+        assert!(handle_result.is_some() && handle_result.unwrap().is_ok());
+        let handle = cpu.read_reg(Register::A0);
+        let data_ptr = bus.read_long(handle);
+        assert_ne!(
+            bus.read_long(data_ptr),
+            0,
+            "regular NewHandle allocations should not be zero-filled"
+        );
+
+        cpu.write_reg(Register::D0, 64);
+        dispatcher.current_trap_word = 0xA322; // NewHandleClear
+        let clear_handle_result = dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus);
+        assert!(clear_handle_result.is_some() && clear_handle_result.unwrap().is_ok());
+        let clear_handle = cpu.read_reg(Register::A0);
+        let clear_data_ptr = bus.read_long(clear_handle);
+        assert_eq!(
+            bus.read_long(clear_data_ptr),
+            0,
+            "NewHandleClear allocations should be zero-filled"
         );
     }
 

@@ -1448,6 +1448,9 @@ impl super::TrapDispatcher {
             );
         }
         if sample_rate == 0 {
+            // dbhSampleRate is a required header field (Sound 1994,
+            // 2-111 to 2-113). A zero value means the caller passed a
+            // malformed double-buffer header.
             return -206; // badFormat
         }
 
@@ -3407,7 +3410,7 @@ mod tests {
     }
 
     #[test]
-    fn sndplaydoublebuffer_zero_sample_rate_returns_badformat_without_playback() {
+    fn sndplaydoublebuffer_zero_sample_rate_returns_bad_format() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP + 0x80;
         let chan_ptr = 0x250000;
@@ -3424,6 +3427,10 @@ mod tests {
         bus.write_long(header_ptr + 16, buf1_ptr);
         bus.write_long(header_ptr + 20, 0x1234_5678); // dbhDoubleBack
 
+        bus.write_long(buf0_ptr, 1); // dbNumFrames
+        bus.write_long(buf0_ptr + 4, 0x0000_0001); // dbBufferReady
+        bus.write_byte(buf0_ptr + 16, 0x40);
+
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0420_0008); // SndPlayDoubleBuffer selector
         bus.write_long(sp, header_ptr);
@@ -3434,9 +3441,12 @@ mod tests {
 
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
-        assert_eq!(bus.read_word(sp + 8), (-206i16) as u16);
-        assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_none());
+        assert_eq!(bus.read_word(sp + 8) as i16, -206);
         assert_eq!(disp.sound_manager.debug_double_buffer_count, 0);
+        assert!(
+            disp.sound_manager.find_channel_mut(chan_ptr).is_none(),
+            "bad double-buffer header must not arm playback"
+        );
     }
 
     /// Edge-case coverage for `decode_double_buffer_samples` — the
