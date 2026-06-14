@@ -322,6 +322,13 @@ pub trait MemoryBus {
             self.write_byte(address.wrapping_add(i), 0);
         }
     }
+
+    /// Fill a region of memory with a repeated byte.
+    fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
+        for i in 0..len {
+            self.write_byte(address.wrapping_add(i), value);
+        }
+    }
 }
 
 /// Mac memory bus with RAM, ROM, and low-memory globals
@@ -475,6 +482,18 @@ impl RamStorage {
             },
             RamStorage::External(ptr, _) => unsafe {
                 std::ptr::write_bytes(ptr.add(index), 0, len);
+            },
+        }
+    }
+
+    #[inline]
+    fn fill_bytes_in_bounds(&mut self, index: usize, len: usize, value: u8) {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                std::ptr::write_bytes(v.as_mut_ptr().add(index), value, len);
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                std::ptr::write_bytes(ptr.add(index), value, len);
             },
         }
     }
@@ -1135,6 +1154,23 @@ impl MemoryBus for MacMemoryBus {
         }
         for i in 0..len {
             self.write_byte(address.wrapping_add(i), 0);
+        }
+    }
+
+    #[inline]
+    fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
+        #[cfg(debug_assertions)]
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        #[cfg(not(debug_assertions))]
+        let fast = fb_write_trace_range().is_none();
+        let end = (address as u64).saturating_add(len as u64);
+        if fast && end <= self.ram_size as u64 {
+            self.ram
+                .fill_bytes_in_bounds(address as usize, len as usize, value);
+            return;
+        }
+        for i in 0..len {
+            self.write_byte(address.wrapping_add(i), value);
         }
     }
 

@@ -1131,6 +1131,17 @@ impl FixtureRunner {
             (-crate::trap::dispatch::BOOT_VOLUME_REF_NUM) as u16
         );
 
+        // The application stack is ordinary RAM used for stack frames and
+        // local variables; classic Mac code does not get it pre-cleared.
+        // Memory 1992, 1-9 and 1-39 describe the stack as the region where
+        // stack frames live and grow downward from high memory. Seed the
+        // unused top-of-stack window with a deterministic nonzero pattern so
+        // partially initialized stack records behave like real hardware
+        // instead of inheriting zeroed RAM.
+        let stack_seed_start = stack_base.saturating_sub(0x8000);
+        self.bus
+            .fill_bytes(stack_seed_start, stack_base - stack_seed_start, 0xA5);
+
         // Zone header at heap_start (Inside Macintosh Volume II, II-22)
         // Apps and the Memory Manager read the zone header to determine
         // available memory. zcbFree (offset +12) must reflect free bytes.
@@ -3831,9 +3842,10 @@ fn load_app_generic<M: MemoryBus>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loader::{Code0Header, LoadedApp};
     use crate::sound::{DoubleBufferState, PendingDoubleBackCallback, SndChannel, OUTPUT_RATE};
     use crate::trap::dispatch::{DialogTrackingState, QueuedEvent, TimerTask, VblTask};
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
 
     fn write_double_buffer(bus: &mut MacMemoryBus, ptr: u32, samples: &[u8]) {
         bus.write_long(ptr, samples.len() as u32);
@@ -3894,6 +3906,32 @@ mod tests {
         assert_eq!(runner.remap_key(0x7B, 28), (0x7B, 28));
         assert_eq!(runner.remap_key(0x7C, 29), (0x7C, 29));
         assert_eq!(runner.remap_key(0x2E, b'm'), (0x2E, b'm'));
+    }
+
+    #[test]
+    fn init_app_seeds_top_of_stack_with_nonzero_bytes() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+        };
+
+        runner.init_app(&app);
+
+        let stack_seed_start = app.initial_sp.saturating_sub(0x8000);
+        assert_eq!(
+            runner.bus.read_long(stack_seed_start),
+            0xA5A5_A5A5,
+            "top-of-stack window must not be zeroed"
+        );
     }
 
     #[test]
