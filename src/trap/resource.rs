@@ -5670,8 +5670,7 @@ impl super::TrapDispatcher {
                     "[TRAP] FSDispatch selector={} name_ptr=${:08X} filename=\"{}\" vref={} dirID={} fdirIdx={}",
                     selector, name_ptr, filename, vref, dir_id, fdir_index
                 );
-                let (resolved_vref, effective_dir_id) =
-                    self.resolve_volume_and_directory(vref, dir_id);
+                let resolved_vref = self.resolve_volume_ref_num(vref);
 
                 // PBGetFCBInfo (selector 8): returns info about an open file control block.
                 // Input: ioRefNum (offset 24) = file reference number; ioFCBIndx (offset 28)
@@ -5693,30 +5692,6 @@ impl super::TrapDispatcher {
                 if selector == 8 {
                     let ref_num = bus.read_word(pb + 24);
                     let fcb_index = bus.read_word(pb + 28) as i16;
-                    if !filename.is_empty() || dir_id != 0 {
-                        if let Some(entry) =
-                            self.lookup_catalog_entry_for_hfs_lookup(vref, dir_id, &filename, 0)
-                        {
-                            if entry.is_directory {
-                                if let Some(directory) = self.vfs_directories.get(&entry.path) {
-                                    Self::fill_directory_catalog_info(bus, pb, directory);
-                                }
-                            } else if let Some(metadata) = self.vfs_file_metadata(&entry.path) {
-                                self.fill_file_catalog_info(bus, pb, &entry.path, metadata);
-                            }
-                            if name_ptr != 0 {
-                                Self::write_pstring(bus, name_ptr, entry.name.as_str());
-                            }
-                            bus.write_word(pb + 22, resolved_vref as u16);
-                            bus.write_long(pb + 48, effective_dir_id);
-                            bus.write_word(pb + 16, 0);
-                            cpu.write_reg(Register::D0, 0);
-                        } else {
-                            bus.write_word(pb + 16, (-43i16) as u16);
-                            cpu.write_reg(Register::D0, (-43i32) as u32);
-                        }
-                        return Some(Ok(()));
-                    }
                     eprintln!(
                         "[TRAP] FSDispatch PBGetFCBInfo refNum={} fcbIndx={}",
                         ref_num, fcb_index
@@ -11388,44 +11363,76 @@ mod tests {
     }
 
     // ================================================================
-    // 32. FSDispatch (0x60) — selector 8 (HGetFInfo), file not found
+    // 32. FSDispatch (0x60) — selector 8 (PBGetFCBInfo), refnum not open
     // ================================================================
     #[test]
-    fn fs_dispatch_hgetfinfo_not_found() {
+    fn fs_dispatch_pbgetfcbinfo_refnum_not_open() {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let pb = 0x300000u32;
-        setup_param_block(&mut bus, &mut cpu, pb, b"MissingFile");
-        bus.write_long(pb + 48, 2); // dirID
+        setup_param_block(&mut bus, &mut cpu, pb, b"stale output buffer");
+        bus.write_word(pb + 24, 999); // ioRefNum
 
-        cpu.write_reg(Register::D0, 8); // selector = HGetFInfo
+        cpu.write_reg(Register::D0, 8); // selector = PBGetFCBInfo
 
         call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(
             cpu.read_reg(Register::D0),
-            (-43i32) as u32,
-            "D0 should be fnfErr"
+            (-38i32) as u32,
+            "D0 should be fnOpnErr"
         );
-        assert_eq!(bus.read_word(pb + 16), (-43i16) as u16);
+        assert_eq!(bus.read_word(pb + 16), (-38i16) as u16);
     }
 
     // ================================================================
-    // 32b. FSDispatch (0x60) — selector 8 (HGetFInfo), file found
+    // 32b. FSDispatch (0x60) — selector 8 (PBGetFCBInfo), app resource file
     // ================================================================
     #[test]
-    fn fs_dispatch_hgetfinfo_found() {
+    fn fs_dispatch_pbgetfcbinfo_refnum_zero_ignores_stale_name_output() {
         let (mut disp, mut cpu, mut bus) = setup();
 
-        disp.vfs.insert("FoundFile".to_string(), vec![0xAB]);
+        disp.vfs
+            .insert("EV/Escape Velocity".to_string(), vec![0xAB]);
+        disp.set_vfs_entry_metadata("EV/Escape Velocity", *b"APPL", *b"EV  ", 0);
+        disp.set_launched_app_path("EV/Escape Velocity");
+        let expected_parent_dir_id = disp.default_dir_id;
 
         let pb = 0x300000u32;
-        setup_param_block(&mut bus, &mut cpu, pb, b"FoundFile");
-        bus.write_long(pb + 48, 2);
+        let name_ptr = setup_param_block(
+            &mut bus,
+            &mut cpu,
+            pb,
+            b"stale output buffer that must not be treated as an input filename",
+        );
+        bus.write_word(pb + 24, 0); // ioRefNum 0 = current app resource file
 
         cpu.write_reg(Register::D0, 8);
 
         call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Escape Velocity".to_vec());
+        assert_eq!(bus.read_long(pb + 58), expected_parent_dir_id);
+        assert_eq!(bus.read_word(pb + 52) as i16, -1);
+    }
+
+    #[test]
+    fn pbhgetfinfo_retries_default_directory_for_stale_dirid() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.ensure_vfs_directory("Marathon");
+        disp.vfs.insert("Marathon/Marathon".to_string(), vec![]);
+        disp.vfs
+            .insert("Marathon/Physics Model".to_string(), vec![0xAB]);
+        disp.set_launched_app_path("Marathon/Marathon");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Physics Model");
+        bus.write_long(pb + 48, 0x01FF01FF);
+
+        call_trap_word(&mut disp, 0xA20C, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
@@ -11439,28 +11446,6 @@ mod tests {
         call(&mut disp, false, 0x6C, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::A7), sp_pre);
         assert_eq!(cpu.read_reg(Register::D0), 0);
-    }
-
-    #[test]
-    fn fs_dispatch_hgetfinfo_retries_default_directory_for_stale_dirid() {
-        let (mut disp, mut cpu, mut bus) = setup();
-
-        disp.ensure_vfs_directory("Marathon");
-        disp.vfs.insert("Marathon/Marathon".to_string(), vec![]);
-        disp.vfs
-            .insert("Marathon/Physics Model".to_string(), vec![0xAB]);
-        disp.set_launched_app_path("Marathon/Marathon");
-
-        let pb = 0x300000u32;
-        setup_param_block(&mut bus, &mut cpu, pb, b"Physics Model");
-        bus.write_long(pb + 48, 0x01FF01FF);
-
-        cpu.write_reg(Register::D0, 8);
-
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
-
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(bus.read_word(pb + 16), 0);
     }
 
     // PBFlushFile (0x45) — valid open refnum returns noErr.

@@ -383,11 +383,30 @@ impl SoundManager {
 
         for chan in &mut self.channels {
             // If channel has a double-buffer but nothing playing, it means
-            // we're waiting for the next buffer to be ready. Mark as active
-            // so we keep producing output (silence) rather than signaling
-            // "no channels playing".
-            if chan.playing.is_none() && chan.double_buffer.is_some() {
-                any_active = true;
+            // we're waiting for the next buffer to be ready. Keep the stream
+            // alive with silence, and if no refill callback is outstanding,
+            // request one so an underrun cannot wedge the channel forever.
+            if chan.playing.is_none() {
+                let mut clear_double_buffer = false;
+                if let Some(ref mut db) = chan.double_buffer {
+                    if db.last_buffer_seen {
+                        clear_double_buffer = true;
+                    } else {
+                        any_active = true;
+                        if !db.waiting_for_callback {
+                            db.waiting_for_callback = true;
+                            exhausted.push((
+                                db.callback_addr,
+                                db.chan_ptr,
+                                db.header_ptr,
+                                db.current_buffer,
+                            ));
+                        }
+                    }
+                }
+                if clear_double_buffer {
+                    chan.double_buffer = None;
+                }
             }
             if chan.file_paused {
                 any_active = true;
@@ -1683,6 +1702,54 @@ mod tests {
         assert!(
             sm.pending_callbacks.is_empty(),
             "no new callback pushed on idle-wait frame"
+        );
+    }
+
+    #[test]
+    fn mix_frame_idle_double_buffer_requests_refill_once() {
+        let mut sm = SoundManager::new();
+        let mut chan = SndChannel::new(0x1234_0000, true);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr: 0x0070_0000,
+            current_buffer: 1,
+            callback_addr: 0xCAFE_0000,
+            chan_ptr: 0x1234_0000,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: false,
+        });
+        sm.channels.push(chan);
+
+        let output = sm.mix_frame(32);
+
+        assert_eq!(
+            output.len(),
+            32,
+            "idle DB channel stays active while requesting a refill"
+        );
+        assert!(
+            output.iter().all(|&b| b == 0x80),
+            "no ready buffer means the active output is silence"
+        );
+        assert_eq!(sm.pending_callbacks.len(), 1);
+        let callback = &sm.pending_callbacks[0];
+        assert_eq!(callback.callback_addr, 0xCAFE_0000);
+        assert_eq!(callback.chan_ptr, 0x1234_0000);
+        assert_eq!(callback.header_ptr, 0x0070_0000);
+        assert_eq!(
+            callback.exhausted_buffer_index, 1,
+            "retry asks the guest to refill the current missing buffer"
+        );
+        let db = sm.channels[0].double_buffer.as_ref().unwrap();
+        assert!(db.waiting_for_callback);
+
+        sm.mix_frame(32);
+        assert_eq!(
+            sm.pending_callbacks.len(),
+            1,
+            "waiting_for_callback prevents refill callback spam"
         );
     }
 

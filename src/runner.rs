@@ -2673,13 +2673,28 @@ impl FixtureRunner {
                     ),
                     _ => continue,
                 };
-            let buf_ptr = self.bus.read_long(header_ptr + 12 + (buf_idx as u32) * 4);
+            let mut load_idx = buf_idx;
+            let mut buf_ptr = self.bus.read_long(header_ptr + 12 + (buf_idx as u32) * 4);
             if buf_ptr == 0 {
                 continue;
             }
-            let flags = self.bus.read_long(buf_ptr + 4);
+            let mut flags = self.bus.read_long(buf_ptr + 4);
             if flags & 0x01 == 0 {
-                continue; // not ready yet
+                let other_idx = buf_idx ^ 1;
+                let other_ptr = self.bus.read_long(header_ptr + 12 + (other_idx as u32) * 4);
+                if other_ptr == 0 {
+                    continue;
+                }
+                let other_flags = self.bus.read_long(other_ptr + 4);
+                if other_flags & 0x01 == 0 {
+                    continue; // neither buffer is ready yet
+                }
+                load_idx = other_idx;
+                buf_ptr = other_ptr;
+                flags = other_flags;
+                if let Some(ref mut db) = chan.double_buffer {
+                    db.current_buffer = other_idx;
+                }
             }
             crate::trap::TrapDispatcher::load_double_buffer_samples(
                 &mut self.bus,
@@ -2689,6 +2704,11 @@ impl FixtureRunner {
                 num_channels,
                 sample_size,
             );
+            if flags & 0x01 != 0 {
+                if let Some(ref mut db) = chan.double_buffer {
+                    db.current_buffer = load_idx;
+                }
+            }
         }
     }
 
@@ -4109,6 +4129,52 @@ mod tests {
         let db = chan.double_buffer.as_ref().expect("double-buffer active");
         assert_eq!(db.current_buffer, 1);
         assert!(db.waiting_for_callback);
+    }
+
+    #[test]
+    fn try_load_pending_double_buffers_recovers_ready_alternate_after_underrun() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let chan_ptr = 0x0039_38C8;
+        let callback_addr = 0x0004_1234;
+        let header_ptr = runner.bus.alloc(24);
+        let buf0_ptr = runner.bus.alloc(18);
+        let buf1_ptr = runner.bus.alloc(18);
+
+        runner.bus.write_word(header_ptr, 1);
+        runner.bus.write_word(header_ptr + 2, 8);
+        runner.bus.write_long(header_ptr + 8, OUTPUT_RATE << 16);
+        runner.bus.write_long(header_ptr + 12, buf0_ptr);
+        runner.bus.write_long(header_ptr + 16, buf1_ptr);
+        runner.bus.write_long(header_ptr + 20, callback_addr);
+        write_double_buffer(&mut runner.bus, buf0_ptr, &[0xA0, 0xA1]);
+        runner.bus.write_long(buf1_ptr, 2);
+        runner.bus.write_long(buf1_ptr + 4, 0);
+
+        let mut chan = SndChannel::new(chan_ptr, false);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr,
+            current_buffer: 1,
+            callback_addr,
+            chan_ptr,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: false,
+        });
+        runner.dispatcher.sound_manager.channels.push(chan);
+
+        runner.try_load_pending_double_buffers();
+
+        let chan = &runner.dispatcher.sound_manager.channels[0];
+        assert!(chan.is_playing(), "ready alternate buffer should load");
+        let db = chan.double_buffer.as_ref().expect("double-buffer active");
+        assert_eq!(db.current_buffer, 0);
+        assert_eq!(
+            runner.bus.read_long(buf0_ptr + 4) & 0x01,
+            0,
+            "loaded alternate buffer is consumed"
+        );
     }
 
     #[test]
