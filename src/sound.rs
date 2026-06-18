@@ -5,13 +5,21 @@
 
 /// Output sample rate in Hz.
 pub const OUTPUT_RATE: u32 = 22050;
+/// Classic Sound Manager `rate22khz` fixed-point value (22254.54545 Hz).
+pub const RATE_22KHZ_FIXED: u32 = 0x56EE_8BA3;
+/// Classic Sound Manager `rate11khz` fixed-point value (11127.27273 Hz).
+pub const RATE_11KHZ_FIXED: u32 = 0x2B77_45D1;
 
 /// Standard command queue depth (Sound 1994, 2-93).
 const STD_Q_LENGTH: usize = 128;
 /// Full volume for one speaker in volumeCmd units (Sound 1994, 2-96).
 const FULL_VOLUME: u16 = 0x0100;
+/// Packed full-volume stereo value: high word = right, low word = left.
+const FULL_STEREO_VOLUME: u32 = ((FULL_VOLUME as u32) << 16) | FULL_VOLUME as u32;
 /// Unity playback rate in Sound Manager Fixed units (Sound 1994, 2-97).
 const UNITY_RATE_FIXED: u32 = 0x0001_0000;
+/// Maximum decoded double-buffer frames retained for waveform diagnostics.
+pub(crate) const DEBUG_DOUBLE_BUFFER_CAPTURE_LIMIT: usize = OUTPUT_RATE as usize * 60;
 
 /// Sound command constants (Sound 1994, 2-92 to 2-97).
 pub mod cmd {
@@ -46,11 +54,38 @@ pub struct SndCommand {
     pub param2: u32,
 }
 
+/// One host-side unsigned 8-bit stereo PCM frame (silence = 0x80).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StereoSample {
+    pub left: u8,
+    pub right: u8,
+}
+
+impl StereoSample {
+    pub(crate) const SILENCE: Self = Self {
+        left: 0x80,
+        right: 0x80,
+    };
+
+    pub(crate) fn mono(sample: u8) -> Self {
+        Self {
+            left: sample,
+            right: sample,
+        }
+    }
+
+    pub(crate) fn downmix(self) -> u8 {
+        let left = self.left as i32 - 0x80;
+        let right = self.right as i32 - 0x80;
+        ((left + right) / 2 + 0x80).clamp(0, 255) as u8
+    }
+}
+
 /// Host-side copy of sample data currently being played on a channel.
 #[derive(Clone, Debug)]
 struct PlayingBuffer {
-    /// Unsigned 8-bit PCM samples (Mac format: silence = 0x80).
-    samples: Vec<u8>,
+    /// Unsigned 8-bit stereo PCM frames (Mac format: silence = 0x80).
+    samples: Vec<StereoSample>,
     /// Source sample rate as Mac Fixed 16.16.
     sample_rate_fixed: u32,
     /// Current playback position in samples (fixed-point 32.32).
@@ -87,6 +122,34 @@ pub struct DoubleBufferState {
     pub last_buffer_seen: bool,
     /// Whether we're waiting for the callback to finish refilling.
     pub waiting_for_callback: bool,
+    /// Which buffer slots currently have an outstanding doubleback refill.
+    pub pending_callback_buffers: [bool; 2],
+}
+
+impl DoubleBufferState {
+    fn buffer_index(index: usize) -> usize {
+        index & 1
+    }
+
+    fn callback_pending_for(&self, index: usize) -> bool {
+        self.pending_callback_buffers[Self::buffer_index(index)]
+    }
+
+    fn arm_callback_for(&mut self, index: usize) -> bool {
+        let index = Self::buffer_index(index);
+        if self.pending_callback_buffers[index] {
+            return false;
+        }
+        self.pending_callback_buffers[index] = true;
+        self.waiting_for_callback = true;
+        true
+    }
+
+    pub(crate) fn complete_callback_for(&mut self, index: usize) {
+        let index = Self::buffer_index(index);
+        self.pending_callback_buffers[index] = false;
+        self.waiting_for_callback = self.pending_callback_buffers.iter().any(|pending| *pending);
+    }
 }
 
 /// A pending double-buffer callback that the runner should fire.
@@ -148,6 +211,23 @@ pub struct SndChannel {
     file_paused: bool,
     /// Active double-buffer state, if SndPlayDoubleBuffer is in use.
     pub double_buffer: Option<DoubleBufferState>,
+    /// Number of SndDoubleBuffer records decoded into this channel.
+    pub debug_double_buffer_loads: u32,
+    /// Number of decoded SndDoubleBuffer records that contained at least one
+    /// non-silent stereo frame.
+    pub debug_double_buffer_non_silent_loads: u32,
+    /// Total decoded SndDoubleBuffer frames for this channel.
+    pub debug_double_buffer_frames_loaded: u64,
+    /// Total decoded non-silent SndDoubleBuffer frames for this channel.
+    pub debug_double_buffer_non_silent_frames: u64,
+    /// Decoded SndDoubleBuffer frames captured as mono unsigned 8-bit PCM for
+    /// waveform probes. This is diagnostic data; normal playback uses
+    /// `playing`.
+    pub debug_double_buffer_captured_samples: Vec<u8>,
+    /// Sound Manager-owned temporary channels created for high-level calls
+    /// such as NIL-channel SndPlay/SysBeep. These should be released after
+    /// their queued playback drains, not immediately after the trap returns.
+    auto_dispose_when_idle: bool,
 }
 
 impl SndChannel {
@@ -161,12 +241,18 @@ impl SndChannel {
             playing: None,
             playback_kind: None,
             callback_addr: 0,
-            volume: ((FULL_VOLUME as u32) << 16) | FULL_VOLUME as u32,
+            volume: FULL_STEREO_VOLUME,
             rate_fixed: UNITY_RATE_FIXED,
             pending_callback_cmds: Vec::new(),
             file_completion_addr: 0,
             file_paused: false,
             double_buffer: None,
+            debug_double_buffer_loads: 0,
+            debug_double_buffer_non_silent_loads: 0,
+            debug_double_buffer_frames_loaded: 0,
+            debug_double_buffer_non_silent_frames: 0,
+            debug_double_buffer_captured_samples: Vec::new(),
+            auto_dispose_when_idle: false,
         }
     }
 
@@ -211,6 +297,18 @@ impl SndChannel {
     pub(crate) fn play_buffer(
         &mut self,
         samples: Vec<u8>,
+        sample_rate_fixed: u32,
+        kind: PlaybackKind,
+        file_completion_addr: u32,
+    ) {
+        let samples = samples.into_iter().map(StereoSample::mono).collect();
+        self.play_stereo_buffer(samples, sample_rate_fixed, kind, file_completion_addr);
+    }
+
+    /// Start playing a buffer of unsigned 8-bit stereo frames.
+    pub(crate) fn play_stereo_buffer(
+        &mut self,
+        samples: Vec<StereoSample>,
         sample_rate_fixed: u32,
         kind: PlaybackKind,
         file_completion_addr: u32,
@@ -264,6 +362,19 @@ impl SndChannel {
             self.file_paused = !self.file_paused;
         }
     }
+
+    pub(crate) fn mark_auto_dispose_when_idle(&mut self) {
+        self.auto_dispose_when_idle = true;
+    }
+
+    fn is_ready_for_auto_dispose(&self) -> bool {
+        self.auto_dispose_when_idle
+            && self.playing.is_none()
+            && !self.file_paused
+            && self.double_buffer.is_none()
+            && self.queue.is_empty()
+            && self.pending_callback_cmds.is_empty()
+    }
 }
 
 /// Top-level sound manager state, owned by TrapDispatcher.
@@ -290,6 +401,8 @@ pub struct SoundManager {
     /// including the matched ones.
     pub debug_cmd_codes_seen: Vec<u16>,
     /// `SndStartFilePlay` (SoundDispatch routine `$00`) submissions.
+    /// Resource-backed calls can later execute bufferCmd internally,
+    /// but they still count as reaching the file-play trap family.
     /// M2's primary audio path goes through this trap and DOES NOT
     /// increment `debug_buffer_cmd_count` or `debug_double_buffer_count`.
     /// Per-path visibility: EV uses bufferCmd
@@ -297,6 +410,13 @@ pub struct SoundManager {
     /// (`debug_file_play_count`), other games can use
     /// `SndPlayDoubleBuffer` (`debug_double_buffer_count`).
     pub debug_file_play_count: u32,
+    /// System alert volume exposed through Get/SetSysBeepVolume.
+    sys_beep_volume: u32,
+    /// Output-device default volume exposed through Get/SetDefaultOutputVolume.
+    /// Sound 1994, 2-141 to 2-142 describes this as the device's default
+    /// setting, distinct from channel `volumeCmd` gain and current
+    /// output-port volume.
+    default_output_volume: u32,
 }
 
 impl Default for SoundManager {
@@ -318,7 +438,25 @@ impl SoundManager {
             debug_unhandled_cmds: Vec::new(),
             debug_cmd_codes_seen: Vec::new(),
             debug_file_play_count: 0,
+            sys_beep_volume: FULL_STEREO_VOLUME,
+            default_output_volume: FULL_STEREO_VOLUME,
         }
+    }
+
+    pub fn sys_beep_volume(&self) -> u32 {
+        self.sys_beep_volume
+    }
+
+    pub fn set_sys_beep_volume(&mut self, volume: u32) {
+        self.sys_beep_volume = volume;
+    }
+
+    pub fn default_output_volume(&self) -> u32 {
+        self.default_output_volume
+    }
+
+    pub fn set_default_output_volume(&mut self, volume: u32) {
+        self.default_output_volume = volume;
     }
 
     /// Find a channel by its guest pointer.
@@ -339,9 +477,37 @@ impl SoundManager {
         self.take_channel(guest_ptr).is_some()
     }
 
+    pub(crate) fn idle_auto_dispose_channel_ptrs(&self) -> Vec<u32> {
+        self.channels
+            .iter()
+            .filter(|chan| chan.is_ready_for_auto_dispose())
+            .map(|chan| chan.guest_ptr)
+            .collect()
+    }
+
     /// Process pending commands on all channels, then mix `num_samples`
-    /// of output into a buffer of unsigned 8-bit PCM (silence = 0x80).
+    /// of mono output into a buffer of unsigned 8-bit PCM (silence = 0x80).
     pub fn mix_frame(&mut self, num_samples: usize) -> Vec<u8> {
+        self.mix_frame_stereo_frames(num_samples)
+            .into_iter()
+            .map(StereoSample::downmix)
+            .collect()
+    }
+
+    /// Process pending commands on all channels, then mix `num_samples`
+    /// of stereo output into interleaved unsigned 8-bit PCM
+    /// (left, right, left, right; silence = 0x80).
+    pub fn mix_frame_stereo(&mut self, num_samples: usize) -> Vec<u8> {
+        let frames = self.mix_frame_stereo_frames(num_samples);
+        let mut out = Vec::with_capacity(frames.len() * 2);
+        for frame in frames {
+            out.push(frame.left);
+            out.push(frame.right);
+        }
+        out
+    }
+
+    fn mix_frame_stereo_frames(&mut self, num_samples: usize) -> Vec<StereoSample> {
         // Process queued commands only on idle channels. SndDoCommand feeds
         // the channel FIFO; SndDoImmediate is the bypass path for stopping
         // playback immediately.
@@ -375,7 +541,7 @@ impl SoundManager {
         self.pending_sound_callbacks.extend(queued_callbacks);
 
         // Mix all playing channels into the output buffer.
-        let mut output = vec![0x80u8; num_samples];
+        let mut output = vec![StereoSample::SILENCE; num_samples];
         let mut any_active = false;
 
         // Collect double-buffer exhaustion events to process after mixing.
@@ -393,8 +559,8 @@ impl SoundManager {
                         clear_double_buffer = true;
                     } else {
                         any_active = true;
-                        if !db.waiting_for_callback {
-                            db.waiting_for_callback = true;
+                        if !db.callback_pending_for(db.current_buffer) {
+                            db.arm_callback_for(db.current_buffer);
                             exhausted.push((
                                 db.callback_addr,
                                 db.chan_ptr,
@@ -416,13 +582,16 @@ impl SoundManager {
             if let Some(ref mut buf) = chan.playing {
                 any_active = true;
                 for slot in output.iter_mut().take(num_samples) {
-                    let sample_idx = (buf.position >> 32) as usize;
-                    if sample_idx >= buf.samples.len() {
+                    let Some(source_sample) =
+                        resampled_sample(&buf.samples, buf.position, buf.step)
+                    else {
                         break;
-                    }
-                    let sample = apply_volume(buf.samples[sample_idx], chan.volume);
-                    let mixed = *slot as i16 + sample as i16 - 0x80;
-                    *slot = mixed.clamp(0, 255) as u8;
+                    };
+                    let sample = apply_volume_stereo(source_sample, chan.volume);
+                    let mixed_left = slot.left as i16 + sample.left as i16 - 0x80;
+                    let mixed_right = slot.right as i16 + sample.right as i16 - 0x80;
+                    slot.left = mixed_left.clamp(0, 255) as u8;
+                    slot.right = mixed_right.clamp(0, 255) as u8;
                     buf.position += buf.step;
                 }
                 let final_idx = (buf.position >> 32) as usize;
@@ -438,16 +607,17 @@ impl SoundManager {
                     // If this channel has a double-buffer, request callback for
                     // the exhausted buffer and switch to the other one.
                     if let Some(ref mut db) = chan.double_buffer {
-                        if !db.last_buffer_seen && !db.waiting_for_callback {
+                        if !db.last_buffer_seen {
                             let exhausted_idx = db.current_buffer;
                             db.current_buffer ^= 1; // switch to other buffer
-                            db.waiting_for_callback = true;
-                            exhausted.push((
-                                db.callback_addr,
-                                db.chan_ptr,
-                                db.header_ptr,
-                                exhausted_idx,
-                            ));
+                            if db.arm_callback_for(exhausted_idx) {
+                                exhausted.push((
+                                    db.callback_addr,
+                                    db.chan_ptr,
+                                    db.header_ptr,
+                                    exhausted_idx,
+                                ));
+                            }
                         }
                     }
                     if callback_addr != 0 {
@@ -533,12 +703,54 @@ fn playback_step(sample_rate_fixed: u32, rate_fixed: u32) -> u64 {
     ((base as u128 * rate_fixed as u128) >> 16) as u64
 }
 
+fn resampled_sample(samples: &[StereoSample], position: u64, step: u64) -> Option<StereoSample> {
+    // Sound 1994 defines drop-sample conversion as using an existing
+    // sample instead of a linear interpolated point. That preserves the
+    // 8-bit edges of classic low-rate sampled effects during upsampling.
+    if step < (1u64 << 32) {
+        let sample_idx = (position >> 32) as usize;
+        return samples.get(sample_idx).copied();
+    }
+    interpolated_sample(samples, position)
+}
+
+fn interpolated_sample(samples: &[StereoSample], position: u64) -> Option<StereoSample> {
+    let sample_idx = (position >> 32) as usize;
+    let first = *samples.get(sample_idx)?;
+    let second = samples.get(sample_idx + 1).copied().unwrap_or(first);
+    let frac = (position & 0xFFFF_FFFF) as i64;
+    Some(StereoSample {
+        left: interpolate_u8(first.left, second.left, frac),
+        right: interpolate_u8(first.right, second.right, frac),
+    })
+}
+
+fn interpolate_u8(first: u8, second: u8, frac: i64) -> u8 {
+    let delta = second as i64 - first as i64;
+    let interpolated = first as i64 + (delta * frac) / (1i64 << 32);
+    interpolated.clamp(0, 255) as u8
+}
+
+#[cfg(test)]
 fn apply_volume(sample: u8, packed_volume: u32) -> u8 {
     let left = (packed_volume & 0xFFFF) as i32;
     let right = ((packed_volume >> 16) & 0xFFFF) as i32;
     let average = (left + right) / 2;
+    apply_volume_channel(sample, average)
+}
+
+fn apply_volume_stereo(sample: StereoSample, packed_volume: u32) -> StereoSample {
+    let left_volume = (packed_volume & 0xFFFF) as i32;
+    let right_volume = ((packed_volume >> 16) & 0xFFFF) as i32;
+    StereoSample {
+        left: apply_volume_channel(sample.left, left_volume),
+        right: apply_volume_channel(sample.right, right_volume),
+    }
+}
+
+fn apply_volume_channel(sample: u8, volume: i32) -> u8 {
     let centered = sample as i32 - 0x80;
-    let scaled = centered * average / FULL_VOLUME as i32;
+    let scaled = centered * volume / FULL_VOLUME as i32;
     (scaled + 0x80).clamp(0, 255) as u8
 }
 
@@ -591,6 +803,16 @@ mod tests {
         assert_eq!(
             sm.debug_file_play_count, 0,
             "debug_file_play_count must start at 0"
+        );
+        assert_eq!(
+            sm.sys_beep_volume(),
+            FULL_STEREO_VOLUME,
+            "system beep volume starts at full L+R"
+        );
+        assert_eq!(
+            sm.default_output_volume(),
+            FULL_STEREO_VOLUME,
+            "default output volume starts at full L+R"
         );
     }
 
@@ -775,7 +997,14 @@ mod tests {
         assert_eq!(chan.playback_kind, Some(PlaybackKind::File));
         assert_eq!(chan.file_completion_addr, 0xABCD_1234);
         let playing = chan.playing.as_ref().expect("playing installed");
-        assert_eq!(playing.samples, samples);
+        assert_eq!(
+            playing.samples,
+            samples
+                .iter()
+                .copied()
+                .map(StereoSample::mono)
+                .collect::<Vec<_>>()
+        );
         assert_eq!(playing.sample_rate_fixed, sample_rate);
         assert_eq!(playing.position, 0, "position starts at 0");
         // Step at 11025 source / 22050 output = 0.5 → \$0_8000_0000.
@@ -963,7 +1192,7 @@ mod tests {
         let mut chan = SndChannel::new(0x1234_0000, true);
         // Set up active playback at 22050 Hz source.
         chan.playing = Some(PlayingBuffer {
-            samples: vec![0x80; 64],
+            samples: vec![StereoSample::SILENCE; 64],
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: fixed_div(22050 << 16, (OUTPUT_RATE as u64) << 16),
@@ -1079,7 +1308,7 @@ mod tests {
 
         // Active playback buffer: both true.
         chan.playing = Some(PlayingBuffer {
-            samples: vec![0x80; 8],
+            samples: vec![StereoSample::SILENCE; 8],
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: 0x0001_0000,
@@ -1133,7 +1362,7 @@ mod tests {
         chan.q_head = 7;
         chan.q_tail = 11;
         chan.playing = Some(PlayingBuffer {
-            samples: vec![0x80; 16],
+            samples: vec![StereoSample::SILENCE; 16],
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: 0x0001_0000,
@@ -1200,7 +1429,7 @@ mod tests {
             param2: 0,
         });
         chan.playing = Some(PlayingBuffer {
-            samples: vec![0x80; 16],
+            samples: vec![StereoSample::SILENCE; 16],
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: 0x0001_0000,
@@ -1467,17 +1696,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mix_frame_preserves_audio_when_default_output_volume_changes() {
+        let mut sm = SoundManager::new();
+        sm.set_default_output_volume(0x0080_0080);
+        let mut chan = SndChannel::new(0x1234_0000, true);
+        chan.play_buffer(vec![0xA0; 8], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
+        sm.channels.push(chan);
+
+        let output = sm.mix_frame(4);
+
+        assert!(
+            output.iter().all(|&b| b == 0xA0),
+            "default output volume stores the device default and must not attenuate the current mixed stream, got {:02X}",
+            output[0]
+        );
+
+        let mut sm = SoundManager::new();
+        sm.set_default_output_volume(0);
+        let mut chan = SndChannel::new(0x1234_0000, true);
+        chan.play_buffer(vec![0xA0; 8], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
+        sm.channels.push(chan);
+
+        let output = sm.mix_frame(4);
+
+        assert!(
+            output.iter().all(|&b| b == 0xA0),
+            "zero default output volume must not silence active channel audio, got {:02X}",
+            output[0]
+        );
+    }
+
     /// Mirror of the resampling test for the upsampling direction. When a
     /// buffer's `sample_rate_fixed` is BELOW OUTPUT_RATE (e.g.
     /// 0.5× = 11025 Hz source at 22050 Hz output), the computed
-    /// step is 0.5 in 32.32 fixed-point. Nearest-neighbour
-    /// interpolation emits each source sample twice before
-    /// advancing. A regression that truncated the fractional
-    /// part of `step` to 0 would freeze playback forever on the
-    /// first sample; a regression doubling the step would halve
-    /// the pitch of every under-sample-rate snd resource.
+    /// step is 0.5 in 32.32 fixed-point. Sample-and-hold preserves the
+    /// original 8-bit sample edges instead of linearly smoothing them; that
+    /// matters for classic low-rate sound effects where interpolation sounds
+    /// muffled. A regression that truncated the fractional part of `step` to
+    /// 0 would freeze playback forever on the first sample; a regression
+    /// doubling the step would halve the pitch of every under-sample-rate snd
+    /// resource.
     #[test]
-    fn mix_frame_resamples_half_rate_via_nearest_neighbour_repeat() {
+    fn mix_frame_resamples_half_rate_with_sample_hold() {
         let mut sm = SoundManager::new();
         let mut chan = SndChannel::new(0x1234_0000, true);
 
@@ -1497,27 +1758,91 @@ mod tests {
 
         // Expected:
         //   output[0] = source[0] = 0x90
-        //   output[1] = source[0] = 0x90 (position 0.5 → idx 0)
+        //   output[1] = source[0] held at fractional position 0.5
         //   output[2] = source[1] = 0xA0
-        //   output[3] = source[1] = 0xA0 (position 1.5 → idx 1)
+        //   output[3] = source[1] held at tail = 0xA0
         //   output[4] = untouched silence (position 2.0 → idx 2, break)
         //   output[5] = untouched silence
         assert_eq!(output.len(), 6);
         assert_eq!(output[0], 0x90, "source[0] at step 0");
         assert_eq!(
             output[1], 0x90,
-            "source[0] repeated at step 1 (0.5 advance)"
+            "low-rate upsampling must hold the source sample, not smooth it"
         );
         assert_eq!(output[2], 0xA0, "source[1] at step 2 (position 1.0)");
-        assert_eq!(
-            output[3], 0xA0,
-            "source[1] repeated at step 3 (position 1.5)"
-        );
+        assert_eq!(output[3], 0xA0, "tail sample held at step 3 (position 1.5)");
         assert_eq!(output[4], 0x80, "break leaves default silence");
         assert_eq!(output[5], 0x80, "break leaves default silence");
 
         // Playback cleared on overflow past the 2-sample buffer.
         assert!(!sm.channels[0].is_playing());
+    }
+
+    #[test]
+    fn mix_frame_stereo_preserves_channel_separation() {
+        let stereo_samples = vec![
+            StereoSample {
+                left: 0x00,
+                right: 0xFF,
+            },
+            StereoSample {
+                left: 0x40,
+                right: 0xC0,
+            },
+        ];
+
+        let mut stereo_sm = SoundManager::new();
+        let mut stereo_chan = SndChannel::new(0x1234_0000, true);
+        stereo_chan.play_stereo_buffer(
+            stereo_samples.clone(),
+            OUTPUT_RATE << 16,
+            PlaybackKind::Buffer,
+            0,
+        );
+        stereo_sm.channels.push(stereo_chan);
+
+        assert_eq!(stereo_sm.mix_frame_stereo(2), vec![0x00, 0xFF, 0x40, 0xC0]);
+
+        let mut mono_sm = SoundManager::new();
+        let mut mono_chan = SndChannel::new(0x1234_0000, true);
+        mono_chan.play_stereo_buffer(stereo_samples, OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
+        mono_sm.channels.push(mono_chan);
+
+        assert_eq!(mono_sm.mix_frame(2), vec![0x80, 0x80]);
+    }
+
+    #[test]
+    fn mix_frame_resamples_classic_rate22khz_with_fractional_interpolation() {
+        // EV/EVO 'snd ' resources commonly use Sound Manager's documented
+        // rate22khz value: 22,254.54545 Hz. The mixer output contract is
+        // 22,050 Hz, so playback advances by just over one source sample
+        // per output sample. This must interpolate the fractional position
+        // instead of periodically dropping source samples as nearest-neighbor
+        // resampling would.
+        const RATE_22KHZ_FIXED: u32 = 0x56EE_8BA3;
+
+        let mut sm = SoundManager::new();
+        let mut chan = SndChannel::new(0x1234_0000, true);
+        chan.play_buffer(
+            vec![0x80, 0x00, 0xFF, 0x80],
+            RATE_22KHZ_FIXED,
+            PlaybackKind::Buffer,
+            0,
+        );
+        sm.channels.push(chan);
+
+        let output = sm.mix_frame(3);
+
+        assert_eq!(output[0], 0x80, "position 0.0 reads source[0]");
+        assert!(
+            (0x01..=0x0F).contains(&output[1]),
+            "position just after source[1] should interpolate toward source[2], got {:#04X}",
+            output[1]
+        );
+        assert!(
+            output[2] > 0x80,
+            "next fractional sample stays on the rising edge"
+        );
     }
 
     /// Locks in `mix_frame`'s resampling step for non-unity source
@@ -1526,9 +1851,9 @@ mod tests {
     /// in 32.32 fixed-point, so playback advances the source position
     /// by that step per output sample. For a buffer whose
     /// `sample_rate_fixed` is 2× `OUTPUT_RATE`, every other source
-    /// sample should be skipped (nearest-neighbour downsampling). A
-    /// regression breaking the step calculation would pitch-shift
-    /// every non-unity-rate snd resource.
+    /// sample should be selected because the step lands on integer
+    /// source positions. A regression breaking the step calculation
+    /// would pitch-shift every non-unity-rate snd resource.
     #[test]
     fn mix_frame_resamples_2x_source_via_step_advance() {
         let mut sm = SoundManager::new();
@@ -1672,6 +1997,7 @@ mod tests {
             sample_size: 8,
             last_buffer_seen: false,
             waiting_for_callback: true,
+            pending_callback_buffers: [false, true],
         });
         assert!(!chan.is_playing(), "playing stays None pre-mix");
         sm.channels.push(chan);
@@ -1719,6 +2045,7 @@ mod tests {
             sample_size: 8,
             last_buffer_seen: false,
             waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
         });
         sm.channels.push(chan);
 
@@ -1815,16 +2142,17 @@ mod tests {
         );
     }
 
-    /// Locks in the two guard flags that INHIBIT double-buffer
+    /// Locks in the guard flags that inhibit duplicate double-buffer
     /// callback queueing in `mix_frame`:
     ///   - `last_buffer_seen=true`: the guest already told us via
     ///     `dbLastBuffer` that no more data will come; don't ask
     ///     for a refill we'll never get.
-    ///   - `waiting_for_callback=true`: we already asked for a
-    ///     refill; don't spam the callback queue until the trap
-    ///     layer fires the pending callback and clears the flag.
+    ///   - `pending_callback_buffers[n]=true`: we already asked for
+    ///     that specific slot to be refilled; don't queue a duplicate
+    ///     for the same slot.
     ///
-    /// A regression removing either guard would cause callback spam.
+    /// A regression removing either guard would cause callback spam or
+    /// a callback request after the guest marked the stream complete.
     #[test]
     fn mix_frame_double_buffer_guards_inhibit_callback_push() {
         // Case A: last_buffer_seen=true → no callback.
@@ -1842,6 +2170,7 @@ mod tests {
                 sample_size: 8,
                 last_buffer_seen: true,
                 waiting_for_callback: false,
+                pending_callback_buffers: [false; 2],
             });
             sm.channels.push(chan);
 
@@ -1864,7 +2193,7 @@ mod tests {
             );
         }
 
-        // Case B: waiting_for_callback=true → no callback.
+        // Case B: this same buffer already has a pending callback → no duplicate.
         {
             let mut sm = SoundManager::new();
             let mut chan = SndChannel::new(0x1234_0000, true);
@@ -1879,6 +2208,7 @@ mod tests {
                 sample_size: 8,
                 last_buffer_seen: false,
                 waiting_for_callback: true,
+                pending_callback_buffers: [true, false],
             });
             sm.channels.push(chan);
 
@@ -1886,7 +2216,7 @@ mod tests {
 
             assert!(
                 sm.pending_callbacks.is_empty(),
-                "waiting_for_callback=true must inhibit callback push (no spam)"
+                "pending_callback_buffers[current]=true must inhibit duplicate callback push"
             );
             assert_eq!(
                 sm.channels[0]
@@ -1894,10 +2224,47 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .current_buffer,
-                0,
-                "current_buffer must NOT flip when waiting_for_callback=true"
+                1,
+                "current_buffer still advances to the paired slot"
             );
         }
+    }
+
+    #[test]
+    fn mix_frame_allows_other_double_buffer_callback_while_one_slot_is_pending() {
+        let mut sm = SoundManager::new();
+        let mut chan = SndChannel::new(0x1234_0000, true);
+        chan.play_buffer(vec![0x80, 0x80], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr: 0x0070_0000,
+            current_buffer: 1,
+            callback_addr: 0xCAFE_0000,
+            chan_ptr: 0x1234_0000,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: true,
+            pending_callback_buffers: [true, false],
+        });
+        sm.channels.push(chan);
+
+        sm.mix_frame(4);
+
+        assert_eq!(
+            sm.pending_callbacks.len(),
+            1,
+            "pending refill for buffer 0 must not suppress buffer 1's doubleback"
+        );
+        assert_eq!(sm.pending_callbacks[0].exhausted_buffer_index, 1);
+        let db = sm.channels[0].double_buffer.as_ref().unwrap();
+        assert_eq!(db.current_buffer, 0);
+        assert_eq!(
+            db.pending_callback_buffers,
+            [true, true],
+            "both slots can have outstanding refills independently"
+        );
+        assert!(db.waiting_for_callback);
     }
 
     /// Locks in `mix_frame`'s double-buffer exhaustion contract. When
@@ -1934,6 +2301,7 @@ mod tests {
             sample_size: 8,
             last_buffer_seen: false,
             waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
         });
         sm.channels.push(chan);
 
@@ -1964,6 +2332,7 @@ mod tests {
             db.waiting_for_callback,
             "waiting_for_callback armed so next frame doesn't re-trigger"
         );
+        assert_eq!(db.pending_callback_buffers, [true, false]);
     }
 
     /// Locks in `mix_frame`'s file-playback completion contract. When

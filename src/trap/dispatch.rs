@@ -127,12 +127,20 @@ pub(crate) fn trace_delivered_events_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DELIVERED_EVENTS").is_some())
 }
 
+// GetKeys returns a 16-byte KeyMap (`PACKED ARRAY[0..127] OF Boolean`;
+// `typedef long KeyMap[4]`). Inside Macintosh Volume I, I-260 and Macintosh
+// Toolbox Essentials 2-110 document the virtual-key-indexed logical array;
+// classic code commonly tests the returned bytes directly:
+// `((uint8_t *)keyMap)[key >> 3] & (1 << (key & 7))`.
 fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
     if key_code >= 128 {
         return None;
     }
-    let byte_idx = (key_code / 8) as usize;
-    let mask = 1u8 << (key_code % 8);
+    let byte_idx = (key_code >> 3) as usize;
+    if byte_idx >= 16 {
+        return None;
+    }
+    let mask = 1u8 << (key_code & 0x07);
     Some((byte_idx, mask))
 }
 
@@ -1023,8 +1031,18 @@ pub struct TrapDispatcher {
     /// Current mouse button state: true = button is pressed
     pub(crate) mouse_button: bool,
     /// Current keyboard state as a classic 16-byte KeyMap (128 keys).
-    /// Bit layout matches Executor: byte = key/8, bit = 1<<(key%8).
+    /// Bits are packed for direct byte/bit readers:
+    /// key >> 3 selects the byte, key & 7 selects the bit.
     pub(crate) key_map: [u8; 16],
+    /// Debug counter for GetKeys calls that observed at least one held key.
+    pub debug_getkeys_nonzero_count: u64,
+    /// Last non-zero KeyMap returned by GetKeys. Used by regression tests to
+    /// prove games are polling the same key state a frontend injected.
+    pub debug_last_getkeys_nonzero_key_map: [u8; 16],
+    /// Debug counter for keyDown/keyUp records delivered through Event Manager.
+    pub debug_key_event_delivery_count: u64,
+    /// Last keyDown/keyUp EventRecord.message delivered through Event Manager.
+    pub debug_last_key_event_message: u32,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
     pub(crate) event_queue: VecDeque<QueuedEvent>,
     /// System event mask used by PostEvent/PPostEvent filtering.
@@ -1687,6 +1705,10 @@ impl TrapDispatcher {
         key_map_key_is_down(&self.key_map, key_code)
     }
 
+    pub(crate) fn key_map_bytes(&self) -> &[u8; 16] {
+        &self.key_map
+    }
+
     pub(crate) fn current_event_modifiers(&self) -> u16 {
         const BTN_STATE: u16 = 128;
         const CMD_KEY: u16 = 256;
@@ -1926,6 +1948,10 @@ impl TrapDispatcher {
             mouse_pos: (0, 0),
             mouse_button: false,
             key_map: [0; 16],
+            debug_getkeys_nonzero_count: 0,
+            debug_last_getkeys_nonzero_key_map: [0; 16],
+            debug_key_event_delivery_count: 0,
+            debug_last_key_event_message: 0,
             event_queue: VecDeque::new(),
             system_event_mask: 0xFFEF, // everyEvent - keyUpMask
             sent_open_app_event: false,

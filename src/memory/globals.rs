@@ -19,21 +19,28 @@ pub mod addr {
     pub const RND_SEED: u32 = 0x0156; // Random number seed (long) - Inside Macintosh Volume II, II-387
     pub const TICKS: u32 = 0x016A; // Tick count (long) - system timer
     pub const MB_STATE: u32 = 0x0172; // Mouse button state (byte) - 0=down, $80=up
+    /// KeyMapLM: current keyboard bitmap, 4 longs / 16 bytes.
+    /// Inside Macintosh Volume I, I-260 documents the GetKeys KeyMap as
+    /// the current key state indexed by key code; MPW's SysEqu.h names the
+    /// low-memory mirror `KeyMapLM` at $0174.
+    pub const KEY_MAP_LM: u32 = 0x0174;
     pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
     pub const ROM85: u32 = 0x028E; // Version number of ROM (word) - Inside Macintosh V, V-578
 
-    /// SoundLevel: current Sound Driver buffer level (1 byte).
-    /// Inside Macintosh: Sound 1994, "Sound Driver" chapter — `SoundLevel`
-    /// holds the Sound Driver's current PCM byte. It's non-zero when audio
-    /// is being emitted; zero when the driver is idle.
+    /// SdVolume: current speaker volume (1 byte, low-order three bits).
+    /// Inside Macintosh Volume III, III-425 lists `SdVolume` at $0260 and
+    /// describes it as the current speaker volume, with values 0..7.
     ///
     /// Marathon 1's sound module reads this byte at CODE 5 +`$0003F2`
     /// (`MOVE.B (mem $260).W, (A0)`) and uses it as a "Sound Driver alive"
     /// sentinel — if zero, M1 short-circuits its entire audio submission
-    /// path. Systemless's HLE bypasses the legacy Sound Driver layer (we mix
-    /// PCM directly), so this byte must be initialized non-zero at boot
-    /// to satisfy classic Sound-Driver clients like M1.
-    pub const SOUND_LEVEL: u32 = 0x0260;
+    /// path. Systemless's HLE bypasses the legacy Sound Driver layer, so this
+    /// byte must be initialized non-zero at boot to satisfy classic clients.
+    pub const SD_VOLUME: u32 = 0x0260;
+
+    /// SoundLevel: amplitude in the Sound Driver's 740-byte buffer (1 byte).
+    /// Inside Macintosh Volume III, III-425.
+    pub const SOUND_LEVEL: u32 = 0x027F;
 
     // Menu Manager globals
     pub const MBAR_HEIGHT: u32 = 0x0BAA; // Menu bar height in pixels (word) - Inside Macintosh V, V-245
@@ -284,16 +291,21 @@ mod tests {
     /// apps that read the global directly.
     #[test]
     fn low_mem_global_addresses_match_inside_macintosh() {
-        // SOUND_LEVEL ($0260) is the M1 sound-unlock load-bearing
+        // SdVolume ($0260) is the M1 sound-unlock load-bearing
         // constant. Marathon 1's CODE 5 +$0003F2 reads the byte here
         // as a "Sound Driver alive" sentinel; with zero, M1 short-
-        // circuits its entire audio submission path. Inside Macintosh:
-        // Sound 1994 (Sound Driver chapter).
+        // circuits its entire audio submission path. Inside Macintosh
+        // Volume III, III-425.
+        assert_eq!(
+            addr::SD_VOLUME,
+            0x0260,
+            "SdVolume must be at $0260 per Inside Macintosh Volume III — \
+             changing this address breaks M1 audio unlock."
+        );
         assert_eq!(
             addr::SOUND_LEVEL,
-            0x0260,
-            "SoundLevel must be at $0260 per IM:Sound 1994 — \
-             changing this address breaks M1 audio unlock."
+            0x027F,
+            "SoundLevel must be at $027F per Inside Macintosh Volume III."
         );
 
         // Other heavily-load-bearing globals; a regression in any
@@ -308,6 +320,11 @@ mod tests {
             addr::MB_STATE,
             0x0172,
             "MBState mouse button — wrong address = button stuck"
+        );
+        assert_eq!(
+            addr::KEY_MAP_LM,
+            0x0174,
+            "KeyMapLM low-memory keyboard bitmap — wrong address = direct key polling breaks"
         );
         assert_eq!(addr::CURRENT_A5, 0x0904, "CurrentA5 per IM:Memory 1-77");
     }

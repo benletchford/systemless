@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 static TRACE_DIALOG_FILTER: OnceLock<bool> = OnceLock::new();
 static TRACE_TIMER: OnceLock<bool> = OnceLock::new();
 static TRACE_VBL: OnceLock<bool> = OnceLock::new();
+static TRACE_SOUND_RUNNER: OnceLock<bool> = OnceLock::new();
 
 fn trace_dialog_filter_enabled() -> bool {
     *TRACE_DIALOG_FILTER
@@ -26,6 +27,10 @@ fn trace_timer_enabled() -> bool {
 
 fn trace_vbl_enabled() -> bool {
     *TRACE_VBL.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_VBL").is_some())
+}
+
+fn trace_sound_runner_enabled() -> bool {
+    *TRACE_SOUND_RUNNER.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some())
 }
 
 // Gate the per-instruction trace_buffer behind an env var. The buffer
@@ -313,6 +318,15 @@ struct ActiveInterruptCallback {
     a_regs: [u32; 8],
     ccr: u8,
     restore_port: Option<(u32, u32)>,
+}
+
+fn is_sound_interrupt_source(source: ActiveInterruptCallbackSource) -> bool {
+    matches!(
+        source,
+        ActiveInterruptCallbackSource::SoundCallback
+            | ActiveInterruptCallbackSource::SoundFileCompletion
+            | ActiveInterruptCallbackSource::SoundDoubleBack
+    )
 }
 
 /// Configuration knobs for [`FixtureRunner`]. Use
@@ -844,16 +858,29 @@ impl FixtureRunner {
         self.sync_mouse_position_lowmem();
     }
 
+    /// Sync the 16-byte KeyMapLM low-memory bitmap from the dispatcher's
+    /// current key state. Inside Macintosh Volume I, I-260 documents the
+    /// KeyMap returned by GetKeys; MPW SysEqu.h exposes the ROM-maintained
+    /// low-memory mirror at $0174 for code that polls it directly.
+    fn sync_key_map_lowmem(&mut self) {
+        use crate::memory::globals::addr;
+
+        self.bus
+            .write_bytes(addr::KEY_MAP_LM, self.dispatcher.key_map_bytes());
+    }
+
     /// Inject a key-down event, applying arrow→numpad remapping if configured.
     pub fn push_key_down(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.push_key_down(key, char_code);
+        self.sync_key_map_lowmem();
     }
 
     /// Inject a key-up event, applying arrow→numpad remapping if configured.
     pub fn push_key_up(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.push_key_up(key, char_code);
+        self.sync_key_map_lowmem();
     }
 
     /// Remap arrow key virtual key codes to numpad equivalents when enabled.
@@ -1066,23 +1093,23 @@ impl FixtureRunner {
         // MBState: $80 = button UP (Mac convention: 0 = down, $80 = up).
         // RAM is zero-initialized which would mean "button down" — must set explicitly.
         self.bus.write_byte(addr::MB_STATE, 0x80);
+        // KeyMapLM ($0174): ROM-maintained current-key bitmap mirrored by
+        // GetKeys. Keep it explicitly clear at launch for direct pollers.
+        // Inside Macintosh Volume I, I-260; MPW SysEqu.h `KeyMapLM`.
+        self.sync_key_map_lowmem();
         // MBarHeight: 20 pixels (standard Roman system script value).
         // Games may set this to 0 to hide the menu bar for full-screen mode.
         // Inside Macintosh Volume V, V-245
         self.bus.write_word(addr::MBAR_HEIGHT, 20);
-        // SoundLevel ($0260): Sound Driver current PCM byte. Inside
-        // Macintosh: Sound 1994 (Sound Driver chapter). Non-zero when
-        // audio is being emitted; zero when idle. Some classic apps
-        // read this byte directly as a "Sound Driver present and emitting"
-        // sentinel — most notably Marathon 1, whose sound module
-        // (CODE 5 +$0003F2: `MOVE.B (mem $260).W, (A0)`) short-circuits
-        // its entire audio submission path when this byte is zero.
-        // Systemless's HLE skips the legacy Sound Driver layer (we mix PCM
-        // directly via the SoundManager), so this byte was previously
-        // always zero — falsifying classic Sound-Driver-presence checks.
-        // Initialize to 1 (the minimum non-zero) so SoundLevel-readers
-        // see "driver alive".
-        self.bus.write_byte(addr::SOUND_LEVEL, 1);
+        // SdVolume ($0260): current speaker volume, low three bits only.
+        // Inside Macintosh Volume III, III-425. Some classic apps also read
+        // this byte directly as a "Sound Driver present" sentinel — most
+        // notably Marathon 1, whose sound module (CODE 5 +$0003F2:
+        // `MOVE.B (mem $260).W, (A0)`) short-circuits its audio submission
+        // path when this byte is zero. Initialize it to the minimum nonzero
+        // compatibility value; higher legacy volume values can change old
+        // Sound Driver clients' control flow.
+        self.bus.write_byte(addr::SD_VOLUME, 1);
 
         // Memory Manager zone globals
         // Inside Macintosh Volume II, II-19
@@ -1249,14 +1276,28 @@ impl FixtureRunner {
         self.mix_host_audio(num_samples);
     }
 
-    fn queue_mixed_audio(&mut self, samples: &[u8]) {
-        if samples.is_empty() {
+    fn queue_mixed_audio(&mut self, stereo_samples: &[u8]) {
+        if stereo_samples.is_empty() {
             return;
         }
         if let Some(ref mut audio) = self.audio {
-            audio.queue_samples(samples);
+            audio.queue_stereo_samples(stereo_samples);
         }
-        self.audio_buffer.extend_from_slice(samples);
+        for frame in stereo_samples.chunks_exact(2) {
+            let left = frame[0] as i32 - 0x80;
+            let right = frame[1] as i32 - 0x80;
+            self.audio_buffer
+                .push(((left + right) / 2 + 0x80).clamp(0, 255) as u8);
+        }
+    }
+
+    fn queue_host_silence_audio(&mut self, num_samples: usize) {
+        if num_samples == 0 {
+            return;
+        }
+        if let Some(ref mut audio) = self.audio {
+            audio.queue_stereo_samples(&vec![0x80; num_samples * 2]);
+        }
     }
 
     fn mix_host_audio(&mut self, mut remaining_samples: usize) {
@@ -1271,22 +1312,30 @@ impl FixtureRunner {
                 .map(|samples| samples.max(1).min(remaining_samples))
                 .unwrap_or(remaining_samples);
 
-            let samples = self.dispatcher.sound_manager.mix_frame(chunk);
+            let samples = self.dispatcher.sound_manager.mix_frame_stereo(chunk);
             if samples.is_empty() {
+                self.queue_host_silence_audio(remaining_samples);
+                self.dispatcher
+                    .release_finished_internal_sound_channels(&mut self.bus);
                 break;
             }
             self.queue_mixed_audio(&samples);
+            self.dispatcher
+                .release_finished_internal_sound_channels(&mut self.bus);
             remaining_samples -= chunk;
         }
     }
 
-    fn finish_host_frame(&mut self, audio_samples: usize) {
+    fn finish_host_frame(&mut self, audio_samples: usize, sound_interrupt_dispatched: bool) {
         // Redraw menu bar and window chrome after each frame.
         // On a real Mac the Window Manager maintains these as
         // separate layers; here they are raw framebuffer pixels
         // that game drawing (explosions, etc.) can overwrite.
         self.dispatcher.redraw_chrome(&mut self.bus);
+        self.finish_audio_frame(audio_samples, sound_interrupt_dispatched);
+    }
 
+    fn finish_audio_frame(&mut self, audio_samples: usize, sound_interrupt_dispatched: bool) {
         // Try to load any double-buffer data that callbacks have refilled.
         self.try_load_pending_double_buffers();
 
@@ -1302,10 +1351,21 @@ impl FixtureRunner {
         self.dispatcher
             .sync_guest_sound_channel_state(&mut self.bus);
 
-        self.fire_sound_callbacks();
+        if !sound_interrupt_dispatched {
+            let fired_sound_callback = self.fire_sound_callbacks();
+            if !fired_sound_callback {
+                // Fire pending double-buffer callbacks (SndPlayDoubleBuffer).
+                self.fire_sound_doubleback_callbacks();
+            }
+        }
+    }
 
-        // Fire pending double-buffer callbacks (SndPlayDoubleBuffer).
-        self.fire_sound_doubleback_callbacks();
+    /// Mix a GUI-only audio slice without running foreground guest code or
+    /// redrawing the frame. Used by realtime frontends to let Sound Manager
+    /// doubleback callbacks run between small audio chunks when TickCount is
+    /// already caught up to the wall clock.
+    pub fn mix_gui_audio_slice(&mut self, audio_samples: usize) {
+        self.finish_audio_frame(audio_samples, false);
     }
 
     /// Try to fast-forward past a TickCount spin-wait loop. Returns
@@ -1488,6 +1548,7 @@ impl FixtureRunner {
         tick_cap: Option<u32>,
         audio_samples: usize,
         yield_for_ui: bool,
+        sound_work_only: bool,
     ) -> (usize, bool) {
         // Freeze ticks while menu/control tracking is active. ModalDialog
         // refires still return to the GUI for intermediate rendering, but
@@ -1505,21 +1566,47 @@ impl FixtureRunner {
         self.dispatcher.instruction_count = self.total_instructions;
         let mut count = 0;
         let mut tick_cap_reached = false;
+        let mut sound_interrupt_dispatched = self
+            .active_interrupt_callback
+            .map(|callback| is_sound_interrupt_source(callback.source))
+            .unwrap_or(false);
 
         while count < max_steps && !self.halted && !tick_cap_reached {
+            if sound_work_only
+                && self.active_interrupt_callback.is_none()
+                && (sound_interrupt_dispatched || !self.has_pending_sound_work())
+            {
+                break;
+            }
+
             // Sound callbacks are interrupt work. If a previous slice queued
-            // one, dispatch it before running more foreground guest code.
-            if self.active_interrupt_callback.is_none() {
-                self.fire_sound_callbacks();
-                self.fire_sound_doubleback_callbacks();
+            // one, dispatch it before running more foreground guest code. Do
+            // not drain the whole queue in one CPU slice: double-buffer
+            // callbacks are paced by audio-buffer completion, and firing
+            // several back-to-back at the same guest PC/tick makes games that
+            // run their own mixer refill with click-sized fragments.
+            if self.active_interrupt_callback.is_none() && !sound_interrupt_dispatched {
+                sound_interrupt_dispatched = self.fire_sound_callbacks();
+                if !sound_interrupt_dispatched {
+                    sound_interrupt_dispatched = self.fire_sound_doubleback_callbacks();
+                }
+                if sound_work_only && !sound_interrupt_dispatched {
+                    continue;
+                }
+            }
+
+            if sound_work_only && self.active_interrupt_callback.is_none() {
+                break;
             }
 
             // Service blocking traps (Delay, WaitNextEvent sleep).
-            if self.service_wait_sleep_ticks(tick_cap) {
-                break;
-            }
-            if self.service_delay_ticks(tick_cap) {
-                break;
+            if !sound_work_only {
+                if self.service_wait_sleep_ticks(tick_cap) {
+                    break;
+                }
+                if self.service_delay_ticks(tick_cap) {
+                    break;
+                }
             }
             if self.cpu.is_stopped() {
                 self.halted = true;
@@ -1560,6 +1647,14 @@ impl FixtureRunner {
                     if trace_timer_enabled() {
                         eprintln!(
                             "[TIMER] resume {:?} pc=${:08X} sp=${:08X} restore_ccr=${:02X}",
+                            active_interrupt_callback.source, pc, sp, active_interrupt_callback.ccr
+                        );
+                    }
+                    if trace_sound_runner_enabled()
+                        && is_sound_interrupt_source(active_interrupt_callback.source)
+                    {
+                        eprintln!(
+                            "[SOUND-CB] resume {:?} pc=${:08X} sp=${:08X} restore_ccr=${:02X}",
                             active_interrupt_callback.source, pc, sp, active_interrupt_callback.ccr
                         );
                     }
@@ -1614,6 +1709,9 @@ impl FixtureRunner {
                             .finalize_dialog_draw_procs_if_idle(&mut self.bus);
                     }
                     self.active_interrupt_callback = None;
+                    if sound_work_only {
+                        break;
+                    }
                 } else if trace_timer_enabled() {
                     eprintln!(
                         "[TIMER] pending {:?} pc=${:08X} sp=${:08X} waiting_for pc=${:08X} sp=${:08X}",
@@ -1678,19 +1776,21 @@ impl FixtureRunner {
 
             // Tick advancement: deduct 1 instruction; when the budget hits
             // zero, advance $016A and refill from instructions_per_tick.
-            self.tick_budget -= 1;
-            while self.tick_budget <= 0 && self.frozen_ticks.is_none() {
-                if let Some(cap) = tick_cap {
-                    if self.bus.read_long(0x016A) >= cap {
-                        tick_cap_reached = true;
-                        break;
+            if !sound_work_only {
+                self.tick_budget -= 1;
+                while self.tick_budget <= 0 && self.frozen_ticks.is_none() {
+                    if let Some(cap) = tick_cap {
+                        if self.bus.read_long(0x016A) >= cap {
+                            tick_cap_reached = true;
+                            break;
+                        }
                     }
+                    self.advance_guest_tick();
+                    self.tick_budget += self.instructions_per_tick as i32;
                 }
-                self.advance_guest_tick();
-                self.tick_budget += self.instructions_per_tick as i32;
-            }
-            if tick_cap_reached {
-                break;
+                if tick_cap_reached {
+                    break;
+                }
             }
 
             // Update debug counters for watchpoint tracking (debug builds only)
@@ -1706,14 +1806,25 @@ impl FixtureRunner {
                 );
             }
 
-            // Mirror PC for [FB-WRITE] trace; watchpoint above is debug-only.
-            if crate::memory::bus::fb_write_trace_active() {
+            // Mirror PC for release-mode memory/framebuffer traces;
+            // watchpoint context above is debug-only.
+            if crate::memory::bus::fb_write_trace_active()
+                || crate::memory::bus::mem_read_trace_active()
+            {
                 crate::memory::bus::set_current_pc(pc);
             }
 
-            if trace_pc_range_contains(pc) {
+            let trace_pc_range_hit = trace_pc_range_contains(pc);
+            if trace_pc_range_hit {
+                let sp = self.cpu.read_reg(Register::A7);
+                let a6 = self.cpu.read_reg(Register::A6);
+                let stack0 = self.bus.read_long(sp);
+                let stack4 = self.bus.read_long(sp.wrapping_add(4));
+                let stack8 = self.bus.read_word(sp.wrapping_add(8));
+                let frame_ret = self.bus.read_long(a6.wrapping_add(4));
+                let frame_arg = self.bus.read_word(a6.wrapping_add(8));
                 eprintln!(
-                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} ccr=${:02X} d0=${:08X} d1=${:08X} d2=${:08X} d3=${:08X} d4=${:08X} d5=${:08X} d6=${:08X} d7=${:08X} a0=${:08X} a1=${:08X} a2=${:08X} a3=${:08X} a4=${:08X} a5=${:08X} a6=${:08X} sp=${:08X}",
+                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} ccr=${:02X} d0=${:08X} d1=${:08X} d2=${:08X} d3=${:08X} d4=${:08X} d5=${:08X} d6=${:08X} d7=${:08X} a0=${:08X} a1=${:08X} a2=${:08X} a3=${:08X} a4=${:08X} a5=${:08X} a6=${:08X} sp=${:08X} stack0=${:08X} stack4=${:08X} stack8=${:04X} frame_ret=${:08X} frame_arg=${:04X}",
                     pc,
                     self.bus.read_word(pc),
                     self.cpu.core.get_ccr(),
@@ -1731,8 +1842,13 @@ impl FixtureRunner {
                     self.cpu.read_reg(Register::A3),
                     self.cpu.read_reg(Register::A4),
                     self.cpu.read_reg(Register::A5),
-                    self.cpu.read_reg(Register::A6),
-                    self.cpu.read_reg(Register::A7),
+                    a6,
+                    sp,
+                    stack0,
+                    stack4,
+                    stack8,
+                    frame_ret,
+                    frame_arg,
                 );
             }
             // Execute one instruction.
@@ -2108,7 +2224,10 @@ impl FixtureRunner {
                                     {
                                         continue;
                                     }
-                                    self.finish_host_frame(audio_samples);
+                                    self.finish_host_frame(
+                                        audio_samples,
+                                        sound_interrupt_dispatched,
+                                    );
                                     return (count, true);
                                 }
                             }
@@ -2174,7 +2293,7 @@ impl FixtureRunner {
             self.dispatcher.instruction_count = self.total_instructions;
         }
 
-        self.finish_host_frame(audio_samples);
+        self.finish_host_frame(audio_samples, sound_interrupt_dispatched || sound_work_only);
 
         (count, !self.halted)
     }
@@ -2196,6 +2315,7 @@ impl FixtureRunner {
             tick_override,
             audio_samples,
             tick_override.is_some(),
+            false,
         )
     }
 
@@ -2207,7 +2327,7 @@ impl FixtureRunner {
         max_steps: usize,
         audio_samples: usize,
     ) -> (usize, bool) {
-        self.run_steps_internal(max_steps, None, audio_samples, true)
+        self.run_steps_internal(max_steps, None, audio_samples, true, false)
     }
 
     /// Run a GUI frame slice paced by wall-clock time.
@@ -2227,7 +2347,13 @@ impl FixtureRunner {
         deadline_tick: u32,
         audio_samples: usize,
     ) -> (usize, bool) {
-        self.run_steps_internal(max_steps, Some(deadline_tick), audio_samples, true)
+        self.run_steps_internal(max_steps, Some(deadline_tick), audio_samples, true, false)
+    }
+
+    /// Run pending Sound Manager interrupt work without advancing TickCount
+    /// or continuing into foreground guest code after the callback returns.
+    pub fn run_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
+        self.run_steps_internal(max_steps, None, 0, true, true)
     }
 
     /// Run for a specific number of steps (for GUI/headless callers that don't
@@ -2241,12 +2367,7 @@ impl FixtureRunner {
     /// [`halted_sp`](Self::halted_sp), [`halted_d0`](Self::halted_d0)
     /// accessors after this call returns.
     pub fn run_steps(&mut self, max_steps: usize, tick_override: Option<u32>) -> (usize, bool) {
-        self.run_steps_internal(
-            max_steps,
-            tick_override,
-            crate::sound::OUTPUT_RATE as usize / 60,
-            false,
-        )
+        self.run_steps_internal(max_steps, tick_override, 0, false, false)
     }
 
     fn advance_guest_tick(&mut self) -> u32 {
@@ -2658,6 +2779,18 @@ impl FixtureRunner {
     /// currently playing but its current_buffer is ready in guest memory,
     /// load the samples so mix_frame() can produce audio.
     fn try_load_pending_double_buffers(&mut self) {
+        if self.active_interrupt_callback.is_some() {
+            return;
+        }
+
+        let queued_doublebacks = self
+            .dispatcher
+            .sound_manager
+            .pending_callbacks
+            .iter()
+            .map(|cb| (cb.chan_ptr, cb.exhausted_buffer_index))
+            .collect::<Vec<_>>();
+
         for chan in &mut self.dispatcher.sound_manager.channels {
             if chan.is_playing() {
                 continue; // already has data
@@ -2675,26 +2808,64 @@ impl FixtureRunner {
                 };
             let mut load_idx = buf_idx;
             let mut buf_ptr = self.bus.read_long(header_ptr + 12 + (buf_idx as u32) * 4);
-            if buf_ptr == 0 {
-                continue;
-            }
-            let mut flags = self.bus.read_long(buf_ptr + 4);
-            if flags & 0x01 == 0 {
+            let mut can_load = buf_ptr != 0
+                && self.bus.read_long(buf_ptr + 4) & 0x01 != 0
+                && !queued_doublebacks
+                    .iter()
+                    .any(|&(pending_chan, pending_idx)| {
+                        pending_chan == chan.guest_ptr && pending_idx == buf_idx
+                    });
+            let original_idx = load_idx;
+            if !can_load {
                 let other_idx = buf_idx ^ 1;
                 let other_ptr = self.bus.read_long(header_ptr + 12 + (other_idx as u32) * 4);
                 if other_ptr == 0 {
                     continue;
                 }
                 let other_flags = self.bus.read_long(other_ptr + 4);
-                if other_flags & 0x01 == 0 {
-                    continue; // neither buffer is ready yet
+                let other_pending =
+                    queued_doublebacks
+                        .iter()
+                        .any(|&(pending_chan, pending_idx)| {
+                            pending_chan == chan.guest_ptr && pending_idx == other_idx
+                        });
+                if other_flags & 0x01 == 0 || other_pending {
+                    continue; // neither available buffer is ready yet
                 }
                 load_idx = other_idx;
                 buf_ptr = other_ptr;
-                flags = other_flags;
+                can_load = true;
                 if let Some(ref mut db) = chan.double_buffer {
                     db.current_buffer = other_idx;
                 }
+            }
+            if !can_load {
+                continue;
+            }
+            let flags = self.bus.read_long(buf_ptr + 4);
+            if trace_sound_runner_enabled() {
+                let preview = self
+                    .bus
+                    .read_bytes(buf_ptr + 16, 16)
+                    .iter()
+                    .map(|byte| format!("{:02X}", byte))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                eprintln!(
+                    "[SOUND-DB] load-ready chan=${:08X} header=${:08X} requested_idx={} load_idx={} buf=${:08X} frames={} flags=${:08X} pending={:?} first={}",
+                    chan.guest_ptr,
+                    header_ptr,
+                    original_idx,
+                    load_idx,
+                    buf_ptr,
+                    self.bus.read_long(buf_ptr),
+                    flags,
+                    chan.double_buffer
+                        .as_ref()
+                        .map(|db| db.pending_callback_buffers)
+                        .unwrap_or([false; 2]),
+                    preview
+                );
             }
             crate::trap::TrapDispatcher::load_double_buffer_samples(
                 &mut self.bus,
@@ -2707,6 +2878,7 @@ impl FixtureRunner {
             if flags & 0x01 != 0 {
                 if let Some(ref mut db) = chan.double_buffer {
                     db.current_buffer = load_idx;
+                    db.complete_callback_for(load_idx);
                 }
             }
         }
@@ -2795,9 +2967,9 @@ impl FixtureRunner {
     }
 
     /// Fire pending Sound Manager callback procedures and file completion routines.
-    fn fire_sound_callbacks(&mut self) {
+    fn fire_sound_callbacks(&mut self) -> bool {
         if self.active_interrupt_callback.is_some() {
-            return;
+            return false;
         }
 
         if self
@@ -2806,7 +2978,7 @@ impl FixtureRunner {
             .pending_sound_callbacks
             .is_empty()
         {
-            return;
+            return false;
         }
 
         let cb = self
@@ -2821,7 +2993,7 @@ impl FixtureRunner {
                 cmd,
             } => {
                 if callback_addr == 0 {
-                    return;
+                    return false;
                 }
 
                 // Sound 1994, 2-152
@@ -2859,13 +3031,14 @@ impl FixtureRunner {
                 self.bus.write_word(cmd_ptr + 2, cmd.param1 as u16);
                 self.bus.write_long(cmd_ptr + 4, cmd.param2);
                 self.inject_interrupt_callback(ActiveInterruptCallbackSource::SoundCallback, tramp);
+                true
             }
             crate::sound::PendingSoundCallback::FileCompletion {
                 callback_addr,
                 chan_ptr,
             } => {
                 if callback_addr == 0 {
-                    return;
+                    return false;
                 }
 
                 // Sound 1994, 2-151
@@ -2892,6 +3065,7 @@ impl FixtureRunner {
                     ActiveInterruptCallbackSource::SoundFileCompletion,
                     tramp,
                 );
+                true
             }
         }
     }
@@ -2905,13 +3079,13 @@ impl FixtureRunner {
     /// The doubleback procedure signature (Sound 1994, 2-146):
     ///   PROCEDURE MyDoubleBackProc(chan: SndChannelPtr;
     ///                              exhaustedBuffer: SndDoubleBufferPtr);
-    fn fire_sound_doubleback_callbacks(&mut self) {
+    fn fire_sound_doubleback_callbacks(&mut self) -> bool {
         if self.active_interrupt_callback.is_some() {
-            return;
+            return false;
         }
 
         if self.dispatcher.sound_manager.pending_callbacks.is_empty() {
-            return;
+            return false;
         }
 
         // Take one callback at a time (like timer tasks).
@@ -2926,18 +3100,33 @@ impl FixtureRunner {
         // Clear dbBufferReady on the exhausted buffer.
         if exhausted_buf_ptr != 0 {
             let flags = self.bus.read_long(exhausted_buf_ptr + 4);
+            if trace_sound_runner_enabled() {
+                let preview = self
+                    .bus
+                    .read_bytes(exhausted_buf_ptr + 16, 16)
+                    .iter()
+                    .map(|byte| format!("{:02X}", byte))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                eprintln!(
+                    "[SOUND-DB] fire-doubleback tick={} chan=${:08X} header=${:08X} idx={} buf=${:08X} frames={} flags_before=${:08X} callback=${:08X} sr=${:04X} first={}",
+                    self.bus.read_long(0x016A),
+                    cb.chan_ptr,
+                    cb.header_ptr,
+                    cb.exhausted_buffer_index,
+                    exhausted_buf_ptr,
+                    self.bus.read_long(exhausted_buf_ptr),
+                    flags,
+                    cb.callback_addr,
+                    self.cpu.core.get_sr(),
+                    preview
+                );
+            }
             self.bus.write_long(exhausted_buf_ptr + 4, flags & !0x01);
         }
 
-        // Mark that we've dispatched the callback.
-        if let Some(chan) = self.dispatcher.sound_manager.find_channel_mut(cb.chan_ptr) {
-            if let Some(ref mut db) = chan.double_buffer {
-                db.waiting_for_callback = false;
-            }
-        }
-
         if cb.callback_addr == 0 {
-            return;
+            return false;
         }
 
         // Allocate trampoline on first use.
@@ -2947,8 +3136,8 @@ impl FixtureRunner {
         //
         // Trampoline layout (34 bytes):
         //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)  ; 48E7 F0F0 (save regs)
-        //   +4:  MOVE.L  #chanPtr,-(SP)       ; 2F3C xxxx xxxx (push param1 first = deeper)
-        //   +10: MOVE.L  #exhaustedBuf,-(SP) ; 2F3C xxxx xxxx (push param2 last = top)
+        //   +4:  MOVE.L  #chanPtr,-(SP)       ; 2F3C xxxx xxxx (Pascal param1 = deeper)
+        //   +10: MOVE.L  #exhaustedBuf,-(SP) ; 2F3C xxxx xxxx (Pascal param2 = top)
         //   +16: JSR     callback             ; 4EB9 xxxx xxxx
         //   +22: MOVEA.L #savedRegsSP,A7      ; ignore guest callback cleanup convention
         //   +28: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F (restore regs)
@@ -2983,6 +3172,7 @@ impl FixtureRunner {
         // guest CPU state must be restored after the callback unwinds.
         // Sound 1994, 2-72
         self.inject_interrupt_callback(ActiveInterruptCallbackSource::SoundDoubleBack, tramp);
+        true
     }
 
     fn dialog_callback_scratch_base(&self) -> u32 {
@@ -3862,10 +4052,45 @@ fn load_app_generic<M: MemoryBus>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::AudioBackend;
     use crate::loader::{Code0Header, LoadedApp};
-    use crate::sound::{DoubleBufferState, PendingDoubleBackCallback, SndChannel, OUTPUT_RATE};
+    use crate::sound::{
+        DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
+        SndChannel, SndCommand, OUTPUT_RATE,
+    };
     use crate::trap::dispatch::{DialogTrackingState, QueuedEvent, TimerTask, VblTask};
+    use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
+    use std::rc::Rc;
+
+    #[derive(Clone, Default)]
+    struct CapturingAudioBackend {
+        stereo_samples: Rc<RefCell<Vec<u8>>>,
+    }
+
+    impl CapturingAudioBackend {
+        fn new() -> (Self, Rc<RefCell<Vec<u8>>>) {
+            let stereo_samples = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    stereo_samples: stereo_samples.clone(),
+                },
+                stereo_samples,
+            )
+        }
+    }
+
+    impl AudioBackend for CapturingAudioBackend {
+        fn queue_samples(&mut self, samples: &[u8]) {
+            self.stereo_samples.borrow_mut().extend(samples);
+        }
+
+        fn queue_stereo_samples(&mut self, samples: &[u8]) {
+            self.stereo_samples.borrow_mut().extend(samples);
+        }
+
+        fn stop(&mut self) {}
+    }
 
     fn write_double_buffer(bus: &mut MacMemoryBus, ptr: u32, samples: &[u8]) {
         bus.write_long(ptr, samples.len() as u32);
@@ -3873,6 +4098,91 @@ mod tests {
         for (offset, sample) in samples.iter().copied().enumerate() {
             bus.write_byte(ptr + 16 + offset as u32, sample);
         }
+    }
+
+    #[test]
+    fn headless_run_steps_does_not_implicitly_mix_audio() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+        for offset in (0..16).step_by(2) {
+            runner.bus.write_word(program_start + offset, 0x4E71); // NOP
+        }
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+
+        let mut chan = SndChannel::new(0x0039_38C8, false);
+        chan.play_buffer(
+            vec![0x90, 0x91, 0x92],
+            OUTPUT_RATE << 16,
+            PlaybackKind::Buffer,
+            0,
+        );
+        runner.dispatcher.sound_manager.channels.push(chan);
+
+        let (steps, running) = runner.run_steps(2, None);
+
+        assert!(running);
+        assert_eq!(steps, 2);
+        assert_eq!(
+            runner.audio_buffer_len(),
+            0,
+            "plain headless stepping must not consume sound buffers"
+        );
+        assert_eq!(runner.dispatcher.sound_manager.debug_samples_mixed, 0);
+
+        runner.mix_audio(2);
+        assert_eq!(runner.drain_audio(), vec![0x90, 0x91]);
+        assert_eq!(runner.dispatcher.sound_manager.debug_samples_mixed, 2);
+    }
+
+    #[test]
+    fn host_audio_backend_receives_silence_while_sound_manager_idle() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let (audio_backend, stereo_samples) = CapturingAudioBackend::new();
+        runner.set_audio(Box::new(audio_backend));
+
+        runner.mix_audio(4);
+
+        assert_eq!(
+            stereo_samples.borrow().as_slice(),
+            &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80]
+        );
+        assert_eq!(
+            runner.audio_buffer_len(),
+            0,
+            "host silence must not become captured guest audio"
+        );
+        assert_eq!(runner.dispatcher.sound_manager.debug_samples_mixed, 0);
+    }
+
+    #[test]
+    fn host_audio_backend_receives_low_rate_sample_hold_output() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let (audio_backend, stereo_samples) = CapturingAudioBackend::new();
+        runner.set_audio(Box::new(audio_backend));
+
+        let mut chan = SndChannel::new(0x0039_38C8, false);
+        chan.play_buffer(
+            vec![0x90, 0xA0],
+            (OUTPUT_RATE / 2) << 16,
+            PlaybackKind::Buffer,
+            0,
+        );
+        runner.dispatcher.sound_manager.channels.push(chan);
+
+        runner.mix_audio(4);
+
+        assert_eq!(
+            stereo_samples.borrow().as_slice(),
+            &[
+                0x90, 0x90, // source[0] at position 0.0
+                0x90, 0x90, // source[0] held at position 0.5
+                0xA0, 0xA0, // source[1] at position 1.0
+                0xA0, 0xA0, // source[1] held at position 1.5
+            ],
+            "GUI/host audio path must receive the sample-hold low-rate output, not the old linear midpoint"
+        );
+        assert_eq!(runner.dispatcher.sound_manager.debug_samples_mixed, 4);
     }
 
     fn dialog_tracking_for_test(filter_proc: u32, item_hit_ptr: u32) -> DialogTrackingState {
@@ -3929,6 +4239,63 @@ mod tests {
     }
 
     #[test]
+    fn key_events_sync_low_memory_keymap() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM + 4), 0);
+        assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM + 15), 0);
+
+        runner.push_key_down(0x26, b'j');
+        runner.push_key_down(0x7E, 30);
+
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 4),
+            0x40,
+            "J key should be visible to byte/bit KeyMap readers"
+        );
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 5),
+            0,
+            "J key should not alias M at KeyMapLM byte 5 bit 6"
+        );
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 15),
+            0x40,
+            "up arrow should be visible to byte/bit KeyMap readers"
+        );
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 14),
+            0,
+            "up arrow should not be mirrored into the unused raw byte"
+        );
+
+        runner.push_key_up(0x26, b'j');
+
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 4),
+            0,
+            "J key release should clear the low-memory mirror"
+        );
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 5),
+            0,
+            "J key release should leave the M-key byte clear"
+        );
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 15),
+            0x40,
+            "unrelated byte/bit down keys should remain mirrored"
+        );
+        assert_eq!(
+            runner.bus.read_byte(addr::KEY_MAP_LM + 14),
+            0,
+            "unused raw byte should stay clear"
+        );
+    }
+
+    #[test]
     fn init_app_seeds_top_of_stack_with_nonzero_bytes() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
@@ -3951,6 +4318,40 @@ mod tests {
             runner.bus.read_long(stack_seed_start),
             0xA5A5_A5A5,
             "top-of-stack window must not be zeroed"
+        );
+    }
+
+    #[test]
+    fn init_app_sets_legacy_sound_driver_low_memory_defaults() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+        };
+
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner
+                .bus
+                .read_byte(crate::memory::globals::addr::SD_VOLUME),
+            1,
+            "SdVolume ($0260) should boot to the nonzero legacy compatibility value"
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_byte(crate::memory::globals::addr::SOUND_LEVEL),
+            0,
+            "SoundLevel ($027F) is a distinct Sound Driver amplitude byte"
         );
     }
 
@@ -4058,6 +4459,52 @@ mod tests {
     }
 
     #[test]
+    fn sound_doubleback_callback_trampoline_stacks_classic_pascal_order() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = runner.bus.alloc(2);
+        let header_ptr = 0x0020_0000;
+        let chan_ptr = 0x0039_38C8;
+        let exhausted_buf_ptr = 0x0020_1000;
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping args.
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.bus.write_long(header_ptr + 12, exhausted_buf_ptr);
+        runner.bus.write_long(exhausted_buf_ptr + 4, 0x0000_0001);
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_callbacks
+            .push(PendingDoubleBackCallback {
+                callback_addr,
+                chan_ptr,
+                header_ptr,
+                exhausted_buffer_index: 0,
+            });
+
+        runner.fire_sound_doubleback_callbacks();
+        let (_steps, running) = runner.run_steps(24, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        let saved_regs_sp = interrupted_sp - 4 - 32;
+        assert_eq!(
+            runner.bus.read_long(saved_regs_sp - 4),
+            chan_ptr,
+            "first declared Pascal argument is deeper on the stack"
+        );
+        assert_eq!(
+            runner.bus.read_long(saved_regs_sp - 8),
+            exhausted_buf_ptr,
+            "last declared Pascal argument is nearest the return address"
+        );
+    }
+
+    #[test]
     fn mix_audio_loads_ready_double_buffer_without_boundary_silence() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let chan_ptr = 0x0039_38C8;
@@ -4086,6 +4533,7 @@ mod tests {
             sample_size: 8,
             last_buffer_seen: false,
             waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
         });
         crate::trap::TrapDispatcher::load_double_buffer_samples(
             &mut runner.bus,
@@ -4106,13 +4554,13 @@ mod tests {
         );
         assert_eq!(
             runner.bus.read_long(buf0_ptr + 4) & 0x01,
-            0,
-            "loaded buffers are consumed by clearing dbBufferReady"
+            0x01,
+            "dbBufferReady stays set until the doubleback callback starts"
         );
         assert_eq!(
             runner.bus.read_long(buf1_ptr + 4) & 0x01,
-            0,
-            "the immediately loaded paired buffer is consumed too"
+            0x01,
+            "the paired buffer is still marked ready while it is playing"
         );
         assert_eq!(
             runner.dispatcher.sound_manager.pending_callbacks.len(),
@@ -4129,6 +4577,178 @@ mod tests {
         let db = chan.double_buffer.as_ref().expect("double-buffer active");
         assert_eq!(db.current_buffer, 1);
         assert!(db.waiting_for_callback);
+    }
+
+    #[test]
+    fn mix_audio_can_queue_other_doubleback_while_callback_is_active() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let chan_ptr = 0x0039_38C8;
+        let callback_addr = 0x0004_1234;
+        let header_ptr = runner.bus.alloc(24);
+        let buf0_ptr = runner.bus.alloc(17);
+        let buf1_ptr = runner.bus.alloc(17);
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+
+        runner.bus.write_word(interrupted_pc, 0x4E71);
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.bus.write_word(header_ptr, 1);
+        runner.bus.write_word(header_ptr + 2, 8);
+        runner.bus.write_long(header_ptr + 8, OUTPUT_RATE << 16);
+        runner.bus.write_long(header_ptr + 12, buf0_ptr);
+        runner.bus.write_long(header_ptr + 16, buf1_ptr);
+        runner.bus.write_long(header_ptr + 20, callback_addr);
+        write_double_buffer(&mut runner.bus, buf0_ptr, &[0xA0]);
+        runner.bus.write_long(buf1_ptr, 1);
+        runner.bus.write_long(buf1_ptr + 4, 0);
+
+        let mut chan = SndChannel::new(chan_ptr, false);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr,
+            current_buffer: 0,
+            callback_addr,
+            chan_ptr,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
+        });
+        crate::trap::TrapDispatcher::load_double_buffer_samples(
+            &mut runner.bus,
+            &mut chan,
+            buf0_ptr,
+            OUTPUT_RATE << 16,
+            1,
+            8,
+        );
+        runner.dispatcher.sound_manager.channels.push(chan);
+
+        runner.mix_audio(1);
+        assert_eq!(runner.dispatcher.sound_manager.pending_callbacks.len(), 1);
+        assert!(
+            runner.dispatcher.sound_manager.channels[0]
+                .double_buffer
+                .as_ref()
+                .expect("double-buffer active")
+                .waiting_for_callback
+        );
+
+        runner.fire_sound_doubleback_callbacks();
+        assert!(matches!(
+            runner
+                .active_interrupt_callback
+                .expect("doubleback callback should be active")
+                .source,
+            ActiveInterruptCallbackSource::SoundDoubleBack
+        ));
+        assert!(
+            runner.dispatcher.sound_manager.channels[0]
+                .double_buffer
+                .as_ref()
+                .expect("double-buffer active")
+                .waiting_for_callback,
+            "callback remains outstanding until guest refills a buffer"
+        );
+
+        runner.mix_audio(16);
+
+        assert_eq!(
+            runner.dispatcher.sound_manager.pending_callbacks.len(),
+            1,
+            "the paired unready buffer may queue its own callback while buffer 0 is active"
+        );
+        assert_eq!(
+            runner.dispatcher.sound_manager.pending_callbacks[0].exhausted_buffer_index, 1,
+            "buffer 0 must not be duplicated; buffer 1 gets the new callback"
+        );
+        let db = runner.dispatcher.sound_manager.channels[0]
+            .double_buffer
+            .as_ref()
+            .expect("double-buffer active");
+        assert!(db.waiting_for_callback);
+        assert_eq!(db.pending_callback_buffers, [true, true]);
+    }
+
+    #[test]
+    fn mix_audio_does_not_load_ready_double_buffer_while_callback_is_active() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let chan_ptr = 0x0039_38C8;
+        let callback_addr = 0x0004_1234;
+        let header_ptr = runner.bus.alloc(24);
+        let buf0_ptr = runner.bus.alloc(17);
+
+        runner.bus.write_word(header_ptr, 1);
+        runner.bus.write_word(header_ptr + 2, 8);
+        runner.bus.write_long(header_ptr + 8, OUTPUT_RATE << 16);
+        runner.bus.write_long(header_ptr + 12, buf0_ptr);
+        runner.bus.write_long(header_ptr + 20, callback_addr);
+        write_double_buffer(&mut runner.bus, buf0_ptr, &[0xA0]);
+
+        let mut chan = SndChannel::new(chan_ptr, false);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr,
+            current_buffer: 0,
+            callback_addr,
+            chan_ptr,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: true,
+            pending_callback_buffers: [true, false],
+        });
+        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source: ActiveInterruptCallbackSource::SoundDoubleBack,
+            resume_pc: 0x0001_0000,
+            resume_sp: 0x007F_FFC0,
+            d_regs: [0; 8],
+            a_regs: [0; 8],
+            ccr: 0,
+            restore_port: None,
+        });
+
+        runner.mix_audio(1);
+
+        assert_eq!(
+            runner.bus.read_long(buf0_ptr + 4) & 0x01,
+            0x01,
+            "ready buffer must not be consumed before the callback returns"
+        );
+        assert!(
+            !runner.dispatcher.sound_manager.channels[0].is_playing(),
+            "callback-active buffer load should be deferred"
+        );
+        assert_eq!(
+            runner.audio_buffer,
+            vec![0x80],
+            "the host stream stays alive with silence while waiting"
+        );
+
+        runner.active_interrupt_callback = None;
+        runner.try_load_pending_double_buffers();
+
+        assert_eq!(
+            runner.bus.read_long(buf0_ptr + 4) & 0x01,
+            0x01,
+            "returned callback buffer stays marked ready while playback owns it"
+        );
+        assert!(
+            runner.dispatcher.sound_manager.channels[0].is_playing(),
+            "returned callback makes the refilled buffer available to the mixer"
+        );
+        let db = runner.dispatcher.sound_manager.channels[0]
+            .double_buffer
+            .as_ref()
+            .expect("double-buffer active");
+        assert_eq!(db.pending_callback_buffers, [false, false]);
+
+        runner.mix_audio(1);
+        assert_eq!(runner.audio_buffer, vec![0x80, 0xA0]);
     }
 
     #[test]
@@ -4161,6 +4781,7 @@ mod tests {
             sample_size: 8,
             last_buffer_seen: false,
             waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
         });
         runner.dispatcher.sound_manager.channels.push(chan);
 
@@ -4170,10 +4791,71 @@ mod tests {
         assert!(chan.is_playing(), "ready alternate buffer should load");
         let db = chan.double_buffer.as_ref().expect("double-buffer active");
         assert_eq!(db.current_buffer, 0);
+        assert!(
+            !db.waiting_for_callback,
+            "loading a ready buffer completes the outstanding refill wait"
+        );
         assert_eq!(
             runner.bus.read_long(buf0_ptr + 4) & 0x01,
-            0,
-            "loaded alternate buffer is consumed"
+            0x01,
+            "loading a ready alternate must not clear dbBufferReady before playback exhausts"
+        );
+    }
+
+    #[test]
+    fn try_load_pending_double_buffers_does_not_replay_callback_pending_slot() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let chan_ptr = 0x0039_38C8;
+        let callback_addr = 0x0004_1234;
+        let header_ptr = runner.bus.alloc(24);
+        let buf0_ptr = runner.bus.alloc(17);
+        let buf1_ptr = runner.bus.alloc(17);
+
+        runner.bus.write_word(header_ptr, 1);
+        runner.bus.write_word(header_ptr + 2, 8);
+        runner.bus.write_long(header_ptr + 8, OUTPUT_RATE << 16);
+        runner.bus.write_long(header_ptr + 12, buf0_ptr);
+        runner.bus.write_long(header_ptr + 16, buf1_ptr);
+        runner.bus.write_long(header_ptr + 20, callback_addr);
+        write_double_buffer(&mut runner.bus, buf0_ptr, &[0xA0]);
+        runner.bus.write_long(buf1_ptr, 1);
+        runner.bus.write_long(buf1_ptr + 4, 0);
+
+        let mut chan = SndChannel::new(chan_ptr, false);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr,
+            current_buffer: 0,
+            callback_addr,
+            chan_ptr,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: true,
+            pending_callback_buffers: [true, false],
+        });
+        runner.dispatcher.sound_manager.channels.push(chan);
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_callbacks
+            .push(PendingDoubleBackCallback {
+                callback_addr,
+                chan_ptr,
+                header_ptr,
+                exhausted_buffer_index: 0,
+            });
+
+        runner.try_load_pending_double_buffers();
+
+        assert!(
+            !runner.dispatcher.sound_manager.channels[0].is_playing(),
+            "an exhausted slot must not replay just because dbBufferReady remains set"
+        );
+        assert_eq!(
+            runner.bus.read_long(buf0_ptr + 4) & 0x01,
+            0x01,
+            "the flag remains ready until fire_sound_doubleback_callbacks clears it"
         );
     }
 
@@ -4335,6 +5017,121 @@ mod tests {
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
+    }
+
+    #[test]
+    fn run_pending_sound_work_does_not_advance_ticks_or_foreground_code() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = runner.bus.alloc(2);
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping args.
+        runner.bus.write_word(interrupted_pc, 0x4E71); // foreground NOP
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.bus.write_long(0x016A, 41);
+        runner.dispatcher.tick_count = 41;
+        runner.set_instructions_per_tick(1);
+        runner.tick_budget = 0;
+
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(PendingSoundCallback::Command {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                cmd: SndCommand {
+                    cmd: crate::sound::cmd::CALLBACK,
+                    param1: 0,
+                    param2: 0,
+                },
+            });
+
+        let (steps, running) = runner.run_pending_sound_work(32);
+
+        assert!(running);
+        assert!(steps > 0, "sound callback trampoline should execute");
+        assert_eq!(
+            runner.guest_tick(),
+            41,
+            "callback-only slices must not advance application-visible ticks"
+        );
+        assert_eq!(
+            runner.cpu.read_reg(Register::PC),
+            interrupted_pc,
+            "sound callback service must stop before resumed foreground code runs"
+        );
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert!(!runner.has_pending_sound_work());
+    }
+
+    #[test]
+    fn run_steps_paces_pending_sound_doublebacks_to_one_per_slice() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = runner.bus.alloc(2);
+        let header_ptr = runner.bus.alloc(24);
+        let buf0_ptr = runner.bus.alloc(16);
+        let buf1_ptr = runner.bus.alloc(16);
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping args.
+        for offset in (0..512).step_by(2) {
+            runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
+        }
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.bus.write_long(header_ptr + 12, buf0_ptr);
+        runner.bus.write_long(header_ptr + 16, buf1_ptr);
+        runner.bus.write_long(buf0_ptr + 4, 0x0000_0001);
+        runner.bus.write_long(buf1_ptr + 4, 0x0000_0001);
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_callbacks
+            .push(PendingDoubleBackCallback {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                header_ptr,
+                exhausted_buffer_index: 0,
+            });
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_callbacks
+            .push(PendingDoubleBackCallback {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                header_ptr,
+                exhausted_buffer_index: 1,
+            });
+
+        let (_steps, running) = runner.run_steps(96, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(
+            runner.dispatcher.sound_manager.pending_callbacks.len(),
+            1,
+            "one CPU slice must not drain back-to-back doubleback interrupts"
+        );
+        assert_eq!(
+            runner.dispatcher.sound_manager.pending_callbacks[0].exhausted_buffer_index,
+            1
+        );
+
+        let (_steps, running) = runner.run_steps(96, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert!(
+            runner.dispatcher.sound_manager.pending_callbacks.is_empty(),
+            "the next CPU slice may dispatch the next pending doubleback"
+        );
     }
 
     #[test]

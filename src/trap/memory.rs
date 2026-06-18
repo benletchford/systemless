@@ -16,6 +16,23 @@ fn trace_memory_enabled() -> bool {
     *TRACE_MEMORY.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MEMORY").is_some())
 }
 
+fn trace_sound_enabled() -> bool {
+    std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some()
+}
+
+fn format_ostype(res_type: [u8; 4]) -> String {
+    res_type
+        .into_iter()
+        .map(|byte| {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                byte as char
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
 fn trace_vbl_enabled() -> bool {
     *TRACE_VBL.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_VBL").is_some())
 }
@@ -563,6 +580,29 @@ impl super::TrapDispatcher {
             (false, 0x29) | (false, 0x2A) | (false, 0x64) => {
                 let handle = cpu.read_reg(Register::A0);
                 if handle != 0 {
+                    if trace_sound_enabled() {
+                        if let Some((ptr, res_type, res_id)) =
+                            self.loaded_handles.get(&handle).copied()
+                        {
+                            if res_type == *b"snd " {
+                                let trap_site = cpu.read_reg(Register::PC).wrapping_sub(2);
+                                let name = match trap_num {
+                                    0x29 => "HLock",
+                                    0x2A => "HUnlock",
+                                    _ => "MoveHHi",
+                                };
+                                eprintln!(
+                                    "[SOUND-MEM] {} @${:08X} handle=${:08X} ptr=${:08X} {} id={}",
+                                    name,
+                                    trap_site,
+                                    handle,
+                                    ptr,
+                                    format_ostype(res_type),
+                                    res_id
+                                );
+                            }
+                        }
+                    }
                     match trap_num {
                         0x29 => {
                             let bits = self.handle_state_bits.entry(handle).or_insert(0);
@@ -595,6 +635,23 @@ impl super::TrapDispatcher {
                 } else {
                     let ptr = bus.read_long(handle);
                     let size = bus.get_alloc_size(ptr).unwrap_or(0);
+                    if trace_sound_enabled() {
+                        if let Some((_resource_ptr, res_type, res_id)) =
+                            self.loaded_handles.get(&handle).copied()
+                        {
+                            if res_type == *b"snd " {
+                                eprintln!(
+                                    "[SOUND-MEM] GetHandleSize @${:08X} handle=${:08X} ptr=${:08X} {} id={} size={}",
+                                    trap_site,
+                                    handle,
+                                    ptr,
+                                    format_ostype(res_type),
+                                    res_id,
+                                    size
+                                );
+                            }
+                        }
+                    }
                     if trace_memory_site(trap_site) {
                         eprintln!(
                             "[MEM] GetHandleSize @${:08X} handle=${:08X} ptr=${:08X} size={}",

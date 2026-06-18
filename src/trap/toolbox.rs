@@ -49,6 +49,24 @@ fn standard_file_put_reply_old(bus: &mut MacMemoryBus, reply_ptr: u32, vref: i16
     bus.write_pstring(reply_ptr + 10, name);
 }
 
+fn standard_file_get_reply_old(
+    bus: &mut MacMemoryBus,
+    reply_ptr: u32,
+    wd_ref: i16,
+    file_type: u32,
+    name: &[u8],
+) {
+    if reply_ptr == 0 {
+        return;
+    }
+    bus.write_byte(reply_ptr, 0xFF); // good = TRUE
+    bus.write_byte(reply_ptr + 1, 0); // copy = FALSE
+    bus.write_long(reply_ptr + 2, file_type);
+    bus.write_word(reply_ptr + 6, wd_ref as u16);
+    bus.write_word(reply_ptr + 8, 0); // version
+    bus.write_pstring(reply_ptr + 10, name);
+}
+
 fn standard_file_put_reply_modern(
     bus: &mut MacMemoryBus,
     reply_ptr: u32,
@@ -71,6 +89,42 @@ fn standard_file_put_reply_modern(
     bus.write_byte(reply_ptr + 81, 0); // sfIsVolume
     bus.write_long(reply_ptr + 82, 0); // sfReserved1
     bus.write_word(reply_ptr + 86, 0); // sfReserved2
+}
+
+fn standard_file_get_reply_modern(
+    bus: &mut MacMemoryBus,
+    reply_ptr: u32,
+    vref: i16,
+    dir_id: u32,
+    file_type: u32,
+    finder_flags: u16,
+    name: &[u8],
+) {
+    if reply_ptr == 0 {
+        return;
+    }
+    bus.write_byte(reply_ptr, 0xFF); // sfGood = TRUE
+    bus.write_byte(reply_ptr + 1, 0); // sfReplacing = FALSE
+    bus.write_long(reply_ptr + 2, file_type); // sfType
+    bus.write_word(reply_ptr + 6, vref as u16); // sfFile.vRefNum
+    bus.write_long(reply_ptr + 8, dir_id); // sfFile.parID
+    bus.write_pstring(reply_ptr + 12, name); // sfFile.name
+    bus.write_word(reply_ptr + 76, 0); // sfScript
+    bus.write_word(reply_ptr + 78, finder_flags); // sfFlags
+    bus.write_byte(reply_ptr + 80, 0); // sfIsFolder
+    bus.write_byte(reply_ptr + 81, 0); // sfIsVolume
+    bus.write_long(reply_ptr + 82, 0); // sfReserved1
+    bus.write_word(reply_ptr + 86, 0); // sfReserved2
+}
+
+#[derive(Clone, Debug)]
+struct StandardFileSelection {
+    name: Vec<u8>,
+    vref: i16,
+    wd_ref: i16,
+    dir_id: u32,
+    file_type: u32,
+    finder_flags: u16,
 }
 
 #[inline]
@@ -261,6 +315,37 @@ impl super::TrapDispatcher {
         bus.write_word(addr + 2, rect.1 as u16);
         bus.write_word(addr + 4, rect.2 as u16);
         bus.write_word(addr + 6, rect.3 as u16);
+    }
+
+    fn standard_file_env_selection(&mut self) -> Option<StandardFileSelection> {
+        let requested = std::env::var("SYSTEMLESS_STANDARD_GET_FILE").ok()?;
+        let requested = requested.trim();
+        if requested.is_empty() {
+            return None;
+        }
+
+        let default_dir_id = self.default_dir_id;
+        let vfs_key = self
+            .find_vfs_file_in_directory(default_dir_id, requested)
+            .or_else(|| self.find_vfs_rsrc_file_in_directory(default_dir_id, requested))
+            .or_else(|| self.find_vfs_file(requested))
+            .or_else(|| self.find_vfs_rsrc_file(requested))?;
+        let metadata = self.vfs_file_metadata(&vfs_key)?;
+        let vref = Self::boot_volume_ref_num();
+        let wd_ref = self
+            .open_working_directory(vref, metadata.parent_dir_id, 0)
+            .unwrap_or(vref);
+        let mut name = encode_mac_roman_lossy(Self::vfs_basename(&vfs_key));
+        name.truncate(63);
+
+        Some(StandardFileSelection {
+            name,
+            vref,
+            wd_ref,
+            dir_id: metadata.parent_dir_id,
+            file_type: metadata.file_type,
+            finder_flags: metadata.finder_flags,
+        })
     }
 
     fn build_alias_record(&mut self, bus: &MacMemoryBus, target_ptr: u32) -> Vec<u8> {
@@ -4874,25 +4959,31 @@ impl super::TrapDispatcher {
             }
 
             // GetKeys ($A976)
+            // Reads the current keyboard and keypad state into a KeyMap.
             // PROCEDURE GetKeys(VAR theKeys: KeyMap);
-            // KeyMap = PACKED ARRAY[0..127] OF BOOLEAN = 16 bytes
-            // GetKeys ($A976): Returns 16-byte KeyMap (all zeros — no keys pressed)
+            // Inside Macintosh Volume I, I-259; Macintosh Toolbox Essentials, 2-110
             (true, 0x176) => {
                 let sp = cpu.read_reg(Register::A7);
                 let keys_ptr = bus.read_long(sp);
+                let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
-                        "[INPUT] GetKeys ptr=${:08X} key_map={:02X?}",
-                        keys_ptr, self.key_map
+                        "[INPUT] GetKeys tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
+                        self.tick_count, trap_pc, keys_ptr, self.key_map
                     );
                 }
                 if std::env::var_os("SYSTEMLESS_TRACE_GETKEYS_NONZERO").is_some()
                     && self.key_map.iter().any(|&byte| byte != 0)
                 {
                     eprintln!(
-                        "[INPUT] GetKeys nonzero tick={} ptr=${:08X} key_map={:02X?}",
-                        self.tick_count, keys_ptr, self.key_map
+                        "[INPUT] GetKeys nonzero tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
+                        self.tick_count, trap_pc, keys_ptr, self.key_map
                     );
+                }
+                if self.key_map.iter().any(|&byte| byte != 0) {
+                    self.debug_getkeys_nonzero_count =
+                        self.debug_getkeys_nonzero_count.saturating_add(1);
+                    self.debug_last_getkeys_nonzero_key_map = self.key_map;
                 }
                 if keys_ptr != 0 {
                     bus.write_bytes(keys_ptr, &self.key_map);
@@ -6893,11 +6984,13 @@ impl super::TrapDispatcher {
             // pointer that the caller pushed by reference.
             //
             // Systemless has no native file-picker UI and never displays
-            // a modal SF dialog. Get-file routines still collapse to the
-            // documented "user canceled" path. Put-file routines accept
-            // the caller's default/original filename in the app's current
-            // directory so games that require a new save file can continue
-            // through their normal File Manager create/open path.
+            // a modal SF dialog. Get-file routines normally collapse to
+            // the documented "user canceled" path; headless harnesses can
+            // set SYSTEMLESS_STANDARD_GET_FILE to select a VFS file
+            // explicitly. Put-file routines accept the caller's
+            // default/original filename in the app's current directory so
+            // games that require a new save file can continue through their
+            // normal File Manager create/open path.
             //
             // Selector encoding is pure low-byte routine number
             // (high byte $00) per IM:Files 3-45..3-54 explicit
@@ -6916,7 +7009,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I (1985), pages I-518..I-527.
             // Inside Macintosh Volume VI (1991), pages 26-21..26-25
             // (CustomGetFile / CustomPutFile additions).
-            // Pack3 / Standard File ($A9EA): Per-selector Pascal frames per IM:Files 3-45..3-54: $0001 SFPutFile pop 22 reply@SP+2, $0002 SFGetFile pop 28 reply@SP+2, $0003 SFPPutFile pop 28 reply@SP+8, $0004 SFPGetFile pop 34 reply@SP+8, $0005 StandardPutFile pop 14 reply@SP+2, $0006 StandardGetFile pop 16 reply@SP+2, $0007 CustomPutFile pop 40 reply@SP+28, $0008 CustomGetFile pop 42 reply@SP+28. Get-file selectors write cancel; put-file selectors return an accepted reply using the supplied default/original name.
+            // Pack3 / Standard File ($A9EA): Per-selector Pascal frames per IM:Files 3-45..3-54: $0001 SFPutFile pop 22 reply@SP+2, $0002 SFGetFile pop 28 reply@SP+2, $0003 SFPPutFile pop 28 reply@SP+8, $0004 SFPGetFile pop 34 reply@SP+8, $0005 StandardPutFile pop 14 reply@SP+2, $0006 StandardGetFile pop 16 reply@SP+2, $0007 CustomPutFile pop 40 reply@SP+28, $0008 CustomGetFile pop 42 reply@SP+28. Get-file selectors write cancel or an explicit selected file; put-file selectors return an accepted reply using the supplied default/original name.
             (true, 0x1EA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
@@ -7015,6 +7108,31 @@ impl super::TrapDispatcher {
                         standard_file_put_reply_modern(bus, reply_ptr, vref, dir_id, &name);
                     } else {
                         standard_file_put_reply_old(bus, reply_ptr, self.app_wd_refnum, &name);
+                    }
+                } else if let Some(selection) = self.standard_file_env_selection() {
+                    // StandardGetFile returns sfGood, sfType, and an FSSpec
+                    // for the selected file; SFGetFile's old SFReply uses a
+                    // working-directory refnum in vRefNum.
+                    // Inside Macintosh: Files (1992), pages 1-12, 3-42,
+                    // 3-45..3-54.
+                    if modern_reply {
+                        standard_file_get_reply_modern(
+                            bus,
+                            reply_ptr,
+                            selection.vref,
+                            selection.dir_id,
+                            selection.file_type,
+                            selection.finder_flags,
+                            &selection.name,
+                        );
+                    } else {
+                        standard_file_get_reply_old(
+                            bus,
+                            reply_ptr,
+                            selection.wd_ref,
+                            selection.file_type,
+                            &selection.name,
+                        );
                     }
                 } else {
                     standard_file_cancel_reply(bus, reply_ptr);
@@ -9533,10 +9651,59 @@ mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
     use crate::cpu::{CpuOps, Register};
-    use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::memory::MemoryBus;
     use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
     use crate::trap::extended80::Extended80;
     use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static STANDARD_FILE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct StandardFileEnvGuard {
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for StandardFileEnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                // SAFETY: The guard holds the module-local environment
+                // mutex while mutating this process-wide test variable.
+                unsafe { std::env::set_var("SYSTEMLESS_STANDARD_GET_FILE", previous) };
+            } else {
+                // SAFETY: The guard holds the module-local environment
+                // mutex while mutating this process-wide test variable.
+                unsafe { std::env::remove_var("SYSTEMLESS_STANDARD_GET_FILE") };
+            }
+        }
+    }
+
+    fn set_standard_file_env(value: &str) -> StandardFileEnvGuard {
+        let lock = STANDARD_FILE_ENV_LOCK.get_or_init(|| Mutex::new(()));
+        let guard = lock.lock().unwrap();
+        let previous = std::env::var_os("SYSTEMLESS_STANDARD_GET_FILE");
+        // SAFETY: The guard holds the module-local environment mutex while
+        // mutating this process-wide test variable.
+        unsafe { std::env::set_var("SYSTEMLESS_STANDARD_GET_FILE", value) };
+        StandardFileEnvGuard {
+            previous,
+            _lock: guard,
+        }
+    }
+
+    fn clear_standard_file_env() -> StandardFileEnvGuard {
+        let lock = STANDARD_FILE_ENV_LOCK.get_or_init(|| Mutex::new(()));
+        let guard = lock.lock().unwrap();
+        let previous = std::env::var_os("SYSTEMLESS_STANDARD_GET_FILE");
+        // SAFETY: The guard holds the module-local environment mutex while
+        // mutating this process-wide test variable.
+        unsafe { std::env::remove_var("SYSTEMLESS_STANDARD_GET_FILE") };
+        StandardFileEnvGuard {
+            previous,
+            _lock: guard,
+        }
+    }
 
     fn read_screen_pixel_1bpp(
         bus: &crate::memory::MacMemoryBus,
@@ -10599,19 +10766,24 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
-        let key_byte = |bus: &MacMemoryBus, key: u8| {
-            let byte = keys_ptr + (key / 8) as u32;
-            bus.read_byte(byte)
-        };
-        let key_mask = |key: u8| 1u8 << (key % 8);
-
-        assert_ne!(key_byte(&bus, 0x7B) & key_mask(0x7B), 0);
-        assert_ne!(key_byte(&bus, 0x31) & key_mask(0x31), 0);
-        assert_ne!(key_byte(&bus, 0x26) & key_mask(0x26), 0);
-        assert_ne!(key_byte(&bus, 0x7E) & key_mask(0x7E), 0);
+        assert!(disp.key_is_down(0x7B));
+        assert!(disp.key_is_down(0x31));
+        assert!(disp.key_is_down(0x26));
+        assert!(disp.key_is_down(0x7E));
+        assert!(!disp.key_is_down(0x2E), "J must not alias the M key");
         assert_eq!(bus.read_byte(keys_ptr + 4), 0x40, "J key byte");
+        assert_eq!(
+            bus.read_byte(keys_ptr + 5),
+            0,
+            "M key byte should stay clear when J is down"
+        );
         assert_eq!(bus.read_byte(keys_ptr + 6), 0x02, "space key byte");
-        assert_eq!(bus.read_byte(keys_ptr + 15), 0x48, "left/up arrow byte");
+        assert_eq!(bus.read_byte(keys_ptr + 15), 0x48, "left/up arrow key byte");
+        assert_eq!(
+            bus.read_byte(keys_ptr + 14),
+            0,
+            "unused arrow byte should stay clear"
+        );
 
         // Release left arrow and verify it clears.
         disp.push_key_up(0x7B, 28);
@@ -10619,10 +10791,24 @@ mod tests {
         bus.write_long(sp, keys_ptr);
         let result = disp.dispatch_toolbox(true, 0x176, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(key_byte(&bus, 0x7B) & key_mask(0x7B), 0);
-        assert_ne!(key_byte(&bus, 0x31) & key_mask(0x31), 0);
-        assert_ne!(key_byte(&bus, 0x26) & key_mask(0x26), 0);
-        assert_ne!(key_byte(&bus, 0x7E) & key_mask(0x7E), 0);
+        assert!(!disp.key_is_down(0x7B));
+        assert!(disp.key_is_down(0x31));
+        assert!(disp.key_is_down(0x26));
+        assert!(disp.key_is_down(0x7E));
+        assert_eq!(bus.read_byte(keys_ptr + 15), 0x40, "only up remains");
+
+        // J ($26) and M ($2E) differ only by KeyMap byte. This catches the
+        // byte-pair swap that makes EV/Marathon direct pollers invert them.
+        disp.push_key_up(0x26, b'j');
+        disp.push_key_down(0x2E, b'm');
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, keys_ptr);
+        let result = disp.dispatch_toolbox(true, 0x176, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert!(!disp.key_is_down(0x26));
+        assert!(disp.key_is_down(0x2E));
+        assert_eq!(bus.read_byte(keys_ptr + 4), 0, "J byte should be clear");
+        assert_eq!(bus.read_byte(keys_ptr + 5), 0x40, "M key byte");
     }
 
     // GetMouse ($A972)
@@ -16667,6 +16853,7 @@ mod tests {
     // IM:Files 1992 pp. 3-50 and 3-61: cancel sets sfGood to FALSE.
     #[test]
     fn standard_get_file_cancel_sets_sfgood_false_and_pops_16_bytes() {
+        let _env = clear_standard_file_env();
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let reply_ptr = 0x320000u32;
@@ -16685,10 +16872,48 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
+    // Pack3 / Standard File ($A9EA) — StandardGetFile selector $0006
+    // IM:Files 1992 pp. 3-42 and 3-50: Open returns sfType and an FSSpec.
+    #[test]
+    fn standard_get_file_env_selection_returns_fsspec_and_pops_16_bytes() {
+        let _env = set_standard_file_env("Tom Fighter Paris");
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x320080u32;
+        let pilots_dir = disp.ensure_vfs_directory("Pilots");
+        disp.default_dir_id = pilots_dir;
+        disp.vfs_rsrc
+            .insert("Pilots/Tom Fighter Paris".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("Pilots/Tom Fighter Paris", *b"PIL ", *b"EVO!", 0x4000);
+        bus.write_word(sp, 0x0006); // StandardGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr + 1), 0);
+        assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
+        assert_eq!(
+            bus.read_word(reply_ptr + 6),
+            crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+        );
+        assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
+        assert_eq!(
+            bus.read_pstring(reply_ptr + 12),
+            b"Tom Fighter Paris".to_vec()
+        );
+        assert_eq!(bus.read_word(reply_ptr + 78), 0x4000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
     // Pack3 / Standard File ($A9EA) — SFGetFile selector $0002
     // IM:Files 1992 pp. 3-53 and 3-61; IM:I I-523..I-526.
     #[test]
     fn sf_get_file_cancel_sets_good_false_and_pops_28_bytes() {
+        let _env = clear_standard_file_env();
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let reply_ptr = 0x320100u32;
@@ -16701,6 +16926,42 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         assert_eq!(bus.read_byte(reply_ptr), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 28);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — SFGetFile selector $0002.
+    // IM:Files 1992 p. 1-12: old SFReply.vRefNum is a WDRefNum.
+    #[test]
+    fn sf_get_file_env_selection_returns_working_directory_refnum_and_pops_28_bytes() {
+        let _env = set_standard_file_env("Pilots/Tom Fighter Paris");
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x320140u32;
+        let pilots_dir = disp.ensure_vfs_directory("Pilots");
+        disp.vfs
+            .insert("Pilots/Tom Fighter Paris".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("Pilots/Tom Fighter Paris", *b"PIL ", *b"EVO!", 0);
+        bus.write_word(sp, 0x0002); // SFGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        let wd_ref = bus.read_word(reply_ptr + 6) as i16;
+        let wd_info = disp
+            .working_directory_info(wd_ref)
+            .expect("SFGetFile should return a WDRefNum for the selected file directory");
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr + 1), 0);
+        assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
+        assert_eq!(wd_info.dir_id, pilots_dir);
+        assert_eq!(bus.read_word(reply_ptr + 8), 0);
+        assert_eq!(
+            bus.read_pstring(reply_ptr + 10),
+            b"Tom Fighter Paris".to_vec()
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp + 28);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
@@ -16766,6 +17027,7 @@ mod tests {
     // IM:Files 1992 pp. 3-51..3-54: reply pointer is still the VAR output.
     #[test]
     fn custom_get_file_cancel_uses_reply_pointer_at_sp_plus_28_and_pops_42_bytes() {
+        let _env = clear_standard_file_env();
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let decoy_reply_ptr = 0x320180u32;

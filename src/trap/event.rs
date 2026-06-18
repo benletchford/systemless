@@ -177,6 +177,11 @@ impl super::TrapDispatcher {
             if event.what == 2 {
                 self.mouse_button = false;
             }
+            if matches!(event.what, 3 | 4) {
+                self.debug_key_event_delivery_count =
+                    self.debug_key_event_delivery_count.saturating_add(1);
+                self.debug_last_key_event_message = event.message;
+            }
             return (
                 event.what,
                 event.message,

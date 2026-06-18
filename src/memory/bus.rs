@@ -144,6 +144,16 @@ fn mem_read_trace_range() -> Option<(u32, u32)> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mem_read_trace_active() -> bool {
+    mem_read_trace_range().is_some()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn mem_read_trace_active() -> bool {
+    false
+}
+
 #[inline]
 fn maybe_log_mem_read(address: u32, width: u8, value: u32) {
     #[cfg(target_arch = "wasm32")]

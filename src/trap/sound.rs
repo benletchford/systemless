@@ -6,7 +6,7 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::sound::{self, SndChannel, SndCommand};
+use crate::sound::{self, SndChannel, SndCommand, StereoSample};
 use crate::Result;
 
 /// Size of the guest SndChannel record we allocate.
@@ -29,6 +29,25 @@ use std::sync::OnceLock;
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
 fn trace_sound_enabled() -> bool {
     *TRACE_SOUND.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some())
+}
+
+static TRACE_SOUND_SAMPLES: OnceLock<bool> = OnceLock::new();
+fn trace_sound_samples_enabled() -> bool {
+    *TRACE_SOUND_SAMPLES
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND_SAMPLES").is_some())
+}
+
+fn synth_sys_beep_samples() -> Vec<u8> {
+    let len = (sound::OUTPUT_RATE as usize * 90) / 1000;
+    let half_period = (sound::OUTPUT_RATE as usize / (880 * 2)).max(1);
+    let mut samples = Vec::with_capacity(len);
+    for i in 0..len {
+        let polarity = if (i / half_period) & 1 == 0 { 1 } else { -1 };
+        let envelope = (len - i) as i32;
+        let amplitude = 72 * envelope / len.max(1) as i32;
+        samples.push((0x80i32 + polarity * amplitude).clamp(0, 255) as u8);
+    }
+    samples
 }
 
 impl super::TrapDispatcher {
@@ -75,6 +94,32 @@ impl super::TrapDispatcher {
                 bus.free(chan.guest_ptr);
             }
         }
+    }
+
+    pub(crate) fn release_finished_internal_sound_channels(&mut self, bus: &mut MacMemoryBus) {
+        let releasable = self.sound_manager.idle_auto_dispose_channel_ptrs();
+        for chan_ptr in releasable {
+            self.release_sound_channel(bus, chan_ptr);
+        }
+    }
+
+    fn play_sys_beep(&mut self, bus: &mut MacMemoryBus) {
+        let volume = self.sound_manager.sys_beep_volume();
+        if volume & 0xFFFF == 0 && (volume >> 16) & 0xFFFF == 0 {
+            return;
+        }
+
+        let guest_ptr = bus.alloc(GUEST_SND_CHANNEL_SIZE);
+        let mut chan = SndChannel::new(guest_ptr, true);
+        chan.set_volume(volume);
+        chan.mark_auto_dispose_when_idle();
+        chan.play_buffer(
+            synth_sys_beep_samples(),
+            crate::sound::OUTPUT_RATE << 16,
+            sound::PlaybackKind::Buffer,
+            0,
+        );
+        self.sound_manager.channels.push(chan);
     }
 
     pub(crate) fn dispatch_sound<C: CpuOps>(
@@ -131,32 +176,13 @@ impl super::TrapDispatcher {
             // Sound Manager Stub family (HLE-no-audio rationale)
             // ============================================================
             //
-            // Three Sound Manager traps below — $A9C8 SysBeep, $A802
-            // SndAddModifier, $A806 SndControl — collapse to no-op /
-            // noErr-returning stubs in Systemless because the underlying
-            // facilities are not modelled. The HLE compromise is the
-            // same across all three: the trap pops its documented
-            // Pascal frame, writes the IM-canonical "success" sentinel
-            // (no result for SysBeep PROCEDURE; noErr for SndAddModifier
-            // and SndControl FUNCTIONs), and otherwise leaves
-            // dispatcher state untouched. Apps that defensively check
-            // OSErr proceed cleanly.
+            // Two legacy Sound Manager traps below — $A802 SndAddModifier
+            // and $A806 SndControl — collapse to narrow noErr/badChannel
+            // compatibility stubs in Systemless because the obsolete
+            // modifier/control facilities are not modelled. SysBeep is handled
+            // separately and emits a short synthesized alert sample.
             //
             // Per-trap HLE rationale:
-            //
-            //   $A9C8 SysBeep — Systemless does not emit audio. Per
-            //   IM:Sound 2-181: "When the system alert sound is
-            //   disabled, the Sound Manager effectively ignores all
-            //   calls to the SysBeep procedure. No sound is created
-            //   and the menu bar does not flash. Also, no resources
-            //   are loaded into memory." Our HLE behaves as if the
-            //   user had explicitly disabled the system alert sound
-            //   via the Sound control panel — a defensible no-op per
-            //   the IM-documented semantic. The duration parameter is
-            //   per IM:II II-385 / IM:Sound 1994 1557 "ignored except
-            //   on a Macintosh Plus, Macintosh SE, or Macintosh
-            //   Classic when the system alert sound is the Simple
-            //   Beep" — System 7+ on every other model ignores it.
             //
             //   $A802 SndAddModifier — per IM:Sound 6808: "for
             //   internal Sound Manager use only. You should not call
@@ -174,14 +200,11 @@ impl super::TrapDispatcher {
             //   SndControl provides are either provided by the
             //   Gestalt function or are no longer supported. The
             //   SndControl function is documented here for
-            //   completeness only." Systemless reports Sound Manager
-            //   3.0 via SndSoundManagerVersion ($0C) so apps gated
-            //   on the version check skip SndControl entirely.
+            //   completeness only." Systemless reports a Sound Manager
+            //   3.x NumVersion via SndSoundManagerVersion ($0C) so
+            //   apps gated on the version check skip SndControl entirely.
             //
             // Per-trap status table:
-            //   $A9C8 SysBeep        — Stub (no-op): PROCEDURE, no
-            //                          return value, no other side
-            //                          effects.
             //   $A802 SndAddModifier — Stub: FUNCTION returning OSErr,
             //                          writes 0 (noErr).
             //   $A806 SndControl     — Stub: FUNCTION returning OSErr,
@@ -192,7 +215,7 @@ impl super::TrapDispatcher {
             // promoted to Partial below — they fill the documented
             // VAR-out status records with HLE-defensible defaults
             // (zero-fill SCStatus; smNumChannels = active channel
-            // count, zero CPU load fields).
+            // count; smMaxCPULoad = default capacity; smCurCPULoad = 0).
 
             // SysBeep ($A9C8)
             // PROCEDURE SysBeep(duration: INTEGER);
@@ -200,17 +223,19 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume II, II-385
             // Inside Macintosh: Sound 1994, 2-181 (line 1551..1572)
             //
-            // HLE: Systemless emits no audio. Per IM:Sound 2-181 the
-            // documented behaviour when the system alert sound is
-            // disabled is "no sound is created and the menu bar does
-            // not flash. Also, no resources are loaded into memory" —
-            // our no-op is the IM-correct disabled-sound semantic.
-            // Pops 2 bytes (duration INTEGER), no return value, no
-            // other side effects (no SndChannel allocation, no command
-            // queue mutation, no menu-bar flash).
-            // SysBeep ($A9C8): Pops 2-byte duration per IM:II II-385 + IM:Sound 1994 2-181; HLE emits no audio (matches IM-documented "system alert sound disabled" semantic — no SndChannel allocation, no command-queue mutation, no menu-bar flash)
+            // HLE: synthesize a short alert sample at the current system beep
+            // volume. The duration parameter is ignored on most System 7-era
+            // machines, so we use a fixed compact beep.
             (true, 0x1C8) => {
                 let sp = cpu.read_reg(Register::A7);
+                if trace_sound_enabled() {
+                    eprintln!(
+                        "[SOUND] SysBeep duration={} volume=${:08X}",
+                        bus.read_word(sp) as i16,
+                        self.sound_manager.sys_beep_volume()
+                    );
+                }
+                self.play_sys_beep(bus);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }
@@ -236,7 +261,7 @@ impl super::TrapDispatcher {
             // (0x10/0x14/0x1C) currently stub-respond at sp+0 instead
             // of sp+param_bytes. Re-evaluate per-routine if a future
             // title trips the divergence.
-            // SoundDispatch ($A800): Routes by selector; SndPlayDoubleBuffer ($20) with doubleback callbacks, SndStartFilePlay ($00) plays 'snd ' resources by ID or AIFF file by refnum with async completion callbacks, SndStopFilePlay ($08) stops channel, SndPauseFilePlay ($04) toggles file pause, SndSoundManagerVersion ($0C) returns 3.0; SndChannelStatus ($10) zero-fills 24-byte SCStatus per IM:Sound 2-101 (no async playback so all fields are documented-correct at zero); SndManagerStatus ($14) fills 6-byte SMStatus with smNumChannels = active channel count + zero CPU load fields per IM:Sound 2-101 + 2-201; volume selectors ($24/$28/$2C/$30) stub
+            // SoundDispatch ($A800): Routes by selector; SndPlayDoubleBuffer ($20) with doubleback callbacks, SndStartFilePlay ($00) plays 'snd ' resources by ID or AIFF file by refnum with async completion callbacks, SndStopFilePlay ($08) stops channel, SndPauseFilePlay ($04) toggles file pause, SndSoundManagerVersion ($0C) returns a Sound Manager 3.x NumVersion; SndChannelStatus ($10) zero-fills 24-byte SCStatus per IM:Sound 2-101 (no async playback so all fields are documented-correct at zero); SndManagerStatus ($14) fills 6-byte SMStatus with smNumChannels = active channel count, default smMaxCPULoad = 100, and zero current load per IM:Sound 2-101 + 2-201; volume selectors ($24/$28/$2C/$30) persist Sound Manager 3.x packed L/R levels
             (true, 0x000) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0);
@@ -253,9 +278,12 @@ impl super::TrapDispatcher {
                     // FUNCTION SndSoundManagerVersion: NumVersion;
                     // Sound 1994, 2-201
                     0x0C => {
-                        // Executor reports 3.3.3.3 here; matching that value
-                        // keeps apps on the Sound Manager 3.x path.
-                        bus.write_long(sp, 0x03030303);
+                        // NumVersion uses the first two bytes for major and
+                        // minor release numbers, followed by release stage.
+                        // Return Sound Manager 3.3.3 final so version gates
+                        // that require 3.1+ take the Sound Manager 3.x path.
+                        // Sound 1994, 2-34.
+                        bus.write_long(sp, 0x0333_8000);
                     }
 
                     // SndPlayDoubleBuffer (routine $20, sel $04200008)
@@ -283,7 +311,14 @@ impl super::TrapDispatcher {
                     0x24 => {
                         let level_ptr = bus.read_long(sp);
                         if level_ptr != 0 {
-                            bus.write_long(level_ptr, 0x00500050); // half volume L+R
+                            let level = self.sound_manager.sys_beep_volume();
+                            bus.write_long(level_ptr, level);
+                            if trace_sound_enabled() {
+                                eprintln!(
+                                    "[SOUND] GetSysBeepVolume level=${:08X} -> ${:08X}",
+                                    level_ptr, level
+                                );
+                            }
                         }
                         bus.write_word(sp + param_bytes, 0); // noErr
                         cpu.write_reg(Register::A7, sp + param_bytes);
@@ -293,6 +328,11 @@ impl super::TrapDispatcher {
                     // FUNCTION SetSysBeepVolume(level: LongInt): OSErr;
                     // Sound 1994, 2-204
                     0x28 => {
+                        let level = bus.read_long(sp);
+                        self.sound_manager.set_sys_beep_volume(level);
+                        if trace_sound_enabled() {
+                            eprintln!("[SOUND] SetSysBeepVolume level=${:08X}", level);
+                        }
                         bus.write_word(sp + param_bytes, 0); // noErr
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
@@ -303,7 +343,14 @@ impl super::TrapDispatcher {
                     0x2C => {
                         let level_ptr = bus.read_long(sp);
                         if level_ptr != 0 {
-                            bus.write_long(level_ptr, 0x00500050); // half volume L+R
+                            let level = self.sound_manager.default_output_volume();
+                            bus.write_long(level_ptr, level);
+                            if trace_sound_enabled() {
+                                eprintln!(
+                                    "[SOUND] GetDefaultOutputVolume level=${:08X} -> ${:08X}",
+                                    level_ptr, level
+                                );
+                            }
                         }
                         bus.write_word(sp + param_bytes, 0); // noErr
                         cpu.write_reg(Register::A7, sp + param_bytes);
@@ -313,6 +360,11 @@ impl super::TrapDispatcher {
                     // FUNCTION SetDefaultOutputVolume(level: LongInt): OSErr;
                     // Sound 1994, 2-206
                     0x30 => {
+                        let level = bus.read_long(sp);
+                        self.sound_manager.set_default_output_volume(level);
+                        if trace_sound_enabled() {
+                            eprintln!("[SOUND] SetDefaultOutputVolume level=${:08X}", level);
+                        }
                         bus.write_word(sp + param_bytes, 0); // noErr
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
@@ -356,13 +408,56 @@ impl super::TrapDispatcher {
 
                     // SndPauseFilePlay (routine $04, sel $02040008)
                     // Sound 1994, 2-139
+                    //
+                    // GetSoundHeaderOffset also uses routine byte $04
+                    // under selector $04040024; dispatch on the full
+                    // selector before treating this as file-play pause.
                     0x04 => {
-                        let chan_ptr = bus.read_long(sp);
-                        if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
-                            chan.pause_file_playback_toggle();
+                        if selector == 0x0404_0024 {
+                            let offset_ptr = bus.read_long(sp);
+                            let snd_handle = bus.read_long(sp + 4);
+                            let err = if snd_handle == 0 {
+                                if offset_ptr != 0 {
+                                    bus.write_long(offset_ptr, 0);
+                                }
+                                -204 // resProblem
+                            } else {
+                                let snd_ptr = bus.read_long(snd_handle);
+                                if snd_ptr == 0 {
+                                    if offset_ptr != 0 {
+                                        bus.write_long(offset_ptr, 0);
+                                    }
+                                    -204 // resProblem
+                                } else if let Some(offset) =
+                                    Self::sound_header_offset_from_resource(bus, snd_ptr)
+                                {
+                                    if offset_ptr != 0 {
+                                        bus.write_long(offset_ptr, offset);
+                                    }
+                                    if trace_sound_enabled() {
+                                        eprintln!(
+                                            "[SOUND] GetSoundHeaderOffset handle=${:08X} ptr=${:08X} -> {}",
+                                            snd_handle, snd_ptr, offset
+                                        );
+                                    }
+                                    0
+                                } else {
+                                    if offset_ptr != 0 {
+                                        bus.write_long(offset_ptr, 0);
+                                    }
+                                    -206 // badFormat
+                                }
+                            };
+                            bus.write_word(sp + param_bytes, err as u16);
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        } else {
+                            let chan_ptr = bus.read_long(sp);
+                            if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
+                                chan.pause_file_playback_toggle();
+                            }
+                            bus.write_word(sp + param_bytes, 0); // noErr
+                            cpu.write_reg(Register::A7, sp + param_bytes);
                         }
-                        bus.write_word(sp + param_bytes, 0); // noErr
-                        cpu.write_reg(Register::A7, sp + param_bytes);
                     }
 
                     // SndStopFilePlay (routine $08, sel $03080008)
@@ -445,15 +540,10 @@ impl super::TrapDispatcher {
                     // the live count from self.sound_manager.channels
                     // (so apps using Listing 2-14's MyGetNumChannels
                     // pattern see the correct allocated-channel
-                    // count). smMaxCPULoad and smCurCPULoad are 0
-                    // (per IM:Sound 3081 WARNING: "Your application
-                    // should not reply on the values returned in the
-                    // smMaxCPULoad and smCurCPULoad fields. To
-                    // determine if it is safe to allocate a channel,
-                    // simply try to allocate it with the SndNewChannel
-                    // function" — Systemless's no-CPU-load semantic
-                    // matches the documented unreliability and is
-                    // the safest defensive default).
+                    // count). smMaxCPULoad is the documented startup
+                    // default, 100; smCurCPULoad is 0 because the HLE
+                    // mixer does not consume guest CPU budget. Sound
+                    // 1994, 2-39.
                     0x14 => {
                         let _the_length = bus.read_word(sp + 4) as i16;
                         let the_status = bus.read_long(sp);
@@ -463,7 +553,7 @@ impl super::TrapDispatcher {
                             //   smMaxCPULoad INTEGER (2)
                             //   smNumChannels INTEGER (2)
                             //   smCurCPULoad INTEGER (2)
-                            bus.write_word(the_status, 0); // smMaxCPULoad
+                            bus.write_word(the_status, 100); // smMaxCPULoad default
                             let num_channels = self.sound_manager.channels.len() as u16;
                             bus.write_word(the_status + 2, num_channels);
                             bus.write_word(the_status + 4, 0); // smCurCPULoad
@@ -792,7 +882,7 @@ impl super::TrapDispatcher {
             // Stack: SP+0 cmd(4, ptr), SP+4 id(2), SP+6 result(2)
             // Inside Macintosh: Sound 1994, 2-134 to 2-135
             //
-            // HLE: Systemless reports Sound Manager 3.0 via
+            // HLE: Systemless reports a Sound Manager 3.x NumVersion via
             // SndSoundManagerVersion ($A800 selector $0C), so the
             // legacy control-query surface is narrow. Still, callers
             // that do use SndControl expect the documented query
@@ -1322,8 +1412,10 @@ impl super::TrapDispatcher {
                         return -206;
                     }
                 }
-                // Format 2: +0=format(2), +2=ref_count(2),
-                //   then num_commands(2), then SndCommand[...]
+                // Format 2: +0=format(2), +2=refCount(2), then
+                // numCommands(2) and SndCommand[...]. Inside Macintosh marks
+                // refCount as application-owned metadata; it is not a generic
+                // reference list to skip.
                 offset = 4;
             }
             // IM:Sound 1994 p. 2-123 result codes: malformed resource -> badFormat.
@@ -1357,10 +1449,13 @@ impl super::TrapDispatcher {
         } else {
             // IM:Sound 1994 2-122: when chan is NIL, SndPlay allocates an
             // internal channel and releases it after synchronous playback.
+            // The HLE cannot block the guest until the PCM stream drains, so
+            // keep the channel alive and auto-release it from the runner after
+            // the mixer has consumed the pending samples.
             let guest_ptr = bus.alloc(GUEST_SND_CHANNEL_SIZE);
-            self.sound_manager
-                .channels
-                .push(SndChannel::new(guest_ptr, true));
+            let mut chan = SndChannel::new(guest_ptr, true);
+            chan.mark_auto_dispose_when_idle();
+            self.sound_manager.channels.push(chan);
             (guest_ptr, true)
         };
 
@@ -1399,11 +1494,85 @@ impl super::TrapDispatcher {
             self.execute_sound_command(bus, effective_chan, cmd);
         }
 
-        if temporary_channel {
+        if temporary_channel
+            && !self
+                .sound_manager
+                .find_channel_mut(effective_chan)
+                .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
+                .unwrap_or(false)
+        {
             self.release_sound_channel(bus, effective_chan);
         }
 
         0
+    }
+
+    fn sound_header_offset_from_resource(bus: &MacMemoryBus, snd_ptr: u32) -> Option<u32> {
+        let format = bus.read_word(snd_ptr);
+        let alloc_size = bus.get_alloc_size(snd_ptr);
+        let offset = match format {
+            1 => {
+                if let Some(size) = alloc_size {
+                    if size < 6 {
+                        return None;
+                    }
+                }
+                let num_data_types = bus.read_word(snd_ptr + 2) as u32;
+                let header_end = 4u32.checked_add(num_data_types.checked_mul(6)?)?;
+                if let Some(size) = alloc_size {
+                    if header_end.checked_add(2)? > size {
+                        return None;
+                    }
+                }
+                header_end
+            }
+            2 => {
+                if let Some(size) = alloc_size {
+                    if size < 6 {
+                        return None;
+                    }
+                }
+                4
+            }
+            _ => return None,
+        };
+
+        let num_commands = bus.read_word(snd_ptr + offset) as usize;
+        let commands_offset = offset.checked_add(2)?;
+        if let Some(size) = alloc_size {
+            let command_bytes = (num_commands as u32).checked_mul(8)?;
+            if commands_offset.checked_add(command_bytes)? > size {
+                return None;
+            }
+        }
+
+        for i in 0..num_commands {
+            let cmd_offset = commands_offset + (i as u32) * 8;
+            let cmd_word = bus.read_word(snd_ptr + cmd_offset);
+            let cmd = cmd_word & !0x8000;
+            if cmd != sound::cmd::BUFFER && cmd != sound::cmd::SOUND {
+                continue;
+            }
+
+            let param2 = bus.read_long(snd_ptr + cmd_offset + 4);
+            if cmd_word & 0x8000 != 0 {
+                return Some(param2);
+            }
+
+            if let Some(size) = alloc_size {
+                if param2 < size {
+                    return Some(param2);
+                }
+                if param2 >= snd_ptr {
+                    let relative = param2 - snd_ptr;
+                    if relative < size {
+                        return Some(relative);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// SndPlayDoubleBuffer: set up double-buffer playback on a channel.
@@ -1437,21 +1606,46 @@ impl super::TrapDispatcher {
 
         let num_channels = bus.read_word(header_ptr) as usize;
         let sample_size = bus.read_word(header_ptr + 2) as usize;
-        let sample_rate = bus.read_long(header_ptr + 8);
+        let compression_id = bus.read_word(header_ptr + 4) as i16;
+        let packet_size = bus.read_word(header_ptr + 6);
+        let raw_sample_rate = bus.read_long(header_ptr + 8);
+        let format = if compression_id == -1 {
+            Some(bus.read_long(header_ptr + 24))
+        } else {
+            None
+        };
+        let sample_rate = if raw_sample_rate == 0 {
+            // dbhSampleRate is a Fixed sample rate. A zero value is not a
+            // useful playback rate; when old low-level clients leave it
+            // unset, treat the supplied double-buffer frames as already being
+            // in the classic Sound Manager output stream rate. Playing those
+            // frames as an 11 kHz source makes pre-converted effects
+            // half-speed and muffled. Sound 1994, 2-16, 2-111, and 2-147.
+            sound::RATE_22KHZ_FIXED
+        } else {
+            raw_sample_rate
+        };
         let buf0_ptr = bus.read_long(header_ptr + 12);
         let buf1_ptr = bus.read_long(header_ptr + 16);
         let callback_addr = bus.read_long(header_ptr + 20);
         if trace_sound_enabled() {
             eprintln!(
-                "[SOUND] snd_play_double_buffer chan=${:08X} header=${:08X} channels={} bits={} rate=${:08X} buf0=${:08X} buf1=${:08X} callback=${:08X}",
-                chan_ptr, header_ptr, num_channels, sample_size, sample_rate, buf0_ptr, buf1_ptr, callback_addr
+                "[SOUND] snd_play_double_buffer chan=${:08X} header=${:08X} channels={} bits={} compression={} packet={} format={} rate=${:08X} raw_rate=${:08X} buf0=${:08X} buf1=${:08X} callback=${:08X}",
+                chan_ptr,
+                header_ptr,
+                num_channels,
+                sample_size,
+                compression_id,
+                packet_size,
+                format
+                    .map(|f| format!("${:08X}", f))
+                    .unwrap_or_else(|| "none".to_string()),
+                sample_rate,
+                raw_sample_rate,
+                buf0_ptr,
+                buf1_ptr,
+                callback_addr
             );
-        }
-        if sample_rate == 0 {
-            // dbhSampleRate is a required header field (Sound 1994,
-            // 2-111 to 2-113). A zero value means the caller passed a
-            // malformed double-buffer header.
-            return -206; // badFormat
         }
 
         // Track valid double-buffer submissions separately from bufferCmd-style
@@ -1480,6 +1674,7 @@ impl super::TrapDispatcher {
             sample_size,
             last_buffer_seen: false,
             waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
         });
 
         // Read samples from buffer 0 and start playing.
@@ -1539,9 +1734,35 @@ impl super::TrapDispatcher {
             }
             return;
         };
+        let non_silent_frames = samples
+            .iter()
+            .filter(|sample| sample.left != 0x80 || sample.right != 0x80)
+            .count();
+        chan.debug_double_buffer_loads = chan.debug_double_buffer_loads.saturating_add(1);
+        chan.debug_double_buffer_frames_loaded = chan
+            .debug_double_buffer_frames_loaded
+            .saturating_add(samples.len() as u64);
+        chan.debug_double_buffer_non_silent_frames = chan
+            .debug_double_buffer_non_silent_frames
+            .saturating_add(non_silent_frames as u64);
+        let capture_remaining = sound::DEBUG_DOUBLE_BUFFER_CAPTURE_LIMIT
+            .saturating_sub(chan.debug_double_buffer_captured_samples.len());
+        chan.debug_double_buffer_captured_samples.extend(
+            samples
+                .iter()
+                .take(capture_remaining)
+                .copied()
+                .map(StereoSample::downmix),
+        );
+        if non_silent_frames > 0 {
+            chan.debug_double_buffer_non_silent_loads =
+                chan.debug_double_buffer_non_silent_loads.saturating_add(1);
+        }
+        if trace_sound_samples_enabled() {
+            trace_double_buffer_sample_stats(chan.guest_ptr, buf_ptr, &samples);
+        }
 
-        bus.write_long(buf_ptr + 4, flags & !0x01);
-        chan.play_buffer(samples, sample_rate, sound::PlaybackKind::Buffer, 0);
+        chan.play_stereo_buffer(samples, sample_rate, sound::PlaybackKind::Buffer, 0);
 
         // Check for last buffer flag.
         if flags & 0x04 != 0 {
@@ -1569,7 +1790,11 @@ impl super::TrapDispatcher {
                         res_num, snd_ptr
                     );
                 }
-                return self.snd_play_resource(bus, chan_ptr, snd_ptr);
+                let err = self.snd_play_resource(bus, chan_ptr, snd_ptr);
+                if err == 0 {
+                    self.sound_manager.debug_file_play_count += 1;
+                }
+                return err;
             }
             if trace_sound_enabled() {
                 eprintln!(
@@ -1930,6 +2155,12 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
     if file_data.len() < 12 || &file_data[0..4] != b"FORM" {
         return None;
     }
+    let form_size =
+        u32::from_be_bytes([file_data[4], file_data[5], file_data[6], file_data[7]]) as usize;
+    let form_end = 8usize.checked_add(form_size)?;
+    if form_end < 12 || form_end > file_data.len() {
+        return None;
+    }
     let form_kind = &file_data[8..12];
     if form_kind != b"AIFF" && form_kind != b"AIFC" {
         return None;
@@ -1941,7 +2172,7 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
     let mut sample_rate_hz: Option<f64> = None;
     let mut ssnd_data: Option<&[u8]> = None;
 
-    while file_data.len().saturating_sub(offset) >= 8 {
+    while form_end.saturating_sub(offset) >= 8 {
         let chunk_id = &file_data[offset..offset + 4];
         let chunk_size = u32::from_be_bytes([
             file_data[offset + 4],
@@ -1951,7 +2182,7 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
         ]) as usize;
         offset += 8;
         let chunk_end = offset.checked_add(chunk_size)?;
-        if chunk_end > file_data.len() {
+        if chunk_end > form_end {
             return None;
         }
         let chunk = &file_data[offset..chunk_end];
@@ -2051,7 +2282,7 @@ fn decode_double_buffer_samples(
     num_frames: usize,
     num_channels: usize,
     sample_size: usize,
-) -> Option<Vec<u8>> {
+) -> Option<Vec<StereoSample>> {
     if num_frames == 0 || num_channels == 0 {
         return Some(Vec::new());
     }
@@ -2067,12 +2298,10 @@ fn decode_double_buffer_samples(
 
             let mut out = Vec::with_capacity(num_frames);
             for frame in 0..num_frames {
-                let mut accum = 0i32;
                 let base = frame * frame_bytes;
-                for channel in 0..num_channels {
-                    accum += raw[base + channel] as i32 - 128;
-                }
-                out.push((accum / num_channels as i32 + 128).clamp(0, 255) as u8);
+                out.push(stereo_sample_from_channels(num_channels, |channel| {
+                    raw[base + channel]
+                }));
             }
             Some(out)
         }
@@ -2086,19 +2315,110 @@ fn decode_double_buffer_samples(
 
             let mut out = Vec::with_capacity(num_frames);
             for frame in 0..num_frames {
-                let mut accum = 0i32;
                 let base = frame * frame_bytes;
-                for channel in 0..num_channels {
+                out.push(stereo_sample_from_channels(num_channels, |channel| {
                     let offset = base + channel * 2;
-                    let sample = i16::from_be_bytes([raw[offset], raw[offset + 1]]) as i32 >> 8;
-                    accum += sample;
-                }
-                out.push((accum / num_channels as i32 + 128).clamp(0, 255) as u8);
+                    signed_16_to_unsigned_8(i16::from_be_bytes([raw[offset], raw[offset + 1]]))
+                }));
             }
             Some(out)
         }
         _ => None,
     }
+}
+
+fn stereo_sample_from_channels(
+    num_channels: usize,
+    mut sample_at: impl FnMut(usize) -> u8,
+) -> StereoSample {
+    match num_channels {
+        1 => StereoSample::mono(sample_at(0)),
+        2 => StereoSample {
+            left: sample_at(0),
+            right: sample_at(1),
+        },
+        _ => {
+            let mut accum = 0i32;
+            for channel in 0..num_channels {
+                accum += sample_at(channel) as i32 - 128;
+            }
+            StereoSample::mono((accum / num_channels as i32 + 128).clamp(0, 255) as u8)
+        }
+    }
+}
+
+fn signed_16_to_unsigned_8(sample: i16) -> u8 {
+    ((sample as i32 >> 8) + 128).clamp(0, 255) as u8
+}
+
+fn trace_double_buffer_sample_stats(chan_ptr: u32, buf_ptr: u32, samples: &[StereoSample]) {
+    if samples.is_empty() {
+        eprintln!(
+            "[SOUND-SAMPLES] chan=${:08X} buf=${:08X} frames=0",
+            chan_ptr, buf_ptr
+        );
+        return;
+    }
+
+    let mut min_left = u8::MAX;
+    let mut max_left = u8::MIN;
+    let mut min_right = u8::MAX;
+    let mut max_right = u8::MIN;
+    let mut non_silent = 0usize;
+    let mut first_non_silent = None;
+    let mut last_non_silent = None;
+    let mut large_jumps = 0usize;
+    let mut prev = samples[0];
+    for (idx, &sample) in samples.iter().enumerate() {
+        min_left = min_left.min(sample.left);
+        max_left = max_left.max(sample.left);
+        min_right = min_right.min(sample.right);
+        max_right = max_right.max(sample.right);
+        if sample.left != 0x80 || sample.right != 0x80 {
+            non_silent += 1;
+            first_non_silent.get_or_insert(idx);
+            last_non_silent = Some(idx);
+        }
+        if (sample.left as i16 - prev.left as i16).abs() > 64
+            || (sample.right as i16 - prev.right as i16).abs() > 64
+        {
+            large_jumps += 1;
+        }
+        prev = sample;
+    }
+    let preview = samples
+        .iter()
+        .take(16)
+        .map(|sample| format!("{:02X}/{:02X}", sample.left, sample.right))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let active_preview = first_non_silent
+        .map(|start| {
+            samples
+                .iter()
+                .skip(start)
+                .take(16)
+                .map(|sample| format!("{:02X}/{:02X}", sample.left, sample.right))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|| "none".to_string());
+    eprintln!(
+        "[SOUND-SAMPLES] chan=${:08X} buf=${:08X} frames={} non_silent={} first_non_silent={:?} last_non_silent={:?} L={:02X}..{:02X} R={:02X}..{:02X} jumps_gt64={} first={} active={}",
+        chan_ptr,
+        buf_ptr,
+        samples.len(),
+        non_silent,
+        first_non_silent,
+        last_non_silent,
+        min_left,
+        max_left,
+        min_right,
+        max_right,
+        large_jumps,
+        preview,
+        active_preview
+    );
 }
 
 fn decode_mace3_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
@@ -2206,12 +2526,13 @@ fn mace_i16_to_u8(value: i32) -> u8 {
 mod tests {
     use super::{
         decode_double_buffer_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
-        extended80_to_f64, parse_aiff_samples, GUEST_SND_CHANNEL_SIZE,
+        extended80_to_f64, parse_aiff_samples, synth_sys_beep_samples, GUEST_SND_CHANNEL_SIZE,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::sound::{
         cmd, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind, SndChannel, SndCommand,
+        StereoSample,
     };
     use crate::trap::test_helpers::{setup, TEST_SP};
 
@@ -2335,6 +2656,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_aiff_samples_ignores_bytes_after_declared_form() {
+        // Marathon Infinity's Music data fork is a valid AIFF whose declared
+        // FORM length ends before a short trailing blob. The parser must stop
+        // at the FORM boundary instead of treating trailing bytes as another
+        // malformed chunk and rejecting the whole file.
+        let one_hz = [0x3F, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let mut aiff = build_aiff(b"AIFF", 1, 8, one_hz, &[0x40, 0xC0], None);
+        aiff.extend_from_slice(&[0xFF; 8]);
+
+        let (samples, rate) = parse_aiff_samples(&aiff).expect("valid FORM with trailing bytes");
+        assert_eq!(samples, vec![0xC0, 0x40]);
+        assert_eq!(rate, 0x0001_0000);
+    }
+
+    #[test]
     fn parse_aiff_samples_rejects_overflowing_chunk_bounds() {
         // SndStartFilePlay can be pointed at files that are not valid AIFF.
         // On wasm32, unchecked `offset + chunk_size` / `8 + data_offset`
@@ -2424,6 +2760,59 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 10);
         assert_eq!(bus.read_word(sp + 10), 0);
         assert_eq!(disp.sound_manager.channels.len(), channel_count_before);
+    }
+
+    #[test]
+    fn sndplay_format2_refcount_does_not_shift_command_stream() {
+        // Format-2 'snd ' refCount is application-owned metadata. The Sound
+        // Manager command stream still starts immediately after the format-2
+        // header, so a nonzero refCount must not shift numCommands.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let chan_ptr = 0x250000;
+        disp.sound_manager
+            .channels
+            .push(SndChannel::new(chan_ptr, false));
+
+        let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
+        let header_offset = 16u32;
+        let header = snd_ptr + header_offset;
+
+        bus.write_word(snd_ptr, 2); // format
+        bus.write_word(snd_ptr + 2, 1); // refCount
+        bus.write_word(snd_ptr + 4, 1); // numCommands
+        bus.write_word(snd_ptr + 6, 0x8000 | cmd::BUFFER); // dataOffsetFlag + bufferCmd
+        bus.write_word(snd_ptr + 8, 0); // param1
+        bus.write_long(snd_ptr + 10, header_offset); // param2 = sound header offset
+
+        bus.write_long(header, 0); // samplePtr = NIL, data follows stdSH
+        bus.write_long(header + 4, 4); // length
+        bus.write_long(header + 8, crate::sound::OUTPUT_RATE << 16);
+        bus.write_long(header + 12, 0); // loopStart
+        bus.write_long(header + 16, 0); // loopEnd
+        bus.write_byte(header + 20, 0); // stdSH
+        bus.write_byte(header + 21, 60); // baseFrequency
+        bus.write_bytes(header + 22, &[0x40, 0x80, 0xC0, 0xFF]);
+
+        bus.write_word(sp, 0); // async = FALSE
+        bus.write_long(sp + 2, snd_handle);
+        bus.write_long(sp + 6, chan_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x005, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert!(disp
+            .sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .is_playing());
+        assert_eq!(
+            disp.sound_manager.mix_frame(4),
+            vec![0x40, 0x80, 0xC0, 0xFF]
+        );
     }
 
     #[test]
@@ -2533,6 +2922,51 @@ mod tests {
     }
 
     #[test]
+    fn sndplay_nil_chan_active_playback_survives_until_mixed_then_releases() {
+        // NIL-channel SndPlay owns its temporary channel until the sampled
+        // buffer has actually been mixed. Releasing at trap return drops the
+        // sound entirely, which is audible as missing menu effects in games
+        // that use high-level SndPlay for short UI sounds.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
+        let header_offset = 16u32;
+        let header = snd_ptr + header_offset;
+
+        bus.write_word(snd_ptr + 4, 1); // numCommands
+        bus.write_word(snd_ptr + 6, 0x8000 | cmd::BUFFER); // dataOffsetFlag + bufferCmd
+        bus.write_word(snd_ptr + 8, 0);
+        bus.write_long(snd_ptr + 10, header_offset);
+
+        bus.write_long(header, 0);
+        bus.write_long(header + 4, 4);
+        bus.write_long(header + 8, crate::sound::OUTPUT_RATE << 16);
+        bus.write_long(header + 12, 0);
+        bus.write_long(header + 16, 0);
+        bus.write_byte(header + 20, 0);
+        bus.write_byte(header + 21, 60);
+        bus.write_bytes(header + 22, &[0x40, 0x80, 0xC0, 0xFF]);
+
+        let channel_count_before = disp.sound_manager.channels.len();
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, snd_handle);
+        bus.write_long(sp + 6, 0);
+        bus.write_word(sp + 10, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x005, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(disp.sound_manager.channels.len(), channel_count_before + 1);
+
+        assert_eq!(
+            disp.sound_manager.mix_frame(4),
+            vec![0x40, 0x80, 0xC0, 0xFF]
+        );
+        disp.release_finished_internal_sound_channels(&mut bus);
+        assert_eq!(disp.sound_manager.channels.len(), channel_count_before);
+    }
+
+    #[test]
     fn sndplay_unloaded_handle_returns_resproblem() {
         // Inside Macintosh: Sound (1994), p. 2-122:
         // unloaded handle -> resProblem (-204).
@@ -2611,28 +3045,176 @@ mod tests {
     }
 
     #[test]
-    fn sysbeep_consumes_duration_word_and_leaves_sound_state_unchanged() {
+    fn sysbeep_consumes_duration_word_and_queues_beep_audio() {
         // Inside Macintosh Volume II (1985), p. II-385 and
         // Inside Macintosh: Sound (1991), pp. 22-80 and 22-95:
-        // SysBeep is a procedure with one Integer argument; in the
-        // disabled-alert-sound state, no sound output/resources are created.
+        // SysBeep is a procedure with one Integer argument. Systemless
+        // synthesizes a short alert sound because packaged games do not run
+        // with a real System file alert-sound resource.
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 30); // duration ticks
         bus.write_word(sp + 2, 0xBEEF); // sentinel: no function-result slot
         let channel_count_before = disp.sound_manager.channels.len();
-        let callback_count_before = disp.sound_manager.pending_sound_callbacks.len();
 
         let result = disp.dispatch_sound(true, 0x1C8, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
         assert_eq!(bus.read_word(sp + 2), 0xBEEF);
-        assert_eq!(disp.sound_manager.channels.len(), channel_count_before);
+        assert_eq!(disp.sound_manager.channels.len(), channel_count_before + 1);
         assert_eq!(
-            disp.sound_manager.pending_sound_callbacks.len(),
-            callback_count_before
+            disp.sound_manager
+                .mix_frame(256)
+                .iter()
+                .filter(|&&sample| sample != 0x80)
+                .count(),
+            256
         );
+        let remaining = synth_sys_beep_samples().len();
+        let _ = disp.sound_manager.mix_frame(remaining);
+        disp.release_finished_internal_sound_channels(&mut bus);
+        assert_eq!(disp.sound_manager.channels.len(), channel_count_before);
+    }
+
+    #[test]
+    fn sounddispatch_reports_sound_manager_3x_final_numversion() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x000C_0008); // SndSoundManagerVersion
+        bus.write_long(sp, 0xDEAD_BEEF);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(sp),
+            0x0333_8000,
+            "NumVersion bytes must encode Sound Manager 3.3.3 final"
+        );
+        assert_eq!(
+            bus.read_byte(sp + 1),
+            0x33,
+            "minorAndBugRev must be BCD-style 3.3, not raw decimal bytes"
+        );
+        assert_eq!(
+            bus.read_byte(sp + 2),
+            0x80,
+            "release stage byte must mark a final release"
+        );
+    }
+
+    #[test]
+    fn sounddispatch_volume_selectors_persist_and_return_levels() {
+        // Inside Macintosh: Sound 1994, 2-139..2-142:
+        // Sound Manager 3.x exposes packed right/left output volumes
+        // through SoundDispatch selectors $24/$28/$2C/$30.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let level_ptr = 0x230800;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x022C_0024); // GetDefaultOutputVolume
+        bus.write_long(sp, level_ptr);
+        bus.write_word(sp + 4, 0xBEEF);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(bus.read_long(level_ptr), 0x0100_0100);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0230_0024); // SetDefaultOutputVolume
+        bus.write_long(sp, 0x0040_00C0);
+        bus.write_word(sp + 4, 0xBEEF);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(disp.sound_manager.default_output_volume(), 0x0040_00C0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x022C_0024); // GetDefaultOutputVolume
+        bus.write_long(sp, level_ptr);
+        bus.write_long(level_ptr, 0);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(level_ptr), 0x0040_00C0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0228_0024); // SetSysBeepVolume
+        bus.write_long(sp, 0x0020_0060);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.sound_manager.sys_beep_volume(), 0x0020_0060);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0224_0024); // GetSysBeepVolume
+        bus.write_long(sp, level_ptr);
+        bus.write_long(level_ptr, 0);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(level_ptr), 0x0020_0060);
+    }
+
+    #[test]
+    fn sounddispatch_sndmanagerstatus_reports_default_cpu_load_capacity() {
+        // Inside Macintosh: Sound 1994, 2-39: smMaxCPULoad is initialized
+        // to 100 at startup; smCurCPULoad is approximate. The HLE mixer does
+        // not consume guest CPU, so current load stays 0.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let status_ptr = 0x230A00;
+        disp.sound_manager
+            .channels
+            .push(SndChannel::new(0x0039_38C8, false));
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0314_0008); // SndManagerStatus
+        bus.write_long(sp, status_ptr);
+        bus.write_word(sp + 4, 6); // sizeof(SMStatus)
+        bus.write_word(sp + 6, 0xBEEF);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(bus.read_word(sp + 6), 0);
+        assert_eq!(bus.read_word(status_ptr), 100);
+        assert_eq!(bus.read_word(status_ptr + 2), 1);
+        assert_eq!(bus.read_word(status_ptr + 4), 0);
+    }
+
+    #[test]
+    fn sounddispatch_get_sound_header_offset_returns_embedded_header_offset() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
+        let offset_ptr = 0x230C00;
+        let header_offset = 16u32;
+
+        bus.write_word(snd_ptr + 4, 1); // numCommands
+        bus.write_word(snd_ptr + 6, 0x8000 | cmd::BUFFER);
+        bus.write_word(snd_ptr + 8, 0);
+        bus.write_long(snd_ptr + 10, header_offset);
+        bus.write_long(snd_ptr + header_offset, 0); // samplePtr
+        bus.write_long(snd_ptr + header_offset + 4, 1); // length
+        bus.write_long(snd_ptr + header_offset + 8, crate::sound::OUTPUT_RATE << 16);
+        bus.write_byte(snd_ptr + header_offset + 20, 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0404_0024);
+        bus.write_long(sp, offset_ptr);
+        bus.write_long(sp + 4, snd_handle);
+        bus.write_word(sp + 8, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(sp + 8), 0);
+        assert_eq!(bus.read_long(offset_ptr), header_offset);
     }
 
     #[test]
@@ -3339,7 +3921,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_double_buffer_samples_downmixes_stereo_8bit() {
+    fn decode_double_buffer_samples_preserves_stereo_8bit() {
         let mut bus = MacMemoryBus::new(1024 * 1024);
         let data_addr = 0x1000;
         let bytes = [0x00, 0xFF, 0x40, 0xC0];
@@ -3350,7 +3932,27 @@ mod tests {
         let samples =
             decode_double_buffer_samples(&bus, data_addr, 2, 2, 8).expect("stereo 8-bit audio");
 
-        assert_eq!(samples, vec![128, 128]);
+        assert_eq!(
+            samples,
+            vec![
+                StereoSample {
+                    left: 0x00,
+                    right: 0xFF
+                },
+                StereoSample {
+                    left: 0x40,
+                    right: 0xC0
+                },
+            ]
+        );
+        assert_eq!(
+            samples
+                .iter()
+                .copied()
+                .map(StereoSample::downmix)
+                .collect::<Vec<_>>(),
+            vec![128, 128]
+        );
     }
 
     #[test]
@@ -3410,7 +4012,7 @@ mod tests {
     }
 
     #[test]
-    fn sndplaydoublebuffer_zero_sample_rate_returns_bad_format() {
+    fn sndplaydoublebuffer_zero_sample_rate_defaults_to_classic_22khz() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP + 0x80;
         let chan_ptr = 0x250000;
@@ -3422,7 +4024,7 @@ mod tests {
         bus.write_word(header_ptr + 2, 8); // dbhSampleSize
         bus.write_word(header_ptr + 4, 0); // dbhCompressionID
         bus.write_word(header_ptr + 6, 0); // dbhPacketSize
-        bus.write_long(header_ptr + 8, 0); // dbhSampleRate: invalid Fixed 16.16
+        bus.write_long(header_ptr + 8, 0); // dbhSampleRate: tolerated zero/default rate
         bus.write_long(header_ptr + 12, buf0_ptr);
         bus.write_long(header_ptr + 16, buf1_ptr);
         bus.write_long(header_ptr + 20, 0x1234_5678); // dbhDoubleBack
@@ -3441,11 +4043,24 @@ mod tests {
 
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
-        assert_eq!(bus.read_word(sp + 8) as i16, -206);
-        assert_eq!(disp.sound_manager.debug_double_buffer_count, 0);
-        assert!(
-            disp.sound_manager.find_channel_mut(chan_ptr).is_none(),
-            "bad double-buffer header must not arm playback"
+        assert_eq!(bus.read_word(sp + 8), 0);
+        assert_eq!(disp.sound_manager.debug_double_buffer_count, 1);
+        let chan = disp
+            .sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("zero-rate probe should still create a channel");
+        assert!(chan.is_playing());
+        assert_eq!(
+            chan.double_buffer
+                .as_ref()
+                .expect("double-buffer state")
+                .sample_rate,
+            crate::sound::RATE_22KHZ_FIXED
+        );
+        assert_eq!(
+            disp.sound_manager.mix_frame(2),
+            vec![0x40, 0x80],
+            "output-rate fallback must not hold an already converted double-buffer frame for two output samples"
         );
     }
 
@@ -3487,7 +4102,15 @@ mod tests {
         bus.write_byte(data_addr + 2, 0xC0);
         let out =
             decode_double_buffer_samples(&bus, data_addr, 3, 1, 8).expect("mono 8-bit frames");
-        assert_eq!(out, vec![0x40, 0x80, 0xC0], "mono 8-bit pass-through");
+        assert_eq!(
+            out,
+            vec![
+                StereoSample::mono(0x40),
+                StereoSample::mono(0x80),
+                StereoSample::mono(0xC0)
+            ],
+            "mono 8-bit pass-through"
+        );
 
         // Mono 16-bit: sample i16 >> 8 gives the upper byte.
         // +0x4000 big-endian = [0x40, 0x00] → i16 = 0x4000 → >>8 = 0x40
@@ -3500,11 +4123,15 @@ mod tests {
         bus.write_byte(data_addr + 3, 0x00);
         let out =
             decode_double_buffer_samples(&bus, data_addr, 2, 1, 16).expect("mono 16-bit frames");
-        assert_eq!(out, vec![0xC0, 0x40], "mono 16-bit upper-byte + center");
+        assert_eq!(
+            out,
+            vec![StereoSample::mono(0xC0), StereoSample::mono(0x40)],
+            "mono 16-bit upper-byte + center"
+        );
     }
 
     #[test]
-    fn decode_double_buffer_samples_downmixes_stereo_16bit() {
+    fn decode_double_buffer_samples_preserves_stereo_16bit() {
         let mut bus = MacMemoryBus::new(1024 * 1024);
         let data_addr = 0x2000;
         let bytes = [
@@ -3518,6 +4145,26 @@ mod tests {
         let samples =
             decode_double_buffer_samples(&bus, data_addr, 2, 2, 16).expect("stereo 16-bit audio");
 
-        assert_eq!(samples, vec![128, 192]);
+        assert_eq!(
+            samples,
+            vec![
+                StereoSample {
+                    left: 0x00,
+                    right: 0xFF
+                },
+                StereoSample {
+                    left: 0xA0,
+                    right: 0xE0
+                },
+            ]
+        );
+        assert_eq!(
+            samples
+                .iter()
+                .copied()
+                .map(StereoSample::downmix)
+                .collect::<Vec<_>>(),
+            vec![128, 192]
+        );
     }
 }
