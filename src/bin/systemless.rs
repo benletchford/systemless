@@ -26,7 +26,7 @@ use softbuffer::Surface;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowAttributesExtMacOS;
 use winit::window::Window;
@@ -631,28 +631,11 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 self.force_next_render = true;
                 if let Some(runner) = self.runner.as_mut() {
-                    let mac_key = keycode_to_mac(&event.physical_key);
-                    // Control keys (Enter / Tab / Escape / arrows /
-                    // Space / Backspace) have canonical Mac char codes
-                    // (CR = 13 for Enter, not LF = 10). winit's
-                    // `event.text` reports the platform's text-input view
-                    // (often "\n" for Enter on Linux / wayland), which is
-                    // wrong for classic Mac — apps that listen for CR
-                    // silently drop LF. Use `keycode_to_mac_char` first;
-                    // it returns the correct Mac code for every control
-                    // key we handle, and 0 for printable keys (where we
-                    // fall back to event.text for the actual typed
-                    // character).
-                    let mac_char_fallback = keycode_to_mac_char(&event.physical_key);
-                    let char_code = if mac_char_fallback != 0 {
-                        mac_char_fallback
-                    } else {
-                        event
-                            .text
-                            .as_ref()
-                            .and_then(|t| t.bytes().next())
-                            .unwrap_or_else(|| keycode_to_mac_printable_char(&event.physical_key))
-                    };
+                    let (mac_key, char_code) = host_key_to_mac(
+                        &event.logical_key,
+                        &event.physical_key,
+                        event.text.as_ref().map(|t| t.as_str()),
+                    );
                     // GUI key logging env-gated on `SYSTEMLESS_TRACE_GUI_KEY=1`
                     // — leaving it on would spam stderr for every keystroke.
                     if std::env::var_os("SYSTEMLESS_TRACE_GUI_KEY").is_some() {
@@ -885,6 +868,67 @@ fn main() {
     } else {
         run_gui(game_path, arrows_as_numpad, cpu_mhz, show_menu_bar);
     }
+}
+
+fn logical_arrow_to_mac(key: &Key) -> Option<(u8, u8)> {
+    match key {
+        Key::Named(NamedKey::ArrowLeft) => Some((0x7B, 28)),
+        Key::Named(NamedKey::ArrowRight) => Some((0x7C, 29)),
+        Key::Named(NamedKey::ArrowDown) => Some((0x7D, 31)),
+        Key::Named(NamedKey::ArrowUp) => Some((0x7E, 30)),
+        _ => None,
+    }
+}
+
+fn physical_numpad_to_mac(key: &PhysicalKey) -> Option<(u8, u8)> {
+    match key {
+        PhysicalKey::Code(
+            KeyCode::NumpadDecimal
+            | KeyCode::NumpadMultiply
+            | KeyCode::NumpadAdd
+            | KeyCode::NumpadDivide
+            | KeyCode::NumpadEnter
+            | KeyCode::NumpadSubtract
+            | KeyCode::NumpadEqual
+            | KeyCode::Numpad0
+            | KeyCode::Numpad1
+            | KeyCode::Numpad2
+            | KeyCode::Numpad3
+            | KeyCode::Numpad4
+            | KeyCode::Numpad5
+            | KeyCode::Numpad6
+            | KeyCode::Numpad7
+            | KeyCode::Numpad8
+            | KeyCode::Numpad9,
+        ) => Some((keycode_to_mac(key), keycode_to_mac_char(key))),
+        _ => None,
+    }
+}
+
+fn host_key_to_mac(logical_key: &Key, physical_key: &PhysicalKey, text: Option<&str>) -> (u8, u8) {
+    let (mac_key, mac_char_fallback) = physical_numpad_to_mac(physical_key)
+        .or_else(|| logical_arrow_to_mac(logical_key))
+        .unwrap_or_else(|| {
+            (
+                keycode_to_mac(physical_key),
+                keycode_to_mac_char(physical_key),
+            )
+        });
+
+    // Control keys (Enter / Tab / Escape / arrows / Space / Backspace)
+    // have canonical Mac char codes (CR = 13 for Enter, not LF = 10).
+    // winit's `event.text` reports the platform's text-input view (often
+    // "\n" for Enter on Linux / wayland), which is wrong for classic Mac.
+    // Use `keycode_to_mac_char` first; it returns the correct Mac code for
+    // every control key we handle, and 0 for printable keys.
+    let char_code = if mac_char_fallback != 0 {
+        mac_char_fallback
+    } else {
+        text.and_then(|t| t.bytes().next())
+            .unwrap_or_else(|| keycode_to_mac_printable_char(physical_key))
+    };
+
+    (mac_key, char_code)
 }
 
 /// Map a winit PhysicalKey to a classic Mac virtual key code.
@@ -1139,6 +1183,78 @@ mod tests {
         assert!(
             !app.arrows_as_numpad,
             "the interactive GUI should leave arrow keys literal by default; --arrows-as-numpad opts into keypad movement"
+        );
+    }
+
+    #[test]
+    fn physical_numpad_events_keep_keypad_identity_even_when_logical_key_is_arrow() {
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowLeft),
+                &PhysicalKey::Code(KeyCode::Numpad4),
+                None,
+            ),
+            (0x56, b'4')
+        );
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowRight),
+                &PhysicalKey::Code(KeyCode::Numpad6),
+                None,
+            ),
+            (0x58, b'6')
+        );
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowDown),
+                &PhysicalKey::Code(KeyCode::Numpad2),
+                None,
+            ),
+            (0x54, b'2')
+        );
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowUp),
+                &PhysicalKey::Code(KeyCode::Numpad8),
+                None,
+            ),
+            (0x5B, b'8')
+        );
+    }
+
+    #[test]
+    fn physical_arrow_events_keep_literal_arrow_identity() {
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowLeft),
+                &PhysicalKey::Code(KeyCode::ArrowLeft),
+                None,
+            ),
+            (0x7B, 28)
+        );
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowRight),
+                &PhysicalKey::Code(KeyCode::ArrowRight),
+                None,
+            ),
+            (0x7C, 29)
+        );
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowDown),
+                &PhysicalKey::Code(KeyCode::ArrowDown),
+                None,
+            ),
+            (0x7D, 31)
+        );
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::ArrowUp),
+                &PhysicalKey::Code(KeyCode::ArrowUp),
+                None,
+            ),
+            (0x7E, 30)
         );
     }
 

@@ -10,6 +10,8 @@ impl super::TrapDispatcher {
     const K_HIGH_LEVEL_EVENT: u16 = 23;
     const K_CORE_EVENT_CLASS: u32 = 0x61657674; // 'aevt'
     const K_AE_OPEN_APPLICATION: u32 = 0x6F617070; // 'oapp'
+    const OS_EVENT: u16 = 15;
+    const MOUSE_MOVED_MESSAGE: u32 = 0xFA00_0000;
     const QHDR_HEAD_OFFSET: u32 = 2;
     const QHDR_TAIL_OFFSET: u32 = 6;
     const QELEM_LINK_OFFSET: u32 = 0;
@@ -23,7 +25,7 @@ impl super::TrapDispatcher {
     const EVQEL_WHERE_H_OFFSET: u32 = 18;
     const EVQEL_MODIFIERS_OFFSET: u32 = 20;
 
-    fn event_matches_mask(event_mask: u16, what: u16) -> bool {
+    pub(crate) fn event_matches_mask(event_mask: u16, what: u16) -> bool {
         match what {
             Self::K_HIGH_LEVEL_EVENT => (event_mask & Self::HIGH_LEVEL_EVENT_MASK) != 0,
             0..=15 => {
@@ -32,6 +34,36 @@ impl super::TrapDispatcher {
             }
             _ => false,
         }
+    }
+
+    pub(crate) fn mouse_moved_event_for_region(
+        &self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+        mouse_rgn: u32,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        // WaitNextEvent's mouseRgn is the region inside which the Event
+        // Manager does not generate mouse-moved operating-system events.
+        // NIL or empty regions suppress them. Macintosh Toolbox Essentials
+        // 1992, pp. 2-22..2-23 and 2-62..2-63; Region record layout:
+        // Inside Macintosh Volume I, I-141.
+        if !Self::event_matches_mask(event_mask, Self::OS_EVENT) || mouse_rgn == 0 {
+            return None;
+        }
+
+        if Self::region_bbox(bus, mouse_rgn).is_none()
+            || Self::region_contains_point(bus, mouse_rgn, self.mouse_pos.0, self.mouse_pos.1)
+        {
+            return None;
+        }
+
+        Some(super::dispatch::QueuedEvent {
+            what: Self::OS_EVENT,
+            message: Self::MOUSE_MOVED_MESSAGE,
+            where_v: self.mouse_pos.0,
+            where_h: self.mouse_pos.1,
+            modifiers: self.current_event_modifiers(),
+        })
     }
 
     fn posted_event_is_enabled(&self, what: u16) -> bool {

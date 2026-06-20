@@ -2232,6 +2232,42 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn refresh_visible_dialog_snapshot_for_port_captures_later_screen_updates() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+
+        for y in 0..40u32 {
+            for x in 0..40u32 {
+                bus.write_byte(screen_base + y * 800 + x, 0x11);
+            }
+        }
+
+        let dialog_ptr = 0x00D1_A106;
+        let bounds = (10, 10, 20, 20);
+        let pixels = disp.save_dialog_pixels(&bus, bounds);
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            super::super::dispatch::PersistentDialogSnapshot { bounds, pixels },
+        );
+
+        let probe = screen_base + 12 * 800 + 12;
+        bus.write_byte(probe, 0x77);
+        disp.refresh_visible_dialog_snapshot_for_port(&bus, dialog_ptr);
+
+        bus.write_byte(probe, 0x00);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x77,
+            "refresh should retain QuickDraw updates made after ModalDialog returned"
+        );
+    }
+
+    #[test]
     fn fb_fill_rect_uses_active_ctab_brightest_entry_for_white() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
 

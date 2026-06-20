@@ -215,7 +215,7 @@ fn spin_wait_fastfwd_gate(force_on: bool, force_off: bool, yield_for_ui: bool) -
 /// of these must be true for the skip to fire:
 ///   - mode is headless (`yield_for_ui = false`)
 ///   - dialog tracking is active (`has_tracking = true`)
-///   - no filter proc installed (`filter_proc_zero`)
+///   - no filter proc callback is due (`filter_allows_noop`)
 ///   - no button flash animating (`flash_remaining_zero`)
 ///   - initial draw procs all completed (`draw_procs_done`)
 ///   - dialog pixels already captured (`rendered_pixels_final`)
@@ -223,7 +223,7 @@ fn spin_wait_fastfwd_gate(force_on: bool, force_off: bool, yield_for_ui: bool) -
 fn modaldialog_refire_is_noop(
     yield_for_ui: bool,
     has_tracking: bool,
-    filter_proc_zero: bool,
+    filter_allows_noop: bool,
     flash_remaining_zero: bool,
     draw_procs_done: bool,
     rendered_pixels_final: bool,
@@ -231,7 +231,7 @@ fn modaldialog_refire_is_noop(
 ) -> bool {
     !yield_for_ui
         && has_tracking
-        && filter_proc_zero
+        && filter_allows_noop
         && flash_remaining_zero
         && draw_procs_done
         && rendered_pixels_final
@@ -455,6 +455,9 @@ pub struct FixtureRunner {
     dialog_filter_trampoline: u32,
     /// Guest-memory address of a scratch EventRecord passed to ModalDialog filters.
     dialog_filter_event: u32,
+    /// Last dialog/tick pair that received a synthetic ModalDialog null event.
+    /// Real queued events bypass this; it only paces the no-input idle callback.
+    dialog_filter_last_null_event_tick: Option<(u32, u32)>,
     /// Override for the application's startup time in Mac-epoch seconds.
     /// Used by scripted frontends to keep guest-visible time deterministic.
     app_start_time: Option<u32>,
@@ -522,6 +525,7 @@ impl FixtureRunner {
             dialog_draw_trampoline: 0,
             dialog_filter_trampoline: 0,
             dialog_filter_event: 0,
+            dialog_filter_last_null_event_tick: None,
             app_start_time: None,
             opcode_histogram: Box::new([0u64; 65536]),
             pc_histogram: HashMap::new(),
@@ -788,6 +792,11 @@ impl FixtureRunner {
     /// Enable or disable arrow-key-to-numpad remapping.
     pub fn set_arrows_as_numpad(&mut self, enabled: bool) {
         self.config.arrows_as_numpad = enabled;
+    }
+
+    /// Returns true when arrow keys are remapped to numpad key codes.
+    pub fn arrows_as_numpad(&self) -> bool {
+        self.config.arrows_as_numpad
     }
 
     /// Move the mouse without changing the button state. Updates the
@@ -1979,7 +1988,7 @@ impl FixtureRunner {
                         // doc-comment for the full list of conditions.
                         let (
                             has_tracking,
-                            filter_proc_zero,
+                            filter_allows_noop,
                             flash_remaining_zero,
                             draw_procs_done,
                             rendered_pixels_final,
@@ -1988,9 +1997,23 @@ impl FixtureRunner {
                             .dialog_tracking
                             .as_ref()
                             .map(|t| {
+                                let idle_dialog_mouse =
+                                    self.dispatcher.mouse_down_over_dialog_button()
+                                        || self.dispatcher.mouse_down_over_dialog_plain_user_item()
+                                        || (self.dispatcher.event_queue.is_empty()
+                                            && self
+                                                .dispatcher
+                                                .pending_dialog_plain_user_item_mouse_down());
+                                let paced_filter_idle = t.filter_proc != 0
+                                    && t.last_filter_event.is_none()
+                                    && !idle_dialog_mouse
+                                    && self.dialog_filter_null_event_already_sent_this_tick(
+                                        t.dialog_ptr,
+                                    )
+                                    && !self.dialog_filter_has_real_event_pending(t.dialog_ptr);
                                 (
                                     true,
-                                    t.filter_proc == 0,
+                                    t.filter_proc == 0 || paced_filter_idle,
                                     t.flash_remaining == 0,
                                     t.draw_procs_done,
                                     t.rendered_pixels_final,
@@ -2000,7 +2023,7 @@ impl FixtureRunner {
                         let noop_refire = modaldialog_refire_is_noop(
                             yield_for_ui,
                             has_tracking,
-                            filter_proc_zero,
+                            filter_allows_noop,
                             flash_remaining_zero,
                             draw_procs_done,
                             rendered_pixels_final,
@@ -2187,27 +2210,7 @@ impl FixtureRunner {
                                     // ModalDialog calls the filter for every event
                                     // (including null events) regardless of item types.
                                     // Inside Macintosh Volume I, I-415
-                                    let should_fire_filter = self
-                                        .dispatcher
-                                        .dialog_tracking
-                                        .as_ref()
-                                        .map(|t| {
-                                            t.filter_proc != 0
-                                                && t.draw_procs_done
-                                                && t.last_filter_event.is_none()
-                                                && !self
-                                                    .dispatcher
-                                                    .pending_dialog_button_mouse_down()
-                                                && !self
-                                                    .dispatcher
-                                                    .pending_dialog_plain_user_item_mouse_down()
-                                                && !self.dispatcher.mouse_down_over_dialog_button()
-                                                && !self
-                                                    .dispatcher
-                                                    .mouse_down_over_dialog_plain_user_item()
-                                        })
-                                        .unwrap_or(false);
-                                    if should_fire_filter {
+                                    if self.should_fire_dialog_filter_proc() {
                                         self.fire_dialog_filter_proc();
                                         fired_filter_proc = true;
                                     }
@@ -3257,8 +3260,9 @@ impl FixtureRunner {
         self.bus.write_long(tramp + 10, dialog_ptr);
         self.bus.write_long(tramp + 16, proc_addr);
 
-        let previous_port = self.dispatcher.current_port;
-        let previous_gdevice = self.dispatcher.current_gdevice;
+        // The Dialog Manager sets the current port to the dialog before
+        // calling a userItem draw proc. It does not restore an older
+        // application port over the callback's final QuickDraw state.
         self.dispatcher
             .set_current_port_state(&mut self.bus, &mut self.cpu, dialog_ptr, None);
 
@@ -3298,9 +3302,67 @@ impl FixtureRunner {
             d_regs,
             a_regs,
             ccr,
-            restore_port: Some((previous_port, previous_gdevice)),
+            restore_port: None,
         });
         self.cpu.write_reg(Register::PC, tramp);
+        true
+    }
+
+    fn dialog_filter_has_real_event_pending(&self, dialog_ptr: u32) -> bool {
+        self.dispatcher
+            .event_queue
+            .iter()
+            .any(|event| matches!(event.what, 1 | 2 | 3 | 4 | 6))
+            || self
+                .dispatcher
+                .pending_update_event(&self.bus, 1u16 << 6)
+                .is_some_and(|event| event.message == dialog_ptr)
+    }
+
+    fn dialog_filter_null_event_already_sent_this_tick(&self, dialog_ptr: u32) -> bool {
+        self.dialog_filter_last_null_event_tick
+            .is_some_and(|(sent_dialog, sent_tick)| {
+                sent_dialog == dialog_ptr && sent_tick == self.dispatcher.tick_count
+            })
+    }
+
+    fn should_fire_dialog_filter_proc(&self) -> bool {
+        let Some(tracking) = self.dispatcher.dialog_tracking.as_ref() else {
+            return false;
+        };
+
+        if tracking.filter_proc == 0
+            || !tracking.draw_procs_done
+            || tracking.last_filter_event.is_some()
+        {
+            return false;
+        }
+
+        let dialog_ptr = tracking.dialog_ptr;
+        let has_real_event = self.dialog_filter_has_real_event_pending(dialog_ptr);
+
+        // A queued mouseDown on a standard dialog item is still a real event:
+        // ModalDialog passes it to the filter first, then handles it itself if
+        // the filter returns FALSE. Only suppress idle/null callbacks while
+        // the mouse is physically held over a dialog item. IM:I 1985 I-415.
+        if !has_real_event
+            && (self.dispatcher.mouse_down_over_dialog_button()
+                || self.dispatcher.mouse_down_over_dialog_plain_user_item()
+                || self.dispatcher.pending_dialog_plain_user_item_mouse_down())
+        {
+            return false;
+        }
+
+        // ModalDialog gets events through GetNextEvent and passes them to the
+        // filter proc. A null event means there was no real event to dequeue;
+        // pace those synthetic idle callbacks to one per guest tick so the HLE
+        // refire loop does not manufacture hundreds of thousands of no-input
+        // filter calls between VBLs. Mouse/key/update events still bypass this
+        // gate and are delivered immediately. IM:I 1985 I-415; MTE 1992 6-136.
+        if !has_real_event && self.dialog_filter_null_event_already_sent_this_tick(dialog_ptr) {
+            return false;
+        }
+
         true
     }
 
@@ -3420,6 +3482,11 @@ impl FixtureRunner {
         let where_v = filter_event.where_v;
         let where_h = filter_event.where_h;
         let modifiers = filter_event.modifiers;
+        if what == 0 {
+            self.dialog_filter_last_null_event_tick = Some((dialog_ptr, ticks));
+        } else {
+            self.dialog_filter_last_null_event_tick = None;
+        }
         self.dispatcher.tick_count = ticks;
         self.dispatcher.write_event_record(
             &mut self.bus,
@@ -3487,8 +3554,10 @@ impl FixtureRunner {
         self.bus.write_long(tramp + 26, filter_proc);
         self.bus.write_long(tramp + 32, result_addr);
 
-        let previous_port = self.dispatcher.current_port;
-        let previous_gdevice = self.dispatcher.current_gdevice;
+        // ModalDialog handles events through DialogSelect, which selects the
+        // dialog port before event handling. Leave that port current when the
+        // filter returns so application follow-up drawing/invalidations target
+        // the active dialog.
         self.dispatcher
             .set_current_port_state(&mut self.bus, &mut self.cpu, dialog_ptr, None);
 
@@ -3535,9 +3604,7 @@ impl FixtureRunner {
         let filter_entry_sp = saved_sp.wrapping_sub(50); // after MOVEM+params+JSR
         let clear_size: u32 = 2048;
         let clear_start = filter_entry_sp.wrapping_sub(clear_size);
-        for addr in (clear_start..filter_entry_sp).step_by(4) {
-            self.bus.write_long(addr, 0);
-        }
+        self.bus.fill_zeros(clear_start, clear_size);
 
         self.bus.write_long(tramp + 38, saved_sp);
         self.bus.write_long(new_sp, current_pc);
@@ -3549,7 +3616,7 @@ impl FixtureRunner {
             d_regs,
             a_regs,
             ccr,
-            restore_port: Some((previous_port, previous_gdevice)),
+            restore_port: None,
         });
         self.cpu.write_reg(Register::PC, tramp);
 
@@ -4058,7 +4125,7 @@ mod tests {
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
         SndChannel, SndCommand, OUTPUT_RATE,
     };
-    use crate::trap::dispatch::{DialogTrackingState, QueuedEvent, TimerTask, VblTask};
+    use crate::trap::dispatch::{DialogItem, DialogTrackingState, QueuedEvent, TimerTask, VblTask};
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
@@ -4233,6 +4300,7 @@ mod tests {
     fn arrows_not_remapped_by_default() {
         let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
+        assert!(!runner.arrows_as_numpad());
         assert_eq!(runner.remap_key(0x7B, 28), (0x7B, 28));
         assert_eq!(runner.remap_key(0x7C, 29), (0x7C, 29));
         assert_eq!(runner.remap_key(0x2E, b'm'), (0x2E, b'm'));
@@ -5584,6 +5652,132 @@ mod tests {
     }
 
     #[test]
+    fn gui_modaldialog_mouse_down_goes_to_filter_before_default_handling() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let filter_proc = 0x0001_1000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0;
+        runner.dispatcher.event_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: 12,
+            where_h: 24,
+            modifiers: 0,
+        });
+        let mut tracking = dialog_tracking_for_test(filter_proc, 0x0010_0100);
+        tracking.items.push(DialogItem {
+            item_type: 4,
+            rect: (8, 16, 20, 30),
+            text: String::from("OK"),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        });
+        runner.dispatcher.dialog_tracking = Some(tracking);
+
+        let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_ne!(runner.cpu.read_reg(Register::PC), base);
+        let event_ptr = runner.dialog_filter_event;
+        assert_eq!(runner.bus.read_word(event_ptr), 1);
+        assert_eq!(runner.bus.read_word(event_ptr + 10), 12);
+        assert_eq!(runner.bus.read_word(event_ptr + 12), 24);
+        assert!(
+            runner.dispatcher.event_queue.is_empty(),
+            "the filter callback should consume a queued button mouseDown event"
+        );
+    }
+
+    #[test]
+    fn modaldialog_filter_null_event_is_paced_per_guest_tick() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let filter_proc = 0x0001_1000u32;
+        let dialog_ptr = 0x0020_0000u32;
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0010_0100));
+        runner.dispatcher.tick_count = 42;
+        runner.bus.write_long(0x016A, 42);
+
+        assert!(runner.should_fire_dialog_filter_proc());
+
+        runner.dialog_filter_last_null_event_tick = Some((dialog_ptr, 42));
+        assert!(
+            !runner.should_fire_dialog_filter_proc(),
+            "a synthetic null event should not refire twice in the same guest tick"
+        );
+
+        runner.dispatcher.tick_count = 43;
+        runner.bus.write_long(0x016A, 43);
+        assert!(
+            runner.should_fire_dialog_filter_proc(),
+            "the next guest tick should allow another ModalDialog null-event filter call"
+        );
+    }
+
+    #[test]
+    fn modaldialog_filter_real_events_bypass_null_event_pacing() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let filter_proc = 0x0001_1000u32;
+        let dialog_ptr = 0x0020_0000u32;
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0010_0100));
+        runner.dispatcher.tick_count = 42;
+        runner.bus.write_long(0x016A, 42);
+        runner.dialog_filter_last_null_event_tick = Some((dialog_ptr, 42));
+        runner.dispatcher.event_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: 12,
+            where_h: 34,
+            modifiers: 0,
+        });
+
+        assert!(
+            runner.should_fire_dialog_filter_proc(),
+            "mouse/key/update events must still enter the filter immediately"
+        );
+
+        runner.dispatcher.event_queue.clear();
+        let window_ptr = runner.bus.alloc(170);
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            window_ptr,
+            0,
+            100,
+            120,
+            220,
+            360,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner
+            .dispatcher
+            .dialog_tracking
+            .as_mut()
+            .unwrap()
+            .dialog_ptr = window_ptr;
+        runner.dialog_filter_last_null_event_tick = Some((window_ptr, 42));
+
+        assert!(
+            runner.should_fire_dialog_filter_proc(),
+            "a pending updateEvt for the active dialog must bypass null-event pacing"
+        );
+    }
+
+    #[test]
     fn modaldialog_refire_skip_headless_requires_all_conditions() {
         // In headless mode, ALL noop conditions must be true.
         // Each condition false alone must prevent the skip.
@@ -5846,6 +6040,35 @@ mod tests {
     }
 
     #[test]
+    fn modaldialog_batched_skip_applies_after_paced_filter_null_event() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let filter_proc = 0x0001_1000u32;
+        let dialog_ptr = 0x0020_0000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.dispatcher.tick_count = 42;
+        runner.bus.write_long(0x016A, 42);
+        runner.set_instructions_per_tick(1_000_000);
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0010_0100));
+        runner.dialog_filter_last_null_event_tick = Some((dialog_ptr, 42));
+
+        let idx = (0xA991u16 & 0xFFF) as usize;
+        let before_inline = runner.dispatcher.inline_skipped[idx];
+        let before_hist = runner.dispatcher.trap_histogram[idx];
+
+        let (steps, running) = runner.run_steps(64, None);
+
+        assert!(running);
+        assert_eq!(steps, 64);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 64);
+        assert_eq!(runner.dispatcher.trap_histogram[idx] - before_hist, 64);
+    }
+
+    #[test]
     fn tick_progress_persists_across_multiple_run_slices() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let program_start = 0x0001_0000;
@@ -6052,6 +6275,10 @@ mod tests {
             runner.bus.read_word(event_ptr + 14),
             runner.dispatcher.current_event_modifiers()
         );
+        assert_eq!(
+            runner.dialog_filter_last_null_event_tick,
+            Some((0x0020_0000, 0))
+        );
     }
 
     #[test]
@@ -6093,10 +6320,11 @@ mod tests {
         let event_ptr = runner.dialog_filter_event;
         assert_eq!(runner.bus.read_word(event_ptr), 6);
         assert_eq!(runner.bus.read_long(event_ptr + 2), dialog_ptr);
+        assert_eq!(runner.dialog_filter_last_null_event_tick, None);
     }
 
     #[test]
-    fn dialog_filter_proc_selects_dialog_port_and_restores_previous_port() {
+    fn dialog_filter_proc_leaves_dialog_port_current() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000u32;
         let interrupted_sp = 0x007F_FFC0u32;
@@ -6142,7 +6370,6 @@ mod tests {
         runner
             .dispatcher
             .set_current_port_state(&mut runner.bus, &mut runner.cpu, main_port, None);
-        let previous_gdevice = runner.dispatcher.current_gdevice;
         let filter_proc = runner.bus.alloc(8);
         runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
 
@@ -6162,7 +6389,7 @@ mod tests {
                 .active_interrupt_callback
                 .as_ref()
                 .and_then(|callback| callback.restore_port),
-            Some((main_port, previous_gdevice))
+            None
         );
 
         runner.cpu.write_reg(Register::PC, interrupted_pc);
@@ -6170,7 +6397,7 @@ mod tests {
         let (_steps, running) = runner.run_steps(1, None);
 
         assert!(running);
-        assert_eq!(runner.dispatcher.current_port, main_port);
+        assert_eq!(runner.dispatcher.current_port, dialog_ptr);
         assert!(runner.active_interrupt_callback.is_none());
     }
 
@@ -6246,6 +6473,113 @@ mod tests {
         );
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+    }
+
+    #[test]
+    fn dialog_draw_proc_does_not_restore_over_guest_selected_dialog_port() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let main_port = runner.bus.alloc(170);
+        let dialog_ptr = runner.bus.alloc(170);
+        let proc_addr = 0x0004_2000u32;
+        let item_no = 5i16;
+
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            main_port,
+            0,
+            0,
+            0,
+            600,
+            800,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            dialog_ptr,
+            0,
+            120,
+            180,
+            240,
+            420,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner
+            .dispatcher
+            .set_current_port_state(&mut runner.bus, &mut runner.cpu, main_port, None);
+
+        runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
+        runner.bus.write_word(proc_addr + 2, 0x0000);
+        runner.bus.write_word(proc_addr + 4, 0x2F3C); // MOVE.L #dialog,-(SP)
+        runner.bus.write_long(proc_addr + 6, dialog_ptr);
+        runner.bus.write_word(proc_addr + 10, 0xA873); // _SetPort
+        runner.bus.write_word(proc_addr + 12, 0x4E5E); // UNLK A6
+        runner.bus.write_word(proc_addr + 14, 0x4E75); // RTS
+
+        runner.dispatcher.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (120, 180, 240, 420),
+            title: String::new(),
+            proc_id: 1,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: interrupted_sp,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::from([(proc_addr, item_no)]),
+            draw_procs_done: false,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        assert!(runner.fire_dialog_draw_procs());
+        assert_eq!(
+            runner
+                .active_interrupt_callback
+                .as_ref()
+                .and_then(|callback| callback.restore_port),
+            None
+        );
+
+        let (_steps, running) = runner.run_steps(32, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(
+            runner.dispatcher.current_port, dialog_ptr,
+            "Dialog Manager must leave the dialog port current after the draw proc"
+        );
     }
 
     #[test]

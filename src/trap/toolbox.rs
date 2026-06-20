@@ -1512,6 +1512,7 @@ impl super::TrapDispatcher {
 
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
+                self.debug_get_next_event_count = self.debug_get_next_event_count.saturating_add(1);
 
                 let (what, message, where_v, where_h, modifiers, has_event) =
                     self.dequeue_toolbox_event(event_mask);
@@ -1539,12 +1540,15 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 // SP+0: mouseRgn(4), SP+4: sleep(4), SP+8: theEvent(4), SP+12: eventMask(2), SP+14: result(2)
+                let mouse_rgn = bus.read_long(sp);
                 let sleep = (bus.read_long(sp + 4) as i32).max(0) as u32;
                 let event_ptr = bus.read_long(sp + 8);
                 let event_mask = bus.read_word(sp + 12);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
+                self.debug_wait_next_event_count =
+                    self.debug_wait_next_event_count.saturating_add(1);
 
                 // Macintosh Toolbox Essentials 1992, 2-85..2-87: eventMask
                 // designates the event types to return; events not designated
@@ -1553,8 +1557,23 @@ impl super::TrapDispatcher {
                 // Finder delivers kAEOpenApplication as a queued high-level
                 // event at launch. Make it visible through the normal toolbox
                 // event APIs instead of special-casing WaitNextEvent only.
-                let (what, message, where_v, where_h, modifiers, has_event) =
+                let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) =
                     self.dequeue_toolbox_event(event_mask);
+
+                if !has_event {
+                    if let Some(event) =
+                        self.mouse_moved_event_for_region(bus, event_mask, mouse_rgn)
+                    {
+                        what = event.what;
+                        message = event.message;
+                        where_v = event.where_v;
+                        where_h = event.where_h;
+                        modifiers = event.modifiers;
+                        has_event = true;
+                        self.debug_mouse_moved_event_count =
+                            self.debug_mouse_moved_event_count.saturating_add(1);
+                    }
+                }
 
                 if !has_event && sleep != 0 {
                     // WaitNextEvent returns a null event only after the caller's
@@ -1664,6 +1683,7 @@ impl super::TrapDispatcher {
             (true, 0x172) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pt_ptr = bus.read_long(sp);
+                self.debug_get_mouse_count = self.debug_get_mouse_count.saturating_add(1);
 
                 let a5 = cpu.read_reg(Register::A5);
                 let global_ptr = bus.read_long(a5);
@@ -1673,6 +1693,14 @@ impl super::TrapDispatcher {
                 // GlobalToLocal: local = global + bounds.topLeft
                 let local_v = self.mouse_pos.0 + bounds_top;
                 let local_h = self.mouse_pos.1 + bounds_left;
+                if self.debug_get_mouse_last_local != (local_v, local_h) {
+                    self.debug_get_mouse_local_change_count =
+                        self.debug_get_mouse_local_change_count.saturating_add(1);
+                }
+                self.debug_get_mouse_last_local = (local_v, local_h);
+                self.debug_get_mouse_last_global = self.mouse_pos;
+                self.debug_get_mouse_last_port = port;
+                self.debug_get_mouse_last_port_bounds_top_left = (bounds_top, bounds_left);
 
                 bus.write_word(pt_ptr, local_v as u16);
                 bus.write_word(pt_ptr + 2, local_h as u16);
@@ -1701,6 +1729,13 @@ impl super::TrapDispatcher {
                     e.what == 1 || e.what == 2 // mouseDown or mouseUp
                 });
                 let result = self.mouse_button && !has_mouse_event;
+                if result {
+                    self.debug_still_down_true_count =
+                        self.debug_still_down_true_count.saturating_add(1);
+                } else {
+                    self.debug_still_down_false_count =
+                        self.debug_still_down_false_count.saturating_add(1);
+                }
                 if super::dispatch::trace_input_enabled() && !result {
                     let pc = cpu.read_reg(Register::PC);
                     eprintln!(
@@ -1745,6 +1780,11 @@ impl super::TrapDispatcher {
                         "[INPUT] Button -> {} (MBState=${:02X} mouse_button={})",
                         pressed, mb_state, self.mouse_button
                     );
+                }
+                if pressed {
+                    self.debug_button_true_count = self.debug_button_true_count.saturating_add(1);
+                } else {
+                    self.debug_button_false_count = self.debug_button_false_count.saturating_add(1);
                 }
                 bus.write_word(sp, if pressed { 0xFFFF } else { 0 });
                 Ok(())
@@ -5022,6 +5062,13 @@ impl super::TrapDispatcher {
                         "[INPUT] WaitMouseUp -> {} (mouse_button={})",
                         still_down, self.mouse_button
                     );
+                }
+                if still_down {
+                    self.debug_wait_mouse_up_true_count =
+                        self.debug_wait_mouse_up_true_count.saturating_add(1);
+                } else {
+                    self.debug_wait_mouse_up_false_count =
+                        self.debug_wait_mouse_up_false_count.saturating_add(1);
                 }
                 bus.write_word(sp, if still_down { 0xFFFF } else { 0 });
                 Ok(())
@@ -10488,6 +10535,24 @@ mod tests {
         assert!(disp.event_queue.is_empty());
     }
 
+    fn test_region_handle(
+        bus: &mut crate::memory::MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> u32 {
+        let rgn_ptr = bus.alloc(10);
+        let rgn_handle = bus.alloc(4);
+        bus.write_long(rgn_handle, rgn_ptr);
+        bus.write_word(rgn_ptr, 10);
+        bus.write_word(rgn_ptr + 2, top as u16);
+        bus.write_word(rgn_ptr + 4, left as u16);
+        bus.write_word(rgn_ptr + 6, bottom as u16);
+        bus.write_word(rgn_ptr + 8, right as u16);
+        rgn_handle
+    }
+
     // WaitNextEvent ($A860) — empty queue
     #[test]
     fn test_wait_next_event_empty() {
@@ -10537,6 +10602,106 @@ mod tests {
         assert_eq!(bus.read_word(event_ptr), 0);
         assert!(!disp.sent_open_app_event);
         assert_eq!(disp.pending_wait_sleep_ticks, 1);
+    }
+
+    #[test]
+    fn wait_next_event_mouse_rgn_outside_returns_mouse_moved_os_event() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+        disp.mouse_pos = (50, 25);
+        let sp = TEST_SP;
+        let event_ptr = 0x200000u32;
+        let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
+
+        bus.write_long(sp, mouse_rgn);
+        bus.write_long(sp + 4, 60);
+        bus.write_long(sp + 8, event_ptr);
+        bus.write_word(sp + 12, 0x8000); // osMask, event type 15.
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 14), 0xFFFF);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(bus.read_word(event_ptr), 15);
+        assert_eq!(bus.read_long(event_ptr + 2), 0xFA00_0000);
+        assert_eq!(bus.read_word(event_ptr + 10), 50);
+        assert_eq!(bus.read_word(event_ptr + 12), 25);
+        assert_eq!(disp.pending_wait_sleep_ticks, 0);
+    }
+
+    #[test]
+    fn wait_next_event_mouse_rgn_inside_takes_null_sleep_path() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+        disp.mouse_pos = (20, 25);
+        let sp = TEST_SP;
+        let event_ptr = 0x200000u32;
+        let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
+
+        bus.write_long(sp, mouse_rgn);
+        bus.write_long(sp + 4, 7);
+        bus.write_long(sp + 8, event_ptr);
+        bus.write_word(sp + 12, 0x8000); // osMask.
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 14), 0);
+        assert_eq!(bus.read_word(event_ptr), 0);
+        assert_eq!(disp.pending_wait_sleep_ticks, 7);
+    }
+
+    #[test]
+    fn wait_next_event_empty_mouse_rgn_suppresses_mouse_moved_event() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+        disp.mouse_pos = (50, 25);
+        let sp = TEST_SP;
+        let event_ptr = 0x200000u32;
+        let empty_mouse_rgn = test_region_handle(&mut bus, 0, 0, 0, 0);
+
+        bus.write_long(sp, empty_mouse_rgn);
+        bus.write_long(sp + 4, 9);
+        bus.write_long(sp + 8, event_ptr);
+        bus.write_word(sp + 12, 0x8000); // osMask.
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 14), 0);
+        assert_eq!(bus.read_word(event_ptr), 0);
+        assert_eq!(disp.pending_wait_sleep_ticks, 9);
+    }
+
+    #[test]
+    fn wait_next_event_mouse_rgn_respects_event_mask() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+        disp.mouse_pos = (50, 25);
+        let sp = TEST_SP;
+        let event_ptr = 0x200000u32;
+        let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
+
+        bus.write_long(sp, mouse_rgn);
+        bus.write_long(sp + 4, 11);
+        bus.write_long(sp + 8, event_ptr);
+        bus.write_word(sp + 12, 0x0002); // mouseDownMask, not osMask.
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 14), 0);
+        assert_eq!(bus.read_word(event_ptr), 0);
+        assert_eq!(disp.pending_wait_sleep_ticks, 11);
     }
 
     // WaitNextEvent ($A860) — synthesizes kAEOpenApplication on first call

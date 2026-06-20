@@ -3140,6 +3140,24 @@ impl super::TrapDispatcher {
         );
     }
 
+    pub(crate) fn refresh_visible_dialog_snapshot_for_port(
+        &mut self,
+        bus: &MacMemoryBus,
+        port: u32,
+    ) {
+        let Some(bounds) = self
+            .dialog_visible_snapshots
+            .get(&port)
+            .map(|snapshot| snapshot.bounds)
+        else {
+            return;
+        };
+        let pixels = self.save_dialog_pixels(bus, bounds);
+        if let Some(snapshot) = self.dialog_visible_snapshots.get_mut(&port) {
+            snapshot.pixels = pixels;
+        }
+    }
+
     pub(crate) fn finalize_dialog_draw_procs_if_idle(&mut self, bus: &mut MacMemoryBus) {
         let Some(tracking) = self.dialog_tracking.as_ref() else {
             return;
@@ -4133,28 +4151,6 @@ impl super::TrapDispatcher {
             }
         }
         0
-    }
-
-    pub(crate) fn pending_dialog_button_mouse_down(&self) -> bool {
-        let Some(tracking) = self.dialog_tracking.as_ref() else {
-            return false;
-        };
-        let Some(event) = self
-            .event_queue
-            .iter()
-            .find(|event| matches!(event.what, 1 | 2 | 3 | 4 | 6))
-        else {
-            return false;
-        };
-        if event.what != 1 {
-            return false;
-        }
-        Self::dialog_button_hit_test(
-            &tracking.items,
-            tracking.bounds,
-            event.where_v,
-            event.where_h,
-        ) > 0
     }
 
     pub(crate) fn pending_dialog_plain_user_item_mouse_down(&self) -> bool {
@@ -5681,6 +5677,7 @@ impl super::TrapDispatcher {
                     // handled the most recent event. Per Inside Macintosh Volume I, I-415:
                     // TRUE means the filter handled the event and set itemHit;
                     // FALSE means ModalDialog should process the event itself.
+                    let mut waiting_for_filter_proc_event = false;
                     if filter_proc != 0 {
                         let result_addr = self.dialog_filter_result_addr;
                         let tracking_dialog_ptr = tracking.dialog_ptr;
@@ -5705,7 +5702,7 @@ impl super::TrapDispatcher {
                             );
                         }
 
-                        if hit > 0 {
+                        if hit > 0 || filter_returned_true {
                             let handled_mouse_down =
                                 filter_event.as_ref().is_some_and(|e| e.what == 1);
                             let (dialog_ptr, edit_item, edit_text, items) = {
@@ -5745,10 +5742,8 @@ impl super::TrapDispatcher {
                             cpu.write_reg(Register::A7, stack_ptr + 8);
                             return Some(Ok(()));
                         }
-                        if filter_returned_true {
-                            return Some(Ok(()));
-                        }
                         pending_event = filter_event;
+                        waiting_for_filter_proc_event = pending_event.is_none();
                     }
 
                     if flash_remaining > 0 {
@@ -5810,6 +5805,15 @@ impl super::TrapDispatcher {
                             }
                             cpu.write_reg(Register::A7, stack_ptr + 8);
                         }
+                        return Some(Ok(()));
+                    }
+
+                    // With a non-NIL filterProc, ModalDialog passes each event
+                    // to the filter before Dialog Manager default handling.
+                    // Leave queued events alone here; runner.rs will inject the
+                    // filter callback, and this handler will process the returned
+                    // event only if that callback returns FALSE. MTE 1992 6-136.
+                    if waiting_for_filter_proc_event {
                         return Some(Ok(()));
                     }
 
@@ -14778,6 +14782,143 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert!(disp.event_queue.iter().all(|event| event.what != 2));
+    }
+
+    #[test]
+    fn modal_dialog_return_key_activates_default_button_after_filter_false() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+        let result_addr = 0x300100u32;
+
+        bus.write_word(result_addr, 0);
+        bus.write_word(item_hit_ptr, 0);
+        disp.dialog_filter_result_addr = result_addr;
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 4,
+                rect: (20, 30, 60, 110),
+                text: String::from("OK"),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0x149F0,
+            game_managed: true,
+            last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+                what: 3,
+                message: 0x0000_240D,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0,
+            }),
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(item_hit_ptr), 0);
+        {
+            let tracking = disp.dialog_tracking.as_ref().unwrap();
+            assert_eq!(tracking.flash_item, 1);
+            assert!(tracking.flash_remaining > 0);
+        }
+
+        {
+            let tracking = disp.dialog_tracking.as_mut().unwrap();
+            tracking.flash_remaining = 1;
+            tracking.flash_delay = 0;
+        }
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+        assert!(disp.dialog_tracking.is_none());
+    }
+
+    #[test]
+    fn modal_dialog_filter_true_zero_hit_returns_to_app() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+        let result_addr = 0x300100u32;
+
+        bus.write_word(result_addr, 0xFFFF);
+        bus.write_word(item_hit_ptr, 0);
+        disp.dialog_filter_result_addr = result_addr;
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 4,
+                rect: (20, 30, 60, 110),
+                text: String::from("OK"),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0x149F0,
+            game_managed: false,
+            last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+                what: 3,
+                message: 0x0000_240D,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0,
+            }),
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 0);
+        assert!(disp.dialog_tracking.is_none());
     }
 
     // ---- TEInit ($A9CC) ----

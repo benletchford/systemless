@@ -885,6 +885,7 @@ impl super::TrapDispatcher {
             //     Band 4: visRgn bbox offset by (dv, dh)
             //     Band 5: clipRgn bbox unchanged
             (true, 0x078) => {
+                self.debug_set_origin_count = self.debug_set_origin_count.saturating_add(1);
                 let sp = cpu.read_reg(Register::A7);
                 let v = bus.read_word(sp) as i16;
                 let h = bus.read_word(sp + 2) as i16;
@@ -2939,6 +2940,7 @@ impl super::TrapDispatcher {
             // Imaging With QuickDraw 1994, 3-112
             // CopyBits ($A8EC): Supports 1bpp/8bpp BitMap and PixMap sources, nearest-neighbor scaling, palette translation, transparent mode, and bbox clipping to visRgn/clipRgn/maskRgn; complex transfer modes and non-rectangular region semantics remain incomplete
             (true, 0x0EC) => {
+                self.debug_copy_bits_count = self.debug_copy_bits_count.saturating_add(1);
                 let sp = cpu.read_reg(Register::A7);
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 let mask_rgn = bus.read_long(sp);
@@ -4004,6 +4006,9 @@ impl super::TrapDispatcher {
                     ) {
                         return Some(Err(err));
                     }
+                }
+                if dst_info.base == self.screen_mode.0 {
+                    self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 }
                 Ok(())
             }
@@ -5099,6 +5104,7 @@ impl super::TrapDispatcher {
             // Imaging With QuickDraw 1994, 3-112
             // ScrollRect ($A8EF): Shifts pixels within rect by (dh, dv), fills exposed area, sets updateRgn. Supports 1bpp and 8bpp
             (true, 0x0EF) => {
+                self.debug_scroll_rect_count = self.debug_scroll_rect_count.saturating_add(1);
                 let sp = cpu.read_reg(Register::A7);
                 // Stack (Pascal calling convention, pushed right-to-left):
                 //   SP+0 : updateRgn  (4 bytes, RgnHandle)
@@ -5116,6 +5122,13 @@ impl super::TrapDispatcher {
                 let left = bus.read_word(rect_ptr + 2) as i16;
                 let bottom = bus.read_word(rect_ptr + 4) as i16;
                 let right = bus.read_word(rect_ptr + 6) as i16;
+                self.debug_scroll_rect_last_rect = (top, left, bottom, right);
+                self.debug_scroll_rect_last_delta = (dh, dv);
+                self.debug_scroll_rect_last_changed_bytes = 0;
+                if dh != 0 || dv != 0 {
+                    self.debug_scroll_rect_nonzero_delta_count =
+                        self.debug_scroll_rect_nonzero_delta_count.saturating_add(1);
+                }
 
                 let w = (right - left) as i32;
                 let h = (bottom - top) as i32;
@@ -5158,6 +5171,11 @@ impl super::TrapDispatcher {
                 }
 
                 let row_bytes = row_bytes_raw as u32;
+                self.debug_scroll_rect_last_port = the_port;
+                self.debug_scroll_rect_last_base = base_addr;
+                self.debug_scroll_rect_last_row_bytes = row_bytes_raw;
+                self.debug_scroll_rect_last_port_bounds_top_left = (port_top, port_left);
+                self.debug_scroll_rect_last_is_color = is_color;
                 let _bytes_per_pixel: u32 = if is_color { 1 } else { 0 }; // 0 means 1bpp
 
                 // Read rect pixels into temp buffer.
@@ -5223,6 +5241,13 @@ impl super::TrapDispatcher {
                             let dy = (top - port_top) as u32 + dst_row as u32;
                             let dx = (left - port_left) as u32 + dst_col_byte as u32;
                             let addr = base_addr + dy * row_bytes + dx;
+                            let old = bus.read_byte(addr);
+                            if old != pixel_byte {
+                                self.debug_scroll_rect_changed_byte_count =
+                                    self.debug_scroll_rect_changed_byte_count.saturating_add(1);
+                                self.debug_scroll_rect_last_changed_bytes =
+                                    self.debug_scroll_rect_last_changed_bytes.saturating_add(1);
+                            }
                             bus.write_byte(addr, pixel_byte);
                         }
                     }
@@ -5266,6 +5291,12 @@ impl super::TrapDispatcher {
                             } else {
                                 cur & !(1u8 << dst_bit)
                             };
+                            if cur != new {
+                                self.debug_scroll_rect_changed_byte_count =
+                                    self.debug_scroll_rect_changed_byte_count.saturating_add(1);
+                                self.debug_scroll_rect_last_changed_bytes =
+                                    self.debug_scroll_rect_last_changed_bytes.saturating_add(1);
+                            }
                             bus.write_byte(dst_byte_addr, new);
                         }
                     }
@@ -5305,6 +5336,11 @@ impl super::TrapDispatcher {
                         bus.write_word(rgn_ptr + 6, exp_bottom as u16);
                         bus.write_word(rgn_ptr + 8, exp_right as u16);
                     }
+                }
+
+                if base_addr == self.screen_mode.0 && self.debug_scroll_rect_last_changed_bytes > 0
+                {
+                    self.refresh_visible_dialog_snapshot_for_port(bus, the_port);
                 }
 
                 Ok(())
@@ -17707,7 +17743,7 @@ impl super::TrapDispatcher {
         Some((rgn_ptr, u32::from(bus.read_word(rgn_ptr))))
     }
 
-    fn region_bbox(bus: &MacMemoryBus, rgn_handle: u32) -> Option<(i16, i16, i16, i16)> {
+    pub(crate) fn region_bbox(bus: &MacMemoryBus, rgn_handle: u32) -> Option<(i16, i16, i16, i16)> {
         let (rgn_ptr, _) = Self::region_ptr_and_size(bus, rgn_handle)?;
         let top = bus.read_word(rgn_ptr + 2) as i16;
         let left = bus.read_word(rgn_ptr + 4) as i16;
@@ -17930,7 +17966,12 @@ impl super::TrapDispatcher {
         Some(RegionMembershipCache { top, rows })
     }
 
-    fn region_contains_point(bus: &MacMemoryBus, rgn_handle: u32, y: i16, x: i16) -> bool {
+    pub(crate) fn region_contains_point(
+        bus: &MacMemoryBus,
+        rgn_handle: u32,
+        y: i16,
+        x: i16,
+    ) -> bool {
         let Some((top, left, bottom, right)) = Self::region_bbox(bus, rgn_handle) else {
             return false;
         };

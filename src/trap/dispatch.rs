@@ -1043,6 +1043,43 @@ pub struct TrapDispatcher {
     pub debug_key_event_delivery_count: u64,
     /// Last keyDown/keyUp EventRecord.message delivered through Event Manager.
     pub debug_last_key_event_message: u32,
+    /// Debug counter for WaitNextEvent calls observed by scripted probes.
+    pub debug_wait_next_event_count: u64,
+    /// Debug counter for GetNextEvent calls observed by scripted probes.
+    pub debug_get_next_event_count: u64,
+    /// Debug counter for mouse-moved OS events synthesized by WaitNextEvent.
+    pub debug_mouse_moved_event_count: u64,
+    /// Debug counter for GetMouse calls observed by scripted probes.
+    pub debug_get_mouse_count: u64,
+    /// Debug snapshots for GetMouse coordinate conversion.
+    pub debug_get_mouse_local_change_count: u64,
+    pub debug_get_mouse_last_local: (i16, i16),
+    pub debug_get_mouse_last_global: (i16, i16),
+    pub debug_get_mouse_last_port: u32,
+    pub debug_get_mouse_last_port_bounds_top_left: (i16, i16),
+    /// Debug counters for StillDown return values observed by scripted probes.
+    pub debug_still_down_true_count: u64,
+    pub debug_still_down_false_count: u64,
+    /// Debug counters for Button return values observed by scripted probes.
+    pub debug_button_true_count: u64,
+    pub debug_button_false_count: u64,
+    /// Debug counters for WaitMouseUp return values observed by scripted probes.
+    pub debug_wait_mouse_up_true_count: u64,
+    pub debug_wait_mouse_up_false_count: u64,
+    /// Debug counters for QuickDraw activity during scripted probes.
+    pub debug_set_origin_count: u64,
+    pub debug_copy_bits_count: u64,
+    pub debug_scroll_rect_count: u64,
+    pub debug_scroll_rect_nonzero_delta_count: u64,
+    pub debug_scroll_rect_changed_byte_count: u64,
+    pub debug_scroll_rect_last_changed_bytes: u64,
+    pub debug_scroll_rect_last_rect: (i16, i16, i16, i16),
+    pub debug_scroll_rect_last_delta: (i16, i16),
+    pub debug_scroll_rect_last_port: u32,
+    pub debug_scroll_rect_last_base: u32,
+    pub debug_scroll_rect_last_row_bytes: u16,
+    pub debug_scroll_rect_last_port_bounds_top_left: (i16, i16),
+    pub debug_scroll_rect_last_is_color: bool,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
     pub(crate) event_queue: VecDeque<QueuedEvent>,
     /// System event mask used by PostEvent/PPostEvent filtering.
@@ -1952,6 +1989,34 @@ impl TrapDispatcher {
             debug_last_getkeys_nonzero_key_map: [0; 16],
             debug_key_event_delivery_count: 0,
             debug_last_key_event_message: 0,
+            debug_wait_next_event_count: 0,
+            debug_get_next_event_count: 0,
+            debug_mouse_moved_event_count: 0,
+            debug_get_mouse_count: 0,
+            debug_get_mouse_local_change_count: 0,
+            debug_get_mouse_last_local: (0, 0),
+            debug_get_mouse_last_global: (0, 0),
+            debug_get_mouse_last_port: 0,
+            debug_get_mouse_last_port_bounds_top_left: (0, 0),
+            debug_still_down_true_count: 0,
+            debug_still_down_false_count: 0,
+            debug_button_true_count: 0,
+            debug_button_false_count: 0,
+            debug_wait_mouse_up_true_count: 0,
+            debug_wait_mouse_up_false_count: 0,
+            debug_set_origin_count: 0,
+            debug_copy_bits_count: 0,
+            debug_scroll_rect_count: 0,
+            debug_scroll_rect_nonzero_delta_count: 0,
+            debug_scroll_rect_changed_byte_count: 0,
+            debug_scroll_rect_last_changed_bytes: 0,
+            debug_scroll_rect_last_rect: (0, 0, 0, 0),
+            debug_scroll_rect_last_delta: (0, 0),
+            debug_scroll_rect_last_port: 0,
+            debug_scroll_rect_last_base: 0,
+            debug_scroll_rect_last_row_bytes: 0,
+            debug_scroll_rect_last_port_bounds_top_left: (0, 0),
+            debug_scroll_rect_last_is_color: false,
             event_queue: VecDeque::new(),
             system_event_mask: 0xFFEF, // everyEvent - keyUpMask
             sent_open_app_event: false,
