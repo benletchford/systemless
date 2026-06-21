@@ -3183,6 +3183,9 @@ impl super::TrapDispatcher {
                 if eff_width <= 0 || eff_height <= 0 {
                     return Some(Ok(()));
                 }
+                if dst_info.base == self.screen_mode.0 {
+                    self.ensure_dialog_background_saved_for_screen_port(bus, port);
+                }
 
                 let mask_membership =
                     Self::build_region_membership_cache(bus, mask_rgn, clip_t, clip_b);
@@ -5177,6 +5180,35 @@ impl super::TrapDispatcher {
                 self.debug_scroll_rect_last_port_bounds_top_left = (port_top, port_left);
                 self.debug_scroll_rect_last_is_color = is_color;
                 let _bytes_per_pixel: u32 = if is_color { 1 } else { 0 }; // 0 means 1bpp
+
+                if base_addr == self.screen_mode.0 {
+                    let mut clip_top = top;
+                    let mut clip_left = left;
+                    let mut clip_bottom = bottom;
+                    let mut clip_right = right;
+                    for offset in [24u32, 28u32] {
+                        let rgn_handle = bus.read_long(the_port.wrapping_add(offset));
+                        if rgn_handle == 0 {
+                            continue;
+                        }
+                        let rgn_ptr = bus.read_long(rgn_handle);
+                        if rgn_ptr == 0 {
+                            continue;
+                        }
+                        let rt = bus.read_word(rgn_ptr + 2) as i16;
+                        let rl = bus.read_word(rgn_ptr + 4) as i16;
+                        let rb = bus.read_word(rgn_ptr + 6) as i16;
+                        let rr = bus.read_word(rgn_ptr + 8) as i16;
+                        clip_top = clip_top.max(rt);
+                        clip_left = clip_left.max(rl);
+                        clip_bottom = clip_bottom.min(rb);
+                        clip_right = clip_right.min(rr);
+                    }
+                    if clip_top >= clip_bottom || clip_left >= clip_right {
+                        return Some(Ok(()));
+                    }
+                    self.ensure_dialog_background_saved_for_screen_port(bus, the_port);
+                }
 
                 // Read rect pixels into temp buffer.
                 //
@@ -12887,6 +12919,9 @@ impl super::TrapDispatcher {
                 }
 
                 if let Some(info) = self.resolve_pixel_target(bus, port, h, v) {
+                    if info.base == self.screen_mode.0 {
+                        self.ensure_dialog_background_saved_for_screen_port(bus, port);
+                    }
                     self.write_cpixel(bus, &info, rgb);
                 }
                 Ok(())
@@ -17227,6 +17262,9 @@ impl super::TrapDispatcher {
         if eff_width <= 0 || eff_height <= 0 {
             return Ok(());
         }
+        if dst_info.base == self.screen_mode.0 {
+            self.ensure_dialog_background_saved_for_screen_port(bus, port);
+        }
 
         let mask_membership = Self::build_region_membership_cache(bus, mask_rgn, clip_t, clip_b);
         let vis_membership =
@@ -18877,6 +18915,23 @@ impl super::TrapDispatcher {
         if h < left || h >= right || v < top || v >= bottom {
             return None;
         }
+        for offset in [24u32, 28u32] {
+            let rgn_handle = bus.read_long(port.wrapping_add(offset));
+            if rgn_handle == 0 {
+                continue;
+            }
+            let rgn_ptr = bus.read_long(rgn_handle);
+            if rgn_ptr == 0 {
+                continue;
+            }
+            let rt = bus.read_word(rgn_ptr + 2) as i16;
+            let rl = bus.read_word(rgn_ptr + 4) as i16;
+            let rb = bus.read_word(rgn_ptr + 6) as i16;
+            let rr = bus.read_word(rgn_ptr + 8) as i16;
+            if v < rt || v >= rb || h < rl || h >= rr {
+                return None;
+            }
+        }
 
         let dy = (v - top) as u32;
         let dx = (h - left) as u32;
@@ -18972,7 +19027,12 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn fill_rect_with_raw_pixpat(&self, bus: &mut MacMemoryBus, r: &Rect, pp_handle: u32) -> bool {
+    fn fill_rect_with_raw_pixpat(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        pp_handle: u32,
+    ) -> bool {
         macro_rules! reject {
             ($($arg:tt)*) => {{
                 if trace_qd_colors_enabled() {
@@ -19160,12 +19220,10 @@ impl super::TrapDispatcher {
                     let vb = bus.read_word(vis_rgn_ptr + 6) as i16;
                     let vr = bus.read_word(vis_rgn_ptr + 8) as i16;
                     trace_vis = Some((vt, vl, vb, vr));
-                    if vb > vt && vr > vl {
-                        clip_top = clip_top.max(vt);
-                        clip_left = clip_left.max(vl);
-                        clip_bottom = clip_bottom.min(vb);
-                        clip_right = clip_right.min(vr);
-                    }
+                    clip_top = clip_top.max(vt);
+                    clip_left = clip_left.max(vl);
+                    clip_bottom = clip_bottom.min(vb);
+                    clip_right = clip_right.min(vr);
                 }
             }
             let clip_rgn_handle = bus.read_long(port.wrapping_add(28));
@@ -19177,12 +19235,10 @@ impl super::TrapDispatcher {
                     let cb = bus.read_word(clip_rgn_ptr + 6) as i16;
                     let cr = bus.read_word(clip_rgn_ptr + 8) as i16;
                     trace_clip = Some((ct, cl, cb, cr));
-                    if cb > ct && cr > cl {
-                        clip_top = clip_top.max(ct);
-                        clip_left = clip_left.max(cl);
-                        clip_bottom = clip_bottom.min(cb);
-                        clip_right = clip_right.min(cr);
-                    }
+                    clip_top = clip_top.max(ct);
+                    clip_left = clip_left.max(cl);
+                    clip_bottom = clip_bottom.min(cb);
+                    clip_right = clip_right.min(cr);
                 }
             }
         }
@@ -19226,6 +19282,9 @@ impl super::TrapDispatcher {
         }
         if bottom <= top || right <= left {
             return true;
+        }
+        if is_screen_port {
+            self.ensure_dialog_background_saved_for_screen_port(bus, port);
         }
 
         for y in top..bottom {

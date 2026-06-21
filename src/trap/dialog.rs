@@ -2,7 +2,7 @@
 
 use super::dispatch::{
     DialogItem, DialogPopupTrackingState, DialogTrackingState, DialogUserItemTrackingState,
-    PendingDialogPopupMenu, PersistentDialogSnapshot,
+    PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent, RetainedModalDialogClickState,
 };
 use super::types::{Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
@@ -155,18 +155,25 @@ impl super::TrapDispatcher {
     }
 
     fn text_item_string_from_handle(bus: &MacMemoryBus, item_handle: u32) -> String {
+        Self::text_item_string_from_handle_if_present(bus, item_handle).unwrap_or_default()
+    }
+
+    fn text_item_string_from_handle_if_present(
+        bus: &MacMemoryBus,
+        item_handle: u32,
+    ) -> Option<String> {
         if item_handle == 0 {
-            return String::new();
+            return None;
         }
 
         let data_ptr = bus.read_long(item_handle);
         if data_ptr == 0 {
-            return String::new();
+            return Some(String::new());
         }
 
         let len = bus.get_alloc_size(data_ptr).unwrap_or(0) as usize;
         let bytes = bus.read_bytes(data_ptr, len);
-        String::from_utf8_lossy(&bytes).to_string()
+        Some(String::from_utf8_lossy(&bytes).to_string())
     }
 
     fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
@@ -217,34 +224,84 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn resolve_dispos_dialog_ptr(&self, dialog_ptr: u32) -> u32 {
-        if dialog_ptr == 0
-            || dialog_ptr == self.front_window
-            || self.dialog_items.contains_key(&dialog_ptr)
-        {
-            return dialog_ptr;
+    pub(crate) fn front_dialog_for_user_item_proc(&self, proc_ptr: u32) -> Option<u32> {
+        if proc_ptr == 0 {
+            return None;
         }
-
         let front = self.front_window;
         if front == 0 {
-            return dialog_ptr;
+            return None;
         }
-
         let Some(items) = self.dialog_items.get(&front) else {
-            return dialog_ptr;
+            return None;
         };
-
-        // EV Override's registration panel can hand DisposDialog a userItem
-        // draw proc address from the current front dialog. Treat that as a
-        // request to close the front dialog instead of leaving stale window state.
         if items
             .iter()
-            .any(|item| (item.item_type & 0x7F) == 0 && item.proc_ptr == dialog_ptr)
+            .any(|item| (item.item_type & 0x7F) == 0 && item.proc_ptr == proc_ptr)
         {
-            return front;
+            Some(front)
+        } else {
+            None
         }
+    }
 
-        dialog_ptr
+    pub(crate) fn front_dialog_has_user_item_proc(&self, proc_ptr: u32) -> bool {
+        self.front_dialog_for_user_item_proc(proc_ptr).is_some()
+    }
+
+    pub(crate) fn redraw_dialog_window_contents(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+    ) {
+        if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
+            Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+            let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+            let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+            let (edit_text, edit_item, default_item) =
+                Self::dialog_edit_state(bus, dialog_ptr, &items);
+            self.draw_dialog(
+                bus,
+                bounds,
+                proc_id,
+                "",
+                &items,
+                default_item,
+                &edit_text,
+                edit_item,
+                false,
+                dialog_ptr,
+            );
+            let pixels = self.save_dialog_pixels(bus, bounds);
+            self.dialog_visible_snapshots
+                .insert(dialog_ptr, PersistentDialogSnapshot { bounds, pixels });
+            self.dialog_items.insert(dialog_ptr, items);
+        }
+    }
+
+    pub(crate) fn queue_modeless_dialog_draw_procs(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+    ) {
+        let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
+            return;
+        };
+        Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+        let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+        for (i, item) in items.iter().enumerate() {
+            if (item.item_type & 0x7F) == 0
+                && item.proc_ptr != 0
+                && Self::dialog_item_intersects_bounds(bounds, item)
+            {
+                self.modeless_dialog_draw_proc_queue.push_back((
+                    dialog_ptr,
+                    item.proc_ptr,
+                    (i + 1) as i16,
+                ));
+            }
+        }
+        self.dialog_items.insert(dialog_ptr, items);
     }
 
     fn allocate_te_handle(bus: &mut MacMemoryBus) -> u32 {
@@ -2043,11 +2100,11 @@ impl super::TrapDispatcher {
             return (String::new(), 0, default_item);
         }
 
-        let edit_text = Self::text_item_string_from_handle(
+        let edit_text = Self::text_item_string_from_handle_if_present(
             bus,
             Self::dialog_item_handle(bus, dialog_ptr, edit_item),
         );
-        if !edit_text.is_empty() {
+        if let Some(edit_text) = edit_text {
             return (edit_text, edit_item, default_item);
         }
 
@@ -2068,6 +2125,54 @@ impl super::TrapDispatcher {
                 item.text = tracking.edit_text.clone();
             }
         }
+    }
+
+    fn redraw_dialog_text_item(&mut self, bus: &mut MacMemoryBus, dialog_ptr: u32, item_no: i16) {
+        if !self.window_visible(bus, dialog_ptr) {
+            return;
+        }
+        let Some(items) = self.dialog_items.get(&dialog_ptr).cloned() else {
+            return;
+        };
+        let Some(item) = items.get((item_no - 1) as usize) else {
+            return;
+        };
+        let base_type = item.item_type & 0x7F;
+        if base_type != 8 && base_type != 16 {
+            return;
+        }
+
+        let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+        let (top, left, bottom, right) = bounds;
+        let (it, il, ib, ir) = item.rect;
+        let abs_top = top + it;
+        let abs_left = left + il;
+        let abs_bottom = top + ib;
+        let abs_right = left + ir;
+        if abs_top >= bottom || abs_bottom <= top || abs_left >= right || abs_right <= left {
+            return;
+        }
+
+        let (edit_text, edit_item, default_item) = Self::dialog_edit_state(bus, dialog_ptr, &items);
+        self.redraw_standard_dialog_items(
+            bus,
+            bounds,
+            &items,
+            default_item,
+            &edit_text,
+            edit_item,
+            dialog_ptr,
+        );
+
+        if self.dialog_visible_snapshots.contains_key(&dialog_ptr) {
+            let pixels = self.save_dialog_pixels(bus, bounds);
+            self.dialog_visible_snapshots
+                .insert(dialog_ptr, PersistentDialogSnapshot { bounds, pixels });
+        }
+        self.capture_gui_frame(
+            bus,
+            &format!("set_dialog_item_text_{:08X}_{}", dialog_ptr, item_no),
+        );
     }
 
     fn flush_dialog_edit_item_texts(
@@ -2164,65 +2269,34 @@ impl super::TrapDispatcher {
         self.dialog_items.insert(dlg_ptr, items.clone());
 
         if visible {
-            // Save the clean background before drawing any controls, so that
-            // ModalDialog can restore it on dismiss.  Without this, ModalDialog
-            // captures saved_pixels *after* we've already drawn buttons here,
-            // and restoring them leaves button-text artefacts on screen.
-            let background = self.save_dialog_pixels(bus, bounds);
-            self.dialog_saved_pixels.insert(dlg_ptr, background);
-            self.draw_window_frame(bus);
-
-            // Fill the dialog area with white immediately so that any
-            // QuickDraw calls the game makes before ModalDialog (e.g.,
-            // Marathon draws its custom popup buttons between GetNewDialog
-            // and ModalDialog) render against a clean white background
-            // rather than whatever game content was behind the dialog.
-            // ModalDialog's draw_dialog call will later redraw the border
-            // and items on top of this, with the game's custom content
-            // preserved by the userItem save/restore mechanism there.
-            // Inside Macintosh Volume I, I-413
-            // Only fill with white if the dialog has standard visible items.
-            // Game-managed dialogs (in-bounds userItems, with possible
-            // offscreen placeholders) handle their own background and filling
-            // white would overwrite game content (e.g. HUD panels).
-            let game_managed = Self::dialog_is_game_managed(bounds, &items);
-            if !game_managed {
-                let (sb, rb, sw, sh, ps) = self.get_screen_params();
-                let (top, left, bottom, right) = bounds;
-                Self::fb_fill_rect(bus, sb, rb, ps, sw, sh, top, left, bottom, right, false);
-            }
-
-            // NewDialog/GetNewDialog draw controls immediately and mark their
-            // rectangles valid so the subsequent update pass redraws only the
-            // remaining items.
-            // Macintosh Toolbox Essentials 1992, 6-114 to 6-118
+            // NewDialog/GetNewDialog create and display visible dialogs
+            // immediately. userItem contents remain app-owned and are skipped
+            // until DrawDialog/ModalDialog/update callbacks can run, but the
+            // standard shell, controls, text, and resource items must still be
+            // visible. Inside Macintosh Volume I, I-405, I-412, I-421.
+            let (edit_text, edit_item, default_item) =
+                Self::dialog_edit_state(bus, dlg_ptr, &items);
+            self.draw_dialog(
+                bus,
+                bounds,
+                proc_id,
+                title,
+                &items,
+                default_item,
+                &edit_text,
+                edit_item,
+                false,
+                dlg_ptr,
+            );
             for item in &items {
-                let (it, il, ib, ir) = item.rect;
-                let abs_top = bounds.0 + it;
-                let abs_left = bounds.1 + il;
-                let abs_bottom = bounds.0 + ib;
-                let abs_right = bounds.1 + ir;
-                match item.item_type & 0x7F {
-                    4 => self.draw_button(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, true,
-                    ),
-                    5 => self.draw_checkbox(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
-                    ),
-                    6 => self.draw_radio(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
-                    ),
-                    8 => self.draw_static_text(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text,
-                    ),
-                    16 => self.draw_edit_text_with_cursor(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, false,
-                    ),
-                    _ => continue,
+                if Self::dialog_item_intersects_bounds(bounds, item) {
+                    self.validate_window_rect(bus, dlg_ptr, item.rect);
                 }
-                self.validate_window_rect(bus, dlg_ptr, item.rect);
             }
             self.queue_window_update_event(dlg_ptr);
+            self.capture_gui_frame(bus, &format!("get_new_dialog_initial_{:08X}", dlg_ptr));
+        } else {
+            self.dialog_initial_draw_deferred.remove(&dlg_ptr);
         }
 
         dlg_ptr
@@ -2294,6 +2368,34 @@ impl super::TrapDispatcher {
             // tolerates short rows.
         }
         saved
+    }
+
+    pub(crate) fn ensure_dialog_background_saved(
+        &mut self,
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+    ) {
+        if dialog_ptr == 0
+            || !self.dialog_items.contains_key(&dialog_ptr)
+            || self.dialog_saved_pixels.contains_key(&dialog_ptr)
+        {
+            return;
+        }
+        let background = self.save_dialog_pixels(bus, bounds);
+        self.dialog_saved_pixels.insert(dialog_ptr, background);
+    }
+
+    pub(crate) fn ensure_dialog_background_saved_for_screen_port(
+        &mut self,
+        bus: &MacMemoryBus,
+        port: u32,
+    ) {
+        if port == 0 || !self.dialog_items.contains_key(&port) {
+            return;
+        }
+        let bounds = Self::dialog_screen_bounds(bus, port);
+        self.ensure_dialog_background_saved(bus, port, bounds);
     }
 
     /// Restore previously saved framebuffer pixels under a dialog.
@@ -2461,7 +2563,7 @@ impl super::TrapDispatcher {
     }
 
     fn draw_dialog_preserving_user_items(
-        &self,
+        &mut self,
         bus: &mut MacMemoryBus,
         bounds: (i16, i16, i16, i16),
         proc_id: i16,
@@ -2506,6 +2608,39 @@ impl super::TrapDispatcher {
         );
 
         self.restore_user_item_preserved_pixels(bus, &user_item_rects, &user_item_backups);
+        self.capture_gui_frame(bus, &format!("draw_dialog_preserved_{:08X}", dialog_ptr));
+    }
+
+    fn fill_rect_clipped_to_dialog(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        rect: (i16, i16, i16, i16),
+        value: bool,
+    ) {
+        let top = rect.0.max(bounds.0);
+        let left = rect.1.max(bounds.1);
+        let bottom = rect.2.min(bounds.2);
+        let right = rect.3.min(bounds.3);
+        if top >= bottom || left >= right {
+            return;
+        }
+
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            value,
+        );
     }
 
     /// Restore framebuffer pixels to an exact rectangle (no margin).
@@ -2576,7 +2711,7 @@ impl super::TrapDispatcher {
     /// When `skip_pictures` is true, icon and picture items are skipped
     /// (used during redraw_chrome to avoid re-parsing PICTs every frame).
     pub(crate) fn draw_dialog(
-        &self,
+        &mut self,
         bus: &mut MacMemoryBus,
         bounds: (i16, i16, i16, i16),
         proc_id: i16,
@@ -2588,6 +2723,9 @@ impl super::TrapDispatcher {
         skip_pictures: bool,
         dialog_ptr: u32,
     ) {
+        self.ensure_dialog_background_saved(bus, dialog_ptr, bounds);
+        self.dialog_initial_draw_deferred.remove(&dialog_ptr);
+
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let (top, left, bottom, right) = bounds;
@@ -2915,6 +3053,7 @@ impl super::TrapDispatcher {
                 _ => {}
             }
         }
+        self.capture_gui_frame(bus, &format!("draw_dialog_{:08X}", dialog_ptr));
     }
 
     fn redraw_standard_dialog_items(
@@ -2956,13 +3095,27 @@ impl super::TrapDispatcher {
                         .copied()
                         .unwrap_or(0)
                         != 0;
+                    self.fill_rect_clipped_to_dialog(
+                        bus,
+                        bounds,
+                        (abs_top, abs_left, abs_bottom, abs_right),
+                        false,
+                    );
                     self.draw_checkbox(
                         bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
                     );
                 }
-                6 => self.draw_radio(
-                    bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
-                ),
+                6 => {
+                    self.fill_rect_clipped_to_dialog(
+                        bus,
+                        bounds,
+                        (abs_top, abs_left, abs_bottom, abs_right),
+                        false,
+                    );
+                    self.draw_radio(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    );
+                }
                 7 => {
                     if let Some(ctrl_handle) =
                         self.dialog_control_handle_for_item(dialog_ptr, item_num)
@@ -2991,24 +3144,40 @@ impl super::TrapDispatcher {
                                 &title,
                                 item_num == default_item,
                             ),
-                            1 => self.draw_checkbox(
-                                bus,
-                                abs_top,
-                                abs_left,
-                                abs_bottom,
-                                abs_right,
-                                &title,
-                                value != 0,
-                            ),
-                            2 => self.draw_radio(
-                                bus,
-                                abs_top,
-                                abs_left,
-                                abs_bottom,
-                                abs_right,
-                                &title,
-                                value != 0,
-                            ),
+                            1 => {
+                                self.fill_rect_clipped_to_dialog(
+                                    bus,
+                                    bounds,
+                                    (abs_top, abs_left, abs_bottom, abs_right),
+                                    false,
+                                );
+                                self.draw_checkbox(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &title,
+                                    value != 0,
+                                )
+                            }
+                            2 => {
+                                self.fill_rect_clipped_to_dialog(
+                                    bus,
+                                    bounds,
+                                    (abs_top, abs_left, abs_bottom, abs_right),
+                                    false,
+                                );
+                                self.draw_radio(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &title,
+                                    value != 0,
+                                )
+                            }
                             16 => self.draw_scroll_bar(
                                 bus, abs_top, abs_left, abs_bottom, abs_right, value, min, max,
                                 hilite,
@@ -3048,19 +3217,10 @@ impl super::TrapDispatcher {
                     }
                 }
                 8 => {
-                    let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-                        self.get_screen_params();
-                    Self::fb_fill_rect(
+                    self.fill_rect_clipped_to_dialog(
                         bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        abs_top,
-                        abs_left,
-                        abs_bottom,
-                        abs_right,
+                        bounds,
+                        (abs_top, abs_left, abs_bottom, abs_right),
                         false,
                     );
                     self.draw_static_text(bus, abs_top, abs_left, abs_bottom, abs_right, &item.text)
@@ -3158,8 +3318,31 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn redraw_retained_modal_dialog_click(&self, bus: &mut MacMemoryBus) {
+        let Some(click) = self.retained_modal_dialog_click.as_ref() else {
+            return;
+        };
+        if !click.highlighted || click.item_no <= 0 || self.front_window != click.dialog_ptr {
+            return;
+        }
+        let bounds = self
+            .dialog_visible_snapshots
+            .get(&click.dialog_ptr)
+            .map(|snapshot| snapshot.bounds)
+            .unwrap_or_else(|| Self::dialog_screen_bounds(bus, click.dialog_ptr));
+        let rect = Self::dialog_item_screen_rect(bounds, click.rect);
+        self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+    }
+
     pub(crate) fn finalize_dialog_draw_procs_if_idle(&mut self, bus: &mut MacMemoryBus) {
         let Some(tracking) = self.dialog_tracking.as_ref() else {
+            if let Some(dialog_ptr) = self.active_modeless_dialog_draw_proc.take() {
+                self.refresh_visible_dialog_snapshot_for_port(bus, dialog_ptr);
+                self.capture_gui_frame(
+                    bus,
+                    &format!("modeless_dialog_draw_proc_{:08X}", dialog_ptr),
+                );
+            }
             return;
         };
         if tracking.draw_procs_done || !tracking.draw_proc_queue.is_empty() {
@@ -4220,6 +4403,29 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn front_retained_modal_dialog(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<(u32, (i16, i16, i16, i16))> {
+        if self.dialog_tracking.is_some() {
+            return None;
+        }
+        let dialog_ptr = self.front_dialog_ptr()?;
+        if !self.window_visible(bus, dialog_ptr) {
+            return None;
+        }
+        let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+        // Dialog-box WDEFs 1/2/3 are modal-box variants; 5 is the
+        // movable modal dialog. noGrowDocProc (4) is modeless and must
+        // continue to pass events to the application.
+        // Inside Macintosh Volume I, I-273; Macintosh Toolbox Essentials
+        // 1992, p. 6-137.
+        if !matches!(proc_id, 1 | 2 | 3 | 5) {
+            return None;
+        }
+        Some((dialog_ptr, Self::dialog_screen_bounds(bus, dialog_ptr)))
+    }
+
     fn dialog_from_window_event(&self, what: u16, message: u32) -> Option<u32> {
         match what {
             6 | 8 if self.dialog_items.contains_key(&message) => Some(message),
@@ -4229,6 +4435,195 @@ impl super::TrapDispatcher {
 
     fn dialog_contains_screen_point(bounds: (i16, i16, i16, i16), v: i16, h: i16) -> bool {
         v >= bounds.0 && v < bounds.2 && h >= bounds.1 && h < bounds.3
+    }
+
+    fn point_in_screen_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
+        v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3
+    }
+
+    fn close_dialog_window<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        dialog_ptr: u32,
+        dispose_storage: bool,
+    ) {
+        let was_front = self.front_window == dialog_ptr;
+        let exposed_rect = self.window_bounds;
+        let initial_draw_deferred = self.dialog_initial_draw_deferred.remove(&dialog_ptr);
+
+        if was_front && !initial_draw_deferred {
+            if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
+                self.restore_dialog_pixels(bus, self.window_bounds, &saved);
+            }
+        } else {
+            self.dialog_saved_pixels.remove(&dialog_ptr);
+        }
+
+        self.dialog_visible_snapshots.remove(&dialog_ptr);
+        self.dialog_modal_entered.remove(&dialog_ptr);
+        if self
+            .retained_modal_dialog_click
+            .as_ref()
+            .is_some_and(|click| click.dialog_ptr == dialog_ptr)
+        {
+            self.retained_modal_dialog_click = None;
+        }
+
+        if dispose_storage {
+            self.dialog_items.remove(&dialog_ptr);
+            self.dialog_item_handles
+                .retain(|_, (dlg, _)| *dlg != dialog_ptr);
+            self.dialog_control_handles
+                .retain(|_, (dlg, _)| *dlg != dialog_ptr);
+            self.dialog_control_values
+                .retain(|(dlg, _), _| *dlg != dialog_ptr);
+            self.dialog_cancel_items.remove(&dialog_ptr);
+        }
+
+        self.untrack_window(bus, dialog_ptr);
+
+        if was_front {
+            if let Some((prev_window, prev_bounds, prev_proc_id, prev_title)) =
+                self.window_stack.pop()
+            {
+                self.set_current_port_state(bus, cpu, prev_window, None);
+                self.front_window = prev_window;
+                self.window_bounds = prev_bounds;
+                self.window_proc_id = prev_proc_id;
+                self.window_title = prev_title;
+                if prev_window != 0 {
+                    bus.write_byte(prev_window + 111, 0xFF);
+                    if !self.event_queue.iter().any(|event| {
+                        event.what == 8
+                            && event.message == prev_window
+                            && (event.modifiers & 1) != 0
+                    }) {
+                        self.event_queue
+                            .push_back(crate::trap::dispatch::QueuedEvent {
+                                what: 8,
+                                message: prev_window,
+                                where_v: 0,
+                                where_h: 0,
+                                modifiers: 1,
+                            });
+                    }
+                    self.draw_single_window_chrome_inline(bus, prev_window, true);
+                    let exposed_local = (
+                        exposed_rect.0.saturating_sub(prev_bounds.0),
+                        exposed_rect.1.saturating_sub(prev_bounds.1),
+                        exposed_rect.2.saturating_sub(prev_bounds.0),
+                        exposed_rect.3.saturating_sub(prev_bounds.1),
+                    );
+                    self.invalidate_window_rect(bus, prev_window, exposed_local);
+                    self.queue_window_update_event(prev_window);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn consume_retained_modal_dialog_event<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        event: &QueuedEvent,
+    ) -> bool {
+        match event.what {
+            1 => {
+                let Some((dialog_ptr, bounds)) = self.front_retained_modal_dialog(bus) else {
+                    return false;
+                };
+
+                if !Self::dialog_contains_screen_point(bounds, event.where_v, event.where_h) {
+                    // Modal dialogs own the mouse while visible. A real Dialog
+                    // Manager click outside the box beeps and does not pass
+                    // through to windows behind it.
+                    // Inside Macintosh Volume I, I-418; Macintosh Toolbox
+                    // Essentials 1992, p. 6-136.
+                    self.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+                        dialog_ptr,
+                        item_no: 0,
+                        rect: (0, 0, 0, 0),
+                        highlighted: false,
+                    });
+                    return true;
+                }
+
+                let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
+                    return false;
+                };
+                Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+                let mut hit = self.dialog_item_hit_test(
+                    bus,
+                    &items,
+                    bounds,
+                    event.where_v,
+                    event.where_h,
+                    &self.dialog_popup_original_rects,
+                    dialog_ptr,
+                );
+                if hit <= 0 {
+                    hit =
+                        Self::dialog_button_hit_test(&items, bounds, event.where_v, event.where_h);
+                }
+                self.dialog_items.insert(dialog_ptr, items.clone());
+
+                if hit <= 0 {
+                    self.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+                        dialog_ptr,
+                        item_no: 0,
+                        rect: (0, 0, 0, 0),
+                        highlighted: false,
+                    });
+                    return true;
+                }
+
+                let item = &items[(hit - 1) as usize];
+                let base_type = item.item_type & 0x7F;
+                let is_disabled = (item.item_type & 0x80) != 0;
+                if base_type == 4 && !is_disabled {
+                    let rect = Self::dialog_item_screen_rect(bounds, item.rect);
+                    self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+                    self.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+                        dialog_ptr,
+                        item_no: hit,
+                        rect: item.rect,
+                        highlighted: true,
+                    });
+                } else {
+                    self.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+                        dialog_ptr,
+                        item_no: 0,
+                        rect: (0, 0, 0, 0),
+                        highlighted: false,
+                    });
+                }
+                true
+            }
+            2 => {
+                let Some(click) = self.retained_modal_dialog_click.take() else {
+                    return false;
+                };
+                if click.item_no > 0 {
+                    let bounds = Self::dialog_screen_bounds(bus, click.dialog_ptr);
+                    let rect = Self::dialog_item_screen_rect(bounds, click.rect);
+                    if click.highlighted {
+                        self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+                    }
+                    if self.front_window == click.dialog_ptr
+                        && Self::point_in_screen_rect(event.where_v, event.where_h, rect)
+                    {
+                        self.close_dialog_window(bus, cpu, click.dialog_ptr, true);
+                        self.capture_gui_frame(
+                            bus,
+                            &format!("retained_modal_dialog_button_{}", click.item_no),
+                        );
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn consume_dialog_mouse_up(&mut self) {
@@ -5014,6 +5409,7 @@ impl super::TrapDispatcher {
                                 let proc_id = bus.read_word(dialog_ptr + 108) as i16;
                                 let (edit_text, edit_item, default_item) =
                                     Self::dialog_edit_state(bus, dialog_ptr, &items);
+                                self.dialog_initial_draw_deferred.remove(&dialog_ptr);
                                 self.draw_dialog(
                                     bus,
                                     bounds,
@@ -5098,6 +5494,7 @@ impl super::TrapDispatcher {
                     let proc_id = bus.read_word(dialog_ptr + 108) as i16;
                     let (edit_text, edit_item, default_item) =
                         Self::dialog_edit_state(bus, dialog_ptr, &items);
+                    self.dialog_initial_draw_deferred.remove(&dialog_ptr);
                     self.draw_dialog_preserving_user_items(
                         bus,
                         bounds,
@@ -5129,14 +5526,11 @@ impl super::TrapDispatcher {
             // Manager's PaintBehind / CalcVisBehind restores the
             // content beneath via update events to the back windows.
             //
-            // In HLE we emulate PaintBehind by blitting the
-            // pre-dialog background pixels (captured during NewDialog
-            // by save_dialog_pixels) back to the screen. Without this
-            // restore, any game that skips ModalDialog and runs its
-            // own event loop (e.g. Escape Velocity's shuttle-name
-            // input dialog) leaves a dialog-shaped hole over the
-            // window behind — the "dialog dismiss leaves dead pixels"
-            // bug.
+            // In HLE we emulate PaintBehind by blitting the saved-under
+            // pixels captured immediately before the dialog first draws to
+            // the visible screen. Without this restore, any app that skips
+            // ModalDialog and runs its own event loop leaves a dialog-shaped
+            // hole over the window behind.
             //
             // Only restore when `was_front` holds: a non-front dialog
             // would require the saved bounds to still be valid, but
@@ -5154,93 +5548,10 @@ impl super::TrapDispatcher {
             (true, 0x183) => {
                 let sp = cpu.read_reg(Register::A7);
                 let requested_dialog_ptr = bus.read_long(sp);
-                let dialog_ptr = self.resolve_dispos_dialog_ptr(requested_dialog_ptr);
+                let dialog_ptr = requested_dialog_ptr;
                 eprintln!("[TRAP] DisposDialog(${:08X})", requested_dialog_ptr);
-                if dialog_ptr != requested_dialog_ptr && trace_dialog_items_enabled() {
-                    eprintln!(
-                        "[DIALOG-ITEM] DisposDialog resolved userItem proc ${:08X} to front dialog ${:08X}",
-                        requested_dialog_ptr, dialog_ptr
-                    );
-                }
-                let was_front = self.front_window == dialog_ptr;
-                let exposed_rect = self.window_bounds;
-
-                // Blit the saved background pixels back to the screen
-                // BEFORE removing any tracking state. For the restore
-                // to hit the right screen area, the dialog must still
-                // be the front window — otherwise its bounds have
-                // already been replaced.
-                if was_front {
-                    if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
-                        self.restore_dialog_pixels(bus, self.window_bounds, &saved);
-                    }
-                } else {
-                    self.dialog_saved_pixels.remove(&dialog_ptr);
-                }
-
-                self.dialog_items.remove(&dialog_ptr);
-                self.dialog_item_handles
-                    .retain(|_, (dlg, _)| *dlg != dialog_ptr);
-                self.dialog_control_handles
-                    .retain(|_, (dlg, _)| *dlg != dialog_ptr);
-                self.dialog_control_values
-                    .retain(|(dlg, _), _| *dlg != dialog_ptr);
-                self.dialog_cancel_items.remove(&dialog_ptr);
-                self.dialog_visible_snapshots.remove(&dialog_ptr);
-                self.dialog_modal_entered.remove(&dialog_ptr);
-                self.untrack_window(bus, dialog_ptr);
-
-                // Restore previous front window if this dialog was on top.
-                // On a real Mac, CloseWindow (called internally by DisposDialog)
-                // removes the window from the window list and the next window
-                // becomes the front window.
-                // Inside Macintosh Volume I, I-283
-                if was_front {
-                    if let Some((prev_window, prev_bounds, prev_proc_id, prev_title)) =
-                        self.window_stack.pop()
-                    {
-                        self.set_current_port_state(bus, cpu, prev_window, None);
-                        self.front_window = prev_window;
-                        self.window_bounds = prev_bounds;
-                        self.window_proc_id = prev_proc_id;
-                        self.window_title = prev_title;
-                        if prev_window != 0 {
-                            bus.write_byte(prev_window + 111, 0xFF);
-                            if !self.event_queue.iter().any(|event| {
-                                event.what == 8
-                                    && event.message == prev_window
-                                    && (event.modifiers & 1) != 0
-                            }) {
-                                self.event_queue
-                                    .push_back(crate::trap::dispatch::QueuedEvent {
-                                        what: 8,
-                                        message: prev_window,
-                                        where_v: 0,
-                                        where_h: 0,
-                                        modifiers: 1,
-                                    });
-                            }
-                            self.draw_single_window_chrome_inline(bus, prev_window, true);
-                            let exposed_local = (
-                                exposed_rect.0.saturating_sub(prev_bounds.0),
-                                exposed_rect.1.saturating_sub(prev_bounds.1),
-                                exposed_rect.2.saturating_sub(prev_bounds.0),
-                                exposed_rect.3.saturating_sub(prev_bounds.1),
-                            );
-                            // Closing the front dialog exposes part of the
-                            // underlying front window. Mark the exposed rect
-                            // invalid so BeginUpdate/EndUpdate paths redraw it.
-                            self.invalidate_window_rect(bus, prev_window, exposed_local);
-                            // IM:I I-413/I-415: closing a front dialog reveals
-                            // the previously obscured window content. Queue an
-                            // update event so custom event loops that rely on
-                            // updateEvt to repaint the uncovered window get a
-                            // redraw opportunity immediately after CloseDialog.
-                            self.queue_window_update_event(prev_window);
-                        }
-                    }
-                }
-
+                self.close_dialog_window(bus, cpu, dialog_ptr, true);
+                self.capture_gui_frame(bus, &format!("dispos_dialog_{:08X}", dialog_ptr));
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -6280,6 +6591,7 @@ impl super::TrapDispatcher {
                             // capture it here and restore it afterwards so the snapshot
                             // (rendered_pixels) reflects the combined state.
                             // Inside Macintosh Volume I, I-405
+                            self.dialog_initial_draw_deferred.remove(&dialog_ptr);
                             self.draw_dialog_preserving_user_items(
                                 bus,
                                 bounds,
@@ -9389,69 +9701,7 @@ impl super::TrapDispatcher {
             (true, 0x182) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_ptr = bus.read_long(sp);
-                let was_front = self.front_window == dialog_ptr;
-                let exposed_rect = self.window_bounds;
-
-                if was_front {
-                    if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
-                        self.restore_dialog_pixels(bus, self.window_bounds, &saved);
-                    }
-                } else {
-                    self.dialog_saved_pixels.remove(&dialog_ptr);
-                }
-                self.dialog_visible_snapshots.remove(&dialog_ptr);
-                self.dialog_modal_entered.remove(&dialog_ptr);
-
-                // IM:I I-413: deletes the dialog window from the window list.
-                self.untrack_window(bus, dialog_ptr);
-
-                // Restore previous front window (same as DisposDialog)
-                if was_front {
-                    if let Some((prev_window, prev_bounds, prev_proc_id, prev_title)) =
-                        self.window_stack.pop()
-                    {
-                        self.set_current_port_state(bus, cpu, prev_window, None);
-                        self.front_window = prev_window;
-                        self.window_bounds = prev_bounds;
-                        self.window_proc_id = prev_proc_id;
-                        self.window_title = prev_title;
-                        if prev_window != 0 {
-                            bus.write_byte(prev_window + 111, 0xFF);
-                            if !self.event_queue.iter().any(|event| {
-                                event.what == 8
-                                    && event.message == prev_window
-                                    && (event.modifiers & 1) != 0
-                            }) {
-                                self.event_queue
-                                    .push_back(crate::trap::dispatch::QueuedEvent {
-                                        what: 8,
-                                        message: prev_window,
-                                        where_v: 0,
-                                        where_h: 0,
-                                        modifiers: 1,
-                                    });
-                            }
-                            self.draw_single_window_chrome_inline(bus, prev_window, true);
-                            let exposed_local = (
-                                exposed_rect.0.saturating_sub(prev_bounds.0),
-                                exposed_rect.1.saturating_sub(prev_bounds.1),
-                                exposed_rect.2.saturating_sub(prev_bounds.0),
-                                exposed_rect.3.saturating_sub(prev_bounds.1),
-                            );
-                            // Mirror CloseWindow/PaintBehind exposure semantics:
-                            // closing a front dialog invalidates the newly
-                            // uncovered area in the promoted window.
-                            self.invalidate_window_rect(bus, prev_window, exposed_local);
-                            // IM:I I-283/I-425: DisposDialog internally
-                            // closes the front dialog and exposes the window
-                            // behind it. Queue updateEvt for the promoted
-                            // front window so app redraw loops can repaint
-                            // newly revealed regions.
-                            self.queue_window_update_event(prev_window);
-                        }
-                    }
-                }
-
+                self.close_dialog_window(bus, cpu, dialog_ptr, false);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -9480,6 +9730,7 @@ impl super::TrapDispatcher {
                     let proc_id = bus.read_word(dialog_ptr + 108) as i16;
                     let (edit_text, edit_item, default_item) =
                         Self::dialog_edit_state(bus, dialog_ptr, &items);
+                    self.dialog_initial_draw_deferred.remove(&dialog_ptr);
                     self.draw_dialog(
                         bus,
                         bounds,
@@ -9768,13 +10019,14 @@ impl super::TrapDispatcher {
             // SetDialogItemText ($A98F)
             // Sets the text of a dialog item (statText or editText).
             // PROCEDURE SetDialogItemText(item: Handle; text: Str255);
-            // Inside Macintosh Volume I, I-422
-            // SetDialogItemText ($A98F): Updates edit text in active dialog tracking state
+            // Inside Macintosh Volume I, I-422; Macintosh Toolbox Essentials 1992, 6-131
+            // SetDialogItemText ($A98F): Replaces a statText/editText item handle's raw text bytes, updates cached DialogItem text, and redraws the item when the dialog is visible.
             (true, 0x18F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pc = cpu.read_reg(Register::PC);
                 let text_str_ptr = bus.read_long(sp);
                 let item_handle = bus.read_long(sp + 4);
+                let mut redraw_text_item = None;
                 if text_str_ptr != 0 {
                     let bytes = bus.read_pstring(text_str_ptr);
                     let len = bytes.len();
@@ -9820,6 +10072,8 @@ impl super::TrapDispatcher {
                         }
                         if refresh_tracking {
                             self.refresh_dialog_tracking_snapshot(bus);
+                        } else {
+                            redraw_text_item = Some((dlg_ptr, item_no));
                         }
                     } else if trace_dialog_items_enabled() {
                         eprintln!(
@@ -9829,6 +10083,10 @@ impl super::TrapDispatcher {
                             text
                         );
                     }
+                }
+
+                if let Some((dlg_ptr, item_no)) = redraw_text_item {
+                    self.redraw_dialog_text_item(bus, dlg_ptr, item_no);
                 }
 
                 cpu.write_reg(Register::A7, sp + 8);
@@ -10158,7 +10416,7 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
-    use crate::trap::dispatch::DialogItem;
+    use crate::trap::dispatch::{DialogItem, PersistentDialogSnapshot};
     use crate::trap::menu::{Menu, MenuItem};
     use crate::trap::TrapDispatcher;
     use std::collections::VecDeque;
@@ -10205,6 +10463,46 @@ mod tests {
 
         assert_eq!(text, "answer");
         assert_eq!(edit_item, 3);
+        assert_eq!(default_item, 1);
+    }
+
+    #[test]
+    fn dialog_edit_state_empty_live_handle_does_not_fallback_to_template_text() {
+        let (_disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+        let text_handle = bus.alloc(4);
+
+        bus.write_long(text_handle, 0); // valid empty text handle
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(dialog_ptr + 164, 0); // item 1 is the active edit field
+        bus.write_word(dialog_ptr + 168, 1);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, text_handle);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 10);
+        bus.write_word(ditl_ptr + 10, 26);
+        bus.write_word(ditl_ptr + 12, 120);
+        bus.write_byte(ditl_ptr + 14, 16);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        let items = vec![DialogItem {
+            item_type: 16,
+            rect: (10, 10, 26, 120),
+            text: "Edit Text".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        let (text, edit_item, default_item) =
+            TrapDispatcher::dialog_edit_state(&bus, dialog_ptr, &items);
+
+        assert_eq!(text, "");
+        assert_eq!(edit_item, 1);
         assert_eq!(default_item, 1);
     }
 
@@ -10281,8 +10579,27 @@ mod tests {
         rect: (i16, i16, i16, i16),
         item_data: &[u8],
     ) -> Vec<u8> {
-        let mut data = Vec::with_capacity(16 + item_data.len() + (item_data.len() & 1));
-        data.extend_from_slice(&0u16.to_be_bytes()); // one item: dlgMaxIndex = 0
+        build_test_ditl_items(&[(item_type, rect, item_data)])
+    }
+
+    fn build_test_ditl_items(items: &[(u8, (i16, i16, i16, i16), &[u8])]) -> Vec<u8> {
+        let total_len = items.iter().fold(2usize, |len, (_, _, item_data)| {
+            len + 14 + item_data.len() + (item_data.len() & 1)
+        });
+        let mut data = Vec::with_capacity(total_len);
+        data.extend_from_slice(&((items.len() as u16).saturating_sub(1)).to_be_bytes());
+        for (item_type, rect, item_data) in items {
+            append_test_ditl_item(&mut data, *item_type, *rect, item_data);
+        }
+        data
+    }
+
+    fn append_test_ditl_item(
+        data: &mut Vec<u8>,
+        item_type: u8,
+        rect: (i16, i16, i16, i16),
+        item_data: &[u8],
+    ) {
         data.extend_from_slice(&0u32.to_be_bytes()); // itmHandle / userItem proc ptr
         data.extend_from_slice(&rect.0.to_be_bytes());
         data.extend_from_slice(&rect.1.to_be_bytes());
@@ -10294,7 +10611,6 @@ mod tests {
         if item_data.len() % 2 != 0 {
             data.push(0);
         }
-        data
     }
 
     // ---- DialogDispatch ($AA68) ----
@@ -10565,6 +10881,158 @@ mod tests {
         let dlg_ptr = bus.read_long(TEST_SP + 10);
         assert_ne!(dlg_ptr, 0);
         assert_eq!(disp.window_bounds, (250, 300, 350, 500));
+    }
+
+    #[test]
+    fn get_new_dialog_draws_visible_shell_with_unresolved_user_item_proc() {
+        // Visible dialogs appear immediately on a real Mac. userItem contents
+        // are application-owned and may be installed later with SetDItem, but
+        // the dialog shell and standard items must not be suppressed.
+        // Inside Macintosh Volume I, I-405, I-412, I-421.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_bytes(screen_base, &vec![0x77; 800 * 600]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let mut dlog = build_test_dlog((100, 100, 180, 260), 1701, 0);
+        dlog[10] = 1; // visible
+        let ditl = build_test_ditl_items(&[
+            (0x80, (8, 8, 30, 80), b"".as_slice()),
+            (4, (44, 20, 64, 90), b"OK".as_slice()),
+        ]);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1700, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1701, &ditl);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1700); // dialogID
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let dlg_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dlg_ptr, 0);
+        assert_eq!(bus.read_byte(dlg_ptr + 110), 0xFF);
+        assert!(disp.dialog_items.contains_key(&dlg_ptr));
+        assert!(
+            disp.dialog_saved_pixels.contains_key(&dlg_ptr),
+            "visible dialogs save the covered pixels before drawing"
+        );
+        assert!(!disp.dialog_initial_draw_deferred.contains(&dlg_ptr));
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == dlg_ptr),
+            "visible dialog should still get an update event"
+        );
+
+        let probe_addr = screen_base + 120 * 800 + 120;
+        assert_ne!(
+            bus.read_byte(probe_addr),
+            0x77,
+            "visible GetNewDialog should draw the standard dialog background immediately"
+        );
+    }
+
+    #[test]
+    fn hidden_dialog_quickdraw_shape_is_clipped_by_empty_vis_region() {
+        // A real invisible window has an empty visRgn. Drawing through its
+        // port must be clipped away instead of touching the screen-backed
+        // PixMap. This covers hidden dialogs whose userItem setup draws into
+        // the current dialog port before the dialog is ever shown.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_bytes(screen_base, &vec![0x77; 800 * 600]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let dlog = build_test_dlog((100, 100, 180, 260), 1705, 0);
+        let ditl = build_test_ditl_item(8, (8, 8, 24, 90), b"Hidden");
+        disp.install_test_resource(&mut bus, *b"DLOG", 1704, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1705, &ditl);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1704); // dialogID
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let dlg_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dlg_ptr, 0);
+        assert_eq!(bus.read_byte(dlg_ptr + 110), 0);
+        assert_eq!(
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(dlg_ptr + 24)),
+            None
+        );
+
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 20);
+        bus.write_word(rect_ptr + 2, 20);
+        bus.write_word(rect_ptr + 4, 30);
+        bus.write_word(rect_ptr + 6, 30);
+        bus.write_long(TEST_SP, rect_ptr);
+
+        let result = disp.dispatch_quickdraw(true, 0x0A2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let probe_addr = screen_base + 125 * 800 + 125;
+        assert_eq!(
+            bus.read_byte(probe_addr),
+            0x77,
+            "QuickDraw drawing through a hidden dialog port must be clipped"
+        );
+        assert!(
+            !disp.dialog_saved_pixels.contains_key(&dlg_ptr),
+            "no visible draw means no saved-under snapshot"
+        );
+    }
+
+    #[test]
+    fn dispos_dialog_skips_saved_pixels_for_never_drawn_deferred_dialog() {
+        // Defensive coverage for the deferred-state guard: if a dialog is
+        // marked never drawn, DisposDialog must not restore stale saved-under
+        // pixels. Real visible dialogs normally draw at creation.
+        // Inside Macintosh Volume I, I-425.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_bytes(screen_base, &vec![0x77; 800 * 600]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let mut dlog = build_test_dlog((100, 100, 180, 260), 1703, 0);
+        dlog[10] = 1; // visible
+        let ditl = build_test_ditl_items(&[
+            (0x80, (8, 8, 30, 80), b"".as_slice()),
+            (4, (44, 20, 64, 90), b"OK".as_slice()),
+        ]);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1702, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1703, &ditl);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1702); // dialogID
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let dlg_ptr = bus.read_long(TEST_SP + 10);
+        disp.dialog_initial_draw_deferred.insert(dlg_ptr);
+
+        // Replace the saved snapshot with a distinct dirty pattern. If
+        // DisposDialog restores it, the probe byte will change to 0x33.
+        disp.dialog_saved_pixels
+            .insert(dlg_ptr, vec![0x33; 90 * 170]);
+        let probe_addr = screen_base + 120 * 800 + 120;
+        bus.write_byte(probe_addr, 0x77);
+
+        bus.write_long(TEST_SP, dlg_ptr);
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_byte(probe_addr),
+            0x77,
+            "never-drawn deferred dialog must not restore saved background"
+        );
+        assert!(!disp.dialog_initial_draw_deferred.contains(&dlg_ptr));
+        assert!(!disp.dialog_saved_pixels.contains_key(&dlg_ptr));
     }
 
     // save_dialog_pixels / restore_dialog_pixels must guard against off-screen y
@@ -12481,6 +12949,37 @@ mod tests {
         bus.write_byte(window_ptr + 110, 0xFF);
     }
 
+    fn seed_retained_modal_dialog(
+        disp: &mut TrapDispatcher,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        prev_window: u32,
+        proc_id: i16,
+    ) {
+        seed_window_regions(bus, dialog_ptr, (0, 0, 100, 220));
+        seed_window_regions(bus, prev_window, (0, 0, 342, 512));
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 108, proc_id as u16);
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = (0, 0, 100, 220);
+        disp.window_proc_id = proc_id;
+        disp.window_list = vec![dialog_ptr, prev_window];
+        disp.window_stack
+            .push((prev_window, (0, 0, 342, 512), 0, "Game".to_string()));
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (60, 130, 82, 200),
+                text: "OK".to_string(),
+                ..DialogItem::default()
+            }],
+        );
+        disp.sent_open_app_event = true;
+    }
+
     #[test]
     fn close_dialog_pops_4_bytes() {
         // Inside Macintosh Volume I, I-413: CloseDialog takes one
@@ -12701,7 +13200,12 @@ mod tests {
     }
 
     #[test]
-    fn dispos_dialog_resolves_front_user_item_proc_argument() {
+    fn dispos_dialog_with_user_item_proc_argument_does_not_close_dialog() {
+        // SetDItem stores a ProcPtr for userItem entries. A ProcPtr is not a
+        // DialogPtr, so DisposDialog must not translate it into the current
+        // front dialog. Doing so suppresses legitimate visible prompts whose
+        // app code is installing or calling userItem procedures.
+        // Inside Macintosh Volume I, I-421, I-425.
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;
         let prev_window = 0x181000u32;
@@ -12720,6 +13224,8 @@ mod tests {
                 ..DialogItem::default()
             }],
         );
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x33; 60 * 110]);
         disp.window_stack
             .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
 
@@ -12727,9 +13233,150 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(disp.window_list, vec![prev_window]);
+        assert_eq!(disp.window_list, vec![dialog_ptr, prev_window]);
+        assert_eq!(disp.front_window, dialog_ptr);
+        assert!(disp.dialog_items.contains_key(&dialog_ptr));
+        assert!(disp.dialog_saved_pixels.contains_key(&dialog_ptr));
+    }
+
+    #[test]
+    fn retained_modal_dialog_consumes_outside_mouse_down() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let prev_window = bus.alloc(170);
+        seed_retained_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 1);
+
+        disp.push_mouse_down(140, 260);
+        let (what, _message, _where_v, _where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+
+        assert!(!has_event);
+        assert_eq!(what, 0);
+        assert!(disp.event_queue.is_empty());
+        assert_eq!(disp.front_window, dialog_ptr);
+        assert!(
+            disp.retained_modal_dialog_click.is_some(),
+            "outside click must be captured until mouseUp so it cannot leak behind the dialog"
+        );
+
+        disp.push_mouse_up(140, 260);
+        let (_what, _message, _where_v, _where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+
+        assert!(!has_event);
+        assert_eq!(disp.front_window, dialog_ptr);
+        assert!(disp.retained_modal_dialog_click.is_none());
+        assert!(
+            disp.dialog_items.contains_key(&dialog_ptr),
+            "outside clicks do not dismiss modal dialogs"
+        );
+    }
+
+    #[test]
+    fn retained_modal_dialog_button_click_highlights_then_dismisses() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let prev_window = bus.alloc(170);
+        let screen_base = 0x300000u32;
+        let row_bytes = 320u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 320, 200, 8);
+        seed_retained_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 1);
+
+        let probe = screen_base + 70 * row_bytes + 150;
+        bus.write_byte(probe, 17);
+        let bounds = TrapDispatcher::dialog_screen_bounds(&bus, dialog_ptr);
+        assert_eq!(bounds, (0, 0, 100, 220));
+        let base_pixels = disp.save_dialog_pixels(&bus, bounds);
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: base_pixels,
+            },
+        );
+        let items = disp.dialog_items.get(&dialog_ptr).cloned().unwrap();
+        assert_eq!(
+            disp.dialog_item_hit_test(
+                &bus,
+                &items,
+                bounds,
+                70,
+                150,
+                &disp.dialog_popup_original_rects,
+                dialog_ptr,
+            ),
+            1
+        );
+
+        disp.push_mouse_down(70, 150);
+        let (_what, _message, _where_v, _where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+
+        assert!(!has_event);
+        assert_eq!(
+            disp.retained_modal_dialog_click
+                .as_ref()
+                .map(|click| click.item_no),
+            Some(1)
+        );
+        assert_eq!(
+            bus.read_byte(probe),
+            238,
+            "button interior should invert on mouseDown"
+        );
+        disp.restore_visible_dialog_snapshots(&mut bus);
+        disp.redraw_retained_modal_dialog_click(&mut bus);
+        assert_eq!(
+            bus.read_byte(probe),
+            238,
+            "pressed retained-modal button must survive visible-dialog snapshot redraw"
+        );
+        assert_eq!(disp.front_window, dialog_ptr);
+
+        disp.push_mouse_up(70, 150);
+        let (_what, _message, _where_v, _where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+
+        assert!(!has_event);
+        assert_eq!(
+            bus.read_byte(probe),
+            17,
+            "button should be unhighlighted before close"
+        );
         assert_eq!(disp.front_window, prev_window);
         assert!(!disp.dialog_items.contains_key(&dialog_ptr));
+        assert!(disp.retained_modal_dialog_click.is_none());
+        assert!(
+            !disp
+                .event_queue
+                .iter()
+                .any(|event| matches!(event.what, 1 | 2)),
+            "consumed dialog click must not leave mouse events for the game loop"
+        );
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == prev_window),
+            "closing the dialog must invalidate/update the exposed window"
+        );
+    }
+
+    #[test]
+    fn retained_modal_dialog_capture_does_not_apply_to_modeless_dialogs() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let prev_window = bus.alloc(170);
+        seed_retained_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 4);
+
+        disp.push_mouse_down(70, 150);
+        let (what, _message, where_v, where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+
+        assert!(has_event);
+        assert_eq!(what, 1);
+        assert_eq!((where_v, where_h), (70, 150));
+        assert!(disp.retained_modal_dialog_click.is_none());
+        assert_eq!(disp.front_window, dialog_ptr);
     }
 
     #[test]
@@ -13564,6 +14211,209 @@ mod tests {
         let resized_ptr = bus.read_long(text_handle);
         assert_eq!(bus.get_alloc_size(resized_ptr), Some(5));
         assert_eq!(bus.read_bytes(resized_ptr, 5), b"Hello".to_vec());
+    }
+
+    #[test]
+    fn set_dialog_item_text_redraws_visible_text_item() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((200 * 100) as u32);
+        let row_bytes = 200u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 200, 100, 8);
+        bus.write_long(0x0824, screen_base);
+        TrapDispatcher::fb_fill_rect(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            8,
+            200,
+            100,
+            0,
+            0,
+            100,
+            200,
+            false,
+        );
+        let white = bus.read_byte(screen_base);
+
+        let bounds = (10, 20, 70, 180);
+        let dialog_ptr = bus.alloc(170);
+        bus.write_word(dialog_ptr + 6, 0); // GrafPort, not CGrafPort
+        bus.write_word(dialog_ptr + 8, (-bounds.0) as u16);
+        bus.write_word(dialog_ptr + 10, (-bounds.1) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, (bounds.2 - bounds.0) as u16);
+        bus.write_word(dialog_ptr + 22, (bounds.3 - bounds.1) as u16);
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        bus.write_word(dialog_ptr + 164, 0xFFFF);
+        bus.write_word(dialog_ptr + 168, 1);
+
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+        let text_handle = bus.alloc(4);
+        let text_ptr = bus.alloc(1);
+        bus.write_bytes(text_ptr, b"A");
+        bus.write_long(text_handle, text_ptr);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, text_handle);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 10);
+        bus.write_word(ditl_ptr + 10, 26);
+        bus.write_word(ditl_ptr + 12, 140);
+        bus.write_byte(ditl_ptr + 14, 8);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        let items = vec![DialogItem {
+            item_type: 8,
+            rect: (10, 10, 26, 140),
+            text: "A".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+        disp.dialog_items.insert(dialog_ptr, items.clone());
+        disp.dialog_item_handles
+            .insert(text_handle, (dialog_ptr, 0));
+        disp.draw_dialog(&mut bus, bounds, 2, "", &items, 1, "", 0, false, dialog_ptr);
+
+        let count_nonwhite = |bus: &MacMemoryBus| -> usize {
+            let mut count = 0;
+            for y in 20..36u32 {
+                for x in 30..160u32 {
+                    if bus.read_byte(screen_base + y * row_bytes + x) != white {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        let before = count_nonwhite(&bus);
+
+        let pstr = bus.alloc(9);
+        bus.write_byte(pstr, 8);
+        bus.write_bytes(pstr + 1, b"WWWWWWWW");
+        bus.write_long(TEST_SP, pstr);
+        bus.write_long(TEST_SP + 4, text_handle);
+
+        let result = disp.dispatch_dialog(true, 0x18F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let after = count_nonwhite(&bus);
+        assert!(
+            after > before + 20,
+            "SetDialogItemText must draw the updated text item; before={} after={}",
+            before,
+            after
+        );
+    }
+
+    #[test]
+    fn set_dialog_item_text_redraw_clips_repaint_to_dialog_bounds() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((200 * 100) as u32);
+        let row_bytes = 200u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 200, 100, 8);
+        bus.write_long(0x0824, screen_base);
+        TrapDispatcher::fb_fill_rect(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            8,
+            200,
+            100,
+            0,
+            0,
+            100,
+            200,
+            true,
+        );
+
+        let bounds = (10, 20, 70, 120);
+        let dialog_ptr = bus.alloc(170);
+        bus.write_word(dialog_ptr + 6, 0); // GrafPort, not CGrafPort
+        bus.write_word(dialog_ptr + 8, (-bounds.0) as u16);
+        bus.write_word(dialog_ptr + 10, (-bounds.1) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, (bounds.2 - bounds.0) as u16);
+        bus.write_word(dialog_ptr + 22, (bounds.3 - bounds.1) as u16);
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        bus.write_word(dialog_ptr + 164, 1); // item 2 is the active edit field
+        bus.write_word(dialog_ptr + 168, 1);
+
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(30);
+        let edit_handle = bus.alloc(4);
+        let edit_ptr = bus.alloc(3);
+        bus.write_bytes(edit_ptr, b"Old");
+        bus.write_long(edit_handle, edit_ptr);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 1); // two items
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 5);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 20);
+        bus.write_word(ditl_ptr + 12, 160); // extends beyond dialog right
+        bus.write_byte(ditl_ptr + 14, 8);
+        bus.write_byte(ditl_ptr + 15, 0);
+        bus.write_long(ditl_ptr + 16, edit_handle);
+        bus.write_word(ditl_ptr + 20, 25);
+        bus.write_word(ditl_ptr + 22, 20);
+        bus.write_word(ditl_ptr + 24, 41);
+        bus.write_word(ditl_ptr + 26, 80);
+        bus.write_byte(ditl_ptr + 28, 16);
+        bus.write_byte(ditl_ptr + 29, 0);
+
+        let items = vec![
+            DialogItem {
+                item_type: 8,
+                rect: (5, 20, 20, 160),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 16,
+                rect: (25, 20, 41, 80),
+                text: "Old".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
+        disp.dialog_items.insert(dialog_ptr, items.clone());
+        disp.dialog_item_handles
+            .insert(edit_handle, (dialog_ptr, 1));
+        disp.draw_dialog(
+            &mut bus, bounds, 2, "", &items, 1, "Old", 2, false, dialog_ptr,
+        );
+
+        let sample = screen_base + 17 * row_bytes + 150;
+        let outside_before = bus.read_byte(sample);
+
+        let pstr = bus.alloc(4);
+        bus.write_byte(pstr, 3);
+        bus.write_bytes(pstr + 1, b"New");
+        bus.write_long(TEST_SP, pstr);
+        bus.write_long(TEST_SP + 4, edit_handle);
+
+        let result = disp.dispatch_dialog(true, 0x18F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_byte(sample),
+            outside_before,
+            "SetDialogItemText repaint must not clear outside the dialog port"
+        );
     }
 
     #[test]

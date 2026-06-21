@@ -189,8 +189,10 @@ impl super::TrapDispatcher {
             .cloned()
     }
 
-    pub(crate) fn dequeue_toolbox_event(
+    pub(crate) fn dequeue_toolbox_event<C: CpuOps>(
         &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
         event_mask: u16,
     ) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_open_application_event_if_needed(event_mask);
@@ -199,6 +201,24 @@ impl super::TrapDispatcher {
             .iter()
             .position(|event| Self::event_matches_mask(event_mask, event.what))
         {
+            let event = self.event_queue[idx].clone();
+            if self.consume_retained_modal_dialog_event(cpu, bus, &event) {
+                self.event_queue.remove(idx);
+                if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
+                    eprintln!(
+                        "[INPUT] consumed retained-modal what={} where=({}, {}) mask=${:04X}",
+                        event.what, event.where_v, event.where_h, event_mask
+                    );
+                }
+                return (
+                    0,
+                    0,
+                    self.mouse_pos.0,
+                    self.mouse_pos.1,
+                    self.current_event_modifiers(),
+                    false,
+                );
+            }
             let event = self.event_queue.remove(idx).unwrap();
             if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
@@ -440,7 +460,7 @@ impl super::TrapDispatcher {
                 // tick_count is maintained by the runner via advance_guest_tick()
 
                 let (what, message, where_v, where_h, modifiers, has_event) =
-                    self.dequeue_toolbox_event(event_mask);
+                    self.dequeue_toolbox_event(cpu, bus, event_mask);
                 self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
                 // Mac convention: OS trap boolean is $0000 (FALSE) or $FFFF (TRUE).
                 cpu.write_reg(Register::D0, if has_event { 0xFFFF } else { 0 });

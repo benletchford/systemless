@@ -1515,7 +1515,7 @@ impl super::TrapDispatcher {
                 self.debug_get_next_event_count = self.debug_get_next_event_count.saturating_add(1);
 
                 let (what, message, where_v, where_h, modifiers, has_event) =
-                    self.dequeue_toolbox_event(event_mask);
+                    self.dequeue_toolbox_event(cpu, bus, event_mask);
                 self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
@@ -1558,7 +1558,7 @@ impl super::TrapDispatcher {
                 // event at launch. Make it visible through the normal toolbox
                 // event APIs instead of special-casing WaitNextEvent only.
                 let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) =
-                    self.dequeue_toolbox_event(event_mask);
+                    self.dequeue_toolbox_event(cpu, bus, event_mask);
 
                 if !has_event {
                     if let Some(event) =

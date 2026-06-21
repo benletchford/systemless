@@ -287,7 +287,7 @@ fn apply_boolean_transfer_32(
 
 impl super::TrapDispatcher {
     pub(super) fn draw_rect<C: CpuOps>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         r: &Rect,
@@ -373,7 +373,7 @@ impl super::TrapDispatcher {
     /// Draw a filled polygon using scanline edge-intersection (even-odd rule).
     /// Inside Macintosh Volume I, I-190
     pub(super) fn draw_poly<C: CpuOps>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         poly_handle: u32,
@@ -460,7 +460,7 @@ impl super::TrapDispatcher {
     /// Mac arcs: 0° = 12 o'clock (north), positive = clockwise.
     /// Inside Macintosh Volume I, I-184
     pub(super) fn draw_arc<C: CpuOps>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         r: &Rect,
@@ -559,7 +559,7 @@ impl super::TrapDispatcher {
     ///   ...
     ///   0x7FFF(2) (region terminator)
     pub(super) fn draw_rgn<C: CpuOps>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         rgn_handle: u32,
@@ -677,7 +677,7 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn draw_oval<C: CpuOps>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         r: &Rect,
@@ -780,7 +780,7 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn draw_round_rect<C: CpuOps>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         r: &Rect,
@@ -839,7 +839,7 @@ impl super::TrapDispatcher {
     /// Uses fixed-point arithmetic matching FixRatio(dh,dv).
     /// Inside Macintosh Volume I, I-170 (LineTo)
     pub(super) fn draw_line<C: CpuOps>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         x1: i16,
@@ -969,7 +969,7 @@ impl super::TrapDispatcher {
     /// is binary by nature. Only the text-render path exercises the
     /// full 8-bit gradient produced by fontdue's hinted rasteriser.
     pub(super) fn draw_generic_shape<C: CpuOps, F>(
-        &self,
+        &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         r: &Rect,
@@ -1097,17 +1097,12 @@ impl super::TrapDispatcher {
                 let vl = bus.read_word(vis_rgn_ptr + 4) as i16;
                 let vb = bus.read_word(vis_rgn_ptr + 6) as i16;
                 let vr = bus.read_word(vis_rgn_ptr + 8) as i16;
-                // Only use visRgn clipping if bounds are non-trivial
-                if vb > vt && vr > vl {
-                    (
-                        vt.max(bounds_top),
-                        vl.max(bounds_left),
-                        vb.min(bounds_bottom),
-                        vr.min(bounds_right),
-                    )
-                } else {
-                    (bounds_top, bounds_left, bounds_bottom, bounds_right)
-                }
+                (
+                    vt.max(bounds_top),
+                    vl.max(bounds_left),
+                    vb.min(bounds_bottom),
+                    vr.min(bounds_right),
+                )
             } else {
                 (bounds_top, bounds_left, bounds_bottom, bounds_right)
             }
@@ -1125,13 +1120,19 @@ impl super::TrapDispatcher {
                 let cl = bus.read_word(clip_rgn_ptr + 4) as i16;
                 let cb = bus.read_word(clip_rgn_ptr + 6) as i16;
                 let cr = bus.read_word(clip_rgn_ptr + 8) as i16;
-                if cb > ct && cr > cl {
-                    clip_top = clip_top.max(ct);
-                    clip_left = clip_left.max(cl);
-                    clip_bottom = clip_bottom.min(cb);
-                    clip_right = clip_right.min(cr);
-                }
+                clip_top = clip_top.max(ct);
+                clip_left = clip_left.max(cl);
+                clip_bottom = clip_bottom.min(cb);
+                clip_right = clip_right.min(cr);
             }
+        }
+
+        let touch_top = r.top.max(clip_top);
+        let touch_left = r.left.max(clip_left);
+        let touch_bottom = r.bottom.min(clip_bottom);
+        let touch_right = r.right.min(clip_right);
+        if pix_base == self.screen_mode.0 && touch_top < touch_bottom && touch_left < touch_right {
+            self.ensure_dialog_background_saved_for_screen_port(bus, port);
         }
 
         // For 8bpp, map fg/bg colors to the destination bitmap's effective CLUT.

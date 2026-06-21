@@ -828,8 +828,11 @@ impl super::TrapDispatcher {
                 .underline_info
                 .as_ref()
                 .map(|info| (info.start_x, info.end_x, info.breaks.clone()));
+            let tx_font = self.tx_font;
+            let tx_size = self.tx_size;
+            let tx_mode = self.tx_mode;
 
-            self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(self.tx_mode), false, |y, x| {
+            self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(tx_mode), false, |y, x| {
                 // All helper closures below return the per-pixel coverage
                 // byte (0=off, 255=fully on, 1..254=partial). Bold smear
                 // and underline clamp to full alpha where they set a pixel
@@ -866,7 +869,7 @@ impl super::TrapDispatcher {
                 // 1. Raw glyph with Italic slant
                 let get_italic_pixel = |curr_y: i16, curr_x: i16| -> u8 {
                     let slant = if is_italic {
-                        get_italic_slant(self.tx_font, self.tx_size, &metrics, v, curr_y) * fs
+                        get_italic_slant(tx_font, tx_size, &metrics, v, curr_y) * fs
                     } else {
                         0
                     };
@@ -898,8 +901,8 @@ impl super::TrapDispatcher {
                     if is_underline && curr_y > v && curr_y < v + 1 + ul_thick {
                         let italic_extend = if is_italic {
                             get_italic_underline_extend_left(
-                                self.tx_font,
-                                self.tx_size,
+                                tx_font,
+                                tx_size,
                                 is_bold,
                                 use_precaptured_italic,
                             )
@@ -908,10 +911,10 @@ impl super::TrapDispatcher {
                         };
 
                         let underline_offset =
-                            get_underline_offset(self.tx_font, self.tx_size, glyph, is_shadow);
+                            get_underline_offset(tx_font, tx_size, glyph, is_shadow);
 
                         let italic_extend_right = if is_italic {
-                            get_italic_underline_extend_right(self.tx_font, self.tx_size)
+                            get_italic_underline_extend_right(tx_font, tx_size)
                         } else {
                             0
                         };

@@ -506,7 +506,7 @@ impl super::TrapDispatcher {
         self.track_window_front(bus, window_ptr);
     }
 
-    fn window_visible(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
+    pub(crate) fn window_visible(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
         window_ptr != 0 && bus.read_byte(window_ptr + Self::WINDOW_VISIBLE_OFFSET) != 0
     }
 
@@ -1408,14 +1408,53 @@ impl super::TrapDispatcher {
             // ShowWindow ($A915): Sets visible flag, updates visRgn/clipRgn, queues updateEvt, and redraws chrome per IM:I I-284/I-286
             (true, 0x115) => {
                 let sp = cpu.read_reg(Register::A7);
-                let the_window = bus.read_long(sp);
+                let requested_window = bus.read_long(sp);
+                let mut resolved_user_item_proc = false;
+                // userItem item fields are ProcPtrs, not WindowPtrs
+                // (IM:I I-405/I-421). In the documented hidden-dialog
+                // setup flow, SetDItem installs those procs before
+                // ShowWindow reveals the dialog. If the current front
+                // dialog owns the supplied ProcPtr, reveal that dialog
+                // and queue its userItem draw procs instead of writing
+                // through procedure memory as though it were a WindowRecord.
+                let the_window = if let Some(dialog_ptr) =
+                    self.front_dialog_for_user_item_proc(requested_window)
+                {
+                    resolved_user_item_proc = true;
+                    if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                        eprintln!(
+                                "[INVAL] ShowWindow resolved userItem proc ${:08X} to front dialog ${:08X}",
+                                requested_window, dialog_ptr
+                            );
+                    }
+                    dialog_ptr
+                } else {
+                    requested_window
+                };
                 if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
                     eprintln!(
-                        "[INVAL] ShowWindow window=${:08X} tick={}",
-                        the_window, self.tick_count
+                        "[INVAL] ShowWindow pc=${:08X} requested=${:08X} window=${:08X} front=${:08X} tick={}",
+                        cpu.read_reg(Register::PC).wrapping_sub(2),
+                        requested_window,
+                        the_window,
+                        self.front_window,
+                        self.tick_count
                     );
                 }
+                // A userItem ProcPtr is not a WindowPtr.
+                if self.front_dialog_has_user_item_proc(the_window) {
+                    if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                        eprintln!(
+                            "[INVAL] ShowWindow skipped userItem proc ${:08X} on front dialog ${:08X}",
+                            the_window,
+                            self.front_window
+                        );
+                    }
+                    cpu.write_reg(Register::A7, sp + 4);
+                    return Some(Ok(()));
+                }
                 if the_window != 0 {
+                    let was_visible = self.window_visible(bus, the_window);
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
                     self.set_window_vis_from_content(bus, the_window, true);
                     if let Some(content_rect) = self.window_content_rect(bus, the_window) {
@@ -1430,8 +1469,16 @@ impl super::TrapDispatcher {
                     // captures that don't run a composite_frame pass still
                     // show the title bar. Uses the window's HILITED byte
                     // for active/inactive state.
-                    let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
-                    self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                    if self.dialog_items.contains_key(&the_window) && !was_visible {
+                        self.redraw_dialog_window_contents(bus, the_window);
+                        if resolved_user_item_proc {
+                            self.queue_modeless_dialog_draw_procs(bus, the_window);
+                        }
+                    } else {
+                        let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
+                        self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                    }
+                    self.capture_gui_frame(bus, &format!("show_window_{:08X}", the_window));
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -1454,9 +1501,26 @@ impl super::TrapDispatcher {
                 let the_window = bus.read_long(sp);
                 if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
                     eprintln!(
-                        "[INVAL] HideWindow window=${:08X} tick={}",
-                        the_window, self.tick_count
+                        "[INVAL] HideWindow pc=${:08X} window=${:08X} front=${:08X} tick={}",
+                        cpu.read_reg(Register::PC).wrapping_sub(2),
+                        the_window,
+                        self.front_window,
+                        self.tick_count
                     );
+                }
+                // A userItem ProcPtr is not a WindowPtr. Treat ProcPtrs
+                // installed on the current front dialog as invalid window
+                // arguments here rather than writing through code memory.
+                if self.front_dialog_has_user_item_proc(the_window) {
+                    if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                        eprintln!(
+                            "[INVAL] HideWindow skipped userItem proc ${:08X} on front dialog ${:08X}",
+                            the_window,
+                            self.front_window
+                        );
+                    }
+                    cpu.write_reg(Register::A7, sp + 4);
+                    return Some(Ok(()));
                 }
                 if the_window != 0 {
                     // Erase the window's chrome area BEFORE clearing
@@ -1533,6 +1597,7 @@ impl super::TrapDispatcher {
                             self.current_port = new_front;
                         }
                     }
+                    self.capture_gui_frame(bus, &format!("hide_window_{:08X}", the_window));
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())

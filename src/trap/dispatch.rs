@@ -16,12 +16,14 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 pub(crate) const BOOT_VOLUME_NAME: &str = "MacintoshHD";
 pub(crate) const BOOT_VOLUME_REF_NUM: i16 = -1;
 
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
 // to toggle these at runtime cannot — values are read ONCE at first call.
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 static TRACE_GUEST_PC_TRAPS: OnceLock<bool> = OnceLock::new();
@@ -33,6 +35,9 @@ static TRACE_RESFILE: OnceLock<bool> = OnceLock::new();
 static TRACE_QUICKTIME: OnceLock<bool> = OnceLock::new();
 static TRACE_PC_TARGET: OnceLock<Option<u32>> = OnceLock::new();
 static TRACE_NATIVE_TRAPS: OnceLock<bool> = OnceLock::new();
+static GUI_CAPTURE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static GUI_CAPTURE_LIMIT: OnceLock<Option<u64>> = OnceLock::new();
+static GUI_CAPTURE_FRAME: AtomicU64 = AtomicU64::new(0);
 
 /// File-backed sink for `SYSTEMLESS_TRACE_TRAP_PCS=<filepath>`. When set,
 /// every A-line trap dispatch appends a `<pc:08X> <trap:04X>\n` line to
@@ -168,6 +173,43 @@ fn trace_sound_enabled() -> bool {
 
 fn trace_native_traps_enabled() -> bool {
     *TRACE_NATIVE_TRAPS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_NATIVE_TRAPS").is_some())
+}
+
+fn gui_capture_dir() -> Option<&'static PathBuf> {
+    GUI_CAPTURE_DIR
+        .get_or_init(|| {
+            let path = std::env::var_os("SYSTEMLESS_GUI_CAPTURE_DIR")?;
+            let path = PathBuf::from(path);
+            if path.as_os_str().is_empty() {
+                None
+            } else {
+                Some(path)
+            }
+        })
+        .as_ref()
+}
+
+fn gui_capture_limit() -> Option<u64> {
+    *GUI_CAPTURE_LIMIT.get_or_init(|| {
+        std::env::var("SYSTEMLESS_GUI_CAPTURE_LIMIT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+    })
+}
+
+fn sanitize_gui_capture_label(label: &str) -> String {
+    let mut safe = String::with_capacity(label.len().min(96));
+    for ch in label.chars().take(96) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            safe.push(ch);
+        } else {
+            safe.push('_');
+        }
+    }
+    if safe.is_empty() {
+        safe.push_str("frame");
+    }
+    safe
 }
 
 /// `SYSTEMLESS_TRACE_RESFILE=1` enables verbose tracing of resource-file open
@@ -381,6 +423,15 @@ pub struct DialogPopupTrackingState {
 
 /// Push-button tracking owned by an active ModalDialog loop.
 pub struct DialogButtonTrackingState {
+    pub item_no: i16,
+    pub rect: (i16, i16, i16, i16),
+    pub highlighted: bool,
+}
+
+/// Push-button/click tracking for a front modal dialog that has been
+/// retained outside an active ModalDialog trap.
+pub struct RetainedModalDialogClickState {
+    pub dialog_ptr: u32,
     pub item_no: i16,
     pub rect: (i16, i16, i16, i16),
     pub highlighted: bool,
@@ -1286,6 +1337,20 @@ pub struct TrapDispatcher {
     /// controls, snapshotted pixels). On re-entry we skip draw_dialog to
     /// preserve game-drawn custom content (e.g. PICT titles, group boxes).
     pub(crate) dialog_modal_entered: std::collections::HashSet<u32>,
+    /// Visible dialogs whose initial NewDialog/GetNewDialog draw was deferred
+    /// because one or more in-bounds userItem draw procs had not yet been
+    /// installed. If such a dialog is disposed before DrawDialog/ModalDialog
+    /// paints it, there are no dialog pixels to erase from the screen.
+    pub(crate) dialog_initial_draw_deferred: HashSet<u32>,
+    /// userItem draw procs queued by modeless/dialog-show paths outside
+    /// ModalDialog. Drained through the same runner trampoline as modal
+    /// draw procs.
+    pub(crate) modeless_dialog_draw_proc_queue: VecDeque<(u32, u32, i16)>,
+    /// Dialog currently executing a modeless userItem draw proc.
+    pub(crate) active_modeless_dialog_draw_proc: Option<u32>,
+    /// Mouse click currently captured by a retained front modal dialog
+    /// outside ModalDialog.
+    pub(crate) retained_modal_dialog_click: Option<RetainedModalDialogClickState>,
     /// Stack of saved window state for restoring front_window/bounds when
     /// dialogs are disposed. Each GetNewDialog pushes the current state;
     /// DisposDialog pops it. Tuple shape:
@@ -1405,6 +1470,74 @@ impl TrapDispatcher {
     /// callers should handle non-ASCII defensively.
     pub fn menu_titles(&self) -> impl Iterator<Item = &str> {
         self.menus.iter().map(|m| m.title.as_str())
+    }
+
+    pub(crate) fn capture_gui_frame(&self, bus: &MacMemoryBus, label: &str) {
+        let Some(dir) = gui_capture_dir() else {
+            return;
+        };
+        let (_, _, width, height, _) = self.screen_mode;
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let frame = GUI_CAPTURE_FRAME.fetch_add(1, Ordering::Relaxed);
+        if let Some(limit) = gui_capture_limit() {
+            if frame >= limit {
+                return;
+            }
+        }
+
+        if let Err(err) = std::fs::create_dir_all(dir) {
+            eprintln!("[GUI-CAPTURE] failed to create {}: {}", dir.display(), err);
+            return;
+        }
+
+        let safe_label = sanitize_gui_capture_label(label);
+        let filename = format!(
+            "{:06}_t{:06}_tr{:08}_{}.png",
+            frame, self.tick_count, self.trap_count, safe_label
+        );
+        let path = dir.join(&filename);
+        let mut rgba = crate::display::render_screen(bus, self.screen_mode, &self.device_clut);
+        if let Some(cursor) = self.cursor() {
+            crate::display::render_cursor(
+                &mut rgba,
+                width as u32,
+                height as u32,
+                cursor,
+                self.mouse_position(),
+            );
+        }
+        let img = image::RgbImage::from_fn(width as u32, height as u32, |x, y| {
+            let idx = ((y * width as u32 + x) * 4) as usize;
+            image::Rgb([rgba[idx], rgba[idx + 1], rgba[idx + 2]])
+        });
+        if let Err(err) = img.save(&path) {
+            eprintln!("[GUI-CAPTURE] failed to save {}: {}", path.display(), err);
+            return;
+        }
+
+        let index_path = dir.join("frames.jsonl");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&index_path)
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                file,
+                "{{\"frame\":{},\"file\":\"{}\",\"label\":\"{}\",\"tick\":{},\"trap_count\":{},\"game_trap_count\":{},\"trap_word\":\"{:04X}\",\"front_window\":\"{:08X}\"}}",
+                frame,
+                filename,
+                safe_label,
+                self.tick_count,
+                self.trap_count,
+                self.game_trap_count,
+                self.current_trap_word,
+                self.front_window
+            );
+        }
     }
 
     /// Number of items in the menu identified by `handle`, or
@@ -2085,6 +2218,10 @@ impl TrapDispatcher {
             dialog_saved_pixels: HashMap::new(),
             dialog_visible_snapshots: HashMap::new(),
             dialog_modal_entered: std::collections::HashSet::new(),
+            dialog_initial_draw_deferred: HashSet::new(),
+            modeless_dialog_draw_proc_queue: VecDeque::new(),
+            active_modeless_dialog_draw_proc: None,
+            retained_modal_dialog_click: None,
             window_stack: Vec::new(),
             saved_vis_regions: HashMap::new(),
             list_states: HashMap::new(),

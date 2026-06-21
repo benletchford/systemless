@@ -984,6 +984,7 @@ impl super::TrapDispatcher {
             wind_right + 2,
             true,
         );
+        self.capture_gui_frame(bus, "draw_window_chrome");
     }
 
     /// Draw the grow icon (size box) in the bottom-right corner of a window.
@@ -1415,6 +1416,7 @@ impl super::TrapDispatcher {
                 );
             }
         }
+        self.capture_gui_frame(bus, "draw_window_frame");
     }
 
     pub(crate) fn restore_visible_dialog_snapshots(&mut self, bus: &mut MacMemoryBus) {
@@ -1703,6 +1705,7 @@ impl super::TrapDispatcher {
             }
         } else {
             self.restore_visible_dialog_snapshots(bus);
+            self.redraw_retained_modal_dialog_click(bus);
         }
 
         // If a menu dropdown is open, redraw it on top of the menu bar
@@ -1721,6 +1724,7 @@ impl super::TrapDispatcher {
                 self.invert_menu_item(bus, tracking.highlighted_item);
             }
         }
+        self.capture_gui_frame(bus, "redraw_chrome");
     }
 }
 

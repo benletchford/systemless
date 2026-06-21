@@ -15,6 +15,7 @@ static TRACE_DIALOG_FILTER: OnceLock<bool> = OnceLock::new();
 static TRACE_TIMER: OnceLock<bool> = OnceLock::new();
 static TRACE_VBL: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RUNNER: OnceLock<bool> = OnceLock::new();
+static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
 
 fn trace_dialog_filter_enabled() -> bool {
     *TRACE_DIALOG_FILTER
@@ -31,6 +32,10 @@ fn trace_vbl_enabled() -> bool {
 
 fn trace_sound_runner_enabled() -> bool {
     *TRACE_SOUND_RUNNER.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some())
+}
+
+fn trace_dialog_procs_enabled() -> bool {
+    *TRACE_DIALOG_PROCS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_PROCS").is_some())
 }
 
 // Gate the per-instruction trace_buffer behind an env var. The buffer
@@ -1710,14 +1715,21 @@ impl FixtureRunner {
                             Some(gdevice),
                         );
                     }
-                    if matches!(
+                    let completed_dialog_draw_proc = matches!(
                         active_interrupt_callback.source,
                         ActiveInterruptCallbackSource::DialogDrawProc
-                    ) {
+                    );
+                    let completed_modeless_dialog_draw_proc = completed_dialog_draw_proc
+                        && self.dispatcher.active_modeless_dialog_draw_proc.is_some();
+                    if completed_dialog_draw_proc {
                         self.dispatcher
                             .finalize_dialog_draw_procs_if_idle(&mut self.bus);
                     }
                     self.active_interrupt_callback = None;
+                    if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
+                    {
+                        continue;
+                    }
                     if sound_work_only {
                         break;
                     }
@@ -2240,6 +2252,10 @@ impl FixtureRunner {
                             // fast-forward through the pause gap.
                             if self.frozen_ticks.is_some() {
                                 self.unfreeze_ticks_to(real_tick_cap);
+                            }
+
+                            if !is_tracking_refire && self.fire_modeless_dialog_draw_proc() {
+                                continue;
                             }
 
                             // Service any pending Delay ticks immediately after
@@ -3182,41 +3198,36 @@ impl FixtureRunner {
         DIALOG_CALLBACK_SCRATCH_FALLBACK
     }
 
-    /// Fire the next pending dialog userItem draw proc by injecting a trampoline.
-    ///
-    /// On a real Mac, ModalDialog calls each userItem's draw proc during
-    /// the update pass. The draw proc is a Pascal callback:
-    ///   PROCEDURE MyItem (theWindow: WindowPtr; itemNo: INTEGER);
-    /// Inside Macintosh Volume I, I-405
-    ///
-    /// We simulate this by writing a small 68K trampoline that:
-    ///   1. Saves D0-D3/A0-A3 via MOVEM.L to the stack
-    ///   2. Pushes params so MPW-style Pascal prologues see theWindow at
-    ///      8(A6) and itemNo at 12(A6)
-    ///   3. JSR to draw proc address
-    ///   4. Resets A7 to the saved-register frame, tolerating callbacks
-    ///      that return with either `RTD #6` or plain `RTS`
-    ///   5. Restores D0-D3/A0-A3
-    ///   6. RTS back to interrupted code (the ModalDialog A-line)
-    fn fire_dialog_draw_procs(&mut self) -> bool {
+    fn looks_like_dialog_proc_entry(&self, addr: u32) -> bool {
+        if addr == 0 {
+            return false;
+        }
+        let entry = self.bus.read_word(addr);
+        entry == 0x4E56 || entry == 0x48E7 || entry == 0x4EF9 || entry == 0x4EFA
+    }
+
+    fn resolve_dialog_draw_proc_addr(&self, proc_addr: u32) -> Option<u32> {
+        if self.looks_like_dialog_proc_entry(proc_addr) {
+            return Some(proc_addr);
+        }
+        let a5_relative = self.cpu.read_reg(Register::A5).wrapping_add(proc_addr);
+        if self.looks_like_dialog_proc_entry(a5_relative) {
+            Some(a5_relative)
+        } else {
+            None
+        }
+    }
+
+    fn inject_dialog_draw_proc(
+        &mut self,
+        proc_addr: u32,
+        item_no: i16,
+        dialog_ptr: u32,
+        modeless: bool,
+    ) -> bool {
         if self.active_interrupt_callback.is_some() {
             return false;
         }
-
-        let (proc_addr, item_no, dialog_ptr) = {
-            let tracking = match self.dispatcher.dialog_tracking.as_mut() {
-                Some(t) if !t.draw_procs_done => t,
-                _ => return false,
-            };
-            match tracking.draw_proc_queue.pop_front() {
-                Some((addr, num)) => (addr, num, tracking.dialog_ptr),
-                None => {
-                    // All draw procs fired and returned
-                    tracking.draw_procs_done = true;
-                    return false;
-                }
-            }
-        };
 
         if proc_addr == 0 {
             return false;
@@ -3224,10 +3235,21 @@ impl FixtureRunner {
 
         // Many dialogs stuff non-code placeholders into userItem proc fields.
         // Only fire callbacks that look like real 68K entry points.
-        let entry = self.bus.read_word(proc_addr);
-        if entry != 0x4E56 && entry != 0x48E7 && entry != 0x4EF9 && entry != 0x4EFA {
+        let Some(call_addr) = self.resolve_dialog_draw_proc_addr(proc_addr) else {
+            if trace_dialog_procs_enabled() {
+                let a5_relative = self.cpu.read_reg(Register::A5).wrapping_add(proc_addr);
+                eprintln!(
+                    "[DIALOG-PROC] skip dialog=${:08X} item={} proc=${:08X} a5rel=${:08X} entry=${:04X} a5entry=${:04X}",
+                    dialog_ptr,
+                    item_no,
+                    proc_addr,
+                    a5_relative,
+                    self.bus.read_word(proc_addr),
+                    self.bus.read_word(a5_relative),
+                );
+            }
             return false;
-        }
+        };
 
         // Allocate trampoline on first use (32 bytes):
         //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)   ; 48E7 F0F0
@@ -3258,7 +3280,7 @@ impl FixtureRunner {
         let tramp = self.dialog_draw_trampoline;
         self.bus.write_word(tramp + 6, item_no as u16);
         self.bus.write_long(tramp + 10, dialog_ptr);
-        self.bus.write_long(tramp + 16, proc_addr);
+        self.bus.write_long(tramp + 16, call_addr);
 
         // The Dialog Manager sets the current port to the dialog before
         // calling a userItem draw proc. It does not restore an older
@@ -3304,8 +3326,76 @@ impl FixtureRunner {
             ccr,
             restore_port: None,
         });
+        if modeless {
+            self.dispatcher.active_modeless_dialog_draw_proc = Some(dialog_ptr);
+        }
+        if trace_dialog_procs_enabled() {
+            eprintln!(
+                "[DIALOG-PROC] fire {} dialog=${:08X} item={} proc=${:08X} call=${:08X} return_pc=${:08X}",
+                if modeless { "modeless" } else { "modal" },
+                dialog_ptr,
+                item_no,
+                proc_addr,
+                call_addr,
+                current_pc,
+            );
+        }
         self.cpu.write_reg(Register::PC, tramp);
         true
+    }
+
+    fn fire_modeless_dialog_draw_proc(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+
+        while let Some((dialog_ptr, proc_addr, item_no)) =
+            self.dispatcher.modeless_dialog_draw_proc_queue.pop_front()
+        {
+            if self.inject_dialog_draw_proc(proc_addr, item_no, dialog_ptr, true) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Fire the next pending dialog userItem draw proc by injecting a trampoline.
+    ///
+    /// On a real Mac, ModalDialog calls each userItem's draw proc during
+    /// the update pass. The draw proc is a Pascal callback:
+    ///   PROCEDURE MyItem (theWindow: WindowPtr; itemNo: INTEGER);
+    /// Inside Macintosh Volume I, I-405
+    ///
+    /// We simulate this by writing a small 68K trampoline that:
+    ///   1. Saves D0-D3/A0-A3 via MOVEM.L to the stack
+    ///   2. Pushes params so MPW-style Pascal prologues see theWindow at
+    ///      8(A6) and itemNo at 12(A6)
+    ///   3. JSR to draw proc address
+    ///   4. Resets A7 to the saved-register frame, tolerating callbacks
+    ///      that return with either `RTD #6` or plain `RTS`
+    ///   5. Restores D0-D3/A0-A3
+    ///   6. RTS back to interrupted code (the ModalDialog A-line)
+    fn fire_dialog_draw_procs(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+
+        if let Some(tracking) = self
+            .dispatcher
+            .dialog_tracking
+            .as_mut()
+            .filter(|tracking| !tracking.draw_procs_done)
+        {
+            let Some((proc_addr, item_no)) = tracking.draw_proc_queue.pop_front() else {
+                // All draw procs fired and returned
+                tracking.draw_procs_done = true;
+                return false;
+            };
+            let dialog_ptr = tracking.dialog_ptr;
+            return self.inject_dialog_draw_proc(proc_addr, item_no, dialog_ptr, false);
+        }
+
+        self.fire_modeless_dialog_draw_proc()
     }
 
     fn dialog_filter_has_real_event_pending(&self, dialog_ptr: u32) -> bool {
@@ -6473,6 +6563,106 @@ mod tests {
         );
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+    }
+
+    #[test]
+    fn modeless_dialog_draw_proc_accepts_a5_relative_proc_ptr() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let a5 = 0x0020_0000u32;
+        let proc_offset = 0x0000_4200u32;
+        let proc_addr = a5 + proc_offset;
+        let dialog_ptr = runner.bus.alloc(170);
+
+        runner.bus.write_word(interrupted_pc, 0x60FE);
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.write_reg(Register::A5, a5);
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            dialog_ptr,
+            0,
+            120,
+            180,
+            240,
+            420,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
+        runner.bus.write_word(proc_addr + 2, 0x0000);
+        runner.bus.write_word(proc_addr + 4, 0x4E5E); // UNLK A6
+        runner.bus.write_word(proc_addr + 6, 0x4E75); // RTS
+        runner
+            .dispatcher
+            .modeless_dialog_draw_proc_queue
+            .push_back((dialog_ptr, proc_offset, 5));
+
+        assert!(runner.fire_modeless_dialog_draw_proc());
+
+        let tramp = runner.dialog_draw_trampoline;
+        assert_eq!(runner.bus.read_long(tramp + 16), proc_addr);
+        assert_eq!(
+            runner.dispatcher.active_modeless_dialog_draw_proc,
+            Some(dialog_ptr)
+        );
+    }
+
+    #[test]
+    fn modeless_dialog_draw_procs_drain_after_plain_trap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let dialog_ptr = runner.bus.alloc(170);
+        let proc_1 = 0x0004_2000u32;
+        let proc_2 = 0x0004_2100u32;
+
+        runner.bus.write_word(base, 0xA861); // _Random
+        runner.bus.write_word(base + 2, 0x60FE); // BRA.S *-0
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            dialog_ptr,
+            0,
+            120,
+            180,
+            240,
+            420,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        for proc_addr in [proc_1, proc_2] {
+            runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
+            runner.bus.write_word(proc_addr + 2, 0x0000);
+            runner.bus.write_word(proc_addr + 4, 0x4E5E); // UNLK A6
+            runner.bus.write_word(proc_addr + 6, 0x4E75); // RTS
+        }
+        runner.dispatcher.modeless_dialog_draw_proc_queue =
+            VecDeque::from([(dialog_ptr, proc_1, 3), (dialog_ptr, proc_2, 5)]);
+
+        let (_steps, running) = runner.run_steps(128, None);
+
+        assert!(running);
+        assert!(runner.dispatcher.modeless_dialog_draw_proc_queue.is_empty());
+        assert_eq!(runner.dispatcher.active_modeless_dialog_draw_proc, None);
+        assert!(
+            runner.active_interrupt_callback.is_none(),
+            "modeless draw callbacks should have returned to foreground code"
+        );
     }
 
     #[test]
