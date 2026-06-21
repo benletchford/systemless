@@ -229,6 +229,7 @@ impl super::TrapDispatcher {
             if event.what == 2 {
                 self.mouse_button = false;
             }
+            self.begin_app_owned_modal_dialog_button_tracking(bus, &event);
             if matches!(event.what, 3 | 4) {
                 self.debug_key_event_delivery_count =
                     self.debug_key_event_delivery_count.saturating_add(1);

@@ -1875,8 +1875,8 @@ impl super::TrapDispatcher {
                 bus.write_word(pt_ptr + 2, local_h as u16);
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
-                        "[INPUT] GetMouse -> local=({}, {}) global=({}, {})",
-                        local_v, local_h, self.mouse_pos.0, self.mouse_pos.1
+                        "[INPUT] GetMouse port=${:08X} boundsTopLeft=({}, {}) -> local=({}, {}) global=({}, {})",
+                        port, bounds_top, bounds_left, local_v, local_h, self.mouse_pos.0, self.mouse_pos.1
                     );
                 }
                 cpu.write_reg(Register::A7, sp + 4);

@@ -117,6 +117,15 @@ impl super::TrapDispatcher {
     const TE_BIT_SET: i16 = 1;
     const TE_BIT_TEST: i16 = -1;
 
+    fn dialog_window_proc_id(&self, bus: &MacMemoryBus, dialog_ptr: u32) -> i16 {
+        self.window_proc_ids
+            .get(&dialog_ptr)
+            .copied()
+            // Older tests seed pre-side-table dialogs by writing the WDEF
+            // procID at +108. Real DialogRecords use +108 as windowKind.
+            .unwrap_or_else(|| bus.read_word(dialog_ptr + 108) as i16)
+    }
+
     fn ensure_text_handle_size(bus: &mut MacMemoryBus, item_handle: u32, size: usize) -> u32 {
         if item_handle == 0 {
             return 0;
@@ -257,7 +266,7 @@ impl super::TrapDispatcher {
         if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
             Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
             let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
-            let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+            let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
             let (edit_text, edit_item, default_item) =
                 Self::dialog_edit_state(bus, dialog_ptr, &items);
             self.draw_dialog(
@@ -2256,7 +2265,11 @@ impl super::TrapDispatcher {
         );
         self.set_current_port_state(bus, cpu, dlg_ptr, None);
 
-        bus.write_word(dlg_ptr + 108, proc_id as u16);
+        // DialogRecord starts with a WindowRecord; +108 is windowKind,
+        // not the WDEF procID. Dialog boxes and alerts must use
+        // dialogKind=2. The WDEF procID is retained in window_proc_ids.
+        // Inside Macintosh Volume I, I-408, I-273; Volume VI, 11-42.
+        bus.write_word(dlg_ptr + 108, 2);
         bus.write_long(dlg_ptr + 156, items_handle);
 
         let text_h = Self::allocate_te_handle(bus);
@@ -4411,10 +4424,20 @@ impl super::TrapDispatcher {
             return None;
         }
         let dialog_ptr = self.front_dialog_ptr()?;
+        // This retained-click path is only for dialogs whose event handling
+        // has already entered our ModalDialog HLE and returned with the
+        // dialog still visible. Dialogs created by GetNewDialog/NewDialog
+        // but handled by the application through WaitNextEvent, DialogSelect,
+        // or custom Control/TextEdit/Window Manager code must keep receiving
+        // their queued events so the app can decide how to respond.
+        // Macintosh Toolbox Essentials 1992, pp. 6-136, 6-138..6-141.
+        if !self.dialog_modal_entered.contains(&dialog_ptr) {
+            return None;
+        }
         if !self.window_visible(bus, dialog_ptr) {
             return None;
         }
-        let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+        let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
         // Dialog-box WDEFs 1/2/3 are modal-box variants; 5 is the
         // movable modal dialog. noGrowDocProc (4) is modeless and must
         // continue to pass events to the application.
@@ -4424,6 +4447,108 @@ impl super::TrapDispatcher {
             return None;
         }
         Some((dialog_ptr, Self::dialog_screen_bounds(bus, dialog_ptr)))
+    }
+
+    fn front_app_owned_modal_dialog(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<(u32, (i16, i16, i16, i16))> {
+        if self.dialog_tracking.is_some() || self.retained_modal_dialog_click.is_some() {
+            return None;
+        }
+        let dialog_ptr = self.front_dialog_ptr()?;
+        if self.dialog_modal_entered.contains(&dialog_ptr) || !self.window_visible(bus, dialog_ptr)
+        {
+            return None;
+        }
+        let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
+        if !matches!(proc_id, 1 | 2 | 3 | 5) {
+            return None;
+        }
+        Some((dialog_ptr, Self::dialog_screen_bounds(bus, dialog_ptr)))
+    }
+
+    pub(crate) fn begin_app_owned_modal_dialog_button_tracking(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        event: &QueuedEvent,
+    ) {
+        if event.what != 1 {
+            return;
+        }
+        let Some((dialog_ptr, bounds)) = self.front_app_owned_modal_dialog(bus) else {
+            return;
+        };
+        if !Self::dialog_contains_screen_point(bounds, event.where_v, event.where_h) {
+            return;
+        }
+
+        let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
+            return;
+        };
+        Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+        let mut hit = self.dialog_item_hit_test(
+            bus,
+            &items,
+            bounds,
+            event.where_v,
+            event.where_h,
+            &self.dialog_popup_original_rects,
+            dialog_ptr,
+        );
+        if hit <= 0 {
+            hit = Self::dialog_button_hit_test(&items, bounds, event.where_v, event.where_h);
+        }
+        self.dialog_items.insert(dialog_ptr, items.clone());
+        if hit <= 0 {
+            return;
+        }
+
+        let item = &items[(hit - 1) as usize];
+        let base_type = item.item_type & 0x7F;
+        let is_disabled = (item.item_type & 0x80) != 0;
+        if base_type != 4 || is_disabled {
+            return;
+        }
+
+        // Some games create a modal DLOG and run their own WaitNextEvent
+        // loop. They still expect the Dialog Manager's standard push-button
+        // press/release affordance for modal WDEFs, but the mouseDown must
+        // remain deliverable to app code. Track only enabled DITL buttons and
+        // finish the press on mouseUp; DialogSelect cancels this state if the
+        // app explicitly asks the Dialog Manager to handle the event.
+        // Macintosh Toolbox Essentials 1992, pp. 6-136, 6-138..6-141.
+        let rect = Self::dialog_item_screen_rect(bounds, item.rect);
+        self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+        self.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+            dialog_ptr,
+            item_no: hit,
+            rect: item.rect,
+            highlighted: true,
+            delivered_to_app: true,
+        });
+    }
+
+    fn cancel_app_owned_modal_dialog_button_tracking(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+    ) {
+        let should_cancel = self
+            .retained_modal_dialog_click
+            .as_ref()
+            .is_some_and(|click| click.dialog_ptr == dialog_ptr && click.delivered_to_app);
+        if !should_cancel {
+            return;
+        }
+        let Some(click) = self.retained_modal_dialog_click.take() else {
+            return;
+        };
+        if click.item_no > 0 && click.highlighted {
+            let bounds = Self::dialog_screen_bounds(bus, click.dialog_ptr);
+            let rect = Self::dialog_item_screen_rect(bounds, click.rect);
+            self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+        }
     }
 
     fn dialog_from_window_event(&self, what: u16, message: u32) -> Option<u32> {
@@ -4545,6 +4670,7 @@ impl super::TrapDispatcher {
                         item_no: 0,
                         rect: (0, 0, 0, 0),
                         highlighted: false,
+                        delivered_to_app: false,
                     });
                     return true;
                 }
@@ -4574,6 +4700,7 @@ impl super::TrapDispatcher {
                         item_no: 0,
                         rect: (0, 0, 0, 0),
                         highlighted: false,
+                        delivered_to_app: false,
                     });
                     return true;
                 }
@@ -4589,6 +4716,7 @@ impl super::TrapDispatcher {
                         item_no: hit,
                         rect: item.rect,
                         highlighted: true,
+                        delivered_to_app: false,
                     });
                 } else {
                     self.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
@@ -4596,6 +4724,7 @@ impl super::TrapDispatcher {
                         item_no: 0,
                         rect: (0, 0, 0, 0),
                         highlighted: false,
+                        delivered_to_app: false,
                     });
                 }
                 true
@@ -4620,7 +4749,7 @@ impl super::TrapDispatcher {
                         );
                     }
                 }
-                true
+                !click.delivered_to_app
             }
             _ => false,
         }
@@ -5406,7 +5535,7 @@ impl super::TrapDispatcher {
                         Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
                         match what {
                             6 => {
-                                let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+                                let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
                                 let (edit_text, edit_item, default_item) =
                                     Self::dialog_edit_state(bus, dialog_ptr, &items);
                                 self.dialog_initial_draw_deferred.remove(&dialog_ptr);
@@ -5437,6 +5566,9 @@ impl super::TrapDispatcher {
                                     let item = &items[(hit - 1) as usize];
                                     let is_disabled = (item.item_type & 0x80) != 0;
                                     if !is_disabled {
+                                        self.cancel_app_owned_modal_dialog_button_tracking(
+                                            bus, dialog_ptr,
+                                        );
                                         if dialog_out_ptr != 0 {
                                             bus.write_long(dialog_out_ptr, dialog_ptr);
                                         }
@@ -5491,7 +5623,7 @@ impl super::TrapDispatcher {
                 if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                     Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
-                    let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+                    let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
                     let (edit_text, edit_item, default_item) =
                         Self::dialog_edit_state(bus, dialog_ptr, &items);
                     self.dialog_initial_draw_deferred.remove(&dialog_ptr);
@@ -9727,7 +9859,7 @@ impl super::TrapDispatcher {
                 if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                     Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
-                    let proc_id = bus.read_word(dialog_ptr + 108) as i16;
+                    let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
                     let (edit_text, edit_item, default_item) =
                         Self::dialog_edit_state(bus, dialog_ptr, &items);
                     self.dialog_initial_draw_deferred.remove(&dialog_ptr);
@@ -11167,6 +11299,7 @@ mod tests {
         }
         bus.write_long(sp + 22, bounds_rect_ptr);
         bus.write_word(sp + 16, 1); // visible
+        bus.write_word(sp + 14, 1); // dBoxProc WDEF
         bus.write_long(sp + 10, 0); // behind = NIL (backmost)
 
         let pre_a7 = cpu.read_reg(Register::A7);
@@ -11179,6 +11312,16 @@ mod tests {
         );
         let dlg_ptr = bus.read_long(sp + 30);
         assert_ne!(dlg_ptr, 0);
+        assert_eq!(
+            bus.read_word(dlg_ptr + 108),
+            2,
+            "DialogRecord.window.windowKind must be dialogKind"
+        );
+        assert_eq!(
+            disp.window_proc_ids.get(&dlg_ptr),
+            Some(&1),
+            "dialog WDEF procID must be tracked separately from windowKind"
+        );
         assert_eq!(
             disp.window_list,
             vec![existing, dlg_ptr],
@@ -12949,7 +13092,7 @@ mod tests {
         bus.write_byte(window_ptr + 110, 0xFF);
     }
 
-    fn seed_retained_modal_dialog(
+    fn seed_app_owned_modal_dialog(
         disp: &mut TrapDispatcher,
         bus: &mut MacMemoryBus,
         dialog_ptr: u32,
@@ -12960,7 +13103,8 @@ mod tests {
         seed_window_regions(bus, prev_window, (0, 0, 342, 512));
         bus.write_word(dialog_ptr + 8, 0);
         bus.write_word(dialog_ptr + 10, 0);
-        bus.write_word(dialog_ptr + 108, proc_id as u16);
+        bus.write_word(dialog_ptr + 108, 2);
+        disp.window_proc_ids.insert(dialog_ptr, proc_id);
         disp.front_window = dialog_ptr;
         disp.current_port = dialog_ptr;
         disp.window_bounds = (0, 0, 100, 220);
@@ -12978,6 +13122,17 @@ mod tests {
             }],
         );
         disp.sent_open_app_event = true;
+    }
+
+    fn seed_retained_modal_dialog(
+        disp: &mut TrapDispatcher,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        prev_window: u32,
+        proc_id: i16,
+    ) {
+        seed_app_owned_modal_dialog(disp, bus, dialog_ptr, prev_window, proc_id);
+        disp.dialog_modal_entered.insert(dialog_ptr);
     }
 
     #[test]
@@ -13269,6 +13424,97 @@ mod tests {
         assert!(
             disp.dialog_items.contains_key(&dialog_ptr),
             "outside clicks do not dismiss modal dialogs"
+        );
+    }
+
+    #[test]
+    fn app_owned_modal_dialog_mouse_down_is_delivered_to_event_loop() {
+        // A DLOG can be created and shown with GetNewDialog while the
+        // application owns the WaitNextEvent/DialogSelect loop. The Dialog
+        // Manager reports enabled item clicks to that application code; it
+        // does not dismiss the dialog from the Event Manager dequeue path.
+        // Macintosh Toolbox Essentials 1992, pp. 6-138..6-141.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let prev_window = bus.alloc(170);
+        let screen_base = 0x300000u32;
+        let row_bytes = 320u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 320, 200, 8);
+        let probe = screen_base + 70 * row_bytes + 150;
+        bus.write_byte(probe, 17);
+
+        seed_app_owned_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 1);
+
+        disp.push_mouse_down(70, 150);
+        let (what, _message, where_v, where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+
+        assert!(has_event);
+        assert_eq!(what, 1);
+        assert_eq!((where_v, where_h), (70, 150));
+        assert_eq!(
+            disp.retained_modal_dialog_click
+                .as_ref()
+                .map(|click| (click.item_no, click.delivered_to_app)),
+            Some((1, true))
+        );
+        assert_eq!(
+            bus.read_byte(probe),
+            238,
+            "app-owned modal button should still show the pressed state"
+        );
+        assert_eq!(disp.front_window, dialog_ptr);
+        assert!(
+            disp.dialog_items.contains_key(&dialog_ptr),
+            "application-owned dialog should not be closed by event dequeue"
+        );
+    }
+
+    #[test]
+    fn app_owned_modal_dialog_button_mouse_up_dismisses_after_delivery() {
+        // Some apps drive modal DLOGs with their own WaitNextEvent loop and
+        // only ask the Window Manager which window was clicked. Keep the
+        // mouseDown deliverable, but finish the standard modal button press
+        // on mouseUp if app code has not called DialogSelect.
+        // Macintosh Toolbox Essentials 1992, pp. 6-136, 6-138..6-141.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let prev_window = bus.alloc(170);
+        let screen_base = 0x300000u32;
+        let row_bytes = 320u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 320, 200, 8);
+        let probe = screen_base + 70 * row_bytes + 150;
+        bus.write_byte(probe, 17);
+
+        seed_app_owned_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 1);
+
+        disp.push_mouse_down(70, 150);
+        let (what, _message, where_v, where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+        assert!(has_event);
+        assert_eq!(what, 1);
+        assert_eq!((where_v, where_h), (70, 150));
+        assert_eq!(disp.front_window, dialog_ptr);
+
+        disp.push_mouse_up(70, 150);
+        let (what, _message, where_v, where_h, _modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+
+        assert!(
+            has_event,
+            "app-owned modal mouseUp remains deliverable after compatibility close"
+        );
+        assert_eq!(what, 2);
+        assert_eq!((where_v, where_h), (70, 150));
+        assert_eq!(bus.read_byte(probe), 17);
+        assert_eq!(disp.front_window, prev_window);
+        assert!(!disp.dialog_items.contains_key(&dialog_ptr));
+        assert!(disp.retained_modal_dialog_click.is_none());
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == prev_window),
+            "closing the dialog must invalidate/update the exposed window"
         );
     }
 

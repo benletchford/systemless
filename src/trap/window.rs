@@ -56,6 +56,10 @@ impl super::TrapDispatcher {
         rect.2 <= rect.0 || rect.3 <= rect.1
     }
 
+    fn point_in_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
+        v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3
+    }
+
     fn copy_window_color_table_resource(&mut self, bus: &mut MacMemoryBus, table_id: i16) -> u32 {
         let resource_ptr = self
             .find_resource_any(*b"wctb", table_id)
@@ -421,6 +425,45 @@ impl super::TrapDispatcher {
             bus.read_word(window_ptr + 20) as i16,
             bus.read_word(window_ptr + 22) as i16,
         )
+    }
+
+    fn window_global_port_rect(&self, bus: &MacMemoryBus, window_ptr: u32) -> (i16, i16, i16, i16) {
+        let (top, left, bottom, right) = self.window_port_rect(bus, window_ptr);
+        let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, window_ptr);
+        (
+            top.wrapping_sub(bounds_top),
+            left.wrapping_sub(bounds_left),
+            bottom.wrapping_sub(bounds_top),
+            right.wrapping_sub(bounds_left),
+        )
+    }
+
+    fn find_window_at_point(
+        &self,
+        bus: &MacMemoryBus,
+        pt_v: i16,
+        pt_h: i16,
+        mbar_h: i16,
+    ) -> (i16, u32) {
+        for &window_ptr in &self.window_list {
+            if !self.window_visible(bus, window_ptr) {
+                continue;
+            }
+            let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
+            if Self::point_in_rect(pt_v, pt_h, (top, left, bottom, right)) {
+                return (3, window_ptr);
+            }
+
+            // The title/drag region sits above the content rect for ordinary
+            // titled windows. FindWindow receives a global point and reports
+            // a WindowPtr without activating it. Inside Macintosh Volume I,
+            // I-287; MTE 1992 p. 4-91.
+            let title_top = top.saturating_sub(20).max(mbar_h);
+            if pt_v >= title_top && pt_v < top && pt_h >= left && pt_h <= right {
+                return (4, window_ptr);
+            }
+        }
+        (0, 0)
     }
 
     fn window_update_rect(
@@ -1690,45 +1733,27 @@ impl super::TrapDispatcher {
                 // Determine which part of the screen was clicked.
                 // Mac FindWindow part codes:
                 //   0 = inDesk, 1 = inMenuBar, 3 = inContent, 4 = inDrag, 5 = inGrow
-                // The title bar (drag region) sits above the content rect.
                 // When games hide the menu bar they set MBarHeight=0; clicks at the
                 // top of the screen then fall through to window hit-testing instead.
                 // Inside Macintosh Volume I, I-287; Inside Macintosh Volume V, V-245
                 let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-                let part = if mbar_h > 0 && pt_v < mbar_h {
-                    1 // inMenuBar
-                } else if self.front_window != 0 {
-                    let (wind_top, wind_left, wind_bottom, wind_right) = self.window_bounds;
-                    // Title bar occupies the 20 pixels above the content rect
-                    let title_top = (wind_top - 20).max(mbar_h);
-                    if pt_v >= title_top
-                        && pt_v < wind_top
-                        && pt_h >= wind_left
-                        && pt_h <= wind_right
-                    {
-                        4 // inDrag (title bar)
-                    } else if pt_v >= wind_top
-                        && pt_v < wind_bottom
-                        && pt_h >= wind_left
-                        && pt_h < wind_right
-                    {
-                        3 // inContent
-                    } else {
-                        0 // inDesk (outside window)
-                    }
+                let (part, window_ptr) = if mbar_h > 0 && pt_v < mbar_h {
+                    (1, 0) // inMenuBar
                 } else {
-                    0 // inDesk
+                    self.find_window_at_point(bus, pt_v, pt_h, mbar_h)
                 };
 
                 // MTE 1992 p. 4-91: `theWindow` must be NIL when the point
                 // is not in a window (for example inDesk or inMenuBar).
-                let window_ptr = match part {
-                    3 | 4 | 5 | 6 | 7 | 8 => self.front_window,
-                    _ => 0,
-                };
-
                 if wnd_ptr_ptr != 0 {
                     bus.write_long(wnd_ptr_ptr, window_ptr);
+                }
+
+                if super::dispatch::trace_input_enabled() {
+                    eprintln!(
+                        "[INPUT] FindWindow point=({}, {}) -> part={} window=${:08X}",
+                        pt_v, pt_h, part, window_ptr
+                    );
                 }
 
                 bus.write_word(sp + 8, part as u16);
@@ -4682,7 +4707,11 @@ mod tests {
     fn test_find_window_content() {
         let (mut disp, mut cpu, mut bus) = setup();
 
-        disp.front_window = 0xDEAD0000; // nonzero front window
+        let window_addr: u32 = 0x310000;
+        setup_full_window_with_regions(&mut bus, window_addr, 40, 0, 342, 512);
+        bus.write_byte(window_addr + 110, 0xFF);
+        disp.window_list = vec![window_addr];
+        disp.front_window = window_addr;
 
         let wnd_ptr_ptr: u32 = 0x300000;
 
@@ -4702,12 +4731,85 @@ mod tests {
         let part = bus.read_word(new_sp);
         assert_eq!(
             part, 3,
-            "FindWindow with front_window set and pt.v>=20 should return inContent (3)"
+            "FindWindow with a visible window under the point should return inContent (3)"
         );
 
         // Verify whichWindow was written
         let which_window = bus.read_long(wnd_ptr_ptr);
-        assert_eq!(which_window, 0xDEAD0000);
+        assert_eq!(which_window, window_addr);
+    }
+
+    #[test]
+    fn find_window_walks_front_to_back_and_uses_port_bounds_for_global_hits() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let main_window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            main_window,
+            screen_base,
+            0,
+            0,
+            600,
+            800,
+            "",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        let dialog_window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            dialog_window,
+            screen_base,
+            110,
+            155,
+            380,
+            645,
+            "",
+            1,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        assert_eq!(disp.window_list, vec![dialog_window, main_window]);
+        // Regression shape: cached front-window fields can be restored by the
+        // application while the Window Manager list still has a visible dialog
+        // in front. FindWindow must use the list, not these stale caches.
+        disp.front_window = main_window;
+        disp.window_bounds = (0, 0, 600, 800);
+        disp.window_proc_id = 0;
+
+        let wnd_ptr_ptr: u32 = bus.alloc(4);
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, wnd_ptr_ptr);
+        bus.write_word(sp + 4, 362); // global v inside dialog content
+        bus.write_word(sp + 6, 491); // global h inside dialog content
+        bus.write_word(sp + 8, 0);
+
+        let result = dispatch(&mut disp, 0x12C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP - 2);
+        assert_eq!(bus.read_word(new_sp), 3);
+        assert_eq!(
+            bus.read_long(wnd_ptr_ptr),
+            dialog_window,
+            "FindWindow must return the frontmost visible window under the global point"
+        );
     }
 
     // FindWindow must return inDesk + whichWindow=NIL when the click is not
@@ -4717,8 +4819,11 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         disp.menu_bar_hidden = false;
-        disp.front_window = 0xDEAD0000;
-        disp.window_bounds = (40, 0, 342, 512);
+        let window_addr: u32 = 0x310000;
+        setup_full_window_with_regions(&mut bus, window_addr, 40, 0, 342, 512);
+        bus.write_byte(window_addr + 110, 0xFF);
+        disp.window_list = vec![window_addr];
+        disp.front_window = window_addr;
 
         let wnd_ptr_ptr: u32 = 0x300000;
         bus.write_long(wnd_ptr_ptr, 0xFFFFFFFF);

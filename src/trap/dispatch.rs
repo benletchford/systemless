@@ -428,13 +428,15 @@ pub struct DialogButtonTrackingState {
     pub highlighted: bool,
 }
 
-/// Push-button/click tracking for a front modal dialog that has been
-/// retained outside an active ModalDialog trap.
+/// Push-button/click tracking for a front modal dialog. ModalDialog-retained
+/// clicks consume both mouse events; app-owned modal clicks pass mouseDown to
+/// the app and use this state to finish the visible button press on mouseUp.
 pub struct RetainedModalDialogClickState {
     pub dialog_ptr: u32,
     pub item_no: i16,
     pub rect: (i16, i16, i16, i16),
     pub highlighted: bool,
+    pub delivered_to_app: bool,
 }
 
 /// Plain userItem tracking owned by an active ModalDialog loop.
@@ -1348,8 +1350,8 @@ pub struct TrapDispatcher {
     pub(crate) modeless_dialog_draw_proc_queue: VecDeque<(u32, u32, i16)>,
     /// Dialog currently executing a modeless userItem draw proc.
     pub(crate) active_modeless_dialog_draw_proc: Option<u32>,
-    /// Mouse click currently captured by a retained front modal dialog
-    /// outside ModalDialog.
+    /// Mouse click currently captured by a front modal dialog. This includes
+    /// ModalDialog-retained clicks and app-owned modal button presses.
     pub(crate) retained_modal_dialog_click: Option<RetainedModalDialogClickState>,
     /// Stack of saved window state for restoring front_window/bounds when
     /// dialogs are disposed. Each GetNewDialog pushes the current state;
