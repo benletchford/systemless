@@ -3,7 +3,8 @@
 use crate::cpu::{CpuOps, Register};
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::quickdraw::text::get_font_metrics;
+use crate::quickdraw::fonts::get_font_face_scaled;
+use crate::quickdraw::text::{get_font_metrics, get_glyph};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -452,6 +453,174 @@ impl super::TrapDispatcher {
     fn write_point_words(bus: &mut MacMemoryBus, addr: u32, point: (i16, i16)) {
         bus.write_word(addr, point.0 as u16);
         bus.write_word(addr + 2, point.1 as u16);
+    }
+
+    fn scriptutil_text_byte_width(&self, byte: u8, font_scale: i16) -> i32 {
+        let ch = byte as char;
+        if let Some((glyph, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
+            i32::from(self.glyph_advance(glyph) * font_scale)
+        } else {
+            i32::from(self.missing_glyph_advance() * font_scale)
+        }
+    }
+
+    fn scriptutil_measure_text_range_width(
+        &self,
+        bus: &MacMemoryBus,
+        text_ptr: u32,
+        start: u32,
+        end: u32,
+    ) -> i32 {
+        let (_, font_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
+        let mut width = 0i32;
+        for offset in start..end {
+            let byte = bus.read_byte(text_ptr.wrapping_add(offset));
+            width = width.saturating_add(self.scriptutil_text_byte_width(byte, font_scale));
+        }
+        width
+    }
+
+    fn scriptutil_fixed_to_pixels(raw: u32) -> i32 {
+        let signed = raw as i32;
+        if (raw & 0xFFFF_0000) != 0 {
+            signed >> 16
+        } else {
+            signed
+        }
+    }
+
+    fn scriptutil_pixels_to_width_like(raw: u32, pixels: i32) -> u32 {
+        let pixels = pixels.clamp(0, 0x7FFF);
+        if (raw & 0xFFFF_0000) != 0 {
+            ((pixels as i32) << 16) as u32
+        } else {
+            pixels as u32
+        }
+    }
+
+    fn scriptutil_is_roman_break_space(byte: u8) -> bool {
+        matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
+    }
+
+    fn scriptutil_last_space_break(
+        bus: &MacMemoryBus,
+        text_ptr: u32,
+        start: u32,
+        fit_end: u32,
+        text_end: u32,
+    ) -> Option<u32> {
+        let mut break_offset = None;
+        let mut offset = start;
+        while offset < fit_end {
+            let byte = bus.read_byte(text_ptr.wrapping_add(offset));
+            if Self::scriptutil_is_roman_break_space(byte) {
+                let mut after_spaces = offset + 1;
+                while after_spaces < text_end
+                    && Self::scriptutil_is_roman_break_space(
+                        bus.read_byte(text_ptr.wrapping_add(after_spaces)),
+                    )
+                {
+                    after_spaces += 1;
+                }
+                break_offset = Some(after_spaces);
+                offset = after_spaces;
+            } else {
+                offset += 1;
+            }
+        }
+        break_offset
+    }
+
+    fn handle_scriptutil_styled_line_break<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        sp: u32,
+    ) -> Result<()> {
+        let text_offset_ptr = bus.read_long(sp + 4);
+        let text_width_ptr = bus.read_long(sp + 8);
+        let text_end_arg = (bus.read_long(sp + 16) as i32).max(0) as u32;
+        let text_start_arg = (bus.read_long(sp + 20) as i32).max(0) as u32;
+        let text_len = (bus.read_long(sp + 24) as i32).max(0) as u32;
+        let text_ptr = bus.read_long(sp + 28);
+
+        let text_start = text_start_arg.min(text_len);
+        let text_end = text_end_arg.max(text_start).min(text_len);
+        let input_offset = if text_offset_ptr != 0 {
+            bus.read_long(text_offset_ptr)
+        } else {
+            0
+        };
+        let first_style_run_on_line = input_offset != 0;
+        let width_raw = if text_width_ptr != 0 {
+            bus.read_long(text_width_ptr)
+        } else {
+            0x7FFF
+        };
+        let available = Self::scriptutil_fixed_to_pixels(width_raw).max(0);
+
+        let run_width =
+            self.scriptutil_measure_text_range_width(bus, text_ptr, text_start, text_end);
+        let (result, output_offset, consumed_width) = if run_width <= available {
+            (2u16, text_end, run_width)
+        } else {
+            let (_, font_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
+            let mut width = 0i32;
+            let mut fit_offset = text_start;
+            for offset in text_start..text_end {
+                let byte_width = self.scriptutil_text_byte_width(
+                    bus.read_byte(text_ptr.wrapping_add(offset)),
+                    font_scale,
+                );
+                if width.saturating_add(byte_width) > available {
+                    break;
+                }
+                width = width.saturating_add(byte_width);
+                fit_offset = offset + 1;
+            }
+
+            if let Some(word_offset) =
+                Self::scriptutil_last_space_break(bus, text_ptr, text_start, fit_offset, text_end)
+            {
+                let word_width = self.scriptutil_measure_text_range_width(
+                    bus,
+                    text_ptr,
+                    text_start,
+                    word_offset,
+                );
+                (0u16, word_offset, word_width)
+            } else if first_style_run_on_line {
+                let char_offset = if fit_offset > text_start {
+                    fit_offset
+                } else {
+                    (text_start + 1).min(text_end)
+                };
+                let char_width = self.scriptutil_measure_text_range_width(
+                    bus,
+                    text_ptr,
+                    text_start,
+                    char_offset,
+                );
+                (1u16, char_offset, char_width)
+            } else {
+                (0u16, text_start, 0)
+            }
+        };
+
+        if text_offset_ptr != 0 {
+            bus.write_long(text_offset_ptr, output_offset);
+        }
+        if text_width_ptr != 0 {
+            let remaining = available.saturating_sub(consumed_width);
+            bus.write_long(
+                text_width_ptr,
+                Self::scriptutil_pixels_to_width_like(width_raw, remaining),
+            );
+        }
+        bus.write_word(sp + 32, result);
+        cpu.write_reg(Register::D0, u32::from(result));
+        cpu.write_reg(Register::A7, sp + 32);
+        Ok(())
     }
 
     fn list_no_click_cell() -> (i16, i16) {
@@ -8292,7 +8461,10 @@ impl super::TrapDispatcher {
             //   hilitetext_computes_highlight_ranges
             //   drawjust_draws_justified_text
             //   measurejust_measures_justified_text
-            // ScriptUtil ($A8B5): Dispatches selectors 0-22 (FontScript, IntlScript, KeyScript, Font2Script, GetEnvirons, SetEnvirons, GetScript, SetScript, CharByte, CharType, Char2Pixel); returns smRoman/noErr/0; per IM:V V-288
+            //   styledlinebreak_full_style_run_fits_returns_overflow_and_decrements_width
+            //   styledlinebreak_breaks_at_last_space_before_overflow
+            //   styledlinebreak_first_long_word_breaks_on_character_boundary
+            // ScriptUtil ($A8B5): Dispatches legacy selectors plus System 7 encoded text-utility selectors; returns Roman/noErr/0 fallbacks where Systemless has no script-system state.
             (true, 0x0B5) => {
                 let sp = cpu.read_reg(Register::A7);
                 // MPW's inline wraps ScriptUtil selectors as
@@ -8324,6 +8496,14 @@ impl super::TrapDispatcher {
                         bus.write_word(sp + 16, 0); // smNotTruncated
                         cpu.write_reg(Register::A7, sp + 16);
                         return Some(Ok(()));
+                    }
+                    // StyledLineBreak ($821CFFFE): FUNCTION StyledLineBreak(textPtr: Ptr;
+                    //   textLen, textStart, textEnd, flags: LongInt; VAR textWidth: Fixed;
+                    //   VAR textOffset: LongInt): StyledLineBreakCode.
+                    // Stack: selector(4), args(28), result(2). Pop selector + args.
+                    // Inside Macintosh: Text 1993, pp. 5-79..5-81 and Table D-3.
+                    0x821C_FFFE => {
+                        return Some(self.handle_scriptutil_styled_line_break(bus, cpu, sp));
                     }
                     _ => {}
                 }
@@ -9698,6 +9878,7 @@ mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
     use crate::cpu::{CpuOps, Register};
+    use crate::memory::MacMemoryBus;
     use crate::memory::MemoryBus;
     use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
     use crate::trap::extended80::Extended80;
@@ -17971,6 +18152,27 @@ mod tests {
         assert!(disp.ae_call_state.is_none());
     }
 
+    fn write_styled_line_break_frame(
+        bus: &mut MacMemoryBus,
+        sp: u32,
+        text_ptr: u32,
+        text_len: u32,
+        text_start: u32,
+        text_end: u32,
+        text_width_ptr: u32,
+        text_offset_ptr: u32,
+    ) {
+        bus.write_long(sp, 0x821C_FFFE);
+        bus.write_long(sp + 4, text_offset_ptr);
+        bus.write_long(sp + 8, text_width_ptr);
+        bus.write_long(sp + 12, 0); // flags
+        bus.write_long(sp + 16, text_end);
+        bus.write_long(sp + 20, text_start);
+        bus.write_long(sp + 24, text_len);
+        bus.write_long(sp + 28, text_ptr);
+        bus.write_word(sp + 32, 0xBEEF); // StyledLineBreakCode result
+    }
+
     // ScriptUtil ($A8B5) selector 0 FontScript
     // IM:V 1988 pp. V-288 and V-315
     #[test]
@@ -18121,6 +18323,120 @@ mod tests {
 
         assert_eq!(bus.read_bytes(offsets_ptr, 12), vec![0; 12]);
         assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+    }
+
+    // ScriptUtil ($A8B5) encoded selector $821CFFFE StyledLineBreak
+    // Text 1993 pp. 5-79..5-81.
+    #[test]
+    fn scriptutil_styledlinebreak_full_style_run_fits_returns_overflow_and_decrements_width() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let text_ptr = 0x365000u32;
+        let width_ptr = 0x366000u32;
+        let offset_ptr = 0x366010u32;
+        let text = b"SHORT";
+        bus.write_bytes(text_ptr, text);
+        let run_width =
+            disp.scriptutil_measure_text_range_width(&bus, text_ptr, 0, text.len() as u32);
+        let starting_width = run_width + 20;
+
+        write_styled_line_break_frame(
+            &mut bus,
+            sp,
+            text_ptr,
+            text.len() as u32,
+            0,
+            text.len() as u32,
+            width_ptr,
+            offset_ptr,
+        );
+        bus.write_long(width_ptr, (starting_width as u32) << 16);
+        bus.write_long(offset_ptr, 0xFFFF_FFFF);
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 32), 2); // smBreakOverflow
+        assert_eq!(bus.read_long(offset_ptr), text.len() as u32);
+        assert_eq!(bus.read_long(width_ptr), 20u32 << 16);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 32);
+    }
+
+    // ScriptUtil ($A8B5) encoded selector $821CFFFE StyledLineBreak
+    // Text 1993 pp. 5-79..5-81.
+    #[test]
+    fn scriptutil_styledlinebreak_breaks_at_last_space_before_overflow() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let text_ptr = 0x365000u32;
+        let width_ptr = 0x366000u32;
+        let offset_ptr = 0x366010u32;
+        let text = b"HELLO WORLD";
+        bus.write_bytes(text_ptr, text);
+        let available = disp.scriptutil_measure_text_range_width(&bus, text_ptr, 0, 7);
+        let consumed = disp.scriptutil_measure_text_range_width(&bus, text_ptr, 0, 6);
+
+        write_styled_line_break_frame(
+            &mut bus,
+            sp,
+            text_ptr,
+            text.len() as u32,
+            0,
+            text.len() as u32,
+            width_ptr,
+            offset_ptr,
+        );
+        bus.write_long(width_ptr, (available as u32) << 16);
+        bus.write_long(offset_ptr, 0xFFFF_FFFF);
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 32), 0); // smBreakWord
+        assert_eq!(bus.read_long(offset_ptr), 6); // after the space
+        assert_eq!(
+            bus.read_long(width_ptr),
+            ((available - consumed) as u32) << 16
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 32);
+    }
+
+    // ScriptUtil ($A8B5) encoded selector $821CFFFE StyledLineBreak
+    // Text 1993 pp. 5-79..5-81.
+    #[test]
+    fn scriptutil_styledlinebreak_first_long_word_breaks_on_character_boundary() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let text_ptr = 0x365000u32;
+        let width_ptr = 0x366000u32;
+        let offset_ptr = 0x366010u32;
+        let text = b"ABCDEFGHIJ";
+        bus.write_bytes(text_ptr, text);
+        let available = disp.scriptutil_measure_text_range_width(&bus, text_ptr, 0, 3);
+
+        write_styled_line_break_frame(
+            &mut bus,
+            sp,
+            text_ptr,
+            text.len() as u32,
+            0,
+            text.len() as u32,
+            width_ptr,
+            offset_ptr,
+        );
+        bus.write_long(width_ptr, (available as u32) << 16);
+        bus.write_long(offset_ptr, 0xFFFF_FFFF);
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 32), 1); // smBreakChar
+        assert_eq!(bus.read_long(offset_ptr), 3);
+        assert_eq!(bus.read_long(width_ptr), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 32);
     }
 
     // ScriptUtil ($A8B5) selector $820CFFDE TruncText

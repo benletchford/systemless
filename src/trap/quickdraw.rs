@@ -6724,6 +6724,8 @@ impl super::TrapDispatcher {
                         const NEW_ROW_BYTES_FLAG: u32 = 1 << 19; // newRowBytesBit = 19
                         const REALLOC_PIX_FLAG: u32 = 1 << 20; // reallocPixBit = 20
                         const ALIGN_PIX_FLAG: u32 = 1 << 18; // alignPixBit = 18
+                        const CLIP_PIX_FLAG: u32 = 1 << 28; // clipPixBit = 28
+                        const STRETCH_PIX_FLAG: u32 = 1 << 29; // stretchPixBit = 29
                         let no_new_device = (flags & NO_NEW_DEVICE_FLAG) != 0;
 
                         let requested_top = bus.read_word(bounds_ptr) as i16;
@@ -6820,20 +6822,31 @@ impl super::TrapDispatcher {
                             || new_row_bytes != old_row_bytes
                             || depth != old_depth
                         {
-                            // Allocate new pixel buffer and copy old data
+                            // Imaging With QuickDraw 1994 pp. 6-23..6-26:
+                            // UpdateGWorld only updates old pixels when the
+                            // caller asks for clipPix or stretchPix. With no
+                            // preservation flag, "the pixels are not updated";
+                            // if the buffer is reallocated, reallocPix tells
+                            // the caller to reconstruct the image.
+                            let preserve_pixels = (flags & (CLIP_PIX_FLAG | STRETCH_PIX_FLAG)) != 0;
                             let new_base = bus.alloc(new_buf_size);
                             // Zero fill first
                             for i in (0..new_buf_size).step_by(4) {
                                 bus.write_long(new_base + i, 0);
                             }
-                            // Copy overlapping rows
-                            let copy_rows = old_height.min(new_height);
-                            let copy_bytes_per_row = old_row_bytes.min(new_row_bytes);
-                            for row in 0..copy_rows {
-                                let src = old_base + row * old_row_bytes;
-                                let dst = new_base + row * new_row_bytes;
-                                for b in 0..copy_bytes_per_row {
-                                    bus.write_byte(dst + b, bus.read_byte(src + b));
+                            if preserve_pixels {
+                                // Approximate clipPix/stretchPix by retaining
+                                // the overlapping source rows; callers still
+                                // see reallocPix/newRowBytes and can redraw
+                                // if they need exact Color QuickDraw scaling.
+                                let copy_rows = old_height.min(new_height);
+                                let copy_bytes_per_row = old_row_bytes.min(new_row_bytes);
+                                for row in 0..copy_rows {
+                                    let src = old_base + row * old_row_bytes;
+                                    let dst = new_base + row * new_row_bytes;
+                                    for b in 0..copy_bytes_per_row {
+                                        bus.write_byte(dst + b, bus.read_byte(src + b));
+                                    }
                                 }
                             }
                             bus.free(old_base);
@@ -30894,6 +30907,112 @@ mod tests {
         assert_eq!(stack_flags, flags);
         assert_eq!(d.current_port, gworld);
         assert!(stack_ok);
+    }
+
+    #[test]
+    fn updategworld_realloc_without_clip_or_stretch_discards_old_pixels() {
+        // IWQD 1994 pp. 6-23..6-26: with no UpdateGWorld pixel-update
+        // flags, pixels are not updated; if the base is reallocated,
+        // reallocPix tells the caller to reconstruct the image.
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds_ptr = 0x300000u32;
+        let resized_bounds_ptr = 0x300020u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 4, 4);
+        write_rect(&mut bus, resized_bounds_ptr, 0, 0, 4, 8);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, 0);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        let create = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let pmh = bus.read_long(gworld + 2);
+        let pm = bus.read_long(pmh);
+        let old_base = bus.read_long(pm);
+        for i in 0..16 {
+            bus.write_byte(old_base + i, 0xA5);
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0016_0003);
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, 0);
+        bus.write_long(TEST_SP + 12, resized_bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        let update = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(update.unwrap().is_ok());
+
+        let new_base = bus.read_long(pm);
+        let flags = cpu.read_reg(Register::D0);
+        assert_ne!(new_base, old_base);
+        assert_eq!(flags & (1 << 20), 1 << 20);
+        assert_eq!(flags & (1 << 19), 1 << 19);
+        for i in 0..16 {
+            assert_eq!(
+                bus.read_byte(new_base + i),
+                0,
+                "byte {i} should not be copied without clipPix/stretchPix"
+            );
+        }
+    }
+
+    #[test]
+    fn updategworld_realloc_with_clippix_preserves_overlapping_pixels() {
+        // IWQD 1994 pp. 6-23..6-26: clipPix requests that pixels be
+        // updated to the new bounds; Systemless preserves the overlapping
+        // rows when it reallocates the offscreen buffer.
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds_ptr = 0x300000u32;
+        let resized_bounds_ptr = 0x300020u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 4, 4);
+        write_rect(&mut bus, resized_bounds_ptr, 0, 0, 4, 8);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, 0);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        let create = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let pmh = bus.read_long(gworld + 2);
+        let pm = bus.read_long(pmh);
+        let old_base = bus.read_long(pm);
+        for i in 0..16 {
+            bus.write_byte(old_base + i, (0x40 + i) as u8);
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0016_0003);
+        bus.write_long(TEST_SP, 1 << 28);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, 0);
+        bus.write_long(TEST_SP + 12, resized_bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        let update = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(update.unwrap().is_ok());
+
+        let new_base = bus.read_long(pm);
+        assert_ne!(new_base, old_base);
+        for row in 0..4u32 {
+            for col in 0..4u32 {
+                assert_eq!(
+                    bus.read_byte(new_base + row * 8 + col),
+                    (0x40 + row * 4 + col) as u8
+                );
+            }
+        }
     }
 
     #[test]
