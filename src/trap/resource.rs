@@ -5697,38 +5697,73 @@ impl super::TrapDispatcher {
                         ref_num, fcb_index
                     );
 
-                    // Look up the file by reference number.
-                    // refNum 0 = the app's resource file.
-                    let resolved_name = if ref_num == 0 {
-                        // App's own resource file
-                        self.launched_app_path.clone()
+                    // Look up the file by reference number. refNum 0 names the
+                    // current application's resource fork. PBOpenRF mirrors
+                    // resource forks into open_files as "__rsrc__<path>" so
+                    // FSRead/FSWrite can share the data-fork code path.
+                    let resolved_fcb = if ref_num == 0 {
+                        self.launched_app_path
+                            .clone()
+                            .map(|vfs_name| (vfs_name, true))
+                    } else if let Some(vfs_name) = self.open_files.get(&ref_num).cloned() {
+                        let is_resource_fork = vfs_name.starts_with("__rsrc__");
+                        Some((vfs_name, is_resource_fork))
                     } else {
-                        self.open_files.get(&ref_num).cloned()
+                        self.resource_file_name(ref_num)
+                            .map(|vfs_name| (vfs_name.to_string(), true))
                     };
 
-                    if let Some(vfs_name) = resolved_name {
-                        let base_name = super::TrapDispatcher::vfs_basename(&vfs_name).to_string();
-                        let parent_dir_id = self
-                            .vfs_file_metadata(&vfs_name)
-                            .map(|m| m.parent_dir_id)
-                            .unwrap_or(2);
+                    if let Some((open_vfs_name, is_resource_fork)) = resolved_fcb {
+                        let metadata_name = open_vfs_name
+                            .strip_prefix("__rsrc__")
+                            .unwrap_or(&open_vfs_name)
+                            .to_string();
+                        let base_name =
+                            super::TrapDispatcher::vfs_basename(&metadata_name).to_string();
+                        let metadata = self.vfs_file_metadata(&metadata_name);
+                        let file_len = if is_resource_fork {
+                            self.vfs
+                                .get(&open_vfs_name)
+                                .map(|data| data.len())
+                                .or_else(|| {
+                                    self.vfs_rsrc.get(&metadata_name).map(|data| data.len())
+                                })
+                                .unwrap_or(0)
+                        } else {
+                            self.vfs
+                                .get(&metadata_name)
+                                .map(|data| data.len())
+                                .unwrap_or(0)
+                        };
+                        let current_pos = self
+                            .file_positions
+                            .get(&ref_num)
+                            .copied()
+                            .unwrap_or(0)
+                            .min(file_len);
+                        let mut flags = if is_resource_fork { 0x0200 } else { 0 };
+                        if self.write_refnums.contains(&ref_num) {
+                            flags |= 0x0100;
+                        }
+                        let file_id = metadata.map(|m| m.file_id).unwrap_or(0);
+                        let parent_dir_id = metadata.map(|m| m.parent_dir_id).unwrap_or(2);
                         if name_ptr != 0 {
                             Self::write_pstring(bus, name_ptr, &base_name);
                         }
                         bus.write_word(pb + 22, super::TrapDispatcher::boot_volume_ref_num_u16()); // ioVRefNum
                         bus.write_word(pb + 30, 0); // filler1
-                        bus.write_long(pb + 32, 0); // ioFCBFlNm (file number)
-                        bus.write_word(pb + 36, 0x0200); // ioFCBFlags (resource fork)
+                        bus.write_long(pb + 32, file_id); // ioFCBFlNm
+                        bus.write_word(pb + 36, flags); // ioFCBFlags
                         bus.write_word(pb + 38, 0); // ioFCBStBlk
-                        bus.write_long(pb + 40, 0); // ioFCBEOF
-                        bus.write_long(pb + 44, 0); // ioFCBPLen
-                        bus.write_long(pb + 48, 0); // ioFCBCrPs
+                        bus.write_long(pb + 40, file_len as u32); // ioFCBEOF
+                        bus.write_long(pb + 44, file_len as u32); // ioFCBPLen
+                        bus.write_long(pb + 48, current_pos as u32); // ioFCBCrPs
                         bus.write_word(pb + 52, super::TrapDispatcher::boot_volume_ref_num_u16()); // ioFCBVRefNum
                         bus.write_long(pb + 54, 0); // ioFCBClpSiz
                         bus.write_long(pb + 58, parent_dir_id); // ioFCBParID
                         eprintln!(
-                            "[TRAP] FSDispatch PBGetFCBInfo -> name=\"{}\" parentDirID={}",
-                            base_name, parent_dir_id
+                            "[TRAP] FSDispatch PBGetFCBInfo -> name=\"{}\" len={} pos={} flags=${:04X} parentDirID={}",
+                            base_name, file_len, current_pos, flags, parent_dir_id
                         );
                         bus.write_word(pb + 16, 0); // noErr
                         cpu.write_reg(Register::D0, 0);
@@ -5809,12 +5844,18 @@ impl super::TrapDispatcher {
                 //     bdNamErr / tmfoErr / fnfErr (-43) / opWrErr /
                 //     permErr / dirNFErr / afpAccessDenied; the impl
                 //     below writes -43 fnfErr on lookup miss.
-                if selector == 26 && !filename.is_empty() {
+                if selector == 26 {
                     // Clear ioRefNum upfront. Files 1992 leaves the output
                     // undefined on failure, but MPW's FSOpen glue writes
                     // `*refNum = pb.ioRefNum` regardless of the result
                     // code — clearing makes the failure path deterministic.
                     bus.write_word(pb + 24, 0);
+                    if filename.is_empty() {
+                        eprintln!("[TRAP] FSDispatch PBHOpenDF(\"\") -> bdNamErr");
+                        bus.write_word(pb + 16, (-37i16) as u16);
+                        cpu.write_reg(Register::D0, (-37i32) as u32);
+                        return Some(Ok(()));
+                    }
                     if let Some(vfs_name) =
                         self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                     {
@@ -11419,6 +11460,70 @@ mod tests {
     }
 
     #[test]
+    fn fs_dispatch_pbgetfcbinfo_data_fork_reports_size_position_and_flags() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("Game/Data 1".to_string(), (0u8..12).collect());
+        disp.set_vfs_entry_metadata("Game/Data 1", *b"DATA", *b"TST!", 0);
+        let metadata = disp.vfs_file_metadata("Game/Data 1").unwrap();
+        disp.open_files.insert(123, "Game/Data 1".to_string());
+        disp.file_positions.insert(123, 4);
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"stale output buffer");
+        bus.write_word(pb + 24, 123);
+        bus.write_word(pb + 28, 0);
+        cpu.write_reg(Register::D0, 8);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Data 1".to_vec());
+        assert_eq!(bus.read_word(pb + 22) as i16, -1);
+        assert_eq!(bus.read_long(pb + 32), metadata.file_id);
+        assert_eq!(bus.read_word(pb + 36) & 0x0200, 0);
+        assert_eq!(bus.read_long(pb + 40), 12);
+        assert_eq!(bus.read_long(pb + 44), 12);
+        assert_eq!(bus.read_long(pb + 48), 4);
+        assert_eq!(bus.read_word(pb + 52) as i16, -1);
+        assert_eq!(bus.read_long(pb + 58), metadata.parent_dir_id);
+    }
+
+    #[test]
+    fn fs_dispatch_pbgetfcbinfo_resource_fork_reports_resource_size_and_flag() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Game/Data 1".to_string(), vec![0xAA, 0xBB]);
+        disp.vfs_rsrc
+            .insert("Game/Data 1".to_string(), vec![1, 2, 3, 4, 5]);
+        disp.set_vfs_entry_metadata("Game/Data 1", *b"DATA", *b"TST!", 0);
+        let metadata = disp.vfs_file_metadata("Game/Data 1").unwrap();
+        disp.open_files
+            .insert(124, "__rsrc__Game/Data 1".to_string());
+        disp.file_positions.insert(124, 3);
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"stale output buffer");
+        bus.write_word(pb + 24, 124);
+        bus.write_word(pb + 28, 0);
+        cpu.write_reg(Register::D0, 8);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Data 1".to_vec());
+        assert_eq!(bus.read_long(pb + 32), metadata.file_id);
+        assert_ne!(bus.read_word(pb + 36) & 0x0200, 0);
+        assert_eq!(bus.read_long(pb + 40), 5);
+        assert_eq!(bus.read_long(pb + 44), 5);
+        assert_eq!(bus.read_long(pb + 48), 3);
+        assert_eq!(bus.read_long(pb + 58), metadata.parent_dir_id);
+    }
+
+    #[test]
     fn pbhgetfinfo_retries_default_directory_for_stale_dirid() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -11857,6 +11962,27 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
         assert!(bus.read_word(pb + 24) >= 100);
+    }
+
+    #[test]
+    fn fs_dispatch_pbhopendf_empty_name_returns_bdnamerr_and_clears_refnum() {
+        // Files 1992, 2-184 lists bdNamErr for a bad filename; the
+        // result-code index clarifies that a zero-length filename is in
+        // that class. PBHOpenDF must not silently succeed with a stale
+        // ioRefNum when ioNamePtr points at an empty Pascal string.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"");
+        bus.write_word(pb + 16, 0x7777);
+        bus.write_word(pb + 24, 1023);
+        cpu.write_reg(Register::D0, 26);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -37);
+        assert_eq!(bus.read_word(pb + 16) as i16, -37);
+        assert_eq!(bus.read_word(pb + 24), 0);
     }
 
     // OSDispatch / Process Manager ($A88F) selector contracts.
