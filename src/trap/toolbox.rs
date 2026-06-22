@@ -2462,7 +2462,6 @@ impl super::TrapDispatcher {
             //
             // Regression coverage:
             //   getappparms_returns_app_parameters
-            // GetAppParms ($A9F5): Reads CurApName ($0910), CurApRefNum ($0900), AppParmHandle ($0AEC); per IM:II II-58
             (true, 0x1F5) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ap_param_ptr = bus.read_long(sp);
@@ -2471,7 +2470,7 @@ impl super::TrapDispatcher {
 
                 // Copy CurApName (Str31 at $0910) → *apName
                 if ap_name_ptr != 0 {
-                    let bytes = bus.read_pstring(0x0910);
+                    let bytes = bus.read_pstring(addr::CUR_APNAME);
                     let n = bytes.len().min(31);
                     bus.write_byte(ap_name_ptr, n as u8);
                     bus.write_bytes(ap_name_ptr + 1, &bytes[..n]);
@@ -2479,13 +2478,13 @@ impl super::TrapDispatcher {
 
                 // Copy CurApRefNum ($0900) → *apRefNum
                 if ap_refnum_ptr != 0 {
-                    let refnum = bus.read_word(0x0900);
+                    let refnum = bus.read_word(addr::CUR_APREF_NUM);
                     bus.write_word(ap_refnum_ptr, refnum);
                 }
 
                 // Copy AppParmHandle ($0AEC) → *apParam
                 if ap_param_ptr != 0 {
-                    let handle = bus.read_long(0x0AEC);
+                    let handle = bus.read_long(addr::APP_PARM_HANDLE);
                     bus.write_long(ap_param_ptr, handle);
                 }
 
@@ -10117,6 +10116,7 @@ mod tests {
         AE_KEY_EVENT_ID_ATTR, AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_TYPE, AE_TYPE_WILDCARD,
     };
     use crate::cpu::{CpuOps, Register};
+    use crate::memory::globals::addr;
     use crate::memory::MacMemoryBus;
     use crate::memory::MemoryBus;
     use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
@@ -13124,9 +13124,9 @@ mod tests {
         let ap_refnum_out = 0x210100u32;
         let ap_name_out = 0x210200u32;
 
-        bus.write_pstring(0x0910, b"Marathon");
-        bus.write_word(0x0900, (-6i16) as u16);
-        bus.write_long(0x0AEC, 0x00AB_CDEF);
+        bus.write_pstring(addr::CUR_APNAME, b"Marathon");
+        bus.write_word(addr::CUR_APREF_NUM, (-6i16) as u16);
+        bus.write_long(addr::APP_PARM_HANDLE, 0x00AB_CDEF);
 
         bus.write_long(ap_param_out, 0xDEAD_BEEF);
         bus.write_word(ap_refnum_out, 0xBEEF);

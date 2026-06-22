@@ -188,6 +188,10 @@ pub mod addr {
     // Application globals
     pub const CUR_APNAME: u32 = 0x0910; // Current app name (Str31)
     pub const CUR_APREF_NUM: u32 = 0x0900; // Current app ref num (int)
+    /// AppParmHandle: handle to Finder launch information.
+    /// The data begins with a message word and selected-file count word.
+    /// Inside Macintosh Volume II, II-57; Files 1992, 1-58.
+    pub const APP_PARM_HANDLE: u32 = 0x0AEC;
     pub const CURRENT_A5: u32 = 0x0904; // Current A5 (ptr) - Inside Macintosh Memory 1-77
     pub const CUR_JT_OFFSET: u32 = 0x0934; // Jump table offset from A5 (word) - Inside Macintosh Volume II, II-62
 

@@ -39,6 +39,10 @@ fn trace_loadseg_enabled() -> bool {
     *TRACE_LOADSEG.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_LOADSEG").is_some())
 }
 
+fn temporary_memory_free_estimate(bus: &MacMemoryBus) -> u32 {
+    (bus.ram_size() / 2).clamp(8 * 1024 * 1024, 64 * 1024 * 1024)
+}
+
 fn format_ostype(res_type: [u8; 4]) -> String {
     res_type
         .into_iter()
@@ -4769,10 +4773,12 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // OSDispatch / Process Manager (0xA88F)
-            // Handles Process Manager selectors needed by classic game utilities.
+            // OSDispatch (0xA88F)
+            // Dispatches Temporary Memory and Process Manager selectors.
+            // FUNCTION TempFreeMem: LongInt;
+            // Inside Macintosh Volume VI, 28-38 and 28-45.
             // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
-            // Processes 1994, 2-21 to 2-24
+            // Processes 1994, 2-21 to 2-24.
             //
             // MPW emits each ProcessMgr selector as
             //   MOVE.W #<sel>, -(SP)     ; push selector word on stack
@@ -4781,13 +4787,15 @@ impl super::TrapDispatcher {
             // pre-existing direct-asm callers instead pre-load D0 before
             // the trap -- if the top-of-stack word isn't a recognised
             // selector, fall back to D0 for compatibility.
-            // OSDispatch ($A88F): Selectors $0037 GetCurrentProcess, $0038 GetNextProcess, $0039 GetFrontProcess, $003A GetProcessInformation (full ProcessInfoRec), $003B SetFrontProcess (no-op), $003C WakeUpProcess (no-op), $003D SameProcess (PSN compare). Selector table: IM:Processes 1994 p. 2-31.
+            // OSDispatch ($A88F): selector $0018 TempFreeMem (IM VI
+            // Temporary Memory table); selectors $0037..$003D are Process
+            // Manager routines (Processes 1994 p. 2-31).
             (true, 0x08F) => {
                 let sp_entry = cpu.read_reg(Register::A7);
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp) = match stack_sel {
-                    0x0037..=0x003D => {
+                    0x0018 | 0x0037..=0x003D => {
                         // Pop the selector word pushed by MOVE.W #sel,-(SP).
                         cpu.write_reg(Register::A7, sp_entry + 2);
                         (stack_sel, sp_entry + 2)
@@ -4795,6 +4803,14 @@ impl super::TrapDispatcher {
                     _ => (d0_sel, sp_entry),
                 };
                 match selector {
+                    0x0018 => {
+                        // TempFreeMem (0xA88F selector $0018)
+                        // Returns the total amount of free temporary memory.
+                        // FUNCTION TempFreeMem: LongInt;
+                        // Inside Macintosh Volume VI, 28-38 and 28-45.
+                        cpu.write_reg(Register::D0, temporary_memory_free_estimate(bus));
+                        Ok(())
+                    }
                     0x0037 => {
                         // GetCurrentProcess (0xA88F selector $0037)
                         // Returns serial number of current process.
@@ -12254,8 +12270,29 @@ mod tests {
         assert_eq!(bus.read_word(pb + 24), 0);
     }
 
-    // OSDispatch / Process Manager ($A88F) selector contracts.
-    // Inside Macintosh: Processes (1994), pp. 2-21 to 2-28 and p. 2-31.
+    // OSDispatch ($A88F) selector contracts.
+    // Temporary Memory: Inside Macintosh Volume VI, 28-38 and 28-45.
+    // Process Manager: Processes (1994), pp. 2-21 to 2-28 and p. 2-31.
+    #[test]
+    fn osdispatch_tempfreemem_selector_0018_uses_stack_selector_and_returns_free_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 0x0018);
+        cpu.write_reg(Register::D0, 0x0001);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 2,
+            "OSDispatch should pop the selector word"
+        );
+        assert!(
+            cpu.read_reg(Register::D0) >= 8 * 1024 * 1024,
+            "TempFreeMem should report usable temporary memory in D0"
+        );
+    }
+
     #[test]
     fn osdispatch_getcurrentprocess_selector_0037_returns_current_psn() {
         let (mut disp, mut cpu, mut bus) = setup();

@@ -1049,6 +1049,33 @@ impl FixtureRunner {
         app
     }
 
+    fn alloc_handle_with_bytes(&mut self, bytes: &[u8]) -> u32 {
+        let data_ptr = if bytes.is_empty() {
+            0
+        } else {
+            let data_ptr = self.bus.alloc(bytes.len() as u32);
+            if data_ptr == 0 {
+                return 0;
+            }
+            self.bus.write_bytes(data_ptr, bytes);
+            data_ptr
+        };
+
+        let handle = self.bus.alloc(4);
+        if handle == 0 {
+            if data_ptr != 0 {
+                self.bus.free(data_ptr);
+            }
+            return 0;
+        }
+
+        self.bus.write_long(handle, data_ptr);
+        if data_ptr != 0 {
+            self.dispatcher.ptr_to_handle.insert(data_ptr, handle);
+        }
+        handle
+    }
+
     /// Seed the Mac-canonical low-memory globals (`MemTop`,
     /// `CurStackBase`, `ApplLimit`, `Lo3Bytes`, `Ticks`, etc.) and
     /// the A5 World start so `run_steps` lands the guest in a
@@ -1148,6 +1175,7 @@ impl FixtureRunner {
 
         // CurApRefNum: resource file reference number of the application (word).
         // CurApName: application name as Pascal string (Str31).
+        // AppParmHandle is allocated below, after the zone header is reserved.
         // Inside Macintosh Volume II, II-57 to II-58
         self.bus.write_word(addr::CUR_APREF_NUM, 0); // app resources use refnum 0
         if let Some(app_path) = &self.dispatcher.launched_app_path {
@@ -1209,6 +1237,14 @@ impl FixtureRunner {
             free_bytes,
             free_bytes as f64 / (1024.0 * 1024.0)
         );
+
+        // AppParmHandle: handle to Finder information about files selected
+        // when launching the application. A normal Finder application launch
+        // with no documents still provides the message/count header:
+        // appOpen (0), count 0. Assembly code may read this global directly.
+        // Inside Macintosh Volume II, II-57; Files 1992, 1-58.
+        let app_param_handle = self.alloc_handle_with_bytes(&[0, 0, 0, 0]);
+        self.bus.write_long(addr::APP_PARM_HANDLE, app_param_handle);
 
         // Write an ExitToShell trap at a known low-memory address so that when
         // main() returns via RTS, the CPU executes ExitToShell and halts cleanly.
@@ -4481,6 +4517,56 @@ mod tests {
             runner.bus.read_long(stack_seed_start),
             0xA5A5_A5A5,
             "top-of-stack window must not be zeroed"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_appparmhandle_with_empty_finder_information() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher_mut()
+            .set_launched_app_path("Games/Armor Alley");
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+        };
+
+        runner.init_app(&app);
+
+        let handle = runner.bus.read_long(addr::APP_PARM_HANDLE);
+        assert_ne!(
+            handle, 0,
+            "AppParmHandle should point at Finder launch information"
+        );
+        let data_ptr = runner.bus.read_long(handle);
+        assert_ne!(
+            data_ptr, 0,
+            "Finder launch information handle should be loaded"
+        );
+        assert_eq!(
+            runner.bus.get_alloc_size(data_ptr),
+            Some(4),
+            "empty Finder launch information is message/count only"
+        );
+        assert_eq!(
+            runner.bus.read_word(data_ptr),
+            0,
+            "message should be appOpen for a normal application launch"
+        );
+        assert_eq!(
+            runner.bus.read_word(data_ptr + 2),
+            0,
+            "normal application launch has no selected documents"
         );
     }
 
