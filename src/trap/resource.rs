@@ -107,6 +107,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
         sel,
         b"vers"
             | b"sysv"
+            | b"sysa"
             | b"evnt"
             | b"cput"
             | b"proc"
@@ -2700,6 +2701,15 @@ impl super::TrapDispatcher {
                             Register::A0,
                             ORACLE_MACHINE_PROFILE.system_version_bcd as u32,
                         );
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltSysArchitecture ('sysa') -> native system
+                    // architecture. Systemless is a 68k runtime, so report
+                    // gestalt68k.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-24: gestalt68k = 1, gestaltPowerPC = 2.
+                    b"sysa" => {
+                        cpu.write_reg(Register::A0, 1);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltAppleEventsAttr ('evnt') -> AppleEvents present
@@ -10116,6 +10126,18 @@ mod tests {
             cpu.read_reg(Register::A0),
             crate::machine_profile::ORACLE_MACHINE_PROFILE.system_version_bcd as u32
         );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_sys_architecture_reports_68k() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"sysa"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 1);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
