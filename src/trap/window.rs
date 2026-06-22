@@ -443,6 +443,153 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn window_structure_rect(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> Option<(i16, i16, i16, i16)> {
+        if window_ptr == 0 {
+            return None;
+        }
+        let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
+        if bottom <= top || right <= left {
+            return None;
+        }
+        let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        let title_top = if self.menu_bar_hidden {
+            top.saturating_sub(19).max(0)
+        } else {
+            top.saturating_sub(19).max(mbar_h)
+        };
+        Some((
+            title_top,
+            left.saturating_sub(1),
+            bottom.saturating_add(2),
+            right.saturating_add(2),
+        ))
+    }
+
+    fn erase_exposed_desktop_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if self.menu_bar_hidden || self.fullscreen_locked {
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                true,
+            );
+        } else {
+            // SetDeskCPat defines the desktop as the Window Manager's
+            // patterned background. Systemless uses the standard QuickDraw
+            // gray pattern when app-style hosting exposes desktop areas.
+            // Inside Macintosh Volume V, V-210
+            Self::fb_fill_pattern_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+            );
+        }
+    }
+
+    fn save_screen_rect_pixels(
+        &self,
+        bus: &MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) -> Option<(i16, i16, i16, i16, Vec<u8>)> {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let top = rect.0.max(0).min(screen_height);
+        let left = rect.1.max(0).min(screen_width);
+        let bottom = rect.2.max(0).min(screen_height);
+        let right = rect.3.max(0).min(screen_width);
+        if top >= bottom || left >= right {
+            return None;
+        }
+
+        let width = right - left;
+        let height = bottom - top;
+        let mut pixels = Vec::with_capacity(width as usize * height as usize);
+        for y in top..bottom {
+            for x in left..right {
+                if pixel_size == 8 {
+                    pixels.push(bus.read_byte(screen_base + y as u32 * row_bytes + x as u32));
+                } else {
+                    let byte_offset = y as u32 * row_bytes + x as u32 / 8;
+                    let bit = 7 - (x as u32 % 8);
+                    pixels.push((bus.read_byte(screen_base + byte_offset) >> bit) & 1);
+                }
+            }
+        }
+
+        Some((top, left, width, height, pixels))
+    }
+
+    fn restore_screen_rect_pixels(
+        &self,
+        bus: &mut MacMemoryBus,
+        dst_top: i16,
+        dst_left: i16,
+        width: i16,
+        height: i16,
+        pixels: &[u8],
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let mut idx = 0usize;
+        for dy in 0..height {
+            let y = dst_top + dy;
+            for dx in 0..width {
+                let x = dst_left + dx;
+                if idx >= pixels.len() {
+                    return;
+                }
+                let pixel = pixels[idx];
+                idx += 1;
+                if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
+                    continue;
+                }
+                if pixel_size == 8 {
+                    bus.write_byte(screen_base + y as u32 * row_bytes + x as u32, pixel);
+                } else {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        pixel != 0,
+                    );
+                }
+            }
+        }
+    }
+
     fn move_window_to_global(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -456,6 +603,15 @@ impl super::TrapDispatcher {
         }
 
         let (_, _, screen_w, screen_h, _) = self.screen_mode;
+        let old_port_rect = self.window_global_port_rect(bus, the_window);
+        let old_structure = if self.window_visible(bus, the_window) {
+            self.window_structure_rect(bus, the_window)
+        } else {
+            None
+        };
+        let moved_pixels = old_structure.and_then(|rect| self.save_screen_rect_pixels(bus, rect));
+        let delta_v = v_global.wrapping_sub(old_port_rect.0);
+        let delta_h = h_global.wrapping_sub(old_port_rect.1);
 
         // portRect stays in local coordinates (0,0,h,w) — unchanged.
         // Update pixmap bounds so local (0,0) maps to the new screen position.
@@ -491,6 +647,20 @@ impl super::TrapDispatcher {
         let port_w = bus.read_word(the_window + 22) as i16;
         if the_window == self.front_window {
             self.window_bounds = (v_global, h_global, v_global + port_h, h_global + port_w);
+        }
+
+        if let Some((top, left, bottom, right)) = old_structure {
+            self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+        }
+        if let Some((top, left, width, height, pixels)) = moved_pixels {
+            self.restore_screen_rect_pixels(
+                bus,
+                top.wrapping_add(delta_v),
+                left.wrapping_add(delta_h),
+                width,
+                height,
+                &pixels,
+            );
         }
 
         if self.window_visible(bus, the_window) {
@@ -1667,24 +1837,17 @@ impl super::TrapDispatcher {
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0x00);
                     self.set_window_vis_from_content(bus, the_window, false);
                     self.clear_queued_update_events(the_window);
-                    // Erase the exposed structure area. In a full Window
-                    // Manager this would be restored from the desktop or the
-                    // window behind; the game runner's desktop is black, so
-                    // avoid leaving a stale white backing rectangle.
-                    let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-                        self.get_screen_params();
-                    Self::fb_fill_rect(
+                    // Restore the exposed structure area from the desktop
+                    // background. A full Window Manager would also repaint
+                    // uncovered windows behind; this keeps desktop exposure
+                    // mode-correct in Systemless's one-window compositor.
+                    let (_, _, screen_width, screen_height, _) = self.get_screen_params();
+                    self.erase_exposed_desktop_rect(
                         bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
                         (wind_top - 19).max(0),
                         (wind_left - 1).max(0),
                         (wind_bottom + 2).min(screen_height),
                         (wind_right + 2).min(screen_width),
-                        true,
                     );
                     if self.front_window == the_window {
                         // Find first visible window in the list (other
@@ -1735,6 +1898,10 @@ impl super::TrapDispatcher {
                     Self::set_title_handle(bus, the_window, &bytes);
                     if the_window == self.front_window {
                         self.window_title = String::from_utf8_lossy(&bytes).into_owned();
+                    }
+                    if self.window_visible(bus, the_window) {
+                        let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
+                        self.draw_single_window_chrome_inline(bus, the_window, hilited);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 8);
@@ -4647,6 +4814,147 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
     }
 
+    #[test]
+    fn setwtitle_redraws_front_window_title_bar() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            60,
+            30,
+            220,
+            370,
+            "Old",
+            0,
+            true,
+            true,
+            false,
+            0,
+        );
+
+        let (screen_base, row_bytes, _, _, _) = disp.screen_mode;
+        let title_region = |bus: &crate::memory::MacMemoryBus| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for y in 41..59u32 {
+                for x in 60..340u32 {
+                    bytes.push(bus.read_byte(screen_base + y * row_bytes + x));
+                }
+            }
+            bytes
+        };
+        let before = title_region(&bus);
+
+        let new_title = bus.alloc(32);
+        bus.write_pstring(new_title, b"Player 1 | Opponent 0");
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, new_title);
+        bus.write_long(sp + 4, window_addr);
+
+        let result = dispatch(&mut disp, 0x11A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_ne!(
+            title_region(&bus),
+            before,
+            "SetWTitle should repaint the visible front-window title bar"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_reads_front_window_title_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            60,
+            30,
+            220,
+            370,
+            "Old",
+            0,
+            true,
+            true,
+            false,
+            0,
+        );
+
+        let (screen_base, row_bytes, _, _, _) = disp.screen_mode;
+        let title_region = |bus: &crate::memory::MacMemoryBus| -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for y in 41..59u32 {
+                for x in 60..340u32 {
+                    bytes.push(bus.read_byte(screen_base + y * row_bytes + x));
+                }
+            }
+            bytes
+        };
+        let before = title_region(&bus);
+
+        let title_handle =
+            bus.read_long(window_addr + super::super::TrapDispatcher::WINDOW_TITLE_HANDLE_OFFSET);
+        let new_title = bus.alloc(32);
+        bus.write_pstring(new_title, b"Player 1 | Opponent 0");
+        bus.write_long(title_handle, new_title);
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_ne!(
+            title_region(&bus),
+            before,
+            "front-window chrome redraw should use the live WindowRecord titleHandle"
+        );
+    }
+
+    #[test]
+    fn inactive_document_window_chrome_still_draws_title_text() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            60,
+            30,
+            220,
+            370,
+            "Inactive Title",
+            0,
+            true,
+            true,
+            false,
+            0,
+        );
+        bus.write_byte(
+            window_addr + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0,
+        );
+        disp.draw_single_window_chrome_inline(&mut bus, window_addr, false);
+
+        let (screen_base, row_bytes, _, _, _) = disp.screen_mode;
+        let has_title_pixels = (44..57u32)
+            .any(|y| (145..255u32).any(|x| bus.read_byte(screen_base + y * row_bytes + x) != 0));
+        assert!(
+            has_title_pixels,
+            "inactive document windows should retain visible title text"
+        );
+    }
+
     // ---------------------------------------------------------------
     // 12. GetWTitle (0x119) -- pops 8 bytes, writes empty string
     // ---------------------------------------------------------------
@@ -5907,6 +6215,68 @@ mod tests {
             bus.read_word(clip_rgn_data + 4) as i16,
             0,
             "clipRgn.left unchanged"
+        );
+    }
+
+    #[test]
+    fn move_window_restores_exposed_desktop_when_menu_bar_visible() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.menu_bar_hidden = false;
+        super::super::TrapDispatcher::fb_fill_pattern_rect(
+            &mut bus,
+            screen_base,
+            800,
+            8,
+            800,
+            600,
+            0,
+            0,
+            600,
+            800,
+            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+        );
+
+        let window_addr = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            screen_base,
+            180,
+            400,
+            420,
+            600,
+            "Player",
+            4,
+            true,
+            true,
+            true,
+            0,
+        );
+
+        let old_content_probe = screen_base + 200 * 800 + 410;
+        assert_eq!(
+            bus.read_byte(old_content_probe),
+            0,
+            "precondition: old window content area starts white"
+        );
+
+        disp.move_window_to_global(&mut bus, window_addr, 450, 230, true);
+
+        assert_eq!(
+            bus.read_byte(old_content_probe),
+            255,
+            "moving a visible window should restore the exposed old area to the desktop pattern"
+        );
+        let new_content_probe = screen_base + 250 * 800 + 460;
+        assert_eq!(
+            bus.read_byte(new_content_probe),
+            0,
+            "moving a visible window should preserve the window's screen pixels at the new position"
         );
     }
 

@@ -128,10 +128,29 @@ pub fn load_game_from_path(
 pub fn init_game(runner: &mut FixtureRunner, app: &LoadedApp) {
     runner.init_app(app);
 
-    // Clear screen memory to black.
-    // For 8bpp, index 255 = black in the standard Mac CLUT.
-    // For 1bpp, 0xFF = black (all bits set).
     {
+        if runner.menu_bar_visible() {
+            let (scrn_base, row_bytes, screen_width, screen_height, pixel_size) =
+                runner.dispatcher().screen_mode;
+            crate::trap::TrapDispatcher::fb_fill_pattern_rect(
+                runner.bus_mut(),
+                scrn_base,
+                row_bytes,
+                pixel_size,
+                screen_width as i16,
+                screen_height as i16,
+                0,
+                0,
+                screen_height as i16,
+                screen_width as i16,
+                [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+            );
+            return;
+        }
+
+        // Clear screen memory to black.
+        // For 8bpp, index 255 = black in the standard Mac CLUT.
+        // For 1bpp, 0xFF = black (all bits set).
         let (scrn_base, row_bytes, _, scrn_height, _) = runner.dispatcher().screen_mode;
         let bus = runner.bus_mut();
         for i in 0..(row_bytes * scrn_height as u32) {

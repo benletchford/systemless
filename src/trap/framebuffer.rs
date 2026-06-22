@@ -238,6 +238,46 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn fb_fill_pattern_rect(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        pattern: [u8; 8],
+    ) {
+        let top = top.max(0).min(screen_height);
+        let left = left.max(0).min(screen_width);
+        let bottom = bottom.max(0).min(screen_height);
+        let right = right.max(0).min(screen_width);
+        if top >= bottom || left >= right {
+            return;
+        }
+
+        for y in top..bottom {
+            let row = pattern[y.rem_euclid(8) as usize];
+            for x in left..right {
+                let bit = (row >> (7 - x.rem_euclid(8))) & 1;
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    bit != 0,
+                );
+            }
+        }
+    }
+
     /// Draw a horizontal line in the framebuffer
     pub(crate) fn fb_hline(
         bus: &mut MacMemoryBus,
@@ -900,8 +940,10 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // Draw title text centered in title bar (active windows only)
-            if active && !self.window_title.is_empty() {
+            // Draw title text centered in title bar. Active windows get
+            // stripes and a close box; inactive windows keep the title text
+            // over a plain title bar.
+            if !self.window_title.is_empty() {
                 let text_x = title_clear_left + 8;
                 Self::fb_draw_string(
                     bus,
@@ -1638,7 +1680,7 @@ impl super::TrapDispatcher {
             // Use the front window's hilited byte rather than hard-coding
             // active=true so HiliteWindow(front, false) renders no stripes.
             let front_hilited = bus.read_byte(self.front_window + 111u32) != 0;
-            self.draw_window_chrome(bus, front_hilited);
+            self.draw_single_window_chrome_inline(bus, self.front_window, front_hilited);
         }
         // If a modal dialog is active, restore the rendered snapshot and
         // redraw only dynamic elements (edit text, button flash) on top.
@@ -1744,6 +1786,32 @@ mod redraw_chrome_tests {
     const PORT_PTR: u32 = 0x181000;
     const VIS_RGN: u32 = 0x182000;
     const CLIP_RGN: u32 = 0x182200;
+
+    #[test]
+    fn fb_fill_pattern_rect_tiles_standard_gray_pattern() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(8 * 8);
+        disp.screen_mode = (screen_base, 8, 8, 8, 8);
+
+        TrapDispatcher::fb_fill_pattern_rect(
+            &mut bus,
+            screen_base,
+            8,
+            8,
+            8,
+            8,
+            0,
+            0,
+            8,
+            8,
+            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+        );
+
+        assert_eq!(bus.read_byte(screen_base), 255);
+        assert_eq!(bus.read_byte(screen_base + 1), 0);
+        assert_eq!(bus.read_byte(screen_base + 8), 0);
+        assert_eq!(bus.read_byte(screen_base + 9), 255);
+    }
 
     fn install_twilight_style_black_index(
         disp: &mut TrapDispatcher,
