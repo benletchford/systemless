@@ -3397,6 +3397,14 @@ fn parse_pack_bits_rect(
     } else {
         build_src_to_dst_table(src_clut, device_clut)
     };
+    let indexed_transfer = build_pict_indexed_transfer_table(
+        mode_base,
+        src_clut,
+        &src_to_dst,
+        device_clut,
+        fg_idx,
+        bg_idx,
+    );
     let mut traced_min_index = u8::MAX;
     let mut traced_max_index = 0u8;
     let mut traced_have_index = false;
@@ -3425,8 +3433,8 @@ fn parse_pack_bits_rect(
                 &row_data,
                 mode_base,
                 &pm,
-                &src_to_dst,
                 device_clut,
+                &indexed_transfer,
                 row,
                 src_top,
                 src_left,
@@ -3463,8 +3471,8 @@ fn parse_pack_bits_rect(
                 &row_data,
                 mode_base,
                 &pm,
-                &src_to_dst,
                 device_clut,
+                &indexed_transfer,
                 row,
                 src_top,
                 src_left,
@@ -3510,8 +3518,8 @@ fn blit_row(
     row_data: &[u8],
     mode_base: u16,
     pm: &PixMapInfo,
-    src_to_dst: &[u8; 256],
     device_clut: &[[u16; 3]; 256],
+    indexed_transfer: &[PictIndexedTransfer; 256],
     row: u32,
     src_top: i16,
     src_left: i16,
@@ -3593,7 +3601,6 @@ fn blit_row(
                     if mode_base == 36 && ci == 0 {
                         continue;
                     }
-                    let pixel = src_to_dst[ci];
                     let Some(pic_x) = map_x(px) else {
                         continue;
                     };
@@ -3602,6 +3609,21 @@ fn blit_row(
                     }
                     let x =
                         ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    let Some(pixel) = pict_indexed_transfer_pixel(
+                        bus,
+                        ci,
+                        indexed_transfer,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                        device_clut,
+                    ) else {
+                        continue;
+                    };
                     write_pixel(
                         bus,
                         screen_base,
@@ -3625,7 +3647,6 @@ fn blit_row(
                     if mode_base == 36 && ci == 0 {
                         continue;
                     }
-                    let pixel = src_to_dst[ci];
                     let Some(pic_x) = map_x(px) else {
                         continue;
                     };
@@ -3634,6 +3655,21 @@ fn blit_row(
                     }
                     let x =
                         ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    let Some(pixel) = pict_indexed_transfer_pixel(
+                        bus,
+                        ci,
+                        indexed_transfer,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                        device_clut,
+                    ) else {
+                        continue;
+                    };
                     write_pixel(
                         bus,
                         screen_base,
@@ -3656,7 +3692,6 @@ fn blit_row(
                     if mode_base == 36 && src_pixel == 0 {
                         continue;
                     }
-                    let pixel = src_to_dst[src_pixel];
                     let Some(pic_x) = map_x(px) else {
                         continue;
                     };
@@ -3665,6 +3700,21 @@ fn blit_row(
                     }
                     let x =
                         ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    let Some(pixel) = pict_indexed_transfer_pixel(
+                        bus,
+                        src_pixel,
+                        indexed_transfer,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        base_y,
+                        screen_w,
+                        screen_h,
+                        scrn_ps,
+                        device_clut,
+                    ) else {
+                        continue;
+                    };
                     if trace_pict_samples_enabled() {
                         for (label, sample_x, sample_y) in [
                             ("center", 400i32, 300i32),
@@ -3745,6 +3795,222 @@ fn blit_row(
         _ => {
             // Unsupported pixel size
         }
+    }
+}
+
+fn read_screen_pixel_index(
+    bus: &MacMemoryBus,
+    screen_base: u32,
+    screen_rb: u32,
+    x: i32,
+    y: i32,
+    screen_w: i32,
+    screen_h: i32,
+) -> Option<u8> {
+    if x < 0 || y < 0 || x >= screen_w || y >= screen_h {
+        return None;
+    }
+    Some(bus.read_byte(screen_base + (y as u32) * screen_rb + x as u32))
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum PictIndexedTransfer {
+    Write(u8),
+    Skip,
+    InvertDestination(u8),
+}
+
+fn build_pict_indexed_transfer_table(
+    mode_base: u16,
+    src_clut: &[[u16; 3]],
+    src_to_dst: &[u8; 256],
+    device_clut: &[[u16; 3]; 256],
+    fg_idx: u8,
+    bg_idx: u8,
+) -> [PictIndexedTransfer; 256] {
+    std::array::from_fn(|source_index| {
+        let translated_pixel = src_to_dst[source_index];
+        pict_indexed_source_mode_transfer(
+            mode_base,
+            source_index,
+            translated_pixel,
+            fg_idx,
+            bg_idx,
+            src_clut,
+            device_clut,
+        )
+    })
+}
+
+fn pict_indexed_transfer_pixel(
+    bus: &MacMemoryBus,
+    source_index: usize,
+    transfer_table: &[PictIndexedTransfer; 256],
+    screen_base: u32,
+    screen_rb: u32,
+    x: i32,
+    y: i32,
+    screen_w: i32,
+    screen_h: i32,
+    scrn_ps: u16,
+    device_clut: &[[u16; 3]; 256],
+) -> Option<u8> {
+    let transfer = transfer_table[source_index];
+    match transfer {
+        PictIndexedTransfer::Write(pixel) => Some(pixel),
+        PictIndexedTransfer::Skip => None,
+        PictIndexedTransfer::InvertDestination(fallback) => {
+            if scrn_ps != 8 {
+                return Some(fallback);
+            }
+            let dst_pixel =
+                read_screen_pixel_index(bus, screen_base, screen_rb, x, y, screen_w, screen_h)?;
+            Some(pict_inverted_clut_index(device_clut, dst_pixel))
+        }
+    }
+}
+
+fn pict_source_rgb(
+    source_index: usize,
+    translated_pixel: u8,
+    src_clut: &[[u16; 3]],
+    device_clut: &[[u16; 3]; 256],
+) -> [u16; 3] {
+    src_clut
+        .get(source_index)
+        .copied()
+        .unwrap_or(device_clut[translated_pixel as usize])
+}
+
+fn pict_colorize_src_copy_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3], bg_rgb: [u16; 3]) -> [u16; 3] {
+    let mut out = [0u16; 3];
+    for component in 0..3 {
+        let src = u32::from(src_rgb[component]);
+        let fg = u32::from(fg_rgb[component]);
+        let bg = u32::from(bg_rgb[component]);
+        out[component] = ((((0xFFFF - src) * fg) + (src * bg) + 0x7FFF) / 0xFFFF) as u16;
+    }
+    out
+}
+
+fn pict_colorize_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3]) -> [u16; 3] {
+    let mut out = [0u16; 3];
+    for component in 0..3 {
+        let src = u32::from(src_rgb[component]);
+        let fg = u32::from(fg_rgb[component]);
+        out[component] = (((0xFFFF - src) * fg + 0x7FFF) / 0xFFFF) as u16;
+    }
+    out
+}
+
+fn pict_colorize_not_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3]) -> [u16; 3] {
+    let mut out = [0u16; 3];
+    for component in 0..3 {
+        let src = u32::from(src_rgb[component]);
+        let fg = u32::from(fg_rgb[component]);
+        out[component] = ((src * fg + 0x7FFF) / 0xFFFF) as u16;
+    }
+    out
+}
+
+fn pict_inverted_clut_index(clut: &[[u16; 3]; 256], pixel: u8) -> u8 {
+    let rgb = clut[pixel as usize];
+    closest_clut_index(0xFFFF - rgb[0], 0xFFFF - rgb[1], 0xFFFF - rgb[2], clut)
+}
+
+fn pict_indexed_source_mode_transfer(
+    mode_base: u16,
+    source_index: usize,
+    translated_pixel: u8,
+    fg_idx: u8,
+    bg_idx: u8,
+    src_clut: &[[u16; 3]],
+    device_clut: &[[u16; 3]; 256],
+) -> PictIndexedTransfer {
+    // Color QuickDraw applies foreground/background colors for Boolean
+    // source modes on colored pixels; white/black source pixels preserve or
+    // modify the destination according to Table 4-1.
+    // Imaging With QuickDraw 1994, p. 4-33.
+    let src_rgb = pict_source_rgb(source_index, translated_pixel, src_clut, device_clut);
+    let is_black = src_rgb == [0, 0, 0];
+    let is_white = src_rgb == [0xFFFF, 0xFFFF, 0xFFFF];
+    let fg_rgb = device_clut[fg_idx as usize];
+    let bg_rgb = device_clut[bg_idx as usize];
+    let map_rgb = |rgb: [u16; 3]| closest_clut_index(rgb[0], rgb[1], rgb[2], device_clut);
+
+    match mode_base {
+        0 => PictIndexedTransfer::Write(if is_black {
+            fg_idx
+        } else if is_white {
+            bg_idx
+        } else {
+            map_rgb(pict_colorize_src_copy_rgb(src_rgb, fg_rgb, bg_rgb))
+        }),
+        1 => {
+            if is_white {
+                PictIndexedTransfer::Skip
+            } else if is_black {
+                PictIndexedTransfer::Write(fg_idx)
+            } else {
+                PictIndexedTransfer::Write(map_rgb(pict_colorize_src_or_rgb(src_rgb, fg_rgb)))
+            }
+        }
+        2 => {
+            if is_black {
+                PictIndexedTransfer::InvertDestination(translated_pixel)
+            } else {
+                PictIndexedTransfer::Skip
+            }
+        }
+        3 => {
+            if is_white {
+                PictIndexedTransfer::Skip
+            } else if is_black {
+                PictIndexedTransfer::Write(bg_idx)
+            } else {
+                PictIndexedTransfer::Write(map_rgb(pict_colorize_src_or_rgb(src_rgb, bg_rgb)))
+            }
+        }
+        4 => PictIndexedTransfer::Write(if is_black {
+            bg_idx
+        } else if is_white {
+            fg_idx
+        } else {
+            map_rgb(pict_colorize_src_copy_rgb(src_rgb, bg_rgb, fg_rgb))
+        }),
+        5 => {
+            if is_black {
+                PictIndexedTransfer::Skip
+            } else if is_white {
+                PictIndexedTransfer::Write(fg_idx)
+            } else {
+                PictIndexedTransfer::Write(map_rgb(pict_colorize_not_src_or_rgb(src_rgb, fg_rgb)))
+            }
+        }
+        6 => {
+            if is_white {
+                PictIndexedTransfer::InvertDestination(translated_pixel)
+            } else {
+                PictIndexedTransfer::Skip
+            }
+        }
+        7 => {
+            if is_black {
+                PictIndexedTransfer::Skip
+            } else if is_white {
+                PictIndexedTransfer::Write(bg_idx)
+            } else {
+                PictIndexedTransfer::Write(map_rgb(pict_colorize_not_src_or_rgb(src_rgb, bg_rgb)))
+            }
+        }
+        36 => {
+            if source_index == 0 {
+                PictIndexedTransfer::Skip
+            } else {
+                PictIndexedTransfer::Write(translated_pixel)
+            }
+        }
+        _ => PictIndexedTransfer::Write(translated_pixel),
     }
 }
 
@@ -3968,7 +4234,10 @@ fn parse_direct_bits_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_src_to_dst_table, closest_grayscale_luminance_index, draw_picture};
+    use super::{
+        build_pict_indexed_transfer_table, build_src_to_dst_table,
+        closest_grayscale_luminance_index, draw_picture, PictIndexedTransfer,
+    };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
 
@@ -4085,6 +4354,156 @@ mod tests {
 
         assert!(ok);
         assert_eq!(bus.read_bytes(screen_base, 8), vec![4, 7, 4, 7, 7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn eight_bit_packbitsrect_srcor_preserves_white_source_pixels() {
+        // Imaging With QuickDraw 1994, p. 4-33: with colored pixels,
+        // srcOr applies foreground color for black source pixels and leaves
+        // destination pixels alone for white source pixels.
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_bytes(screen_base, &[42; 16]);
+
+        let mut clut = [[0x7777u16; 3]; 256];
+        clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        clut[42] = [0x1234, 0x5678, 0x9ABC];
+        clut[255] = [0x0000, 0x0000, 0x0000];
+
+        let pic = 0x10_0000u32;
+        bus.write_word(pic, 0); // picSize, patched at the end for clarity.
+        bus.write_word(pic + 2, 0); // frame top
+        bus.write_word(pic + 4, 0); // frame left
+        bus.write_word(pic + 6, 4); // frame bottom
+        bus.write_word(pic + 8, 4); // frame right
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11); // VersionOp
+        p += 1;
+        bus.write_byte(p, 0x01); // PICT v1
+        p += 1;
+        bus.write_byte(p, 0x98); // PackBitsRect
+        p += 1;
+
+        bus.write_word(p, 0x8004); // PixMap rowBytes, 8bpp, unpacked (< 8).
+        p += 2;
+        for value in [0i16, 0, 4, 4] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+        bus.write_word(p, 0); // pmVersion
+        p += 2;
+        bus.write_word(p, 0); // packType
+        p += 2;
+        bus.write_long(p, 0); // packSize
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // hRes
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // vRes
+        p += 4;
+        bus.write_word(p, 0); // pixelType indexed
+        p += 2;
+        bus.write_word(p, 8); // pixelSize
+        p += 2;
+        bus.write_word(p, 1); // cmpCount
+        p += 2;
+        bus.write_word(p, 8); // cmpSize
+        p += 2;
+        bus.write_long(p, 0); // planeBytes
+        p += 4;
+        bus.write_long(p, 0); // pmTable
+        p += 4;
+        bus.write_long(p, 0); // pmReserved
+        p += 4;
+
+        bus.write_long(p, 0); // ctSeed
+        p += 4;
+        bus.write_word(p, 0x8000); // ctFlags: entries are implicit indexes.
+        p += 2;
+        bus.write_word(p, 1); // ctSize: entries 0 and 1.
+        p += 2;
+        for (value, rgb) in [
+            (0u16, [0xFFFF, 0xFFFF, 0xFFFF]),
+            (1u16, [0x0000, 0x0000, 0x0000]),
+        ] {
+            bus.write_word(p, value);
+            p += 2;
+            for component in rgb {
+                bus.write_word(p, component);
+                p += 2;
+            }
+        }
+
+        for _ in 0..2 {
+            for value in [0i16, 0, 4, 4] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+        bus.write_word(p, 1); // srcOr
+        p += 2;
+        bus.write_bytes(
+            p,
+            &[
+                1, 1, 1, 0, //
+                1, 0, 0, 0, //
+                1, 0, 0, 0, //
+                0, 0, 0, 0,
+            ],
+        );
+        p += 16;
+        bus.write_byte(p, 0xFF); // EndOfPicture
+        p += 1;
+        bus.write_word(pic, (p - pic) as u16);
+
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            4,
+            4,
+            (screen_base, 4, 4, 4, 8),
+            &clut,
+            0,
+        );
+
+        assert!(ok);
+        assert_eq!(
+            bus.read_bytes(screen_base, 16),
+            vec![
+                255, 255, 255, 42, //
+                255, 42, 42, 42, //
+                255, 42, 42, 42, //
+                42, 42, 42, 42,
+            ]
+        );
+    }
+
+    #[test]
+    fn indexed_transfer_table_precomputes_srcor_black_white_actions() {
+        let mut src_clut = [[0u16; 3]; 256];
+        src_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        src_clut[1] = [0x0000, 0x0000, 0x0000];
+        src_clut[2] = [0x8000, 0x8000, 0x8000];
+
+        let mut dst_clut = [[0x7777u16; 3]; 256];
+        dst_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        dst_clut[42] = [0x8000, 0x8000, 0x8000];
+        dst_clut[255] = [0x0000, 0x0000, 0x0000];
+
+        let mut src_to_dst = [0u8; 256];
+        src_to_dst[0] = 0;
+        src_to_dst[1] = 255;
+        src_to_dst[2] = 42;
+
+        let table = build_pict_indexed_transfer_table(1, &src_clut, &src_to_dst, &dst_clut, 255, 0);
+
+        assert_eq!(table[0], PictIndexedTransfer::Skip);
+        assert_eq!(table[1], PictIndexedTransfer::Write(255));
+        assert!(
+            matches!(table[2], PictIndexedTransfer::Write(_)),
+            "non-white source colors should be resolved once into the transfer table"
+        );
     }
 
     /// fillRect ($0x34) honors FillPat (0x0A) rather than PnPat (0x09) —

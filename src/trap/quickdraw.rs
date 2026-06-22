@@ -3723,30 +3723,19 @@ impl super::TrapDispatcher {
                                         continue;
                                     }
                                 }
-                                let dst_pixel = match mode_base {
-                                    0 => palette_translation
-                                        .map(|translation| translation[src_pixel as usize])
-                                        .unwrap_or(src_pixel),
-                                    4 => {
-                                        if let (Some(src_clut), Some(dst_clut)) =
-                                            (src_clut, dst_clut)
-                                        {
-                                            let src_rgb = src_clut[src_pixel as usize];
-                                            let colorized = Self::colorize_src_copy_rgb(
-                                                src_rgb,
-                                                copy_bg_rgb,
-                                                copy_fg_rgb,
-                                            );
-                                            Self::nearest_palette_index(dst_clut, colorized)
-                                        } else {
-                                            palette_translation
-                                                .map(|translation| translation[src_pixel as usize])
-                                                .unwrap_or(src_pixel)
-                                        }
-                                    }
-                                    _ => palette_translation
-                                        .map(|translation| translation[src_pixel as usize])
-                                        .unwrap_or(src_pixel),
+                                let Some(dst_pixel) = self.copy_bits_color_source_mode_pixel(
+                                    bus,
+                                    dst_ctab_handle,
+                                    src_clut,
+                                    dst_clut,
+                                    palette_translation,
+                                    mode_base,
+                                    src_pixel,
+                                    bus.read_byte(dst_addr),
+                                    copy_fg_rgb,
+                                    copy_bg_rgb,
+                                ) else {
+                                    continue;
                                 };
                                 if let Some(points) = copybits_hud_probe_points {
                                     if !points
@@ -17527,28 +17516,19 @@ impl super::TrapDispatcher {
                                 continue;
                             }
                         }
-                        let dst_pixel = match mode_base {
-                            0 => palette_translation
-                                .map(|translation| translation[src_pixel as usize])
-                                .unwrap_or(src_pixel),
-                            4 => {
-                                if let (Some(src_clut), Some(dst_clut)) = (src_clut, dst_clut) {
-                                    let src_rgb = src_clut[src_pixel as usize];
-                                    let colorized = Self::colorize_src_copy_rgb(
-                                        src_rgb,
-                                        copy_bg_rgb,
-                                        copy_fg_rgb,
-                                    );
-                                    Self::nearest_palette_index(dst_clut, colorized)
-                                } else {
-                                    palette_translation
-                                        .map(|translation| translation[src_pixel as usize])
-                                        .unwrap_or(src_pixel)
-                                }
-                            }
-                            _ => palette_translation
-                                .map(|translation| translation[src_pixel as usize])
-                                .unwrap_or(src_pixel),
+                        let Some(dst_pixel) = self.copy_bits_color_source_mode_pixel(
+                            bus,
+                            dst_ctab_handle,
+                            src_clut,
+                            dst_clut,
+                            palette_translation,
+                            mode_base,
+                            src_pixel,
+                            bus.read_byte(dst_addr),
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        ) else {
+                            continue;
                         };
                         bus.write_byte(dst_addr, dst_pixel);
                     }
@@ -18340,6 +18320,71 @@ impl super::TrapDispatcher {
             out[component] = ((((0xFFFF - src) * fg) + (src * bg) + 0x7FFF) / 0xFFFF) as u16;
         }
         out
+    }
+
+    fn colorize_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3]) -> [u16; 3] {
+        let mut out = [0u16; 3];
+        for component in 0..3 {
+            let src = u32::from(src_rgb[component]);
+            let fg = u32::from(fg_rgb[component]);
+            out[component] = (((0xFFFF - src) * fg + 0x7FFF) / 0xFFFF) as u16;
+        }
+        out
+    }
+
+    fn colorize_not_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3]) -> [u16; 3] {
+        let mut out = [0u16; 3];
+        for component in 0..3 {
+            let src = u32::from(src_rgb[component]);
+            let fg = u32::from(fg_rgb[component]);
+            out[component] = ((src * fg + 0x7FFF) / 0xFFFF) as u16;
+        }
+        out
+    }
+
+    fn copy_bits_color_source_mode_pixel(
+        &self,
+        bus: &MacMemoryBus,
+        dst_ctab_handle: u32,
+        src_clut: Option<&[[u16; 3]; 256]>,
+        dst_clut: Option<&[[u16; 3]; 256]>,
+        palette_translation: Option<&[u8; 256]>,
+        mode_base: u16,
+        src_pixel: u8,
+        dst_pixel: u8,
+        fg_rgb: [u16; 3],
+        bg_rgb: [u16; 3],
+    ) -> Option<u8> {
+        // Color QuickDraw applies current foreground/background colors for
+        // Boolean source modes on colored pixels, and leaves destination
+        // pixels untouched for the table's white/black preserve cases.
+        // Imaging With QuickDraw 1994, p. 4-33.
+        let raw_source = || {
+            palette_translation
+                .map(|translation| translation[src_pixel as usize])
+                .unwrap_or(src_pixel)
+        };
+        let (Some(src_clut), Some(dst_clut)) = (src_clut, dst_clut) else {
+            return Some(raw_source());
+        };
+        let src_rgb = src_clut[src_pixel as usize];
+        let is_black = src_rgb == [0, 0, 0];
+        let is_white = src_rgb == [0xFFFF, 0xFFFF, 0xFFFF];
+        let map_rgb = |rgb| self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, rgb);
+
+        match mode_base {
+            0 => Some(raw_source()),
+            1 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, fg_rgb))),
+            2 => is_black.then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
+            3 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, bg_rgb))),
+            4 => Some(map_rgb(Self::colorize_src_copy_rgb(
+                src_rgb, bg_rgb, fg_rgb,
+            ))),
+            5 => (!is_black).then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, fg_rgb))),
+            6 => is_white.then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
+            7 => (!is_black).then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, bg_rgb))),
+            _ => Some(raw_source()),
+        }
     }
 
     fn inverted_palette_index(dst_clut: &[[u16; 3]; 256], pixel: u8) -> u8 {
@@ -26153,6 +26198,62 @@ mod tests {
             "CopyBits should sample from low-24-bit source baseAddr when tagged high byte points unmapped"
         );
         assert_eq!(bus.read_byte(dst_base + 15), 0xFF);
+    }
+
+    #[test]
+    fn copy_bits_8bpp_srcor_colorizes_black_source_and_preserves_white_source() {
+        // Imaging With QuickDraw 1994, p. 4-33: for colored pixels, srcOr
+        // applies the foreground color where the source is black and leaves
+        // destination pixels alone where the source is white.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.fg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+        d.bg_color = (0, 0, 0);
+
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 4, 4, 0);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 4, 4, 0);
+
+        // Black source pixels form a top-left bracket on a white source
+        // background. srcOr should draw only those bracket strokes.
+        bus.write_bytes(
+            src_base,
+            &[
+                255, 255, 255, 255, //
+                255, 0, 0, 0, //
+                255, 0, 0, 0, //
+                255, 0, 0, 0,
+            ],
+        );
+        bus.write_bytes(dst_base, &[255; 16]);
+
+        let src_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, src_rect, 0, 0, 4, 4);
+        write_rect(&mut bus, dst_rect, 0, 0, 4, 4);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 1u16); // srcOr
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_bytes(dst_base, 16),
+            vec![
+                0, 0, 0, 0, //
+                0, 255, 255, 255, //
+                0, 255, 255, 255, //
+                0, 255, 255, 255,
+            ],
+            "8bpp srcOr should render bracket strokes through the foreground color without copying the source rectangle's white background"
+        );
     }
 
     fn write_pixmap_8(
