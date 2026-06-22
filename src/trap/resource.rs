@@ -4413,9 +4413,9 @@ impl super::TrapDispatcher {
             // Gets Finder and catalog information for a file.
             // FUNCTION PBGetFInfo (paramBlock: ParmBlkPtr; async: BOOLEAN): OSErr;
             // FUNCTION PBHGetFInfo (paramBlock: HParmBlkPtr; async: BOOLEAN): OSErr;
-            // Files 1992, 2-170 / 9296.  The HFS variant ($A20C) is
-            // aliased onto this arm via the OS-trap `trap & 0x00FF`
-            // mask.
+            // Inside Macintosh Volume IV, IV-148; Files 1992, 2-170.
+            // The HFS variant ($A20C) is aliased onto this arm via the OS-trap
+            // `trap & 0x00FF` mask.
             //
             // Regression coverage (BasiliskII golden):
             //   pb_finfo               ← $A00C/$A00D fnfErr path
@@ -4426,16 +4426,31 @@ impl super::TrapDispatcher {
                 let pb = cpu.read_reg(Register::A0);
                 let name_ptr = bus.read_long(pb + 18);
                 let filename = Self::read_pb_filename(bus, name_ptr);
-                eprintln!("[TRAP] PBGetFInfo(\"{}\")", filename);
+                let vref = bus.read_word(pb + 22) as i16;
+                let fdir_index = bus.read_word(pb + 28) as i16;
+                let dir_id = bus.read_long(pb + 48);
+                eprintln!(
+                    "[TRAP] PBGetFInfo(\"{}\", vRefNum={}, dirID={}, fDirIndex={})",
+                    filename, vref, dir_id, fdir_index
+                );
 
-                if let Some(vfs_name) = self.find_vfs_file(&filename) {
+                let lookup = if fdir_index > 0 {
+                    self.lookup_file_entry_for_get_finfo(vref, dir_id, &filename, fdir_index)
+                        .map(|entry| entry.path)
+                } else {
+                    self.find_vfs_file(&filename)
+                };
+
+                if let Some(vfs_name) = lookup {
                     if let Some(metadata) = self.vfs_file_metadata(&vfs_name) {
                         self.fill_file_catalog_info(bus, pb, &vfs_name, metadata);
-                        Self::write_pstring(
-                            bus,
-                            name_ptr,
-                            super::TrapDispatcher::vfs_basename(&vfs_name),
-                        );
+                        if name_ptr != 0 {
+                            Self::write_pstring(
+                                bus,
+                                name_ptr,
+                                super::TrapDispatcher::vfs_basename(&vfs_name),
+                            );
+                        }
                     }
                     bus.write_word(pb + 16, 0); // noErr
                     cpu.write_reg(Register::D0, 0);
@@ -6300,6 +6315,83 @@ impl super::TrapDispatcher {
             }
         }
 
+        None
+    }
+
+    fn list_vfs_file_catalog_entries(
+        &mut self,
+        dir_id: u32,
+    ) -> Vec<super::dispatch::VfsCatalogEntry> {
+        self.ensure_vfs_catalog();
+        let Some(_) = self.directory_path_for_id(dir_id) else {
+            return Vec::new();
+        };
+
+        let mut file_paths: Vec<String> = self.vfs_metadata.keys().cloned().collect();
+        file_paths.sort_by_key(|path| path.to_ascii_lowercase());
+
+        let mut entries = Vec::new();
+        for path in file_paths {
+            let Some(metadata) = self.vfs_metadata.get(&path).copied() else {
+                continue;
+            };
+            if metadata.parent_dir_id != dir_id {
+                continue;
+            }
+            entries.push(super::dispatch::VfsCatalogEntry {
+                name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                path,
+                is_directory: false,
+            });
+        }
+
+        entries.sort_by_key(|entry| entry.name.to_ascii_lowercase());
+        entries
+    }
+
+    fn lookup_file_entry(
+        &mut self,
+        dir_id: u32,
+        filename: &str,
+        fdir_index: i16,
+    ) -> Option<super::dispatch::VfsCatalogEntry> {
+        if fdir_index > 0 {
+            let entries = self.list_vfs_file_catalog_entries(dir_id);
+            return entries.get(fdir_index as usize - 1).cloned();
+        }
+
+        if !filename.is_empty() {
+            if let Some(path) = self.find_vfs_file_in_directory(dir_id, filename) {
+                self.vfs_file_metadata(&path)?;
+                return Some(super::dispatch::VfsCatalogEntry {
+                    path: path.clone(),
+                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                    is_directory: false,
+                });
+            }
+        }
+
+        None
+    }
+
+    fn lookup_file_entry_for_get_finfo(
+        &mut self,
+        vref: i16,
+        dir_id: u32,
+        filename: &str,
+        fdir_index: i16,
+    ) -> Option<super::dispatch::VfsCatalogEntry> {
+        let mut candidate_dir_ids = self.hfs_lookup_directory_ids(vref, dir_id);
+        let non_hfs_dir_id = self.resolve_directory_id(vref, 0);
+        if !candidate_dir_ids.contains(&non_hfs_dir_id) {
+            candidate_dir_ids.push(non_hfs_dir_id);
+        }
+
+        for candidate_dir_id in candidate_dir_ids {
+            if let Some(entry) = self.lookup_file_entry(candidate_dir_id, filename, fdir_index) {
+                return Some(entry);
+            }
+        }
         None
     }
 
@@ -10802,6 +10894,51 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
         assert_eq!(bus.read_long(pb + 100), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn pb_get_finfo_positive_iofdirindex_enumerates_files_in_working_directory() {
+        // Inside Macintosh Volume IV, IV-148: positive ioFDirIndex indexes
+        // files on ioVRefNum; when ioVRefNum is a working-directory refnum,
+        // it indexes files in that directory.  GetFileInfo indexes files only,
+        // unlike GetCatInfo.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Mission/A Launcher".to_string(), vec![]);
+        disp.vfs
+            .insert("Mission/B Suspended".to_string(), vec![0xAA]);
+        disp.set_vfs_entry_metadata("Mission/A Launcher", *b"APPL", *b"WSTL", 0);
+        disp.set_vfs_entry_metadata("Mission/B Suspended", *b"SAVE", *b"WSTL", 0);
+        disp.ensure_vfs_directory("Mission/AAA Folder");
+        disp.vfs
+            .insert("Mission/AAA Folder/Inner Save".to_string(), vec![0xBB]);
+        disp.set_vfs_entry_metadata("Mission/AAA Folder/Inner Save", *b"SAVE", *b"WSTL", 0);
+        disp.set_launched_app_path("Mission/A Launcher");
+        let suspended_metadata = disp.vfs_file_metadata("Mission/B Suspended").unwrap();
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"stale output name");
+        bus.write_word(pb + 22, disp.app_wd_refnum as u16);
+        bus.write_word(pb + 28, 2); // second file in Mission, not second catalog entry
+
+        call(&mut disp, false, 0x0C, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"B Suspended".to_vec());
+        assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"SAVE"));
+        assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"WSTL"));
+        assert_eq!(bus.read_long(pb + 48), suspended_metadata.file_id);
+
+        let pb2 = 0x300400u32;
+        setup_param_block(&mut bus, &mut cpu, pb2, b"A Launcher");
+        bus.write_word(pb2 + 22, disp.app_wd_refnum as u16);
+        bus.write_word(pb2 + 28, 99);
+
+        call(&mut disp, false, 0x0C, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-43i32) as u32);
+        assert_eq!(bus.read_word(pb2 + 16), (-43i16) as u16);
     }
 
     // ================================================================
