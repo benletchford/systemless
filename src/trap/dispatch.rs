@@ -615,6 +615,15 @@ pub(crate) struct AeCallState {
     pub expected_sp_after_rtd: u32,
 }
 
+/// Minimal AppleEvent descriptor state synthesized by Pack8 routine 27.
+/// This records the attributes that AEGetAttribute* must expose while
+/// dispatching startup high-level events such as Open Application.
+#[derive(Clone, Debug)]
+pub(crate) struct SyntheticAppleEvent {
+    pub event_class: u32,
+    pub event_id: u32,
+}
+
 /// A queued Mac event (mouseDown, mouseUp, keyDown, etc.)
 #[derive(Clone, Debug)]
 pub struct QueuedEvent {
@@ -759,6 +768,9 @@ pub struct TrapDispatcher {
     /// as 4-char-codes; value is `(handler_proc_ptr, handler_refcon)`.
     /// Inside Macintosh Volume VI, 6-43.
     pub ae_handlers: HashMap<(u32, u32), (u32, u32)>,
+    /// Synthetic AppleEvent descriptors currently visible to guest
+    /// handlers. Key is the guest address of the AEDesc record.
+    pub(crate) ae_events: HashMap<u32, SyntheticAppleEvent>,
     /// Gestalt selectors registered at runtime via `_NewGestalt` ($A3AD)
     /// or replaced via `_ReplaceGestalt` ($A5AD). Key is the OSType
     /// selector code packed big-endian; value is the guest-side selector
@@ -2018,6 +2030,7 @@ impl TrapDispatcher {
             resources: None,
             segment_map: HashMap::new(),
             ae_handlers: HashMap::new(),
+            ae_events: HashMap::new(),
             gestalt_registry: HashMap::new(),
             ae_call_state: None,
             ae_trampoline_addr: None,

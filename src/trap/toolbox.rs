@@ -16,7 +16,21 @@ static TRACE_LIST: OnceLock<bool> = OnceLock::new();
 static TRACE_ENTROPY: OnceLock<bool> = OnceLock::new();
 static TRACE_TITLE_DIAG: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
+static TRACE_AE: OnceLock<bool> = OnceLock::new();
 static FORCE_BUTTON_TRUE_AT_PC: OnceLock<Option<u32>> = OnceLock::new();
+
+const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
+const AE_TYPE_TYPE: u32 = u32::from_be_bytes(*b"type");
+const AE_TYPE_NULL: u32 = u32::from_be_bytes(*b"null");
+const AE_TYPE_WILDCARD: u32 = u32::from_be_bytes(*b"****");
+const AE_TYPE_OBJECT_SPECIFIER: u32 = u32::from_be_bytes(*b"obj ");
+const AE_KEY_EVENT_CLASS_ATTR: u32 = u32::from_be_bytes(*b"evcl");
+const AE_KEY_EVENT_ID_ATTR: u32 = u32::from_be_bytes(*b"evid");
+const AE_ERR_COERCION_FAIL: i16 = -1700;
+const AE_ERR_DESC_NOT_FOUND: i16 = -1701;
+const AE_ERR_ACCESSOR_NOT_FOUND: i16 = -1723;
+const AE_ERR_NOT_AN_OBJECT_SPEC: i16 = -1727;
+const AE_BUFFER_IS_SMALL: i16 = -607;
 
 fn standard_file_cancel_reply(bus: &mut MacMemoryBus, reply_ptr: u32) {
     if reply_ptr != 0 {
@@ -244,6 +258,30 @@ fn trace_title_diag_enabled() -> bool {
 
 fn trace_sound_enabled() -> bool {
     *TRACE_SOUND.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some())
+}
+
+fn trace_ae_enabled() -> bool {
+    *TRACE_AE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_AE").is_some())
+}
+
+fn format_fourcc(v: u32) -> String {
+    v.to_be_bytes()
+        .iter()
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
+fn write_null_aedesc(bus: &mut MacMemoryBus, desc_ptr: u32) {
+    if desc_ptr != 0 {
+        bus.write_long(desc_ptr, AE_TYPE_NULL);
+        bus.write_long(desc_ptr + 4, 0);
+    }
 }
 
 fn force_button_true_at_pc() -> Option<u32> {
@@ -3273,11 +3311,23 @@ impl super::TrapDispatcher {
                 static AE_LOG_COUNT: std::sync::atomic::AtomicU32 =
                     std::sync::atomic::AtomicU32::new(0);
                 let lc = AE_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if lc < 20 {
+                if lc < 20 || trace_ae_enabled() {
                     eprintln!(
-                        "[TRAP] Pack8/AE D0=${:08X} routine={} param_words={} param_bytes={}",
-                        d0, routine, param_words, param_bytes
+                        "[TRAP] Pack8/AE PC=${:08X} SP=${:08X} D0=${:08X} routine={} param_words={} param_bytes={}",
+                        cpu.read_reg(Register::PC),
+                        sp,
+                        d0,
+                        routine,
+                        param_words,
+                        param_bytes
                     );
+                    if trace_ae_enabled() {
+                        let mut words = Vec::new();
+                        for off in (0..=(param_bytes + 2).min(34)).step_by(2) {
+                            words.push(format!("+{:02X}:{:04X}", off, bus.read_word(sp + off)));
+                        }
+                        eprintln!("[AE] stack {}", words.join(" "));
+                    }
                 }
 
                 // Routine 31 (`AEInstallEventHandler`): record the
@@ -3298,25 +3348,186 @@ impl super::TrapDispatcher {
                     let event_class = bus.read_long(sp + 14);
                     self.ae_handlers
                         .insert((event_class, event_id), (handler_ptr, handler_refcon));
-                    let fourcc = |v: u32| -> String {
-                        v.to_be_bytes()
-                            .iter()
-                            .map(|&b| {
-                                if b.is_ascii_graphic() || b == b' ' {
-                                    b as char
-                                } else {
-                                    '.'
-                                }
-                            })
-                            .collect()
-                    };
                     eprintln!(
                         "[AE] InstallEventHandler class='{}' id='{}' handler=${:08X} refcon=${:08X}",
-                        fourcc(event_class),
-                        fourcc(event_id),
+                        format_fourcc(event_class),
+                        format_fourcc(event_id),
                         handler_ptr,
                         handler_refcon,
                     );
+                }
+
+                // Routine 18 (`AEGetParamDesc` / `AEGetKeyDesc`) and
+                // routine 17 (`AEGetParamPtr` / `AEGetKeyPtr`) extract
+                // AppleEvent parameters. The synthetic Open Application
+                // event has no direct parameter, so missing parameters
+                // must return `errAEDescNotFound`, not a successful
+                // zero-filled result.
+                //
+                // AEGetParamDesc (0x0812)
+                // FUNCTION AEGetParamDesc(theAppleEvent: AppleEvent;
+                //   theAEKeyword: AEKeyword; desiredType: DescType;
+                //   VAR result: AEDesc): OSErr;
+                // AEGetParamPtr (0x0E11)
+                // FUNCTION AEGetParamPtr(theAppleEvent: AppleEvent;
+                //   theAEKeyword: AEKeyword; desiredType: DescType;
+                //   VAR typeCode: DescType; dataPtr: Ptr;
+                //   maximumSize: Size; VAR actualSize: Size): OSErr;
+                // Inside Macintosh: Interapplication Communication, 4-68..4-70.
+                if routine == 18 && param_bytes == 16 {
+                    let result_desc = bus.read_long(sp);
+                    write_null_aedesc(bus, result_desc);
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, AE_ERR_DESC_NOT_FOUND as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, AE_ERR_DESC_NOT_FOUND as i32 as u32);
+                    return Some(Ok(()));
+                }
+                if routine == 17 && param_bytes == 28 {
+                    let actual_size_ptr = bus.read_long(sp);
+                    let type_code_ptr = bus.read_long(sp + 12);
+                    if actual_size_ptr != 0 {
+                        bus.write_long(actual_size_ptr, 0);
+                    }
+                    if type_code_ptr != 0 {
+                        bus.write_long(type_code_ptr, AE_TYPE_NULL);
+                    }
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, AE_ERR_DESC_NOT_FOUND as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, AE_ERR_DESC_NOT_FOUND as i32 as u32);
+                    return Some(Ok(()));
+                }
+
+                // Routine 21 (`AEGetAttributePtr`) and routine 38
+                // (`AEGetAttributeDesc`) expose AppleEvent attributes.
+                // Every AppleEvent includes event class and event ID
+                // attributes (`keyEventClassAttr`, `keyEventIDAttr`),
+                // each stored as `typeType` four-character-code data.
+                //
+                // AEGetAttributePtr (0x0E15)
+                // FUNCTION AEGetAttributePtr(theAppleEvent: AppleEvent;
+                //   theAEKeyword: AEKeyword; desiredType: DescType;
+                //   VAR typeCode: DescType; dataPtr: Ptr;
+                //   maximumSize: Size; VAR actualSize: Size): OSErr;
+                // AEGetAttributeDesc (0x0826)
+                // FUNCTION AEGetAttributeDesc(theAppleEvent: AppleEvent;
+                //   theAEKeyword: AEKeyword; desiredType: DescType;
+                //   VAR result: AEDesc): OSErr;
+                // Inside Macintosh: Interapplication Communication, 4-71..4-73.
+                if routine == 21 && param_bytes == 28 {
+                    let actual_size_ptr = bus.read_long(sp);
+                    let maximum_size = bus.read_long(sp + 4);
+                    let data_ptr = bus.read_long(sp + 8);
+                    let type_code_ptr = bus.read_long(sp + 12);
+                    let desired_type = bus.read_long(sp + 16);
+                    let keyword = bus.read_long(sp + 20);
+                    let event_desc = bus.read_long(sp + 24);
+                    let attr_value = self.ae_events.get(&event_desc).and_then(|event| {
+                        if keyword == AE_KEY_EVENT_CLASS_ATTR {
+                            Some(event.event_class)
+                        } else if keyword == AE_KEY_EVENT_ID_ATTR {
+                            Some(event.event_id)
+                        } else {
+                            None
+                        }
+                    });
+                    let err = if let Some(value) = attr_value {
+                        if desired_type != AE_TYPE_WILDCARD && desired_type != AE_TYPE_TYPE {
+                            AE_ERR_COERCION_FAIL
+                        } else {
+                            if type_code_ptr != 0 {
+                                bus.write_long(type_code_ptr, AE_TYPE_TYPE);
+                            }
+                            if actual_size_ptr != 0 {
+                                bus.write_long(actual_size_ptr, 4);
+                            }
+                            if maximum_size >= 4 && data_ptr != 0 {
+                                bus.write_long(data_ptr, value);
+                                0
+                            } else {
+                                AE_BUFFER_IS_SMALL
+                            }
+                        }
+                    } else {
+                        if type_code_ptr != 0 {
+                            bus.write_long(type_code_ptr, AE_TYPE_NULL);
+                        }
+                        if actual_size_ptr != 0 {
+                            bus.write_long(actual_size_ptr, 0);
+                        }
+                        AE_ERR_DESC_NOT_FOUND
+                    };
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
+                if routine == 38 && param_bytes == 16 {
+                    let result_desc = bus.read_long(sp);
+                    let desired_type = bus.read_long(sp + 4);
+                    let keyword = bus.read_long(sp + 8);
+                    let event_desc = bus.read_long(sp + 12);
+                    let attr_value = self.ae_events.get(&event_desc).and_then(|event| {
+                        if keyword == AE_KEY_EVENT_CLASS_ATTR {
+                            Some(event.event_class)
+                        } else if keyword == AE_KEY_EVENT_ID_ATTR {
+                            Some(event.event_id)
+                        } else {
+                            None
+                        }
+                    });
+                    let err = if let Some(value) = attr_value {
+                        if desired_type != AE_TYPE_WILDCARD && desired_type != AE_TYPE_TYPE {
+                            write_null_aedesc(bus, result_desc);
+                            AE_ERR_COERCION_FAIL
+                        } else {
+                            let data = bus.alloc(4);
+                            bus.write_long(data, value);
+                            bus.write_long(result_desc, AE_TYPE_TYPE);
+                            bus.write_long(result_desc + 4, data);
+                            0
+                        }
+                    } else {
+                        write_null_aedesc(bus, result_desc);
+                        AE_ERR_DESC_NOT_FOUND
+                    };
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
+
+                // Routine 54 (`AEResolve`) resolves an AppleEvent
+                // object specifier record into a token. Until Systemless
+                // models object accessor dispatch, it must still avoid
+                // the generic Pack8 success stub: non-object-specifier
+                // input returns `errAENotAnObjectSpec`, and errors return
+                // a null token.
+                //
+                // AEResolve (0x0536)
+                // FUNCTION AEResolve(objectSpecifier: AEDesc;
+                //   callbackFlags: Integer; VAR theToken: AEDesc): OSErr;
+                // Inside Macintosh: Interapplication Communication,
+                // 6-85..6-86 and 6-115.
+                if routine == 54 && param_bytes == 10 {
+                    let token_desc = bus.read_long(sp);
+                    let object_specifier = bus.read_long(sp + 6);
+                    let err = if object_specifier != 0
+                        && bus.read_long(object_specifier) == AE_TYPE_OBJECT_SPECIFIER
+                    {
+                        AE_ERR_ACCESSOR_NOT_FOUND
+                    } else {
+                        AE_ERR_NOT_AN_OBJECT_SPEC
+                    };
+                    write_null_aedesc(bus, token_desc);
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
                 }
 
                 // Routine 27 (`AEProcessAppleEvent`): dispatch the head
@@ -3333,8 +3544,23 @@ impl super::TrapDispatcher {
                 // each `AEProcessAppleEvent` invocation can dispatch the
                 // registered handler again.
                 if routine == 27 && param_bytes == 4 {
-                    let oapp_class = u32::from_be_bytes(*b"aevt");
+                    let oapp_class = AE_TYPE_APPLE_EVENT;
                     let oapp_id = u32::from_be_bytes(*b"oapp");
+                    if trace_ae_enabled() {
+                        let event_record = bus.read_long(sp);
+                        let what = bus.read_word(event_record);
+                        let message = bus.read_long(event_record + 2);
+                        let where_v = bus.read_word(event_record + 10);
+                        let where_h = bus.read_word(event_record + 12);
+                        eprintln!(
+                            "[AE] ProcessAppleEvent EventRecord=${:08X} what={} message='{}' where='{}' mods=${:04X}",
+                            event_record,
+                            what,
+                            format_fourcc(message),
+                            format_fourcc(((where_v as u32) << 16) | where_h as u32),
+                            bus.read_word(event_record + 14)
+                        );
+                    }
                     if let Some(&(handler_ptr, refcon)) =
                         self.ae_handlers.get(&(oapp_class, oapp_id))
                     {
@@ -3354,31 +3580,40 @@ impl super::TrapDispatcher {
                         };
 
                         // Build a minimal AppleEvent + reply pair on
-                        // the heap. Most OAPP handlers ignore the
-                        // bodies and just toggle a "ready" flag, so
-                        // zero-filled `AEDesc`s suffice for the
-                        // common case. `descriptorType` of `null`
-                        // (= 0) on the reply tells the handler
-                        // there's no reply expected.
+                        // the heap. The AppleEvent descriptor carries
+                        // typeAppleEvent and a non-NIL data handle;
+                        // `ae_events` holds the attribute data that
+                        // AEGetAttribute* exposes to the handler. The
+                        // null reply descriptor matches the no-reply
+                        // path for a synthetic open-application event.
                         let event_desc = bus.alloc(8);
-                        bus.write_long(event_desc, oapp_class);
-                        bus.write_long(event_desc + 4, 0);
+                        let event_data = bus.alloc(8);
+                        bus.write_long(event_data, oapp_class);
+                        bus.write_long(event_data + 4, oapp_id);
+                        bus.write_long(event_desc, AE_TYPE_APPLE_EVENT);
+                        bus.write_long(event_desc + 4, event_data);
+                        self.ae_events.insert(
+                            event_desc,
+                            crate::trap::dispatch::SyntheticAppleEvent {
+                                event_class: oapp_class,
+                                event_id: oapp_id,
+                            },
+                        );
                         let reply_desc = bus.alloc(8);
-                        bus.write_long(reply_desc, 0);
+                        bus.write_long(reply_desc, AE_TYPE_NULL);
                         bus.write_long(reply_desc + 4, 0);
 
                         // Stack on entry has [event_ptr][result_slot]
                         // at [SP][SP+4]. We need the handler to see
                         // [trampoline][refcon][reply][event][result],
-                        // so push three 4-byte words below the
-                        // existing event_ptr / result_slot. The
-                        // existing event_ptr at SP+0 lands at the
-                        // expected handler arg-3 position
-                        // (new_sp+12) for free.
+                        // so push three 4-byte words below the result
+                        // slot and replace the original EventRecord
+                        // pointer at SP+0 with the AppleEvent AEDesc.
                         let new_sp = sp.wrapping_sub(12);
                         bus.write_long(new_sp, trampoline); // return PC
                         bus.write_long(new_sp + 4, refcon);
                         bus.write_long(new_sp + 8, reply_desc);
+                        bus.write_long(new_sp + 12, event_desc);
                         cpu.write_reg(Register::A7, new_sp);
 
                         // Save what we need to resume the original
@@ -9877,6 +10112,10 @@ impl super::TrapDispatcher {
 mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
+    use super::{
+        AE_ERR_DESC_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC, AE_KEY_EVENT_CLASS_ATTR,
+        AE_KEY_EVENT_ID_ATTR, AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_TYPE, AE_TYPE_WILDCARD,
+    };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::MacMemoryBus;
     use crate::memory::MemoryBus;
@@ -18012,6 +18251,157 @@ mod tests {
         );
         assert_eq!(bus.read_long(sp - 8), handler_refcon);
         assert_ne!(bus.read_long(sp - 4), 0, "reply AEDesc pointer");
+
+        let passed_event_desc = bus.read_long(sp);
+        assert_ne!(
+            passed_event_desc, event_record_ptr,
+            "handler must receive an AppleEvent AEDesc, not the source EventRecord"
+        );
+        assert_eq!(bus.read_long(passed_event_desc), event_class);
+        assert_ne!(bus.read_long(passed_event_desc + 4), 0);
+    }
+
+    #[test]
+    fn pack8_aegetparamdesc_missing_parameter_returns_err_and_null_desc() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let event_desc = 0x0030_0000u32;
+        let result_desc = 0x0030_0100u32;
+
+        bus.write_long(event_desc, AE_TYPE_APPLE_EVENT);
+        bus.write_long(event_desc + 4, 0x0030_0200);
+        disp.ae_events.insert(
+            event_desc,
+            crate::trap::dispatch::SyntheticAppleEvent {
+                event_class: AE_TYPE_APPLE_EVENT,
+                event_id: u32::from_be_bytes(*b"oapp"),
+            },
+        );
+
+        // Selector $0812 => AEGetParamDesc(event, keyDirectObject,
+        // typeWildCard, result). The synthetic OAPP event has no direct
+        // parameter, so the result AEDesc must be typeNull and the OSErr
+        // must be errAEDescNotFound.
+        cpu.write_reg(Register::D0, 0x0812);
+        bus.write_long(sp, result_desc);
+        bus.write_long(sp + 4, AE_TYPE_WILDCARD);
+        bus.write_long(sp + 8, u32::from_be_bytes(*b"----"));
+        bus.write_long(sp + 12, event_desc);
+        bus.write_word(sp + 16, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_long(result_desc), AE_TYPE_NULL);
+        assert_eq!(bus.read_long(result_desc + 4), 0);
+        assert_eq!(bus.read_word(sp + 16), AE_ERR_DESC_NOT_FOUND as u16);
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            AE_ERR_DESC_NOT_FOUND as i32 as u32
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    }
+
+    #[test]
+    fn pack8_aegetattributeptr_returns_event_class_and_id_attributes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let event_desc = 0x0030_0000u32;
+        let type_code_ptr = 0x0030_0100u32;
+        let data_ptr = 0x0030_0200u32;
+        let actual_size_ptr = 0x0030_0300u32;
+        let event_class = AE_TYPE_APPLE_EVENT;
+        let event_id = u32::from_be_bytes(*b"oapp");
+
+        bus.write_long(event_desc, AE_TYPE_APPLE_EVENT);
+        bus.write_long(event_desc + 4, 0x0030_0400);
+        disp.ae_events.insert(
+            event_desc,
+            crate::trap::dispatch::SyntheticAppleEvent {
+                event_class,
+                event_id,
+            },
+        );
+
+        // Selector $0E15 => AEGetAttributePtr(event, keyEventIDAttr,
+        // typeWildCard, typeCode, dataPtr, maximumSize, actualSize).
+        cpu.write_reg(Register::D0, 0x0E15);
+        bus.write_long(sp, actual_size_ptr);
+        bus.write_long(sp + 4, 4);
+        bus.write_long(sp + 8, data_ptr);
+        bus.write_long(sp + 12, type_code_ptr);
+        bus.write_long(sp + 16, AE_TYPE_WILDCARD);
+        bus.write_long(sp + 20, AE_KEY_EVENT_ID_ATTR);
+        bus.write_long(sp + 24, event_desc);
+        bus.write_word(sp + 28, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 28), 0);
+        assert_eq!(bus.read_long(type_code_ptr), AE_TYPE_TYPE);
+        assert_eq!(bus.read_long(actual_size_ptr), 4);
+        assert_eq!(bus.read_long(data_ptr), event_id);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 28);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        // Repeat for keyEventClassAttr to make both required attributes
+        // observable through the same pointer-returning routine.
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0E15);
+        bus.write_long(sp, actual_size_ptr);
+        bus.write_long(sp + 4, 4);
+        bus.write_long(sp + 8, data_ptr);
+        bus.write_long(sp + 12, type_code_ptr);
+        bus.write_long(sp + 16, AE_TYPE_WILDCARD);
+        bus.write_long(sp + 20, AE_KEY_EVENT_CLASS_ATTR);
+        bus.write_long(sp + 24, event_desc);
+        bus.write_word(sp + 28, 0xBEEF);
+        let class_result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(class_result.is_some());
+        assert!(class_result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 28), 0);
+        assert_eq!(bus.read_long(type_code_ptr), AE_TYPE_TYPE);
+        assert_eq!(bus.read_long(actual_size_ptr), 4);
+        assert_eq!(bus.read_long(data_ptr), event_class);
+    }
+
+    #[test]
+    fn pack8_aeresolve_non_object_spec_returns_err_and_null_token() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let object_specifier = 0x0030_0000u32;
+        let token = 0x0030_0100u32;
+
+        bus.write_long(object_specifier, AE_TYPE_NULL);
+        bus.write_long(object_specifier + 4, 0);
+        bus.write_long(token, 0xDEAD_BEEFu32);
+        bus.write_long(token + 4, 0xCAFE_BABEu32);
+
+        // Selector $0536 => AEResolve(objectSpecifier, callbackFlags,
+        // token). A non-object-specifier input must not resolve
+        // successfully; Inside Macintosh says AEResolve returns a null
+        // descriptor in `theToken` if an error occurs.
+        cpu.write_reg(Register::D0, 0x0536);
+        bus.write_long(sp, token);
+        bus.write_word(sp + 4, 0); // kAEIDoMinimum
+        bus.write_long(sp + 6, object_specifier);
+        bus.write_word(sp + 10, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_long(token), AE_TYPE_NULL);
+        assert_eq!(bus.read_long(token + 4), 0);
+        assert_eq!(bus.read_word(sp + 10), AE_ERR_NOT_AN_OBJECT_SPEC as u16);
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            AE_ERR_NOT_AN_OBJECT_SPEC as i32 as u32
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
     }
 
     #[test]
