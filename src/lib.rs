@@ -34,7 +34,9 @@
 
 pub mod audio;
 pub mod cpu;
+pub mod disk_image;
 pub mod display;
+mod error;
 pub mod game;
 pub mod loader;
 pub mod machine_profile;
@@ -45,8 +47,5 @@ pub mod quickdraw;
 pub mod runner;
 pub mod sound;
 pub mod trap;
-
-mod disk_image;
-mod error;
 
 pub use error::{Error, Result};

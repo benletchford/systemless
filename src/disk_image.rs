@@ -9,14 +9,14 @@ use std::path::{Component, Path};
 use hfs_reader::HfsVolume;
 
 #[derive(Debug)]
-pub(crate) struct DiskImageContents {
+pub struct DiskImageContents {
     pub volume_name: String,
     pub dirs: Vec<String>,
     pub files: Vec<DiskImageFile>,
 }
 
 #[derive(Debug)]
-pub(crate) struct DiskImageFile {
+pub struct DiskImageFile {
     pub path: String,
     pub data: Vec<u8>,
     pub rsrc: Vec<u8>,
@@ -25,14 +25,14 @@ pub(crate) struct DiskImageFile {
     pub finder_flags: u16,
 }
 
-pub(crate) fn looks_like_dc42_or_hfs(bytes: &[u8]) -> bool {
+pub fn looks_like_dc42_or_hfs(bytes: &[u8]) -> bool {
     raw_filesystem_signature(bytes).is_some()
         || dc42_data_range(bytes)
             .and_then(|(start, end)| raw_filesystem_signature(&bytes[start..end]))
             .is_some()
 }
 
-pub(crate) fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
+pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
     if !looks_like_dc42_or_hfs(bytes) {
         return Ok(None);
     }

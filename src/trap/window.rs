@@ -7,9 +7,14 @@ use crate::Result;
 use std::sync::OnceLock;
 
 static TRACE_INVAL: OnceLock<bool> = OnceLock::new();
+static TRACE_DRAGWINDOW: OnceLock<bool> = OnceLock::new();
 
 fn trace_inval_enabled() -> bool {
     *TRACE_INVAL.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some())
+}
+
+fn trace_dragwindow_enabled() -> bool {
+    *TRACE_DRAGWINDOW.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DRAGWINDOW").is_some())
 }
 
 impl super::TrapDispatcher {
@@ -436,6 +441,62 @@ impl super::TrapDispatcher {
             bottom.wrapping_sub(bounds_top),
             right.wrapping_sub(bounds_left),
         )
+    }
+
+    fn move_window_to_global(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        the_window: u32,
+        h_global: i16,
+        v_global: i16,
+        front_flag: bool,
+    ) {
+        if the_window == 0 {
+            return;
+        }
+
+        let (_, _, screen_w, screen_h, _) = self.screen_mode;
+
+        // portRect stays in local coordinates (0,0,h,w) — unchanged.
+        // Update pixmap bounds so local (0,0) maps to the new screen position.
+        // Per Executor windInit.cpp lines 370-373 and
+        // Inside Macintosh Volume I, I-289 (SetOrigin)
+        let port_version = bus.read_word(the_window + 6);
+        let is_cgraf = (port_version & 0xC000) == 0xC000;
+        if is_cgraf {
+            let pixmap_handle = bus.read_long(the_window + 2);
+            let pixmap = bus.read_long(pixmap_handle);
+            bus.write_word(pixmap + 6, (-v_global) as u16);
+            bus.write_word(pixmap + 8, (-h_global) as u16);
+            bus.write_word(pixmap + 10, (screen_h as i16 - v_global) as u16);
+            bus.write_word(pixmap + 12, (screen_w as i16 - h_global) as u16);
+        } else {
+            // GrafPort: portBits.bounds at offset 2+6=8
+            bus.write_word(the_window + 8, (-v_global) as u16);
+            bus.write_word(the_window + 10, (-h_global) as u16);
+            bus.write_word(the_window + 12, (screen_h as i16 - v_global) as u16);
+            bus.write_word(the_window + 14, (screen_w as i16 - h_global) as u16);
+        }
+
+        // portRect, visRgn, clipRgn stay in local coords — no update needed.
+
+        // If front=TRUE, bring theWindow to the front
+        // (equivalent to SelectWindow per IM:I I-287).
+        if front_flag {
+            self.activate_as_front_window(bus, the_window);
+        }
+
+        // Keep FindWindow hit-test bounds in sync (screen coords).
+        let port_h = bus.read_word(the_window + 20) as i16;
+        let port_w = bus.read_word(the_window + 22) as i16;
+        if the_window == self.front_window {
+            self.window_bounds = (v_global, h_global, v_global + port_h, h_global + port_w);
+        }
+
+        if self.window_visible(bus, the_window) {
+            let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
+            self.draw_single_window_chrome_inline(bus, the_window, hilited);
+        }
     }
 
     fn find_window_at_point(
@@ -1035,7 +1096,17 @@ impl super::TrapDispatcher {
             window_ptr, pixmap, wind_top, wind_left, wind_bottom, wind_right, go_away_flag
         );
 
-        let suppress_document_chrome = self.menu_bar_hidden && matches!(wind_proc_id, 0 | 4);
+        let hidden_menu_fullscreen_top = if mbar_h > 0 {
+            mbar_h.saturating_add(2)
+        } else {
+            22
+        };
+        let suppress_document_chrome = self.menu_bar_hidden
+            && matches!(wind_proc_id, 0 | 4)
+            && wind_top <= hidden_menu_fullscreen_top
+            && wind_left <= 2
+            && wind_bottom >= screen_h as i16 - 2
+            && wind_right >= screen_w as i16 - 2;
         if visible && !fullscreen_visible {
             if draw_initial_frame && !suppress_document_chrome {
                 self.draw_window_frame(bus);
@@ -1755,6 +1826,12 @@ impl super::TrapDispatcher {
                         pt_v, pt_h, part, window_ptr
                     );
                 }
+                if trace_dragwindow_enabled() {
+                    eprintln!(
+                        "[DRAGWINDOW] FindWindow point=({}, {}) -> part={} window=${:08X}",
+                        pt_v, pt_h, part, window_ptr
+                    );
+                }
 
                 bus.write_word(sp + 8, part as u16);
                 cpu.write_reg(Register::A7, sp + 8);
@@ -1874,46 +1951,7 @@ impl super::TrapDispatcher {
                 let h_global = bus.read_word(sp + 4) as i16;
                 let the_window = bus.read_long(sp + 6);
 
-                if the_window != 0 {
-                    let (_, _, screen_w, screen_h, _) = self.screen_mode;
-
-                    // portRect stays in local coordinates (0,0,h,w) — unchanged.
-                    // Update pixmap bounds so local (0,0) maps to the new screen position.
-                    // Per Executor windInit.cpp lines 370-373 and
-                    // Inside Macintosh Volume I, I-289 (SetOrigin)
-                    let port_version = bus.read_word(the_window + 6);
-                    let is_cgraf = (port_version & 0xC000) == 0xC000;
-                    if is_cgraf {
-                        let pixmap_handle = bus.read_long(the_window + 2);
-                        let pixmap = bus.read_long(pixmap_handle);
-                        bus.write_word(pixmap + 6, (-v_global) as u16);
-                        bus.write_word(pixmap + 8, (-h_global) as u16);
-                        bus.write_word(pixmap + 10, (screen_h as i16 - v_global) as u16);
-                        bus.write_word(pixmap + 12, (screen_w as i16 - h_global) as u16);
-                    } else {
-                        // GrafPort: portBits.bounds at offset 2+6=8
-                        bus.write_word(the_window + 8, (-v_global) as u16);
-                        bus.write_word(the_window + 10, (-h_global) as u16);
-                        bus.write_word(the_window + 12, (screen_h as i16 - v_global) as u16);
-                        bus.write_word(the_window + 14, (screen_w as i16 - h_global) as u16);
-                    }
-
-                    // portRect, visRgn, clipRgn stay in local coords — no update needed.
-
-                    // If front=TRUE, bring theWindow to the front
-                    // (equivalent to SelectWindow per IM:I I-287).
-                    if front_flag {
-                        self.activate_as_front_window(bus, the_window);
-                    }
-
-                    // Keep FindWindow hit-test bounds in sync (screen coords).
-                    let port_h = bus.read_word(the_window + 20) as i16;
-                    let port_w = bus.read_word(the_window + 22) as i16;
-                    if the_window == self.front_window {
-                        self.window_bounds =
-                            (v_global, h_global, v_global + port_h, h_global + port_w);
-                    }
-                }
+                self.move_window_to_global(bus, the_window, h_global, v_global, front_flag);
 
                 cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
@@ -2053,16 +2091,16 @@ impl super::TrapDispatcher {
             // ModalDialog filterProc + Alert filterProc + Pack1 LSearch
             // searchProc).
             //
-            // So all 5 traps are intentional no-ops that pop their
-            // documented Pascal frame + write the IM-canonical "user
-            // didn't drag / didn't click close box" sentinel:
+            // So these traps model the caller-observable terminal state
+            // and skip only the outline/DragHook tracking loop:
             //   - TrackGoAway → FALSE (user didn't release inside the
             //     close box — equivalent to "user pressed close box but
             //     dragged out before releasing"; correct semantic since
             //     no click has actually happened yet from Systemless's
             //     event model)
-            //   - DragWindow  → no-op (window left in place, user
-            //     "released without moving")
+            //   - DragWindow  → use the frontend's current mouse position
+            //     as the release point; if it is inside boundsRect, move
+            //     by the release-start delta via MoveWindow semantics
             //   - GrowWindow  → 0 (LONGINT zero == "no drag" sentinel
             //     per IM:I I-298: "GrowWindow returns 0 if the user
             //     releases the mouse button without moving it")
@@ -2096,18 +2134,64 @@ impl super::TrapDispatcher {
             //                     identical pop count of 22.
             //
             // Tests pin: (a) pop discipline matches IM Pascal frame, (b)
-            // result-slot sentinel value, (c) other registers (A0/A1/D1)
-            // not mutated, (d) caller stack ABOVE the pop window not
-            // mutated (defensive against future "update DragHook ptr"
-            // half-fixes that touch caller-owned bytes).
+            // DragWindow's terminal move/no-move cases, (c) result-slot
+            // sentinel value for FUNCTION traps, (d) other registers
+            // (A0/A1/D1) not mutated, (e) caller stack ABOVE the pop
+            // window not mutated (defensive against future "update
+            // DragHook ptr" half-fixes that touch caller-owned bytes).
             // ============================================================
 
             // DragWindow ($A925)
             // PROCEDURE DragWindow(theWindow: WindowPtr; startPt: Point; boundsRect: Rect);
             // Inside Macintosh Volume I, I-296
-            // DragWindow ($A925): Pops 12 bytes (theWindow 4 + startPt 4 + boundsRect ptr 4) per IM:I I-91 PEA convention; HLE has no interactive mouse-drag loop / DragHook dispatch so the window is left in place per IM:I I-296 "If the mouse button is released when the mouse location is outside boundsRect, DragWindow returns without moving theWindow" — semantically the user "released without moving"
+            // DragWindow ($A925): Pops 12 bytes (theWindow 4 + startPt 4 + boundsRect ptr 4) per IM:I I-91 PEA convention; uses the current hardware mouse position as the IM:I I-296 release point, moves by release-start delta through MoveWindow semantics when the release is inside global boundsRect, and still skips only the dotted-outline/DragHook loop that HLE cannot drive continuously.
             (true, 0x125) => {
                 let sp = cpu.read_reg(Register::A7);
+                let bounds_rect_ptr = bus.read_long(sp);
+                let start_v = bus.read_word(sp + 4) as i16;
+                let start_h = bus.read_word(sp + 6) as i16;
+                let the_window = bus.read_long(sp + 8);
+
+                if the_window != 0 && bounds_rect_ptr != 0 {
+                    let bounds_rect = (
+                        bus.read_word(bounds_rect_ptr) as i16,
+                        bus.read_word(bounds_rect_ptr + 2) as i16,
+                        bus.read_word(bounds_rect_ptr + 4) as i16,
+                        bus.read_word(bounds_rect_ptr + 6) as i16,
+                    );
+                    let (release_v, release_h) = self.mouse_pos;
+                    if trace_dragwindow_enabled() {
+                        eprintln!(
+                            "[DRAGWINDOW] DragWindow window=${:08X} start=({}, {}) release=({}, {}) bounds=({},{},{},{})",
+                            the_window,
+                            start_v,
+                            start_h,
+                            release_v,
+                            release_h,
+                            bounds_rect.0,
+                            bounds_rect.1,
+                            bounds_rect.2,
+                            bounds_rect.3
+                        );
+                    }
+                    if Self::point_in_rect(release_v, release_h, bounds_rect)
+                        && (release_v != start_v || release_h != start_h)
+                    {
+                        let (top, left, _, _) = self.window_global_port_rect(bus, the_window);
+                        let new_v = top.wrapping_add(release_v.wrapping_sub(start_v));
+                        let new_h = left.wrapping_add(release_h.wrapping_sub(start_h));
+                        let front_flag = !self.key_is_down(0x37);
+                        self.move_window_to_global(bus, the_window, new_h, new_v, front_flag);
+                        if trace_dragwindow_enabled() {
+                            eprintln!(
+                                "[DRAGWINDOW] moved window=${:08X} from=({}, {}) to=({}, {}) front={}",
+                                the_window, top, left, new_v, new_h, front_flag
+                            );
+                        }
+                    } else if trace_dragwindow_enabled() {
+                        eprintln!("[DRAGWINDOW] no move");
+                    }
+                }
                 cpu.write_reg(Register::A7, sp + 12);
                 Ok(())
             }
@@ -5887,10 +5971,64 @@ mod tests {
     }
 
     // IM:I p.I-296 (with Rect-by-pointer calling convention on p.I-91):
-    // DragWindow consumes WindowPtr + Point + RectPtr and leaves the
-    // window in place when no valid drag release occurs.
+    // DragWindow moves the window by the release-point delta when the
+    // mouse-up location is inside the global boundsRect.
     #[test]
-    fn dragwindow_consumes_window_startpoint_and_boundsrect_and_leaves_window_unchanged() {
+    fn dragwindow_moves_window_to_release_delta_inside_boundsrect() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let window_addr: u32 = 0x300000;
+        setup_window_with_regions(&mut bus, window_addr, 0, 0, 100, 200);
+        bus.write_word(window_addr + 6, 0); // GrafPort
+        bus.write_word(window_addr + 8, (-40i16) as u16);
+        bus.write_word(window_addr + 10, (-20i16) as u16);
+        bus.write_word(window_addr + 12, 560);
+        bus.write_word(window_addr + 14, 780);
+        bus.write_byte(window_addr + 110, 0xFF);
+        disp.window_list = vec![window_addr];
+        disp.front_window = window_addr;
+        disp.window_bounds = (40, 20, 140, 220);
+
+        let bounds_rect_ptr = 0x320000;
+        bus.write_word(bounds_rect_ptr + 0, 0);
+        bus.write_word(bounds_rect_ptr + 2, 0);
+        bus.write_word(bounds_rect_ptr + 4, 400);
+        bus.write_word(bounds_rect_ptr + 6, 600);
+
+        disp.push_mouse_down(50, 30);
+        disp.set_mouse_position(70, 80);
+
+        let sp = TEST_SP - 12;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, bounds_rect_ptr); // boundsRect pointer
+        bus.write_long(sp + 4, 0x0032_001E); // startPt v=50, h=30
+        bus.write_long(sp + 8, window_addr); // theWindow
+
+        let result = dispatch(&mut disp, 0x125, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(
+            bus.read_word(window_addr + 8) as i16,
+            -60,
+            "portBits.bounds.top tracks moved global origin"
+        );
+        assert_eq!(
+            bus.read_word(window_addr + 10) as i16,
+            -70,
+            "portBits.bounds.left tracks moved global origin"
+        );
+        assert_eq!(
+            disp.window_bounds,
+            (60, 70, 160, 270),
+            "front-window hit-test bounds move with DragWindow"
+        );
+    }
+
+    // IM:I p.I-296 (with Rect-by-pointer calling convention on p.I-91):
+    // DragWindow consumes WindowPtr + Point + RectPtr and leaves the
+    // window in place when the release point is outside boundsRect.
+    #[test]
+    fn dragwindow_release_outside_boundsrect_leaves_window_unchanged() {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let window_addr: u32 = 0x300000;
@@ -5905,6 +6043,8 @@ mod tests {
         bus.write_word(bounds_rect_ptr + 4, 400);
         bus.write_word(bounds_rect_ptr + 6, 500);
 
+        disp.set_mouse_position(600, 700);
+
         let sp = TEST_SP - 12;
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, bounds_rect_ptr); // boundsRect pointer
@@ -5916,6 +6056,48 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         let after: Vec<u8> = (0..32u32).map(|i| bus.read_byte(window_addr + i)).collect();
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn hidden_menu_mode_draws_normal_document_window_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        for offset in 0..800 * 600 {
+            bus.write_byte(screen_base + offset, 0xAA);
+        }
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.menu_bar_hidden = true;
+
+        let window_addr = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            screen_base,
+            180,
+            400,
+            420,
+            600,
+            "Player",
+            4,
+            true,
+            true,
+            true,
+            0,
+        );
+
+        assert_ne!(
+            bus.read_byte(screen_base + 240 * 800 + 450),
+            0xAA,
+            "normal document windows should erase their content even when the host menu bar is hidden"
+        );
+        assert_ne!(
+            bus.read_byte(screen_base + 162 * 800 + 450),
+            0xAA,
+            "normal document windows should still draw title-bar chrome"
+        );
     }
 
     // IM:I I-302 + IM:I I-91: DragTheRgn is the custom-outline alias of
