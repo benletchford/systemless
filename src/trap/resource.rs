@@ -162,6 +162,27 @@ impl super::TrapDispatcher {
         bytes
     }
 
+    fn resolve_file_mark_position(
+        pos_mode: u16,
+        pos_offset: i32,
+        cur_pos: usize,
+        file_len: usize,
+    ) -> std::result::Result<usize, i16> {
+        let base = match pos_mode & 0x03 {
+            0 => return Ok(cur_pos),
+            1 => 0i64,
+            2 => file_len as i64,
+            3 => cur_pos as i64,
+            _ => cur_pos as i64,
+        };
+        let position = base + pos_offset as i64;
+        if position < 0 {
+            Err(-40)
+        } else {
+            Ok(position as usize)
+        }
+    }
+
     fn loadseg_entry_is_loaded(bus: &MacMemoryBus, entry_addr: u32) -> bool {
         bus.read_word(entry_addr) == 0x4EF9 || bus.read_word(entry_addr + 2) == 0x4EF9
     }
@@ -2995,14 +3016,15 @@ impl super::TrapDispatcher {
                 if let Some(filename) = self.open_files.get(&ref_num).cloned() {
                     if let Some(file_buf) = self.vfs.get(&filename) {
                         let file_len = file_buf.len();
-                        // Determine read position based on posMode
                         let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
-                        let start = match pos_mode & 0x03 {
-                            0 => cur_pos,                                 // fsAtMark
-                            1 => pos_offset as usize,                     // fsFromStart
-                            2 => (file_len as i32 + pos_offset) as usize, // fsFromLEOF
-                            3 => (cur_pos as i32 + pos_offset) as usize,  // fsFromMark
-                            _ => cur_pos,
+                        let Ok(start) = Self::resolve_file_mark_position(
+                            pos_mode, pos_offset, cur_pos, file_len,
+                        ) else {
+                            bus.write_word(pb + 16, (-40i16) as u16); // posErr
+                            bus.write_long(pb + 40, 0);
+                            bus.write_long(pb + 46, cur_pos as u32);
+                            cpu.write_reg(Register::D0, (-40i32) as u32);
+                            return Some(Ok(()));
                         };
                         let start = start.min(file_len);
                         let avail = file_len - start;
@@ -3076,14 +3098,15 @@ impl super::TrapDispatcher {
                     let file_buf = self.vfs.entry(filename.clone()).or_default();
                     let file_len = file_buf.len();
                     let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
-                    let start = match pos_mode & 0x03 {
-                        0 => cur_pos as i64,                      // fsAtMark
-                        1 => pos_offset as i64,                   // fsFromStart
-                        2 => file_len as i64 + pos_offset as i64, // fsFromLEOF
-                        3 => cur_pos as i64 + pos_offset as i64,  // fsFromMark
-                        _ => cur_pos as i64,
-                    }
-                    .max(0) as usize;
+                    let Ok(start) =
+                        Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
+                    else {
+                        bus.write_long(pb + 40, 0);
+                        bus.write_long(pb + 46, cur_pos as u32);
+                        bus.write_word(pb + 16, (-40i16) as u16); // posErr
+                        cpu.write_reg(Register::D0, (-40i32) as u32);
+                        return Some(Ok(()));
+                    };
 
                     if start > file_buf.len() {
                         file_buf.resize(start, 0);
@@ -3276,17 +3299,23 @@ impl super::TrapDispatcher {
                 if let Some(filename) = self.open_files.get(&ref_num).cloned() {
                     let file_len = self.vfs.get(&filename).map(|f| f.len()).unwrap_or(0);
                     let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
-                    let new_pos = match pos_mode {
-                        0 => cur_pos,                                 // fsAtMark
-                        1 => pos_offset as usize,                     // fsFromStart
-                        2 => (file_len as i32 + pos_offset) as usize, // fsFromLEOF
-                        3 => (cur_pos as i32 + pos_offset) as usize,  // fsFromMark
-                        _ => cur_pos,
+                    let Ok(requested_pos) =
+                        Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
+                    else {
+                        bus.write_long(pb + 46, cur_pos as u32);
+                        bus.write_word(pb + 16, (-40i16) as u16); // posErr
+                        cpu.write_reg(Register::D0, (-40i32) as u32);
+                        return Some(Ok(()));
+                    };
+                    let (new_pos, err) = if requested_pos > file_len {
+                        (file_len, -39i16)
+                    } else {
+                        (requested_pos, 0i16)
                     };
                     self.file_positions.insert(ref_num, new_pos);
                     bus.write_long(pb + 46, new_pos as u32);
-                    bus.write_word(pb + 16, 0);
-                    cpu.write_reg(Register::D0, 0);
+                    bus.write_word(pb + 16, err as u16);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
                 } else {
                     bus.write_word(pb + 16, (-51i16) as u16); // rfNumErr
                     cpu.write_reg(Register::D0, (-51i32) as u32);
@@ -10221,6 +10250,36 @@ mod tests {
         assert_eq!(bus.read_byte(read_buf + 2), 30);
     }
 
+    #[test]
+    fn fs_read_before_start_returns_poserr_and_keeps_mark() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("ReadMe".to_string(), vec![10, 20, 30, 40, 50]);
+        disp.open_files.insert(100, "ReadMe".to_string());
+        disp.file_positions.insert(100, 2);
+
+        let pb = 0x300000u32;
+        let read_buf = 0x310000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, read_buf);
+        bus.write_long(pb + 36, 1);
+        bus.write_long(pb + 40, 0xDEADBEEF);
+        bus.write_word(pb + 44, 1); // fsFromStart
+        bus.write_long(pb + 46, (-1i32) as u32);
+        bus.write_byte(read_buf, 0xCC);
+
+        call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -40);
+        assert_eq!(bus.read_word(pb + 16) as i16, -40);
+        assert_eq!(bus.read_long(pb + 40), 0);
+        assert_eq!(bus.read_long(pb + 46), 2);
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 2);
+        assert_eq!(bus.read_byte(read_buf), 0xCC);
+    }
+
     // ================================================================
     // 17. FSWrite (0x03)
     // ================================================================
@@ -10286,6 +10345,35 @@ mod tests {
         let file_data = disp.vfs.get("WriteMe").unwrap();
         assert_eq!(file_data, &[0x11, 0xAA, 0xBB, 0x44]);
         assert_eq!(*disp.file_positions.get(&100).unwrap(), 3);
+    }
+
+    #[test]
+    fn fs_write_before_start_returns_poserr_and_keeps_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("WriteMe".to_string(), vec![0x11, 0x22, 0x33, 0x44]);
+        disp.open_files.insert(100, "WriteMe".to_string());
+        disp.file_positions.insert(100, 1);
+
+        let pb = 0x300000u32;
+        let write_buf = 0x310000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, write_buf);
+        bus.write_long(pb + 36, 1);
+        bus.write_word(pb + 44, 3); // fsFromMark
+        bus.write_long(pb + 46, (-2i32) as u32);
+        bus.write_byte(write_buf, 0xAA);
+
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -40);
+        assert_eq!(bus.read_word(pb + 16) as i16, -40);
+        assert_eq!(bus.read_long(pb + 40), 0);
+        assert_eq!(bus.read_long(pb + 46), 1);
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 1);
+        assert_eq!(disp.vfs.get("WriteMe").unwrap(), &[0x11, 0x22, 0x33, 0x44]);
     }
 
     // PBOpenRF stores the rsrc fork bytes in self.vfs under the
@@ -10457,6 +10545,50 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(*disp.file_positions.get(&refnum).unwrap(), 42);
+    }
+
+    #[test]
+    fn pb_set_fpos_before_start_returns_poserr_and_keeps_mark() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("TestFile".to_string(), vec![0u8; 256]);
+        disp.open_files.insert(100, "TestFile".to_string());
+        disp.file_positions.insert(100, 4);
+
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_word(pb + 44, 3); // fsFromMark
+        bus.write_long(pb + 46, (-5i32) as u32);
+
+        call(&mut disp, false, 0x44, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -40);
+        assert_eq!(bus.read_word(pb + 16) as i16, -40);
+        assert_eq!(bus.read_long(pb + 46), 4);
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 4);
+    }
+
+    #[test]
+    fn pb_set_fpos_past_eof_clamps_to_eof_and_returns_eoferr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("TestFile".to_string(), vec![0u8; 256]);
+        disp.open_files.insert(100, "TestFile".to_string());
+        disp.file_positions.insert(100, 4);
+
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_word(pb + 44, 1); // fsFromStart
+        bus.write_long(pb + 46, 300);
+
+        call(&mut disp, false, 0x44, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(bus.read_word(pb + 16) as i16, -39);
+        assert_eq!(bus.read_long(pb + 46), 256);
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 256);
     }
 
     // ================================================================
