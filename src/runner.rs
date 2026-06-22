@@ -3258,8 +3258,8 @@ impl FixtureRunner {
 
         // Allocate trampoline on first use (32 bytes):
         //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)   ; 48E7 F0F0
-        //   +4:  MOVE.W  #itemNo,-(SP)         ; 3F3C xxxx
-        //   +8:  MOVE.L  #dialogPtr,-(SP)      ; 2F3C xxxx xxxx
+        //   +4:  MOVE.L  #dialogPtr,-(SP)      ; 2F3C xxxx xxxx
+        //   +10: MOVE.W  #itemNo,-(SP)         ; 3F3C xxxx
         //   +14: JSR     proc_addr              ; 4EB9 xxxx xxxx
         //   +20: MOVEA.L #savedRegsSP,A7       ; 4FF9 xxxx xxxx
         //   +26: MOVEM.L (SP)+,D0-D3/A0-A3    ; 4CDF 0F0F
@@ -3268,10 +3268,10 @@ impl FixtureRunner {
             let tramp = self.dialog_callback_scratch_base() + DIALOG_DRAW_TRAMPOLINE_OFFSET;
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
             self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
-            self.bus.write_word(tramp + 4, 0x3F3C); // MOVE.W #imm,-(SP)
-                                                    // +6..+7: itemNo (patched per-fire)
-            self.bus.write_word(tramp + 8, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                    // +10..+13: dialogPtr (patched per-fire)
+            self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #imm,-(SP)
+                                                    // +6..+9: dialogPtr (patched per-fire)
+            self.bus.write_word(tramp + 10, 0x3F3C); // MOVE.W #imm,-(SP)
+                                                     // +12..+13: itemNo (patched per-fire)
             self.bus.write_word(tramp + 14, 0x4EB9); // JSR abs.L
                                                      // +16..+19: proc_addr (patched per-fire)
             self.bus.write_word(tramp + 20, 0x4FF9); // MOVEA.L #imm,A7
@@ -3283,8 +3283,8 @@ impl FixtureRunner {
         }
 
         let tramp = self.dialog_draw_trampoline;
-        self.bus.write_word(tramp + 6, item_no as u16);
-        self.bus.write_long(tramp + 10, dialog_ptr);
+        self.bus.write_long(tramp + 6, dialog_ptr);
+        self.bus.write_word(tramp + 12, item_no as u16);
         self.bus.write_long(tramp + 16, call_addr);
 
         // The Dialog Manager sets the current port to the dialog before
@@ -3373,8 +3373,8 @@ impl FixtureRunner {
     ///
     /// We simulate this by writing a small 68K trampoline that:
     ///   1. Saves D0-D3/A0-A3 via MOVEM.L to the stack
-    ///   2. Pushes params so MPW-style Pascal prologues see theWindow at
-    ///      8(A6) and itemNo at 12(A6)
+    ///   2. Pushes params so MPW-style Pascal prologues see itemNo at
+    ///      8(A6) and theWindow at 10(A6), matching Pascal's stack layout
     ///   3. JSR to draw proc address
     ///   4. Resets A7 to the saved-register frame, tolerating callbacks
     ///      that return with either `RTD #6` or plain `RTS`
@@ -6524,7 +6524,7 @@ mod tests {
     }
 
     #[test]
-    fn dialog_draw_proc_trampoline_passes_dialog_first_and_tolerates_plain_rts() {
+    fn dialog_draw_proc_trampoline_passes_item_first_and_tolerates_plain_rts() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000u32;
         let interrupted_sp = 0x007F_FFC0u32;
@@ -6577,10 +6577,10 @@ mod tests {
         assert!(runner.fire_dialog_draw_procs());
         let tramp = runner.dialog_draw_trampoline;
         assert_eq!(runner.bus.read_word(tramp), 0x48E7);
-        assert_eq!(runner.bus.read_word(tramp + 4), 0x3F3C);
-        assert_eq!(runner.bus.read_word(tramp + 6), item_no as u16);
-        assert_eq!(runner.bus.read_word(tramp + 8), 0x2F3C);
-        assert_eq!(runner.bus.read_long(tramp + 10), dialog_ptr);
+        assert_eq!(runner.bus.read_word(tramp + 4), 0x2F3C);
+        assert_eq!(runner.bus.read_long(tramp + 6), dialog_ptr);
+        assert_eq!(runner.bus.read_word(tramp + 10), 0x3F3C);
+        assert_eq!(runner.bus.read_word(tramp + 12), item_no as u16);
         assert_eq!(runner.bus.read_word(tramp + 14), 0x4EB9);
         assert_eq!(runner.bus.read_long(tramp + 16), proc_addr);
         assert_eq!(runner.bus.read_word(tramp + 20), 0x4FF9);
@@ -6802,6 +6802,76 @@ mod tests {
             runner.dispatcher.current_port, dialog_ptr,
             "Dialog Manager must leave the dialog port current after the draw proc"
         );
+    }
+
+    #[test]
+    fn dialog_draw_proc_pascal_stack_places_item_number_before_window_pointer() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let dialog_ptr = 0x0029_4240u32;
+        let proc_addr = 0x0004_2000u32;
+        let item_no = 2i16;
+        let seen_item_addr = 0x0004_3000u32;
+        let seen_dialog_addr = 0x0004_3004u32;
+
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        // PROCEDURE MyItem(theWindow: WindowPtr; itemNo: INTEGER);
+        // Inside Macintosh Volume I, I-405. MPW Pascal prologues observe
+        // itemNo at 8(A6) and theWindow at 10(A6).
+        runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
+        runner.bus.write_word(proc_addr + 2, 0x0000);
+        runner.bus.write_word(proc_addr + 4, 0x302E); // MOVE.W 8(A6),D0
+        runner.bus.write_word(proc_addr + 6, 0x0008);
+        runner.bus.write_word(proc_addr + 8, 0x33C0); // MOVE.W D0,(abs).L
+        runner.bus.write_long(proc_addr + 10, seen_item_addr);
+        runner.bus.write_word(proc_addr + 14, 0x222E); // MOVE.L 10(A6),D1
+        runner.bus.write_word(proc_addr + 16, 0x000A);
+        runner.bus.write_word(proc_addr + 18, 0x23C1); // MOVE.L D1,(abs).L
+        runner.bus.write_long(proc_addr + 20, seen_dialog_addr);
+        runner.bus.write_word(proc_addr + 24, 0x4E5E); // UNLK A6
+        runner.bus.write_word(proc_addr + 26, 0x4E75); // RTS
+
+        runner.dispatcher.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (120, 180, 240, 420),
+            title: String::new(),
+            proc_id: 1,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: interrupted_sp,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::from([(proc_addr, item_no)]),
+            draw_procs_done: false,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        assert!(runner.fire_dialog_draw_procs());
+        let (_steps, running) = runner.run_steps(48, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.bus.read_word(seen_item_addr) as i16, item_no);
+        assert_eq!(runner.bus.read_long(seen_dialog_addr), dialog_ptr);
     }
 
     #[test]
