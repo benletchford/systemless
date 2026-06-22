@@ -37,6 +37,26 @@ fn trace_sound_samples_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND_SAMPLES").is_some())
 }
 
+fn sound_dispatch_param_bytes(selector: u32) -> u32 {
+    let encoded = ((selector >> 24) & 0xFF) * 2;
+    if encoded != 0 {
+        return encoded;
+    }
+
+    match selector {
+        // The Inside Macintosh VI selector table documents these SoundDispatch
+        // selectors with a zero param-size byte even though the Pascal
+        // routines have stack arguments. Some clients pass those literals.
+        // Inside Macintosh Volume VI, VI-576 to VI-577.
+        0x0010_0008 => 10, // SndChannelStatus(chan, theLength, theStatus)
+        0x0014_0008 => 6,  // SndManagerStatus(theLength, theStatus)
+        0x0018_0008 => 4,  // SndGetSysBeepState(VAR state)
+        0x001C_0008 => 2,  // SndSetSysBeepState(state)
+        0x0020_0008 => 8,  // SndPlayDoubleBuffer(chan, theParams)
+        _ => 0,
+    }
+}
+
 fn synth_sys_beep_samples() -> Vec<u8> {
     let len = (sound::OUTPUT_RATE as usize * 90) / 1000;
     let half_period = (sound::OUTPUT_RATE as usize / (880 * 2)).max(1);
@@ -246,26 +266,17 @@ impl super::TrapDispatcher {
             // Bits 23-16: routine selector
             // Sound 1994, 2-256
             //
-            // Caveat on the paramSize byte: IM:Sound 1994 page 8401's
-            // selector reference table lists routines like SndChannelStatus
-            // as `$00100008` — paramSize byte is documented as 0 even
-            // though the function's stack signature requires 10 bytes of
-            // params. Real apps built with MPW glue compute the selector
-            // at compile time including the correct paramSize byte
-            // (e.g. `$05100008` for SndChannelStatus, `$03140008` for
-            // SndManagerStatus). Apps that pass the IM table's literal
-            // value directly hit our routine handler with `param_bytes=0`
-            // and would corrupt the stack on routines that expect to pop
-            // params. None of the canonical games we exercise hit this
-            // code path, so the routines that don't read the stack
-            // (0x10/0x14/0x1C) currently stub-respond at sp+0 instead
-            // of sp+param_bytes. Re-evaluate per-routine if a future
-            // title trips the divergence.
+            // Caveat on the paramSize byte: Inside Macintosh Volume VI's
+            // trap selector table lists several SoundDispatch routines with
+            // a zero param-size byte even though their Pascal signatures have
+            // stack arguments. `sound_dispatch_param_bytes` maps those
+            // documented literals back to their real frame sizes so clients
+            // that pass table values directly do not return through args.
             // SoundDispatch ($A800): Routes by selector; SndPlayDoubleBuffer ($20) with doubleback callbacks, SndStartFilePlay ($00) plays 'snd ' resources by ID or AIFF file by refnum with async completion callbacks, SndStopFilePlay ($08) stops channel, SndPauseFilePlay ($04) toggles file pause, SndSoundManagerVersion ($0C) returns a Sound Manager 3.x NumVersion; SndChannelStatus ($10) zero-fills 24-byte SCStatus per IM:Sound 2-101 (no async playback so all fields are documented-correct at zero); SndManagerStatus ($14) fills 6-byte SMStatus with smNumChannels = active channel count, default smMaxCPULoad = 100, and zero current load per IM:Sound 2-101 + 2-201; volume selectors ($24/$28/$2C/$30) persist Sound Manager 3.x packed L/R levels
             (true, 0x000) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0);
-                let param_bytes = ((selector >> 24) & 0xFF) * 2;
+                let param_bytes = sound_dispatch_param_bytes(selector);
                 let routine = (selector >> 16) & 0xFF;
                 if trace_sound_enabled() {
                     eprintln!(
@@ -286,11 +297,11 @@ impl super::TrapDispatcher {
                         bus.write_long(sp, 0x0333_8000);
                     }
 
-                    // SndPlayDoubleBuffer (routine $20, sel $04200008)
+                    // SndPlayDoubleBuffer (routine $20, sel $00200008)
                     // FUNCTION SndPlayDoubleBuffer(chan: SndChannelPtr;
                     //     params: SndDoubleBufferHeaderPtr): OSErr;
                     // Stack: SP+0: params(4), SP+4: chan(4), SP+8: result(2)
-                    // Sound 1994, 2-145
+                    // Sound 1994, 2-145; Inside Macintosh Volume VI, VI-577
                     0x20 => {
                         let params_ptr = bus.read_long(sp);
                         let chan_ptr = bus.read_long(sp + 4);
@@ -588,8 +599,9 @@ impl super::TrapDispatcher {
                             if state_ptr != 0 {
                                 bus.write_word(state_ptr, 1);
                             }
+                            bus.write_word(sp + param_bytes, 0); // noErr
+                            cpu.write_reg(Register::A7, sp + param_bytes);
                         }
-                        cpu.write_reg(Register::D0, 0);
                     }
 
                     // SndSetSysBeepState (routine $1C, sel $001C0008)
@@ -3187,6 +3199,59 @@ mod tests {
     }
 
     #[test]
+    fn sounddispatch_documented_zero_param_selectors_pop_real_pascal_frames() {
+        // Inside Macintosh Volume VI, VI-576 to VI-577 documents these
+        // SoundDispatch selectors with a zero param-size byte. The routines
+        // still consume their Pascal arguments.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let sc_status_ptr = 0x230A80;
+        let sm_status_ptr = 0x230AA0;
+        let state_ptr = 0x230AC0;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0010_0008); // SndChannelStatus
+        bus.write_long(sp, sc_status_ptr);
+        bus.write_word(sp + 4, 24);
+        bus.write_long(sp + 6, 0);
+        bus.write_word(sp + 10, 0xFFFF);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0014_0008); // SndManagerStatus
+        bus.write_long(sp, sm_status_ptr);
+        bus.write_word(sp + 4, 6);
+        bus.write_word(sp + 6, 0xFFFF);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(bus.read_word(sp + 6), 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0018_0008); // SndGetSysBeepState
+        bus.write_long(sp, state_ptr);
+        bus.write_word(sp + 4, 0xFFFF);
+        bus.write_word(state_ptr, 0);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(bus.read_word(state_ptr), 1);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x001C_0008); // SndSetSysBeepState
+        bus.write_word(sp, 0);
+        bus.write_word(sp + 2, 0xFFFF);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(bus.read_word(sp + 2), 0);
+    }
+
+    #[test]
     fn sounddispatch_get_sound_header_offset_returns_embedded_header_offset() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP + 0x80;
@@ -4034,7 +4099,7 @@ mod tests {
         bus.write_byte(buf0_ptr + 16, 0x40);
 
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0420_0008); // SndPlayDoubleBuffer selector
+        cpu.write_reg(Register::D0, 0x0020_0008); // documented SndPlayDoubleBuffer selector
         bus.write_long(sp, header_ptr);
         bus.write_long(sp + 4, chan_ptr);
         bus.write_word(sp + 8, 0xFFFF);
