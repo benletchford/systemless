@@ -1084,6 +1084,11 @@ impl FixtureRunner {
         self.bus.write_long(addr::CUR_STACK_BASE, app_globals_start);
         self.bus.write_long(addr::CURRENT_A5, app.a5_base);
         self.bus.write_word(addr::ROM85, 0x0000);
+        // MMU32Bit ($0CB2): TRUE when 32-bit addressing mode is in effect.
+        // Inside Macintosh: Memory 1992, p. 4-25 says applications can test
+        // this low-memory byte directly; Systemless's TrapDispatcher already
+        // defaults SwapMMUMode to true32b and Gestalt('addr') bit 0 to set.
+        self.bus.write_byte(addr::MMU32_BIT, 1);
         // Initialize Ticks ($016A) to a realistic post-boot value.
         // On a real Mac, hundreds of ticks elapse during the boot ROM,
         // system extensions, and Finder startup before the application
@@ -4510,6 +4515,33 @@ mod tests {
                 .read_byte(crate::memory::globals::addr::SOUND_LEVEL),
             0,
             "SoundLevel ($027F) is a distinct Sound Driver amplitude byte"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_mmu32bit_low_memory_flag() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+        };
+
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner
+                .bus
+                .read_byte(crate::memory::globals::addr::MMU32_BIT),
+            1,
+            "MMU32Bit ($0CB2) should mirror Systemless's default 32-bit addressing mode"
         );
     }
 

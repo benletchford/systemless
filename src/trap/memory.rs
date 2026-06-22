@@ -2,7 +2,7 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::ORACLE_MACHINE_PROFILE;
-use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -859,6 +859,7 @@ impl super::TrapDispatcher {
                 let new_mode = cpu.read_reg(Register::D0) & 0xFF;
                 let old_mode = self.mmu_mode as u32;
                 self.mmu_mode = (new_mode & 1) as u8;
+                bus.write_byte(addr::MMU32_BIT, self.mmu_mode);
                 cpu.write_reg(Register::D0, old_mode);
                 Ok(())
             }
@@ -5710,6 +5711,42 @@ mod tests {
             cpu.read_reg(Register::D0),
             0xAB12_3456,
             "Translate24To32 should preserve the full tagged input in 32-bit mode"
+        );
+    }
+
+    #[test]
+    fn swapmmumode_updates_mmu32bit_low_memory_flag() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_byte(crate::memory::globals::addr::MMU32_BIT, 1);
+
+        cpu.write_reg(Register::D0, 0);
+        let result = dispatcher.dispatch_memory(false, 0x5D, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SwapMMUMode should be handled");
+        assert!(result.unwrap().is_ok(), "SwapMMUMode should return cleanly");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            1,
+            "default mode is true32b, so D0 returns the previous mode"
+        );
+        assert_eq!(
+            bus.read_byte(crate::memory::globals::addr::MMU32_BIT),
+            0,
+            "MMU32Bit should mirror the requested 24-bit mode"
+        );
+
+        cpu.write_reg(Register::D0, 1);
+        let result = dispatcher.dispatch_memory(false, 0x5D, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SwapMMUMode should be handled again");
+        assert!(result.unwrap().is_ok(), "SwapMMUMode should return cleanly");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "D0 returns the previous false32b mode"
+        );
+        assert_eq!(
+            bus.read_byte(crate::memory::globals::addr::MMU32_BIT),
+            1,
+            "MMU32Bit should mirror the requested 32-bit mode"
         );
     }
 

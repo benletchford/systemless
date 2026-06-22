@@ -107,6 +107,10 @@ pub mod addr {
     // Memory Manager globals (for NewPtr, etc.)
     pub const APP_L_ZONE: u32 = 0x02AA; // Application zone (ptr)
     pub const SYS_ZONE: u32 = 0x02A6; // System zone (ptr)
+    /// MMU32Bit: TRUE when 32-bit addressing mode is in effect.
+    /// Inside Macintosh: Memory 1992, p. 4-25 and low-memory table
+    /// line 8838; also listed in Inside Macintosh Volume V, V-593.
+    pub const MMU32_BIT: u32 = 0x0CB2;
 
     /// ResumeProc: address of the system error resume procedure
     /// (4 bytes, ProcPtr). Set by InitDialogs ($A97B) from its
@@ -327,5 +331,10 @@ mod tests {
             "KeyMapLM low-memory keyboard bitmap — wrong address = direct key polling breaks"
         );
         assert_eq!(addr::CURRENT_A5, 0x0904, "CurrentA5 per IM:Memory 1-77");
+        assert_eq!(
+            addr::MMU32_BIT,
+            0x0CB2,
+            "MMU32Bit per IM:Memory 1992 low-memory table"
+        );
     }
 }
