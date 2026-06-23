@@ -5892,7 +5892,11 @@ impl super::TrapDispatcher {
                     //                   flags: Integer): Integer;
                     // Imaging With QuickDraw 1994 pp.5-33..5-34
                     let depth = bus.read_word(sp + 4);
-                    let mode_id: u16 = if matches!(depth, 1 | 2 | 4 | 8) { 1 } else { 0 };
+                    let mode_id: u16 = if Self::hasdepth_supported_depth(depth) {
+                        1
+                    } else {
+                        0
+                    };
                     bus.write_word(sp + 10, mode_id);
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
@@ -5903,7 +5907,7 @@ impl super::TrapDispatcher {
                     //                   flags: Integer): OSErr;
                     // IM:VI VI-21-12
                     let depth = bus.read_word(sp + 4);
-                    let result = if depth == 8 {
+                    let result = if Self::setdepth_supported_depth(depth) {
                         self.do_setdepth(cpu, bus, depth);
                         0
                     } else {
@@ -6162,14 +6166,21 @@ impl super::TrapDispatcher {
                     // return 0 when the requested depth is unsupported, and a
                     // nonzero mode ID when supported.
                     //
-                    // Systemless's framebuffer model supports CLUT depths
-                    // 1/2/4/8 bpp; higher depths (16/32) return unsupported.
+                    // HasDepth is also used by games as a Color QuickDraw
+                    // capability probe before selecting 2/4/8-bit art paths.
+                    // Systemless can render those indexed sources into its
+                    // 8bpp screen even when SetDepth does not expose a physical
+                    // 2bpp/4bpp framebuffer mode.
                     0x0A14 => {
                         let _flags = bus.read_word(sp + 2);
                         let _which = bus.read_word(sp + 4);
                         let depth = bus.read_word(sp + 6);
                         let _gd = bus.read_long(sp + 8);
-                        let mode_id = if matches!(depth, 1 | 2 | 4 | 8) { 1 } else { 0 };
+                        let mode_id = if Self::hasdepth_supported_depth(depth) {
+                            1
+                        } else {
+                            0
+                        };
                         bus.write_word(sp + 12, mode_id);
                         cpu.write_reg(Register::A7, sp + 12);
                     }
@@ -6179,10 +6190,10 @@ impl super::TrapDispatcher {
                     // Inside Macintosh Volume VI, VI-21-12
                     //
                     // Stack: same layout as HasDepth (10-byte arg block).
-                    // Result is OSErr (Integer). Systemless updates screenBits
-                    // and screen_mode to the requested depth (only 8bpp is
-                    // actually supported), then returns noErr for depth 8
-                    // or paramErr for unsupported depths.
+                    // Result is OSErr (Integer). Systemless updates screenBits,
+                    // the main GDevice PixMap, and screen_mode for 1bpp B&W or
+                    // 8bpp indexed color, then returns paramErr for depths that
+                    // are not backed by the renderer.
                     //
                     // Regression coverage:
                     //   setdepth_changes_device_depth
@@ -6191,7 +6202,7 @@ impl super::TrapDispatcher {
                         let _which = bus.read_word(sp + 4);
                         let depth = bus.read_word(sp + 6);
                         let _gd = bus.read_long(sp + 8);
-                        let result = if depth == 8 {
+                        let result = if Self::setdepth_supported_depth(depth) {
                             self.do_setdepth(cpu, bus, depth);
                             0
                         } else {
@@ -16794,14 +16805,13 @@ impl super::TrapDispatcher {
 
     /// Apply the side effects of `SetDepth(depth)` from the Graphics
     /// Devices Manager. Updates ScrnBase, screenBits, the QD globals
-    /// copy of screenBits, and `self.screen_mode`, then clears the
-    /// 8bpp framebuffer to black (index 255).
+    /// copy of screenBits, the main GDevice PixMap, and
+    /// `self.screen_mode`, then clears the active framebuffer.
     ///
-    /// Currently only 8bpp is fully wired up; other depths leave the
-    /// state alone (matching the original behavior of the squatting
-    /// SetDepth handler at $AA36).
-    ///
-    /// Inside Macintosh Volume VI, VI-21-12
+    /// Imaging With QuickDraw 1994 pp. 5-34..5-35: SetDepth changes
+    /// the pixel depth and color/B&W mode of the requested device.
+    /// Systemless currently wires this for the two depths its screen
+    /// renderer supports directly: 1bpp B&W and 8bpp indexed color.
     pub(crate) fn do_setdepth<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -16815,6 +16825,22 @@ impl super::TrapDispatcher {
             ORACLE_MACHINE_PROFILE.screen_width,
             ORACLE_MACHINE_PROFILE.screen_height,
         );
+    }
+
+    fn setdepth_supported_depth(depth: u16) -> bool {
+        matches!(depth, 1 | 8)
+    }
+
+    fn hasdepth_supported_depth(depth: u16) -> bool {
+        matches!(depth, 1 | 2 | 4 | 8)
+    }
+
+    fn row_bytes_for_depth(width: u16, depth: u16) -> Option<u32> {
+        match depth {
+            1 => Some(u32::from(width).div_ceil(8)),
+            8 => Some(u32::from(width)),
+            _ => None,
+        }
     }
 
     fn display_mode_geometry(mode: u32) -> Option<(u16, u16)> {
@@ -16843,7 +16869,14 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn sync_main_gdevice_geometry(&mut self, bus: &mut MacMemoryBus, width: u16, height: u16) {
+    fn sync_main_gdevice_geometry(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        width: u16,
+        height: u16,
+        row_bytes: u32,
+        depth: u16,
+    ) {
         let gdh = self.ensure_main_gdevice(bus);
         let gd = bus.read_long(gdh);
         if gd == 0 {
@@ -16856,12 +16889,31 @@ impl super::TrapDispatcher {
             0
         };
         if pm != 0 {
-            bus.write_word(pm + 4, 0x8000 | width);
+            bus.write_word(pm + 4, 0x8000 | row_bytes as u16);
             bus.write_word(pm + 6, 0);
             bus.write_word(pm + 8, 0);
             bus.write_word(pm + 10, height);
             bus.write_word(pm + 12, width);
+            bus.write_word(pm + 32, depth);
+            bus.write_word(pm + 34, 1);
+            bus.write_word(pm + 36, depth);
+            let ctab_handle = bus.read_long(pm + 42);
+            let ctab = if ctab_handle != 0 {
+                bus.read_long(ctab_handle)
+            } else {
+                0
+            };
+            if ctab != 0 {
+                bus.write_long(ctab, u32::from(depth));
+            }
         }
+        let mut flags = bus.read_word(gd + 20);
+        if depth == 1 {
+            flags &= !0x0001;
+        } else {
+            flags |= 0x0001;
+        }
+        bus.write_word(gd + 20, flags);
         bus.write_word(gd + 34, 0);
         bus.write_word(gd + 36, 0);
         bus.write_word(gd + 38, height);
@@ -16876,13 +16928,11 @@ impl super::TrapDispatcher {
         width: u16,
         height: u16,
     ) {
-        if depth != 8 {
+        let Some(row_bytes) = Self::row_bytes_for_depth(width, depth) else {
             return;
-        }
-        eprintln!("[TRAP] SetDepth: depth={}", depth);
+        };
         let ram_size = bus.ram_size();
         let color_screen_base = ram_size - 0x80000;
-        let row_bytes = u32::from(width);
         bus.write_long(0x0824, color_screen_base); // ScrnBase
 
         let sb = crate::memory::globals::addr::SCREEN_BITS;
@@ -16906,11 +16956,11 @@ impl super::TrapDispatcher {
             bus.write_word(sb + 12, width);
         }
 
-        self.sync_main_gdevice_geometry(bus, width, height);
+        self.sync_main_gdevice_geometry(bus, width, height, row_bytes, depth);
 
-        // Clear the 8bpp screen to black (index 255 = black in Mac palette).
-        for i in 0..(u32::from(width) * u32::from(height)) {
-            bus.write_byte(color_screen_base + i, 0xFF);
+        let clear_byte = if depth == 1 { 0x00 } else { 0xFF };
+        for i in 0..(row_bytes * u32::from(height)) {
+            bus.write_byte(color_screen_base + i, clear_byte);
         }
         self.screen_mode = (color_screen_base, row_bytes, width, height, depth);
     }
@@ -17107,6 +17157,19 @@ impl super::TrapDispatcher {
         info.bounds_left = rect_left;
         info.bounds_bottom = rect_bottom;
         info.bounds_right = rect_right;
+    }
+
+    fn inert_copy_bitmap_info() -> CopyBitmapInfo {
+        CopyBitmapInfo {
+            base: u32::MAX,
+            row_bytes: 0,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 0,
+            bounds_right: 0,
+            pixel_size: 0,
+            ctab_handle: 0,
+        }
     }
 
     fn copy_bits_common<C: CpuOps>(
@@ -17627,6 +17690,10 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn resolve_copy_bitmap(&self, bus: &MacMemoryBus, bits_ptr: u32) -> CopyBitmapInfo {
+        if bits_ptr == 0 || !Self::guest_range_in_ram(bus, bits_ptr, 14) {
+            return Self::inert_copy_bitmap_info();
+        }
+
         let normalize_base = |base: u32| -> u32 {
             if base == 0 || base == u32::MAX {
                 return base;
@@ -17705,6 +17772,9 @@ impl super::TrapDispatcher {
             };
         }
         if (raw_word & 0x8000) != 0 {
+            if !Self::guest_range_in_ram(bus, bits_ptr, 46) {
+                return Self::inert_copy_bitmap_info();
+            }
             return CopyBitmapInfo {
                 base: normalize_base(Self::offscreen_pixmap_base_ptr(bus, bits_ptr)),
                 row_bytes: (raw_word & 0x3FFF) as u32,
@@ -28689,27 +28759,30 @@ mod tests {
         // a nonzero mode ID when the requested depth is supported.
         // Stack: SP+0=selector, SP+2=flags, SP+4=whichFlags, SP+6=depth,
         //        SP+8=gd, SP+12=result. Pops 12 bytes.
-        let (mut d, mut cpu, mut bus) = setup();
-        bus.write_word(TEST_SP, 0x0A14); // selector
-        bus.write_word(TEST_SP + 2, 1); // flags (color)
-        bus.write_word(TEST_SP + 4, 0); // whichFlags
-        bus.write_word(TEST_SP + 6, 8); // depth
-        bus.write_long(TEST_SP + 8, 0); // gd
-        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-        assert_ne!(bus.read_word(TEST_SP + 12), 0);
+        for depth in [1, 2, 4, 8] {
+            let (mut d, mut cpu, mut bus) = setup();
+            bus.write_word(TEST_SP, 0x0A14); // selector
+            bus.write_word(TEST_SP + 2, 1); // flags (color)
+            bus.write_word(TEST_SP + 4, 0); // whichFlags
+            bus.write_word(TEST_SP + 6, depth);
+            bus.write_long(TEST_SP + 8, 0); // gd
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+            assert_ne!(bus.read_word(TEST_SP + 12), 0);
+        }
     }
 
     #[test]
     fn has_depth_unsupported_depth_returns_zero() {
         // Imaging With QuickDraw 1994 pp.5-33..5-34: HasDepth returns
-        // 0 when the requested depth is unsupported.
+        // 0 when the requested depth is outside the indexed depths Systemless
+        // can render into its 8bpp screen path.
         let (mut d, mut cpu, mut bus) = setup();
         bus.write_word(TEST_SP, 0x0A14); // selector
         bus.write_word(TEST_SP + 2, 1); // flags (color)
         bus.write_word(TEST_SP + 4, 0); // whichFlags
-        bus.write_word(TEST_SP + 6, 16); // unsupported depth in HLE
+        bus.write_word(TEST_SP + 6, 16);
         bus.write_long(TEST_SP + 8, 0); // gd
         let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -28735,19 +28808,64 @@ mod tests {
     }
 
     #[test]
+    fn set_depth_one_switches_screen_and_gdevice_to_monochrome() {
+        // Imaging With QuickDraw 1994 pp. 5-34..5-35: SetDepth sets the
+        // requested device depth and gdDevType flag. A B&W request uses
+        // flags=0 and depth=1, and should leave screenBits, the active
+        // screen_mode, and the main GDevice PixMap in agreement.
+        let (mut d, mut cpu, mut bus) = setup();
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+        let main_gd = bus.read_long(main_gdh);
+        let main_pm_handle = bus.read_long(main_gd + 22);
+        let main_pm = bus.read_long(main_pm_handle);
+        let screen_bits_ptr = crate::memory::globals::addr::SCREEN_BITS;
+
+        cpu.write_reg(Register::D0, 0x0A13);
+        bus.write_word(TEST_SP, 0); // flags: black-and-white
+        bus.write_word(TEST_SP + 2, 1); // whichFlags: gdDevType
+        bus.write_word(TEST_SP + 4, 1); // depth: 1bpp
+        bus.write_long(TEST_SP + 6, main_gdh); // gd
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(d.screen_mode.1, 100);
+        assert_eq!(d.screen_mode.2, 800);
+        assert_eq!(d.screen_mode.3, 600);
+        assert_eq!(d.screen_mode.4, 1);
+        assert_eq!(bus.read_long(screen_bits_ptr), d.screen_mode.0);
+        assert_eq!(bus.read_word(screen_bits_ptr + 4), 100);
+        assert_eq!(bus.read_word(screen_bits_ptr + 10), 600);
+        assert_eq!(bus.read_word(screen_bits_ptr + 12), 800);
+        assert_eq!(bus.read_byte(d.screen_mode.0), 0x00);
+        assert_eq!(
+            bus.read_byte(d.screen_mode.0 + d.screen_mode.1 * 600 - 1),
+            0x00
+        );
+        assert_eq!(bus.read_word(main_pm + 4), 0x8000 | 100);
+        assert_eq!(bus.read_word(main_pm + 32), 1);
+        assert_eq!(bus.read_word(main_pm + 36), 1);
+        assert_eq!(bus.read_word(main_gd + 20) & 0x0001, 0);
+    }
+
+    #[test]
     fn set_depth_unsupported_depth_returns_nonzero() {
         // Imaging With QuickDraw 1994 pp. 5-34..5-35: SetDepth returns
         // a nonzero OSErr when it cannot impose the requested depth.
-        let (mut d, mut cpu, mut bus) = setup();
-        bus.write_word(TEST_SP, 0x0A13); // selector
-        bus.write_word(TEST_SP + 2, 1); // flags (color)
-        bus.write_word(TEST_SP + 4, 0); // whichFlags
-        bus.write_word(TEST_SP + 6, 99); // unsupported depth in HLE
-        bus.write_long(TEST_SP + 8, 0); // gd
-        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-        assert_ne!(bus.read_word(TEST_SP + 12), 0);
+        for depth in [4, 99] {
+            let (mut d, mut cpu, mut bus) = setup();
+            bus.write_word(TEST_SP, 0x0A13); // selector
+            bus.write_word(TEST_SP + 2, 1); // flags (color)
+            bus.write_word(TEST_SP + 4, 0); // whichFlags
+            bus.write_word(TEST_SP + 6, depth); // unsupported depth in HLE
+            bus.write_long(TEST_SP + 8, 0); // gd
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+            assert_ne!(bus.read_word(TEST_SP + 12), 0);
+        }
     }
 
     // ==================== Palette ====================
@@ -30244,6 +30362,18 @@ mod tests {
         assert_eq!(info.base, expected_base);
         assert_eq!(info.row_bytes, expected_row_bytes);
         assert_eq!(info.pixel_size, expected_pixel_size);
+    }
+
+    #[test]
+    fn resolve_copy_bitmap_nil_or_sentinel_bits_are_inert() {
+        let (d, _cpu, bus) = setup();
+
+        for bits_ptr in [0, u32::MAX] {
+            let info = d.resolve_copy_bitmap(&bus, bits_ptr);
+            assert_eq!(info.base, u32::MAX);
+            assert_eq!(info.row_bytes, 0);
+            assert_eq!(info.pixel_size, 0);
+        }
     }
 
     #[test]
