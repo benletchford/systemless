@@ -25,6 +25,9 @@ pub mod addr {
     /// low-memory mirror `KeyMapLM` at $0174.
     pub const KEY_MAP_LM: u32 = 0x0174;
     pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
+    /// MemErr: current value of MemError (word).
+    /// Inside Macintosh Volume IV, IV-80; low-memory table IV-246.
+    pub const MEM_ERR: u32 = 0x0220;
     pub const ROM85: u32 = 0x028E; // Version number of ROM (word) - Inside Macintosh V, V-578
 
     /// SdVolume: current speaker volume (1 byte, low-order three bits).

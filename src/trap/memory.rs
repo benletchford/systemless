@@ -102,6 +102,8 @@ fn scribble_uninitialized_allocation(bus: &mut MacMemoryBus, address: u32, size:
 const NO_ERR: u32 = 0;
 const BAD_UNIT_ERR: u32 = (-21i32) as u32;
 const PARAM_ERR: u32 = (-50i32) as u32;
+const MEM_FULL_ERR: u32 = (-108i32) as u32;
+const NIL_HANDLE_ERR: u32 = (-109i32) as u32;
 const DT_QTYPE: u16 = 7;
 const NOT_HELD_ERR: u32 = (-621i32) as u32;
 const NOT_LOCKED_ERR: u32 = (-623i32) as u32;
@@ -112,6 +114,17 @@ const VM_PAGE_SIZE: u32 = 1 << VM_PAGE_SHIFT;
 fn return_noerr<C: CpuOps>(cpu: &mut C) -> Result<()> {
     cpu.write_reg(Register::D0, NO_ERR);
     Ok(())
+}
+
+#[inline]
+fn set_mem_error(bus: &mut MacMemoryBus, result: u32) {
+    bus.write_word(addr::MEM_ERR, result as u16);
+}
+
+#[inline]
+fn write_memory_result<C: CpuOps>(cpu: &mut C, bus: &mut MacMemoryBus, result: u32) {
+    set_mem_error(bus, result);
+    cpu.write_reg(Register::D0, result);
 }
 
 fn vm_page_span(start: u32, count: u32) -> Option<(u32, u32)> {
@@ -379,7 +392,7 @@ impl super::TrapDispatcher {
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
                 } else {
                     // Check CLEAR bit (bit 9 = 0x0200 in trap word)
                     if (self.current_trap_word & 0x0200) != 0 && size > 0 {
@@ -388,7 +401,7 @@ impl super::TrapDispatcher {
                         scribble_uninitialized_allocation(bus, ptr, size);
                     }
                     cpu.write_reg(Register::A0, ptr);
-                    cpu.write_reg(Register::D0, 0);
+                    write_memory_result(cpu, bus, NO_ERR);
                 }
                 Ok(())
             }
@@ -402,7 +415,7 @@ impl super::TrapDispatcher {
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
                 // Check CLEAR bit (bit 9 = 0x0200 in trap word)
@@ -412,13 +425,21 @@ impl super::TrapDispatcher {
                     scribble_uninitialized_allocation(bus, ptr, size);
                 }
                 let handle = bus.alloc(4);
+                if handle == 0 {
+                    if ptr != 0 {
+                        bus.free(ptr);
+                    }
+                    cpu.write_reg(Register::A0, 0);
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
+                    return Some(Ok(()));
+                }
                 bus.write_long(handle, ptr);
                 // Track the ptr → handle mapping so RecoverHandle can find
                 // this handle later given just its master pointer's data
                 // address. Inside Macintosh Volume V, V-579.
                 self.ptr_to_handle.insert(ptr, handle);
                 cpu.write_reg(Register::A0, handle);
-                cpu.write_reg(Register::D0, 0);
+                write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
 
@@ -431,11 +452,11 @@ impl super::TrapDispatcher {
                 let handle = bus.alloc(4);
                 if handle == 0 {
                     cpu.write_reg(Register::A0, 0);
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
                 } else {
                     bus.write_long(handle, 0); // master pointer = NIL
                     cpu.write_reg(Register::A0, handle);
-                    cpu.write_reg(Register::D0, 0); // noErr
+                    write_memory_result(cpu, bus, NO_ERR);
                 }
                 Ok(())
             }
@@ -445,7 +466,7 @@ impl super::TrapDispatcher {
             (false, 0x1F) => {
                 let ptr = cpu.read_reg(Register::A0);
                 bus.free(ptr);
-                cpu.write_reg(Register::D0, 0);
+                write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
 
@@ -491,7 +512,7 @@ impl super::TrapDispatcher {
                     }
                     bus.free(handle);
                 }
-                cpu.write_reg(Register::D0, 0);
+                write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
 
@@ -619,7 +640,7 @@ impl super::TrapDispatcher {
                         }
                     }
                 }
-                cpu.write_reg(Register::D0, 0);
+                write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
 
@@ -631,7 +652,7 @@ impl super::TrapDispatcher {
                 let handle = cpu.read_reg(Register::A0);
                 let trap_site = cpu.read_reg(Register::PC).wrapping_sub(2);
                 if handle == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
+                    write_memory_result(cpu, bus, NIL_HANDLE_ERR);
                 } else {
                     let ptr = bus.read_long(handle);
                     let size = bus.get_alloc_size(ptr).unwrap_or(0);
@@ -658,6 +679,7 @@ impl super::TrapDispatcher {
                             trap_site, handle, ptr, size
                         );
                     }
+                    set_mem_error(bus, NO_ERR);
                     cpu.write_reg(Register::D0, size);
                 }
                 Ok(())
@@ -4386,6 +4408,7 @@ fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
 mod tests {
     use super::super::test_helpers::{setup, TEST_SP};
     use crate::cpu::{CpuOps, Register};
+    use crate::memory::globals::addr;
     use crate::memory::MemoryBus;
     use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
     use std::collections::HashMap;
@@ -4435,6 +4458,27 @@ mod tests {
             cpu.read_reg(Register::D0),
             0,
             "NewHandle should set D0 to 0 (noErr)"
+        );
+    }
+
+    #[test]
+    fn new_handle_clear_clears_stale_memerr_on_success() {
+        // Inside Macintosh Volume IV, IV-80: Memory Manager routines store
+        // the most recent result code in the low-memory MemErr word.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_word(addr::MEM_ERR, 0x1E6C);
+        dispatcher.current_trap_word = 0xA322; // NewHandleClear
+        cpu.write_reg(Register::D0, 68);
+
+        let result = dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus);
+        assert!(result.is_some(), "NewHandleClear should be handled");
+        assert!(result.unwrap().is_ok(), "NewHandleClear should succeed");
+        assert_ne!(cpu.read_reg(Register::A0), 0, "allocation should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0, "D0 should report noErr");
+        assert_eq!(
+            bus.read_word(addr::MEM_ERR),
+            0,
+            "NewHandleClear must clear stale MemErr on success"
         );
     }
 
