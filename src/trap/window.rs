@@ -869,6 +869,7 @@ impl super::TrapDispatcher {
         }
         self.track_window_front(bus, the_window);
         self.front_window = the_window;
+        self.sync_cached_front_window_render_state(bus);
         bus.write_byte(the_window + Self::WINDOW_HILITED_OFFSET, 0xFF);
         self.event_queue.push_back(QueuedEvent {
             what: 8,
@@ -940,11 +941,55 @@ impl super::TrapDispatcher {
                 .into_iter()
                 .find(|&w| self.window_visible(bus, w))
                 .unwrap_or_else(|| self.window_list.first().copied().unwrap_or(0));
+            self.sync_cached_front_window_render_state(bus);
         }
         if self.current_port == window_ptr {
             self.current_port = self.front_window;
         }
         self.saved_draw_old_regions.remove(&window_ptr);
+    }
+
+    fn sync_cached_front_window_render_state(&mut self, bus: &MacMemoryBus) {
+        let front_window = self.front_window;
+        if front_window == 0 || !self.window_visible(bus, front_window) {
+            self.window_bounds = (0, 0, 0, 0);
+            self.window_title.clear();
+            self.window_proc_id = -1;
+            self.go_away_flag = false;
+            return;
+        }
+
+        self.window_bounds = self.window_global_port_rect(bus, front_window);
+        self.window_proc_id = self
+            .window_proc_ids
+            .get(&front_window)
+            .copied()
+            .unwrap_or(0);
+        self.go_away_flag = bus.read_byte(front_window + Self::WINDOW_GO_AWAY_FLAG_OFFSET) != 0;
+
+        let title_handle = bus.read_long(front_window + Self::WINDOW_TITLE_HANDLE_OFFSET);
+        self.window_title = if title_handle != 0 {
+            let title_ptr = bus.read_long(title_handle);
+            if title_ptr != 0 {
+                String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+    }
+
+    fn erase_window_for_removal(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
+        if window_ptr == 0 || !self.window_visible(bus, window_ptr) {
+            return;
+        }
+
+        if let Some((top, left, bottom, right)) = self.window_structure_rect(bus, window_ptr) {
+            self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+        }
+        bus.write_byte(window_ptr + Self::WINDOW_VISIBLE_OFFSET, 0x00);
+        self.set_window_vis_from_content(bus, window_ptr, false);
     }
 
     fn apply_closewindow_front_promotion_side_effects(
@@ -1677,6 +1722,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
                 let was_front = self.front_window == the_window;
+                self.erase_window_for_removal(bus, the_window);
                 self.untrack_window(bus, the_window);
                 self.apply_closewindow_front_promotion_side_effects(bus, the_window, was_front);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -1692,6 +1738,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
                 let was_front = self.front_window == the_window;
+                self.erase_window_for_removal(bus, the_window);
                 self.untrack_window(bus, the_window);
                 self.apply_closewindow_front_promotion_side_effects(bus, the_window, was_front);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -4306,6 +4353,10 @@ mod tests {
         disp.window_list = vec![front, next];
         disp.front_window = front;
         disp.current_port = front;
+        disp.window_bounds = (240, 450, 480, 650);
+        disp.window_proc_id = 4;
+        disp.window_title = "Player".to_string();
+        disp.go_away_flag = true;
         for &base in &[front, next] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -4325,6 +4376,14 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(disp.front_window, next);
         assert_eq!(disp.current_port, next);
+        assert_eq!(
+            disp.window_bounds,
+            (10, 10, 50, 100),
+            "CloseWindow front promotion must refresh cached render bounds \
+             before later NewWindow calls redraw the previous front inactive"
+        );
+        assert_eq!(disp.window_title, "");
+        assert!(!disp.go_away_flag);
         assert_eq!(bus.read_byte(front + 111u32), 0x00);
         assert_eq!(bus.read_byte(next + 111u32), 0xFF);
         assert_eq!(disp.window_list, vec![next]);
@@ -4362,6 +4421,10 @@ mod tests {
         disp.window_list = vec![front, next];
         disp.front_window = front;
         disp.current_port = front;
+        disp.window_bounds = (240, 450, 480, 650);
+        disp.window_proc_id = 4;
+        disp.window_title = "Player".to_string();
+        disp.go_away_flag = true;
         for &base in &[front, next] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -4381,6 +4444,14 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(disp.front_window, next);
         assert_eq!(disp.current_port, next);
+        assert_eq!(
+            disp.window_bounds,
+            (10, 10, 50, 100),
+            "DisposeWindow front promotion must refresh cached render bounds \
+             before later NewWindow calls redraw the previous front inactive"
+        );
+        assert_eq!(disp.window_title, "");
+        assert!(!disp.go_away_flag);
         assert_eq!(bus.read_byte(front + 111u32), 0x00);
         assert_eq!(bus.read_byte(next + 111u32), 0xFF);
         assert_eq!(disp.window_list, vec![next]);
@@ -4390,6 +4461,103 @@ mod tests {
                 && (event.modifiers & 1) == 1),
             "DisposeWindow front promotion must queue activate event for new front window"
         );
+    }
+
+    #[test]
+    fn disposewindow_erases_visible_window_from_screen() {
+        // IM:I I-284: DisposeWindow calls CloseWindow; IM:I I-283 says
+        // CloseWindow removes the window from the screen and window list.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.menu_bar_hidden = false;
+        super::super::TrapDispatcher::fb_fill_pattern_rect(
+            &mut bus,
+            screen_base,
+            800,
+            8,
+            800,
+            600,
+            0,
+            0,
+            600,
+            800,
+            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+        );
+
+        let content_probe = screen_base + 250 * 800 + 460;
+        let right_frame_probe = screen_base + 300 * 800 + 651;
+        let title_frame_probe = screen_base + 221 * 800 + 626;
+        let desktop_content = bus.read_byte(content_probe);
+        let desktop_right_frame = bus.read_byte(right_frame_probe);
+        let desktop_title_frame = bus.read_byte(title_frame_probe);
+        let window_addr = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            screen_base,
+            240,
+            450,
+            480,
+            650,
+            "Player",
+            4,
+            true,
+            true,
+            true,
+            0,
+        );
+        disp.window_list = vec![window_addr];
+        disp.front_window = window_addr;
+        disp.current_port = window_addr;
+        assert_ne!(
+            bus.read_byte(content_probe),
+            desktop_content,
+            "precondition: visible window content covers the desktop pixel"
+        );
+        assert_ne!(
+            bus.read_byte(right_frame_probe),
+            desktop_right_frame,
+            "precondition: visible window frame covers the right-edge desktop pixel"
+        );
+        assert_ne!(
+            bus.read_byte(title_frame_probe),
+            desktop_title_frame,
+            "precondition: visible window frame covers the title-bar desktop pixel"
+        );
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window_addr);
+
+        let result = dispatch(&mut disp, 0x114, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(
+            bus.read_byte(content_probe),
+            desktop_content,
+            "DisposeWindow must remove the visible window pixels from the screen"
+        );
+        assert_eq!(
+            bus.read_byte(right_frame_probe),
+            desktop_right_frame,
+            "DisposeWindow must erase the visible right frame from the screen"
+        );
+        assert_eq!(
+            bus.read_byte(title_frame_probe),
+            desktop_title_frame,
+            "DisposeWindow must erase the visible title frame from the screen"
+        );
+        assert_eq!(
+            bus.read_byte(window_addr + 110u32),
+            0x00,
+            "disposed window should no longer be marked visible"
+        );
+        assert!(!disp.window_list.contains(&window_addr));
     }
 
     // ---------------------------------------------------------------
