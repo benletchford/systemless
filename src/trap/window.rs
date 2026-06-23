@@ -198,7 +198,7 @@ impl super::TrapDispatcher {
         aux_handle
     }
 
-    fn rect_intersection(
+    pub(super) fn rect_intersection(
         a: (i16, i16, i16, i16),
         b: (i16, i16, i16, i16),
     ) -> Option<(i16, i16, i16, i16)> {
@@ -443,7 +443,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn window_structure_rect(
+    pub(super) fn window_structure_rect(
         &self,
         bus: &MacMemoryBus,
         window_ptr: u32,
@@ -514,7 +514,37 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn save_screen_rect_pixels(
+    fn erase_window_content_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        rect: (i16, i16, i16, i16),
+    ) {
+        let Some(local_rect) = self
+            .window_content_rect(bus, window_ptr)
+            .and_then(|content| Self::rect_intersection(content, rect))
+        else {
+            return;
+        };
+        let (global_top, global_left, _, _) = self.window_global_port_rect(bus, window_ptr);
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            global_top.saturating_add(local_rect.0),
+            global_left.saturating_add(local_rect.1),
+            global_top.saturating_add(local_rect.2),
+            global_left.saturating_add(local_rect.3),
+            false,
+        );
+    }
+
+    pub(super) fn save_screen_rect_pixels(
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
@@ -547,7 +577,7 @@ impl super::TrapDispatcher {
         Some((top, left, width, height, pixels))
     }
 
-    fn restore_screen_rect_pixels(
+    pub(super) fn restore_screen_rect_pixels(
         &self,
         bus: &mut MacMemoryBus,
         dst_top: i16,
@@ -2560,12 +2590,12 @@ impl super::TrapDispatcher {
             // Paints the portion of theWindow that lies within
             // clobberedRgn. NIL clobberedRgn = paint the whole window.
             // PROCEDURE PaintOne(theWindow: WindowPeek; clobberedRgn: RgnHandle);
-            // Inside Macintosh Volume I, I-292
+            // Inside Macintosh Volume I, I-296
             //
-            // Delegates to invalidate_window_rect: NIL means the full
-            // window, while an empty region currently falls back to the
-            // window's full portRect path as observed on BasiliskII.
-            // PaintOne ($A90C): NIL clobberedRgn uses portRect per IM:I I-292
+            // Paints the frame, erases exposed content with the background
+            // pattern, and adds that content to the update region. NIL means
+            // the full window; an empty region currently follows the same
+            // full-portRect path observed on BasiliskII.
             (true, 0x10C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rgn_handle = bus.read_long(sp);
@@ -2580,6 +2610,7 @@ impl super::TrapDispatcher {
                     None
                 };
                 let rect = rect.unwrap_or_else(|| self.window_port_rect(bus, the_window));
+                self.erase_window_content_rect(bus, the_window, rect);
                 self.invalidate_window_rect(bus, the_window, rect);
                 Ok(())
             }
@@ -4918,6 +4949,66 @@ mod tests {
     }
 
     #[test]
+    fn redraw_chrome_does_not_paint_back_window_chrome_through_front_content() {
+        // The Window Manager clips a back window's frame to windows above it.
+        // Redrawing raw framebuffer chrome without that clip can leave stale
+        // back-window borders inside the front window's content area.
+        // Inside Macintosh Volume I (1985), pp. I-296..I-297.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+
+        let back = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            screen_base,
+            50,
+            50,
+            150,
+            300,
+            "Back",
+            4,
+            true,
+            false,
+            false,
+            0,
+        );
+        let front = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            screen_base,
+            50,
+            30,
+            570,
+            370,
+            "Front",
+            4,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        let protected = screen_base + 60 * 800 + 49;
+        bus.write_byte(protected, 0x7B);
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(protected),
+            0x7B,
+            "back-window chrome must be clipped by the front window's content"
+        );
+    }
+
+    #[test]
     fn inactive_document_window_chrome_still_draws_title_text() {
         let (mut disp, mut cpu, mut bus) = setup();
         let window_addr = bus.alloc(256);
@@ -6786,6 +6877,53 @@ mod tests {
                 .any(|event| event.what == 6 && event.message == win),
             "PaintOne should queue an update event for the target window"
         );
+    }
+
+    #[test]
+    fn paintone_erases_exposed_content_before_queuing_update() {
+        // PaintOne erases exposed content with the background pattern and
+        // adds it to the update region.
+        // Inside Macintosh Volume I (1985), p. I-296.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let win = bus.alloc(256);
+        let (_cont_rgn, update_rgn) =
+            setup_full_window_with_regions(&mut bus, win, 10, 20, 50, 100);
+        bus.write_byte(win + 110u32, 0xFF);
+        disp.window_list = vec![win];
+        disp.front_window = win;
+
+        let probe = screen_base + 30 * 800 + 50;
+        bus.write_byte(probe, 0x7B);
+
+        let clobbered_ptr = bus.alloc(10);
+        let clobbered_handle = bus.alloc(4);
+        bus.write_long(clobbered_handle, clobbered_ptr);
+        bus.write_word(clobbered_ptr, 10);
+        bus.write_word(clobbered_ptr + 2, 15);
+        bus.write_word(clobbered_ptr + 4, 25);
+        bus.write_word(clobbered_ptr + 6, 30);
+        bus.write_word(clobbered_ptr + 8, 60);
+
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, clobbered_handle);
+        bus.write_long(sp + 4, win);
+
+        let result = dispatch(&mut disp, 0x10C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_ne!(
+            bus.read_byte(probe),
+            0x7B,
+            "PaintOne must erase exposed content before the application redraws it"
+        );
+        assert_eq!(bus.read_word(update_rgn + 2) as i16, 15, "updateRgn.top");
+        assert_eq!(bus.read_word(update_rgn + 4) as i16, 25, "updateRgn.left");
+        assert_eq!(bus.read_word(update_rgn + 6) as i16, 30, "updateRgn.bottom");
+        assert_eq!(bus.read_word(update_rgn + 8) as i16, 60, "updateRgn.right");
     }
 
     #[test]

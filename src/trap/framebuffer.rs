@@ -1617,6 +1617,23 @@ impl super::TrapDispatcher {
                     // Not visible.
                     continue;
                 }
+                let preserved_front_pixels: Vec<_> = self
+                    .window_structure_rect(bus, w)
+                    .map(|back_structure| {
+                        list_snapshot
+                            .iter()
+                            .take_while(|&&front_window| front_window != w)
+                            .filter(|&&front_window| bus.read_byte(front_window + 110u32) != 0)
+                            .filter_map(|&front_window| {
+                                self.window_structure_rect(bus, front_window)
+                                    .and_then(|front_structure| {
+                                        Self::rect_intersection(back_structure, front_structure)
+                                    })
+                                    .and_then(|rect| self.save_screen_rect_pixels(bus, rect))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 // Derive per-window screen bounds from port geometry:
                 // init_cgraf_window writes pixmap bounds as
                 // (-wind_top, -wind_left, screen_h - wind_top,
@@ -1667,6 +1684,9 @@ impl super::TrapDispatcher {
                     self.draw_window_frame(bus);
                 } else {
                     self.draw_window_chrome(bus, hilited);
+                }
+                for (top, left, width, height, pixels) in preserved_front_pixels {
+                    self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
                 }
             }
             // Restore front-window state before drawing front chrome.
