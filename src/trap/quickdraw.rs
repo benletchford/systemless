@@ -977,7 +977,9 @@ impl super::TrapDispatcher {
             // ========== Clipping ==========
 
             // SetClip ($A879)
-            // Changes the given region to be equivalent to the clipping region of the current grafPort.
+            // Changes the clipping region of the current grafPort to an
+            // equivalent copy of the given region without changing the port's
+            // clipRgn handle.
             // PROCEDURE SetClip (rgn: RgnHandle);
             // Inside Macintosh Volume I, I-167
             (true, 0x079) => {
@@ -1020,7 +1022,9 @@ impl super::TrapDispatcher {
             }
 
             // GetClip ($A87A)
-            // Copies the current grafPort's clipping region into the given region.
+            // Changes the given region to an equivalent copy of the current
+            // grafPort's clipping region without changing the given region's
+            // handle.
             // PROCEDURE GetClip (rgn: RgnHandle);
             // Inside Macintosh Volume I, I-167
             (true, 0x07A) => {
@@ -1031,21 +1035,29 @@ impl super::TrapDispatcher {
                 let global_ptr = bus.read_long(a5);
                 let port_ptr = bus.read_long(global_ptr);
                 let clip_rgn = bus.read_long(port_ptr + 28);
-                let clip_rgn_ptr = bus.read_long(clip_rgn);
-                let dest_ptr = bus.read_long(rgn_handle);
-                let rgn_size = bus.read_word(clip_rgn_ptr) as u32;
-                for i in 0..rgn_size {
-                    bus.write_byte(dest_ptr + i, bus.read_byte(clip_rgn_ptr + i));
-                }
-                if trace_dialog_ports_enabled() {
-                    let top = bus.read_word(clip_rgn_ptr + 2) as i16;
-                    let left = bus.read_word(clip_rgn_ptr + 4) as i16;
-                    let bottom = bus.read_word(clip_rgn_ptr + 6) as i16;
-                    let right = bus.read_word(clip_rgn_ptr + 8) as i16;
-                    eprintln!(
-                        "[DIALOG-PORT] GetClip port=${:08X} rect=({},{},{},{})",
-                        port_ptr, top, left, bottom, right
-                    );
+                if rgn_handle != 0 && clip_rgn != 0 {
+                    let clip_rgn_ptr = bus.read_long(clip_rgn);
+                    if clip_rgn_ptr != 0 {
+                        let rgn_size = bus.read_word(clip_rgn_ptr) as u32;
+                        let Some(dest_ptr) =
+                            Self::ensure_region_capacity(bus, rgn_handle, rgn_size)
+                        else {
+                            return Some(Ok(()));
+                        };
+                        for i in 0..rgn_size {
+                            bus.write_byte(dest_ptr + i, bus.read_byte(clip_rgn_ptr + i));
+                        }
+                        if trace_dialog_ports_enabled() {
+                            let top = bus.read_word(clip_rgn_ptr + 2) as i16;
+                            let left = bus.read_word(clip_rgn_ptr + 4) as i16;
+                            let bottom = bus.read_word(clip_rgn_ptr + 6) as i16;
+                            let right = bus.read_word(clip_rgn_ptr + 8) as i16;
+                            eprintln!(
+                                "[DIALOG-PORT] GetClip port=${:08X} rect=({},{},{},{})",
+                                port_ptr, top, left, bottom, right
+                            );
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -1628,7 +1640,7 @@ impl super::TrapDispatcher {
 
             // CopyRgn ($A8DC)
             // PROCEDURE CopyRgn(srcRgn, dstRgn: RgnHandle);
-            // CopyRgn ($A8DC): Copies 10 bytes of region data
+            // CopyRgn ($A8DC): Copies the full region structure by value
             (true, 0x0DC) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_handle = bus.read_long(sp);
@@ -20299,6 +20311,21 @@ mod tests {
         )
     }
 
+    fn assert_rgn_bytes_equal(bus: &impl MemoryBus, actual_handle: u32, expected_handle: u32) {
+        let actual_ptr = bus.read_long(actual_handle);
+        let expected_ptr = bus.read_long(expected_handle);
+        let expected_size = bus.read_word(expected_ptr) as u32;
+        assert_eq!(bus.read_word(actual_ptr) as u32, expected_size);
+        for offset in 0..expected_size {
+            assert_eq!(
+                bus.read_byte(actual_ptr + offset),
+                bus.read_byte(expected_ptr + offset),
+                "region byte {} should match",
+                offset
+            );
+        }
+    }
+
     /// Build a minimal version-1 PICT with a single paintRect opcode.
     fn write_v1_paintrect_picture(
         bus: &mut impl MemoryBus,
@@ -21727,6 +21754,76 @@ mod tests {
     }
 
     #[test]
+    fn setclip_copies_complex_region_data_and_resizes_port_clip_storage() {
+        // IM:I I-167: SetClip copies the complete region into the current
+        // port's clipRgn without replacing the clipRgn handle.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let clip_ptr = bus.alloc(10);
+        let clip_handle = bus.alloc(4);
+        make_rgn(&mut bus, clip_ptr, clip_handle, 0, 0, 342, 512);
+        bus.write_long(port_ptr + 28, clip_handle);
+
+        let src = make_complex_rgn(
+            &mut bus,
+            (0, 0, 4, 6),
+            &[
+                0,
+                0,
+                6,
+                super::REGION_STOP,
+                1,
+                2,
+                4,
+                super::REGION_STOP,
+                3,
+                2,
+                4,
+                super::REGION_STOP,
+                4,
+                0,
+                6,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        let src_size = bus.read_word(bus.read_long(src)) as u32;
+
+        bus.write_long(TEST_SP, src);
+        let result = d.dispatch_quickdraw(true, 0x079, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_long(port_ptr + 28), clip_handle);
+        assert_ne!(
+            bus.read_long(clip_handle),
+            clip_ptr,
+            "complex SetClip should resize the 10-byte destination storage"
+        );
+        assert_eq!(
+            bus.get_alloc_size(bus.read_long(clip_handle)),
+            Some(src_size)
+        );
+        assert_rgn_bytes_equal(&bus, clip_handle, src);
+        assert!(TrapDispatcher::region_contains_point(
+            &bus,
+            clip_handle,
+            1,
+            1
+        ));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, clip_handle, 1, 3),
+            "complex clipping hole should survive SetClip"
+        );
+        assert!(TrapDispatcher::region_contains_point(
+            &bus,
+            clip_handle,
+            1,
+            4
+        ));
+    }
+
+    #[test]
     fn test_get_clip() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         // Create a destination region
@@ -21740,6 +21837,62 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         // Verify clip region was copied
         assert_eq!(bus.read_word(dst_rgn), 10); // rgnSize
+    }
+
+    #[test]
+    fn getclip_copies_complex_current_clip_and_resizes_destination_storage() {
+        // IM:I I-167: GetClip is the reverse of SetClip; it changes the
+        // caller-supplied region to an equivalent copy of the port clip.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let clip = make_complex_rgn(
+            &mut bus,
+            (0, 0, 4, 6),
+            &[
+                0,
+                0,
+                6,
+                super::REGION_STOP,
+                1,
+                2,
+                4,
+                super::REGION_STOP,
+                3,
+                2,
+                4,
+                super::REGION_STOP,
+                4,
+                0,
+                6,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        bus.write_long(port_ptr + 28, clip);
+        let clip_size = bus.read_word(bus.read_long(clip)) as u32;
+
+        let dst_ptr = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_ptr, dst, 9, 8, 7, 6);
+
+        bus.write_long(TEST_SP, dst);
+        let result = d.dispatch_quickdraw(true, 0x07A, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_ne!(
+            bus.read_long(dst),
+            dst_ptr,
+            "complex GetClip should resize the 10-byte destination storage"
+        );
+        assert_eq!(bus.get_alloc_size(bus.read_long(dst)), Some(clip_size));
+        assert_rgn_bytes_equal(&bus, dst, clip);
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 1));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, dst, 1, 3),
+            "complex clipping hole should survive GetClip"
+        );
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 4));
     }
 
     #[test]
@@ -22563,6 +22716,60 @@ mod tests {
         // Verify dst has src data
         assert_eq!(bus.read_word(dst_rgn + 2) as i16, 5);
         assert_eq!(bus.read_word(dst_rgn + 4) as i16, 10);
+    }
+
+    #[test]
+    fn copyrgn_copies_complex_region_structure_and_resizes_destination_storage() {
+        // IM:I I-183: CopyRgn duplicates the mathematical structure of the
+        // source region; complex scanline data is part of that structure.
+        let (mut d, mut cpu, mut bus) = setup();
+        let src = make_complex_rgn(
+            &mut bus,
+            (0, 0, 4, 6),
+            &[
+                0,
+                0,
+                6,
+                super::REGION_STOP,
+                1,
+                2,
+                4,
+                super::REGION_STOP,
+                3,
+                2,
+                4,
+                super::REGION_STOP,
+                4,
+                0,
+                6,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        let src_size = bus.read_word(bus.read_long(src)) as u32;
+        let dst_ptr = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_ptr, dst, 9, 8, 7, 6);
+
+        bus.write_long(TEST_SP, dst);
+        bus.write_long(TEST_SP + 4, src);
+        let result = d.dispatch_quickdraw(true, 0x0DC, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_ne!(
+            bus.read_long(dst),
+            dst_ptr,
+            "complex CopyRgn should resize the 10-byte destination storage"
+        );
+        assert_eq!(bus.get_alloc_size(bus.read_long(dst)), Some(src_size));
+        assert_rgn_bytes_equal(&bus, dst, src);
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 1));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, dst, 1, 3),
+            "complex region hole should survive CopyRgn"
+        );
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 4));
     }
 
     #[test]
