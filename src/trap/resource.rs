@@ -109,6 +109,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"sysv"
             | b"sysa"
             | b"evnt"
+            | b"ppc "
             | b"cput"
             | b"proc"
             | b"mach"
@@ -2715,6 +2716,19 @@ impl super::TrapDispatcher {
                     }
                     // gestaltAppleEventsAttr ('evnt') -> AppleEvents present
                     b"evnt" => {
+                        cpu.write_reg(Register::A0, 0x0001);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltPPCToolboxAttr ('ppc ') -> PPC Toolbox present.
+                    // Inside Macintosh: Interapplication Communication 1993,
+                    // p. 11-80 defines gestaltPPCToolboxAttr='ppc ' and
+                    // gestaltPPCToolboxPresent as bit 0; Macintosh Toolbox
+                    // Essentials 1992, p. 2-7 directs high-level-event apps
+                    // to use this selector before relying on PPC services.
+                    // Systemless implements the local/init PPC dispatch
+                    // paths generically, so report present but no incoming,
+                    // outgoing, or realtime networking capability bits.
+                    b"ppc " => {
                         cpu.write_reg(Register::A0, 0x0001);
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -10297,6 +10311,19 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         cpu.write_reg(Register::D0, u32::from_be_bytes(*b"rsrc"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 1);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_ppc_toolbox_reports_present() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"ppc "));
 
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
 
