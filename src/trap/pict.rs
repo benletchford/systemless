@@ -3379,16 +3379,18 @@ fn parse_pack_bits_rect(
     // Each PICT pixel index is remapped to the closest match in the
     // destination port's color table (passed as device_clut).
     //
-    // Seed-match identity gate: if the PICT CTab carried a non-zero
-    // ctSeed that matches the current GDevice
-    // CTab seed, the game is asserting the PICT was authored for
-    // this exact palette, and we should write source indices
-    // verbatim. Executor qStdBits.cpp:564-568 applies the same
-    // logic; the equivalent path for PICT playback is here since
-    // PICTs with an embedded CTab carry the seed via their
-    // ColorTable record (Imaging With QuickDraw 1994, A-16).
+    // Seed-match identity gate: ctSeed is a ColorTable identifier
+    // (Inside Macintosh Volume V, V-48; Imaging With QuickDraw 1994,
+    // 4-56). Some PICTs carry the depth-convention seed (for example
+    // 8) even when their inline table differs from the active device
+    // table, so a seed match alone is not enough to bypass RGB
+    // translation. Preserve raw source indices only when the source and
+    // destination tables actually match.
     let src_clut = colors16.as_deref().unwrap_or(&[][..]);
-    let src_to_dst = if src_ct_seed != 0 && src_ct_seed == device_ct_seed {
+    let seed_and_table_match = src_ct_seed != 0
+        && src_ct_seed == device_ct_seed
+        && should_preserve_source_palette_indices(src_clut, device_clut);
+    let src_to_dst = if seed_and_table_match {
         let mut t = [0u8; 256];
         for (i, slot) in t.iter_mut().enumerate() {
             *slot = i as u8;
@@ -4297,6 +4299,132 @@ mod tests {
         let table = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(table[71], 71);
+    }
+
+    #[test]
+    fn packbitsrect_matching_ctseed_still_translates_when_tables_differ() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_row_bytes = 8u32;
+        bus.write_bytes(screen_base, &[0xEE; 8]);
+
+        let mut device_clut = [[0u16; 3]; 256];
+        device_clut[42] = [0xFFFF, 0, 0];
+
+        let pic = 0x10_0000u32;
+        let mut p = pic;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 1);
+        p += 2;
+        bus.write_word(p, 2);
+        p += 2;
+
+        bus.write_byte(p, 0x98); // PackBitsRect
+        p += 1;
+        bus.write_word(p, 0x8002); // PixMap rowBytes = 2
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 1);
+        p += 2;
+        bus.write_word(p, 2);
+        p += 2;
+        bus.write_word(p, 0); // version
+        p += 2;
+        bus.write_word(p, 0); // packType
+        p += 2;
+        bus.write_long(p, 0); // packSize
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // hRes
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // vRes
+        p += 4;
+        bus.write_word(p, 0); // pixelType
+        p += 2;
+        bus.write_word(p, 8); // pixelSize
+        p += 2;
+        bus.write_word(p, 1); // cmpCount
+        p += 2;
+        bus.write_word(p, 8); // cmpSize
+        p += 2;
+        bus.write_long(p, 0); // planeBytes
+        p += 4;
+        bus.write_long(p, 0); // pmTable
+        p += 4;
+        bus.write_long(p, 0); // pmReserved
+        p += 4;
+
+        bus.write_long(p, 8); // ctSeed matches destination seed, but table differs
+        p += 4;
+        bus.write_word(p, 0x8000);
+        p += 2;
+        bus.write_word(p, 1); // two ColorSpec entries
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 1);
+        p += 2;
+        bus.write_word(p, 0xFFFF);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+
+        // srcRect, dstRect, mode
+        for _ in 0..2 {
+            bus.write_word(p, 0);
+            p += 2;
+            bus.write_word(p, 0);
+            p += 2;
+            bus.write_word(p, 1);
+            p += 2;
+            bus.write_word(p, 2);
+            p += 2;
+        }
+        bus.write_word(p, 0); // srcCopy
+        p += 2;
+
+        // rowBytes < 8: raw row data, two source-index-1 red pixels.
+        bus.write_byte(p, 1);
+        p += 1;
+        bus.write_byte(p, 1);
+        p += 1;
+        bus.write_byte(p, 0xFF); // EndOfPicture
+        p += 1;
+        bus.write_word(pic, (p - pic) as u16);
+
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            1,
+            2,
+            (screen_base, screen_row_bytes, 8, 1, 8),
+            &device_clut,
+            8,
+        );
+
+        assert!(ok);
+        assert_eq!(
+            bus.read_bytes(screen_base, 2),
+            vec![42, 42],
+            "matching ctSeed is not enough for identity mapping when ColorTable contents differ"
+        );
     }
 
     #[test]
