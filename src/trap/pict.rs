@@ -1673,6 +1673,13 @@ fn clut_black_white_indices(clut: &[[u16; 3]; 256]) -> (u8, u8) {
     (black_idx, white_idx)
 }
 
+fn one_bit_destination_clut() -> [[u16; 3]; 256] {
+    let mut clut = [[0x0000u16, 0x0000, 0x0000]; 256];
+    clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+    clut[255] = [0x0000, 0x0000, 0x0000];
+    clut
+}
+
 /// Map a legacy Mac Pascal QuickDraw color constant to a destination CLUT
 /// index. Inside Macintosh Volume I, I-172 defines the 8 canonical colors.
 /// `default_idx` is returned for color = 0 (Pascal sentinel for "no color
@@ -3570,9 +3577,20 @@ fn parse_pack_bits_rect(
     // translation. Preserve raw source indices only when the source and
     // destination tables actually match.
     let src_clut = colors16.as_deref().unwrap_or(&[][..]);
-    let seed_and_table_match = src_ct_seed != 0
+    // Black-and-white devices can display PixMaps in pictures, but color
+    // pixels must be matched to the colors actually available in that
+    // destination, not to the full 8bpp screen CLUT. Imaging With QuickDraw
+    // 1994, pp. 4-13 and A-13; Inside Macintosh Volume V, V-57.
+    let mono_clut = if scrn_ps == 1 {
+        Some(one_bit_destination_clut())
+    } else {
+        None
+    };
+    let dst_clut = mono_clut.as_ref().unwrap_or(device_clut);
+    let seed_and_table_match = scrn_ps != 1
+        && src_ct_seed != 0
         && src_ct_seed == device_ct_seed
-        && should_preserve_source_palette_indices(src_clut, device_clut);
+        && should_preserve_source_palette_indices(src_clut, dst_clut);
     let src_to_dst = if seed_and_table_match {
         let mut t = [0u8; 256];
         for (i, slot) in t.iter_mut().enumerate() {
@@ -3580,13 +3598,13 @@ fn parse_pack_bits_rect(
         }
         t
     } else {
-        build_src_to_dst_table(src_clut, device_clut)
+        build_src_to_dst_table(src_clut, dst_clut)
     };
     let indexed_transfer = build_pict_indexed_transfer_table(
         mode_base,
         src_clut,
         &src_to_dst,
-        device_clut,
+        dst_clut,
         fg_idx,
         bg_idx,
     );
@@ -4789,6 +4807,7 @@ mod tests {
             (screen_base, 4, 4, 4, 8),
             &clut,
             0,
+            None,
         );
 
         assert!(ok);
@@ -4827,6 +4846,114 @@ mod tests {
         assert!(
             matches!(table[2], PictIndexedTransfer::Write(_)),
             "non-white source colors should be resolved once into the transfer table"
+        );
+    }
+
+    #[test]
+    fn color_packbitsrect_to_one_bit_destination_maps_to_black_or_white() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_byte(screen_base, 0);
+
+        let pic = 0x10_0000u32;
+        bus.write_word(pic, 0);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 1);
+        bus.write_word(pic + 8, 3);
+        let mut p = pic + 10;
+
+        bus.write_byte(p, 0x98); // PackBitsRect
+        p += 1;
+        bus.write_word(p, 0x8003); // PixMap rowBytes = 3
+        p += 2;
+        for value in [0i16, 0, 1, 3] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+        bus.write_word(p, 0); // version
+        p += 2;
+        bus.write_word(p, 0); // packType
+        p += 2;
+        bus.write_long(p, 0); // packSize
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // hRes
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // vRes
+        p += 4;
+        bus.write_word(p, 0); // pixelType
+        p += 2;
+        bus.write_word(p, 8); // pixelSize
+        p += 2;
+        bus.write_word(p, 1); // cmpCount
+        p += 2;
+        bus.write_word(p, 8); // cmpSize
+        p += 2;
+        bus.write_long(p, 0); // planeBytes
+        p += 4;
+        bus.write_long(p, 0); // pmTable
+        p += 4;
+        bus.write_long(p, 0); // pmReserved
+        p += 4;
+
+        bus.write_long(p, 0); // ctSeed
+        p += 4;
+        bus.write_word(p, 0x8000); // ctFlags: ColorSpec values are indices
+        p += 2;
+        bus.write_word(p, 2); // ctSize: entries 0..2
+        p += 2;
+        for (index, [r, g, b]) in [
+            (0u16, [0x0000, 0x0000, 0x0000]), // black
+            (1u16, [0xFFFF, 0xFFFF, 0x0000]), // yellow, closer to white in 1bpp
+            (2u16, [0xFFFF, 0xFFFF, 0xFFFF]), // white
+        ] {
+            bus.write_word(p, index);
+            p += 2;
+            bus.write_word(p, r);
+            p += 2;
+            bus.write_word(p, g);
+            p += 2;
+            bus.write_word(p, b);
+            p += 2;
+        }
+
+        for _ in 0..2 {
+            for value in [0i16, 0, 1, 3] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+        bus.write_word(p, 0); // srcCopy
+        p += 2;
+        bus.write_byte(p, 0); // black source pixel
+        p += 1;
+        bus.write_byte(p, 1); // yellow should map to white on a 1bpp destination
+        p += 1;
+        bus.write_byte(p, 2); // white source pixel
+        p += 1;
+        bus.write_byte(p, 0xFF); // EndOfPicture
+        p += 1;
+        bus.write_word(pic, (p - pic) as u16);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            1,
+            3,
+            (screen_base, 1, 8, 1, 1),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok);
+        assert_eq!(
+            bus.read_byte(screen_base) & 0b1110_0000,
+            0b1000_0000,
+            "indexed color PICT pixels drawn into 1bpp must resolve against the black/white destination, not the full 8bpp CLUT"
         );
     }
 
