@@ -2443,12 +2443,16 @@ impl super::TrapDispatcher {
                     );
                 }
                 if window != 0 {
+                    let Some(update_rect) = self.window_update_rect(bus, window) else {
+                        self.clear_queued_update_events(window);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        return Some(Ok(()));
+                    };
                     if let Some(saved_vis) =
                         Self::region_handle_rect(bus, bus.read_long(window + 24))
                     {
                         self.saved_vis_regions.insert(window, saved_vis);
                     }
-                    let update_rect = self.window_update_rect(bus, window).unwrap_or((0, 0, 0, 0));
                     let (port_top, port_left, _, _) = self.window_port_rect(bus, window);
                     let update_rect = (
                         update_rect.0.wrapping_add(port_top),
@@ -6249,6 +6253,39 @@ mod tests {
         assert_eq!(bus.read_word(update_rgn_data + 4), 0, "updateRgn.left");
         assert_eq!(bus.read_word(update_rgn_data + 6), 0, "updateRgn.bottom");
         assert_eq!(bus.read_word(update_rgn_data + 8), 0, "updateRgn.right");
+    }
+
+    #[test]
+    fn beginupdate_without_pending_update_preserves_visrgn() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr: u32 = 0x300000;
+        let (vis_rgn_data, _clip_rgn_data) =
+            setup_window_with_regions(&mut bus, window_addr, 0, 0, 110, 210);
+        let (_cont_rgn_data, update_rgn_data) =
+            setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 110, 210);
+
+        assert_eq!(
+            (bus.read_word(update_rgn_data + 2), bus.read_word(update_rgn_data + 6)),
+            (0, 0),
+            "test fixture should start with an empty updateRgn"
+        );
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window_addr);
+
+        let result = dispatch(&mut disp, 0x122, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        assert_eq!(bus.read_word(vis_rgn_data + 2) as i16, 0);
+        assert_eq!(bus.read_word(vis_rgn_data + 4) as i16, 0);
+        assert_eq!(bus.read_word(vis_rgn_data + 6) as i16, 110);
+        assert_eq!(bus.read_word(vis_rgn_data + 8) as i16, 210);
+        assert!(
+            !disp.saved_vis_regions.contains_key(&window_addr),
+            "no-update BeginUpdate should not create a restore obligation"
+        );
     }
 
     // Systems Twilight shifts the port origin before servicing the
