@@ -8446,85 +8446,147 @@ impl super::TrapDispatcher {
             (true, 0x21E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let icon_id = bus.read_word(sp) as i16;
-                let handle =
-                    if let Some((_, resource_ptr)) = self.find_resource_any(*b"cicn", icon_id) {
-                        let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0);
-                        if resource_size == 0 {
+                let handle = if let Some((_, resource_ptr)) =
+                    self.find_resource_any(*b"cicn", icon_id)
+                {
+                    let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0);
+                    if resource_size == 0 {
+                        0
+                    } else {
+                        let icon_ptr = bus.alloc(resource_size);
+                        if icon_ptr == 0 {
                             0
                         } else {
-                            let icon_ptr = bus.alloc(resource_size);
-                            if icon_ptr == 0 {
-                                0
-                            } else {
-                                let resource_bytes =
-                                    bus.read_bytes(resource_ptr, resource_size as usize);
-                                bus.write_bytes(icon_ptr, &resource_bytes);
+                            let resource_bytes =
+                                bus.read_bytes(resource_ptr, resource_size as usize);
+                            bus.write_bytes(icon_ptr, &resource_bytes);
 
-                                let pm_top = bus.read_word(icon_ptr + 6) as i16;
-                                let pm_bottom = bus.read_word(icon_ptr + 10) as i16;
-                                let icon_h = (pm_bottom - pm_top).max(0) as u32;
-                                let mask_rb = (bus.read_word(icon_ptr + 54) & 0x3FFF) as u32;
-                                let bmap_rb = (bus.read_word(icon_ptr + 68) & 0x3FFF) as u32;
-                                let mask_size = mask_rb * icon_h;
-                                let bmap_size = bmap_rb * icon_h;
-                                let ctab_ptr = icon_ptr + 82 + mask_size + bmap_size;
+                            let resource_end = icon_ptr.saturating_add(resource_size);
+                            let pm_top = bus.read_word(icon_ptr + 6) as i16;
+                            let pm_bottom = bus.read_word(icon_ptr + 10) as i16;
+                            let icon_h = (pm_bottom - pm_top).max(0) as u32;
+                            let mask_rb = (bus.read_word(icon_ptr + 54) & 0x3FFF) as u32;
+                            let bmap_rb = (bus.read_word(icon_ptr + 68) & 0x3FFF) as u32;
+                            let mask_size = mask_rb * icon_h;
+                            let bmap_size = bmap_rb * icon_h;
+                            let mask_data_ptr = icon_ptr + 82;
+                            let bmap_data_ptr = mask_data_ptr + mask_size;
+                            let ctab_ptr = icon_ptr + 82 + mask_size + bmap_size;
+                            let ctab_header_valid = ctab_ptr
+                                .checked_add(8)
+                                .is_some_and(|end| end <= resource_end);
+                            let ctab_total_bytes = if ctab_header_valid {
                                 let ct_size = bus.read_word(ctab_ptr + 6) as u32;
-                                let ctab_total_bytes = 8 + (ct_size + 1) * 8;
-                                let inline_pixel_ptr = ctab_ptr + ctab_total_bytes;
-                                let pixel_len =
-                                    resource_size.saturating_sub(inline_pixel_ptr - icon_ptr);
+                                8 + (ct_size + 1) * 8
+                            } else {
+                                0
+                            };
+                            let ctab_valid = ctab_total_bytes != 0
+                                && ctab_ptr
+                                    .checked_add(ctab_total_bytes)
+                                    .is_some_and(|end| end <= resource_end);
+                            let inline_pixel_ptr = if ctab_valid {
+                                ctab_ptr + ctab_total_bytes
+                            } else {
+                                resource_end
+                            };
+                            let pixel_len = resource_end.saturating_sub(inline_pixel_ptr);
 
-                                let icon_data_handle = if pixel_len > 0 {
-                                    let pixel_ptr = bus.alloc(pixel_len);
-                                    if pixel_ptr == 0 {
-                                        bus.free(icon_ptr);
-                                        0
-                                    } else {
-                                        let pixel_bytes =
-                                            bus.read_bytes(inline_pixel_ptr, pixel_len as usize);
-                                        bus.write_bytes(pixel_ptr, &pixel_bytes);
-                                        let pixel_handle = bus.alloc(4);
-                                        if pixel_handle == 0 {
-                                            bus.free(pixel_ptr);
-                                            bus.free(icon_ptr);
-                                            0
-                                        } else {
-                                            bus.write_long(pixel_handle, pixel_ptr);
-                                            self.ptr_to_handle.insert(pixel_ptr, pixel_handle);
-                                            pixel_handle
-                                        }
-                                    }
-                                } else {
-                                    let pixel_handle = bus.alloc(4);
-                                    if pixel_handle == 0 {
-                                        bus.free(icon_ptr);
-                                        0
-                                    } else {
-                                        bus.write_long(pixel_handle, 0);
-                                        pixel_handle
-                                    }
-                                };
-
-                                if icon_data_handle == 0 && resource_size != 0 {
+                            let mut allocation_failed = false;
+                            let icon_data_handle = if pixel_len > 0 {
+                                let pixel_ptr = bus.alloc(pixel_len);
+                                if pixel_ptr == 0 {
+                                    bus.free(icon_ptr);
+                                    allocation_failed = true;
                                     0
                                 } else {
-                                    bus.write_long(icon_ptr + 78, icon_data_handle);
-                                    let icon_handle = bus.alloc(4);
-                                    if icon_handle == 0 {
-                                        Self::free_handle_and_target(bus, icon_data_handle);
+                                    let pixel_bytes =
+                                        bus.read_bytes(inline_pixel_ptr, pixel_len as usize);
+                                    bus.write_bytes(pixel_ptr, &pixel_bytes);
+                                    let pixel_handle = bus.alloc(4);
+                                    if pixel_handle == 0 {
+                                        bus.free(pixel_ptr);
                                         bus.free(icon_ptr);
+                                        allocation_failed = true;
                                         0
                                     } else {
-                                        bus.write_long(icon_handle, icon_ptr);
-                                        self.ptr_to_handle.insert(icon_ptr, icon_handle);
-                                        icon_handle
+                                        bus.write_long(pixel_handle, pixel_ptr);
+                                        self.ptr_to_handle.insert(pixel_ptr, pixel_handle);
+                                        pixel_handle
                                     }
+                                }
+                            } else {
+                                let pixel_handle = bus.alloc(4);
+                                if pixel_handle == 0 {
+                                    bus.free(icon_ptr);
+                                    allocation_failed = true;
+                                    0
+                                } else {
+                                    bus.write_long(pixel_handle, 0);
+                                    pixel_handle
+                                }
+                            };
+
+                            let icon_pm_table_handle = if icon_data_handle != 0 && ctab_valid {
+                                let ctab_copy_ptr = bus.alloc(ctab_total_bytes);
+                                if ctab_copy_ptr == 0 {
+                                    Self::free_handle_and_target(bus, icon_data_handle);
+                                    bus.free(icon_ptr);
+                                    allocation_failed = true;
+                                    0
+                                } else {
+                                    let ctab_bytes =
+                                        bus.read_bytes(ctab_ptr, ctab_total_bytes as usize);
+                                    bus.write_bytes(ctab_copy_ptr, &ctab_bytes);
+                                    let ctab_handle = bus.alloc(4);
+                                    if ctab_handle == 0 {
+                                        bus.free(ctab_copy_ptr);
+                                        Self::free_handle_and_target(bus, icon_data_handle);
+                                        bus.free(icon_ptr);
+                                        allocation_failed = true;
+                                        0
+                                    } else {
+                                        bus.write_long(ctab_handle, ctab_copy_ptr);
+                                        self.ptr_to_handle.insert(ctab_copy_ptr, ctab_handle);
+                                        ctab_handle
+                                    }
+                                }
+                            } else {
+                                0
+                            };
+
+                            if allocation_failed || (icon_data_handle == 0 && resource_size != 0) {
+                                0
+                            } else {
+                                let icon_data_ptr = bus.read_long(icon_data_handle);
+                                bus.write_long(icon_ptr, icon_data_ptr);
+                                bus.write_long(icon_ptr + 42, icon_pm_table_handle);
+                                bus.write_long(
+                                    icon_ptr + 50,
+                                    if mask_size == 0 { 0 } else { mask_data_ptr },
+                                );
+                                bus.write_long(
+                                    icon_ptr + 64,
+                                    if bmap_size == 0 { 0 } else { bmap_data_ptr },
+                                );
+                                bus.write_long(icon_ptr + 78, icon_data_handle);
+                                let icon_handle = bus.alloc(4);
+                                if icon_handle == 0 {
+                                    Self::free_handle_and_target(bus, icon_pm_table_handle);
+                                    Self::free_handle_and_target(bus, icon_data_handle);
+                                    bus.free(icon_ptr);
+                                    0
+                                } else {
+                                    bus.write_long(icon_handle, icon_ptr);
+                                    self.ptr_to_handle.insert(icon_ptr, icon_handle);
+                                    icon_handle
                                 }
                             }
                         }
-                    } else {
-                        0
-                    };
+                    }
+                } else {
+                    0
+                };
 
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
@@ -8629,9 +8691,19 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                let port_version = bus.read_word(port + 4);
+                let real_port_version = bus.read_word(port + 6);
+                let legacy_port_version = bus.read_word(port + 4);
                 let (dst_base, dst_row_bytes, dst_bounds_top, dst_bounds_left) =
-                    if (port_version & 0xC000) == 0xC000 {
+                    if (real_port_version & 0xC000) == 0xC000 {
+                        let pm_handle = bus.read_long(port + 2);
+                        let pm_ptr = bus.read_long(pm_handle);
+                        (
+                            Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
+                            (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
+                            bus.read_word(pm_ptr + 6) as i16,
+                            bus.read_word(pm_ptr + 8) as i16,
+                        )
+                    } else if (legacy_port_version & 0xC000) == 0xC000 {
                         let pm_handle = bus.read_long(port);
                         let pm_ptr = bus.read_long(pm_handle);
                         (
@@ -8799,8 +8871,11 @@ impl super::TrapDispatcher {
                 if icon_handle != 0 {
                     let icon_ptr = bus.read_long(icon_handle);
                     if icon_ptr != 0 {
+                        let icon_pm_table_handle = bus.read_long(icon_ptr + 42);
                         let icon_data_handle = bus.read_long(icon_ptr + 78);
+                        bus.write_long(icon_ptr + 42, 0);
                         bus.write_long(icon_ptr + 78, 0);
+                        Self::free_handle_and_target(bus, icon_pm_table_handle);
                         Self::free_handle_and_target(bus, icon_data_handle);
                         self.ptr_to_handle.remove(&icon_ptr);
                         self.loaded_handles.remove(&icon_handle);
@@ -27506,6 +27581,84 @@ mod tests {
     }
 
     #[test]
+    fn getcicon_present_resource_initializes_live_bitmap_fields_for_copymask_callers() {
+        // IM:V V-79..V-80 defines 'cicn' resources with zero placeholder
+        // fields for PixMap.baseAddr, PixMap.pmTable, and iconData; IM:V
+        // V-78 says Color QuickDraw copies these resources and alters the
+        // copy before returning it. Apps may use the returned CIcon record's
+        // embedded PixMap and mask directly with CopyMask rather than going
+        // through PlotCIcon, so those live fields must address usable data.
+        let (mut d, mut cpu, mut bus) = setup();
+        let cicn_data = make_test_cicn_resource(0xF0, 0x00, 0xA5);
+        d.install_test_resource(&mut bus, *b"cicn", 128, &cicn_data);
+        bus.write_word(TEST_SP, 128);
+
+        let get_icon = d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus);
+        assert!(get_icon.unwrap().is_ok());
+
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(icon_handle, 0);
+        let icon_ptr = bus.read_long(icon_handle);
+        assert_ne!(icon_ptr, 0);
+
+        let icon_data_handle = bus.read_long(icon_ptr + 78);
+        assert_ne!(icon_data_handle, 0);
+        let icon_data_ptr = bus.read_long(icon_data_handle);
+        assert_ne!(icon_data_ptr, 0);
+        assert_eq!(
+            bus.read_long(icon_ptr),
+            icon_data_ptr,
+            "live CIcon.iconPMap.baseAddr must point at the copied pixel data"
+        );
+
+        let pm_table_handle = bus.read_long(icon_ptr + 42);
+        assert_ne!(pm_table_handle, 0);
+        let pm_table_ptr = bus.read_long(pm_table_handle);
+        assert_ne!(pm_table_ptr, 0);
+        assert_ne!(pm_table_ptr, icon_ptr + 84);
+        assert_eq!(bus.read_word(pm_table_ptr + 6), 0);
+
+        assert_eq!(
+            bus.read_long(icon_ptr + 50),
+            icon_ptr + 82,
+            "live CIcon.iconMask.baseAddr must point at inline mask data"
+        );
+        assert_eq!(
+            bus.read_long(icon_ptr + 64),
+            icon_ptr + 83,
+            "live CIcon.iconBMap.baseAddr must point at inline bitmap data"
+        );
+
+        let dst_bits = bus.alloc(14);
+        let dst_base = bus.alloc(1);
+        write_bitmap_1bpp(&mut bus, dst_bits, dst_base, 1, (0, 0, 1, 8));
+        bus.write_byte(dst_base, 0x0F);
+
+        let src_rect = bus.alloc(8);
+        let mask_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 8);
+        write_rect(&mut bus, mask_rect, 0, 0, 1, 8);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 8);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, mask_rect);
+        bus.write_long(TEST_SP + 8, src_rect);
+        bus.write_long(TEST_SP + 12, dst_bits);
+        bus.write_long(TEST_SP + 16, icon_ptr + 50);
+        bus.write_long(TEST_SP + 20, icon_ptr);
+
+        let copy_mask = d.dispatch_quickdraw(true, 0x017, &mut cpu, &mut bus);
+        assert!(copy_mask.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(dst_base),
+            0xAF,
+            "CopyMask should be able to draw from GetCIcon's live PixMap and mask"
+        );
+    }
+
+    #[test]
     fn disposecicon_clears_getcicon_icondata_handle_and_preserves_general_registers() {
         // More Macintosh Toolbox (1993), p. 5-30: DisposeCIcon disposes
         // the structures allocated by GetCIcon and takes one CIconHandle
@@ -27598,6 +27751,55 @@ mod tests {
         assert_ne!(icon_handle, 0);
 
         let rect_ptr = 0x300120u32;
+        write_rect(&mut bus, rect_ptr, 0, 0, 1, 8);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let plot = d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus);
+        assert!(plot.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_byte(dst_base), 0x5F);
+    }
+
+    #[test]
+    fn plotcicon_draws_into_real_cgrafport_portpixmap_layout() {
+        // Systemless CGrafPorts store portPixMap at +2 and portVersion at
+        // +6, matching Imaging With QuickDraw's CGrafPort layout. PlotCIcon
+        // must resolve that real layout, not only the legacy synthetic test
+        // layout with the PixMap handle at +0.
+        let (mut d, mut cpu, mut bus) = setup();
+        let dst_base = bus.alloc(64);
+        bus.fill_zeros(dst_base, 64);
+        bus.write_byte(dst_base, 0x0F);
+
+        let pm_handle = bus.alloc(4);
+        let pm_ptr = bus.alloc(64);
+        bus.fill_zeros(pm_ptr, 64);
+        bus.write_long(pm_handle, pm_ptr);
+        bus.write_long(pm_ptr, dst_base);
+        bus.write_word(pm_ptr + 4, 1);
+        write_rect(&mut bus, pm_ptr + 6, 0, 0, 1, 8);
+
+        let port_ptr = bus.alloc(128);
+        bus.fill_zeros(port_ptr, 128);
+        bus.write_long(port_ptr + 2, pm_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+
+        let a5 = cpu.read_reg(Register::A5);
+        let globals_ptr = bus.read_long(a5);
+        bus.write_long(globals_ptr, port_ptr);
+
+        let cicn_data = make_test_cicn_resource(0xF0, 0x00, 0x55);
+        d.install_test_resource(&mut bus, *b"cicn", 128, &cicn_data);
+
+        bus.write_word(TEST_SP, 128);
+        let get_icon = d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus);
+        assert!(get_icon.unwrap().is_ok());
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(icon_handle, 0);
+
+        let rect_ptr = 0x300140u32;
         write_rect(&mut bus, rect_ptr, 0, 0, 1, 8);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, icon_handle);

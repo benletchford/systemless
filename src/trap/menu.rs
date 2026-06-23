@@ -1763,7 +1763,7 @@ impl super::TrapDispatcher {
             //
             // HLE compromise (Partial vs Complete): only handles 1bpp
             // ICON (32×32 monochrome) resources; cicn / 'cicn' colour
-            // icons go through GetCIcon ($AA1F) → PlotCIcon ($AA1E)
+            // icons go through GetCIcon ($AA1E) -> PlotCIcon ($AA1F)
             // separately. Pixel-format dispatch handles dst.pixel_size
             // 1 (b/w fb OR-paint) + 8 (8-bit fb white-paint = 0xFF);
             // 16/32-bit colour fb is silently no-op (matches the
@@ -1775,7 +1775,7 @@ impl super::TrapDispatcher {
             // / GetItemIcon / GetItemStyle / GetItemMark all of which
             // were silently mislabeled and surfaced via prior audit
             // passes.
-            // PlotIcon ($A94B): OR-compress 1bpp / 8bpp pixel writes for shrink + nearest-neighbor for magnify per IM:V V-65 CopyBits scaling; ICON (32×32 mono) only — cicn handled via PlotCIcon $AA1E; NIL handle / NIL rect / NIL master ptr / zero-area / no-port are defensive no-ops; 16/32-bit colour fb silently no-op
+            // PlotIcon ($A94B): OR-compress 1bpp / 8bpp pixel writes for shrink + nearest-neighbor for magnify per IM:V V-65 CopyBits scaling; ICON (32×32 mono) only — cicn handled via PlotCIcon $AA1F; NIL handle / NIL rect / NIL master ptr / zero-area / no-port are defensive no-ops; 16/32-bit colour fb silently no-op
             //
             // Pop-8 + no-port proof: a94b_ploticon_strict and
             // a94b_ploticon_noport_strict (BasiliskII-baked, registered

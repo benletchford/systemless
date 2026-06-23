@@ -10582,7 +10582,7 @@ impl super::TrapDispatcher {
             // GetIconFromSuite, ForEachIconDo, GetIconCacheData,
             // SetIconCacheData, IconIDToRgn, IconSuiteToRgn,
             // IconMethodToRgn, etc. Note that GetIcon ($A9BB),
-            // PlotIcon ($A94B), GetCIcon ($AA1F), PlotCIcon ($AA1E),
+            // PlotIcon ($A94B), GetCIcon ($AA1E), PlotCIcon ($AA1F),
             // and DisposeCIcon ($AA25) are SEPARATE legacy traps
             // available in System 6 and System 7 — those are NOT
             // routed through IconDispatch.
@@ -10593,7 +10593,7 @@ impl super::TrapDispatcher {
             // on return. Apps that probe Gestalt see "absent" and
             // fall back to the legacy trap surface for monochrome /
             // color icons (which Systemless implements via $A9BB
-            // GetIcon / $AA1F GetCIcon / etc.).
+            // GetIcon / $AA1E GetCIcon / etc.).
             //
             // Regression coverage:
             //   src/trap/toolbox.rs::tests::icondispatch_*
