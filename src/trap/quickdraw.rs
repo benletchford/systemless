@@ -17873,6 +17873,13 @@ impl super::TrapDispatcher {
         (bottom > top && right > left).then_some((top, left, bottom, right))
     }
 
+    pub(super) fn region_is_complex(bus: &MacMemoryBus, rgn_handle: u32) -> bool {
+        let Some((_, rgn_size)) = Self::region_ptr_and_size(bus, rgn_handle) else {
+            return false;
+        };
+        rgn_size > REGION_HEADER_SIZE
+    }
+
     fn drawpicture_rect_intersects_current_port_clip(
         bus: &MacMemoryBus,
         port: u32,
@@ -18611,7 +18618,7 @@ impl super::TrapDispatcher {
     /// (`rgn_handle == 0 → true`) is what we want LLVM to fold across the
     /// whole inner loop.
     #[inline]
-    fn region_contains_point_cached(
+    pub(super) fn region_contains_point_cached(
         bus: &MacMemoryBus,
         rgn_handle: u32,
         cache: Option<&RegionMembershipCache>,
@@ -21578,6 +21585,76 @@ mod tests {
             1,
             "current window drawing must use the current GDevice CTable when its PixMap table is stale"
         );
+    }
+
+    #[test]
+    fn drawrect_honors_complex_current_port_clip_region_on_8bpp_fast_fill() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let base = bus.alloc(4 * 2);
+        for offset in 0..8 {
+            bus.write_byte(base + offset, 77);
+        }
+
+        let ctab = make_test_ctab_handle(
+            &mut bus,
+            &TrapDispatcher::standard_mac_8bpp_clut(),
+            0x1234,
+            0,
+        );
+        let pixmap_handle = bus.alloc(4);
+        let pixmap_ptr = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap_ptr);
+        write_pixmap_8(&mut bus, pixmap_ptr, base, 4, 2, ctab);
+
+        let port = bus.alloc(96);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        write_rect(&mut bus, port + 16, 0, 0, 2, 4);
+
+        let vis = make_complex_rgn(&mut bus, (0, 0, 2, 4), &[]);
+        let clip = make_complex_rgn(
+            &mut bus,
+            (0, 0, 2, 4),
+            &[
+                0,
+                0,
+                1,
+                3,
+                4,
+                super::REGION_STOP,
+                2,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        bus.write_long(port + 24, vis);
+        bus.write_long(port + 28, clip);
+
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.fg_color = (0, 0, 0);
+        d.pn_mode = 0;
+        d.pn_pat = [0xFF; 8];
+
+        let rect = Rect {
+            top: 0,
+            left: 0,
+            bottom: 2,
+            right: 4,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Paint);
+
+        assert_eq!(bus.read_byte(base), 255);
+        assert_eq!(bus.read_byte(base + 3), 255);
+        assert_eq!(bus.read_byte(base + 4), 255);
+        assert_eq!(bus.read_byte(base + 7), 255);
+        assert_eq!(
+            bus.read_byte(base + 1),
+            77,
+            "8bpp PaintRect must preserve holes in a complex clipRgn"
+        );
+        assert_eq!(bus.read_byte(base + 2), 77);
+        assert_eq!(bus.read_byte(base + 5), 77);
+        assert_eq!(bus.read_byte(base + 6), 77);
     }
 
     #[test]

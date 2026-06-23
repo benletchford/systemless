@@ -1135,6 +1135,22 @@ impl super::TrapDispatcher {
             self.ensure_dialog_background_saved_for_screen_port(bus, port);
         }
 
+        let vis_region_complex =
+            vis_rgn_handle != 0 && Self::region_is_complex(bus, vis_rgn_handle);
+        let clip_region_complex =
+            clip_rgn_handle != 0 && Self::region_is_complex(bus, clip_rgn_handle);
+        let vis_region_cache = if vis_region_complex {
+            Self::build_region_membership_cache(bus, vis_rgn_handle, touch_top, touch_bottom)
+        } else {
+            None
+        };
+        let clip_region_cache = if clip_region_complex {
+            Self::build_region_membership_cache(bus, clip_rgn_handle, touch_top, touch_bottom)
+        } else {
+            None
+        };
+        let has_complex_port_clip = vis_region_complex || clip_region_complex;
+
         // For 8bpp, map fg/bg colors to the destination bitmap's effective CLUT.
         // QuickDraw's Color Manager maintains an inverse color table (ITable)
         // for mapping RGB colors to pixel indices. The ITable is derived
@@ -1208,7 +1224,7 @@ impl super::TrapDispatcher {
             bg_idx = 0;
         }
 
-        if pixel_size == 8 && full_rect_coverage {
+        if pixel_size == 8 && full_rect_coverage && !has_complex_port_clip {
             if let Some(fill_idx) = self.solid_src_copy_fill_index(&op, fg_idx, bg_idx) {
                 let top = r.top.max(clip_top);
                 let left = r.left.max(clip_left);
@@ -1278,6 +1294,28 @@ impl super::TrapDispatcher {
             let dy = (y - bounds_top) as u32;
             for x in r.left..r.right {
                 if x < clip_left || x >= clip_right {
+                    continue;
+                }
+                if vis_region_complex
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        vis_rgn_handle,
+                        vis_region_cache.as_ref(),
+                        y,
+                        x,
+                    )
+                {
+                    continue;
+                }
+                if clip_region_complex
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        clip_rgn_handle,
+                        clip_region_cache.as_ref(),
+                        y,
+                        x,
+                    )
+                {
                     continue;
                 }
                 let alpha = coverage_at(y, x);
