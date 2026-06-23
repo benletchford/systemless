@@ -3,6 +3,7 @@
 
 use super::types::{read_rect, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
+use crate::display::{self, CursorImage};
 use crate::machine_profile::ORACLE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
@@ -13056,29 +13057,12 @@ impl super::TrapDispatcher {
             // 4-byte slot after the trap returns. Net A7 effect
             // across the C-level call is zero.
             //
-            // Status: Stub → Partial. Matches the established GetXxx
-            // family pattern (A9B9 GetCursor / A9B8 GetPattern /
-            // A9BB GetIcon / A9BC GetPicture / AA1F GetCIcon /
-            // AA0C GetPixPat). All route through find_resource_any +
-            // get_or_create_resource_handle for handle stability and
-            // return NIL on miss per the IM-canonical "resource not
-            // found returns NIL" semantic.
-            //
-            // HLE compromise on the present-resource path: returns
-            // the master ptr to the raw 'crsr' resource bytes wrapped
-            // in a stable handle, NOT a freshly-allocated CCrsr
-            // record. BasiliskII System 7.5.3 ROM Color QuickDraw
-            // allocates a fresh CCrsr record per the IM:V V-74 layout
-            // (PixMap + colorTable + crsrXData expanded for current
-            // screen depth). The handle-stability gate matters
-            // because apps cache the GetCCursor result and reuse it
-            // across many SetCCursor calls per frame; without
-            // get_or_create_resource_handle each call would allocate
-            // a fresh handle and leak. Per IM:V V-74 explicit
-            // guidance: "Since GetCCursor creates a new CCrsr data
-            // structure each time it is called, your application
-            // shouldn't call GetCCursor before each call to
-            // SetCCursor."
+            // Status: Partial. Valid compiled 'crsr' resources are
+            // promoted to live CCrsr records with PixMapHandle,
+            // pixel-data Handle, and ColorTable Handle fields. Malformed
+            // synthetic resources fall back to a Resource Manager handle so
+            // legacy tests and non-rendering callers still receive a non-NIL
+            // present-resource result.
             //
             // Apple-vs-BasiliskII engines-agree subset:
             //   (1) Pascal FUNCTION calling convention — A7 unchanged
@@ -13099,9 +13083,11 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let crsr_id = bus.read_word(sp) as i16;
                 let handle = match self.find_resource_any(*b"crsr", crsr_id) {
-                    Some((_, data_ptr)) => {
-                        self.get_or_create_resource_handle(bus, *b"crsr", crsr_id, data_ptr)
-                    }
+                    Some((_, data_ptr)) => self
+                        .promote_compiled_crsr_resource(bus, data_ptr)
+                        .unwrap_or_else(|| {
+                            self.get_or_create_resource_handle(bus, *b"crsr", crsr_id, data_ptr)
+                        }),
                     None => 0,
                 };
                 bus.write_long(sp + 2, handle);
@@ -13125,18 +13111,9 @@ impl super::TrapDispatcher {
                 if crsr_handle != 0 {
                     let crsr_ptr = bus.read_long(crsr_handle);
                     if crsr_ptr != 0 {
-                        let mut data = [0u8; 32];
-                        for (i, byte) in data.iter_mut().enumerate() {
-                            *byte = bus.read_byte(crsr_ptr + 20 + i as u32);
+                        if let Some(cursor) = self.cursor_image_from_ccrsr(bus, crsr_ptr) {
+                            self.cursor_data = Some(cursor);
                         }
-                        let mut mask = [0u8; 32];
-                        for (i, byte) in mask.iter_mut().enumerate() {
-                            *byte = bus.read_byte(crsr_ptr + 52 + i as u32);
-                        }
-                        let hot_v = bus.read_word(crsr_ptr + 84) as i16;
-                        let hot_h = bus.read_word(crsr_ptr + 86) as i16;
-
-                        self.cursor_data = Some((data, mask, hot_v, hot_h));
                         self.cursor_visible = self.cursor_level == 0;
                     }
                 }
@@ -13148,7 +13125,11 @@ impl super::TrapDispatcher {
             // PROCEDURE DisposeCCursor(cCrsr: CCrsrHandle);
             // Inside Macintosh Volume V, V-80
             // Stack: SP+0: cCrsr(4). Pop 4.
-            // DisposeCCursor ($AA26): Pops 4 bytes (cCrsr); GetCCursor doesn't allocate so disposal is a no-op per IM:V V-80. Return noErr in D0 so callers can treat the procedure as a clean do-nothing path.
+            // DisposeCCursor ($AA26): Pops 4 bytes (cCrsr); Systemless keeps
+            // guest cursor allocations alive for the process lifetime, so
+            // disposal is a no-op per the current HLE memory model. Return
+            // noErr in D0 so callers can treat the procedure as a clean
+            // do-nothing path.
             (true, 0x226) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -20066,12 +20047,244 @@ impl super::TrapDispatcher {
             )
         }
     }
+
+    fn promote_compiled_crsr_resource(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        resource_ptr: u32,
+    ) -> Option<u32> {
+        let crsr_type = bus.read_word(resource_ptr);
+        if crsr_type != 0x8001 && crsr_type != 0x8000 {
+            return None;
+        }
+
+        let map_offset = bus.read_long(resource_ptr + 2);
+        let data_offset = bus.read_long(resource_ptr + 6);
+        if map_offset < 96 || data_offset <= map_offset {
+            return None;
+        }
+
+        let raw_pixmap = resource_ptr + map_offset;
+        let raw_row_bytes = bus.read_word(raw_pixmap);
+        let row_bytes = u32::from(raw_row_bytes & 0x3FFF);
+        let top = bus.read_word(raw_pixmap + 2) as i16;
+        let left = bus.read_word(raw_pixmap + 4) as i16;
+        let bottom = bus.read_word(raw_pixmap + 6) as i16;
+        let right = bus.read_word(raw_pixmap + 8) as i16;
+        let height = bottom.saturating_sub(top).max(0) as u32;
+        if row_bytes == 0 || height == 0 {
+            return None;
+        }
+
+        let table_offset = bus.read_long(raw_pixmap + 38);
+        let pixel_data_len = if table_offset > data_offset {
+            table_offset - data_offset
+        } else {
+            row_bytes.saturating_mul(height)
+        }
+        .max(1);
+
+        let pixel_data_ptr = bus.alloc(pixel_data_len);
+        for i in 0..pixel_data_len {
+            bus.write_byte(
+                pixel_data_ptr + i,
+                bus.read_byte(resource_ptr + data_offset + i),
+            );
+        }
+        let pixel_data_handle = bus.alloc(4);
+        bus.write_long(pixel_data_handle, pixel_data_ptr);
+
+        let ctab_handle = if table_offset != 0 && table_offset > data_offset {
+            let raw_ctab = resource_ptr + table_offset;
+            let ct_size = u32::from(bus.read_word(raw_ctab + 6)).min(255);
+            let ctab_len = 8 + (ct_size + 1) * 8;
+            let ctab_ptr = bus.alloc(ctab_len);
+            for i in 0..ctab_len {
+                bus.write_byte(ctab_ptr + i, bus.read_byte(raw_ctab + i));
+            }
+            let handle = bus.alloc(4);
+            bus.write_long(handle, ctab_ptr);
+            handle
+        } else {
+            0
+        };
+
+        let pixmap_ptr = bus.alloc(50);
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap_ptr);
+        bus.write_long(pixmap_ptr, pixel_data_ptr);
+        bus.write_word(pixmap_ptr + 4, raw_row_bytes);
+        bus.write_word(pixmap_ptr + 6, top as u16);
+        bus.write_word(pixmap_ptr + 8, left as u16);
+        bus.write_word(pixmap_ptr + 10, bottom as u16);
+        bus.write_word(pixmap_ptr + 12, right as u16);
+        for (raw_off, live_off, len) in [
+            (10u32, 14u32, 2u32),
+            (12, 16, 2),
+            (14, 18, 4),
+            (18, 22, 4),
+            (22, 26, 4),
+            (26, 30, 2),
+            (28, 32, 2),
+            (30, 34, 2),
+            (32, 36, 2),
+            (34, 38, 4),
+            (42, 46, 4),
+        ] {
+            for i in 0..len {
+                bus.write_byte(
+                    pixmap_ptr + live_off + i,
+                    bus.read_byte(raw_pixmap + raw_off + i),
+                );
+            }
+        }
+        bus.write_long(pixmap_ptr + 42, ctab_handle);
+
+        let crsr_ptr = bus.alloc(96);
+        let crsr_handle = bus.alloc(4);
+        bus.write_long(crsr_handle, crsr_ptr);
+        bus.write_word(crsr_ptr, crsr_type);
+        bus.write_long(crsr_ptr + 2, pixmap_handle);
+        bus.write_long(crsr_ptr + 6, pixel_data_handle);
+        bus.write_long(crsr_ptr + 10, 0);
+        bus.write_word(crsr_ptr + 14, 0);
+        bus.write_long(crsr_ptr + 16, 0);
+        for i in 20..96u32 {
+            bus.write_byte(crsr_ptr + i, bus.read_byte(resource_ptr + i));
+        }
+
+        Some(crsr_handle)
+    }
+
+    fn cursor_image_from_ccrsr(&self, bus: &MacMemoryBus, crsr_ptr: u32) -> Option<CursorImage> {
+        if crsr_ptr == 0 {
+            return None;
+        }
+
+        let mut mono_data = [0u8; 32];
+        for (i, byte) in mono_data.iter_mut().enumerate() {
+            *byte = bus.read_byte(crsr_ptr + 20 + i as u32);
+        }
+        let mut mono_mask = [0u8; 32];
+        for (i, byte) in mono_mask.iter_mut().enumerate() {
+            *byte = bus.read_byte(crsr_ptr + 52 + i as u32);
+        }
+        let hot_v = bus.read_word(crsr_ptr + 84) as i16;
+        let hot_h = bus.read_word(crsr_ptr + 86) as i16;
+
+        let crsr_type = bus.read_word(crsr_ptr);
+        if crsr_type != 0x8001 {
+            return Some(CursorImage::mono(mono_data, mono_mask, hot_v, hot_h));
+        }
+
+        let pixmap_handle = bus.read_long(crsr_ptr + 2);
+        let pixel_handle = bus.read_long(crsr_ptr + 6);
+        if pixmap_handle == 0 || pixel_handle == 0 {
+            return Some(CursorImage::mono(mono_data, mono_mask, hot_v, hot_h));
+        }
+        let pixmap_ptr = bus.read_long(pixmap_handle);
+        let pixel_data_ptr = bus.read_long(pixel_handle);
+        if pixmap_ptr == 0 || pixel_data_ptr == 0 {
+            return Some(CursorImage::mono(mono_data, mono_mask, hot_v, hot_h));
+        }
+
+        let row_bytes = u32::from(bus.read_word(pixmap_ptr + 4) & 0x3FFF);
+        let top = bus.read_word(pixmap_ptr + 6) as i16;
+        let left = bus.read_word(pixmap_ptr + 8) as i16;
+        let bottom = bus.read_word(pixmap_ptr + 10) as i16;
+        let right = bus.read_word(pixmap_ptr + 12) as i16;
+        let width = right.saturating_sub(left).max(0) as u16;
+        let height = bottom.saturating_sub(top).max(0) as u16;
+        let pixel_size = bus.read_word(pixmap_ptr + 32);
+        if row_bytes == 0 || width == 0 || height == 0 || width > 128 || height > 128 {
+            return Some(CursorImage::mono(mono_data, mono_mask, hot_v, hot_h));
+        }
+
+        let pixels_argb = self.decode_cursor_pixels_argb(
+            bus,
+            pixel_data_ptr,
+            row_bytes,
+            width,
+            height,
+            pixel_size,
+            bus.read_long(pixmap_ptr + 42),
+        )?;
+
+        Some(CursorImage::Color {
+            width,
+            height,
+            pixels_argb,
+            mask: mono_mask,
+            hot_v,
+            hot_h,
+            mono_data,
+            mono_mask,
+        })
+    }
+
+    fn decode_cursor_pixels_argb(
+        &self,
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        width: u16,
+        height: u16,
+        pixel_size: u16,
+        ctab_handle: u32,
+    ) -> Option<Vec<u32>> {
+        let mut pixels = Vec::with_capacity(width as usize * height as usize);
+        let clut = self.read_ctab_handle_clut(bus, ctab_handle);
+
+        for row in 0..height as u32 {
+            for col in 0..width as u32 {
+                let argb = match pixel_size {
+                    1 => {
+                        let byte = bus.read_byte(base + row * row_bytes + col / 8);
+                        let index = (byte >> (7 - (col % 8))) & 1;
+                        display::clut_to_argb(&clut, index)
+                    }
+                    2 => {
+                        let byte = bus.read_byte(base + row * row_bytes + col / 4);
+                        let index = (byte >> (6 - (col % 4) * 2)) & 0x03;
+                        display::clut_to_argb(&clut, index)
+                    }
+                    4 => {
+                        let byte = bus.read_byte(base + row * row_bytes + col / 2);
+                        let index = if (col & 1) == 0 {
+                            (byte >> 4) & 0x0F
+                        } else {
+                            byte & 0x0F
+                        };
+                        display::clut_to_argb(&clut, index)
+                    }
+                    8 => {
+                        let index = bus.read_byte(base + row * row_bytes + col);
+                        display::clut_to_argb(&clut, index)
+                    }
+                    16 => {
+                        let packed = bus.read_word(base + row * row_bytes + col * 2);
+                        let r5 = (packed >> 10) & 0x1F;
+                        let g5 = (packed >> 5) & 0x1F;
+                        let b5 = packed & 0x1F;
+                        let expand5 = |c: u16| ((c << 3) | (c >> 2)) as u32;
+                        0xFF00_0000 | (expand5(r5) << 16) | (expand5(g5) << 8) | expand5(b5)
+                    }
+                    32 => bus.read_long(base + row * row_bytes + col * 4) | 0xFF00_0000,
+                    _ => return None,
+                };
+                pixels.push(argb);
+            }
+        }
+
+        Some(pixels)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
     use crate::cpu::{CpuOps, Register};
+    use crate::display::CursorImage;
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::{LoadedResources, RecentColorTableFetch, ResourceFileMap};
     use crate::trap::quickdraw::CopyBitmapInfo;
@@ -20605,6 +20818,47 @@ mod tests {
     }
 
     #[test]
+    fn getccursor_promotes_compiled_crsr_offsets_to_live_handles() {
+        // Imaging With QuickDraw 1994 p. 8-35: compiled 'crsr'
+        // resources store offsets to the PixMap, pixel data, and color
+        // table. GetCCursor returns a live CCrsrHandle whose crsrMap and
+        // crsrData fields are handles.
+        let (mut d, mut cpu, mut bus) = setup();
+        let crsr_data = compiled_crsr_resource_2bpp();
+        d.install_test_resource(&mut bus, *b"crsr", 1026, &crsr_data);
+        bus.write_word(TEST_SP, 1026);
+
+        let result = d.dispatch_quickdraw(true, 0x21B, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let crsr_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(crsr_handle, 0);
+        let crsr_ptr = bus.read_long(crsr_handle);
+        assert_ne!(crsr_ptr, 0);
+
+        let crsr_map_handle = bus.read_long(crsr_ptr + 2);
+        let crsr_data_handle = bus.read_long(crsr_ptr + 6);
+        assert_ne!(
+            crsr_map_handle, 0x60,
+            "compiled crsrMap offset must be promoted to a live PixMapHandle"
+        );
+        assert_ne!(
+            crsr_data_handle, 0x92,
+            "compiled crsrData offset must be promoted to a live pixel-data Handle"
+        );
+        let pixmap_ptr = bus.read_long(crsr_map_handle);
+        let data_ptr = bus.read_long(crsr_data_handle);
+        assert_ne!(pixmap_ptr, 0);
+        assert_ne!(data_ptr, 0);
+        assert_eq!(bus.read_long(pixmap_ptr), data_ptr);
+        assert_ne!(
+            bus.read_long(pixmap_ptr + 42),
+            0xD2,
+            "compiled pmTable offset must be promoted to a ColorTable handle"
+        );
+    }
+
+    #[test]
     fn getccursor_missing_resource_returns_nil() {
         // IM:V 1986 p. V-79: if the specified 'crsr' resource is not
         // found, GetCCursor returns NIL.
@@ -20718,6 +20972,47 @@ mod tests {
             ))
         );
         assert!(!d.cursor_visible());
+    }
+
+    #[test]
+    fn setccursor_installs_color_pixels_from_promoted_ccrsr() {
+        // Imaging With QuickDraw 1994 p. 8-5: on screens deeper than
+        // 2bpp, a color cursor's image comes from crsrMap + crsrData,
+        // with the same mask used by the one-bit fallback.
+        let (mut d, mut cpu, mut bus) = setup();
+        let crsr_data = compiled_crsr_resource_2bpp();
+        d.install_test_resource(&mut bus, *b"crsr", 1026, &crsr_data);
+        bus.write_word(TEST_SP, 1026);
+        assert!(d
+            .dispatch_quickdraw(true, 0x21B, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let crsr_handle = bus.read_long(TEST_SP + 2);
+
+        let sp = cpu.read_reg(Register::A7);
+        bus.write_long(sp, crsr_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x21C, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let Some(CursorImage::Color {
+            width,
+            height,
+            pixels_argb,
+            hot_v,
+            hot_h,
+            ..
+        }) = d.cursor()
+        else {
+            panic!("SetCCursor should install decoded color cursor pixels");
+        };
+        assert_eq!((*width, *height), (16, 16));
+        assert_eq!((*hot_v, *hot_h), (15, 7));
+        assert_eq!(pixels_argb[0], 0xFFFF_FFFF);
+        assert_eq!(pixels_argb[1], 0xFFFF_0000);
+        assert_eq!(pixels_argb[2], 0xFF00_FF00);
+        assert_eq!(pixels_argb[3], 0xFF00_0000);
     }
 
     #[test]
@@ -27266,6 +27561,63 @@ mod tests {
             bus.write_word(entry_ptr + 4, *green);
             bus.write_word(entry_ptr + 6, *blue);
         }
+    }
+
+    fn compiled_crsr_resource_2bpp() -> Vec<u8> {
+        let mut data = vec![0u8; 0xD2 + 8 + 4 * 8];
+
+        data[0..2].copy_from_slice(&0x8001u16.to_be_bytes());
+        data[2..6].copy_from_slice(&0x60u32.to_be_bytes());
+        data[6..10].copy_from_slice(&0x92u32.to_be_bytes());
+        data[84..86].copy_from_slice(&15i16.to_be_bytes());
+        data[86..88].copy_from_slice(&7i16.to_be_bytes());
+        for row in 0..16usize {
+            let mask = if row < 8 { 0xFFFFu16 } else { 0x0000 };
+            data[52 + row * 2..54 + row * 2].copy_from_slice(&mask.to_be_bytes());
+        }
+
+        let pixmap = 0x60usize;
+        data[pixmap..pixmap + 2].copy_from_slice(&0x8004u16.to_be_bytes());
+        data[pixmap + 2..pixmap + 4].copy_from_slice(&0i16.to_be_bytes());
+        data[pixmap + 4..pixmap + 6].copy_from_slice(&0i16.to_be_bytes());
+        data[pixmap + 6..pixmap + 8].copy_from_slice(&16i16.to_be_bytes());
+        data[pixmap + 8..pixmap + 10].copy_from_slice(&16i16.to_be_bytes());
+        data[pixmap + 28..pixmap + 30].copy_from_slice(&2u16.to_be_bytes());
+        data[pixmap + 30..pixmap + 32].copy_from_slice(&1u16.to_be_bytes());
+        data[pixmap + 32..pixmap + 34].copy_from_slice(&2u16.to_be_bytes());
+        data[pixmap + 38..pixmap + 42].copy_from_slice(&0xD2u32.to_be_bytes());
+
+        let pixels = 0x92usize;
+        for row in 0..16usize {
+            for col_byte in 0..4usize {
+                data[pixels + row * 4 + col_byte] = match col_byte {
+                    0 => 0b00_01_10_11,
+                    1 => 0b11_10_01_00,
+                    2 => 0b00_00_01_01,
+                    _ => 0b10_10_11_11,
+                };
+            }
+        }
+
+        let ctab = 0xD2usize;
+        data[ctab..ctab + 4].copy_from_slice(&0u32.to_be_bytes());
+        data[ctab + 4..ctab + 6].copy_from_slice(&0u16.to_be_bytes());
+        data[ctab + 6..ctab + 8].copy_from_slice(&3u16.to_be_bytes());
+        let entries = [
+            (0u16, 0xFFFFu16, 0xFFFFu16, 0xFFFFu16),
+            (1, 0xFFFF, 0x0000, 0x0000),
+            (2, 0x0000, 0xFFFF, 0x0000),
+            (3, 0x0000, 0x0000, 0x0000),
+        ];
+        for (index, (value, red, green, blue)) in entries.iter().copied().enumerate() {
+            let entry = ctab + 8 + index * 8;
+            data[entry..entry + 2].copy_from_slice(&value.to_be_bytes());
+            data[entry + 2..entry + 4].copy_from_slice(&red.to_be_bytes());
+            data[entry + 4..entry + 6].copy_from_slice(&green.to_be_bytes());
+            data[entry + 6..entry + 8].copy_from_slice(&blue.to_be_bytes());
+        }
+
+        data
     }
 
     #[test]

@@ -13,6 +13,55 @@ const WHITE_RGBA_WORD: u32 = u32::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF]);
 pub type RgbaPalette = [u32; 256];
 const UNUSED_RGBA_PALETTE: RgbaPalette = [0; 256];
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CursorImage {
+    Mono {
+        data: [u8; 32],
+        mask: [u8; 32],
+        hot_v: i16,
+        hot_h: i16,
+    },
+    Color {
+        width: u16,
+        height: u16,
+        pixels_argb: Vec<u32>,
+        mask: [u8; 32],
+        hot_v: i16,
+        hot_h: i16,
+        mono_data: [u8; 32],
+        mono_mask: [u8; 32],
+    },
+}
+
+impl CursorImage {
+    pub fn mono(data: [u8; 32], mask: [u8; 32], hot_v: i16, hot_h: i16) -> Self {
+        Self::Mono {
+            data,
+            mask,
+            hot_v,
+            hot_h,
+        }
+    }
+
+    pub fn mono_parts(&self) -> ([u8; 32], [u8; 32], i16, i16) {
+        match self {
+            Self::Mono {
+                data,
+                mask,
+                hot_v,
+                hot_h,
+            } => (*data, *mask, *hot_v, *hot_h),
+            Self::Color {
+                mono_data,
+                mono_mask,
+                hot_v,
+                hot_h,
+                ..
+            } => (*mono_data, *mono_mask, *hot_v, *hot_h),
+        }
+    }
+}
+
 /// Render the current screen to an RGBA pixel buffer (4 bytes per pixel).
 ///
 /// Uses `ram_slice()` for bulk memory access. Supports both 1bpp and 8bpp modes.
@@ -235,13 +284,52 @@ pub fn render_cursor(
     pixels: &mut [u8],
     width: u32,
     height: u32,
-    cursor: &([u8; 32], [u8; 32], i16, i16),
+    cursor: &CursorImage,
     mouse_pos: (i16, i16),
 ) {
-    let (data, mask, hot_v, hot_h) = cursor;
+    match cursor {
+        CursorImage::Mono {
+            data,
+            mask,
+            hot_v,
+            hot_h,
+        } => render_mono_cursor(pixels, width, height, data, mask, *hot_v, *hot_h, mouse_pos),
+        CursorImage::Color {
+            width: cursor_w,
+            height: cursor_h,
+            pixels_argb,
+            mask,
+            hot_v,
+            hot_h,
+            ..
+        } => render_color_cursor_rgba(
+            pixels,
+            width,
+            height,
+            *cursor_w,
+            *cursor_h,
+            pixels_argb,
+            mask,
+            *hot_v,
+            *hot_h,
+            mouse_pos,
+        ),
+    }
+}
+
+fn render_mono_cursor(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    data: &[u8; 32],
+    mask: &[u8; 32],
+    hot_v: i16,
+    hot_h: i16,
+    mouse_pos: (i16, i16),
+) {
     let (mouse_v, mouse_h) = mouse_pos;
-    let cx = mouse_h as i32 - *hot_h as i32;
-    let cy = mouse_v as i32 - *hot_v as i32;
+    let cx = mouse_h as i32 - hot_h as i32;
+    let cy = mouse_v as i32 - hot_v as i32;
 
     for row in 0..16i32 {
         let data_word =
@@ -280,13 +368,52 @@ pub fn render_cursor_argb(
     pixels: &mut [u32],
     width: u32,
     height: u32,
-    cursor: &([u8; 32], [u8; 32], i16, i16),
+    cursor: &CursorImage,
     mouse_pos: (i16, i16),
 ) {
-    let (data, mask, hot_v, hot_h) = cursor;
+    match cursor {
+        CursorImage::Mono {
+            data,
+            mask,
+            hot_v,
+            hot_h,
+        } => render_mono_cursor_argb(pixels, width, height, data, mask, *hot_v, *hot_h, mouse_pos),
+        CursorImage::Color {
+            width: cursor_w,
+            height: cursor_h,
+            pixels_argb,
+            mask,
+            hot_v,
+            hot_h,
+            ..
+        } => render_color_cursor_argb(
+            pixels,
+            width,
+            height,
+            *cursor_w,
+            *cursor_h,
+            pixels_argb,
+            mask,
+            *hot_v,
+            *hot_h,
+            mouse_pos,
+        ),
+    }
+}
+
+fn render_mono_cursor_argb(
+    pixels: &mut [u32],
+    width: u32,
+    height: u32,
+    data: &[u8; 32],
+    mask: &[u8; 32],
+    hot_v: i16,
+    hot_h: i16,
+    mouse_pos: (i16, i16),
+) {
     let (mouse_v, mouse_h) = mouse_pos;
-    let cx = mouse_h as i32 - *hot_h as i32;
-    let cy = mouse_v as i32 - *hot_v as i32;
+    let cx = mouse_h as i32 - hot_h as i32;
+    let cy = mouse_v as i32 - hot_v as i32;
 
     for row in 0..16i32 {
         let data_word =
@@ -311,6 +438,96 @@ pub fn render_cursor_argb(
             } else {
                 WHITE_ARGB
             };
+        }
+    }
+}
+
+fn color_cursor_mask_bit(mask: &[u8; 32], row: u16, col: u16) -> bool {
+    if row >= 16 || col >= 16 {
+        return false;
+    }
+    let row = row as usize;
+    let bit = 15 - col;
+    let word = ((mask[row * 2] as u16) << 8) | mask[row * 2 + 1] as u16;
+    ((word >> bit) & 1) != 0
+}
+
+fn render_color_cursor_rgba(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    cursor_w: u16,
+    cursor_h: u16,
+    pixels_argb: &[u32],
+    mask: &[u8; 32],
+    hot_v: i16,
+    hot_h: i16,
+    mouse_pos: (i16, i16),
+) {
+    let (mouse_v, mouse_h) = mouse_pos;
+    let cx = mouse_h as i32 - hot_h as i32;
+    let cy = mouse_v as i32 - hot_v as i32;
+
+    for row in 0..cursor_h {
+        for col in 0..cursor_w {
+            let gx = cx + col as i32;
+            let gy = cy + row as i32;
+            if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 {
+                continue;
+            }
+            let Some(&argb) = pixels_argb.get(row as usize * cursor_w as usize + col as usize)
+            else {
+                continue;
+            };
+            let idx = ((gy as u32 * width + gx as u32) * 4) as usize;
+            if color_cursor_mask_bit(mask, row, col) {
+                pixels[idx] = ((argb >> 16) & 0xFF) as u8;
+                pixels[idx + 1] = ((argb >> 8) & 0xFF) as u8;
+                pixels[idx + 2] = (argb & 0xFF) as u8;
+                pixels[idx + 3] = 0xFF;
+            } else if argb == BLACK_ARGB {
+                pixels[idx] = !pixels[idx];
+                pixels[idx + 1] = !pixels[idx + 1];
+                pixels[idx + 2] = !pixels[idx + 2];
+                pixels[idx + 3] = 0xFF;
+            }
+        }
+    }
+}
+
+fn render_color_cursor_argb(
+    pixels: &mut [u32],
+    width: u32,
+    height: u32,
+    cursor_w: u16,
+    cursor_h: u16,
+    pixels_argb: &[u32],
+    mask: &[u8; 32],
+    hot_v: i16,
+    hot_h: i16,
+    mouse_pos: (i16, i16),
+) {
+    let (mouse_v, mouse_h) = mouse_pos;
+    let cx = mouse_h as i32 - hot_h as i32;
+    let cy = mouse_v as i32 - hot_v as i32;
+
+    for row in 0..cursor_h {
+        for col in 0..cursor_w {
+            let gx = cx + col as i32;
+            let gy = cy + row as i32;
+            if gx < 0 || gy < 0 || gx >= width as i32 || gy >= height as i32 {
+                continue;
+            }
+            let Some(&argb) = pixels_argb.get(row as usize * cursor_w as usize + col as usize)
+            else {
+                continue;
+            };
+            let idx = gy as usize * width as usize + gx as usize;
+            if color_cursor_mask_bit(mask, row, col) {
+                pixels[idx] = argb | 0xFF00_0000;
+            } else if argb == BLACK_ARGB {
+                pixels[idx] ^= 0x00FF_FFFF;
+            }
         }
     }
 }
@@ -374,8 +591,9 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 #[cfg(test)]
 mod tests {
     use super::{
-        clut_component_to_u8, clut_to_argb, render_screen_into,
+        clut_component_to_u8, clut_to_argb, render_cursor, render_cursor_argb, render_screen_into,
         render_screen_with_rgba_palette_into, rgba_palette_from_clut, screen_pixel_rgb,
+        CursorImage,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
 
@@ -485,6 +703,39 @@ mod tests {
                 0xFF, 0xFF, 0xFF, 0xFF,
             ]
         );
+    }
+
+    #[test]
+    fn render_color_cursor_replaces_masked_pixels_and_inverts_black_outside_mask() {
+        let mut mask = [0u8; 32];
+        mask[0] = 0x80;
+        let cursor = CursorImage::Color {
+            width: 2,
+            height: 2,
+            pixels_argb: vec![0xFFFF_0000, 0xFF00_0000, 0xFFFF_FFFF, 0xFF00_FF00],
+            mask,
+            hot_v: 0,
+            hot_h: 0,
+            mono_data: [0; 32],
+            mono_mask: mask,
+        };
+
+        let mut rgba = vec![
+            0x40, 0x50, 0x60, 0xFF, 0x40, 0x50, 0x60, 0xFF, 0x40, 0x50, 0x60, 0xFF, 0x40, 0x50,
+            0x60, 0xFF,
+        ];
+        render_cursor(&mut rgba, 2, 2, &cursor, (0, 0));
+        assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF]);
+        assert_eq!(&rgba[4..8], &[0xBF, 0xAF, 0x9F, 0xFF]);
+        assert_eq!(&rgba[8..12], &[0x40, 0x50, 0x60, 0xFF]);
+        assert_eq!(&rgba[12..16], &[0x40, 0x50, 0x60, 0xFF]);
+
+        let mut argb = vec![0xFF40_5060; 4];
+        render_cursor_argb(&mut argb, 2, 2, &cursor, (0, 0));
+        assert_eq!(argb[0], 0xFFFF_0000);
+        assert_eq!(argb[1], 0xFFBF_AF9F);
+        assert_eq!(argb[2], 0xFF40_5060);
+        assert_eq!(argb[3], 0xFF40_5060);
     }
 
     #[test]

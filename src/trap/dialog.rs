@@ -6,6 +6,7 @@ use super::dispatch::{
 };
 use super::types::{Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
+use crate::display::CursorImage;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::get_font_face_scaled;
 use crate::quickdraw::text::get_font_metrics;
@@ -7152,7 +7153,7 @@ impl super::TrapDispatcher {
             // InitCursor ($A850): Sets arrow cursor, resets cursor level to 0,
             // makes visible (IM:I I-167).
             (true, 0x050) => {
-                self.cursor_data = Some(Self::default_arrow_cursor());
+                self.cursor_data = Some(Self::default_arrow_cursor_image());
                 self.cursor_level = 0;
                 self.cursor_visible = true;
                 Ok(())
@@ -7183,7 +7184,7 @@ impl super::TrapDispatcher {
                 let hot_v = bus.read_word(crsr_ptr + 64) as i16;
                 let hot_h = bus.read_word(crsr_ptr + 66) as i16;
 
-                self.cursor_data = Some((data, mask, hot_v, hot_h));
+                self.cursor_data = Some(CursorImage::mono(data, mask, hot_v, hot_h));
                 self.cursor_visible = self.cursor_level == 0;
                 Ok(())
             }
@@ -18766,7 +18767,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
 
-        let (data, mask, hot_v, hot_h) = disp.cursor_data.unwrap();
+        let (data, mask, hot_v, hot_h) = disp.cursor_data().unwrap();
         assert!(data.iter().all(|&b| b == 0xAA));
         assert!(mask.iter().all(|&b| b == 0xFF));
         assert_eq!(hot_v, 5);

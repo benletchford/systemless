@@ -6,6 +6,7 @@
 
 use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
+use crate::display::CursorImage;
 use crate::machine_profile::oracle_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -1198,8 +1199,8 @@ pub struct TrapDispatcher {
     /// the runner drains these one-at-a-time via advance_guest_tick().
     /// Inside Macintosh Volume II, II-384
     pub pending_delay_ticks: u32,
-    /// Custom cursor data: 16x16 1-bit bitmap (32 bytes) + mask (32 bytes) + hotspot (v, h)
-    pub(crate) cursor_data: Option<([u8; 32], [u8; 32], i16, i16)>,
+    /// Custom cursor image installed by SetCursor / SetCCursor.
+    pub(crate) cursor_data: Option<CursorImage>,
     /// Cursor level per IM:I I-167..I-168. `0` means visible; negative
     /// values mean hidden by one or more HideCursor/ShieldCursor calls.
     pub(crate) cursor_level: i16,
@@ -2254,7 +2255,7 @@ impl TrapDispatcher {
             current_trap_caller: None,
             pending_wait_sleep_ticks: 0,
             pending_delay_ticks: 0,
-            cursor_data: Some(Self::default_arrow_cursor()),
+            cursor_data: Some(Self::default_arrow_cursor_image()),
             cursor_level: 0,
             cursor_visible: true,
             trap_count: 0,
@@ -3069,6 +3070,11 @@ impl TrapDispatcher {
         (data, mask, 1, 1) // hotspot at (1, 1)
     }
 
+    pub(crate) fn default_arrow_cursor_image() -> CursorImage {
+        let (data, mask, hot_v, hot_h) = Self::default_arrow_cursor();
+        CursorImage::mono(data, mask, hot_v, hot_h)
+    }
+
     /// Get a built-in system cursor by ID.
     /// Standard Mac cursor IDs: 1=iBeam, 2=cross, 3=plus, 4=watch
     pub(crate) fn system_cursor(id: i16) -> Option<([u8; 32], [u8; 32], i16, i16)> {
@@ -3290,8 +3296,7 @@ impl TrapDispatcher {
     }
 
     /// Get the current cursor data for rendering overlay.
-    /// Returns (bitmap, mask, hotspot_v, hotspot_h) if a custom cursor is set.
-    pub fn cursor(&self) -> Option<&([u8; 32], [u8; 32], i16, i16)> {
+    pub fn cursor(&self) -> Option<&CursorImage> {
         if self.cursor_visible {
             self.cursor_data.as_ref()
         } else {
@@ -3318,7 +3323,7 @@ impl TrapDispatcher {
     /// `TrapDispatcher::new()` seeds the default arrow). Used by
     /// tests to observe SetCursor's bitmap-storage effect.
     pub fn cursor_data(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
-        self.cursor_data
+        self.cursor_data.as_ref().map(|cursor| cursor.mono_parts())
     }
 
     /// Get the current mouse position.

@@ -493,7 +493,7 @@ impl App {
 
         let screen_mode = runner.dispatcher().screen_mode;
         let device_clut = runner.dispatcher().device_clut;
-        let cursor = runner.dispatcher().cursor().copied();
+        let cursor = runner.dispatcher().cursor().cloned();
         let mouse_pos = runner.dispatcher().mouse_position();
 
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
