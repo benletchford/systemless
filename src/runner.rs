@@ -262,12 +262,15 @@ const SPIN_FASTFWD_MAX_TICKS: u32 = 1_000_000;
 
 /// Outcome of `advance_until_tick`. Used to distinguish the "we
 /// advanced, please synthesise the exit state" happy path from
-/// the two abort paths: tick_cap reached (caller must break the
-/// outer run loop) and pathological target difference (caller
-/// must NOT synthesise — let the guest spin normally).
+/// the abort paths: tick_cap reached (caller must break the
+/// outer run loop), pathological target difference (caller must
+/// NOT synthesise — let the guest spin normally), and interrupt
+/// callback injection (caller must leave the CPU at the callback
+/// trampoline).
 enum AdvanceResult {
     Advanced,
     CapHit,
+    Interrupted,
     TooFar,
 }
 
@@ -1460,6 +1463,11 @@ impl FixtureRunner {
             return self.try_spin_template_b(pc_after_trap, dn, w1, tick_cap, count);
         }
 
+        // Template C: CMP.L (xxx).L, Dn; BCS.S <back>
+        if (w1 & 0xF1FF) == 0xB0B9 && ((w1 >> 9) & 7) as usize == dn {
+            return self.try_spin_template_c(pc_after_trap, dn, tick_cap, count);
+        }
+
         false
     }
 
@@ -1506,7 +1514,7 @@ impl FixtureRunner {
         let target_tick = dm_val.wrapping_add(imm);
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => return true,
-            AdvanceResult::TooFar => return false,
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => return false,
             AdvanceResult::Advanced => {}
         }
 
@@ -1566,7 +1574,7 @@ impl FixtureRunner {
 
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => return true,
-            AdvanceResult::TooFar => return false,
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => return false,
             AdvanceResult::Advanced => {}
         }
 
@@ -1577,6 +1585,54 @@ impl FixtureRunner {
         self.cpu.core.set_a(7, sp.wrapping_add(4));
         self.cpu.core.set_d(dn, final_tick);
         self.cpu.core.pc = pc_after_trap.wrapping_add(8);
+
+        *count += 3;
+        self.total_instructions = self.total_instructions.wrapping_add(3);
+        false
+    }
+
+    /// Template C: absolute-long target variant.
+    ///   MOVE.L (A7)+, Dn
+    ///   CMP.L  (xxx).L, Dn
+    ///   BCS.S  <back-to-SUBQ.W #4,A7 before the _TickCount>
+    ///
+    /// Exit when `TickCount() >= *(xxx).L`.
+    fn try_spin_template_c(
+        &mut self,
+        pc_after_trap: u32,
+        dn: usize,
+        tick_cap: Option<u32>,
+        count: &mut usize,
+    ) -> bool {
+        let target_addr = self.bus.read_long(pc_after_trap.wrapping_add(4));
+        let w_brk = self.bus.read_word(pc_after_trap.wrapping_add(8));
+
+        // BCS.S/BLO.S disp8. The loop repeats while Dn < *(xxx).L.
+        if (w_brk & 0xFF00) != 0x6500 {
+            return false;
+        }
+        let disp8 = (w_brk & 0xFF) as i8 as i32;
+        if disp8 == 0 {
+            return false;
+        }
+        let branch_src = pc_after_trap.wrapping_add(8);
+        let target = (branch_src.wrapping_add(2) as i32).wrapping_add(disp8) as u32;
+        if target != pc_after_trap.wrapping_sub(4) {
+            return false;
+        }
+
+        let target_tick = self.bus.read_long(target_addr);
+        match self.advance_until_tick(target_tick, tick_cap) {
+            AdvanceResult::CapHit => return true,
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => return false,
+            AdvanceResult::Advanced => {}
+        }
+
+        let final_tick = self.dispatcher.tick_count;
+        let sp = self.cpu.core.a(7);
+        self.cpu.core.set_a(7, sp.wrapping_add(4));
+        self.cpu.core.set_d(dn, final_tick);
+        self.cpu.core.pc = pc_after_trap.wrapping_add(10);
 
         *count += 3;
         self.total_instructions = self.total_instructions.wrapping_add(3);
@@ -1598,6 +1654,9 @@ impl FixtureRunner {
                 }
             }
             self.advance_guest_tick();
+            if self.active_interrupt_callback.is_some() {
+                return AdvanceResult::Interrupted;
+            }
         }
         AdvanceResult::Advanced
     }
@@ -5773,6 +5832,112 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
         // Template B synthesises 3 instructions (MOVE, CMP, BLS).
         assert_eq!(count, 3);
+    }
+
+    /// Regression gate for the TickCount spin fast-forward absolute
+    /// LongInt target variant:
+    ///
+    ///   SUBQ.W #4,A7
+    ///   _TickCount
+    ///   MOVE.L (A7)+,Dn
+    ///   CMP.L  (xxx).L,Dn
+    ///   BCS.S  back-to-SUBQ
+    ///
+    /// This is the same wait-until-Ticks-reaches-memory-target shape as
+    /// template B, but older MPW/Think-era code may address the target
+    /// through an absolute long global instead of an A-register frame.
+    #[test]
+    fn spin_fastfwd_template_c_absolute_long_target_variant() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let target_addr = 0x0002_FE44u32;
+
+        // $base+0:  SUBQ.W #4, A7      (0x594F)
+        // $base+2:  _TickCount         (0xA975)
+        // $base+4:  MOVE.L (A7)+, D0   (0x201F)
+        // $base+6:  CMP.L (xxx).L, D0  (0xB0B9 + absolute long)
+        // $base+12: BCS.S $base        (0x65F2; base+14-14)
+        // $base+14: sentinel NOP
+        runner.bus.write_word(base, 0x594F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0xB0B9);
+        runner.bus.write_long(base + 8, target_addr);
+        runner.bus.write_word(base + 12, 0x65F2);
+        runner.bus.write_word(base + 14, 0x4E71);
+
+        runner.bus.write_long(target_addr, 400);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let pc_after_trap = base + 4;
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(pc_after_trap, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.dispatcher.tick_count, 400);
+        assert_eq!(runner.bus.read_long(0x016A), 400);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 400);
+        assert_eq!(runner.cpu.read_reg(Register::A7), 0x0010_0004);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 14);
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn spin_fastfwd_leaves_interrupt_callback_state_unsynthesized() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let target_addr = 0x0002_FE44u32;
+        let task_ptr = 0x0020_2000u32;
+        let sp = 0x0010_0000u32;
+
+        // Same absolute-long TickCount spin as template C. The VBL task
+        // becomes due during the accelerated tick advance, before the
+        // loop reaches its target tick.
+        runner.bus.write_word(base, 0x594F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0xB0B9);
+        runner.bus.write_long(base + 8, target_addr);
+        runner.bus.write_word(base + 12, 0x65F2);
+        runner.bus.write_word(base + 14, 0x4E71);
+
+        runner.bus.write_long(target_addr, 400);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.cpu.write_reg(Register::D0, 0xDEAD_BEEF);
+        runner.bus.write_long(sp, 100);
+
+        runner.bus.write_word(task_ptr + 4, 1);
+        runner.bus.write_long(task_ptr + 6, 0x0004_1234);
+        runner.bus.write_word(task_ptr + 10, 1);
+        runner.bus.write_word(task_ptr + 12, 0);
+        runner.dispatcher.vbl_tasks.push(VblTask {
+            task_ptr,
+            slot: None,
+        });
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.dispatcher.tick_count, 101);
+        assert_eq!(runner.bus.read_long(0x016A), 101);
+        assert_eq!(count, 0);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 0xDEAD_BEEF);
+        assert_eq!(runner.cpu.read_reg(Register::PC), runner.vbl_trampoline);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.bus.read_long(sp - 4), base + 4);
+
+        let active = runner
+            .active_interrupt_callback
+            .expect("VBL callback should remain active for normal resume handling");
+        assert!(matches!(active.source, ActiveInterruptCallbackSource::Vbl));
+        assert_eq!(active.resume_pc, base + 4);
+        assert_eq!(active.resume_sp, sp);
     }
 
     /// Regression gates for the tri-state spin-fastfwd gate. Tests the

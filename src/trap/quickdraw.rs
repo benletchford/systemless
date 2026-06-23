@@ -11560,10 +11560,26 @@ impl super::TrapDispatcher {
                 }
                 let count = (req_size as usize) + 1;
 
+                let result_size = 8 + (count as u32) * 8;
+                let result_ptr = self.resize_handle_allocation(bus, result_handle, result_size);
+                if result_ptr == 0 {
+                    return Some(Ok(()));
+                }
+
                 // Source: NIL handle = current device CLUT, else read from
-                // the CTab pointed to by the handle.
+                // the CTab pointed to by the handle. When possible, NIL
+                // source reads through the current GDevice CTab so the
+                // packed result carries real ColorSpec.value words instead
+                // of synthesized indices.
+                let current_ctab_handle = if src_handle == 0 {
+                    self.current_gdevice_ctab_handle(bus)
+                } else {
+                    0
+                };
                 let src_ptr = if src_handle != 0 {
                     bus.read_long(src_handle)
+                } else if current_ctab_handle != 0 {
+                    bus.read_long(current_ctab_handle)
                 } else {
                     0
                 };
@@ -11574,6 +11590,19 @@ impl super::TrapDispatcher {
                 } else {
                     255 // device_clut always has 256 entries
                 };
+
+                // SaveEntries produces a packed ColorTable suitable for
+                // RestoreEntries. Callers may pass a freshly-created
+                // zero-length Handle; make the result structurally valid
+                // before writing entries.
+                let seed = if src_ptr != 0 {
+                    bus.read_long(src_ptr)
+                } else {
+                    self.next_color_table_seed()
+                };
+                bus.write_long(result_ptr, seed);
+                bus.write_word(result_ptr + 4, 0);
+                bus.write_word(result_ptr + 6, req_size as u16);
 
                 for i in 0..count {
                     let req_slot = selection_ptr + 2 + (i as u32) * 2;
@@ -25031,6 +25060,52 @@ mod tests {
             sp_pre,
             "5 successive RestoreEntries calls (after 5 SaveEntries calls) should net-balance A7"
         );
+    }
+
+    #[test]
+    fn saveentries_nil_source_resizes_zero_length_result_handle_to_ctab() {
+        // IM:V 1986 p. V-144: SaveEntries packs selected entries from
+        // the current device color table when srcTable is NIL. Callers
+        // commonly pass a freshly-created zero-length result handle;
+        // the result must still become a structurally valid ColorTable.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.ensure_main_gdevice(&mut bus);
+
+        let selection = bus.alloc(2 + 256 * 2);
+        bus.write_word(selection, 255); // reqLSize: 256 requests
+        for index in 0..256u32 {
+            bus.write_word(selection + 2 + index * 2, index as u16);
+        }
+
+        let zero_len_ptr = bus.alloc(0);
+        let result_handle = bus.alloc(4);
+        bus.write_long(result_handle, zero_len_ptr);
+        assert_eq!(bus.get_alloc_size(zero_len_ptr), Some(0));
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, selection);
+        bus.write_long(TEST_SP + 4, result_handle);
+        bus.write_long(TEST_SP + 8, 0); // NIL srcTable => current device CTab
+
+        let result = d.dispatch_quickdraw(true, 0x249, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+        let result_ptr = bus.read_long(result_handle);
+        assert_ne!(result_ptr, 0);
+        assert_eq!(
+            bus.get_alloc_size(result_ptr),
+            Some(8 + 256 * 8),
+            "SaveEntries should resize resultTable for a packed 256-entry CTab"
+        );
+        assert_eq!(bus.read_word(result_ptr + 6), 255);
+
+        let canonical = TrapDispatcher::standard_mac_8bpp_clut();
+        let entry_42 = result_ptr + 8 + 42 * 8;
+        assert_eq!(bus.read_word(entry_42), 42);
+        assert_eq!(bus.read_word(entry_42 + 2), canonical[42][0]);
+        assert_eq!(bus.read_word(entry_42 + 4), canonical[42][1]);
+        assert_eq!(bus.read_word(entry_42 + 6), canonical[42][2]);
     }
 
     #[test]
