@@ -638,6 +638,13 @@ pub struct QueuedEvent {
     pub modifiers: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct KeyRepeatState {
+    pub key_code: u8,
+    pub char_code: u8,
+    pub next_tick: u32,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ListState {
     /// List view rectangle in local coordinates.
@@ -1109,6 +1116,8 @@ pub struct TrapDispatcher {
     /// Bits are packed for direct byte/bit readers:
     /// key >> 3 selects the byte, key & 7 selects the bit.
     pub(crate) key_map: [u8; 16],
+    /// Auto-key repeat state for the currently repeating character key.
+    pub(crate) key_repeat: Option<KeyRepeatState>,
     /// Debug counter for GetKeys calls that observed at least one held key.
     pub debug_getkeys_nonzero_count: u64,
     /// Last non-zero KeyMap returned by GetKeys. Used by regression tests to
@@ -1521,6 +1530,19 @@ pub(crate) struct LoadedResources {
 }
 
 impl TrapDispatcher {
+    pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
+    pub(crate) const AUTO_KEY_RATE_TICKS: u32 = 4;
+
+    pub(crate) fn key_generates_auto_key(key_code: u8) -> bool {
+        // Modifier keys are not auto-keying character keys. Inside Macintosh
+        // Volume I, I-246; include extended Control/right-side modifier key
+        // codes used by later System 7-era keyboards.
+        !matches!(
+            key_code,
+            0x37 | 0x38 | 0x39 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E
+        )
+    }
+
     /// Number of menus currently loaded (added via InsertMenu, NewMenu,
     /// GetNewMBar, etc.). Used by ctx.json snapshots so observers can see
     /// whether the menu bar was populated at capture time without
@@ -2187,6 +2209,7 @@ impl TrapDispatcher {
             mouse_pos: (0, 0),
             mouse_button: false,
             key_map: [0; 16],
+            key_repeat: None,
             debug_getkeys_nonzero_count: 0,
             debug_last_getkeys_nonzero_key_map: [0; 16],
             debug_key_event_delivery_count: 0,
@@ -3222,11 +3245,27 @@ impl TrapDispatcher {
             where_h: self.mouse_pos.1,
             modifiers,
         });
+
+        if Self::key_generates_auto_key(key_code) {
+            // Auto-key timing defaults are 16 ticks for the first repeat and
+            // 4 ticks thereafter. Inside Macintosh Volume I, I-246.
+            self.key_repeat = Some(KeyRepeatState {
+                key_code,
+                char_code,
+                next_tick: self.tick_count.wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS),
+            });
+        }
     }
 
     /// Push a key-up event into the event queue.
     pub fn push_key_up(&mut self, key_code: u8, char_code: u8) {
         set_key_map_key(&mut self.key_map, key_code, false);
+        if self
+            .key_repeat
+            .is_some_and(|repeat| repeat.key_code == key_code)
+        {
+            self.key_repeat = None;
+        }
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
             eprintln!(

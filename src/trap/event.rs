@@ -10,6 +10,7 @@ impl super::TrapDispatcher {
     const K_HIGH_LEVEL_EVENT: u16 = 23;
     const K_CORE_EVENT_CLASS: u32 = 0x61657674; // 'aevt'
     const K_AE_OPEN_APPLICATION: u32 = 0x6F617070; // 'oapp'
+    const AUTO_KEY_EVENT: u16 = 5;
     const OS_EVENT: u16 = 15;
     const MOUSE_MOVED_MESSAGE: u32 = 0xFA00_0000;
     const QHDR_HEAD_OFFSET: u32 = 2;
@@ -252,12 +253,55 @@ impl super::TrapDispatcher {
         });
     }
 
+    fn tick_has_reached(now: u32, due: u32) -> bool {
+        now.wrapping_sub(due) < 0x8000_0000
+    }
+
+    fn enqueue_auto_key_if_due(&mut self, event_mask: u16) {
+        // Auto-key events are posted only when requested and when no matching
+        // higher-priority event is already available. Inside Macintosh Volume
+        // I, I-246.
+        if !Self::event_matches_mask(event_mask, Self::AUTO_KEY_EVENT)
+            || self
+                .event_queue
+                .iter()
+                .any(|event| Self::event_matches_mask(event_mask, event.what))
+        {
+            return;
+        }
+
+        let Some(repeat) = self.key_repeat else {
+            return;
+        };
+        if !Self::key_generates_auto_key(repeat.key_code) || !self.key_is_down(repeat.key_code) {
+            self.key_repeat = None;
+            return;
+        }
+        if !Self::tick_has_reached(self.tick_count, repeat.next_tick) {
+            return;
+        }
+
+        if let Some(state) = self.key_repeat.as_mut() {
+            state.next_tick = self.tick_count.wrapping_add(Self::AUTO_KEY_RATE_TICKS);
+        }
+
+        let message = ((repeat.key_code as u32) << 8) | (repeat.char_code as u32);
+        self.event_queue.push_back(super::dispatch::QueuedEvent {
+            what: Self::AUTO_KEY_EVENT,
+            message,
+            where_v: self.mouse_pos.0,
+            where_h: self.mouse_pos.1,
+            modifiers: self.current_event_modifiers(),
+        });
+    }
+
     pub(crate) fn peek_toolbox_event(
         &mut self,
         bus: &MacMemoryBus,
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_open_application_event_if_needed(event_mask);
+        self.enqueue_auto_key_if_due(event_mask);
         self.event_queue
             .iter()
             .find(|event| Self::event_matches_mask(event_mask, event.what))
@@ -266,7 +310,8 @@ impl super::TrapDispatcher {
             .or_else(|| self.pending_update_event(bus, event_mask))
     }
 
-    fn peek_event(&self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
+    fn peek_event(&mut self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
+        self.enqueue_auto_key_if_due(event_mask);
         self.event_queue
             .iter()
             .find(|event| Self::event_matches_mask(event_mask, event.what))
@@ -280,6 +325,7 @@ impl super::TrapDispatcher {
         event_mask: u16,
     ) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_open_application_event_if_needed(event_mask);
+        self.enqueue_auto_key_if_due(event_mask);
         if let Some(idx) = self
             .event_queue
             .iter()
@@ -314,7 +360,7 @@ impl super::TrapDispatcher {
                 self.mouse_button = false;
             }
             self.begin_app_owned_modal_dialog_button_tracking(bus, &event);
-            if matches!(event.what, 3 | 4) {
+            if matches!(event.what, 3 | 4 | 5) {
                 self.debug_key_event_delivery_count =
                     self.debug_key_event_delivery_count.saturating_add(1);
                 self.debug_last_key_event_message = event.message;
@@ -428,6 +474,7 @@ impl super::TrapDispatcher {
     /// Dequeue one event matching the event mask, or return a null event.
     /// Returns (what, message, where_v, where_h, modifiers, has_event).
     pub(crate) fn dequeue_event(&mut self, event_mask: u16) -> (u16, u32, i16, i16, u16, bool) {
+        self.enqueue_auto_key_if_due(event_mask);
         if let Some(idx) = self
             .event_queue
             .iter()
@@ -970,7 +1017,7 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatch::QueuedEvent;
+    use super::super::dispatch::{QueuedEvent, TrapDispatcher};
     use super::super::test_helpers::setup;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::MemoryBus;
@@ -1027,6 +1074,103 @@ mod tests {
             stack_ptr,
             "InitEvents should preserve A7"
         );
+    }
+
+    #[test]
+    fn held_key_generates_autokey_after_default_threshold() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x7D, 31); // Down Arrow
+        let (what, message, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event, "initial keyDown should be delivered");
+        assert_eq!(what, 3);
+        assert_eq!(message, 0x0000_7D1F);
+
+        let first_repeat_tick = disp.tick_count + TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
+
+        disp.tick_count = first_repeat_tick - 1;
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        assert!(
+            !has_event,
+            "autoKey should wait for the 16-tick default threshold"
+        );
+
+        disp.tick_count = first_repeat_tick;
+        let (what, message, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        assert!(has_event, "held key should generate autoKey at threshold");
+        assert_eq!(what, 5);
+        assert_eq!(message, 0x0000_7D1F);
+
+        let second_repeat_tick = disp.tick_count + TrapDispatcher::AUTO_KEY_RATE_TICKS;
+
+        disp.tick_count = second_repeat_tick - 1;
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        assert!(
+            !has_event,
+            "autoKey should wait for the 4-tick default repeat rate"
+        );
+
+        disp.tick_count = second_repeat_tick;
+        let (what, message, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        assert!(has_event, "held key should repeat after the rate interval");
+        assert_eq!(what, 5);
+        assert_eq!(message, 0x0000_7D1F);
+
+        disp.push_key_up(0x7D, 31);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+        assert!(has_event, "keyUp should be delivered");
+        assert_eq!(what, 4);
+
+        disp.tick_count = 100;
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        assert!(!has_event, "released key should not keep auto-keying");
+    }
+
+    #[test]
+    fn event_avail_peeks_autokey_without_duplicating_it() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x7D, 31);
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event, "initial keyDown should be drained");
+
+        disp.tick_count += TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
+        let first = disp
+            .peek_toolbox_event(&bus, 0x0020)
+            .expect("EventAvail should see due autoKey");
+        assert_eq!(first.what, 5);
+        assert_eq!(first.message, 0x0000_7D1F);
+        assert_eq!(disp.event_queue.len(), 1);
+
+        let second = disp
+            .peek_toolbox_event(&bus, 0x0020)
+            .expect("second EventAvail should see same autoKey");
+        assert_eq!(second.what, 5);
+        assert_eq!(second.message, 0x0000_7D1F);
+        assert_eq!(
+            disp.event_queue.len(),
+            1,
+            "peek should not duplicate autoKey"
+        );
+    }
+
+    #[test]
+    fn modifier_keys_do_not_generate_autokey() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x38, 0); // Shift
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event, "existing keyDown behavior is preserved");
+
+        disp.tick_count = 100;
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        assert!(!has_event, "modifier keys should not auto-key");
     }
 
     // ---- Device/Interrupt no-op family ($A03D/$A03E/$A072/$A075/$A076) ----
