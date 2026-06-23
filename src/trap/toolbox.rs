@@ -164,6 +164,15 @@ fn return_error_and_pop<C: CpuOps>(cpu: &mut C, bytes: u32, err: i16) -> Result<
     Ok(())
 }
 
+fn signed_byte_from_stack_word(word: u16) -> i16 {
+    let byte = if word & 0x00FF == 0 {
+        (word >> 8) as u8
+    } else {
+        (word & 0x00FF) as u8
+    };
+    i16::from(byte as i8)
+}
+
 /// Returns true if `year` is a leap year in the Gregorian calendar.
 fn is_leap_year(year: u32) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
@@ -8408,26 +8417,11 @@ impl super::TrapDispatcher {
             //
             // A complete Movie Toolbox emulation is a substantial
             // multi-iteration project (movies, tracks, media handlers,
-            // codecs). Until those land, the games we've identified as
-            // QuickTime-gated (Souls In The System) probe the Movie
-            // Toolbox during init via EnterMovies/ExitMovies but don't
-            // actually depend on movie playback for their menu→
-            // gameplay flow. A noErr-returning stub that pops the
-            // selector + declared param size lets those games proceed
-            // past init; titles that hit a real movie playback call
-            // can be addressed by upgrading specific selectors as
-            // they surface.
-            //
-            // Pre-fix the trap was UNIMPLEMENTED → halted the runner.
-            // Post-fix: return D0=0 (noErr), preserving the stack.
-            // EnterMovies also writes its OSErr result into the caller's
-            // result slot so the MPW wrapper sees the noErr value.
-            // Diagnostic logging still uses
-            // SYSTEMLESS_TRACE_QUICKTIME=1 for diagnostic visibility.
-            // Movie Toolbox Dispatch ($AAAA): D0 carries the selector;
-            // zero-arg EnterMovies/ExitMovies calls are stack-neutral,
-            // and EnterMovies writes its noErr result for the caller.
-            // Real Movie Toolbox emulation pending.
+            // codecs). The selectors below cover documented initialization
+            // and movie-file loading calls that appear before gameplay in
+            // several Classic Mac demos. Playback/status selectors still
+            // need real stack behavior and movie state before QuickTime-
+            // gated games can be considered playable.
             (true, 0x2AA) => {
                 let selector = cpu.read_reg(Register::D0) as u16;
                 if super::dispatch::trace_quicktime_enabled() {
@@ -8435,16 +8429,195 @@ impl super::TrapDispatcher {
                         std::sync::atomic::AtomicU32::new(0);
                     if QT_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 20 {
                         eprintln!(
-                            "[QUICKTIME] MovieToolboxDispatch selector_in_d0=${:04X}",
-                            selector
+                            "[QUICKTIME] MovieToolboxDispatch selector_in_d0=${:04X} sp=${:08X} d1=${:08X} a0=${:08X} a1=${:08X}",
+                            selector,
+                            cpu.read_reg(Register::A7),
+                            cpu.read_reg(Register::D1),
+                            cpu.read_reg(Register::A0),
+                            cpu.read_reg(Register::A1)
                         );
                     }
                 }
-                if selector == 1 {
-                    let sp = cpu.read_reg(Register::A7);
-                    bus.write_word(sp, 0);
+                match selector {
+                    1 => {
+                        let sp = cpu.read_reg(Register::A7);
+                        bus.write_word(sp, 0);
+                        return_noerr(cpu)
+                    }
+                    0x0192 => {
+                        // OpenMovieFile ($AAAA selector $0192)
+                        // Opens a QuickTime movie file and returns a resource-file refNum.
+                        // pascal OSErr OpenMovieFile(const FSSpec *fileSpec,
+                        //   short *resRefNum, char perms);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-98 to 2-99.
+                        let sp = cpu.read_reg(Register::A7);
+                        let permission = signed_byte_from_stack_word(bus.read_word(sp));
+                        let ref_num_ptr = bus.read_long(sp + 2);
+                        let spec_ptr = bus.read_long(sp + 6);
+                        let filename = crate::trap::types::read_fsspec_name(bus, spec_ptr);
+                        let vref = bus.read_word(spec_ptr) as i16;
+                        let dir_id = bus.read_long(spec_ptr + 2);
+                        let wants_write = permission == 2 || permission == 3;
+                        let Some(vfs_key) = self.vfs_key_for_fsspec(vref, dir_id, &filename) else {
+                            bus.write_word(sp + 10, (-43i16) as u16);
+                            cpu.write_reg(Register::A7, sp + 10);
+                            cpu.write_reg(Register::D0, (-43i16) as u32);
+                            return Some(Ok(()));
+                        };
+                        let normalized_key = Self::normalize_vfs_path(&vfs_key);
+                        let rsrc_key = self
+                            .vfs_rsrc
+                            .keys()
+                            .find(|key| {
+                                Self::normalize_vfs_path(key).eq_ignore_ascii_case(&normalized_key)
+                            })
+                            .cloned();
+                        let data_key = self
+                            .vfs
+                            .keys()
+                            .find(|key| {
+                                Self::normalize_vfs_path(key).eq_ignore_ascii_case(&normalized_key)
+                            })
+                            .cloned();
+
+                        let refnum = if let Some(vfs_key) = rsrc_key {
+                            if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
+                                existing
+                            } else {
+                                self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write)
+                            }
+                        } else if let Some(vfs_key) = data_key {
+                            if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
+                                existing
+                            } else {
+                                let refnum = self.next_refnum;
+                                self.next_refnum += 1;
+                                self.register_empty_resource_file(refnum);
+                                self.set_resource_file_name(refnum, vfs_key.clone());
+                                if wants_write {
+                                    self.write_refnums.insert(refnum);
+                                }
+                                self.open_files.insert(refnum, vfs_key);
+                                self.file_positions.insert(refnum, 0);
+                                self.set_current_resource_refnum(bus, refnum);
+                                refnum
+                            }
+                        } else {
+                            bus.write_word(sp + 10, (-43i16) as u16);
+                            cpu.write_reg(Register::A7, sp + 10);
+                            cpu.write_reg(Register::D0, (-43i16) as u32);
+                            return Some(Ok(()));
+                        };
+
+                        if ref_num_ptr != 0 {
+                            bus.write_word(ref_num_ptr, refnum);
+                        }
+                        bus.write_word(sp + 10, 0);
+                        cpu.write_reg(Register::A7, sp + 10);
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
+                    0x00F0 => {
+                        // NewMovieFromFile ($AAAA selector $00F0)
+                        // Creates an in-memory Movie from an open movie file.
+                        // pascal OSErr NewMovieFromFile(Movie *theMovie,
+                        //   short resRefNum, short *resId, StringPtr resName,
+                        //   short newMovieFlags, Boolean *dataRefWasChanged);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-88 to 2-90.
+                        let sp = cpu.read_reg(Register::A7);
+                        let data_ref_changed_ptr = bus.read_long(sp);
+                        let new_movie_flags = bus.read_word(sp + 4);
+                        let res_name_ptr = bus.read_long(sp + 6);
+                        let res_id_ptr = bus.read_long(sp + 10);
+                        let res_refnum = bus.read_word(sp + 14);
+                        let movie_ptr = bus.read_long(sp + 16);
+                        let requested_id = if res_id_ptr != 0 {
+                            bus.read_word(res_id_ptr) as i16
+                        } else {
+                            0
+                        };
+
+                        let mut selected_resource: Option<(i16, String)> = None;
+                        if requested_id != -1 {
+                            if let Some(resources) = self.resources.as_ref() {
+                                if let Some(file) = resources.files.get(&res_refnum) {
+                                    if requested_id != 0
+                                        && file.loaded.contains_key(&(*b"moov", requested_id))
+                                    {
+                                        let name = file
+                                            .names_by_id
+                                            .get(&(*b"moov", requested_id))
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        selected_resource = Some((requested_id, name));
+                                    } else if requested_id == 0 {
+                                        let mut ids: Vec<i16> = file
+                                            .loaded
+                                            .keys()
+                                            .filter_map(|(res_type, id)| {
+                                                (*res_type == *b"moov").then_some(*id)
+                                            })
+                                            .collect();
+                                        ids.sort_unstable();
+                                        if let Some(id) = ids.first().copied() {
+                                            let name = file
+                                                .names_by_id
+                                                .get(&(*b"moov", id))
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            selected_resource = Some((id, name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let file_name = self.resource_file_name(res_refnum).map(str::to_owned);
+                        let has_data_fork_movie = file_name
+                            .as_ref()
+                            .is_some_and(|name| self.vfs.contains_key(name));
+                        let selected_movie = selected_resource.or_else(|| {
+                            if requested_id == 0 || requested_id == -1 {
+                                has_data_fork_movie.then_some((-1, String::new()))
+                            } else {
+                                None
+                            }
+                        });
+
+                        let Some((selected_id, selected_name)) = selected_movie else {
+                            bus.write_word(sp + 20, (-2010i16) as u16); // invalidMovie
+                            if movie_ptr != 0 {
+                                bus.write_long(movie_ptr, 0);
+                            }
+                            cpu.write_reg(Register::A7, sp + 20);
+                            cpu.write_reg(Register::D0, (-2010i16) as u32);
+                            return Some(Ok(()));
+                        };
+
+                        let movie = bus.alloc(16);
+                        bus.write_long(movie, u32::from_be_bytes(*b"MooV"));
+                        bus.write_word(movie + 4, res_refnum);
+                        bus.write_word(movie + 6, selected_id as u16);
+                        bus.write_word(movie + 8, new_movie_flags);
+                        if movie_ptr != 0 {
+                            bus.write_long(movie_ptr, movie);
+                        }
+                        if res_id_ptr != 0 {
+                            bus.write_word(res_id_ptr, selected_id as u16);
+                        }
+                        if res_name_ptr != 0 {
+                            bus.write_pstring(res_name_ptr, selected_name.as_bytes());
+                        }
+                        if data_ref_changed_ptr != 0 {
+                            bus.write_byte(data_ref_changed_ptr, 0);
+                        }
+                        bus.write_word(sp + 20, 0);
+                        cpu.write_reg(Register::A7, sp + 20);
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
+                    _ => return_noerr(cpu),
                 }
-                return_noerr(cpu)
             }
 
             // SetFractEnable ($A814)
@@ -10130,6 +10303,20 @@ mod tests {
     struct StandardFileEnvGuard {
         previous: Option<OsString>,
         _lock: MutexGuard<'static, ()>,
+    }
+
+    fn write_test_fsspec(
+        bus: &mut MacMemoryBus,
+        spec_ptr: u32,
+        vref: i16,
+        dir_id: u32,
+        name: &[u8],
+    ) {
+        bus.write_word(spec_ptr, vref as u16);
+        bus.write_long(spec_ptr + 2, dir_id);
+        let len = name.len().min(63) as u8;
+        bus.write_byte(spec_ptr + 6, len);
+        bus.write_bytes(spec_ptr + 7, &name[..usize::from(len)]);
     }
 
     impl Drop for StandardFileEnvGuard {
@@ -19603,6 +19790,86 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp);
         assert_eq!(bus.read_word(sp), 0);
         assert_eq!(bus.read_word(sp + 2), 0xBEEF);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_open_movie_file_opens_vfs_movie_and_writes_refnum() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let spec_ptr = 0x300000;
+        let ref_num_ptr = 0x300100;
+        let movies_dir = disp.ensure_vfs_directory("AmoebArena/Movies");
+        disp.vfs.insert(
+            "AmoebArena/Movies/C&G".to_string(),
+            vec![0x6D, 0x6F, 0x6F, 0x76],
+        );
+        disp.vfs_rsrc
+            .insert("AmoebArena/Movies/C&G".to_string(), Vec::new());
+        disp.ensure_vfs_catalog();
+        write_test_fsspec(&mut bus, spec_ptr, -1, movies_dir, b"C&G");
+        bus.write_word(ref_num_ptr, 0xCAFE);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0192);
+        bus.write_word(sp, 0x0100); // fsRdPerm as SignedByte in the high byte.
+        bus.write_long(sp + 2, ref_num_ptr);
+        bus.write_long(sp + 6, spec_ptr);
+        bus.write_word(sp + 10, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "MovieToolboxDispatch should be handled");
+        assert!(result.unwrap().is_ok(), "OpenMovieFile should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let refnum = bus.read_word(ref_num_ptr);
+        assert_ne!(refnum, 0);
+        assert_ne!(refnum, 0xCAFE);
+        assert_eq!(
+            disp.resource_file_name(refnum).map(str::to_owned),
+            Some("AmoebArena/Movies/C&G".to_string())
+        );
+        assert_eq!(disp.current_resource_refnum(), refnum);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_new_movie_from_file_returns_movie_and_resource_id() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let movie_ptr = 0x300200;
+        let res_id_ptr = 0x300204;
+        let res_name_ptr = 0x300208;
+        let changed_ptr = 0x300310;
+        let refnum = 123;
+
+        disp.register_empty_resource_file(refnum);
+        disp.set_resource_file_name(refnum, "Movies/Intro");
+        disp.install_named_test_resource_in_file(&mut bus, refnum, *b"moov", 128, "Intro", b"moov");
+        bus.write_long(movie_ptr, 0);
+        bus.write_word(res_id_ptr, 0);
+        bus.write_byte(res_name_ptr, 0xEE);
+        bus.write_byte(changed_ptr, 0xEE);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00F0);
+        bus.write_long(sp, changed_ptr);
+        bus.write_word(sp + 4, 1); // newMovieActive
+        bus.write_long(sp + 6, res_name_ptr);
+        bus.write_long(sp + 10, res_id_ptr);
+        bus.write_word(sp + 14, refnum);
+        bus.write_long(sp + 16, movie_ptr);
+        bus.write_word(sp + 20, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "MovieToolboxDispatch should be handled");
+        assert!(result.unwrap().is_ok(), "NewMovieFromFile should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 20);
+        assert_eq!(bus.read_word(sp + 20), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_ne!(bus.read_long(movie_ptr), 0);
+        assert_eq!(bus.read_word(res_id_ptr), 128);
+        assert_eq!(bus.read_pstring(res_name_ptr), b"Intro");
+        assert_eq!(bus.read_byte(changed_ptr), 0);
     }
 
     // Unhandled trap returns None
