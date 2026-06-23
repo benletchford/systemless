@@ -8,6 +8,84 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 
 pub(crate) type DstClipRect = (i32, i32, i32, i32); // top, left, bottom, right in dst pixels
 
+#[derive(Clone, Debug)]
+pub(crate) struct DstClipRegion {
+    top: i32,
+    left: i32,
+    bottom: i32,
+    right: i32,
+    rows: Option<Vec<Vec<i32>>>,
+}
+
+impl DstClipRegion {
+    pub(crate) fn rectangular(top: i32, left: i32, bottom: i32, right: i32) -> Self {
+        Self {
+            top,
+            left,
+            bottom,
+            right,
+            rows: None,
+        }
+    }
+
+    pub(crate) fn complex(
+        top: i32,
+        left: i32,
+        bottom: i32,
+        right: i32,
+        rows: Vec<Vec<i32>>,
+    ) -> Self {
+        Self {
+            top,
+            left,
+            bottom,
+            right,
+            rows: Some(rows),
+        }
+    }
+
+    fn contains(&self, y: i32, x: i32) -> bool {
+        if y < self.top || y >= self.bottom || x < self.left || x >= self.right {
+            return false;
+        }
+        let Some(rows) = self.rows.as_ref() else {
+            return true;
+        };
+        let row_index = (y - self.top) as usize;
+        let Some(row) = rows.get(row_index) else {
+            return false;
+        };
+        let mut in_region = false;
+        for &edge in row {
+            if edge > x {
+                break;
+            }
+            in_region = !in_region;
+        }
+        in_region
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DstClip {
+    rect: DstClipRect,
+    regions: Vec<DstClipRegion>,
+}
+
+impl DstClip {
+    pub(crate) fn new(rect: DstClipRect, regions: Vec<DstClipRegion>) -> Self {
+        Self { rect, regions }
+    }
+
+    fn contains(&self, x: i32, y: i32) -> bool {
+        let (top, left, bottom, right) = self.rect;
+        if y < top || y >= bottom || x < left || x >= right {
+            return false;
+        }
+        self.regions.iter().all(|region| region.contains(y, x))
+    }
+}
+
 use std::sync::OnceLock;
 static TRACE_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_PICT_PALETTE: OnceLock<bool> = OnceLock::new();
@@ -213,7 +291,7 @@ pub fn draw_picture(
     screen_mode: (u32, u32, u16, u16, u16), // (base, row_bytes, width, height, pixel_size)
     device_clut: &[[u16; 3]; 256],
     device_ct_seed: u32,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) -> (bool, Option<Vec<[u16; 3]>>) {
     if pic_ptr == 0 {
         return (false, None);
@@ -1542,11 +1620,8 @@ fn write_pixel(
     }
 }
 
-fn dst_clip_contains(clip: Option<DstClipRect>, x: i32, y: i32) -> bool {
-    match clip {
-        Some((top, left, bottom, right)) => y >= top && y < bottom && x >= left && x < right,
-        None => true,
-    }
+fn dst_clip_contains(clip: Option<&DstClip>, x: i32, y: i32) -> bool {
+    clip.is_none_or(|clip| clip.contains(x, y))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1560,7 +1635,7 @@ fn write_pixel_clipped(
     screen_w: i32,
     screen_h: i32,
     pixel_size: u16,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) {
     if dst_clip_contains(dst_clip, x, y) {
         write_pixel(
@@ -1666,7 +1741,7 @@ fn plot_dst_pixel(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) {
     if let Some(rgn) = clip_region {
         let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
@@ -1707,7 +1782,7 @@ fn fill_dst_rect(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     color_index: u8,
 ) {
     let (sb, srb, sw, sh, ps) = screen_mode;
@@ -1754,7 +1829,7 @@ fn fill_dst_rect_pat(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     pattern: [u8; 8],
     on_color: u8,
     off_color: u8,
@@ -1856,7 +1931,7 @@ fn draw_shape_rect(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
     bk_pat: [u8; 8],
@@ -2069,7 +2144,7 @@ fn invert_dst_rect(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) {
     let (sb, srb, sw, sh, ps) = screen_mode;
     let sw = sw as i32;
@@ -2130,7 +2205,7 @@ fn draw_shape_oval(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
     bk_pat: [u8; 8],
@@ -2185,7 +2260,7 @@ fn draw_shape_oval_or_arc(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     arc_angles: Option<(i16, i16)>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
@@ -2401,7 +2476,7 @@ fn render_pict_polygon(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     fg_idx: u8,
     bg_idx: u8,
 ) {
@@ -2642,7 +2717,7 @@ fn draw_picture_line(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
     fg_idx: u8,
@@ -2793,7 +2868,7 @@ fn draw_picture_text(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
     fg_idx: u8,
     bg_idx: u8,
     tx_mode: i16,
@@ -3238,7 +3313,7 @@ fn parse_bits_rect(
     fg_idx: u8,
     bg_idx: u8,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) -> u32 {
     // Read BitMap structure (not full PixMap)
     let row_bytes = bus.read_word(pos) & 0x3FFF;
@@ -3374,7 +3449,7 @@ fn parse_pack_bits_rect(
     fg_idx: u8,
     bg_idx: u8,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) -> (u32, Option<Vec<[u16; 3]>>) {
     // In PICT data, PackBitsRect starts with rowBytes directly (no baseAddr)
     // Check if this is a PixMap (row_bytes high bit set) or BitMap
@@ -3655,7 +3730,7 @@ fn blit_row(
     fg_idx: u8,
     bg_idx: u8,
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) {
     let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
     let src_y = i32::from(pm.bounds_top) + row as i32;
@@ -4146,7 +4221,7 @@ fn parse_direct_bits_rect(
     screen_mode: (u32, u32, u16, u16, u16),
     device_clut: &[[u16; 3]; 256],
     clip_region: Option<&PictureRegion>,
-    dst_clip: Option<DstClipRect>,
+    dst_clip: Option<&DstClip>,
 ) -> u32 {
     // DirectBitsRect has PixMap WITH baseAddr prefix (usually 0x000000FF)
     let (new_pos, pm) = read_pixmap_with_base(bus, pos);

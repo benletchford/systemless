@@ -7853,7 +7853,7 @@ impl super::TrapDispatcher {
                         port_mode,
                         draw_port_clut,
                         device_ct_seed,
-                        dst_clip,
+                        dst_clip.as_ref(),
                     );
 
                     if trace_palette_enabled() {
@@ -7928,7 +7928,7 @@ impl super::TrapDispatcher {
                                         port_mode,
                                         &self.device_clut,
                                         device_ct_seed,
-                                        dst_clip,
+                                        dst_clip.as_ref(),
                                     );
                                     if trace_palette_enabled() {
                                         eprintln!(
@@ -7982,7 +7982,7 @@ impl super::TrapDispatcher {
                                         port_mode,
                                         &raw_pict_array,
                                         device_ct_seed,
-                                        dst_clip,
+                                        dst_clip.as_ref(),
                                     );
                                     if trace_palette_enabled() {
                                         eprintln!(
@@ -8033,7 +8033,7 @@ impl super::TrapDispatcher {
                                         port_mode,
                                         &pict_clut_array,
                                         device_ct_seed,
-                                        dst_clip,
+                                        dst_clip.as_ref(),
                                     );
                                     if trace_palette_enabled() {
                                         eprintln!(
@@ -18006,7 +18006,7 @@ impl super::TrapDispatcher {
         bounds_left: i16,
         port_w: u16,
         port_h: u16,
-    ) -> Option<super::pict::DstClipRect> {
+    ) -> Option<super::pict::DstClip> {
         if port == 0 {
             return None;
         }
@@ -18015,6 +18015,9 @@ impl super::TrapDispatcher {
         let mut clip_left = 0i32;
         let mut clip_bottom = i32::from(port_h);
         let mut clip_right = i32::from(port_w);
+        let mut regions = Vec::new();
+        let bounds_bottom = bounds_top.saturating_add(port_h as i16);
+        let bounds_right = bounds_left.saturating_add(port_w as i16);
 
         for region_offset in [24u32, 28u32] {
             let rgn_handle = bus.read_long(port.wrapping_add(region_offset));
@@ -18024,15 +18027,65 @@ impl super::TrapDispatcher {
             let Some((rgn_top, rgn_left, rgn_bottom, rgn_right)) =
                 Self::region_bbox(bus, rgn_handle)
             else {
-                return Some((0, 0, 0, 0));
+                return Some(super::pict::DstClip::new((0, 0, 0, 0), Vec::new()));
             };
-            clip_top = clip_top.max(i32::from(rgn_top) - i32::from(bounds_top));
-            clip_left = clip_left.max(i32::from(rgn_left) - i32::from(bounds_left));
-            clip_bottom = clip_bottom.min(i32::from(rgn_bottom) - i32::from(bounds_top));
-            clip_right = clip_right.min(i32::from(rgn_right) - i32::from(bounds_left));
+            let region_top = i32::from(rgn_top) - i32::from(bounds_top);
+            let region_left = i32::from(rgn_left) - i32::from(bounds_left);
+            let region_bottom = i32::from(rgn_bottom) - i32::from(bounds_top);
+            let region_right = i32::from(rgn_right) - i32::from(bounds_left);
+            clip_top = clip_top.max(region_top);
+            clip_left = clip_left.max(region_left);
+            clip_bottom = clip_bottom.min(region_bottom);
+            clip_right = clip_right.min(region_right);
+
+            let clipped_top = rgn_top.max(bounds_top);
+            let clipped_left = rgn_left.max(bounds_left);
+            let clipped_bottom = rgn_bottom.min(bounds_bottom);
+            let clipped_right = rgn_right.min(bounds_right);
+            if clipped_bottom <= clipped_top || clipped_right <= clipped_left {
+                return Some(super::pict::DstClip::new((0, 0, 0, 0), Vec::new()));
+            }
+
+            let Some((_, rgn_size)) = Self::region_ptr_and_size(bus, rgn_handle) else {
+                return Some(super::pict::DstClip::new((0, 0, 0, 0), Vec::new()));
+            };
+            if rgn_size <= REGION_HEADER_SIZE {
+                regions.push(super::pict::DstClipRegion::rectangular(
+                    i32::from(clipped_top) - i32::from(bounds_top),
+                    i32::from(clipped_left) - i32::from(bounds_left),
+                    i32::from(clipped_bottom) - i32::from(bounds_top),
+                    i32::from(clipped_right) - i32::from(bounds_left),
+                ));
+                continue;
+            }
+
+            let Some(cache) =
+                Self::build_region_membership_cache(bus, rgn_handle, clipped_top, clipped_bottom)
+            else {
+                return Some(super::pict::DstClip::new((0, 0, 0, 0), Vec::new()));
+            };
+            let rows = cache
+                .rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|edge| i32::from(edge) - i32::from(bounds_left))
+                        .collect()
+                })
+                .collect();
+            regions.push(super::pict::DstClipRegion::complex(
+                i32::from(clipped_top) - i32::from(bounds_top),
+                i32::from(clipped_left) - i32::from(bounds_left),
+                i32::from(clipped_bottom) - i32::from(bounds_top),
+                i32::from(clipped_right) - i32::from(bounds_left),
+                rows,
+            ));
         }
 
-        Some((clip_top, clip_left, clip_bottom, clip_right))
+        Some(super::pict::DstClip::new(
+            (clip_top, clip_left, clip_bottom, clip_right),
+            regions,
+        ))
     }
 
     fn ensure_region_capacity(bus: &mut MacMemoryBus, rgn_handle: u32, size: u32) -> Option<u32> {
@@ -31989,6 +32042,75 @@ mod tests {
             0,
             "DrawPicture must leave pixels below the clipRgn untouched"
         );
+    }
+
+    #[test]
+    fn drawpicture_honors_complex_current_port_clip_region() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let a5 = cpu.read_reg(Register::A5);
+        let qd_globals = bus.read_long(a5);
+        let port_ptr = bus.read_long(qd_globals);
+
+        let row_bytes = 1u32; // 8 one-bit pixels per row.
+        let screen_base = bus.alloc(row_bytes * 4);
+        bus.fill_zeros(screen_base, row_bytes * 4);
+        bus.write_long(port_ptr + 2, screen_base);
+        bus.write_word(port_ptr + 6, row_bytes as u16);
+        write_rect(&mut bus, port_ptr + 8, 0, 0, 4, 8);
+        write_rect(&mut bus, port_ptr + 16, 0, 0, 4, 8);
+
+        let vis_rgn = bus.read_long(port_ptr + 24);
+        let clip_rgn = bus.read_long(port_ptr + 28);
+        let vis_rgn_ptr = bus.read_long(vis_rgn);
+        write_rect(&mut bus, vis_rgn_ptr + 2, 0, 0, 4, 8);
+
+        let data_words = [
+            0,
+            0,
+            1,
+            3,
+            4,
+            super::REGION_STOP,
+            2,
+            0,
+            1,
+            3,
+            4,
+            super::REGION_STOP,
+            super::REGION_STOP,
+        ];
+        assert!(TrapDispatcher::write_region(
+            &mut bus,
+            clip_rgn,
+            Some((0, 0, 2, 4)),
+            &data_words,
+        ));
+
+        let pic = bus.alloc(32);
+        write_v1_paintrect_picture(&mut bus, pic, (0, 0, 2, 4), (0, 0, 2, 4));
+        let pic_handle = bus.alloc(4);
+        bus.write_long(pic_handle, pic);
+
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, dst_rect, 0, 0, 2, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, pic_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x0F6, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_byte(screen_base),
+            0b1001_0000,
+            "DrawPicture must preserve holes in the current port clipRgn"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + row_bytes),
+            0b1001_0000,
+            "complex clipRgn should apply to every row in the region"
+        );
+        assert_eq!(bus.read_byte(screen_base + row_bytes * 2), 0);
     }
 
     #[test]

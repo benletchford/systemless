@@ -6265,7 +6265,10 @@ mod tests {
             setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 110, 210);
 
         assert_eq!(
-            (bus.read_word(update_rgn_data + 2), bus.read_word(update_rgn_data + 6)),
+            (
+                bus.read_word(update_rgn_data + 2),
+                bus.read_word(update_rgn_data + 6)
+            ),
             (0, 0),
             "test fixture should start with an empty updateRgn"
         );
