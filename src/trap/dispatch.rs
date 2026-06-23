@@ -724,6 +724,20 @@ pub(crate) struct PolygonRecording {
     pub vertices: Vec<(i16, i16)>,
 }
 
+/// Region recording state for OpenRgn/CloseRgn.
+/// Imaging With QuickDraw 1994, 3-87..3-89.
+#[derive(Debug, Default)]
+pub(crate) struct RegionRecording {
+    /// Outline segments collected from Line/LineTo and framed shapes.
+    /// Endpoints are (v, h) pairs in local QuickDraw coordinates.
+    pub outline_segments: Vec<((i16, i16), (i16, i16))>,
+    /// Filled row spans contributed by existing regions or fallback shape
+    /// paths. Each row stores sorted x endpoint pairs.
+    pub filled_rows: BTreeMap<i16, Vec<i16>>,
+    /// Mathematical bounds of all recorded input geometry.
+    pub bbox: Option<(i16, i16, i16, i16)>,
+}
+
 /// Trap dispatcher with resource fork access and emulator state.
 pub struct TrapDispatcher {
     /// Loaded resources by handle -> (ptr, type, id)
@@ -1268,11 +1282,8 @@ pub struct TrapDispatcher {
     /// Polygon recording state. When `Some`, LineTo/MoveTo calls append
     /// vertices. Set by OpenPoly, consumed by ClosePoly.
     pub(crate) recording_polygon: Option<PolygonRecording>,
-    /// Region recording bbox. When `Some((top, left, bottom, right))`,
-    /// drawing primitives accumulate their bounds here and skip framebuffer
-    /// writes (per IM:I I-189). Set by OpenRgn, consumed by CloseRgn. Bbox
-    /// starts at (MAX, MAX, MIN, MIN) and grows by `extend_recording_region`.
-    pub(crate) recording_region: Option<(i16, i16, i16, i16)>,
+    /// Region recording state. Set by OpenRgn, consumed by CloseRgn.
+    pub(crate) recording_region: Option<RegionRecording>,
     /// Screen mode: (screen_base, row_bytes, width, height, pixel_size)
     /// Defaults to 800x600 8bpp.
     pub screen_mode: (u32, u32, u16, u16, u16),

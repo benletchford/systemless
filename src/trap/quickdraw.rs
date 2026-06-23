@@ -1530,18 +1530,9 @@ impl super::TrapDispatcher {
                         }
                         rec.vertices.push((v, h));
                     }
-                } else if self.recording_region.is_some() {
-                    // During OpenRgn, line primitives extend the recorded
-                    // bbox (both endpoints normalized) and are suppressed
-                    // from the port per IM:I I-184.
-                    let (top, bot) = if v0 <= v { (v0, v) } else { (v, v0) };
-                    let (left, right) = if h0 <= h { (h0, h) } else { (h, h0) };
-                    self.extend_recording_region(
-                        top,
-                        left,
-                        bot.saturating_add(1),
-                        right.saturating_add(1),
-                    );
+                } else if self.record_region_line(v0, h0, v, h) {
+                    // OpenRgn records the mathematical line outline and
+                    // suppresses framebuffer writes.
                 } else if let Err(e) = self.draw_line(cpu, bus, h0, v0, h, v) {
                     return Some(Err(e));
                 }
@@ -1568,16 +1559,8 @@ impl super::TrapDispatcher {
                         }
                         rec.vertices.push((v1, h1));
                     }
-                } else if self.recording_region.is_some() {
+                } else if self.record_region_line(v0, h0, v1, h1) {
                     // See LineTo above for OpenRgn-recording rationale.
-                    let (top, bot) = if v0 <= v1 { (v0, v1) } else { (v1, v0) };
-                    let (left, right) = if h0 <= h1 { (h0, h1) } else { (h1, h0) };
-                    self.extend_recording_region(
-                        top,
-                        left,
-                        bot.saturating_add(1),
-                        right.saturating_add(1),
-                    );
                 } else if let Err(e) = self.draw_line(cpu, bus, h0, v0, h1, v1) {
                     return Some(Err(e));
                 }
@@ -9212,42 +9195,31 @@ impl super::TrapDispatcher {
 
             // OpenRgn ($A8DA)
             // PROCEDURE OpenRgn;
-            // Inside Macintosh Volume I, I-186
-            // Starts region recording. While recording, drawing primitives
-            // accumulate their bounds into self.recording_region and skip
-            // framebuffer writes.
-            // OpenRgn ($A8DA): Begins region recording into self.recording_region (bbox-only); subsequent drawing primitives skip framebuffer writes per IM:I I-186
+            // Imaging With QuickDraw 1994, 3-87
+            // Begins recording line and framed-shape outlines into a region;
+            // drawing is suppressed until CloseRgn organizes the region.
+            // OpenRgn ($A8DA): Begins region recording; subsequent drawing primitives skip framebuffer writes
             (true, 0x0DA) => {
-                self.recording_region = Some((i16::MAX, i16::MAX, i16::MIN, i16::MIN));
+                self.recording_region = Some(super::dispatch::RegionRecording::default());
                 Ok(())
             }
 
             // CloseRgn ($A8DB)
             // PROCEDURE CloseRgn(dstRgn: RgnHandle);
-            // Inside Macintosh Volume I, I-186
-            // Ends recording. Writes the accumulated bbox into the dst
-            // region's data block. Region storage is bbox-only (matches
-            // SectRgn/UnionRgn/etc bbox-approx semantics).
-            // CloseRgn ($A8DB): Ends region recording, writes accumulated bbox into dstRgn (bbox-only storage) per IM:I I-186
+            // Imaging With QuickDraw 1994, 3-89
+            // Stops collection of lines and framed shapes, organizes them
+            // into a region definition, and saves it in dstRgn.
+            // CloseRgn ($A8DB): Ends region recording and serializes recorded geometry into dstRgn
             (true, 0x0DB) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                if let Some((rt, rl, rb, rr)) = self.recording_region.take() {
+                if let Some(recording) = self.recording_region.take() {
                     if dst_handle != 0 {
-                        let dst_ptr = bus.read_long(dst_handle);
-                        if dst_ptr != 0 {
-                            let (top, left, bottom, right) = if rt > rb || rl > rr {
-                                // Empty recording.
-                                (0, 0, 0, 0)
-                            } else {
-                                (rt, rl, rb, rr)
-                            };
-                            bus.write_word(dst_ptr, 10); // rgnSize
-                            bus.write_word(dst_ptr + 2, top as u16);
-                            bus.write_word(dst_ptr + 4, left as u16);
-                            bus.write_word(dst_ptr + 6, bottom as u16);
-                            bus.write_word(dst_ptr + 8, right as u16);
+                        if let Some((rows_top, rows)) = Self::recorded_region_rows(&recording) {
+                            Self::write_region_from_rows(bus, dst_handle, rows_top, &rows);
+                        } else {
+                            Self::write_region(bus, dst_handle, None, &[]);
                         }
                     }
                 }
@@ -14461,10 +14433,64 @@ impl super::TrapDispatcher {
         true
     }
 
-    /// While OpenRgn..CloseRgn is in progress, drawing primitives extend
-    /// the accumulated bbox here and skip the actual framebuffer write
-    /// per IM:I I-189. Returns true if recording is active (caller should
-    /// skip the draw); false if not.
+    fn extend_recording_bbox(
+        recording: &mut super::dispatch::RegionRecording,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        recording.bbox = Some(match recording.bbox {
+            Some((current_top, current_left, current_bottom, current_right)) => (
+                current_top.min(top),
+                current_left.min(left),
+                current_bottom.max(bottom),
+                current_right.max(right),
+            ),
+            None => (top, left, bottom, right),
+        });
+    }
+
+    fn add_recording_rows(
+        recording: &mut super::dispatch::RegionRecording,
+        rows_top: i16,
+        rows: &[Vec<i16>],
+    ) {
+        for (row_index, row) in rows.iter().enumerate() {
+            if row.is_empty() {
+                continue;
+            }
+            let y = rows_top + row_index as i16;
+            let left = row[0];
+            let right = *row.last().unwrap();
+            let current = recording.filled_rows.entry(y).or_default();
+            *current = Self::union_region_rows(current, row);
+            Self::extend_recording_bbox(recording, y, left, y + 1, right);
+        }
+    }
+
+    fn record_region_rect_boundary(
+        recording: &mut super::dispatch::RegionRecording,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        if bottom <= top || right <= left {
+            return;
+        }
+        recording.outline_segments.extend([
+            ((top, left), (top, right)),
+            ((top, right), (bottom, right)),
+            ((bottom, right), (bottom, left)),
+            ((bottom, left), (top, left)),
+        ]);
+        Self::extend_recording_bbox(recording, top, left, bottom, right);
+    }
+
+    /// While OpenRgn..CloseRgn is in progress, rectangular drawing
+    /// primitives contribute their mathematical boundary and skip the actual
+    /// framebuffer write. Returns true if recording is active.
     pub(crate) fn extend_recording_region(
         &mut self,
         top: i16,
@@ -14472,19 +14498,18 @@ impl super::TrapDispatcher {
         bottom: i16,
         right: i16,
     ) -> bool {
-        if let Some(bbox) = self.recording_region.as_mut() {
-            if top < bbox.0 {
-                bbox.0 = top;
-            }
-            if left < bbox.1 {
-                bbox.1 = left;
-            }
-            if bottom > bbox.2 {
-                bbox.2 = bottom;
-            }
-            if right > bbox.3 {
-                bbox.3 = right;
-            }
+        if let Some(recording) = self.recording_region.as_mut() {
+            Self::record_region_rect_boundary(recording, top, left, bottom, right);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn record_region_line(&mut self, v0: i16, h0: i16, v1: i16, h1: i16) -> bool {
+        if let Some(recording) = self.recording_region.as_mut() {
+            recording.outline_segments.push(((v0, h0), (v1, h1)));
+            Self::extend_recording_bbox(recording, v0.min(v1), h0.min(h1), v0.max(v1), h0.max(h1));
             true
         } else {
             false
@@ -14533,8 +14558,15 @@ impl super::TrapDispatcher {
         if self.recording_region.is_none() {
             return false;
         }
-        if let Some((top, left, bottom, right)) = Self::region_handle_rect(bus, rgn_handle) {
-            self.extend_recording_region(top, left, bottom, right);
+        let Some((top, left, bottom, right)) = Self::region_bbox(bus, rgn_handle) else {
+            return true;
+        };
+        if bottom <= top || right <= left {
+            return true;
+        }
+        let rows = Self::region_rows_for_band(bus, rgn_handle, top, bottom);
+        if let Some(recording) = self.recording_region.as_mut() {
+            Self::add_recording_rows(recording, top, &rows);
         }
         true
     }
@@ -18188,6 +18220,83 @@ impl super::TrapDispatcher {
             RegionBooleanOp::Difference => Self::difference_region_rows(lhs, rhs),
             RegionBooleanOp::Xor => Self::xor_region_rows(lhs, rhs),
         }
+    }
+
+    fn quantize_region_edge(edge: f64) -> i16 {
+        Self::clamp_region_coord((edge - 0.5).ceil() as i32)
+    }
+
+    fn recorded_outline_rows(
+        segments: &[((i16, i16), (i16, i16))],
+        top: i16,
+        bottom: i16,
+    ) -> Vec<Vec<i16>> {
+        let height = (bottom - top).max(0) as usize;
+        let mut rows = vec![Vec::new(); height];
+        if height == 0 || segments.is_empty() {
+            return rows;
+        }
+
+        for y in top..bottom {
+            let scan_y = f64::from(y) + 0.5;
+            let mut crossings = Vec::new();
+            for &((v0, h0), (v1, h1)) in segments {
+                if v0 == v1 {
+                    continue;
+                }
+
+                let y0 = f64::from(v0);
+                let y1 = f64::from(v1);
+                let min_y = y0.min(y1);
+                let max_y = y0.max(y1);
+                if scan_y < min_y || scan_y >= max_y {
+                    continue;
+                }
+
+                let x0 = f64::from(h0);
+                let x1 = f64::from(h1);
+                let t = (scan_y - y0) / (y1 - y0);
+                crossings.push(x0 + t * (x1 - x0));
+            }
+
+            crossings.sort_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap());
+            let intervals = crossings
+                .chunks_exact(2)
+                .filter_map(|pair| {
+                    let left = Self::quantize_region_edge(pair[0].min(pair[1]));
+                    let right = Self::quantize_region_edge(pair[0].max(pair[1]));
+                    (left < right).then_some((left, right))
+                })
+                .collect::<Vec<_>>();
+            rows[(y - top) as usize] = Self::intervals_to_endpoints(intervals);
+        }
+
+        rows
+    }
+
+    fn recorded_region_rows(
+        recording: &super::dispatch::RegionRecording,
+    ) -> Option<(i16, Vec<Vec<i16>>)> {
+        let (top, _, bottom, _) = recording.bbox?;
+        if bottom <= top {
+            return None;
+        }
+
+        let mut rows = vec![Vec::new(); (bottom - top) as usize];
+        for (&y, row) in recording.filled_rows.iter() {
+            if y < top || y >= bottom {
+                continue;
+            }
+            let index = (y - top) as usize;
+            rows[index] = Self::union_region_rows(&rows[index], row);
+        }
+
+        let outline_rows = Self::recorded_outline_rows(&recording.outline_segments, top, bottom);
+        for (row, outline_row) in rows.iter_mut().zip(outline_rows.iter()) {
+            *row = Self::union_region_rows(row, outline_row);
+        }
+
+        Some((top, rows))
     }
 
     fn write_region_from_rows(
@@ -23129,6 +23238,55 @@ mod tests {
     // ==================== Region Operations ====================
 
     #[test]
+    fn closergn_preserves_multiple_recorded_line_loops_as_complex_region() {
+        // Imaging With QuickDraw (1994), p. 3-87..3-89: OpenRgn collects
+        // line outlines and CloseRgn organizes them into the resulting region.
+        // Separate closed loops must remain separate areas, not collapse to
+        // the union bbox.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let dst_ptr = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_ptr, dst, 0, 0, 0, 0);
+
+        let result = d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        for left in [0i16, 8] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0); // v
+            bus.write_word(TEST_SP + 2, left as u16); // h
+            let result = d.dispatch_quickdraw(true, 0x093, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+
+            for (dv, dh) in [(0i16, 4i16), (4, 0), (0, -4), (-4, 0)] {
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_word(TEST_SP, dv as u16);
+                bus.write_word(TEST_SP + 2, dh as u16);
+                let result = d.dispatch_quickdraw(true, 0x092, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+            }
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst);
+        let result = d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        assert_eq!(read_rgn_bbox(&bus, dst), (0, 0, 4, 12));
+        assert!(
+            bus.read_word(bus.read_long(dst)) > super::REGION_HEADER_SIZE as u16,
+            "separate recorded loops should produce a complex region"
+        );
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 1));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, dst, 1, 6),
+            "gap between recorded loops must remain outside the region"
+        );
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 9));
+    }
+
+    #[test]
     fn test_new_rgn() {
         let (mut d, mut cpu, mut bus) = setup();
         let result = d.dispatch_quickdraw(true, 0x0D8, &mut cpu, &mut bus);
@@ -27036,13 +27194,15 @@ mod tests {
             &[(10, 10), (10, 20), (20, 20)],
         );
 
-        d.recording_region = Some((32767, 32767, -32767, -32767));
+        d.recording_region = Some(super::super::dispatch::RegionRecording::default());
         bus.write_long(TEST_SP, poly_handle);
         let result = d.dispatch_quickdraw(true, 0x0C6, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(
-            d.recording_region,
+            d.recording_region
+                .as_ref()
+                .and_then(|recording| recording.bbox),
             Some((10, 10, 20, 20)),
             "FramePoly should fold polygon bounds into the active OpenRgn recording extent"
         );
