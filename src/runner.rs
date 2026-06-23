@@ -1032,6 +1032,11 @@ impl FixtureRunner {
     /// directly only when you've already parsed the resource fork
     /// yourself (e.g. building a custom test fixture).
     pub fn load_app(&mut self, fork: &ResourceFork) -> Option<LoadedApp> {
+        // init_app writes the Memory Manager zone header at the start of the
+        // heap. Reserve that header before resource loading so eager resource
+        // allocations cannot land at $200000 and be overwritten later.
+        self.bus.reserve_heap(64);
+
         // Load resources into dispatcher for GetResource trap
         self.dispatcher.load_resources(fork, &mut self.bus);
 
@@ -4288,6 +4293,121 @@ mod tests {
         }
 
         fn stop(&mut self) {}
+    }
+
+    fn make_resource_fork_bytes(resources: &[([u8; 4], i16, &[u8])]) -> Vec<u8> {
+        let mut type_groups: Vec<([u8; 4], Vec<(i16, &[u8], u32)>)> = Vec::new();
+        for (res_type, res_id, data) in resources {
+            let group_idx = type_groups
+                .iter()
+                .position(|(existing_type, _)| existing_type == res_type)
+                .unwrap_or_else(|| {
+                    type_groups.push((*res_type, Vec::new()));
+                    type_groups.len() - 1
+                });
+            type_groups[group_idx].1.push((*res_id, *data, 0));
+        }
+        type_groups.sort_by_key(|(res_type, _)| *res_type);
+        for (_, entries) in &mut type_groups {
+            entries.sort_by_key(|(res_id, _, _)| *res_id);
+        }
+
+        let data_offset = 16u32;
+        let mut data_section = Vec::new();
+        for (_, entries) in &mut type_groups {
+            for (_, data, data_pos) in entries {
+                *data_pos = data_section.len() as u32;
+                data_section.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                data_section.extend_from_slice(data);
+            }
+        }
+
+        let map_offset = data_offset + data_section.len() as u32;
+        let type_list_offset = 30u16;
+        let type_count = type_groups.len();
+        let resource_count: usize = type_groups.iter().map(|(_, entries)| entries.len()).sum();
+        let ref_lists_offset = 2 + type_count * 8;
+        let name_list_offset = type_list_offset as usize + ref_lists_offset + resource_count * 12;
+        let map_length = name_list_offset as u32;
+
+        let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+        header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+        header[8..12].copy_from_slice(&(data_section.len() as u32).to_be_bytes());
+        header[12..16].copy_from_slice(&map_length.to_be_bytes());
+        bytes[0..16].copy_from_slice(&header);
+        bytes[data_offset as usize..data_offset as usize + data_section.len()]
+            .copy_from_slice(&data_section);
+
+        let map_start = map_offset as usize;
+        bytes[map_start..map_start + 16].copy_from_slice(&header);
+        bytes[map_start + 24..map_start + 26].copy_from_slice(&type_list_offset.to_be_bytes());
+        bytes[map_start + 26..map_start + 28]
+            .copy_from_slice(&(name_list_offset as u16).to_be_bytes());
+        bytes[map_start + 28..map_start + 30]
+            .copy_from_slice(&((type_count as u16) - 1).to_be_bytes());
+
+        let type_list_start = map_start + type_list_offset as usize;
+        bytes[type_list_start..type_list_start + 2]
+            .copy_from_slice(&((type_count as u16) - 1).to_be_bytes());
+        let mut next_ref_list_offset = ref_lists_offset;
+        for (i, (res_type, entries)) in type_groups.iter().enumerate() {
+            let type_entry = type_list_start + 2 + i * 8;
+            bytes[type_entry..type_entry + 4].copy_from_slice(res_type);
+            bytes[type_entry + 4..type_entry + 6]
+                .copy_from_slice(&((entries.len() as u16) - 1).to_be_bytes());
+            bytes[type_entry + 6..type_entry + 8]
+                .copy_from_slice(&(next_ref_list_offset as u16).to_be_bytes());
+
+            let ref_list_start = type_list_start + next_ref_list_offset;
+            for (j, (res_id, _, data_pos)) in entries.iter().enumerate() {
+                let ref_entry = ref_list_start + j * 12;
+                bytes[ref_entry..ref_entry + 2].copy_from_slice(&(*res_id as u16).to_be_bytes());
+                bytes[ref_entry + 2..ref_entry + 4].copy_from_slice(&0xFFFFu16.to_be_bytes());
+                bytes[ref_entry + 4] = 0;
+                let data_offset_bytes = data_pos.to_be_bytes();
+                bytes[ref_entry + 5..ref_entry + 8].copy_from_slice(&data_offset_bytes[1..4]);
+            }
+
+            next_ref_list_offset += entries.len() * 12;
+        }
+
+        bytes
+    }
+
+    fn minimal_code0(above_a5: u32, below_a5: u32, jt_size: u32, jt_offset: u32) -> Vec<u8> {
+        let mut code0 = Vec::with_capacity(16 + jt_size as usize);
+        code0.extend_from_slice(&above_a5.to_be_bytes());
+        code0.extend_from_slice(&below_a5.to_be_bytes());
+        code0.extend_from_slice(&jt_size.to_be_bytes());
+        code0.extend_from_slice(&jt_offset.to_be_bytes());
+        code0.resize(16 + jt_size as usize, 0);
+        code0
+    }
+
+    #[test]
+    fn init_app_preserves_resources_allocated_before_zone_header() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let bgas = [0x4E, 0x56, 0xFF, 0xA6, 0x2D, 0x7A, 0x1C, 0x72];
+        let fork_bytes = make_resource_fork_bytes(&[(*b"BGAS", 128, &bgas), (*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        let (_, bgas_ptr) = runner
+            .dispatcher
+            .find_resource_any(*b"BGAS", 128)
+            .expect("BGAS resource loaded");
+        assert_eq!(runner.bus.read_bytes(bgas_ptr, bgas.len()), bgas);
+
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.bus.read_bytes(bgas_ptr, bgas.len()),
+            bgas,
+            "init_app must not overwrite resources loaded before zone setup"
+        );
     }
 
     fn write_double_buffer(bus: &mut MacMemoryBus, ptr: u32, samples: &[u8]) {

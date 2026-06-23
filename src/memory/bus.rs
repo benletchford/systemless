@@ -702,9 +702,11 @@ impl MacMemoryBus {
     /// memFullErr.
     /// Reserve space at the start of the heap without returning it.
     /// Used to protect zone headers from being overwritten by alloc().
+    /// Idempotent so callers can reserve before resources are loaded and
+    /// later write the zone header during application initialization.
     pub fn reserve_heap(&mut self, size: u32) {
         let aligned = (size + 3) & !3;
-        self.heap_ptr = self.heap_ptr.max(0x200000) + aligned;
+        self.heap_ptr = self.heap_ptr.max(0x200000 + aligned);
     }
 
     pub fn alloc(&mut self, size: u32) -> u32 {
