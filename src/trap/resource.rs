@@ -124,6 +124,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"alis"
             | b"fs  "
             | b"fold"
+            | b"rsrc"
             | b"qtim"
             | b"drag"
             | b"os  "
@@ -2816,6 +2817,16 @@ impl super::TrapDispatcher {
                     // gestaltFindFolderAttr ('fold') -> FindFolder present
                     // Inside Macintosh Volume VI, 9-28
                     b"fold" => {
+                        cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltResourceMgrAttr ('rsrc')
+                    // Returns information about Resource Manager
+                    // capabilities; bit 0, gestaltPartialRsrcs, indicates
+                    // that the partial-resource routines exist.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-23. More Macintosh Toolbox 1993, p. 1-13.
+                    b"rsrc" => {
                         cpu.write_reg(Register::A0, 1);
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -6031,7 +6042,19 @@ impl super::TrapDispatcher {
         if handle == 0 {
             return Self::RES_NOT_FOUND;
         }
-        let ptr = bus.read_long(handle);
+        let handle_ptr = bus.read_long(handle);
+        let (ptr, already_in_memory) = if handle_ptr == 0 {
+            // MMTB 1993 p. 1-41 documents the normal partial-resource
+            // workflow: SetResLoad(FALSE) returns an empty handle, then
+            // ReadPartialResource streams bytes from the resource on disk.
+            // Systemless keeps that disk backing in loaded_handles.
+            let Some((backing_ptr, _, _)) = self.loaded_handles.get(&handle).copied() else {
+                return Self::RES_NOT_FOUND;
+            };
+            (backing_ptr, false)
+        } else {
+            (handle_ptr, true)
+        };
         if ptr == 0 {
             return Self::RES_NOT_FOUND;
         }
@@ -6053,7 +6076,11 @@ impl super::TrapDispatcher {
         bus.write_bytes(buffer, &bytes);
         // The classic Resource Manager reports `resourceInMemory`
         // after a partial read from a resource that is already loaded.
-        -188
+        if already_in_memory {
+            -188
+        } else {
+            0
+        }
     }
 
     /// Selector 2 of _ResourceDispatch ($A822). Copies `count` bytes
@@ -6072,7 +6099,19 @@ impl super::TrapDispatcher {
         if handle == 0 {
             return Self::RES_NOT_FOUND;
         }
-        let ptr = bus.read_long(handle);
+        let handle_ptr = bus.read_long(handle);
+        let handle_was_empty = handle_ptr == 0;
+        let ptr = if handle_was_empty {
+            // Same SetResLoad(FALSE) partial-resource workflow as
+            // ReadPartialResource: the empty handle still names a
+            // resource-map entry whose backing bytes Systemless tracks.
+            let Some((backing_ptr, _, _)) = self.loaded_handles.get(&handle).copied() else {
+                return Self::RES_NOT_FOUND;
+            };
+            backing_ptr
+        } else {
+            handle_ptr
+        };
         if ptr == 0 {
             return Self::RES_NOT_FOUND;
         }
@@ -6101,6 +6140,10 @@ impl super::TrapDispatcher {
         if count > 0 {
             let bytes = bus.read_bytes(buffer, count as usize);
             bus.write_bytes(live_ptr + offset as u32, &bytes);
+        }
+        if handle_was_empty {
+            bus.write_long(handle, 0);
+            self.ptr_to_handle.remove(&live_ptr);
         }
         if past_end {
             -189
@@ -7877,6 +7920,41 @@ mod tests {
     }
 
     #[test]
+    fn readpartialresource_empty_handle_reads_backing_resource_and_reports_noerr() {
+        // MMTB 1993 1-41: the partial-resource workflow calls
+        // SetResLoad(FALSE), gets an empty resource handle, restores
+        // SetResLoad(TRUE), then calls ReadPartialResource. That read
+        // should stream from the resource on disk and report noErr.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = setup_resources(
+            &mut disp,
+            &mut bus,
+            b"PART",
+            94,
+            &[0x10, 0x20, 0x30, 0x40, 0x50],
+        );
+        disp.res_load = false;
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"PART", 94, data_ptr);
+        disp.res_load = true;
+        assert_eq!(bus.read_long(handle), 0, "handle should be empty");
+        let buffer = bus.alloc(4);
+        bus.write_bytes(buffer, &[0xEE; 4]);
+
+        bus.write_long(TEST_SP, 4); // count
+        bus.write_long(TEST_SP + 4, buffer);
+        bus.write_long(TEST_SP + 8, 1); // offset
+        bus.write_long(TEST_SP + 12, handle);
+        cpu.write_reg(Register::D0, 0x0001);
+
+        call(&mut disp, true, 0x022, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+        assert_eq!(bus.read_bytes(buffer, 4), vec![0x20, 0x30, 0x40, 0x50]);
+        assert_eq!(bus.read_word(0x0A60), 0);
+        assert_eq!(bus.read_long(handle), 0, "partial read should not load it");
+    }
+
+    #[test]
     fn writepartialresource_selector_2_extends_resource_and_sets_writingpastend() {
         // MMTB 1993 1-70: writes past end extend the resource and report
         // writingPastEnd (-189).
@@ -7903,6 +7981,34 @@ mod tests {
             bus.read_bytes(live_ptr, 7),
             vec![0xAA, 0xBB, 0xCC, 1, 2, 3, 4]
         );
+    }
+
+    #[test]
+    fn writepartialresource_empty_handle_updates_backing_resource_and_reports_noerr() {
+        // MMTB 1993 1-41 describes using SetResLoad(FALSE) and an empty
+        // handle for the partial-resource family; writes should still use
+        // the resource map entry rather than treating the handle as missing.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = setup_resources(&mut disp, &mut bus, b"WEPT", 95, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        disp.res_load = false;
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"WEPT", 95, data_ptr);
+        disp.res_load = true;
+        assert_eq!(bus.read_long(handle), 0, "handle should be empty");
+        let src = bus.alloc(2);
+        bus.write_bytes(src, &[0x11, 0x22]);
+
+        bus.write_long(TEST_SP, 2); // count
+        bus.write_long(TEST_SP + 4, src);
+        bus.write_long(TEST_SP + 8, 1); // offset
+        bus.write_long(TEST_SP + 12, handle);
+        cpu.write_reg(Register::D0, 0x0002);
+
+        call(&mut disp, true, 0x022, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+        assert_eq!(bus.read_word(0x0A60), 0);
+        assert_eq!(bus.read_bytes(data_ptr, 4), vec![0xAA, 0x11, 0x22, 0xDD]);
+        assert_eq!(bus.read_long(handle), 0, "partial write should not load it");
     }
 
     #[test]
@@ -10183,6 +10289,18 @@ mod tests {
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_resource_manager_reports_partial_resource_support() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"rsrc"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 1);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
