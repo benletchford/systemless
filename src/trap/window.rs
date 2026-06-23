@@ -1909,13 +1909,15 @@ impl super::TrapDispatcher {
                     if !was_visible {
                         self.save_window_under_pixels(bus, the_window);
                     }
-                    if let Some(content_rect) = self.window_content_rect(bus, the_window) {
-                        Self::write_region_handle_rect(
-                            bus,
-                            bus.read_long(the_window + Self::WINDOW_UPDATE_RGN_OFFSET),
-                            Some(content_rect),
-                        );
-                        self.queue_window_update_event(the_window);
+                    if !was_visible {
+                        if let Some(content_rect) = self.window_content_rect(bus, the_window) {
+                            Self::write_region_handle_rect(
+                                bus,
+                                bus.read_long(the_window + Self::WINDOW_UPDATE_RGN_OFFSET),
+                                Some(content_rect),
+                            );
+                            self.queue_window_update_event(the_window);
+                        }
                     }
                     // Redraw the now-visible window's chrome inline so
                     // captures that don't run a composite_frame pass still
@@ -1935,7 +1937,6 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
-
             // HideWindow ($A916)
             // Makes the specified window invisible.
             // PROCEDURE HideWindow (theWindow: WindowPtr);
@@ -4788,6 +4789,45 @@ mod tests {
         let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    #[test]
+    fn showwindow_already_visible_does_not_requeue_full_update() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = 0x200040u32;
+        let (_cont_rgn, update_rgn) =
+            setup_full_window_with_regions(&mut bus, window, 20, 0, 424, 627);
+        bus.write_byte(window + 110, 0xFF);
+        bus.write_byte(window + 111, 0xFF);
+        disp.window_list = vec![window];
+        disp.front_window = window;
+        disp.current_port = window;
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window);
+
+        let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        assert!(
+            !disp
+                .event_queue
+                .iter()
+                .any(|e| e.what == 6 && e.message == window),
+            "ShowWindow on an already visible window must not queue a new updateEvt"
+        );
+        assert_eq!(
+            (
+                bus.read_word(update_rgn + 2) as i16,
+                bus.read_word(update_rgn + 4) as i16,
+                bus.read_word(update_rgn + 6) as i16,
+                bus.read_word(update_rgn + 8) as i16,
+            ),
+            (0, 0, 0, 0),
+            "ShowWindow must not expand an already visible window's updateRgn"
+        );
     }
 
     // ---------------------------------------------------------------
