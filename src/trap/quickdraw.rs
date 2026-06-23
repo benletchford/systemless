@@ -9277,19 +9277,7 @@ impl super::TrapDispatcher {
                 let dh = bus.read_word(sp + 2) as i16;
                 let rgn_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if rgn_handle != 0 {
-                    let rgn_ptr = bus.read_long(rgn_handle);
-                    if rgn_ptr != 0 {
-                        let t = bus.read_word(rgn_ptr + 2) as i16;
-                        let l = bus.read_word(rgn_ptr + 4) as i16;
-                        let b = bus.read_word(rgn_ptr + 6) as i16;
-                        let r = bus.read_word(rgn_ptr + 8) as i16;
-                        bus.write_word(rgn_ptr + 2, (t + dv) as u16);
-                        bus.write_word(rgn_ptr + 4, (l + dh) as u16);
-                        bus.write_word(rgn_ptr + 6, (b - dv) as u16);
-                        bus.write_word(rgn_ptr + 8, (r - dh) as u16);
-                    }
-                }
+                Self::inset_region(bus, rgn_handle, dh, dv);
                 Ok(())
             }
 
@@ -18358,6 +18346,117 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn clamp_region_coord(value: i32) -> i16 {
+        value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    }
+
+    fn inset_region_row(row: &[i16], dh: i16) -> Vec<i16> {
+        if row.is_empty() {
+            return Vec::new();
+        }
+
+        let dh = i32::from(dh);
+        let intervals = Self::endpoints_to_intervals(row)
+            .into_iter()
+            .filter_map(|(left, right)| {
+                let new_left = i32::from(left) + dh;
+                let new_right = i32::from(right) - dh;
+                (new_left < new_right).then_some((
+                    Self::clamp_region_coord(new_left),
+                    Self::clamp_region_coord(new_right),
+                ))
+            })
+            .collect::<Vec<_>>();
+        Self::intervals_to_endpoints(intervals)
+    }
+
+    fn inset_region(bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
+        let Some((rgn_ptr, rgn_size)) = Self::region_ptr_and_size(bus, rgn_handle) else {
+            return;
+        };
+        if rgn_size < REGION_HEADER_SIZE {
+            return;
+        }
+
+        let top = bus.read_word(rgn_ptr + 2) as i16;
+        let left = bus.read_word(rgn_ptr + 4) as i16;
+        let bottom = bus.read_word(rgn_ptr + 6) as i16;
+        let right = bus.read_word(rgn_ptr + 8) as i16;
+        if bottom <= top || right <= left {
+            let _ = Self::write_region(bus, rgn_handle, None, &[]);
+            return;
+        }
+
+        let new_top = Self::clamp_region_coord(i32::from(top) + i32::from(dv));
+        let new_left = Self::clamp_region_coord(i32::from(left) + i32::from(dh));
+        let new_bottom = Self::clamp_region_coord(i32::from(bottom) - i32::from(dv));
+        let new_right = Self::clamp_region_coord(i32::from(right) - i32::from(dh));
+        if new_bottom <= new_top || new_right <= new_left {
+            let _ = Self::write_region(bus, rgn_handle, None, &[]);
+            return;
+        }
+
+        if rgn_size <= REGION_HEADER_SIZE {
+            let _ = Self::write_region(
+                bus,
+                rgn_handle,
+                Some((new_top, new_left, new_bottom, new_right)),
+                &[],
+            );
+            return;
+        }
+
+        let src_rows = Self::region_rows_for_band(bus, rgn_handle, top, bottom);
+        let horizontal_rows = src_rows
+            .iter()
+            .map(|row| Self::inset_region_row(row, dh))
+            .collect::<Vec<_>>();
+        let source_top = i32::from(top);
+        let source_bottom = i32::from(bottom);
+        let radius = i32::from(dv).abs();
+        let mut rows = Vec::with_capacity((new_bottom - new_top) as usize);
+
+        for y in i32::from(new_top)..i32::from(new_bottom) {
+            if dv >= 0 {
+                let first_source_y = y - radius;
+                let last_source_y = y + radius;
+                if first_source_y < source_top || last_source_y >= source_bottom {
+                    rows.push(Vec::new());
+                    continue;
+                }
+
+                let mut combined: Option<Vec<i16>> = None;
+                for source_y in first_source_y..=last_source_y {
+                    let source_row = &horizontal_rows[(source_y - source_top) as usize];
+                    combined = Some(match combined {
+                        Some(current) => Self::intersect_region_rows(&current, source_row),
+                        None => source_row.clone(),
+                    });
+                    if combined.as_ref().is_some_and(Vec::is_empty) {
+                        break;
+                    }
+                }
+                rows.push(combined.unwrap_or_default());
+            } else {
+                let first_source_y = (y - radius).max(source_top);
+                let last_source_y = (y + radius).min(source_bottom - 1);
+                if first_source_y > last_source_y {
+                    rows.push(Vec::new());
+                    continue;
+                }
+
+                let mut combined = Vec::new();
+                for source_y in first_source_y..=last_source_y {
+                    let source_row = &horizontal_rows[(source_y - source_top) as usize];
+                    combined = Self::union_region_rows(&combined, source_row);
+                }
+                rows.push(combined);
+            }
+        }
+
+        let _ = Self::write_region_from_rows(bus, rgn_handle, new_top, &rows);
+    }
+
     fn merge_region_endpoints(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
         let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
         let mut lhs_index = 0usize;
@@ -23365,6 +23464,47 @@ mod tests {
         );
         assert!(TrapDispatcher::region_contains_point(&bus, rgn, 21, 14));
         assert!(!TrapDispatcher::region_contains_point(&bus, rgn, 1, 1));
+    }
+
+    #[test]
+    fn insetrgn_shrinks_complex_region_scanlines() {
+        // Imaging With QuickDraw (1994), p. 3-93: InsetRgn moves the region
+        // boundary inward. Complex scanline edge data must move with the bbox.
+        let (mut d, mut cpu, mut bus) = setup();
+        let rgn = bus.alloc(4);
+        let rows = vec![
+            vec![0, 10],
+            vec![0, 10],
+            vec![0, 10],
+            vec![2, 8],
+            vec![2, 8],
+            vec![0, 10],
+            vec![0, 10],
+            vec![0, 10],
+        ];
+        assert!(TrapDispatcher::write_region_from_rows(
+            &mut bus, rgn, 0, &rows
+        ));
+        assert!(
+            bus.read_word(bus.read_long(rgn)) > super::REGION_HEADER_SIZE as u16,
+            "test fixture should exercise the complex-region path"
+        );
+
+        bus.write_word(TEST_SP, 1u16); // dv
+        bus.write_word(TEST_SP + 2, 1u16); // dh
+        bus.write_long(TEST_SP + 4, rgn);
+
+        let result = d.dispatch_quickdraw(true, 0x0E1, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(read_rgn_bbox(&bus, rgn), (1, 1, 7, 9));
+        assert!(TrapDispatcher::region_contains_point(&bus, rgn, 1, 2));
+        assert!(TrapDispatcher::region_contains_point(&bus, rgn, 2, 3));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, rgn, 2, 2),
+            "middle-band edge should move inward with the complex scanlines"
+        );
+        assert!(!TrapDispatcher::region_contains_point(&bus, rgn, 0, 5));
     }
 
     // EqualRgn ($A8E3) lives at slot 0x0E3, not 0x0E5. Prior to the
