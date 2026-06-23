@@ -26,6 +26,18 @@ pub struct Menu {
     /// True after InsertMenu; false after NewMenu/DeleteMenu/ClearMenuBar.
     /// GetMHandle only returns menus in the current menu list (per IM:I I-361).
     pub in_menu_bar: bool,
+    /// True when InsertMenu was called with beforeID = -1, placing this menu
+    /// in the hierarchical/pop-up portion of the current menu list.
+    pub hierarchical: bool,
+}
+
+/// State for one visible hierarchical submenu while MenuSelect is tracking.
+pub struct SubmenuTrackingState {
+    pub menu: usize,
+    pub parent_item: i16,
+    pub highlighted_item: i16,
+    pub saved_pixels: Vec<u8>,
+    pub dropdown_rect: (i16, i16, i16, i16),
 }
 
 /// State for MenuSelect mouse tracking across frames.
@@ -34,6 +46,7 @@ pub struct MenuTrackingState {
     pub highlighted_item: i16,
     pub saved_pixels: Vec<u8>,
     pub dropdown_rect: (i16, i16, i16, i16),
+    pub submenu: Option<SubmenuTrackingState>,
     pub stack_ptr: u32,
     /// Remaining flash toggles (6 = 3 flashes: off, on, off, on, off, on).
     /// 0 means not flashing.
@@ -180,6 +193,7 @@ fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
         enabled: (enable_flags & 1) != 0,
         handle,
         in_menu_bar: false,
+        hierarchical: false,
     }
 }
 
@@ -588,6 +602,7 @@ impl super::TrapDispatcher {
                         enabled: true,
                         handle,
                         in_menu_bar: false,
+                        hierarchical: false,
                     });
                 }
                 bus.write_long(sp + 6, handle);
@@ -629,6 +644,7 @@ impl super::TrapDispatcher {
                                     self.menus.iter_mut().find(|m| m.handle == handle)
                                 {
                                     parsed.in_menu_bar = existing.in_menu_bar;
+                                    parsed.hierarchical = existing.hierarchical;
                                     *existing = parsed;
                                 } else {
                                     self.menus.push(parsed);
@@ -701,7 +717,7 @@ impl super::TrapDispatcher {
             // InsertMenu ($A935): Parses MENU resource, adds to internal menu list
             (true, 0x135) => {
                 let sp = cpu.read_reg(Register::A7);
-                let _before_id = bus.read_word(sp) as i16;
+                let before_id = bus.read_word(sp) as i16;
                 let menu_handle = bus.read_long(sp + 2);
 
                 if menu_handle != 0 {
@@ -712,6 +728,7 @@ impl super::TrapDispatcher {
                         if let Some(idx) = self.menus.iter().position(|m| m.handle == menu_handle) {
                             self.last_inserted_menu_id = Some(self.menus[idx].id);
                             self.menus[idx].in_menu_bar = true;
+                            self.menus[idx].hierarchical = before_id == -1;
                         } else {
                             // Handle wasn't previously tracked (for example a
                             // raw guest MENU handle). Parse any MENU resource
@@ -726,6 +743,7 @@ impl super::TrapDispatcher {
                                     menu.items.len()
                                 );
                                 menu.in_menu_bar = true;
+                                menu.hierarchical = before_id == -1;
                                 self.last_inserted_menu_id = Some(menu.id);
                                 self.menus.push(menu);
                             } else {
@@ -750,6 +768,7 @@ impl super::TrapDispatcher {
                                             enabled: true,
                                             handle: menu_handle,
                                             in_menu_bar: true,
+                                            hierarchical: before_id == -1,
                                         });
                                     }
                                 }
@@ -867,6 +886,7 @@ impl super::TrapDispatcher {
                         // This list is not installed until SetMenuBar is called,
                         // but once installed it represents the current menu list.
                         parsed.in_menu_bar = true;
+                        parsed.hierarchical = false;
                         snapshot.push(parsed);
                     }
 
@@ -1045,11 +1065,7 @@ impl super::TrapDispatcher {
                             // Flash complete — finish up
                             let sp = self.menu_tracking.as_ref().unwrap().stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
-                            self.restore_dropdown_pixels(
-                                bus,
-                                saved.dropdown_rect,
-                                &saved.saved_pixels,
-                            );
+                            self.restore_menu_tracking_pixels(bus, saved);
                             self.draw_menu_bar_to_fb(bus);
                             bus.write_long(sp + 4, result);
                             cpu.write_reg(Register::A7, sp + 4);
@@ -1057,10 +1073,8 @@ impl super::TrapDispatcher {
                         // else: stay on trap, re-fire next frame
                     } else if !self.mouse_button {
                         // Button released — start flash or complete immediately
-                        if tracking.highlighted_item > 0 {
-                            let menu = &self.menus[tracking.active_menu];
-                            let item_idx = tracking.highlighted_item;
-                            let result = ((menu.id as u32) << 16) | (item_idx as u32 & 0xFFFF);
+                        let result = self.menu_tracking_selection_result();
+                        if result != 0 {
                             // Start flashing: 6 toggles = 3 flashes
                             let tracking = self.menu_tracking.as_mut().unwrap();
                             tracking.flash_remaining = 6;
@@ -1070,18 +1084,13 @@ impl super::TrapDispatcher {
                             // No item selected — return 0 immediately
                             let sp = tracking.stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
-                            self.restore_dropdown_pixels(
-                                bus,
-                                saved.dropdown_rect,
-                                &saved.saved_pixels,
-                            );
+                            self.restore_menu_tracking_pixels(bus, saved);
                             self.draw_menu_bar_to_fb(bus);
                             self.finish_menu_no_hit(bus, cpu, sp, 4);
                         }
                     } else {
                         // Button still held — update highlight
                         let (mv, mh) = self.mouse_pos;
-                        let new_item = self.dropdown_item_at_point(mh, mv);
 
                         // Check if mouse moved to a different menu title
                         let new_menu = self.menu_title_hit_test(mh);
@@ -1092,31 +1101,15 @@ impl super::TrapDispatcher {
                             if new_idx != tracking.active_menu && mv < mbar_h {
                                 // Switch to different menu
                                 let old_saved = self.menu_tracking.take().unwrap();
-                                self.restore_dropdown_pixels(
-                                    bus,
-                                    old_saved.dropdown_rect,
-                                    &old_saved.saved_pixels,
-                                );
                                 let sp = old_saved.stack_ptr;
+                                self.restore_menu_tracking_pixels(bus, old_saved);
                                 self.open_menu_dropdown(bus, new_idx, sp);
                                 // Don't advance PC
                                 return Some(Ok(()));
                             }
                         }
 
-                        let old_item = self.menu_tracking.as_ref().unwrap().highlighted_item;
-                        if new_item != old_item {
-                            // Erase old highlight
-                            if old_item > 0 {
-                                self.invert_menu_item(bus, old_item);
-                            }
-                            // Update tracking state
-                            self.menu_tracking.as_mut().unwrap().highlighted_item = new_item;
-                            // Draw new highlight
-                            if new_item > 0 {
-                                self.invert_menu_item(bus, new_item);
-                            }
-                        }
+                        self.update_menu_tracking_for_point(bus, mh, mv);
                         // Don't advance PC — stay on the trap
                     }
                 } else {
@@ -1163,21 +1156,15 @@ impl super::TrapDispatcher {
                         if new_remaining == 0 {
                             let sp = self.menu_tracking.as_ref().unwrap().stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
-                            self.restore_dropdown_pixels(
-                                bus,
-                                saved.dropdown_rect,
-                                &saved.saved_pixels,
-                            );
+                            self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
                             // Stack: popUpItem(2) + left(2) + top(2) + menu(4) = 10 bytes
                             bus.write_long(sp + 10, result);
                             cpu.write_reg(Register::A7, sp + 10);
                         }
                     } else if !self.mouse_button {
-                        if tracking.highlighted_item > 0 {
-                            let menu = &self.menus[tracking.active_menu];
-                            let item_idx = tracking.highlighted_item;
-                            let result = ((menu.id as u32) << 16) | (item_idx as u32 & 0xFFFF);
+                        let result = self.menu_tracking_selection_result();
+                        if result != 0 {
                             let tracking = self.menu_tracking.as_mut().unwrap();
                             tracking.flash_remaining = 6;
                             tracking.flash_delay = 3;
@@ -1185,28 +1172,14 @@ impl super::TrapDispatcher {
                         } else {
                             let sp = tracking.stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
-                            self.restore_dropdown_pixels(
-                                bus,
-                                saved.dropdown_rect,
-                                &saved.saved_pixels,
-                            );
+                            self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
                             self.finish_menu_no_hit(bus, cpu, sp, 10);
                         }
                     } else {
                         // Button held — update highlight
                         let (mv, mh) = self.mouse_pos;
-                        let new_item = self.dropdown_item_at_point(mh, mv);
-                        let old_item = self.menu_tracking.as_ref().unwrap().highlighted_item;
-                        if new_item != old_item {
-                            if old_item > 0 {
-                                self.invert_menu_item(bus, old_item);
-                            }
-                            self.menu_tracking.as_mut().unwrap().highlighted_item = new_item;
-                            if new_item > 0 {
-                                self.invert_menu_item(bus, new_item);
-                            }
-                        }
+                        self.update_menu_tracking_for_point(bus, mh, mv);
                     }
                 } else {
                     // First call: read params and open popup dropdown
@@ -1250,6 +1223,7 @@ impl super::TrapDispatcher {
                             highlighted_item: 0,
                             saved_pixels: saved,
                             dropdown_rect: dd_rect,
+                            submenu: None,
                             stack_ptr: sp,
                             flash_remaining: 0,
                             flash_delay: 0,
@@ -2748,37 +2722,56 @@ impl super::TrapDispatcher {
         })
     }
 
+    fn is_hierarchical_item(item: &MenuItem) -> bool {
+        item.key_equiv == 0x1B && item.mark != 0
+    }
+
+    fn menu_item_extra_width(item: &MenuItem) -> i16 {
+        if Self::is_hierarchical_item(item) {
+            20
+        } else {
+            let key_extra = if item.key_equiv != 0 { 30 } else { 0 };
+            let mark_extra = if item.mark != 0 { 14 } else { 0 };
+            key_extra + mark_extra
+        }
+    }
+
+    fn dropdown_width_for_menu(&self, menu_idx: usize, min_width: i16) -> i16 {
+        let Some(menu) = self.menus.get(menu_idx) else {
+            return min_width.max(100);
+        };
+        let mut max_width = min_width.max(100);
+        for item in &menu.items {
+            let w = Self::fb_measure_string(&item.text, 0, 12);
+            let total = w + Self::menu_item_extra_width(item) + 24;
+            max_width = max_width.max(total);
+        }
+        max_width
+    }
+
     /// Open a menu dropdown and start tracking.
     fn open_menu_dropdown(&mut self, bus: &mut MacMemoryBus, menu_idx: usize, stack_ptr: u32) {
         let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
             self.get_screen_params();
 
         // Compute dropdown rect
-        let regions = self.menu_title_regions();
-        if menu_idx >= regions.len() || menu_idx >= self.menus.len() {
+        let region = self
+            .menu_title_regions_with_indices()
+            .into_iter()
+            .find(|(idx, _, _)| *idx == menu_idx);
+        if menu_idx >= self.menus.len() {
             return;
         }
-        let (title_left, title_right) = regions[menu_idx];
+        let Some((_idx, title_left, title_right)) = region else {
+            return;
+        };
         let menu = &self.menus[menu_idx];
 
         let item_height: i16 = 16;
         let dropdown_top: i16 = 20; // Below menu bar
         let dropdown_left: i16 = title_left;
 
-        // Compute dropdown width: max of item text widths + padding
-        let mut max_width: i16 = 0;
-        for item in &menu.items {
-            let w = Self::fb_measure_string(&item.text, 0, 12);
-            let key_extra = if item.key_equiv != 0 { 30 } else { 0 };
-            let mark_extra = if item.mark != 0 { 14 } else { 0 };
-            let total = w + key_extra + mark_extra + 24; // padding
-            if total > max_width {
-                max_width = total;
-            }
-        }
-        // At least as wide as the title
-        max_width = max_width.max(title_right - title_left + 20);
-        max_width = max_width.max(100); // minimum width
+        let max_width = self.dropdown_width_for_menu(menu_idx, title_right - title_left + 20);
 
         let dropdown_bottom =
             (dropdown_top + menu.items.len() as i16 * item_height + 2).min(screen_height);
@@ -2799,6 +2792,7 @@ impl super::TrapDispatcher {
             highlighted_item: 0,
             saved_pixels: saved,
             dropdown_rect,
+            submenu: None,
             stack_ptr,
             flash_remaining: 0,
             flash_delay: 0,
@@ -2818,6 +2812,212 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, stack_ptr + result_offset);
     }
 
+    fn restore_menu_tracking_pixels(&self, bus: &mut MacMemoryBus, saved: MenuTrackingState) {
+        if let Some(submenu) = saved.submenu {
+            self.restore_dropdown_pixels(bus, submenu.dropdown_rect, &submenu.saved_pixels);
+        }
+        self.restore_dropdown_pixels(bus, saved.dropdown_rect, &saved.saved_pixels);
+    }
+
+    fn menu_tracking_selection_result(&self) -> u32 {
+        let Some(tracking) = self.menu_tracking.as_ref() else {
+            return 0;
+        };
+        if let Some(submenu) = tracking.submenu.as_ref() {
+            if submenu.highlighted_item > 0 {
+                let menu = &self.menus[submenu.menu];
+                return ((menu.id as u32) << 16) | (submenu.highlighted_item as u32 & 0xFFFF);
+            }
+        }
+        if tracking.highlighted_item <= 0 {
+            return 0;
+        }
+
+        let menu = &self.menus[tracking.active_menu];
+        let item_idx = tracking.highlighted_item as usize - 1;
+        let Some(item) = menu.items.get(item_idx) else {
+            return 0;
+        };
+        if Self::is_hierarchical_item(item) {
+            return 0;
+        }
+        ((menu.id as u32) << 16) | (tracking.highlighted_item as u32 & 0xFFFF)
+    }
+
+    fn submenu_menu_index_for_parent_item(&self, parent_item: i16) -> Option<usize> {
+        let tracking = self.menu_tracking.as_ref()?;
+        if parent_item <= 0 {
+            return None;
+        }
+        let parent_menu = self.menus.get(tracking.active_menu)?;
+        let item = parent_menu.items.get(parent_item as usize - 1)?;
+        if !Self::is_hierarchical_item(item) {
+            return None;
+        }
+        let submenu_id = item.mark as i16;
+        self.menus.iter().position(|m| m.id == submenu_id)
+    }
+
+    fn submenu_rect_for_parent_item(
+        &self,
+        submenu_idx: usize,
+        parent_item: i16,
+    ) -> Option<(i16, i16, i16, i16)> {
+        let tracking = self.menu_tracking.as_ref()?;
+        let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
+            self.get_screen_params();
+        let item_height: i16 = 16;
+        let (parent_top, parent_left, _parent_bottom, parent_right) = tracking.dropdown_rect;
+        let submenu_top = parent_top + 1 + (parent_item - 1) * item_height;
+        let submenu_height = self.menus.get(submenu_idx)?.items.len() as i16 * item_height + 2;
+        let submenu_width = self.dropdown_width_for_menu(submenu_idx, 100);
+
+        let mut submenu_left = parent_right - 1;
+        let mut submenu_right = submenu_left + submenu_width;
+        if submenu_right > screen_width {
+            submenu_right = parent_left + 1;
+            submenu_left = (submenu_right - submenu_width).max(0);
+        }
+
+        let submenu_bottom = (submenu_top + submenu_height).min(screen_height);
+        Some((submenu_top, submenu_left, submenu_bottom, submenu_right))
+    }
+
+    fn close_submenu(&mut self, bus: &mut MacMemoryBus) {
+        let submenu = self
+            .menu_tracking
+            .as_mut()
+            .and_then(|tracking| tracking.submenu.take());
+        if let Some(submenu) = submenu {
+            self.restore_dropdown_pixels(bus, submenu.dropdown_rect, &submenu.saved_pixels);
+        }
+    }
+
+    fn ensure_submenu_for_parent_item(&mut self, bus: &mut MacMemoryBus, parent_item: i16) {
+        let Some(submenu_idx) = self.submenu_menu_index_for_parent_item(parent_item) else {
+            self.close_submenu(bus);
+            return;
+        };
+        let already_open = self
+            .menu_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.submenu.as_ref())
+            .is_some_and(|submenu| {
+                submenu.menu == submenu_idx && submenu.parent_item == parent_item
+            });
+        if already_open {
+            return;
+        }
+
+        let Some(dropdown_rect) = self.submenu_rect_for_parent_item(submenu_idx, parent_item)
+        else {
+            self.close_submenu(bus);
+            return;
+        };
+        self.close_submenu(bus);
+        let saved_pixels = self.save_dropdown_pixels(bus, dropdown_rect);
+        self.draw_menu_dropdown(bus, submenu_idx, dropdown_rect);
+        if let Some(tracking) = self.menu_tracking.as_mut() {
+            tracking.submenu = Some(SubmenuTrackingState {
+                menu: submenu_idx,
+                parent_item,
+                highlighted_item: 0,
+                saved_pixels,
+                dropdown_rect,
+            });
+        }
+    }
+
+    fn submenu_item_at_point(&self, mouse_x: i16, mouse_y: i16) -> Option<i16> {
+        let tracking = self.menu_tracking.as_ref()?;
+        let submenu = tracking.submenu.as_ref()?;
+        let (top, left, bottom, right) = submenu.dropdown_rect;
+        if mouse_x < left || mouse_x >= right || mouse_y < top || mouse_y >= bottom {
+            return None;
+        }
+        let item_height: i16 = 16;
+        let item_idx = (mouse_y - top - 1) / item_height;
+        let menu = self.menus.get(submenu.menu)?;
+        if item_idx < 0 || item_idx as usize >= menu.items.len() {
+            return Some(0);
+        }
+        let item = &menu.items[item_idx as usize];
+        if item.text == "-" || !item.enabled {
+            return Some(0);
+        }
+        Some(item_idx + 1)
+    }
+
+    fn update_submenu_highlight(&mut self, bus: &mut MacMemoryBus, new_item: i16) {
+        let Some((old_item, rect)) = self
+            .menu_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.submenu.as_ref())
+            .map(|submenu| (submenu.highlighted_item, submenu.dropdown_rect))
+        else {
+            return;
+        };
+        if old_item == new_item {
+            return;
+        }
+        if old_item > 0 {
+            self.invert_dropdown_item_rect(bus, rect, old_item);
+        }
+        if let Some(submenu) = self
+            .menu_tracking
+            .as_mut()
+            .and_then(|tracking| tracking.submenu.as_mut())
+        {
+            submenu.highlighted_item = new_item;
+        }
+        if new_item > 0 {
+            self.invert_dropdown_item_rect(bus, rect, new_item);
+        }
+    }
+
+    fn update_parent_menu_highlight(&mut self, bus: &mut MacMemoryBus, new_item: i16) {
+        let Some(old_item) = self
+            .menu_tracking
+            .as_ref()
+            .map(|tracking| tracking.highlighted_item)
+        else {
+            return;
+        };
+
+        if old_item != new_item {
+            self.close_submenu(bus);
+            if old_item > 0 {
+                self.invert_menu_item(bus, old_item);
+            }
+            if let Some(tracking) = self.menu_tracking.as_mut() {
+                tracking.highlighted_item = new_item;
+            }
+            if new_item > 0 {
+                self.invert_menu_item(bus, new_item);
+            }
+        }
+
+        if new_item > 0 {
+            self.ensure_submenu_for_parent_item(bus, new_item);
+        } else {
+            self.close_submenu(bus);
+        }
+    }
+
+    fn update_menu_tracking_for_point(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        mouse_x: i16,
+        mouse_y: i16,
+    ) {
+        if let Some(submenu_item) = self.submenu_item_at_point(mouse_x, mouse_y) {
+            self.update_submenu_highlight(bus, submenu_item);
+            return;
+        }
+        let new_item = self.dropdown_item_at_point(mouse_x, mouse_y);
+        self.update_parent_menu_highlight(bus, new_item);
+    }
+
     /// Determine which menu title the x coordinate falls on.
     pub(crate) fn menu_title_hit_test(&self, mouse_x: i16) -> Option<usize> {
         for (menu_idx, left, right) in self.menu_title_regions_with_indices() {
@@ -2831,6 +3031,7 @@ impl super::TrapDispatcher {
     /// Compute the (left, right) x-coordinate regions for each menu title.
     /// Regions are derived from the current menu list only (menus that have
     /// been inserted via InsertMenu). IM:I I-352 / I-354.
+    #[cfg(test)]
     fn menu_title_regions(&self) -> Vec<(i16, i16)> {
         self.menu_title_regions_with_indices()
             .into_iter()
@@ -2845,7 +3046,7 @@ impl super::TrapDispatcher {
         let mut regions = Vec::new();
         let mut x: i16 = 18;
         for (menu_idx, menu) in self.menus.iter().enumerate() {
-            if !menu.in_menu_bar {
+            if !menu.in_menu_bar || menu.hierarchical {
                 continue;
             }
             let width = Self::fb_measure_string(&menu.title, 0, 12);
@@ -3018,9 +3219,11 @@ impl super::TrapDispatcher {
                 continue;
             }
 
+            let is_hierarchical = Self::is_hierarchical_item(item);
+
             // Draw mark character if present (0x12 = checkmark, others rendered as-is).
             // Inside Macintosh Volume I, I-358
-            let text_left = if item.mark != 0 {
+            let text_left = if item.mark != 0 && !is_hierarchical {
                 // Map Mac Roman mark byte to a renderable string.
                 // Mac character 0x12 (18) is the standard checkmark in Chicago.
                 let mark_str: std::borrow::Cow<str> = if item.mark == 0x12 {
@@ -3063,7 +3266,7 @@ impl super::TrapDispatcher {
             );
 
             // Draw key equivalent on right side
-            if item.key_equiv != 0 {
+            if item.key_equiv != 0 && !is_hierarchical {
                 let cmd_str = format!("\u{2318}{}", item.key_equiv as char);
                 let cmd_width = Self::fb_measure_string(&cmd_str, font_id, font_size);
                 Self::fb_draw_string(
@@ -3079,6 +3282,29 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                 );
+            }
+
+            if is_hierarchical {
+                // IM:V V-23 / V-236: hierarchical items show a right-pointing
+                // indicator; their mark byte is the submenu ID, not a checkmark.
+                let tri_mid_y = item_top + item_height / 2;
+                for dx in 0..7 {
+                    let x = right - 12 + dx;
+                    let half_height = dx.min(6 - dx);
+                    for dy in -half_height..=half_height {
+                        Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            tri_mid_y + dy,
+                            true,
+                        );
+                    }
+                }
             }
 
             // Gray out disabled items by drawing a white dither pattern over them
@@ -3406,8 +3632,18 @@ mod tests {
         bus: &mut crate::memory::MacMemoryBus,
         menu_handle: u32,
     ) {
+        insert_menu_before(disp, cpu, bus, menu_handle, 0);
+    }
+
+    fn insert_menu_before(
+        disp: &mut super::super::TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut crate::memory::MacMemoryBus,
+        menu_handle: u32,
+        before_id: i16,
+    ) {
         cpu.write_reg(Register::A7, TEST_SP);
-        bus.write_word(TEST_SP, 0);
+        bus.write_word(TEST_SP, before_id as u16);
         bus.write_long(TEST_SP + 2, menu_handle);
         assert!(
             disp.dispatch_menu(true, 0x135, cpu, bus).unwrap().is_ok(),
@@ -3488,6 +3724,24 @@ mod tests {
         assert!(
             disp.dispatch_menu(true, 0x04F, cpu, bus).unwrap().is_ok(),
             "SetItemCmd should succeed"
+        );
+    }
+
+    fn set_item_mark(
+        disp: &mut super::super::TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut crate::memory::MacMemoryBus,
+        menu_handle: u32,
+        item: i16,
+        mark: u8,
+    ) {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, mark as u16);
+        bus.write_word(TEST_SP + 2, item as u16);
+        bus.write_long(TEST_SP + 4, menu_handle);
+        assert!(
+            disp.dispatch_menu(true, 0x144, cpu, bus).unwrap().is_ok(),
+            "SetItemMark should succeed"
         );
     }
 
@@ -4199,6 +4453,7 @@ mod tests {
             enabled: true,
             handle: 0x1234,
             in_menu_bar: false,
+            hierarchical: false,
         });
 
         assert_eq!(
@@ -6356,6 +6611,186 @@ mod tests {
         assert!(
             disp.menu_tracking.is_some(),
             "MenuSelect should enter tracking mode when menu title is hit"
+        );
+    }
+
+    // IM:V V-235..V-237: a hierarchical item has itemCmd=$1B and
+    // itemMark equal to the submenu menuID; MenuSelect returns the
+    // selected submenu's menuID/item packed as a LongInt.
+    #[test]
+    fn menuselect_tracks_hierarchical_submenu_item() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 129, 0x310000, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            file,
+            0x310040,
+            "New Game;Resume Game;-;Practice Battle;Pause Game;Resign Game;-;Quit",
+        );
+        let practice =
+            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 138, 0x310200, "Practice");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            practice,
+            0x310240,
+            "1: Cake Walk;(2: One-Gun;(3: Sucker Punch;(4: Airborne",
+        );
+        set_item_cmd(&mut disp, &mut cpu, &mut bus, file, 4, 0x1B);
+        set_item_mark(&mut disp, &mut cpu, &mut bus, file, 4, 138);
+
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+        insert_menu_before(&mut disp, &mut cpu, &mut bus, practice, -1);
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(
+            disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "DrawMenuBar should succeed before MenuSelect tracking"
+        );
+
+        let regions = disp.menu_title_regions();
+        let file_mid_h = (regions[0].0 + regions[0].1) / 2;
+        disp.mouse_pos = (10, file_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, file_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xFFFF_FFFF);
+
+        assert!(
+            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "MenuSelect should enter tracking on the File title"
+        );
+        let parent_rect = disp
+            .menu_tracking
+            .as_ref()
+            .expect("MenuSelect should be tracking")
+            .dropdown_rect;
+        let parent_item_y = parent_rect.0 + 1 + 3 * 16 + 8;
+
+        disp.mouse_pos = (parent_item_y, parent_rect.1 + 24);
+        assert!(
+            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "MenuSelect should track the hierarchical parent item"
+        );
+
+        disp.mouse_pos = (parent_item_y, parent_rect.3 + 20);
+        assert!(
+            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "MenuSelect should track into the submenu"
+        );
+
+        disp.mouse_button = false;
+        for _ in 0..40 {
+            assert!(
+                disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok(),
+                "MenuSelect should finish submenu selection"
+            );
+            if disp.menu_tracking.is_none() {
+                break;
+            }
+        }
+
+        assert!(
+            disp.menu_tracking.is_none(),
+            "MenuSelect should finish after flashing the submenu item"
+        );
+        assert_eq!(
+            bus.read_long(TEST_SP + 4),
+            (138u32 << 16) | 1,
+            "MenuSelect should return the selected submenu menuID/item"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 4,
+            "MenuSelect should pop the Point argument after submenu selection"
+        );
+    }
+
+    // IM:V V-239: InsertMenu(beforeID=-1) places a menu in the hierarchical
+    // portion of the current menu list, so later nonhierarchical menu-bar
+    // titles must still hit-test by their source menu record, not by compacted
+    // title-region index.
+    #[test]
+    fn menuselect_regular_menu_after_hierarchical_menu_still_opens() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 540, 0x311000, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, file, 0x311040, "Open");
+        let submenu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 541, 0x311100, "Practice");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            submenu,
+            0x311140,
+            "1: Cake Walk",
+        );
+        let edit = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 542, 0x311200, "Edit");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, edit, 0x311240, "Copy");
+
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+        insert_menu_before(&mut disp, &mut cpu, &mut bus, submenu, -1);
+        insert_menu(&mut disp, &mut cpu, &mut bus, edit);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(
+            disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "DrawMenuBar should succeed before MenuSelect tracking"
+        );
+
+        let regions = disp.menu_title_regions();
+        assert_eq!(
+            regions.len(),
+            2,
+            "hierarchical menu must not create a menu-bar title"
+        );
+        let edit_mid_h = (regions[1].0 + regions[1].1) / 2;
+        disp.mouse_pos = (10, edit_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, edit_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+
+        assert!(
+            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "MenuSelect should enter tracking on the Edit title"
+        );
+
+        let edit_idx = disp
+            .menus
+            .iter()
+            .position(|menu| menu.handle == edit)
+            .expect("Edit menu should still be tracked");
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .expect("MenuSelect should be tracking")
+                .active_menu,
+            edit_idx,
+            "MenuSelect should open the regular menu after a hierarchical menu"
         );
     }
 

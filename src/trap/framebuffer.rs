@@ -475,7 +475,7 @@ impl super::TrapDispatcher {
         // current after InsertMenu). IM:I I-352 / I-354.
         let mut x: i16 = 18;
         for menu in &self.menus {
-            if !menu.in_menu_bar {
+            if !menu.in_menu_bar || menu.hierarchical {
                 continue;
             }
             let title = &menu.title;
@@ -1990,6 +1990,7 @@ mod redraw_chrome_tests {
             enabled: true,
             handle: 0,
             in_menu_bar: true,
+            hierarchical: false,
         });
         // Skip blit_window_to_screen by leaving front_window=0 — the
         // test specifically targets draw_menu_bar_to_fb, not the window
@@ -2043,6 +2044,7 @@ mod redraw_chrome_tests {
             enabled: true,
             handle: 0,
             in_menu_bar: true,
+            hierarchical: false,
         });
         disp.front_window = 0;
         disp.fullscreen_locked = false;
@@ -2099,6 +2101,7 @@ mod redraw_chrome_tests {
             enabled: true,
             handle: 0,
             in_menu_bar: true,
+            hierarchical: false,
         });
         disp.front_window = 0;
         disp.fullscreen_locked = false;

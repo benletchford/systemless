@@ -3751,6 +3751,7 @@ mod tests {
             enabled: true,
             handle: 0,
             in_menu_bar: false,
+            hierarchical: false,
         });
 
         disp.mouse_button = true;

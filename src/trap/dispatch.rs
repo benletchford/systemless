@@ -4314,6 +4314,7 @@ mod tests {
             highlighted_item: 0,
             saved_pixels: Vec::new(),
             dropdown_rect: (0, 0, 0, 0),
+            submenu: None,
             stack_ptr: 0,
             flash_remaining: 0,
             flash_delay: 0,

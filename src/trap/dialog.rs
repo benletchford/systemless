@@ -15102,6 +15102,7 @@ mod tests {
             enabled: true,
             handle: 0,
             in_menu_bar: false,
+            hierarchical: false,
         });
 
         let item_hit_addr = 0x300000u32;
