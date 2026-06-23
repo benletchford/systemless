@@ -5592,7 +5592,7 @@ impl super::TrapDispatcher {
             }
 
             // FSDispatch ($A060) / HFSDispatch ($A260)
-            // HFSDispatch / FSDispatch ($A060): Selectors 1=PBOpenWD, 2=PBCloseWD, 7=PBGetWDInfo, 8=PBGetFCBInfo, 9=PBGetCatInfo, 26=PBHOpenDF; by-name lookups retry via default/WD directory
+            // HFSDispatch / FSDispatch ($A060): Selectors 1=PBOpenWD, 2=PBCloseWD, 6=PBDirCreate, 7=PBGetWDInfo, 8=PBGetFCBInfo, 9=PBGetCatInfo, 26=PBHOpenDF; by-name lookups retry via default/WD directory
             (false, 0x60) => {
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
                 let pb = cpu.read_reg(Register::A0);
@@ -5766,6 +5766,66 @@ impl super::TrapDispatcher {
                     selector, name_ptr, filename, vref, dir_id, fdir_index
                 );
                 let resolved_vref = self.resolve_volume_ref_num(vref);
+
+                if selector == 6 {
+                    // PBDirCreate ($A260, selector 6)
+                    // Creates a new directory and returns its directory ID in ioDirID.
+                    // FUNCTION PBDirCreate(paramBlock: HParmBlkPtr; async: BOOLEAN): OSErr;
+                    // Inside Macintosh Volume IV, IV-146
+                    let result = if filename.is_empty() {
+                        -37i16 // bdNamErr
+                    } else {
+                        let parent_dir_id = self.resolve_directory_id(vref, dir_id);
+                        let Some(parent_path) = self
+                            .directory_path_for_id(parent_dir_id)
+                            .map(str::to_string)
+                        else {
+                            bus.write_word(pb + 16, (-120i16) as u16); // dirNFErr
+                            cpu.write_reg(Register::D0, (-120i32) as u32);
+                            return Some(Ok(()));
+                        };
+                        let child_name = super::TrapDispatcher::normalize_vfs_path(&filename);
+                        if child_name.is_empty() {
+                            -37i16 // bdNamErr
+                        } else {
+                            let child_path = if parent_path.is_empty() {
+                                child_name
+                            } else {
+                                format!("{parent_path}/{child_name}")
+                            };
+                            let duplicate = self
+                                .vfs_directories
+                                .keys()
+                                .any(|path| path.eq_ignore_ascii_case(&child_path))
+                                || self
+                                    .vfs
+                                    .keys()
+                                    .any(|path| path.eq_ignore_ascii_case(&child_path))
+                                || self
+                                    .vfs_rsrc
+                                    .keys()
+                                    .any(|path| path.eq_ignore_ascii_case(&child_path));
+                            if duplicate {
+                                -48i16 // dupFNErr
+                            } else {
+                                let new_dir_id = self.ensure_vfs_directory(&child_path);
+                                if let Some(ref dir) = self.output_dir {
+                                    let _ = std::fs::create_dir_all(dir.join(&child_path));
+                                }
+                                bus.write_long(pb + 48, new_dir_id);
+                                eprintln!(
+                                    "[TRAP] FSDispatch PBDirCreate(\"{}\") parentDirID={} -> dirID={}",
+                                    filename, parent_dir_id, new_dir_id
+                                );
+                                0
+                            }
+                        }
+                    };
+                    bus.write_word(pb + 22, resolved_vref as u16);
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                    return Some(Ok(()));
+                }
 
                 // PBGetFCBInfo (selector 8): returns info about an open file control block.
                 // Input: ioRefNum (offset 24) = file reference number; ioFCBIndx (offset 28)
@@ -11025,6 +11085,36 @@ mod tests {
             disp.vfs_rsrc.get("Pilot 1").unwrap(),
             &vec![9, 9, 9, 9],
             "resource fork must be preserved across truncate"
+        );
+    }
+
+    // ================================================================
+    // 26b. FSDispatch ($A260) selector 6 — PBDirCreate
+    // ================================================================
+    #[test]
+    fn fsdispatch_pbdircreate_creates_child_directory_and_returns_dirid() {
+        // PBDirCreate is PBHCreate for directories: it creates a new
+        // directory under ioDirID and returns the new directory ID in ioDirID.
+        // Inside Macintosh Volume IV, IV-146.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let parent_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Sierra");
+        bus.write_word(pb + 16, 0x3FFF); // ioResult poison
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 48, parent_dir_id);
+        cpu.write_reg(Register::D0, 6); // HFSDispatch selector: PBDirCreate
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        let created_dir_id = bus.read_long(pb + 48);
+        assert_ne!(created_dir_id, parent_dir_id);
+        assert_eq!(
+            disp.directory_path_for_id(created_dir_id),
+            Some("System Folder/Preferences/Sierra")
         );
     }
 
