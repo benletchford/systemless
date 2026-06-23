@@ -761,6 +761,12 @@ pub struct TrapDispatcher {
     pub(crate) detached_handle_files: HashMap<u32, u16>,
     /// Resource fork reference (loaded into memory)
     pub(crate) resources: Option<LoadedResources>,
+    /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
+    pub(crate) movie_states: HashMap<u32, MovieState>,
+    /// Movie Toolbox current error value for GetMoviesError.
+    pub(crate) movie_error: i16,
+    /// Movie Toolbox sticky error value for GetMoviesStickyError.
+    pub(crate) movie_sticky_error: i16,
     /// Map of Segment ID -> Loaded Address (for LoadSeg)
     pub(crate) segment_map: HashMap<i16, u32>,
     /// AppleEvent handlers registered by the guest via Pack8 routine 31
@@ -1459,6 +1465,43 @@ pub(crate) struct ResourceFileMap {
     pub map_attrs: u16,
 }
 
+/// Synthetic Movie Toolbox state for Movie handles returned by
+/// NewMovieFromFile/NewMovie-style traps.
+#[derive(Clone, Debug)]
+pub(crate) struct MovieState {
+    pub box_rect: (i16, i16, i16, i16),
+    pub gworld_port: u32,
+    pub gworld_gdh: u32,
+    pub volume: i16,
+    pub preferred_rate: i32,
+    pub rate: i32,
+    pub current_time: i32,
+    pub duration: i32,
+    pub active: bool,
+}
+
+impl MovieState {
+    pub(crate) fn new(
+        _res_refnum: u16,
+        _res_id: i16,
+        _flags: u16,
+        box_rect: (i16, i16, i16, i16),
+        duration: i32,
+    ) -> Self {
+        Self {
+            box_rect,
+            gworld_port: 0,
+            gworld_gdh: 0,
+            volume: 0x0100,
+            preferred_rate: 0x0001_0000,
+            rate: 0,
+            current_time: 0,
+            duration: duration.max(1),
+            active: true,
+        }
+    }
+}
+
 pub(crate) struct LoadedResources {
     /// Resources grouped by resource-file reference number.
     pub files: HashMap<u16, ResourceFileMap>,
@@ -2028,6 +2071,9 @@ impl TrapDispatcher {
             resource_handle_files: HashMap::new(),
             detached_handle_files: HashMap::new(),
             resources: None,
+            movie_states: HashMap::new(),
+            movie_error: 0,
+            movie_sticky_error: 0,
             segment_map: HashMap::new(),
             ae_handlers: HashMap::new(),
             ae_events: HashMap::new(),

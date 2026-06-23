@@ -9,6 +9,7 @@ use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use super::dispatch::MovieState;
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
 static TRACE_MUNGER: OnceLock<bool> = OnceLock::new();
@@ -31,6 +32,7 @@ const AE_ERR_DESC_NOT_FOUND: i16 = -1701;
 const AE_ERR_ACCESSOR_NOT_FOUND: i16 = -1723;
 const AE_ERR_NOT_AN_OBJECT_SPEC: i16 = -1727;
 const AE_BUFFER_IS_SMALL: i16 = -607;
+const QUICKTIME_INVALID_MOVIE: i16 = -2010;
 
 fn standard_file_cancel_reply(bus: &mut MacMemoryBus, reply_ptr: u32) {
     if reply_ptr != 0 {
@@ -171,6 +173,144 @@ fn signed_byte_from_stack_word(word: u16) -> i16 {
         (word & 0x00FF) as u8
     };
     i16::from(byte as i8)
+}
+
+fn read_quicktime_u32(data: &[u8], offset: usize) -> Option<u32> {
+    let bytes = data.get(offset..offset + 4)?;
+    Some(u32::from_be_bytes(bytes.try_into().ok()?))
+}
+
+fn fixed_16_16_to_i16_dimension(value: u32) -> Option<i16> {
+    let whole = (value >> 16).min(i16::MAX as u32);
+    (whole > 0).then_some(whole as i16)
+}
+
+fn scan_quicktime_atoms(
+    data: &[u8],
+    depth: u8,
+    bounds: &mut Option<(i16, i16, i16, i16)>,
+    duration: &mut Option<i32>,
+) {
+    if depth > 8 {
+        return;
+    }
+    let mut offset = 0usize;
+    while offset + 8 <= data.len() {
+        let Some(size32) = read_quicktime_u32(data, offset) else {
+            break;
+        };
+        let atom_type = &data[offset + 4..offset + 8];
+        let mut header_len = 8usize;
+        let atom_len = if size32 == 1 {
+            if offset + 16 > data.len() {
+                break;
+            }
+            header_len = 16;
+            let Some(high) = read_quicktime_u32(data, offset + 8) else {
+                break;
+            };
+            let Some(low) = read_quicktime_u32(data, offset + 12) else {
+                break;
+            };
+            let size64 = ((high as u64) << 32) | u64::from(low);
+            if size64 > usize::MAX as u64 {
+                break;
+            }
+            size64 as usize
+        } else if size32 == 0 {
+            data.len() - offset
+        } else {
+            size32 as usize
+        };
+        if atom_len < header_len || offset + atom_len > data.len() {
+            break;
+        }
+        let payload = &data[offset + header_len..offset + atom_len];
+        match atom_type {
+            b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" => {
+                scan_quicktime_atoms(payload, depth + 1, bounds, duration);
+            }
+            b"mvhd" => {
+                if duration.is_none() && payload.len() >= 20 {
+                    let version = payload[0];
+                    let parsed_duration = if version == 0 {
+                        read_quicktime_u32(payload, 16).map(|value| value.min(i32::MAX as u32))
+                    } else if payload.len() >= 32 {
+                        read_quicktime_u32(payload, 28).map(|value| value.min(i32::MAX as u32))
+                    } else {
+                        None
+                    };
+                    if let Some(value) = parsed_duration.filter(|value| *value > 0) {
+                        *duration = Some(value as i32);
+                    }
+                }
+            }
+            b"tkhd" => {
+                if bounds.is_none() {
+                    let version = payload.first().copied().unwrap_or(0);
+                    let dimension_offset = if version == 0 { 76 } else { 88 };
+                    if payload.len() >= dimension_offset + 8 {
+                        let width = read_quicktime_u32(payload, dimension_offset)
+                            .and_then(fixed_16_16_to_i16_dimension);
+                        let height = read_quicktime_u32(payload, dimension_offset + 4)
+                            .and_then(fixed_16_16_to_i16_dimension);
+                        if let (Some(width), Some(height)) = (width, height) {
+                            *bounds = Some((0, 0, height, width));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if size32 == 0 {
+            break;
+        }
+        offset += atom_len;
+    }
+}
+
+fn quicktime_movie_metadata(data: &[u8]) -> ((i16, i16, i16, i16), i32) {
+    let mut bounds = None;
+    let mut duration = None;
+    scan_quicktime_atoms(data, 0, &mut bounds, &mut duration);
+    (bounds.unwrap_or((0, 0, 120, 160)), duration.unwrap_or(1))
+}
+
+fn write_movie_box(bus: &mut MacMemoryBus, rect_ptr: u32, rect: (i16, i16, i16, i16)) {
+    if rect_ptr == 0 {
+        return;
+    }
+    bus.write_word(rect_ptr, rect.0 as u16);
+    bus.write_word(rect_ptr + 2, rect.1 as u16);
+    bus.write_word(rect_ptr + 4, rect.2 as u16);
+    bus.write_word(rect_ptr + 6, rect.3 as u16);
+}
+
+fn read_movie_box(bus: &MacMemoryBus, rect_ptr: u32) -> Option<(i16, i16, i16, i16)> {
+    (rect_ptr != 0).then(|| {
+        (
+            bus.read_word(rect_ptr) as i16,
+            bus.read_word(rect_ptr + 2) as i16,
+            bus.read_word(rect_ptr + 4) as i16,
+            bus.read_word(rect_ptr + 6) as i16,
+        )
+    })
+}
+
+fn read_allocated_bytes(bus: &MacMemoryBus, ptr: u32) -> Vec<u8> {
+    let size = bus.get_alloc_size(ptr).unwrap_or(0) as usize;
+    if size == 0 {
+        Vec::new()
+    } else {
+        bus.read_bytes(ptr, size)
+    }
+}
+
+fn record_movie_error(dispatcher: &mut super::TrapDispatcher, err: i16) {
+    dispatcher.movie_error = err;
+    if err != 0 && dispatcher.movie_sticky_error == 0 {
+        dispatcher.movie_sticky_error = err;
+    }
 }
 
 /// Returns true if `year` is a leap year in the Gregorian calendar.
@@ -1704,6 +1844,55 @@ impl super::TrapDispatcher {
             (0, 0) => b'a' as u32,
             (0, _) => b'A' as u32,
             _ => 0,
+        }
+    }
+
+    fn close_movie_file_refnum(&mut self, bus: &mut MacMemoryBus, refnum: u16) -> i16 {
+        let mut closed_resource_file = false;
+
+        if let Some(resources) = self.resources.as_mut() {
+            if resources.files.contains_key(&refnum) && refnum != 0 {
+                if let Some(file) = resources.files.get_mut(&refnum) {
+                    for attr in file.attrs.values_mut() {
+                        *attr &= !(super::TrapDispatcher::RES_CHANGED_ATTR as u8);
+                    }
+                    file.map_attrs &= !super::TrapDispatcher::RES_MAP_CHANGED_ATTR;
+                }
+                if resources.current_file == refnum {
+                    resources.current_file = resources
+                        .search_order
+                        .iter()
+                        .rev()
+                        .find(|&&candidate| {
+                            candidate != refnum && resources.files.contains_key(&candidate)
+                        })
+                        .copied()
+                        .unwrap_or(0);
+                }
+                resources
+                    .search_order
+                    .retain(|&candidate| candidate != refnum);
+                resources.files.remove(&refnum);
+                resources.names.remove(&refnum);
+                closed_resource_file = true;
+            }
+        }
+
+        if closed_resource_file {
+            self.resource_handle_files.retain(|_, &mut r| r != refnum);
+            bus.write_word(0x0A5A, self.current_resource_refnum());
+        }
+
+        let closed_data_fork = self.open_files.remove(&refnum).is_some();
+        if closed_data_fork {
+            self.file_positions.remove(&refnum);
+            self.write_refnums.remove(&refnum);
+        }
+
+        if closed_resource_file || closed_data_fork {
+            0
+        } else {
+            -51
         }
     }
 
@@ -8417,11 +8606,10 @@ impl super::TrapDispatcher {
             //
             // A complete Movie Toolbox emulation is a substantial
             // multi-iteration project (movies, tracks, media handlers,
-            // codecs). The selectors below cover documented initialization
-            // and movie-file loading calls that appear before gameplay in
-            // several Classic Mac demos. Playback/status selectors still
-            // need real stack behavior and movie state before QuickTime-
-            // gated games can be considered playable.
+            // codecs). The selectors below cover documented initialization,
+            // movie-file loading, and stateful playback calls that appear
+            // before gameplay in Classic Mac demos. Selector values are
+            // verified against MPW Universal Headers Movies.h in Docker.
             (true, 0x2AA) => {
                 let selector = cpu.read_reg(Register::D0) as u16;
                 if super::dispatch::trace_quicktime_enabled() {
@@ -8537,7 +8725,7 @@ impl super::TrapDispatcher {
                             0
                         };
 
-                        let mut selected_resource: Option<(i16, String)> = None;
+                        let mut selected_resource: Option<(i16, String, Vec<u8>)> = None;
                         if requested_id != -1 {
                             if let Some(resources) = self.resources.as_ref() {
                                 if let Some(file) = resources.files.get(&res_refnum) {
@@ -8549,7 +8737,12 @@ impl super::TrapDispatcher {
                                             .get(&(*b"moov", requested_id))
                                             .cloned()
                                             .unwrap_or_default();
-                                        selected_resource = Some((requested_id, name));
+                                        let data_ptr = file.loaded[&(*b"moov", requested_id)];
+                                        selected_resource = Some((
+                                            requested_id,
+                                            name,
+                                            read_allocated_bytes(bus, data_ptr),
+                                        ));
                                     } else if requested_id == 0 {
                                         let mut ids: Vec<i16> = file
                                             .loaded
@@ -8565,7 +8758,15 @@ impl super::TrapDispatcher {
                                                 .get(&(*b"moov", id))
                                                 .cloned()
                                                 .unwrap_or_default();
-                                            selected_resource = Some((id, name));
+                                            if let Some(&data_ptr) =
+                                                file.loaded.get(&(*b"moov", id))
+                                            {
+                                                selected_resource = Some((
+                                                    id,
+                                                    name,
+                                                    read_allocated_bytes(bus, data_ptr),
+                                                ));
+                                            }
                                         }
                                     }
                                 }
@@ -8573,32 +8774,46 @@ impl super::TrapDispatcher {
                         }
 
                         let file_name = self.resource_file_name(res_refnum).map(str::to_owned);
-                        let has_data_fork_movie = file_name
-                            .as_ref()
-                            .is_some_and(|name| self.vfs.contains_key(name));
-                        let selected_movie = selected_resource.or_else(|| {
-                            if requested_id == 0 || requested_id == -1 {
-                                has_data_fork_movie.then_some((-1, String::new()))
-                            } else {
-                                None
-                            }
-                        });
+                        let selected_movie = if selected_resource.is_some() {
+                            selected_resource
+                        } else if requested_id == 0 || requested_id == -1 {
+                            file_name.as_ref().and_then(|name| {
+                                self.vfs
+                                    .get(name)
+                                    .cloned()
+                                    .map(|data| (-1, String::new(), data))
+                            })
+                        } else {
+                            None
+                        };
 
-                        let Some((selected_id, selected_name)) = selected_movie else {
-                            bus.write_word(sp + 20, (-2010i16) as u16); // invalidMovie
+                        let Some((selected_id, selected_name, movie_data)) = selected_movie else {
+                            bus.write_word(sp + 20, QUICKTIME_INVALID_MOVIE as u16);
                             if movie_ptr != 0 {
                                 bus.write_long(movie_ptr, 0);
                             }
                             cpu.write_reg(Register::A7, sp + 20);
-                            cpu.write_reg(Register::D0, (-2010i16) as u32);
+                            cpu.write_reg(Register::D0, QUICKTIME_INVALID_MOVIE as u32);
+                            record_movie_error(self, QUICKTIME_INVALID_MOVIE);
                             return Some(Ok(()));
                         };
 
+                        let (box_rect, duration) = quicktime_movie_metadata(&movie_data);
                         let movie = bus.alloc(16);
                         bus.write_long(movie, u32::from_be_bytes(*b"MooV"));
                         bus.write_word(movie + 4, res_refnum);
                         bus.write_word(movie + 6, selected_id as u16);
                         bus.write_word(movie + 8, new_movie_flags);
+                        self.movie_states.insert(
+                            movie,
+                            MovieState::new(
+                                res_refnum,
+                                selected_id,
+                                new_movie_flags,
+                                box_rect,
+                                duration,
+                            ),
+                        );
                         if movie_ptr != 0 {
                             bus.write_long(movie_ptr, movie);
                         }
@@ -8614,6 +8829,441 @@ impl super::TrapDispatcher {
                         bus.write_word(sp + 20, 0);
                         cpu.write_reg(Register::A7, sp + 20);
                         cpu.write_reg(Register::D0, 0);
+                        record_movie_error(self, 0);
+                        Ok(())
+                    }
+                    3 => {
+                        // GetMoviesError ($AAAA selector $0003)
+                        // Returns and clears the Movie Toolbox current error.
+                        // pascal OSErr GetMoviesError(void);
+                        // Inside Macintosh: QuickTime 1993, p. 2-85.
+                        let sp = cpu.read_reg(Register::A7);
+                        let err = self.movie_error;
+                        bus.write_word(sp, err as u16);
+                        self.movie_error = 0;
+                        cpu.write_reg(Register::D0, err as u32);
+                        Ok(())
+                    }
+                    4 => {
+                        // GetMoviesStickyError ($AAAA selector $0004)
+                        // Returns the first nonzero Movie Toolbox error since it was cleared.
+                        // pascal OSErr GetMoviesStickyError(void);
+                        // Inside Macintosh: QuickTime 1993, p. 2-85.
+                        let sp = cpu.read_reg(Register::A7);
+                        bus.write_word(sp, self.movie_sticky_error as u16);
+                        cpu.write_reg(Register::D0, self.movie_sticky_error as u32);
+                        Ok(())
+                    }
+                    0x00DE => {
+                        // ClearMoviesStickyError ($AAAA selector $00DE)
+                        // Clears the Movie Toolbox sticky error.
+                        // pascal void ClearMoviesStickyError(void);
+                        // Inside Macintosh: QuickTime 1993, p. 2-85.
+                        self.movie_sticky_error = 0;
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
+                    0x0005 => {
+                        // MoviesTask ($AAAA selector $0005)
+                        // Services active movies from the event loop.
+                        // pascal void MoviesTask(Movie theMovie, long maxMilliSecToUse);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-124 to 2-125.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp + 4);
+                        let ok = if movie == 0 {
+                            for state in self.movie_states.values_mut() {
+                                if state.active && state.rate != 0 {
+                                    if state.rate < 0 {
+                                        state.current_time = 0;
+                                    } else {
+                                        state.current_time = state.duration;
+                                    }
+                                    state.rate = 0;
+                                    state.active = false;
+                                }
+                            }
+                            true
+                        } else if let Some(state) = self.movie_states.get_mut(&movie) {
+                            if state.active && state.rate != 0 {
+                                if state.rate < 0 {
+                                    state.current_time = 0;
+                                } else {
+                                    state.current_time = state.duration;
+                                }
+                                state.rate = 0;
+                                state.active = false;
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                        cpu.write_reg(Register::A7, sp + 8);
+                        let err = if ok { 0 } else { QUICKTIME_INVALID_MOVIE };
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x0006 => {
+                        // PrerollMovie ($AAAA selector $0006)
+                        // Prepares movie media for playback at the requested time and rate.
+                        // pascal OSErr PrerollMovie(Movie theMovie, TimeValue time, Fixed Rate);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-135 to 2-136.
+                        let sp = cpu.read_reg(Register::A7);
+                        let rate = bus.read_long(sp) as i32;
+                        let time = bus.read_long(sp + 4) as i32;
+                        let movie = bus.read_long(sp + 8);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.preferred_rate = rate;
+                            state.current_time = time.clamp(0, state.duration);
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_word(sp + 12, err as u16);
+                        cpu.write_reg(Register::A7, sp + 12);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x0007 => {
+                        // LoadMovieIntoRam ($AAAA selector $0007)
+                        // Requests a movie segment be loaded into memory for playback.
+                        // pascal OSErr LoadMovieIntoRam(Movie theMovie, TimeValue time,
+                        //   TimeValue duration, long flags);
+                        // Inside Macintosh: QuickTime 1993, p. 2-135.
+                        let sp = cpu.read_reg(Register::A7);
+                        let _flags = bus.read_long(sp);
+                        let _duration = bus.read_long(sp + 4);
+                        let _time = bus.read_long(sp + 8);
+                        let movie = bus.read_long(sp + 12);
+                        let err = if self.movie_states.contains_key(&movie) {
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_word(sp + 16, err as u16);
+                        cpu.write_reg(Register::A7, sp + 16);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x000B => {
+                        // StartMovie ($AAAA selector $000B)
+                        // Starts playback from the current movie time at the preferred rate.
+                        // pascal void StartMovie(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-111 to 2-112.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.active = true;
+                            state.rate = state.preferred_rate;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x000C => {
+                        // StopMovie ($AAAA selector $000C)
+                        // Stops movie playback.
+                        // pascal void StopMovie(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-112.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.rate = 0;
+                            state.active = false;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x000D => {
+                        // GoToBeginningOfMovie ($AAAA selector $000D)
+                        // Repositions a movie to play from its start.
+                        // pascal void GoToBeginningOfMovie(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-113.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.current_time = 0;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x0016 => {
+                        // SetMovieGWorld ($AAAA selector $0016)
+                        // Sets the graphics world used to display a movie.
+                        // pascal void SetMovieGWorld(Movie theMovie, CGrafPtr port,
+                        //   GDHandle gdh);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-159 to 2-160.
+                        let sp = cpu.read_reg(Register::A7);
+                        let gdh = bus.read_long(sp);
+                        let port = bus.read_long(sp + 4);
+                        let movie = bus.read_long(sp + 8);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.gworld_port = port;
+                            state.gworld_gdh = gdh;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 12);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x0015 => {
+                        // GetMovieGWorld ($AAAA selector $0015)
+                        // Returns the graphics world used to display a movie.
+                        // pascal void GetMovieGWorld(Movie theMovie, CGrafPtr *port,
+                        //   GDHandle *gdh);
+                        // Inside Macintosh: QuickTime 1993, p. 2-160.
+                        let sp = cpu.read_reg(Register::A7);
+                        let gdh_ptr = bus.read_long(sp);
+                        let port_ptr = bus.read_long(sp + 4);
+                        let movie = bus.read_long(sp + 8);
+                        let values = self
+                            .movie_states
+                            .get(&movie)
+                            .map(|state| (state.gworld_port, state.gworld_gdh));
+                        let err = if let Some((port, gdh)) = values {
+                            if port_ptr != 0 {
+                                bus.write_long(port_ptr, port);
+                            }
+                            if gdh_ptr != 0 {
+                                bus.write_long(gdh_ptr, gdh);
+                            }
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 12);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x0023 => {
+                        // DisposeMovie ($AAAA selector $0023)
+                        // Frees memory and state owned by a movie.
+                        // pascal void DisposeMovie(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-96.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let err = if self.movie_states.remove(&movie).is_some() {
+                            bus.free(movie);
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x002B => {
+                        // GetMovieDuration ($AAAA selector $002B)
+                        // Returns the calculated duration of a movie.
+                        // pascal TimeValue GetMovieDuration(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-185.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let duration = self
+                            .movie_states
+                            .get(&movie)
+                            .map(|state| state.duration)
+                            .unwrap_or(0);
+                        let err = if duration == 0 {
+                            QUICKTIME_INVALID_MOVIE
+                        } else {
+                            0
+                        };
+                        bus.write_long(sp + 4, duration as u32);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x002C => {
+                        // GetMovieRate ($AAAA selector $002C)
+                        // Returns the current movie playback rate.
+                        // pascal Fixed GetMovieRate(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-185.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let rate = self
+                            .movie_states
+                            .get(&movie)
+                            .map(|state| state.rate)
+                            .unwrap_or(0);
+                        let err = if self.movie_states.contains_key(&movie) {
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_long(sp + 4, rate as u32);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x002D => {
+                        // SetMovieRate ($AAAA selector $002D)
+                        // Sets the movie playback rate.
+                        // pascal void SetMovieRate(Movie theMovie, Fixed rate);
+                        // Inside Macintosh: QuickTime 1993, p. 2-185.
+                        let sp = cpu.read_reg(Register::A7);
+                        let rate = bus.read_long(sp) as i32;
+                        let movie = bus.read_long(sp + 4);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.rate = rate;
+                            if rate != 0 {
+                                state.active = true;
+                            } else {
+                                state.active = false;
+                            }
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x002E => {
+                        // GetMovieVolume ($AAAA selector $002E)
+                        // Returns a movie's current 8.8 fixed-point volume.
+                        // pascal short GetMovieVolume(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-182.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let volume = self
+                            .movie_states
+                            .get(&movie)
+                            .map(|state| state.volume)
+                            .unwrap_or(0);
+                        let err = if self.movie_states.contains_key(&movie) {
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_word(sp + 4, volume as u16);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x002F => {
+                        // SetMovieVolume ($AAAA selector $002F)
+                        // Sets a movie's current 8.8 fixed-point volume.
+                        // pascal void SetMovieVolume(Movie theMovie, short volume);
+                        // Inside Macintosh: QuickTime 1993, p. 2-182.
+                        let sp = cpu.read_reg(Register::A7);
+                        let volume = bus.read_word(sp) as i16;
+                        let movie = bus.read_long(sp + 2);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.volume = volume;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 6);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x00D5 => {
+                        // CloseMovieFile ($AAAA selector $00D5)
+                        // Closes an open movie file reference number.
+                        // pascal OSErr CloseMovieFile(short resRefNum);
+                        // Inside Macintosh: QuickTime 1993, p. 2-99.
+                        let sp = cpu.read_reg(Register::A7);
+                        let refnum = bus.read_word(sp);
+                        let err = self.close_movie_file_refnum(bus, refnum);
+                        bus.write_word(sp + 2, err as u16);
+                        cpu.write_reg(Register::A7, sp + 2);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x00DD => {
+                        // IsMovieDone ($AAAA selector $00DD)
+                        // Reports whether a movie has finished playing.
+                        // pascal Boolean IsMovieDone(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-125 to 2-126.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let status = self.movie_states.get(&movie).map(|state| {
+                            if state.rate < 0 {
+                                state.current_time <= 0
+                            } else {
+                                state.current_time >= state.duration
+                            }
+                        });
+                        let err = if status.is_some() {
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_word(sp + 4, if status.unwrap_or(true) { 0xFFFF } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x00F9 => {
+                        // GetMovieBox ($AAAA selector $00F9)
+                        // Returns a movie's boundary rectangle.
+                        // pascal void GetMovieBox(Movie theMovie, Rect *boxRect);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-161 to 2-162.
+                        let sp = cpu.read_reg(Register::A7);
+                        let box_ptr = bus.read_long(sp);
+                        let movie = bus.read_long(sp + 4);
+                        let rect = self.movie_states.get(&movie).map(|state| state.box_rect);
+                        let err = if let Some(rect) = rect {
+                            write_movie_box(bus, box_ptr, rect);
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x00FA => {
+                        // SetMovieBox ($AAAA selector $00FA)
+                        // Sets a movie's boundary rectangle.
+                        // pascal void SetMovieBox(Movie theMovie, const Rect *boxRect);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-161 to 2-162.
+                        let sp = cpu.read_reg(Register::A7);
+                        let box_ptr = bus.read_long(sp);
+                        let movie = bus.read_long(sp + 4);
+                        let err = if let (Some(rect), Some(state)) = (
+                            read_movie_box(bus, box_ptr),
+                            self.movie_states.get_mut(&movie),
+                        ) {
+                            state.box_rect = rect;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
                         Ok(())
                     }
                     _ => return_noerr(cpu),
@@ -10283,16 +10933,17 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::super::dispatch::QueuedEvent;
-    use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
+    use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
-        AE_ERR_DESC_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC, AE_KEY_EVENT_CLASS_ATTR,
-        AE_KEY_EVENT_ID_ATTR, AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_TYPE, AE_TYPE_WILDCARD,
+        quicktime_movie_metadata, AE_ERR_DESC_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC,
+        AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR, AE_TYPE_APPLE_EVENT, AE_TYPE_NULL,
+        AE_TYPE_TYPE, AE_TYPE_WILDCARD,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
     use crate::memory::MacMemoryBus;
     use crate::memory::MemoryBus;
-    use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
+    use crate::trap::dispatch::{LoadedResources, ResourceFileMap, TrapDispatcher};
     use crate::trap::extended80::Extended80;
     use std::collections::HashMap;
     use std::ffi::OsString;
@@ -19870,6 +20521,266 @@ mod tests {
         assert_eq!(bus.read_word(res_id_ptr), 128);
         assert_eq!(bus.read_pstring(res_name_ptr), b"Intro");
         assert_eq!(bus.read_byte(changed_ptr), 0);
+    }
+
+    fn quicktime_atom(atom_type: [u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut atom = Vec::with_capacity(8 + payload.len());
+        atom.extend_from_slice(&((payload.len() + 8) as u32).to_be_bytes());
+        atom.extend_from_slice(&atom_type);
+        atom.extend_from_slice(payload);
+        atom
+    }
+
+    #[test]
+    fn quicktime_movie_metadata_reads_mvhd_duration_and_tkhd_bounds() {
+        let mut mvhd = vec![0; 20];
+        mvhd[16..20].copy_from_slice(&240u32.to_be_bytes());
+
+        let mut tkhd = vec![0; 84];
+        tkhd[76..80].copy_from_slice(&(320u32 << 16).to_be_bytes());
+        tkhd[80..84].copy_from_slice(&(200u32 << 16).to_be_bytes());
+
+        let trak = quicktime_atom(*b"trak", &quicktime_atom(*b"tkhd", &tkhd));
+        let mut moov_payload = quicktime_atom(*b"mvhd", &mvhd);
+        moov_payload.extend_from_slice(&trak);
+        let moov = quicktime_atom(*b"moov", &moov_payload);
+
+        let (bounds, duration) = quicktime_movie_metadata(&moov);
+        assert_eq!(bounds, (0, 0, 200, 320));
+        assert_eq!(duration, 240);
+    }
+
+    fn create_test_movie_from_file(
+        disp: &mut TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut MacMemoryBus,
+        sp: u32,
+    ) -> u32 {
+        let movie_ptr = 0x300400;
+        let res_id_ptr = 0x300404;
+        let res_name_ptr = 0x300408;
+        let changed_ptr = 0x300510;
+        let refnum = 124;
+
+        disp.register_empty_resource_file(refnum);
+        disp.set_resource_file_name(refnum, "Movies/Test");
+        disp.install_named_test_resource_in_file(bus, refnum, *b"moov", 128, "Test", b"moov");
+        bus.write_long(movie_ptr, 0);
+        bus.write_word(res_id_ptr, 0);
+        bus.write_byte(res_name_ptr, 0);
+        bus.write_byte(changed_ptr, 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00F0);
+        bus.write_long(sp, changed_ptr);
+        bus.write_word(sp + 4, 1);
+        bus.write_long(sp + 6, res_name_ptr);
+        bus.write_long(sp + 10, res_id_ptr);
+        bus.write_word(sp + 14, refnum);
+        bus.write_long(sp + 16, movie_ptr);
+        bus.write_word(sp + 20, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2AA, cpu, bus);
+        assert!(result.is_some(), "NewMovieFromFile should be handled");
+        assert!(result.unwrap().is_ok(), "NewMovieFromFile should return");
+        let movie = bus.read_long(movie_ptr);
+        assert_ne!(movie, 0, "NewMovieFromFile should create a movie token");
+        movie
+    }
+
+    #[test]
+    fn movietoolboxdispatch_movie_spatial_selectors_pop_and_round_trip_box() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let movie = create_test_movie_from_file(&mut disp, &mut cpu, &mut bus, sp);
+        let box_ptr = 0x300600;
+        let out_box_ptr = 0x300620;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0016); // SetMovieGWorld
+        bus.write_long(sp, 0); // gdh
+        bus.write_long(sp + 4, 0x0022_0000); // port
+        bus.write_long(sp + 8, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SetMovieGWorld should be handled");
+        assert!(result.unwrap().is_ok(), "SetMovieGWorld should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+
+        bus.write_word(box_ptr, 7);
+        bus.write_word(box_ptr + 2, 11);
+        bus.write_word(box_ptr + 4, 107);
+        bus.write_word(box_ptr + 6, 211);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00FA); // SetMovieBox
+        bus.write_long(sp, box_ptr);
+        bus.write_long(sp + 4, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SetMovieBox should be handled");
+        assert!(result.unwrap().is_ok(), "SetMovieBox should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        for offset in (0..8).step_by(2) {
+            bus.write_word(out_box_ptr + offset, 0xEEEE);
+        }
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00F9); // GetMovieBox
+        bus.write_long(sp, out_box_ptr);
+        bus.write_long(sp + 4, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetMovieBox should be handled");
+        assert!(result.unwrap().is_ok(), "GetMovieBox should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(out_box_ptr), 7);
+        assert_eq!(bus.read_word(out_box_ptr + 2), 11);
+        assert_eq!(bus.read_word(out_box_ptr + 4), 107);
+        assert_eq!(bus.read_word(out_box_ptr + 6), 211);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_movie_playback_selectors_pop_and_report_done() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let movie = create_test_movie_from_file(&mut disp, &mut cpu, &mut bus, sp);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x000B); // StartMovie
+        bus.write_long(sp, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "StartMovie should be handled");
+        assert!(result.unwrap().is_ok(), "StartMovie should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0005); // MoviesTask
+        bus.write_long(sp, 0); // maxMilliSecToUse: service once
+        bus.write_long(sp + 4, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "MoviesTask should be handled");
+        assert!(result.unwrap().is_ok(), "MoviesTask should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00DD); // IsMovieDone
+        bus.write_long(sp, movie);
+        bus.write_word(sp + 4, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "IsMovieDone should be handled");
+        assert!(result.unwrap().is_ok(), "IsMovieDone should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0xFFFF);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_movie_preload_duration_and_volume_selectors_pop() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let movie = create_test_movie_from_file(&mut disp, &mut cpu, &mut bus, sp);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x002B); // GetMovieDuration
+        bus.write_long(sp, movie);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetMovieDuration should be handled");
+        assert!(result.unwrap().is_ok(), "GetMovieDuration should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_ne!(bus.read_long(sp + 4), 0xDEAD_BEEF);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x002F); // SetMovieVolume
+        bus.write_word(sp, 0x0100);
+        bus.write_long(sp + 2, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SetMovieVolume should be handled");
+        assert!(result.unwrap().is_ok(), "SetMovieVolume should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0006); // PrerollMovie
+        bus.write_long(sp, 0x0001_0000); // rate
+        bus.write_long(sp + 4, 0); // time
+        bus.write_long(sp + 8, movie);
+        bus.write_word(sp + 12, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "PrerollMovie should be handled");
+        assert!(result.unwrap().is_ok(), "PrerollMovie should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0007); // LoadMovieIntoRam
+        bus.write_long(sp, 0); // flags
+        bus.write_long(sp + 4, 1); // duration
+        bus.write_long(sp + 8, 0); // time
+        bus.write_long(sp + 12, movie);
+        bus.write_word(sp + 16, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "LoadMovieIntoRam should be handled");
+        assert!(result.unwrap().is_ok(), "LoadMovieIntoRam should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_word(sp + 16), 0);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_dispose_movie_pops_and_releases_movie_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let movie = create_test_movie_from_file(&mut disp, &mut cpu, &mut bus, sp);
+        assert!(disp.movie_states.contains_key(&movie));
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0023); // DisposeMovie
+        bus.write_long(sp, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "DisposeMovie should be handled");
+        assert!(result.unwrap().is_ok(), "DisposeMovie should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(!disp.movie_states.contains_key(&movie));
+    }
+
+    #[test]
+    fn movietoolboxdispatch_close_movie_file_closes_data_fork_and_writes_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let spec_ptr = 0x300800;
+        let ref_num_ptr = 0x300900;
+        let movies_dir = disp.ensure_vfs_directory("AmoebArena/Movies");
+        disp.vfs.insert(
+            "AmoebArena/Movies/C&G".to_string(),
+            vec![0x6D, 0x6F, 0x6F, 0x76],
+        );
+        disp.ensure_vfs_catalog();
+        write_test_fsspec(&mut bus, spec_ptr, -1, movies_dir, b"C&G");
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0192); // OpenMovieFile
+        bus.write_word(sp, 0x0100);
+        bus.write_long(sp + 2, ref_num_ptr);
+        bus.write_long(sp + 6, spec_ptr);
+        bus.write_word(sp + 10, 0xBEEF);
+        let open = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(open.is_some(), "OpenMovieFile should be handled");
+        assert!(open.unwrap().is_ok(), "OpenMovieFile should return");
+        let refnum = bus.read_word(ref_num_ptr);
+        assert!(disp.open_files.contains_key(&refnum));
+        assert_eq!(
+            disp.resource_file_name(refnum).map(str::to_owned),
+            Some("AmoebArena/Movies/C&G".to_string())
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00D5); // CloseMovieFile
+        bus.write_word(sp, refnum);
+        bus.write_word(sp + 2, 0xBEEF);
+        let close = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(close.is_some(), "CloseMovieFile should be handled");
+        assert!(close.unwrap().is_ok(), "CloseMovieFile should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(bus.read_word(sp + 2), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(!disp.open_files.contains_key(&refnum));
+        assert!(disp.resource_file_name(refnum).is_none());
     }
 
     // Unhandled trap returns None
