@@ -13106,11 +13106,11 @@ impl super::TrapDispatcher {
             // Where mask bits are 1, the source bit is copied to the
             // destination; where mask bits are 0, the destination is
             // left unchanged. Source and mask must be the same size;
-            // destination can be at any position with the same dimensions
-            // (CopyMask does not scale).
+            // destination may have a different size; CopyMask scales the
+            // source image to fit the destination.
             // Stack: SP+0: dstRect(4), SP+4: maskRect(4), SP+8: srcRect(4),
             //        SP+12: dstBits(4), SP+16: maskBits(4), SP+20: srcBits(4). Pop 24.
-            // CopyMask ($A817): Mask-gated unscaled blit srcBits → dstBits via maskBits (1 = copy, 0 = preserve dst); supports 1bpp + 8bpp dst per IM:IV IV-33
+            // CopyMask ($A817): Mask-gated scaled blit srcBits → dstBits via maskBits (1 = copy, 0 = preserve dst); supports 1bpp + 8bpp dst per Imaging With QuickDraw 3-119..3-120
             (true, 0x017) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_rect_ptr = bus.read_long(sp);
@@ -13131,21 +13131,83 @@ impl super::TrapDispatcher {
                 let src_right = bus.read_word(src_rect_ptr + 6) as i16;
                 let mask_top = bus.read_word(mask_rect_ptr) as i16;
                 let mask_left = bus.read_word(mask_rect_ptr + 2) as i16;
+                let mask_bottom = bus.read_word(mask_rect_ptr + 4) as i16;
+                let mask_right = bus.read_word(mask_rect_ptr + 6) as i16;
                 let dst_top = bus.read_word(dst_rect_ptr) as i16;
                 let dst_left = bus.read_word(dst_rect_ptr + 2) as i16;
+                let dst_bottom = bus.read_word(dst_rect_ptr + 4) as i16;
+                let dst_right = bus.read_word(dst_rect_ptr + 6) as i16;
 
-                // Walk every (sy, sx) inside srcRect; map to mask + dst
-                // by relative offset. CopyMask is unscaled, so the loop
-                // iterates srcRect once and uses offsets into the other
-                // two rects.
-                for sy in src_top..src_bottom {
-                    for sx in src_left..src_right {
-                        let dy_off = sy - src_top;
-                        let dx_off = sx - src_left;
-                        let my = mask_top + dy_off;
-                        let mx = mask_left + dx_off;
-                        let dy = dst_top + dy_off;
-                        let dx = dst_left + dx_off;
+                if src_bottom <= src_top
+                    || src_right <= src_left
+                    || mask_bottom <= mask_top
+                    || mask_right <= mask_left
+                    || dst_bottom <= dst_top
+                    || dst_right <= dst_left
+                {
+                    return Some(Ok(()));
+                }
+
+                let clip_t = dst_top.max(dst_info.bounds_top);
+                let clip_l = dst_left.max(dst_info.bounds_left);
+                let clip_b = dst_bottom.min(dst_info.bounds_bottom);
+                let clip_r = dst_right.min(dst_info.bounds_right);
+                if clip_b <= clip_t || clip_r <= clip_l {
+                    return Some(Ok(()));
+                }
+
+                let src_w = i32::from(src_right) - i32::from(src_left);
+                let src_h = i32::from(src_bottom) - i32::from(src_top);
+                let mask_w = i32::from(mask_right) - i32::from(mask_left);
+                let mask_h = i32::from(mask_bottom) - i32::from(mask_top);
+                let dst_w = i32::from(dst_right) - i32::from(dst_left);
+                let dst_h = i32::from(dst_bottom) - i32::from(dst_top);
+                let no_src_scaling = src_w == dst_w && src_h == dst_h && src_w > 0 && src_h > 0;
+                let no_mask_scaling =
+                    mask_w == dst_w && mask_h == dst_h && mask_w > 0 && mask_h > 0;
+
+                for dy in clip_t..clip_b {
+                    let sy = if no_src_scaling {
+                        i32::from(src_top) + (i32::from(dy) - i32::from(dst_top))
+                    } else {
+                        let Some(sy) =
+                            Self::scale_coord(src_top, src_bottom, dst_top, dst_bottom, dy)
+                        else {
+                            continue;
+                        };
+                        sy
+                    } as i16;
+                    let my = if no_mask_scaling {
+                        i32::from(mask_top) + (i32::from(dy) - i32::from(dst_top))
+                    } else {
+                        let Some(my) =
+                            Self::scale_coord(mask_top, mask_bottom, dst_top, dst_bottom, dy)
+                        else {
+                            continue;
+                        };
+                        my
+                    } as i16;
+                    for dx in clip_l..clip_r {
+                        let sx = if no_src_scaling {
+                            i32::from(src_left) + (i32::from(dx) - i32::from(dst_left))
+                        } else {
+                            let Some(sx) =
+                                Self::scale_coord(src_left, src_right, dst_left, dst_right, dx)
+                            else {
+                                continue;
+                            };
+                            sx
+                        } as i16;
+                        let mx = if no_mask_scaling {
+                            i32::from(mask_left) + (i32::from(dx) - i32::from(dst_left))
+                        } else {
+                            let Some(mx) =
+                                Self::scale_coord(mask_left, mask_right, dst_left, dst_right, dx)
+                            else {
+                                continue;
+                            };
+                            mx
+                        } as i16;
                         let Some(mask_pixel) = Self::read_bitmap_pixel(bus, &mask_info, my, mx)
                         else {
                             continue;
@@ -13157,15 +13219,6 @@ impl super::TrapDispatcher {
                         else {
                             continue;
                         };
-                        // Write src pixel to dst at (dy, dx). Reuse the
-                        // bounds-checked path: skip writes outside dst.
-                        if dy < dst_info.bounds_top
-                            || dy >= dst_info.bounds_bottom
-                            || dx < dst_info.bounds_left
-                            || dx >= dst_info.bounds_right
-                        {
-                            continue;
-                        }
                         let row = (dy - dst_info.bounds_top) as u32;
                         let col = (dx - dst_info.bounds_left) as u32;
                         match dst_info.pixel_size {
@@ -27535,6 +27588,50 @@ mod tests {
             bus.read_byte(dst_base),
             0b0101_1010,
             "mask bits cleared to 0 should preserve destination bits"
+        );
+    }
+
+    #[test]
+    fn copymask_scales_source_and_mask_into_destination_rect() {
+        // Imaging With QuickDraw (1994), pp. 3-119..3-120: CopyMask scales the
+        // source image to fit dstRect when srcRect and dstRect differ.
+        let (mut d, mut cpu, mut bus) = setup();
+
+        let src_bits = bus.alloc(14);
+        let mask_bits = bus.alloc(14);
+        let dst_bits = bus.alloc(14);
+        let src_base = bus.alloc(1);
+        let mask_base = bus.alloc(1);
+        let dst_base = bus.alloc(1);
+        write_bitmap_1bpp(&mut bus, src_bits, src_base, 1, (0, 0, 1, 4));
+        write_bitmap_1bpp(&mut bus, mask_bits, mask_base, 1, (0, 0, 1, 4));
+        write_bitmap_1bpp(&mut bus, dst_bits, dst_base, 1, (0, 0, 1, 8));
+
+        bus.write_byte(src_base, 0b1010_0000);
+        bus.write_byte(mask_base, 0b1111_0000);
+        bus.write_byte(dst_base, 0);
+
+        let src_rect = bus.alloc(8);
+        let mask_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 4);
+        write_rect(&mut bus, mask_rect, 0, 0, 1, 4);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 8);
+
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, mask_rect);
+        bus.write_long(TEST_SP + 8, src_rect);
+        bus.write_long(TEST_SP + 12, dst_bits);
+        bus.write_long(TEST_SP + 16, mask_bits);
+        bus.write_long(TEST_SP + 20, src_bits);
+
+        let result = d.dispatch_quickdraw(true, 0x017, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 24);
+        assert_eq!(
+            bus.read_byte(dst_base),
+            0b1100_1100,
+            "4 source pixels should scale to 8 destination pixels through the mask"
         );
     }
 
