@@ -144,6 +144,9 @@ impl super::TrapDispatcher {
             }
 
             if !stopped && Self::event_matches_mask(event_mask, event.what) {
+                if event.what == 6 {
+                    self.remember_flushed_update_event(&event);
+                }
                 continue;
             }
 
@@ -152,6 +155,86 @@ impl super::TrapDispatcher {
 
         self.event_queue = remaining;
         result
+    }
+
+    fn remember_flushed_update_event(&mut self, event: &super::dispatch::QueuedEvent) {
+        if event.what != 6 || event.message == 0 {
+            return;
+        }
+        if self
+            .flushed_update_events
+            .iter()
+            .any(|queued| queued.what == 6 && queued.message == event.message)
+        {
+            return;
+        }
+        if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+            eprintln!(
+                "[INVAL] remember_flushed_update_event window=${:08X} tick={}",
+                event.message, self.tick_count
+            );
+        }
+        self.flushed_update_events.push_back(event.clone());
+    }
+
+    fn peek_flushed_update_event(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        if !Self::event_matches_mask(event_mask, 6) {
+            return None;
+        }
+
+        while let Some(event) = self.flushed_update_events.front().cloned() {
+            if self.window_visible(bus, event.message)
+                && self.window_has_pending_update(bus, event.message)
+            {
+                return Some(event);
+            }
+            if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                eprintln!(
+                    "[INVAL] drop_stale_flushed_update_event window=${:08X} tick={}",
+                    event.message, self.tick_count
+                );
+            }
+            self.flushed_update_events.pop_front();
+        }
+
+        None
+    }
+
+    fn dequeue_flushed_update_event(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        if !Self::event_matches_mask(event_mask, 6) {
+            return None;
+        }
+
+        while let Some(event) = self.flushed_update_events.front().cloned() {
+            if self.window_visible(bus, event.message)
+                && self.window_has_pending_update(bus, event.message)
+            {
+                if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                    eprintln!(
+                        "[INVAL] dequeue_flushed_update_event window=${:08X} tick={}",
+                        event.message, self.tick_count
+                    );
+                }
+                return self.flushed_update_events.pop_front();
+            }
+            if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                eprintln!(
+                    "[INVAL] drop_stale_flushed_update_event window=${:08X} tick={}",
+                    event.message, self.tick_count
+                );
+            }
+            self.flushed_update_events.pop_front();
+        }
+
+        None
     }
 
     fn enqueue_open_application_event_if_needed(&mut self, event_mask: u16) {
@@ -179,6 +262,7 @@ impl super::TrapDispatcher {
             .iter()
             .find(|event| Self::event_matches_mask(event_mask, event.what))
             .cloned()
+            .or_else(|| self.peek_flushed_update_event(bus, event_mask))
             .or_else(|| self.pending_update_event(bus, event_mask))
     }
 
@@ -245,20 +329,32 @@ impl super::TrapDispatcher {
             );
         }
 
+        if let Some(event) = self.dequeue_flushed_update_event(bus, event_mask) {
+            if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
+                eprintln!(
+                    "[INPUT] dequeue flushed update what={} message=${:08X} mask=${:04X}",
+                    event.what, event.message, event_mask
+                );
+            }
+            return (
+                event.what,
+                event.message,
+                event.where_v,
+                event.where_h,
+                event.modifiers,
+                true,
+            );
+        }
+
         // Update events flow exclusively through `event_queue` (pushed by
         // `queue_window_update_event` on InvalRect/InvalRgn/ShowWindow,
-        // cleared by BeginUpdate). Previously we also synthesized update
-        // events from any window whose update region was non-empty — that
-        // re-fired the same event forever for any window the app didn't
-        // BeginUpdate-acknowledge. POD MARS Master shows MARS (visible=0
-        // in WIND 256) and then ShowWindows it before pushing the
-        // Registration dialog on top; POD's modal-dialog event loop only
-        // ever calls BeginUpdate on the dialog, so the MARS update region
-        // stayed non-empty and the synthetic path streamed ~10K updateEvts
-        // for MARS into the dialog loop, locking POD at <1 MIPS while the
-        // scripted harness timed out. With the synthetic path removed, the
-        // queued MARS updateEvt is delivered once, POD's loop ignores it,
-        // and the loop runs at full speed.
+        // cleared by BeginUpdate). FlushEvents can remove such a queued
+        // update while the Window Manager update region remains dirty, so
+        // those dropped entries are recoverable once through
+        // `flushed_update_events`. We intentionally do not synthesize from
+        // arbitrary dirty update regions here: POD MARS Master's modal loop
+        // ignored a visible MARS update, leaving the region dirty and causing
+        // the old synthetic path to stream updateEvts indefinitely.
         (
             0,
             0,

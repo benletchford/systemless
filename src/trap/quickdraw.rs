@@ -7757,6 +7757,14 @@ impl super::TrapDispatcher {
                     }
 
                     let port_mode = (port_base, port_rb, port_w, port_h, port_ps);
+                    let dst_clip = Self::drawpicture_current_port_pixel_clip(
+                        bus,
+                        port,
+                        port_bounds_top,
+                        port_bounds_left,
+                        port_w,
+                        port_h,
+                    );
 
                     let picture_info = self.loaded_handles.get(&pic_handle).copied();
                     if trace_title_diag_enabled() && self.tick_count >= 80 && self.tick_count <= 110
@@ -7845,6 +7853,7 @@ impl super::TrapDispatcher {
                         port_mode,
                         draw_port_clut,
                         device_ct_seed,
+                        dst_clip,
                     );
 
                     if trace_palette_enabled() {
@@ -7919,6 +7928,7 @@ impl super::TrapDispatcher {
                                         port_mode,
                                         &self.device_clut,
                                         device_ct_seed,
+                                        dst_clip,
                                     );
                                     if trace_palette_enabled() {
                                         eprintln!(
@@ -7972,6 +7982,7 @@ impl super::TrapDispatcher {
                                         port_mode,
                                         &raw_pict_array,
                                         device_ct_seed,
+                                        dst_clip,
                                     );
                                     if trace_palette_enabled() {
                                         eprintln!(
@@ -8022,6 +8033,7 @@ impl super::TrapDispatcher {
                                         port_mode,
                                         &pict_clut_array,
                                         device_ct_seed,
+                                        dst_clip,
                                     );
                                     if trace_palette_enabled() {
                                         eprintln!(
@@ -17910,6 +17922,42 @@ impl super::TrapDispatcher {
         }
 
         true
+    }
+
+    fn drawpicture_current_port_pixel_clip(
+        bus: &MacMemoryBus,
+        port: u32,
+        bounds_top: i16,
+        bounds_left: i16,
+        port_w: u16,
+        port_h: u16,
+    ) -> Option<super::pict::DstClipRect> {
+        if port == 0 {
+            return None;
+        }
+
+        let mut clip_top = 0i32;
+        let mut clip_left = 0i32;
+        let mut clip_bottom = i32::from(port_h);
+        let mut clip_right = i32::from(port_w);
+
+        for region_offset in [24u32, 28u32] {
+            let rgn_handle = bus.read_long(port.wrapping_add(region_offset));
+            if rgn_handle == 0 {
+                continue;
+            }
+            let Some((rgn_top, rgn_left, rgn_bottom, rgn_right)) =
+                Self::region_bbox(bus, rgn_handle)
+            else {
+                return Some((0, 0, 0, 0));
+            };
+            clip_top = clip_top.max(i32::from(rgn_top) - i32::from(bounds_top));
+            clip_left = clip_left.max(i32::from(rgn_left) - i32::from(bounds_left));
+            clip_bottom = clip_bottom.min(i32::from(rgn_bottom) - i32::from(bounds_top));
+            clip_right = clip_right.min(i32::from(rgn_right) - i32::from(bounds_left));
+        }
+
+        Some((clip_top, clip_left, clip_bottom, clip_right))
     }
 
     fn ensure_region_capacity(bus: &mut MacMemoryBus, rgn_handle: u32, size: u32) -> Option<u32> {
@@ -31576,6 +31624,7 @@ mod tests {
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
+            None,
         );
         assert!(rendered);
 
@@ -31688,6 +31737,59 @@ mod tests {
     }
 
     #[test]
+    fn drawpicture_clips_partially_intersecting_rect_to_current_port_clip_region() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let a5 = cpu.read_reg(Register::A5);
+        let qd_globals = bus.read_long(a5);
+        let port_ptr = bus.read_long(qd_globals);
+
+        let row_bytes = 1u32; // 8 one-bit pixels per row.
+        let screen_base = bus.alloc(row_bytes * 8);
+        bus.fill_zeros(screen_base, row_bytes * 8);
+        bus.write_long(port_ptr + 2, screen_base);
+        bus.write_word(port_ptr + 6, row_bytes as u16);
+        write_rect(&mut bus, port_ptr + 8, 0, 0, 8, 8);
+        write_rect(&mut bus, port_ptr + 16, 0, 0, 8, 8);
+
+        let vis_rgn = bus.read_long(port_ptr + 24);
+        let clip_rgn = bus.read_long(port_ptr + 28);
+        let vis_rgn_ptr = bus.read_long(vis_rgn);
+        let clip_rgn_ptr = bus.read_long(clip_rgn);
+        write_rect(&mut bus, vis_rgn_ptr + 2, 0, 0, 8, 8);
+        write_rect(&mut bus, clip_rgn_ptr + 2, 1, 1, 3, 3);
+
+        let pic = bus.alloc(32);
+        write_v1_paintrect_picture(&mut bus, pic, (0, 0, 4, 4), (0, 0, 4, 4));
+        let pic_handle = bus.alloc(4);
+        bus.write_long(pic_handle, pic);
+
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, dst_rect, 0, 0, 4, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, pic_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x0F6, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_byte(screen_base),
+            0,
+            "DrawPicture must leave pixels above/left of clipRgn untouched"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 2 * row_bytes) & 0b0010_0000,
+            0b0010_0000,
+            "DrawPicture must still render pixels inside the clipRgn"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 4 * row_bytes),
+            0,
+            "DrawPicture must leave pixels below the clipRgn untouched"
+        );
+    }
+
+    #[test]
     fn drawpicture_writes_to_offscreen_gworld_base_pointer_not_base_handle_cell() {
         let (mut d, mut cpu, mut bus) = setup();
         let bounds_ptr = 0x360000u32;
@@ -31782,6 +31884,7 @@ mod tests {
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
+            None,
         );
         assert!(rendered);
 
@@ -31920,6 +32023,7 @@ mod tests {
             (screen_base, screen_row_bytes, 32, 1, 8),
             &device_clut,
             0,
+            None,
         );
 
         assert!(rendered);
@@ -32041,6 +32145,7 @@ mod tests {
             (screen_base, screen_row_bytes, 32, 1, 8),
             &device_clut,
             0,
+            None,
         );
 
         assert!(rendered);

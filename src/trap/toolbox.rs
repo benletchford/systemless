@@ -11614,6 +11614,89 @@ mod tests {
     }
 
     #[test]
+    fn get_next_event_delivers_visible_window_update_after_flushevents_drops_queue_entry() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        let bounds_rect_ptr = 0x300000u32;
+        bus.write_word(bounds_rect_ptr, 40);
+        bus.write_word(bounds_rect_ptr + 2, 40);
+        bus.write_word(bounds_rect_ptr + 4, 140);
+        bus.write_word(bounds_rect_ptr + 6, 220);
+
+        let new_window_sp = TEST_SP - 26;
+        cpu.write_reg(Register::A7, new_window_sp);
+        for i in 0..30u32 {
+            bus.write_byte(new_window_sp + i, 0);
+        }
+        bus.write_long(new_window_sp + 18, bounds_rect_ptr);
+        bus.write_byte(new_window_sp + 12, 0xFF); // visible = TRUE
+
+        let result = disp.dispatch_window(true, 0x113, &mut cpu, &mut bus);
+        assert!(result.is_some(), "NewWindow should be handled");
+        assert!(result.unwrap().is_ok(), "NewWindow should return");
+        let window_ptr = bus.read_long(TEST_SP);
+        assert_ne!(window_ptr, 0, "NewWindow should return a window");
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == window_ptr),
+            "visible NewWindow should queue an updateEvt"
+        );
+
+        cpu.write_reg(Register::D0, 0x0000_FFFF);
+        let flush = disp.dispatch_event(false, 0x32, &mut cpu, &mut bus);
+        assert!(flush.is_some(), "FlushEvents should be handled");
+        assert!(flush.unwrap().is_ok(), "FlushEvents should return");
+        assert!(
+            disp.event_queue.is_empty(),
+            "FlushEvents($FFFF, 0) should remove queued events"
+        );
+
+        let event_ptr = 0x200000u32;
+        let get_next_sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, get_next_sp);
+        bus.write_long(get_next_sp, event_ptr);
+        bus.write_word(get_next_sp + 4, 0xFFFF);
+        bus.write_word(get_next_sp + 6, 0);
+
+        let event = disp.dispatch_toolbox(true, 0x170, &mut cpu, &mut bus);
+        assert!(event.is_some(), "GetNextEvent should be handled");
+        assert!(event.unwrap().is_ok(), "GetNextEvent should return");
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 2);
+        assert_eq!(
+            bus.read_word(get_next_sp + 6),
+            0xFFFF,
+            "GetNextEvent should report the pending update event"
+        );
+        assert_eq!(
+            bus.read_word(event_ptr),
+            6,
+            "event.what should be updateEvt"
+        );
+        assert_eq!(
+            bus.read_long(event_ptr + 2),
+            window_ptr,
+            "event.message should carry the dirty WindowPtr"
+        );
+
+        let second_sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, second_sp);
+        bus.write_long(second_sp, event_ptr);
+        bus.write_word(second_sp + 4, 0xFFFF);
+        bus.write_word(second_sp + 6, 0xBEEF);
+
+        let second = disp.dispatch_toolbox(true, 0x170, &mut cpu, &mut bus);
+        assert!(second.is_some(), "second GetNextEvent should be handled");
+        assert!(second.unwrap().is_ok(), "second GetNextEvent should return");
+        assert_eq!(
+            bus.read_word(second_sp + 6),
+            0,
+            "flushed update recovery should be one-shot until a new update is queued"
+        );
+    }
+
+    #[test]
     fn slotmanager_sreadinfo_selector_uses_a0_spblock_d0_selector_and_returns_oserr_in_d0() {
         // Inside Macintosh: Devices (1994), pp. 2-61 to 2-62:
         // _SlotManager selector $0010 (SReadInfo) uses A0=SpBlockPtr and

@@ -2969,6 +2969,7 @@ impl super::TrapDispatcher {
                                 self.screen_mode,
                                 &self.device_clut,
                                 device_ct_seed,
+                                None,
                             );
                         }
                     }

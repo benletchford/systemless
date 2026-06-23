@@ -6,6 +6,8 @@
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 
+pub(crate) type DstClipRect = (i32, i32, i32, i32); // top, left, bottom, right in dst pixels
+
 use std::sync::OnceLock;
 static TRACE_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_PICT_PALETTE: OnceLock<bool> = OnceLock::new();
@@ -211,6 +213,7 @@ pub fn draw_picture(
     screen_mode: (u32, u32, u16, u16, u16), // (base, row_bytes, width, height, pixel_size)
     device_clut: &[[u16; 3]; 256],
     device_ct_seed: u32,
+    dst_clip: Option<DstClipRect>,
 ) -> (bool, Option<Vec<[u16; 3]>>) {
     if pic_ptr == 0 {
         return (false, None);
@@ -476,6 +479,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     fg_idx,
@@ -503,6 +507,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     fg_idx,
@@ -533,6 +538,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     fg_idx,
@@ -562,6 +568,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     fg_idx,
@@ -594,6 +601,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     fg_idx,
                     bg_idx,
                     tx_mode,
@@ -634,6 +642,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     fg_idx,
                     bg_idx,
                     tx_mode,
@@ -674,6 +683,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     fg_idx,
                     bg_idx,
                     tx_mode,
@@ -716,6 +726,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     fg_idx,
                     bg_idx,
                     tx_mode,
@@ -771,6 +782,7 @@ pub fn draw_picture(
                     scale_y,
                     screen_mode,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     bk_pat,
@@ -797,6 +809,7 @@ pub fn draw_picture(
                         scale_y,
                         screen_mode,
                         clip_region.as_ref(),
+                        dst_clip,
                         pen_size,
                         pn_pat,
                         bk_pat,
@@ -830,6 +843,7 @@ pub fn draw_picture(
                     scale_y,
                     screen_mode,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     bk_pat,
@@ -855,6 +869,7 @@ pub fn draw_picture(
                         scale_y,
                         screen_mode,
                         clip_region.as_ref(),
+                        dst_clip,
                         pen_size,
                         pn_pat,
                         bk_pat,
@@ -885,6 +900,7 @@ pub fn draw_picture(
                     scale_y,
                     screen_mode,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     bk_pat,
@@ -910,6 +926,7 @@ pub fn draw_picture(
                         scale_y,
                         screen_mode,
                         clip_region.as_ref(),
+                        dst_clip,
                         pen_size,
                         pn_pat,
                         bk_pat,
@@ -945,6 +962,7 @@ pub fn draw_picture(
                     scale_y,
                     screen_mode,
                     clip_region.as_ref(),
+                    dst_clip,
                     Some((start_angle, arc_angle)),
                     pen_size,
                     pn_pat,
@@ -974,6 +992,7 @@ pub fn draw_picture(
                         scale_y,
                         screen_mode,
                         clip_region.as_ref(),
+                        dst_clip,
                         Some((start_angle, arc_angle)),
                         pen_size,
                         pn_pat,
@@ -1011,6 +1030,7 @@ pub fn draw_picture(
                     scale_x,
                     scale_y,
                     clip_region.as_ref(),
+                    dst_clip,
                     fg_idx,
                     bg_idx,
                 );
@@ -1044,6 +1064,7 @@ pub fn draw_picture(
                     scale_y,
                     screen_mode,
                     clip_region.as_ref(),
+                    dst_clip,
                     pen_size,
                     pn_pat,
                     bk_pat,
@@ -1070,6 +1091,7 @@ pub fn draw_picture(
                     fg_idx,
                     bg_idx,
                     clip_region.as_ref(),
+                    dst_clip,
                 );
             }
             0x98 | 0x99 => {
@@ -1090,6 +1112,7 @@ pub fn draw_picture(
                     fg_idx,
                     bg_idx,
                     clip_region.as_ref(),
+                    dst_clip,
                 );
                 pos = new_pos;
                 if let Some(ct) = clut16 {
@@ -1128,6 +1151,7 @@ pub fn draw_picture(
                     screen_mode,
                     device_clut,
                     clip_region.as_ref(),
+                    dst_clip,
                 );
             }
             0xA0 => {
@@ -1518,6 +1542,41 @@ fn write_pixel(
     }
 }
 
+fn dst_clip_contains(clip: Option<DstClipRect>, x: i32, y: i32) -> bool {
+    match clip {
+        Some((top, left, bottom, right)) => y >= top && y < bottom && x >= left && x < right,
+        None => true,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_pixel_clipped(
+    bus: &mut MacMemoryBus,
+    screen_base: u32,
+    screen_rb: u32,
+    x: i32,
+    y: i32,
+    color_index: u8,
+    screen_w: i32,
+    screen_h: i32,
+    pixel_size: u16,
+    dst_clip: Option<DstClipRect>,
+) {
+    if dst_clip_contains(dst_clip, x, y) {
+        write_pixel(
+            bus,
+            screen_base,
+            screen_rb,
+            x,
+            y,
+            color_index,
+            screen_w,
+            screen_h,
+            pixel_size,
+        );
+    }
+}
+
 fn clut_black_white_indices(clut: &[[u16; 3]; 256]) -> (u8, u8) {
     let mut black_idx = 0u8;
     let mut black_luma = u64::MAX;
@@ -1607,6 +1666,7 @@ fn plot_dst_pixel(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
 ) {
     if let Some(rgn) = clip_region {
         let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
@@ -1617,7 +1677,7 @@ fn plot_dst_pixel(
             return;
         }
     }
-    write_pixel(
+    write_pixel_clipped(
         bus,
         screen_base,
         screen_rb,
@@ -1627,6 +1687,7 @@ fn plot_dst_pixel(
         screen_w,
         screen_h,
         pixel_size,
+        dst_clip,
     );
 }
 
@@ -1646,6 +1707,7 @@ fn fill_dst_rect(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     color_index: u8,
 ) {
     let (sb, srb, sw, sh, ps) = screen_mode;
@@ -1668,6 +1730,7 @@ fn fill_dst_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
             );
         }
     }
@@ -1691,6 +1754,7 @@ fn fill_dst_rect_pat(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     pattern: [u8; 8],
     on_color: u8,
     off_color: u8,
@@ -1712,6 +1776,7 @@ fn fill_dst_rect_pat(
             scale_x,
             scale_y,
             clip_region,
+            dst_clip,
             on_color,
         );
         return;
@@ -1731,6 +1796,7 @@ fn fill_dst_rect_pat(
             scale_x,
             scale_y,
             clip_region,
+            dst_clip,
             off_color,
         );
         return;
@@ -1758,6 +1824,7 @@ fn fill_dst_rect_pat(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
             );
         }
     }
@@ -1789,6 +1856,7 @@ fn draw_shape_rect(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
     bk_pat: [u8; 8],
@@ -1835,6 +1903,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 fg_idx,
             );
             fill_dst_rect(
@@ -1851,6 +1920,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 fg_idx,
             );
             fill_dst_rect(
@@ -1867,6 +1937,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 fg_idx,
             );
             fill_dst_rect(
@@ -1883,6 +1954,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 fg_idx,
             );
         }
@@ -1903,6 +1975,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 pn_pat,
                 fg_idx,
                 bg_idx,
@@ -1928,6 +2001,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 fill_pat,
                 fg_idx,
                 bg_idx,
@@ -1950,6 +2024,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 bk_pat,
                 bg_idx,
                 fg_idx,
@@ -1971,6 +2046,7 @@ fn draw_shape_rect(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
             );
         }
         _ => {}
@@ -1993,6 +2069,7 @@ fn invert_dst_rect(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
 ) {
     let (sb, srb, sw, sh, ps) = screen_mode;
     let sw = sw as i32;
@@ -2003,6 +2080,9 @@ fn invert_dst_rect(
         }
         for x in x1..x2 {
             if x < 0 || x >= sw {
+                continue;
+            }
+            if !dst_clip_contains(dst_clip, x, y) {
                 continue;
             }
             if let Some(rgn) = clip_region {
@@ -2050,6 +2130,7 @@ fn draw_shape_oval(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
     bk_pat: [u8; 8],
@@ -2072,6 +2153,7 @@ fn draw_shape_oval(
         scale_y,
         screen_mode,
         clip_region,
+        dst_clip,
         None,
         pen_size,
         pn_pat,
@@ -2103,6 +2185,7 @@ fn draw_shape_oval_or_arc(
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     arc_angles: Option<(i16, i16)>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
@@ -2244,6 +2327,9 @@ fn draw_shape_oval_or_arc(
                 if x < 0 || x >= sw || y < 0 || y >= sh {
                     continue;
                 }
+                if !dst_clip_contains(dst_clip, x, y) {
+                    continue;
+                }
                 if let Some(rgn) = clip_region {
                     let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
                     let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
@@ -2283,6 +2369,7 @@ fn draw_shape_oval_or_arc(
                     scale_x,
                     scale_y,
                     clip_region,
+                    dst_clip,
                 );
             }
         }
@@ -2314,6 +2401,7 @@ fn render_pict_polygon(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     fg_idx: u8,
     bg_idx: u8,
 ) {
@@ -2354,6 +2442,7 @@ fn render_pict_polygon(
                 scale_x,
                 scale_y,
                 clip_region,
+                dst_clip,
                 pen_size,
                 pn_pat,
                 fg_idx,
@@ -2455,7 +2544,7 @@ fn render_pict_polygon(
                         // paintPoly — pn_pat.
                         let bit_set = pn_pat[pat_row_idx] & pat_bit != 0;
                         let color = if bit_set { fg_idx } else { bg_idx };
-                        write_pixel(
+                        write_pixel_clipped(
                             bus,
                             screen_base,
                             screen_rb,
@@ -2465,13 +2554,14 @@ fn render_pict_polygon(
                             screen_w,
                             screen_h,
                             pixel_size,
+                            dst_clip,
                         );
                     }
                     4 => {
                         // fillPoly — fill_pat.
                         let bit_set = fill_pat[pat_row_idx] & pat_bit != 0;
                         let color = if bit_set { fg_idx } else { bg_idx };
-                        write_pixel(
+                        write_pixel_clipped(
                             bus,
                             screen_base,
                             screen_rb,
@@ -2481,6 +2571,7 @@ fn render_pict_polygon(
                             screen_w,
                             screen_h,
                             pixel_size,
+                            dst_clip,
                         );
                     }
                     2 => {
@@ -2489,7 +2580,7 @@ fn render_pict_polygon(
                         // bk_pat's set bits are the dominant erase color).
                         let bit_set = bk_pat[pat_row_idx] & pat_bit != 0;
                         let color = if bit_set { bg_idx } else { fg_idx };
-                        write_pixel(
+                        write_pixel_clipped(
                             bus,
                             screen_base,
                             screen_rb,
@@ -2499,11 +2590,15 @@ fn render_pict_polygon(
                             screen_w,
                             screen_h,
                             pixel_size,
+                            dst_clip,
                         );
                     }
                     3 => {
                         // invert: XOR pixel value
                         if dx < 0 || dx >= screen_w || dy < 0 || dy >= screen_h {
+                            continue;
+                        }
+                        if !dst_clip_contains(dst_clip, dx, dy) {
                             continue;
                         }
                         if pixel_size == 8 {
@@ -2547,6 +2642,7 @@ fn draw_picture_line(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     pen_size: (i16, i16),
     pn_pat: [u8; 8],
     fg_idx: u8,
@@ -2573,7 +2669,7 @@ fn draw_picture_line(
     let plot = |bus: &mut MacMemoryBus, cx: i32, cy: i32| {
         if stamp_w == 1 && stamp_h == 1 {
             if solid_black {
-                write_pixel(
+                write_pixel_clipped(
                     bus,
                     screen_base,
                     screen_rb,
@@ -2583,12 +2679,13 @@ fn draw_picture_line(
                     screen_w,
                     screen_h,
                     pixel_size,
+                    dst_clip,
                 );
             } else {
                 let row = pn_pat[cy.rem_euclid(8) as usize];
                 let bit = 1u8 << (7 - cx.rem_euclid(8));
                 if row & bit != 0 {
-                    write_pixel(
+                    write_pixel_clipped(
                         bus,
                         screen_base,
                         screen_rb,
@@ -2598,6 +2695,7 @@ fn draw_picture_line(
                         screen_w,
                         screen_h,
                         pixel_size,
+                        dst_clip,
                     );
                 }
             }
@@ -2607,7 +2705,7 @@ fn draw_picture_line(
                     let ox = cx + dx;
                     let oy = cy + dy;
                     if solid_black {
-                        write_pixel(
+                        write_pixel_clipped(
                             bus,
                             screen_base,
                             screen_rb,
@@ -2617,12 +2715,13 @@ fn draw_picture_line(
                             screen_w,
                             screen_h,
                             pixel_size,
+                            dst_clip,
                         );
                     } else {
                         let row = pn_pat[oy.rem_euclid(8) as usize];
                         let bit = 1u8 << (7 - ox.rem_euclid(8));
                         if row & bit != 0 {
-                            write_pixel(
+                            write_pixel_clipped(
                                 bus,
                                 screen_base,
                                 screen_rb,
@@ -2632,6 +2731,7 @@ fn draw_picture_line(
                                 screen_w,
                                 screen_h,
                                 pixel_size,
+                                dst_clip,
                             );
                         }
                     }
@@ -2693,6 +2793,7 @@ fn draw_picture_text(
     scale_x: f64,
     scale_y: f64,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
     fg_idx: u8,
     bg_idx: u8,
     tx_mode: i16,
@@ -2736,6 +2837,9 @@ fn draw_picture_text(
                     if x < 0 || x >= screen_w || y < 0 || y >= screen_h {
                         continue;
                     }
+                    if !dst_clip_contains(dst_clip, x, y) {
+                        continue;
+                    }
                     if pixel_size == 8 {
                         let addr = screen_base + (y as u32) * screen_rb + (x as u32);
                         match tx_mode & 0x3F {
@@ -2751,7 +2855,7 @@ fn draw_picture_text(
                             }
                         }
                     } else {
-                        write_pixel(
+                        write_pixel_clipped(
                             bus,
                             screen_base,
                             screen_rb,
@@ -2761,6 +2865,7 @@ fn draw_picture_text(
                             screen_w,
                             screen_h,
                             pixel_size,
+                            dst_clip,
                         );
                     }
                 }
@@ -3133,6 +3238,7 @@ fn parse_bits_rect(
     fg_idx: u8,
     bg_idx: u8,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
 ) -> u32 {
     // Read BitMap structure (not full PixMap)
     let row_bytes = bus.read_word(pos) & 0x3FFF;
@@ -3232,7 +3338,7 @@ fn parse_bits_rect(
                 }
                 let x = ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
                 let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32 + dst_top as i32;
-                write_pixel(
+                write_pixel_clipped(
                     bus,
                     screen_base,
                     screen_rb,
@@ -3242,6 +3348,7 @@ fn parse_bits_rect(
                     screen_w,
                     screen_h,
                     scrn_ps,
+                    dst_clip,
                 );
             }
         }
@@ -3267,6 +3374,7 @@ fn parse_pack_bits_rect(
     fg_idx: u8,
     bg_idx: u8,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
 ) -> (u32, Option<Vec<[u16; 3]>>) {
     // In PICT data, PackBitsRect starts with rowBytes directly (no baseAddr)
     // Check if this is a PixMap (row_bytes high bit set) or BitMap
@@ -3460,6 +3568,7 @@ fn parse_pack_bits_rect(
                 fg_idx,
                 bg_idx,
                 clip_region,
+                dst_clip,
             );
         }
     } else {
@@ -3498,6 +3607,7 @@ fn parse_pack_bits_rect(
                 fg_idx,
                 bg_idx,
                 clip_region,
+                dst_clip,
             );
         }
     }
@@ -3545,6 +3655,7 @@ fn blit_row(
     fg_idx: u8,
     bg_idx: u8,
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
 ) {
     let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
     let src_y = i32::from(pm.bounds_top) + row as i32;
@@ -3580,7 +3691,7 @@ fn blit_row(
                     }
                     let x =
                         ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
-                    write_pixel(
+                    write_pixel_clipped(
                         bus,
                         screen_base,
                         screen_rb,
@@ -3590,6 +3701,7 @@ fn blit_row(
                         screen_w,
                         screen_h,
                         scrn_ps,
+                        dst_clip,
                     );
                 }
             }
@@ -3626,7 +3738,7 @@ fn blit_row(
                     ) else {
                         continue;
                     };
-                    write_pixel(
+                    write_pixel_clipped(
                         bus,
                         screen_base,
                         screen_rb,
@@ -3636,6 +3748,7 @@ fn blit_row(
                         screen_w,
                         screen_h,
                         scrn_ps,
+                        dst_clip,
                     );
                 }
             }
@@ -3672,7 +3785,7 @@ fn blit_row(
                     ) else {
                         continue;
                     };
-                    write_pixel(
+                    write_pixel_clipped(
                         bus,
                         screen_base,
                         screen_rb,
@@ -3682,6 +3795,7 @@ fn blit_row(
                         screen_w,
                         screen_h,
                         scrn_ps,
+                        dst_clip,
                     );
                 }
             }
@@ -3741,7 +3855,7 @@ fn blit_row(
                             }
                         }
                     }
-                    write_pixel(
+                    write_pixel_clipped(
                         bus,
                         screen_base,
                         screen_rb,
@@ -3751,6 +3865,7 @@ fn blit_row(
                         screen_w,
                         screen_h,
                         scrn_ps,
+                        dst_clip,
                     );
                 }
             }
@@ -3780,7 +3895,7 @@ fn blit_row(
                     }
                     let x =
                         ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
-                    write_pixel(
+                    write_pixel_clipped(
                         bus,
                         screen_base,
                         screen_rb,
@@ -3790,6 +3905,7 @@ fn blit_row(
                         screen_w,
                         screen_h,
                         scrn_ps,
+                        dst_clip,
                     );
                 }
             }
@@ -4030,6 +4146,7 @@ fn parse_direct_bits_rect(
     screen_mode: (u32, u32, u16, u16, u16),
     device_clut: &[[u16; 3]; 256],
     clip_region: Option<&PictureRegion>,
+    dst_clip: Option<DstClipRect>,
 ) -> u32 {
     // DirectBitsRect has PixMap WITH baseAddr prefix (usually 0x000000FF)
     let (new_pos, pm) = read_pixmap_with_base(bus, pos);
@@ -4164,7 +4281,7 @@ fn parse_direct_bits_rect(
                             + dst_left as i32;
                         let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
                             + dst_top as i32;
-                        write_pixel(
+                        write_pixel_clipped(
                             bus,
                             screen_base,
                             screen_rb,
@@ -4174,6 +4291,7 @@ fn parse_direct_bits_rect(
                             screen_w,
                             screen_h,
                             scrn_ps,
+                            dst_clip,
                         );
                     }
                 }
@@ -4213,7 +4331,7 @@ fn parse_direct_bits_rect(
                             + dst_left as i32;
                         let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
                             + dst_top as i32;
-                        write_pixel(
+                        write_pixel_clipped(
                             bus,
                             screen_base,
                             screen_rb,
@@ -4223,6 +4341,7 @@ fn parse_direct_bits_rect(
                             screen_w,
                             screen_h,
                             scrn_ps,
+                            dst_clip,
                         );
                     }
                 }
@@ -4417,6 +4536,7 @@ mod tests {
             (screen_base, screen_row_bytes, 8, 1, 8),
             &device_clut,
             8,
+            None,
         );
 
         assert!(ok);
@@ -4478,6 +4598,7 @@ mod tests {
             (screen_base, 8, 8, 1, 8),
             &clut,
             0,
+            None,
         );
 
         assert!(ok);
@@ -4703,6 +4824,7 @@ mod tests {
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
+            None,
         );
 
         // A representative interior pixel must be fg_idx (255 = black).
@@ -4777,6 +4899,7 @@ mod tests {
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
+            None,
         );
 
         assert!(ok, "v2 OpColor should be skipped, not stop the PICT stream");
@@ -4851,6 +4974,7 @@ mod tests {
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
+            None,
         );
 
         // Interior columns: sample two adjacent rows. With the stripe
@@ -4931,6 +5055,7 @@ mod tests {
             (screen_base, row_bytes, screen_w, screen_h, 8),
             &clut,
             0,
+            None,
         );
 
         // Sample a vertical column through the oval's interior; expect

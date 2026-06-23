@@ -1053,6 +1053,10 @@ pub struct TrapDispatcher {
     /// mutates that record in place instead of allocating the first one on
     /// demand.
     pub(crate) window_aux_records: HashMap<u32, u32>,
+    /// Saved framebuffer pixels under transient/non-document windows.
+    /// Used to emulate Window Manager save-under behavior for dialog-like
+    /// windows created through the Window Manager rather than Dialog Manager.
+    pub(crate) window_saved_under_pixels: HashMap<u32, (i16, i16, i16, i16, Vec<u8>)>,
     /// Aux-control state keyed by ControlHandle. On System 7.5.3 in 32-bit
     /// mode, each control has a stable AuxCtlRec even before custom colors are
     /// installed, so HLE GetAuxCtl currently treats aux-record presence as the
@@ -1153,6 +1157,9 @@ pub struct TrapDispatcher {
     pub debug_scroll_rect_last_is_color: bool,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
     pub(crate) event_queue: VecDeque<QueuedEvent>,
+    /// One-shot update events recovered after FlushEvents drops queue entries
+    /// while the Window Manager update region remains dirty.
+    pub(crate) flushed_update_events: VecDeque<QueuedEvent>,
     /// System event mask used by PostEvent/PPostEvent filtering.
     /// Inside Macintosh Volume II, II-70.
     pub(crate) system_event_mask: u16,
@@ -2158,6 +2165,7 @@ impl TrapDispatcher {
             window_proc_id: 0,
             window_proc_ids: HashMap::new(),
             window_aux_records: HashMap::new(),
+            window_saved_under_pixels: HashMap::new(),
             control_aux_records: HashMap::new(),
             control_aux_head: 0,
             go_away_flag: false,
@@ -2212,6 +2220,7 @@ impl TrapDispatcher {
             debug_scroll_rect_last_port_bounds_top_left: (0, 0),
             debug_scroll_rect_last_is_color: false,
             event_queue: VecDeque::new(),
+            flushed_update_events: VecDeque::new(),
             system_event_mask: 0xFFEF, // everyEvent - keyUpMask
             sent_open_app_event: false,
             current_trap_word: 0,
