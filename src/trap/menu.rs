@@ -599,39 +599,51 @@ impl super::TrapDispatcher {
             // Reads a menu from a MENU resource and returns a MenuHandle.
             // FUNCTION GetMenu(resourceID: INTEGER): MenuHandle;
             // Inside Macintosh Volume I, I-352
-            // GetMenu ($A9BF): Reads MENU resource, copies to allocated block;
+            // GetMenu ($A9BF): Reads MENU resource via the Resource Manager;
             // returns NIL when the MENU resource cannot be read per IM:I I-352.
             (true, 0x1BF) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
-                let handle = if let Some((_, res_ptr)) = self.find_resource_any(*b"MENU", menu_id) {
-                    let menu_ptr = bus.alloc(256);
-                    let handle = bus.alloc(4);
-                    bus.write_long(handle, menu_ptr);
-
-                    // Copy full MENU resource data to the allocated block.
-                    // MENU format: menuID(2), menuWidth(2), menuHeight(2),
-                    // menuProc(4), enableFlags(4), title(pstring),
-                    // then items: [text(pstring), icon(1), key(1), mark(1), style(1)]...
-                    // terminated by a 0-length item string.
-                    let res_size = menu_resource_size(bus, res_ptr);
-                    for i in 0..res_size.min(256) {
-                        bus.write_byte(menu_ptr + i as u32, bus.read_byte(res_ptr + i as u32));
+                let handle = match self.find_resource_any(*b"MENU", menu_id) {
+                    Some((refnum, res_ptr)) => {
+                        let handle = self.get_or_create_resource_handle_in_file(
+                            bus, *b"MENU", menu_id, res_ptr, refnum,
+                        );
+                        if handle != 0 {
+                            let mut menu_ptr = bus.read_long(handle);
+                            if menu_ptr == 0 {
+                                menu_ptr = res_ptr;
+                                bus.write_long(handle, menu_ptr);
+                                self.ptr_to_handle.insert(menu_ptr, handle);
+                            }
+                            if menu_ptr != 0 {
+                                if bus.get_alloc_size(menu_ptr).unwrap_or(0) < 256 {
+                                    let resized =
+                                        self.resize_resource_allocation(bus, handle, menu_ptr, 256);
+                                    if resized != 0 {
+                                        menu_ptr = resized;
+                                    }
+                                }
+                                let mut parsed = parse_menu_resource(bus, menu_ptr, handle);
+                                if let Some(existing) =
+                                    self.menus.iter_mut().find(|m| m.handle == handle)
+                                {
+                                    parsed.in_menu_bar = existing.in_menu_bar;
+                                    *existing = parsed;
+                                } else {
+                                    self.menus.push(parsed);
+                                }
+                            }
+                        }
+                        bus.write_word(0x0A60, 0);
+                        cpu.write_reg(Register::D0, 0);
+                        handle
                     }
-
-                    // Keep a non-menu-bar copy so AppendMenu can mutate this
-                    // handle before InsertMenu installs it into the menu list.
-                    let parsed = parse_menu_resource(bus, menu_ptr, handle);
-                    if !self.menus.iter().any(|m| m.handle == handle) {
-                        self.menus.push(parsed);
+                    None => {
+                        bus.write_word(0x0A60, (-192i16) as u16);
+                        cpu.write_reg(Register::D0, -192i32 as u32);
+                        0
                     }
-                    bus.write_word(0x0A60, 0);
-                    cpu.write_reg(Register::D0, 0);
-                    handle
-                } else {
-                    bus.write_word(0x0A60, (-192i16) as u16);
-                    cpu.write_reg(Register::D0, -192i32 as u32);
-                    0
                 };
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
@@ -4335,6 +4347,87 @@ mod tests {
             bus.read_word(0x0A60),
             0,
             "GetMenu hit must clear stale resource errors"
+        );
+    }
+
+    #[test]
+    fn getmenu_returns_resource_backed_handle_reused_until_release() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let menu_ptr = seed_menu_resource(&mut bus, 128, "Game");
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([((*b"MENU", 128), menu_ptr)]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        bus.write_word(TEST_SP, 128);
+        let first = disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus);
+        assert!(first.is_some(), "GetMenu should be handled");
+        assert!(first.unwrap().is_ok(), "GetMenu should succeed");
+        let first_handle = bus.read_long(cpu.read_reg(Register::A7));
+        assert_ne!(first_handle, 0, "GetMenu should return a handle on hit");
+        assert_eq!(
+            disp.loaded_handles.get(&first_handle).copied(),
+            Some((bus.read_long(first_handle), *b"MENU", 128)),
+            "GetMenu must return a Resource Manager-backed MENU handle"
+        );
+        assert_eq!(
+            disp.resource_handle_files.get(&first_handle).copied(),
+            Some(0),
+            "GetMenu-backed MENU handle should retain its resource-file owner"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 128);
+        let second = disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus);
+        assert!(second.is_some(), "second GetMenu should be handled");
+        assert!(second.unwrap().is_ok(), "second GetMenu should succeed");
+        assert_eq!(
+            bus.read_long(cpu.read_reg(Register::A7)),
+            first_handle,
+            "repeated GetMenu should reuse the loaded MENU resource handle"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, first_handle);
+        let release = disp.dispatch_resource(true, 0x1A3, &mut cpu, &mut bus);
+        assert!(release.is_some(), "ReleaseResource should be handled");
+        assert!(release.unwrap().is_ok(), "ReleaseResource should succeed");
+        assert_eq!(
+            bus.read_long(first_handle),
+            0,
+            "ReleaseResource should nil the released menu handle"
+        );
+        assert!(
+            !disp.loaded_handles.contains_key(&first_handle),
+            "ReleaseResource should invalidate the old MENU handle identity"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 128);
+        let third = disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus);
+        assert!(third.is_some(), "third GetMenu should be handled");
+        assert!(third.unwrap().is_ok(), "third GetMenu should succeed");
+        let third_handle = bus.read_long(cpu.read_reg(Register::A7));
+        assert_ne!(third_handle, 0, "GetMenu after release should reload");
+        assert_ne!(
+            third_handle, first_handle,
+            "GetMenu after ReleaseResource should allocate a fresh handle"
+        );
+        assert_eq!(
+            disp.resource_handle_files.get(&third_handle).copied(),
+            Some(0),
+            "reloaded MENU handle should be resource-backed"
         );
     }
 
