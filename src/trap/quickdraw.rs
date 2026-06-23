@@ -18489,6 +18489,38 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn set_entries_request_in_range(
+        bus: &MacMemoryBus,
+        table_ptr: u32,
+        start: i16,
+        count: i16,
+    ) -> bool {
+        // Systemless currently models an 8-bit indexed screen CLUT. Per
+        // Inside Macintosh Volume V, V-143, any out-of-range SetEntries
+        // request fails atomically: nothing in the device table changes.
+        if count < 0 || count > 255 {
+            return false;
+        }
+
+        if start >= 0 {
+            let end = start as i32 + count as i32;
+            return end <= 255;
+        }
+
+        if start != -1 {
+            return false;
+        }
+
+        for i in 0..=(count as u32) {
+            let value = bus.read_word(table_ptr + i * 8) as i16;
+            if !(0..=255).contains(&value) {
+                return false;
+            }
+        }
+
+        true
+    }
+
     /// Apply CLUT updates from a ColorSpec array (hardware only).
     /// Used by low-level video CLUT APIs (e.g. _Control cscSetEntries),
     /// which bypass the Color Manager and write directly to the video
@@ -18504,6 +18536,9 @@ impl super::TrapDispatcher {
         start: i16,
         count: i16,
     ) -> Option<u32> {
+        if !Self::set_entries_request_in_range(bus, table_ptr, start, count) {
+            return None;
+        }
         if ctab_handle == 0 {
             return None;
         }
@@ -18543,6 +18578,9 @@ impl super::TrapDispatcher {
         start: i16,
         count: i16,
     ) {
+        if !Self::set_entries_request_in_range(bus, table_ptr, start, count) {
+            return;
+        }
         let num_entries = (count + 1) as u32;
         // Low-level SetEntries always targets the screen's hardware CLUT
         // and GDevice ColorTable, regardless of the current GrafPort.
@@ -18689,6 +18727,9 @@ impl super::TrapDispatcher {
         count: i16,
         strict_palette: bool,
     ) {
+        if !Self::set_entries_request_in_range(bus, table_ptr, start, count) {
+            return;
+        }
         let incoming_default_palette = start == 0
             && count == 255
             && Self::table_looks_like_scaled_canonical_system_8bpp(bus, table_ptr);
@@ -33249,6 +33290,47 @@ mod tests {
             assert_eq!(cpu.read_reg(Register::A7), sp);
         }
         assert_eq!(cpu.read_reg(Register::A7), pre);
+    }
+
+    #[test]
+    fn setentries_oversized_sequence_does_not_corrupt_device_clut() {
+        // Inside Macintosh Volume V (1986), p. V-143:
+        // "If any of the requested entries are protected or out of range, a
+        // protection error is returned, and nothing happens."
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let before_device = d.device_clut;
+        let ctab_handle = d.current_gdevice_ctab_handle(&bus);
+        let ctab_ptr = bus.read_long(ctab_handle);
+        let before_ctab = bus.read_bytes(ctab_ptr, 8 + 256 * 8);
+
+        let table_ptr = 0x310000u32;
+        for i in 0..257u32 {
+            let entry = table_ptr + i * 8;
+            bus.write_word(entry, i as u16);
+            bus.write_word(entry + 2, 0x1111);
+            bus.write_word(entry + 4, 0x2222);
+            bus.write_word(entry + 6, 0x3333);
+        }
+
+        let sp = cpu.read_reg(Register::A7);
+        bus.write_long(sp - 8, table_ptr);
+        bus.write_word(sp - 4, 256); // requests index 256 in sequence mode
+        bus.write_word(sp - 2, 0);
+        cpu.write_reg(Register::A7, sp - 8);
+
+        let result = d.dispatch_quickdraw(true, 0x23F, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(
+            d.device_clut, before_device,
+            "out-of-range SetEntries must not change the hardware CLUT"
+        );
+        assert_eq!(
+            bus.read_bytes(ctab_ptr, 8 + 256 * 8),
+            before_ctab,
+            "out-of-range SetEntries must not change the GDevice color table"
+        );
     }
 
     #[test]
