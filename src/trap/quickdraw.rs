@@ -8641,6 +8641,10 @@ impl super::TrapDispatcher {
 
                 // Read mask BitMap fields from iconMask
                 let mask_row_bytes = (bus.read_word(icon_ptr + 54) & 0x3FFF) as u32;
+                let mask_top = bus.read_word(icon_ptr + 56) as i16;
+                let mask_left = bus.read_word(icon_ptr + 58) as i16;
+                let mask_bottom = bus.read_word(icon_ptr + 60) as i16;
+                let mask_right = bus.read_word(icon_ptr + 62) as i16;
                 // Read bmap BitMap rowBytes from iconBMap (offset 64+4)
                 let bmap_row_bytes = (bus.read_word(icon_ptr + 68) & 0x3FFF) as u32;
 
@@ -8697,33 +8701,57 @@ impl super::TrapDispatcher {
 
                 let real_port_version = bus.read_word(port + 6);
                 let legacy_port_version = bus.read_word(port + 4);
-                let (dst_base, dst_row_bytes, dst_bounds_top, dst_bounds_left) =
-                    if (real_port_version & 0xC000) == 0xC000 {
-                        let pm_handle = bus.read_long(port + 2);
-                        let pm_ptr = bus.read_long(pm_handle);
-                        (
-                            Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
-                            (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
-                            bus.read_word(pm_ptr + 6) as i16,
-                            bus.read_word(pm_ptr + 8) as i16,
-                        )
-                    } else if (legacy_port_version & 0xC000) == 0xC000 {
-                        let pm_handle = bus.read_long(port);
-                        let pm_ptr = bus.read_long(pm_handle);
-                        (
-                            Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
-                            (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
-                            bus.read_word(pm_ptr + 6) as i16,
-                            bus.read_word(pm_ptr + 8) as i16,
-                        )
+                let (
+                    dst_base,
+                    dst_row_bytes,
+                    dst_bounds_top,
+                    dst_bounds_left,
+                    dst_pixel_size,
+                    dst_ctab_handle,
+                ) = if (real_port_version & 0xC000) == 0xC000 {
+                    let pm_handle = bus.read_long(port + 2);
+                    let pm_ptr = bus.read_long(pm_handle);
+                    (
+                        Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
+                        (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
+                        bus.read_word(pm_ptr + 6) as i16,
+                        bus.read_word(pm_ptr + 8) as i16,
+                        bus.read_word(pm_ptr + 32) as u32,
+                        bus.read_long(pm_ptr + 42),
+                    )
+                } else if (legacy_port_version & 0xC000) == 0xC000 {
+                    let pm_handle = bus.read_long(port);
+                    let pm_ptr = bus.read_long(pm_handle);
+                    (
+                        Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
+                        (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
+                        bus.read_word(pm_ptr + 6) as i16,
+                        bus.read_word(pm_ptr + 8) as i16,
+                        bus.read_word(pm_ptr + 32) as u32,
+                        bus.read_long(pm_ptr + 42),
+                    )
+                } else {
+                    let base = bus.read_long(port);
+                    let (screen_base, _, _, _, screen_ps) = self.screen_mode;
+                    let pixel_size = if base == screen_base && screen_ps > 1 {
+                        u32::from(screen_ps)
                     } else {
-                        (
-                            bus.read_long(port),
-                            (bus.read_word(port + 4) & 0x3FFF) as u32,
-                            bus.read_word(port + 6) as i16,
-                            bus.read_word(port + 8) as i16,
-                        )
+                        1
                     };
+                    (
+                        base,
+                        (bus.read_word(port + 4) & 0x3FFF) as u32,
+                        bus.read_word(port + 6) as i16,
+                        bus.read_word(port + 8) as i16,
+                        pixel_size,
+                        0,
+                    )
+                };
+                let dst_pixel_size = if dst_pixel_size == 0 {
+                    1
+                } else {
+                    dst_pixel_size
+                };
 
                 if trace_menu_redraw_enabled() {
                     let abs_top = dst_top + dst_bounds_top;
@@ -8808,47 +8836,119 @@ impl super::TrapDispatcher {
                     ];
                 }
 
-                // Draw: for each destination pixel, map to source, check mask, copy pixel
-                let bytes_per_pixel = if pixel_size >= 8 { pixel_size / 8 } else { 1 };
-                for dy in 0..dst_h {
-                    // Map destination row to source row (scale)
-                    let sy = (dy * icon_h / dst_h) as u32;
-                    let dst_y = (dst_top as i32 + dy - dst_bounds_top as i32) as u32;
-                    for dx in 0..dst_w {
-                        let sx = (dx * icon_w / dst_w) as u32;
-                        let dst_x = (dst_left as i32 + dx - dst_bounds_left as i32) as u32;
+                let dst_clut = if dst_ctab_handle != 0 {
+                    self.read_port_clut(bus, dst_ctab_handle)
+                } else {
+                    self.device_clut
+                };
 
-                        // Check mask bit
-                        let mask_byte_off = sy * mask_row_bytes + sx / 8;
-                        let mask_bit = 7 - (sx % 8);
-                        let mask_byte = bus.read_byte(mask_data_ptr + mask_byte_off);
-                        if (mask_byte & (1 << mask_bit)) == 0 {
-                            continue; // Masked out
+                for dst_y_local in dst_top..dst_bottom {
+                    let Some(sy) =
+                        Self::scale_coord(pm_top, pm_bottom, dst_top, dst_bottom, dst_y_local)
+                    else {
+                        continue;
+                    };
+                    for dst_x_local in dst_left..dst_right {
+                        let Some(sx) =
+                            Self::scale_coord(pm_left, pm_right, dst_left, dst_right, dst_x_local)
+                        else {
+                            continue;
+                        };
+                        let Some(mask_y) = Self::scale_coord(
+                            mask_top,
+                            mask_bottom,
+                            dst_top,
+                            dst_bottom,
+                            dst_y_local,
+                        ) else {
+                            continue;
+                        };
+                        let Some(mask_x) = Self::scale_coord(
+                            mask_left,
+                            mask_right,
+                            dst_left,
+                            dst_right,
+                            dst_x_local,
+                        ) else {
+                            continue;
+                        };
+                        let Some(mask_pixel) = Self::read_packed_bitmap_index(
+                            bus,
+                            mask_data_ptr,
+                            mask_row_bytes,
+                            1,
+                            mask_top,
+                            mask_left,
+                            mask_bottom,
+                            mask_right,
+                            mask_y as i16,
+                            mask_x as i16,
+                        ) else {
+                            continue;
+                        };
+                        if mask_pixel == 0 {
+                            continue;
                         }
 
-                        // Read source pixel
-                        if pixel_size >= 8 {
-                            let src_off = sy * pm_row_bytes + sx * bytes_per_pixel;
-                            let dst_off = dst_y * dst_row_bytes + dst_x * bytes_per_pixel;
-                            for b in 0..bytes_per_pixel {
-                                let pixel = bus.read_byte(icon_data_ptr + src_off + b);
-                                bus.write_byte(dst_base + dst_off + b, pixel);
+                        let dst_y = i32::from(dst_y_local) - i32::from(dst_bounds_top);
+                        let dst_x = i32::from(dst_x_local) - i32::from(dst_bounds_left);
+                        if dst_y < 0 || dst_x < 0 {
+                            continue;
+                        }
+                        let dst_y = dst_y as u32;
+                        let dst_x = dst_x as u32;
+
+                        match dst_pixel_size {
+                            8 => {
+                                let Some(src_index) = Self::read_packed_bitmap_index(
+                                    bus,
+                                    icon_data_ptr,
+                                    pm_row_bytes,
+                                    pixel_size,
+                                    pm_top,
+                                    pm_left,
+                                    pm_bottom,
+                                    pm_right,
+                                    sy as i16,
+                                    sx as i16,
+                                ) else {
+                                    continue;
+                                };
+                                let rgb = icon_clut
+                                    .get(src_index as usize)
+                                    .copied()
+                                    .unwrap_or(self.device_clut[src_index as usize]);
+                                let dst_index = super::pict::closest_clut_index(
+                                    rgb[0], rgb[1], rgb[2], &dst_clut,
+                                );
+                                bus.write_byte(dst_base + dst_y * dst_row_bytes + dst_x, dst_index);
                             }
-                        } else {
-                            // 1bpp icon data path
-                            let src_byte_off = sy * pm_row_bytes + sx / 8;
-                            let src_bit = 7 - (sx % 8);
-                            let src_byte = bus.read_byte(icon_data_ptr + src_byte_off);
-                            let is_set = (src_byte & (1 << src_bit)) != 0;
-                            let dst_byte_off = dst_y * dst_row_bytes + dst_x / 8;
-                            let dst_bit = 7 - (dst_x % 8);
-                            let mut dst_byte = bus.read_byte(dst_base + dst_byte_off);
-                            if is_set {
-                                dst_byte |= 1 << dst_bit;
-                            } else {
-                                dst_byte &= !(1 << dst_bit);
+                            1 => {
+                                let Some(src_index) = Self::read_packed_bitmap_index(
+                                    bus,
+                                    icon_data_ptr,
+                                    pm_row_bytes,
+                                    pixel_size,
+                                    pm_top,
+                                    pm_left,
+                                    pm_bottom,
+                                    pm_right,
+                                    sy as i16,
+                                    sx as i16,
+                                ) else {
+                                    continue;
+                                };
+                                let dst_byte_off = dst_y * dst_row_bytes + dst_x / 8;
+                                let dst_bit = 7 - (dst_x % 8);
+                                let mut dst_byte = bus.read_byte(dst_base + dst_byte_off);
+                                if src_index != 0 {
+                                    dst_byte |= 1 << dst_bit;
+                                } else {
+                                    dst_byte &= !(1 << dst_bit);
+                                }
+                                bus.write_byte(dst_base + dst_byte_off, dst_byte);
                             }
-                            bus.write_byte(dst_base + dst_byte_off, dst_byte);
+                            _ => {}
                         }
                     }
                 }
@@ -17903,6 +18003,50 @@ impl super::TrapDispatcher {
                 let byte = bus.read_byte(addr);
                 Some(if (byte & (1 << bit)) != 0 { 255 } else { 0 })
             }
+            _ => None,
+        }
+    }
+
+    fn read_packed_bitmap_index(
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        pixel_size: u32,
+        bounds_top: i16,
+        bounds_left: i16,
+        bounds_bottom: i16,
+        bounds_right: i16,
+        y: i16,
+        x: i16,
+    ) -> Option<u8> {
+        if base == 0
+            || row_bytes == 0
+            || y < bounds_top
+            || y >= bounds_bottom
+            || x < bounds_left
+            || x >= bounds_right
+        {
+            return None;
+        }
+        let row = (y - bounds_top) as u32;
+        let col = (x - bounds_left) as u32;
+        match pixel_size {
+            1 => {
+                let byte = bus.read_byte(base + row * row_bytes + col / 8);
+                let shift = 7 - (col % 8);
+                Some((byte >> shift) & 0x01)
+            }
+            2 => {
+                let byte = bus.read_byte(base + row * row_bytes + col / 4);
+                let shift = 6 - (col % 4) * 2;
+                Some((byte >> shift) & 0x03)
+            }
+            4 => {
+                let byte = bus.read_byte(base + row * row_bytes + col / 2);
+                let shift = 4 - (col % 2) * 4;
+                Some((byte >> shift) & 0x0F)
+            }
+            8 => Some(bus.read_byte(base + row * row_bytes + col)),
             _ => None,
         }
     }
@@ -28890,6 +29034,58 @@ mod tests {
         data
     }
 
+    fn make_test_cicn_resource_4bpp(pixel_bytes: [u8; 2], entries: &[[u16; 3]; 16]) -> Vec<u8> {
+        // Minimal 1-row, 4-pixel, 4bpp CIcon record payload:
+        // CIcon header (82 bytes) + 1-byte mask + 1-byte bmap +
+        // ColorTable (16 entries) + 2 bytes of packed pixel data.
+        let mut data = vec![0u8; 222];
+
+        // iconPMap (offset 0)
+        data[4] = 0x80;
+        data[5] = 0x02; // rowBytes = 2, PixMap flag set
+        data[10] = 0x00;
+        data[11] = 0x01; // bounds.bottom = 1
+        data[12] = 0x00;
+        data[13] = 0x04; // bounds.right = 4
+        data[32] = 0x00;
+        data[33] = 0x04; // pixelSize = 4
+
+        // iconMask BitMap (offset 50)
+        data[54] = 0x00;
+        data[55] = 0x01; // rowBytes
+        data[60] = 0x00;
+        data[61] = 0x01; // bounds.bottom = 1
+        data[62] = 0x00;
+        data[63] = 0x04; // bounds.right = 4
+
+        // iconBMap BitMap (offset 64)
+        data[68] = 0x00;
+        data[69] = 0x01; // rowBytes
+        data[74] = 0x00;
+        data[75] = 0x01; // bounds.bottom = 1
+        data[76] = 0x00;
+        data[77] = 0x04; // bounds.right = 4
+
+        data[82] = 0xF0; // mask: first four pixels opaque
+
+        // ColorTable header at offset 84:
+        // ctSeed(4), ctFlags(2), ctSize(2). ctSize = 15 => 16 entries.
+        data[90] = 0x00;
+        data[91] = 0x0F;
+        for (i, rgb) in entries.iter().enumerate() {
+            let entry = 92 + i * 8;
+            data[entry] = 0;
+            data[entry + 1] = i as u8;
+            data[entry + 2..entry + 4].copy_from_slice(&rgb[0].to_be_bytes());
+            data[entry + 4..entry + 6].copy_from_slice(&rgb[1].to_be_bytes());
+            data[entry + 6..entry + 8].copy_from_slice(&rgb[2].to_be_bytes());
+        }
+
+        data[220] = pixel_bytes[0];
+        data[221] = pixel_bytes[1];
+        data
+    }
+
     #[test]
     fn getcicon_missing_resource_returns_nil_and_pops_iconid_word() {
         // Inside Macintosh Volume V (1986), p. V-76: GetCIcon returns
@@ -29220,6 +29416,81 @@ mod tests {
         assert!(plot.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_byte(dst_base), 0x5F);
+    }
+
+    #[test]
+    fn plotcicon_decodes_packed_4bpp_icon_pixels_into_8bpp_destination() {
+        // More Macintosh Toolbox (1993), p. 5-25 / Inside Macintosh V
+        // (1986), p. V-76: PlotCIcon stretches the iconPMap and remaps its
+        // pixels to the current depth and color table.
+        let (mut d, mut cpu, mut bus) = setup();
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
+        d.device_clut[9] = [0x0000, 0x2222, 0x0000];
+        d.device_clut[42] = [0x0000, 0x0000, 0x3333];
+        assert_eq!(
+            crate::trap::pict::closest_clut_index(0x1111, 0x0000, 0x0000, &d.device_clut),
+            7
+        );
+
+        let dst_base = bus.alloc(8);
+        bus.fill_zeros(dst_base, 8);
+
+        let pm_handle = bus.alloc(4);
+        let pm_ptr = bus.alloc(64);
+        bus.fill_zeros(pm_ptr, 64);
+        bus.write_long(pm_handle, pm_ptr);
+        write_pixmap_8(&mut bus, pm_ptr, dst_base, 4, 1, 0);
+
+        let port_ptr = bus.alloc(128);
+        bus.fill_zeros(port_ptr, 128);
+        bus.write_long(port_ptr + 2, pm_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+
+        let a5 = cpu.read_reg(Register::A5);
+        let globals_ptr = bus.read_long(a5);
+        bus.write_long(globals_ptr, port_ptr);
+
+        let mut icon_entries = [[0, 0, 0]; 16];
+        icon_entries[1] = d.device_clut[7];
+        icon_entries[2] = d.device_clut[9];
+        icon_entries[3] = d.device_clut[42];
+        let cicn_data = make_test_cicn_resource_4bpp([0x12, 0x30], &icon_entries);
+        d.install_test_resource(&mut bus, *b"cicn", 129, &cicn_data);
+
+        bus.write_word(TEST_SP, 129);
+        let get_icon = d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus);
+        assert!(get_icon.unwrap().is_ok());
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(icon_handle, 0);
+        let icon_ptr = bus.read_long(icon_handle);
+        assert_eq!(bus.read_word(icon_ptr + 32), 4);
+        let icon_data_handle = bus.read_long(icon_ptr + 78);
+        let icon_data_ptr = bus.read_long(icon_data_handle);
+        assert_eq!(bus.read_bytes(icon_data_ptr, 2), vec![0x12, 0x30]);
+        assert_eq!(
+            TrapDispatcher::read_packed_bitmap_index(&bus, icon_data_ptr, 2, 4, 0, 0, 1, 4, 0, 0),
+            Some(1)
+        );
+        assert_eq!(
+            TrapDispatcher::read_packed_bitmap_index(&bus, icon_data_ptr, 2, 4, 0, 0, 1, 4, 0, 2),
+            Some(3)
+        );
+
+        let rect_ptr = 0x300160u32;
+        write_rect(&mut bus, rect_ptr, 0, 0, 1, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let plot = d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus);
+        assert!(plot.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(
+            bus.read_bytes(dst_base, 4),
+            vec![7, 9, 42, 255],
+            "packed 4bpp source nibbles should decode and remap through the icon ColorTable"
+        );
     }
 
     #[test]
