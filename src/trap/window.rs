@@ -34,6 +34,7 @@ impl super::TrapDispatcher {
     const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
     const WINDOW_PIC_OFFSET: u32 = 148;
     const WINDOW_REFCON_OFFSET: u32 = 152;
+    const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
     const LOWMEM_WMGR_PORT: u32 = 0x09DE;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
@@ -897,6 +898,10 @@ impl super::TrapDispatcher {
             let next = self.window_list.get(index + 1).copied().unwrap_or(0);
             bus.write_long(window_ptr + Self::WINDOW_NEXT_WINDOW_OFFSET, next);
         }
+        bus.write_long(
+            Self::LOWMEM_WINDOW_LIST,
+            self.window_list.first().copied().unwrap_or(0),
+        );
     }
 
     pub(crate) fn track_window_front(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
@@ -3914,6 +3919,69 @@ mod tests {
         assert_ne!(
             window_ptr, 0,
             "NewWindow with NIL wStorage must fall back to bus.alloc"
+        );
+    }
+
+    #[test]
+    fn new_window_publishes_windowlist_lowmem_global() {
+        // Inside Macintosh Volume I, I-299/I-301: Window Manager calls
+        // insert a new visible window into the window list. Assembly
+        // callers can read the front pointer through low-memory WindowList.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let bounds_rect_ptr: u32 = 0x300000;
+        bus.write_word(bounds_rect_ptr, 40);
+        bus.write_word(bounds_rect_ptr + 2, 0);
+        bus.write_word(bounds_rect_ptr + 4, 342);
+        bus.write_word(bounds_rect_ptr + 6, 512);
+
+        let sp = TEST_SP - 26;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..30u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_long(sp + 18, bounds_rect_ptr);
+        bus.write_byte(sp + 12, 1); // visible
+        bus.write_long(sp + 6, 0xFFFF_FFFF); // behind = frontmost
+
+        let result = dispatch(&mut disp, 0x113, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let window_ptr = bus.read_long(cpu.read_reg(Register::A7));
+
+        assert_eq!(
+            bus.read_long(0x09D6),
+            window_ptr,
+            "low-memory WindowList must point at the front window"
+        );
+        assert_eq!(
+            bus.read_long(window_ptr + 144),
+            0,
+            "single-window list should have a NIL nextWindow link"
+        );
+    }
+
+    #[test]
+    fn closewindow_clears_windowlist_lowmem_when_last_window_removed() {
+        // IM:I I-282/I-283 exposes the window list through low memory;
+        // closing the final tracked window must publish NIL.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_ptr = 0x200040u32;
+        disp.window_list = vec![window_ptr];
+        disp.front_window = window_ptr;
+        bus.write_byte(window_ptr + 110u32, 0xFF);
+        bus.write_long(0x09D6, window_ptr);
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window_ptr);
+
+        let result = dispatch(&mut disp, 0x12D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_long(0x09D6),
+            0,
+            "low-memory WindowList must be NIL after removing the last window"
         );
     }
 
