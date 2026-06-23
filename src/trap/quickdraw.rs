@@ -41,6 +41,14 @@ pub(super) struct RegionMembershipCache {
     pub(super) rows: Vec<Vec<i16>>,
 }
 
+#[derive(Clone, Copy)]
+enum RegionBooleanOp {
+    Intersection,
+    Union,
+    Difference,
+    Xor,
+}
+
 pub(super) const REGION_HEADER_SIZE: u32 = 10;
 const REGION_STOP: i16 = i16::MAX;
 const PALETTE_HEADER_SIZE: u32 = 16;
@@ -9243,19 +9251,7 @@ impl super::TrapDispatcher {
                 let dh = bus.read_word(sp + 2) as i16;
                 let rgn_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if rgn_handle != 0 {
-                    let rgn_ptr = bus.read_long(rgn_handle);
-                    if rgn_ptr != 0 {
-                        let t = bus.read_word(rgn_ptr + 2) as i16;
-                        let l = bus.read_word(rgn_ptr + 4) as i16;
-                        let b = bus.read_word(rgn_ptr + 6) as i16;
-                        let r = bus.read_word(rgn_ptr + 8) as i16;
-                        bus.write_word(rgn_ptr + 2, (t + dv) as u16);
-                        bus.write_word(rgn_ptr + 4, (l + dh) as u16);
-                        bus.write_word(rgn_ptr + 6, (b + dv) as u16);
-                        bus.write_word(rgn_ptr + 8, (r + dh) as u16);
-                    }
-                }
+                Self::offset_region(bus, rgn_handle, dh, dv);
                 Ok(())
             }
 
@@ -9377,33 +9373,13 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && src_b != 0 && dst_handle != 0 {
-                    let pa = bus.read_long(src_a);
-                    let pb = bus.read_long(src_b);
-                    let pd = bus.read_long(dst_handle);
-                    if pa != 0 && pb != 0 && pd != 0 {
-                        let at = bus.read_word(pa + 2) as i16;
-                        let al = bus.read_word(pa + 4) as i16;
-                        let ab = bus.read_word(pa + 6) as i16;
-                        let ar = bus.read_word(pa + 8) as i16;
-                        let bt = bus.read_word(pb + 2) as i16;
-                        let bl = bus.read_word(pb + 4) as i16;
-                        let bb = bus.read_word(pb + 6) as i16;
-                        let br = bus.read_word(pb + 8) as i16;
-                        let dt = at.max(bt);
-                        let dl = al.max(bl);
-                        let db = ab.min(bb);
-                        let dr = ar.min(br);
-                        bus.write_word(pd, 10);
-                        if dt < db && dl < dr {
-                            bus.write_word(pd + 2, dt as u16);
-                            bus.write_word(pd + 4, dl as u16);
-                            bus.write_word(pd + 6, db as u16);
-                            bus.write_word(pd + 8, dr as u16);
-                        } else {
-                            bus.write_long(pd + 2, 0);
-                            bus.write_long(pd + 6, 0);
-                        }
-                    }
+                    Self::write_region_boolean_op(
+                        bus,
+                        dst_handle,
+                        src_a,
+                        src_b,
+                        RegionBooleanOp::Intersection,
+                    );
                 }
                 Ok(())
             }
@@ -9419,35 +9395,13 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && src_b != 0 && dst_handle != 0 {
-                    let pa = bus.read_long(src_a);
-                    let pb = bus.read_long(src_b);
-                    let pd = bus.read_long(dst_handle);
-                    if pa != 0 && pb != 0 && pd != 0 {
-                        let at = bus.read_word(pa + 2) as i16;
-                        let al = bus.read_word(pa + 4) as i16;
-                        let ab = bus.read_word(pa + 6) as i16;
-                        let ar = bus.read_word(pa + 8) as i16;
-                        let bt = bus.read_word(pb + 2) as i16;
-                        let bl = bus.read_word(pb + 4) as i16;
-                        let bb = bus.read_word(pb + 6) as i16;
-                        let br = bus.read_word(pb + 8) as i16;
-                        let a_empty = ab <= at || ar <= al;
-                        let b_empty = bb <= bt || br <= bl;
-                        let (dt, dl, db, dr) = if a_empty && b_empty {
-                            (0, 0, 0, 0)
-                        } else if a_empty {
-                            (bt, bl, bb, br)
-                        } else if b_empty {
-                            (at, al, ab, ar)
-                        } else {
-                            (at.min(bt), al.min(bl), ab.max(bb), ar.max(br))
-                        };
-                        bus.write_word(pd, 10);
-                        bus.write_word(pd + 2, dt as u16);
-                        bus.write_word(pd + 4, dl as u16);
-                        bus.write_word(pd + 6, db as u16);
-                        bus.write_word(pd + 8, dr as u16);
-                    }
+                    Self::write_region_boolean_op(
+                        bus,
+                        dst_handle,
+                        src_a,
+                        src_b,
+                        RegionBooleanOp::Union,
+                    );
                 }
                 Ok(())
             }
@@ -9463,41 +9417,13 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && dst_handle != 0 {
-                    let pa = bus.read_long(src_a);
-                    let pd = bus.read_long(dst_handle);
-                    if pa != 0 && pd != 0 {
-                        let at = bus.read_word(pa + 2) as i16;
-                        let al = bus.read_word(pa + 4) as i16;
-                        let ab = bus.read_word(pa + 6) as i16;
-                        let ar = bus.read_word(pa + 8) as i16;
-                        let pb = if src_b != 0 { bus.read_long(src_b) } else { 0 };
-                        let (bt, bl, bb, br, b_empty) = if pb != 0 {
-                            let t = bus.read_word(pb + 2) as i16;
-                            let l = bus.read_word(pb + 4) as i16;
-                            let b = bus.read_word(pb + 6) as i16;
-                            let r = bus.read_word(pb + 8) as i16;
-                            let empty = t >= b || l >= r;
-                            (t, l, b, r, empty)
-                        } else {
-                            (0, 0, 0, 0, true)
-                        };
-                        bus.write_word(pd, 10);
-                        let a_empty = at >= ab || al >= ar;
-                        let equal =
-                            !a_empty && !b_empty && at == bt && al == bl && ab == bb && ar == br;
-                        let b_contains_a =
-                            !a_empty && !b_empty && bt <= at && bl <= al && bb >= ab && br >= ar;
-                        if a_empty || equal || b_contains_a {
-                            bus.write_long(pd + 2, 0);
-                            bus.write_long(pd + 6, 0);
-                        } else {
-                            // Over-approximation: return A unchanged.
-                            bus.write_word(pd + 2, at as u16);
-                            bus.write_word(pd + 4, al as u16);
-                            bus.write_word(pd + 6, ab as u16);
-                            bus.write_word(pd + 8, ar as u16);
-                        }
-                    }
+                    Self::write_region_boolean_op(
+                        bus,
+                        dst_handle,
+                        src_a,
+                        src_b,
+                        RegionBooleanOp::Difference,
+                    );
                 }
                 Ok(())
             }
@@ -9513,47 +9439,13 @@ impl super::TrapDispatcher {
                 let src_a = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 if src_a != 0 && src_b != 0 && dst_handle != 0 {
-                    let pa = bus.read_long(src_a);
-                    let pb = bus.read_long(src_b);
-                    let pd = bus.read_long(dst_handle);
-                    if pa != 0 && pb != 0 && pd != 0 {
-                        let at = bus.read_word(pa + 2) as i16;
-                        let al = bus.read_word(pa + 4) as i16;
-                        let ab = bus.read_word(pa + 6) as i16;
-                        let ar = bus.read_word(pa + 8) as i16;
-                        let bt = bus.read_word(pb + 2) as i16;
-                        let bl = bus.read_word(pb + 4) as i16;
-                        let bb = bus.read_word(pb + 6) as i16;
-                        let br = bus.read_word(pb + 8) as i16;
-                        let a_empty = at >= ab || al >= ar;
-                        let b_empty = bt >= bb || bl >= br;
-                        bus.write_word(pd, 10);
-                        if a_empty && b_empty {
-                            // Empty result: write zero rect.
-                            bus.write_long(pd + 2, 0);
-                            bus.write_long(pd + 6, 0);
-                        } else if a_empty {
-                            bus.write_word(pd + 2, bt as u16);
-                            bus.write_word(pd + 4, bl as u16);
-                            bus.write_word(pd + 6, bb as u16);
-                            bus.write_word(pd + 8, br as u16);
-                        } else if b_empty {
-                            bus.write_word(pd + 2, at as u16);
-                            bus.write_word(pd + 4, al as u16);
-                            bus.write_word(pd + 6, ab as u16);
-                            bus.write_word(pd + 8, ar as u16);
-                        } else if at == bt && al == bl && ab == bb && ar == br {
-                            // Equal regions → empty.
-                            bus.write_long(pd + 2, 0);
-                            bus.write_long(pd + 6, 0);
-                        } else {
-                            // Over-approximation: bbox of (A ∪ B).
-                            bus.write_word(pd + 2, at.min(bt) as u16);
-                            bus.write_word(pd + 4, al.min(bl) as u16);
-                            bus.write_word(pd + 6, ab.max(bb) as u16);
-                            bus.write_word(pd + 8, ar.max(br) as u16);
-                        }
-                    }
+                    Self::write_region_boolean_op(
+                        bus,
+                        dst_handle,
+                        src_a,
+                        src_b,
+                        RegionBooleanOp::Xor,
+                    );
                 }
                 Ok(())
             }
@@ -18150,6 +18042,322 @@ impl super::TrapDispatcher {
         true
     }
 
+    fn region_rows_for_band(
+        bus: &MacMemoryBus,
+        rgn_handle: u32,
+        top: i16,
+        bottom: i16,
+    ) -> Vec<Vec<i16>> {
+        let height = (bottom - top).max(0) as usize;
+        let mut rows = vec![Vec::new(); height];
+        if height == 0 {
+            return rows;
+        }
+
+        let Some((rgn_ptr, rgn_size)) = Self::region_ptr_and_size(bus, rgn_handle) else {
+            return rows;
+        };
+        let rgn_top = bus.read_word(rgn_ptr + 2) as i16;
+        let rgn_left = bus.read_word(rgn_ptr + 4) as i16;
+        let rgn_bottom = bus.read_word(rgn_ptr + 6) as i16;
+        let rgn_right = bus.read_word(rgn_ptr + 8) as i16;
+        if rgn_bottom <= rgn_top || rgn_right <= rgn_left {
+            return rows;
+        }
+
+        let overlap_top = top.max(rgn_top);
+        let overlap_bottom = bottom.min(rgn_bottom);
+        if overlap_bottom <= overlap_top {
+            return rows;
+        }
+
+        if rgn_size <= REGION_HEADER_SIZE {
+            for y in overlap_top..overlap_bottom {
+                rows[(y - top) as usize] = vec![rgn_left, rgn_right];
+            }
+            return rows;
+        }
+
+        if let Some(cache) =
+            Self::build_region_membership_cache(bus, rgn_handle, overlap_top, overlap_bottom)
+        {
+            let start = (overlap_top - top) as usize;
+            for (offset, row) in cache.rows.into_iter().enumerate() {
+                rows[start + offset] = row;
+            }
+        }
+        rows
+    }
+
+    fn endpoints_to_intervals(endpoints: &[i16]) -> Vec<(i16, i16)> {
+        endpoints
+            .chunks_exact(2)
+            .filter_map(|pair| (pair[0] < pair[1]).then_some((pair[0], pair[1])))
+            .collect()
+    }
+
+    fn intervals_to_endpoints(mut intervals: Vec<(i16, i16)>) -> Vec<i16> {
+        if intervals.is_empty() {
+            return Vec::new();
+        }
+
+        intervals.sort_unstable();
+        let mut merged: Vec<(i16, i16)> = Vec::with_capacity(intervals.len());
+        for (start, end) in intervals {
+            if start >= end {
+                continue;
+            }
+            if let Some((_, last_end)) = merged.last_mut() {
+                if start <= *last_end {
+                    *last_end = (*last_end).max(end);
+                    continue;
+                }
+            }
+            merged.push((start, end));
+        }
+
+        let mut endpoints = Vec::with_capacity(merged.len() * 2);
+        for (start, end) in merged {
+            endpoints.push(start);
+            endpoints.push(end);
+        }
+        endpoints
+    }
+
+    fn intersect_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
+        let lhs = Self::endpoints_to_intervals(lhs);
+        let rhs = Self::endpoints_to_intervals(rhs);
+        let mut out = Vec::new();
+        let mut lhs_index = 0usize;
+        let mut rhs_index = 0usize;
+
+        while let (Some(&(lhs_start, lhs_end)), Some(&(rhs_start, rhs_end))) =
+            (lhs.get(lhs_index), rhs.get(rhs_index))
+        {
+            let start = lhs_start.max(rhs_start);
+            let end = lhs_end.min(rhs_end);
+            if start < end {
+                out.push((start, end));
+            }
+            if lhs_end < rhs_end {
+                lhs_index += 1;
+            } else {
+                rhs_index += 1;
+            }
+        }
+
+        Self::intervals_to_endpoints(out)
+    }
+
+    fn union_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
+        let mut intervals = Self::endpoints_to_intervals(lhs);
+        intervals.extend(Self::endpoints_to_intervals(rhs));
+        Self::intervals_to_endpoints(intervals)
+    }
+
+    fn difference_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
+        let lhs = Self::endpoints_to_intervals(lhs);
+        let rhs = Self::endpoints_to_intervals(rhs);
+        let mut out = Vec::new();
+
+        for (lhs_start, lhs_end) in lhs {
+            let mut start = lhs_start;
+            for &(rhs_start, rhs_end) in rhs.iter() {
+                if rhs_end <= start {
+                    continue;
+                }
+                if rhs_start >= lhs_end {
+                    break;
+                }
+                if rhs_start > start {
+                    out.push((start, rhs_start.min(lhs_end)));
+                }
+                start = start.max(rhs_end);
+                if start >= lhs_end {
+                    break;
+                }
+            }
+            if start < lhs_end {
+                out.push((start, lhs_end));
+            }
+        }
+
+        Self::intervals_to_endpoints(out)
+    }
+
+    fn xor_region_rows(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
+        let mut intervals = Self::endpoints_to_intervals(&Self::difference_region_rows(lhs, rhs));
+        intervals.extend(Self::endpoints_to_intervals(&Self::difference_region_rows(
+            rhs, lhs,
+        )));
+        Self::intervals_to_endpoints(intervals)
+    }
+
+    fn combine_region_rows(lhs: &[i16], rhs: &[i16], op: RegionBooleanOp) -> Vec<i16> {
+        match op {
+            RegionBooleanOp::Intersection => Self::intersect_region_rows(lhs, rhs),
+            RegionBooleanOp::Union => Self::union_region_rows(lhs, rhs),
+            RegionBooleanOp::Difference => Self::difference_region_rows(lhs, rhs),
+            RegionBooleanOp::Xor => Self::xor_region_rows(lhs, rhs),
+        }
+    }
+
+    fn write_region_from_rows(
+        bus: &mut MacMemoryBus,
+        rgn_handle: u32,
+        rows_top: i16,
+        rows: &[Vec<i16>],
+    ) -> bool {
+        let mut bbox: Option<(i16, i16, i16, i16)> = None;
+        for (row_index, row) in rows.iter().enumerate() {
+            if row.is_empty() {
+                continue;
+            }
+            let y = rows_top + row_index as i16;
+            let left = row[0];
+            let right = *row.last().unwrap();
+            bbox = Some(match bbox {
+                Some((top, current_left, bottom, current_right)) => (
+                    top,
+                    current_left.min(left),
+                    bottom.max(y + 1),
+                    current_right.max(right),
+                ),
+                None => (y, left, y + 1, right),
+            });
+        }
+
+        let Some((top, left, bottom, right)) = bbox else {
+            return Self::write_region(bus, rgn_handle, None, &[]);
+        };
+
+        let first_row = &rows[(top - rows_top) as usize];
+        let rectangular = first_row.len() == 2
+            && first_row[0] == left
+            && first_row[1] == right
+            && (top..bottom).all(|y| rows[(y - rows_top) as usize] == *first_row);
+        if rectangular {
+            return Self::write_region(bus, rgn_handle, Some((top, left, bottom, right)), &[]);
+        }
+
+        let mut data_words = Vec::new();
+        let mut previous_row = Vec::new();
+        for y in top..=bottom {
+            let current_row = if y < bottom {
+                rows[(y - rows_top) as usize].clone()
+            } else {
+                Vec::new()
+            };
+            let delta = Self::merge_region_endpoints(&previous_row, &current_row);
+            if !delta.is_empty() {
+                data_words.push(y);
+                data_words.extend(delta);
+                data_words.push(REGION_STOP);
+            }
+            previous_row = current_row;
+        }
+        data_words.push(REGION_STOP);
+        Self::write_region(
+            bus,
+            rgn_handle,
+            Some((top, left, bottom, right)),
+            &data_words,
+        )
+    }
+
+    fn write_region_boolean_op(
+        bus: &mut MacMemoryBus,
+        dst_handle: u32,
+        src_a: u32,
+        src_b: u32,
+        op: RegionBooleanOp,
+    ) -> bool {
+        let bbox_a = Self::region_bbox(bus, src_a);
+        let bbox_b = Self::region_bbox(bus, src_b);
+
+        let band = match op {
+            RegionBooleanOp::Intersection => {
+                let (Some(a), Some(b)) = (bbox_a, bbox_b) else {
+                    return Self::write_region(bus, dst_handle, None, &[]);
+                };
+                let top = a.0.max(b.0);
+                let bottom = a.2.min(b.2);
+                if bottom <= top {
+                    return Self::write_region(bus, dst_handle, None, &[]);
+                }
+                (top, bottom)
+            }
+            RegionBooleanOp::Difference => {
+                let Some(a) = bbox_a else {
+                    return Self::write_region(bus, dst_handle, None, &[]);
+                };
+                (a.0, a.2)
+            }
+            RegionBooleanOp::Union | RegionBooleanOp::Xor => match (bbox_a, bbox_b) {
+                (Some(a), Some(b)) => (a.0.min(b.0), a.2.max(b.2)),
+                (Some(a), None) => (a.0, a.2),
+                (None, Some(b)) => (b.0, b.2),
+                (None, None) => return Self::write_region(bus, dst_handle, None, &[]),
+            },
+        };
+
+        let (top, bottom) = band;
+        if bottom <= top {
+            return Self::write_region(bus, dst_handle, None, &[]);
+        }
+        let rows_a = Self::region_rows_for_band(bus, src_a, top, bottom);
+        let rows_b = Self::region_rows_for_band(bus, src_b, top, bottom);
+        let rows = rows_a
+            .iter()
+            .zip(rows_b.iter())
+            .map(|(lhs, rhs)| Self::combine_region_rows(lhs, rhs, op))
+            .collect::<Vec<_>>();
+        Self::write_region_from_rows(bus, dst_handle, top, &rows)
+    }
+
+    fn offset_region(bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
+        let Some((rgn_ptr, rgn_size)) = Self::region_ptr_and_size(bus, rgn_handle) else {
+            return;
+        };
+        if rgn_size < REGION_HEADER_SIZE {
+            return;
+        }
+
+        for offset in [2u32, 6u32] {
+            let value = bus.read_word(rgn_ptr + offset) as i16;
+            bus.write_word(rgn_ptr + offset, value.wrapping_add(dv) as u16);
+        }
+        for offset in [4u32, 8u32] {
+            let value = bus.read_word(rgn_ptr + offset) as i16;
+            bus.write_word(rgn_ptr + offset, value.wrapping_add(dh) as u16);
+        }
+
+        if rgn_size <= REGION_HEADER_SIZE {
+            return;
+        }
+
+        let region_end = rgn_ptr + rgn_size;
+        let mut cursor = rgn_ptr + REGION_HEADER_SIZE;
+        while cursor + 2 <= region_end {
+            let y = bus.read_word(cursor) as i16;
+            if y == REGION_STOP {
+                break;
+            }
+            bus.write_word(cursor, y.wrapping_add(dv) as u16);
+            cursor += 2;
+
+            while cursor + 2 <= region_end {
+                let edge = bus.read_word(cursor) as i16;
+                if edge == REGION_STOP {
+                    cursor += 2;
+                    break;
+                }
+                bus.write_word(cursor, edge.wrapping_add(dh) as u16);
+                cursor += 2;
+            }
+        }
+    }
+
     fn merge_region_endpoints(lhs: &[i16], rhs: &[i16]) -> Vec<i16> {
         let mut merged = Vec::with_capacity(lhs.len() + rhs.len());
         let mut lhs_index = 0usize;
@@ -19893,6 +20101,21 @@ mod tests {
         bus.write_word(rgn_addr + 6, bottom as u16);
         bus.write_word(rgn_addr + 8, right as u16);
         bus.write_long(handle_addr, rgn_addr);
+    }
+
+    fn make_complex_rgn(
+        bus: &mut MacMemoryBus,
+        bbox: (i16, i16, i16, i16),
+        data_words: &[i16],
+    ) -> u32 {
+        let handle = bus.alloc(4);
+        assert!(TrapDispatcher::write_region(
+            bus,
+            handle,
+            Some(bbox),
+            data_words
+        ));
+        handle
     }
 
     /// Helper: write a BitMap record.
@@ -22461,6 +22684,108 @@ mod tests {
         assert_eq!(bus.read_word(TEST_SP + 8), 0);
         assert_eq!(read_rgn_bbox(&bus, rgn_handle), (0, 0, 0, 0));
         assert_eq!(bus.read_word(rgn_data), 10);
+    }
+
+    #[test]
+    fn sectrgn_preserves_complex_scanline_intersection() {
+        // Inside Macintosh Volume I (1985), p. I-184: SectRgn computes
+        // the geometric intersection of two regions, not only their bboxes.
+        let (mut d, mut cpu, mut bus) = setup();
+
+        let complex = make_complex_rgn(
+            &mut bus,
+            (0, 0, 4, 6),
+            &[
+                0,
+                0,
+                6,
+                super::REGION_STOP,
+                1,
+                2,
+                4,
+                super::REGION_STOP,
+                3,
+                2,
+                4,
+                super::REGION_STOP,
+                4,
+                0,
+                6,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        let clip_data = bus.alloc(10);
+        let clip = bus.alloc(4);
+        make_rgn(&mut bus, clip_data, clip, 1, 1, 3, 5);
+        let dst_data = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_data, dst, 0, 0, 0, 0);
+
+        bus.write_long(TEST_SP, dst);
+        bus.write_long(TEST_SP + 4, clip);
+        bus.write_long(TEST_SP + 8, complex);
+
+        let result = d.dispatch_quickdraw(true, 0x0E4, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(read_rgn_bbox(&bus, dst), (1, 1, 3, 5));
+        assert!(
+            bus.read_word(bus.read_long(dst)) > super::REGION_HEADER_SIZE as u16,
+            "intersection should stay complex, not collapse to its bbox"
+        );
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 1));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, dst, 1, 3),
+            "hole inside the source region must remain clipped out"
+        );
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 4));
+    }
+
+    #[test]
+    fn offsetrgn_shifts_complex_region_scanlines() {
+        // Inside Macintosh Volume I (1985), p. I-183: OffsetRgn moves the
+        // region shape. Complex scanline coordinates must move with the bbox.
+        let (mut d, mut cpu, mut bus) = setup();
+        let rgn = make_complex_rgn(
+            &mut bus,
+            (0, 0, 3, 6),
+            &[
+                0,
+                0,
+                6,
+                super::REGION_STOP,
+                1,
+                2,
+                4,
+                super::REGION_STOP,
+                2,
+                2,
+                4,
+                super::REGION_STOP,
+                3,
+                0,
+                6,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+
+        bus.write_word(TEST_SP, 20u16); // dv
+        bus.write_word(TEST_SP + 2, 10u16); // dh
+        bus.write_long(TEST_SP + 4, rgn);
+
+        let result = d.dispatch_quickdraw(true, 0x0E0, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(read_rgn_bbox(&bus, rgn), (20, 10, 23, 16));
+        assert!(TrapDispatcher::region_contains_point(&bus, rgn, 21, 11));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, rgn, 21, 13),
+            "the shifted interior hole must remain a hole"
+        );
+        assert!(TrapDispatcher::region_contains_point(&bus, rgn, 21, 14));
+        assert!(!TrapDispatcher::region_contains_point(&bus, rgn, 1, 1));
     }
 
     // EqualRgn ($A8E3) lives at slot 0x0E3, not 0x0E5. Prior to the
