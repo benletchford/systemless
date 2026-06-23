@@ -36,6 +36,11 @@ impl super::TrapDispatcher {
     const WINDOW_REFCON_OFFSET: u32 = 152;
     const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
     const LOWMEM_WMGR_PORT: u32 = 0x09DE;
+    const WDEF_WDRAW_MSG: i16 = 0;
+    const WDEF_WCALC_RGNS_MSG: i16 = 2;
+    const WDEF_WNEW_MSG: i16 = 3;
+    const WDEF_FIRST_APPLICATION_RESOURCE_ID: i16 = 128;
+    const WDEF_TRAMPOLINE_SIZE: u32 = 58;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
     const AUX_WIN_CTABLE_OFFSET: u32 = 8;
@@ -279,6 +284,221 @@ impl super::TrapDispatcher {
         bus.write_long(handle, ptr);
         Self::write_region_handle_rect(bus, handle, rect);
         handle
+    }
+
+    fn window_def_resource_id(proc_id: i16) -> i16 {
+        proc_id >> 4
+    }
+
+    fn is_application_window_def_proc_id(proc_id: i16) -> bool {
+        Self::window_def_resource_id(proc_id) >= Self::WDEF_FIRST_APPLICATION_RESOURCE_ID
+    }
+
+    pub(crate) fn window_uses_custom_def_proc(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
+        if window_ptr == 0 {
+            return false;
+        }
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        Self::is_application_window_def_proc_id(proc_id)
+            && bus.read_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET) != 0
+    }
+
+    fn window_def_proc_handle(&mut self, bus: &mut MacMemoryBus, proc_id: i16) -> u32 {
+        if !Self::is_application_window_def_proc_id(proc_id) {
+            return 0;
+        }
+
+        let wdef_id = Self::window_def_resource_id(proc_id);
+        self.find_resource_any(*b"WDEF", wdef_id)
+            .map(|(_, ptr)| ptr)
+            .map(|ptr| self.get_or_create_resource_handle(bus, *b"WDEF", wdef_id, ptr))
+            .unwrap_or(0)
+    }
+
+    fn window_def_proc_addr(bus: &MacMemoryBus, def_handle: u32) -> u32 {
+        if def_handle == 0 {
+            return 0;
+        }
+        let def_ptr = bus.read_long(def_handle);
+        if def_ptr != 0 {
+            def_ptr
+        } else {
+            def_handle
+        }
+    }
+
+    fn window_def_entry_looks_callable(bus: &MacMemoryBus, proc_addr: u32) -> bool {
+        if proc_addr == 0 {
+            return false;
+        }
+        matches!(
+            bus.read_word(proc_addr),
+            0x4E56 // LINK.W A6,#imm
+                | 0x48E7 // MOVEM.L regs,-(SP)
+                | 0x4EF9 // JMP abs.L
+                | 0x4EFA // JMP pc-relative
+                | 0x6000..=0x60FF // BRA/BRA.S to the real entry
+        )
+    }
+
+    fn get_or_create_window_def_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if self.window_def_trampoline != 0 {
+            return self.window_def_trampoline;
+        }
+
+        let tramp = bus.alloc(Self::WDEF_TRAMPOLINE_SIZE);
+        bus.write_word(tramp, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        bus.write_word(tramp + 2, 0xF0F0);
+        bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #result,-(SP)
+        bus.write_word(tramp + 10, 0x3F3C); // MOVE.W #varCode,-(SP)
+        bus.write_word(tramp + 14, 0x2F3C); // MOVE.L #theWindow,-(SP)
+        bus.write_word(tramp + 20, 0x3F3C); // MOVE.W #message,-(SP)
+        bus.write_word(tramp + 24, 0x2F3C); // MOVE.L #param,-(SP)
+        bus.write_word(tramp + 30, 0x4EB9); // JSR abs.L
+        bus.write_word(tramp + 36, 0x2E7C); // MOVEA.L #savedRegsSP,A7
+        bus.write_word(tramp + 42, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+        bus.write_word(tramp + 44, 0x0F0F);
+        bus.write_word(tramp + 46, 0x4E75); // RTS (patched to JMP for chains)
+        self.window_def_trampoline = tramp;
+        tramp
+    }
+
+    fn write_window_def_trampoline(
+        bus: &mut MacMemoryBus,
+        tramp: u32,
+        variant: i16,
+        window_ptr: u32,
+        message: i16,
+        param: u32,
+        proc_addr: u32,
+        return_slot: u32,
+        next_trampoline: Option<u32>,
+    ) {
+        bus.write_word(tramp, 0x48E7);
+        bus.write_word(tramp + 2, 0xF0F0);
+        bus.write_word(tramp + 4, 0x2F3C);
+        bus.write_long(tramp + 6, 0);
+        bus.write_word(tramp + 10, 0x3F3C);
+        bus.write_word(tramp + 12, variant as u16);
+        bus.write_word(tramp + 14, 0x2F3C);
+        bus.write_long(tramp + 16, window_ptr);
+        bus.write_word(tramp + 20, 0x3F3C);
+        bus.write_word(tramp + 22, message as u16);
+        bus.write_word(tramp + 24, 0x2F3C);
+        bus.write_long(tramp + 26, param);
+        bus.write_word(tramp + 30, 0x4EB9);
+        bus.write_long(tramp + 32, proc_addr);
+        bus.write_word(tramp + 36, 0x2E7C);
+        bus.write_long(tramp + 38, return_slot.wrapping_sub(32));
+        bus.write_word(tramp + 42, 0x4CDF);
+        bus.write_word(tramp + 44, 0x0F0F);
+        match next_trampoline {
+            Some(next) => {
+                bus.write_word(tramp + 46, 0x4EF9); // JMP abs.L
+                bus.write_long(tramp + 48, next);
+            }
+            None => {
+                bus.write_word(tramp + 46, 0x4E75); // RTS
+                bus.write_long(tramp + 48, 0);
+            }
+        }
+    }
+
+    fn arm_window_def_messages<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        proc_id: i16,
+        messages: &[(i16, u32)],
+    ) -> bool {
+        if messages.is_empty() || !Self::is_application_window_def_proc_id(proc_id) {
+            return false;
+        }
+
+        let def_handle = bus.read_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET);
+        let proc_addr = Self::window_def_proc_addr(bus, def_handle);
+        if !Self::window_def_entry_looks_callable(bus, proc_addr) {
+            return false;
+        }
+
+        // Window definition functions are Pascal functions:
+        // FUNCTION MyWindow(varCode: Integer; theWindow: WindowPtr;
+        //                   message: Integer; param: LongInt): LongInt;
+        // They live in 'WDEF' resources, receive the variation code from the
+        // low four bits of the window definition ID, and draw wDraw in the
+        // Window Manager port. Macintosh Toolbox Essentials 1992, pp. 4-120
+        // through 4-127; Inside Macintosh Volume I 1985, pp. I-282, I-304.
+        let wmgr_port = self.ensure_color_window_manager_port(bus);
+        self.set_current_port_state(bus, cpu, wmgr_port, None);
+
+        let final_sp = cpu.read_reg(Register::A7);
+        let return_pc = cpu.read_reg(Register::PC);
+        let return_slot = final_sp.wrapping_sub(4);
+        let variant = proc_id & 0xF;
+        let trampolines: Vec<u32> = (0..messages.len())
+            .map(|idx| {
+                if idx == 0 {
+                    self.get_or_create_window_def_trampoline(bus)
+                } else {
+                    bus.alloc(Self::WDEF_TRAMPOLINE_SIZE)
+                }
+            })
+            .collect();
+
+        for (idx, &(message, param)) in messages.iter().enumerate() {
+            let next = trampolines.get(idx + 1).copied();
+            Self::write_window_def_trampoline(
+                bus,
+                trampolines[idx],
+                variant,
+                window_ptr,
+                message,
+                param,
+                proc_addr,
+                return_slot,
+                next,
+            );
+        }
+
+        bus.write_long(return_slot, return_pc);
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, trampolines[0]);
+        true
+    }
+
+    fn arm_window_def_on_create<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        proc_id: i16,
+        draw_initial_frame: bool,
+        visible: bool,
+    ) -> bool {
+        let mut messages = Vec::with_capacity(3);
+        messages.push((Self::WDEF_WNEW_MSG, 0));
+        if draw_initial_frame && visible {
+            messages.push((Self::WDEF_WCALC_RGNS_MSG, 0));
+            messages.push((Self::WDEF_WDRAW_MSG, 0));
+        }
+        self.arm_window_def_messages(cpu, bus, window_ptr, proc_id, &messages)
+    }
+
+    fn arm_window_def_draw<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+    ) -> bool {
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        self.arm_window_def_messages(
+            cpu,
+            bus,
+            window_ptr,
+            proc_id,
+            &[(Self::WDEF_WCALC_RGNS_MSG, 0), (Self::WDEF_WDRAW_MSG, 0)],
+        )
     }
 
     pub(crate) fn ensure_window_manager_port(&mut self, bus: &mut MacMemoryBus) -> u32 {
@@ -1359,6 +1579,8 @@ impl super::TrapDispatcher {
             go_away_flag,
             ref_con,
         );
+        let window_def_proc = self.window_def_proc_handle(bus, wind_proc_id);
+        bus.write_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET, window_def_proc);
         // OpenPort/OpenCPort initializes clipRgn to an arbitrarily large
         // rectangle; only visRgn is constrained to the visible content.
         Self::write_region_handle_rect(
@@ -1446,7 +1668,10 @@ impl super::TrapDispatcher {
             && wind_right >= screen_w as i16 - 2;
         if visible && !fullscreen_visible {
             self.save_window_under_pixels_for_proc(bus, window_ptr, wind_proc_id);
-            if draw_initial_frame && !suppress_document_chrome {
+            if draw_initial_frame
+                && !suppress_document_chrome
+                && !self.window_uses_custom_def_proc(bus, window_ptr)
+            {
                 self.draw_window_frame(bus);
             }
             self.queue_window_update_event(window_ptr);
@@ -1565,6 +1790,7 @@ impl super::TrapDispatcher {
                 let param_size = 26u32;
                 bus.write_long(sp + param_size, window_ptr);
                 cpu.write_reg(Register::A7, sp + param_size);
+                self.arm_window_def_on_create(cpu, bus, window_ptr, proc_id, true, visible);
                 Ok(())
             }
 
@@ -1653,6 +1879,7 @@ impl super::TrapDispatcher {
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
+                self.arm_window_def_on_create(cpu, bus, window_ptr, proc_id, true, visible);
                 Ok(())
             }
 
@@ -1725,6 +1952,7 @@ impl super::TrapDispatcher {
                 let param_size = 26;
                 bus.write_long(sp + param_size, window_ptr);
                 cpu.write_reg(Register::A7, sp + param_size);
+                self.arm_window_def_on_create(cpu, bus, window_ptr, wind_proc_id, true, visible);
                 Ok(())
             }
 
@@ -1803,6 +2031,7 @@ impl super::TrapDispatcher {
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
+                self.arm_window_def_on_create(cpu, bus, window_ptr, proc_id, true, visible);
                 Ok(())
             }
 
@@ -1907,6 +2136,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 4);
                     return Some(Ok(()));
                 }
+                let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
@@ -1935,11 +2165,18 @@ impl super::TrapDispatcher {
                         }
                     } else {
                         let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
-                        self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                        if self.window_uses_custom_def_proc(bus, the_window) {
+                            arm_custom_wdef_draw = !was_visible;
+                        } else {
+                            self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                        }
                     }
                     self.capture_gui_frame(bus, &format!("show_window_{:08X}", the_window));
                 }
                 cpu.write_reg(Register::A7, sp + 4);
+                if arm_custom_wdef_draw {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
             // HideWindow ($A916)
@@ -3429,6 +3666,27 @@ mod tests {
         });
     }
 
+    fn install_wdef_resource(
+        disp: &mut super::super::TrapDispatcher,
+        bus: &mut crate::memory::MacMemoryBus,
+        wdef_id: i16,
+    ) -> u32 {
+        let proc_addr = bus.alloc(2);
+        bus.write_word(proc_addr, 0x4E56); // plausible 68K LINK.W proc entry
+        let resources = disp.resources.get_or_insert_with(|| LoadedResources {
+            files: HashMap::new(),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        let file = resources.files.entry(0).or_default();
+        file.loaded.insert((*b"WDEF", wdef_id), proc_addr);
+        if !resources.search_order.contains(&0) {
+            resources.search_order.push(0);
+        }
+        proc_addr
+    }
+
     fn setup_region_window() -> (
         super::super::TrapDispatcher,
         super::super::test_helpers::MockCpu,
@@ -3609,6 +3867,143 @@ mod tests {
             read_window_region_rect(&bus, window_addr, 28),
             (-32767, -32767, 32767, 32767),
             "SetOrigin must not collapse a window's clipRgn"
+        );
+    }
+
+    #[test]
+    fn init_cgraf_window_custom_wdef_installs_window_def_proc_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let wdef_proc = install_wdef_resource(&mut disp, &mut bus, 200);
+        let window_addr = bus.alloc(256);
+        let proc_id = (200i16 << 4) | 3;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            34,
+            2,
+            114,
+            473,
+            "",
+            proc_id,
+            false,
+            true,
+            false,
+            0,
+        );
+
+        let def_handle =
+            bus.read_long(window_addr + super::super::TrapDispatcher::WINDOW_DEF_PROC_OFFSET);
+        assert_ne!(def_handle, 0, "custom WDEF should be loaded into a handle");
+        assert_eq!(
+            bus.read_long(def_handle),
+            wdef_proc,
+            "windowDefProc should point at the loaded WDEF resource"
+        );
+        assert!(
+            disp.window_uses_custom_def_proc(&bus, window_addr),
+            "custom WDEF window should be classified from procID + windowDefProc"
+        );
+    }
+
+    #[test]
+    fn getnewcwindow_visible_custom_wdef_arms_wnew_wcalcrgns_then_wdraw_trampoline() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let proc_id = (200i16 << 4) | 3;
+        install_wind_resource(
+            &mut disp,
+            &mut bus,
+            600,
+            (34, 2, 114, 473),
+            proc_id,
+            true,
+            false,
+            0,
+            b"",
+        );
+        let wdef_proc = install_wdef_resource(&mut disp, &mut bus, 200);
+
+        let sp = TEST_SP - 10;
+        let return_pc = 0x1234_5678;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(sp, 0); // behind
+        bus.write_long(sp + 4, 0); // wStorage
+        bus.write_word(sp + 8, 600); // windowID
+        bus.write_long(sp + 10, 0);
+
+        let result = dispatch(&mut disp, 0x246, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        let window_ptr = bus.read_long(sp + 10);
+        let tramp = disp.window_def_trampoline;
+        assert_ne!(window_ptr, 0);
+        assert_ne!(tramp, 0, "custom WDEF should allocate a trampoline");
+        assert_eq!(cpu.read_reg(Register::PC), tramp);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(
+            bus.read_long(sp + 6),
+            return_pc,
+            "callback RTS should resume at the original trap return PC"
+        );
+        let def_handle =
+            bus.read_long(window_ptr + super::super::TrapDispatcher::WINDOW_DEF_PROC_OFFSET);
+        assert_ne!(def_handle, 0);
+        assert_eq!(bus.read_long(def_handle), wdef_proc);
+        assert_eq!(
+            bus.read_word(tramp + 12),
+            3,
+            "variant must be low procID bits"
+        );
+        assert_eq!(bus.read_long(tramp + 16), window_ptr);
+        assert_eq!(
+            bus.read_word(tramp + 22),
+            super::super::TrapDispatcher::WDEF_WNEW_MSG as u16
+        );
+        assert_eq!(bus.read_long(tramp + 26), 0);
+        assert_eq!(bus.read_long(tramp + 32), wdef_proc);
+        assert_eq!(bus.read_long(tramp + 38), (sp + 6).wrapping_sub(32));
+        assert_eq!(
+            bus.read_word(tramp + 46),
+            0x4EF9,
+            "first WDEF call should chain"
+        );
+
+        let calc_tramp = bus.read_long(tramp + 48);
+        assert_ne!(calc_tramp, 0);
+        assert_eq!(bus.read_word(calc_tramp + 12), 3);
+        assert_eq!(bus.read_long(calc_tramp + 16), window_ptr);
+        assert_eq!(
+            bus.read_word(calc_tramp + 22),
+            super::super::TrapDispatcher::WDEF_WCALC_RGNS_MSG as u16
+        );
+        assert_eq!(bus.read_long(calc_tramp + 26), 0);
+        assert_eq!(bus.read_long(calc_tramp + 32), wdef_proc);
+        assert_eq!(bus.read_long(calc_tramp + 38), (sp + 6).wrapping_sub(32));
+        assert_eq!(
+            bus.read_word(calc_tramp + 46),
+            0x4EF9,
+            "wCalcRgns should chain to wDraw"
+        );
+
+        let draw_tramp = bus.read_long(calc_tramp + 48);
+        assert_ne!(draw_tramp, 0);
+        assert_eq!(bus.read_word(draw_tramp + 12), 3);
+        assert_eq!(bus.read_long(draw_tramp + 16), window_ptr);
+        assert_eq!(
+            bus.read_word(draw_tramp + 22),
+            super::super::TrapDispatcher::WDEF_WDRAW_MSG as u16
+        );
+        assert_eq!(bus.read_long(draw_tramp + 26), 0);
+        assert_eq!(bus.read_long(draw_tramp + 32), wdef_proc);
+        assert_eq!(bus.read_long(draw_tramp + 38), (sp + 6).wrapping_sub(32));
+        assert_eq!(bus.read_word(draw_tramp + 46), 0x4E75);
+        assert_eq!(
+            disp.current_port, disp.window_manager_cport,
+            "wDraw should run in the color Window Manager port"
         );
     }
 

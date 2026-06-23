@@ -1268,6 +1268,9 @@ impl super::TrapDispatcher {
         if bus.read_byte(window_ptr + 110u32) == 0 {
             return; // not visible
         }
+        if self.window_uses_custom_def_proc(bus, window_ptr) {
+            return;
+        }
         // plainDBox (2), dBoxProc (1), altDBoxProc (3), and rDocProc (16)
         // windows have NO title bar — only a border — per Inside Macintosh
         // Volume I, I-275. Dispatch to draw_window_frame for those procIDs
@@ -1538,7 +1541,9 @@ impl super::TrapDispatcher {
         }
         // Skip chrome for borderless/dialog window types that have no title bar.
         // procID 1 = dBoxProc, 2 = plainDBox, 3 = altDBoxProc
-        // All other types (documentProc, noGrowDocProc, custom WDEFs) get chrome.
+        // All other standard types (documentProc, noGrowDocProc, etc.) get
+        // chrome. Application custom WDEFs draw their own frames and are
+        // skipped per-window below.
         // Also skip chrome when MBarHeight is 0 — the game has hidden the menu bar
         // for full-screen mode, so window chrome should not be drawn either.
         // Inside Macintosh Volume I, I-299; Inside Macintosh Volume V, V-245
@@ -1678,6 +1683,9 @@ impl super::TrapDispatcher {
                 // Use the per-window procID. Windows with no title bar
                 // (plainDBox/dBoxProc/altDBoxProc) draw only a border.
                 let w_proc = self.window_proc_ids.get(&w).copied().unwrap_or(0);
+                if self.window_uses_custom_def_proc(bus, w) {
+                    continue;
+                }
                 self.window_proc_id = w_proc;
                 let hilited = bus.read_byte(w + 111u32) != 0;
                 if matches!(w_proc, 1..=3) {

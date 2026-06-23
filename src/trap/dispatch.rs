@@ -839,6 +839,9 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline template used by the
     /// List Manager to call a guest LDEF drawing procedure.
     pub(crate) list_def_trampoline: u32,
+    /// Address of the lazily-allocated trampoline template used by the
+    /// Window Manager to call a guest WDEF procedure.
+    pub(crate) window_def_trampoline: u32,
     /// Address of the lazily-allocated trampoline used by DeferUserFn
     /// to call a callable userFunction immediately. Holds
     /// `48E7 F0F0 207C xxxx xxxx 4EB9 xxxx xxxx 4CDF 0F0F 7000 4E75`.
@@ -2117,6 +2120,7 @@ impl TrapDispatcher {
             preserve_auto_pop_pc_once: false,
             device_loop_trampoline: 0,
             list_def_trampoline: 0,
+            window_def_trampoline: 0,
             defer_user_fn_trampoline: 0,
             ajcp_decompressor_ready: false,
             ajcp_decompressed_resources: std::collections::HashSet::new(),
