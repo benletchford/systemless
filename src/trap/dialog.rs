@@ -10871,6 +10871,8 @@ impl super::TrapDispatcher {
                         let is_reentry = self.dialog_modal_entered.contains(&dialog_ptr);
                         let preserved_visible_snapshot =
                             self.dialog_visible_snapshots.remove(&dialog_ptr);
+                        let reused_retained_visible_snapshot =
+                            is_reentry && preserved_visible_snapshot.is_some();
                         let preserved_saved_pixels =
                             self.dialog_saved_pixels.get(&dialog_ptr).cloned();
                         let preserve_user_items = preserved_saved_pixels.is_some();
@@ -11010,18 +11012,27 @@ impl super::TrapDispatcher {
                         // after they execute.
                         let rendered_pixels = self.save_dialog_pixels(bus, bounds);
 
-                        // Collect userItem draw procs to call.
-                        // Even game-managed dialogs can rely on Dialog Manager
-                        // userItem callbacks for portions of their content.
-                        // Inside Macintosh Volume I, I-405
+                        // Collect userItem draw procs to call. ShowWindow can
+                        // create a visible snapshot before the first
+                        // ModalDialog entry, and that first entry still needs
+                        // the initial userItem update pass. Only skip the
+                        // queue when the same retained modal dialog is
+                        // re-entered after a non-dismissing return: that
+                        // restored visible snapshot already contains the
+                        // completed userItem output, and a real ModalDialog
+                        // re-entry does not manufacture a fresh update pass
+                        // just because the app called it again.
+                        // Inside Macintosh Volume I, I-405 and I-415.
                         let mut draw_proc_queue = VecDeque::new();
-                        for (i, item) in items.iter().enumerate() {
-                            let base_type = item.item_type & 0x7F;
-                            if base_type == 0
-                                && item.proc_ptr != 0
-                                && Self::dialog_item_intersects_bounds(bounds, item)
-                            {
-                                draw_proc_queue.push_back((item.proc_ptr, (i + 1) as i16));
+                        if !reused_retained_visible_snapshot {
+                            for (i, item) in items.iter().enumerate() {
+                                let base_type = item.item_type & 0x7F;
+                                if base_type == 0
+                                    && item.proc_ptr != 0
+                                    && Self::dialog_item_intersects_bounds(bounds, item)
+                                {
+                                    draw_proc_queue.push_back((item.proc_ptr, (i + 1) as i16));
+                                }
                             }
                         }
                         let has_draw_procs = !draw_proc_queue.is_empty();
@@ -26869,6 +26880,122 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
+        assert!(!tracking.draw_procs_done);
+        assert!(!tracking.rendered_pixels_final);
+    }
+
+    #[test]
+    fn modal_dialog_retained_reentry_reuses_visible_snapshot_without_user_item_redraw() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_addr = 0x300000u32;
+        let screen_base = bus.alloc((64 * 64) as u32);
+        let row_bytes = 64u32;
+        for i in 0..row_bytes * 64 {
+            bus.write_byte(screen_base + i, 0x11);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, row_bytes, 64, 64, 8);
+
+        let bounds = (10, 12, 30, 34);
+        let snapshot_width = (bounds.3 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let snapshot_height =
+            (bounds.2 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let visible_pixels = vec![0x44; snapshot_width * snapshot_height];
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: visible_pixels,
+            },
+        );
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x22; snapshot_width * snapshot_height]);
+        disp.dialog_modal_entered.insert(dialog_ptr);
+
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+        disp.window_proc_id = 1;
+        disp.window_title.clear();
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80,
+                rect: (0, 0, 20, 22),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0x500000,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_long(TEST_SP, item_hit_addr);
+        bus.write_long(TEST_SP + 4, 0);
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert!(tracking.draw_proc_queue.is_empty());
+        assert!(tracking.draw_procs_done);
+        assert!(tracking.rendered_pixels_final);
+        assert_eq!(
+            bus.read_byte(screen_base + 20 * row_bytes + 20),
+            0x44,
+            "retained visible snapshot should be restored on re-entry"
+        );
+    }
+
+    #[test]
+    fn modal_dialog_first_entry_with_showwindow_snapshot_still_queues_user_item_draw_proc() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_addr = 0x300000u32;
+        let screen_base = bus.alloc((64 * 64) as u32);
+        let row_bytes = 64u32;
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, row_bytes, 64, 64, 8);
+
+        let bounds = (10, 12, 30, 34);
+        let snapshot_width = (bounds.3 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let snapshot_height =
+            (bounds.2 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: vec![0x44; snapshot_width * snapshot_height],
+            },
+        );
+
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+        disp.window_proc_id = 1;
+        disp.window_title.clear();
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80,
+                rect: (0, 0, 20, 22),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0x500000,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_long(TEST_SP, item_hit_addr);
+        bus.write_long(TEST_SP + 4, 0);
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert_eq!(tracking.draw_proc_queue.len(), 1);
+        assert_eq!(tracking.draw_proc_queue[0], (0x500000, 1));
         assert!(!tracking.draw_procs_done);
         assert!(!tracking.rendered_pixels_final);
     }

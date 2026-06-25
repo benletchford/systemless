@@ -4138,9 +4138,10 @@ fn pict_indexed_source_mode_transfer(
     src_clut: &[[u16; 3]],
     device_clut: &[[u16; 3]; 256],
 ) -> PictIndexedTransfer {
-    // Color QuickDraw applies foreground/background colors for Boolean
-    // source modes on colored pixels; white/black source pixels preserve or
-    // modify the destination according to Table 4-1.
+    // Plain srcCopy copies indexed PixMap colors through the source and
+    // destination ColorTables. Boolean source modes apply foreground/background
+    // colors on colored pixels; white/black source pixels preserve or modify
+    // the destination according to Table 4-1.
     // Imaging With QuickDraw 1994, p. 4-33.
     let src_rgb = pict_source_rgb(source_index, translated_pixel, src_clut, device_clut);
     let is_black = src_rgb == [0, 0, 0];
@@ -4150,13 +4151,7 @@ fn pict_indexed_source_mode_transfer(
     let map_rgb = |rgb: [u16; 3]| closest_clut_index(rgb[0], rgb[1], rgb[2], device_clut);
 
     match mode_base {
-        0 => PictIndexedTransfer::Write(if is_black {
-            fg_idx
-        } else if is_white {
-            bg_idx
-        } else {
-            map_rgb(pict_colorize_src_copy_rgb(src_rgb, fg_rgb, bg_rgb))
-        }),
+        0 => PictIndexedTransfer::Write(translated_pixel),
         1 => {
             if is_white {
                 PictIndexedTransfer::Skip
@@ -4846,6 +4841,28 @@ mod tests {
         assert!(
             matches!(table[2], PictIndexedTransfer::Write(_)),
             "non-white source colors should be resolved once into the transfer table"
+        );
+    }
+
+    #[test]
+    fn indexed_src_copy_ignores_foreground_and_background_colors() {
+        let mut src_clut = [[0u16; 3]; 256];
+        src_clut[1] = [0xFFFF, 0x0000, 0x0000];
+
+        let mut dst_clut = [[0x7777u16; 3]; 256];
+        dst_clut[7] = [0x0000, 0xFFFF, 0x0000];
+        dst_clut[42] = [0xFFFF, 0x0000, 0x0000];
+        dst_clut[99] = [0x0000, 0x0000, 0xFFFF];
+
+        let mut src_to_dst = [0u8; 256];
+        src_to_dst[1] = 42;
+
+        let table = build_pict_indexed_transfer_table(0, &src_clut, &src_to_dst, &dst_clut, 7, 99);
+
+        assert_eq!(
+            table[1],
+            PictIndexedTransfer::Write(42),
+            "indexed srcCopy should copy the source ColorTable color, not tint it through fg/bg"
         );
     }
 

@@ -3237,14 +3237,12 @@ impl super::TrapDispatcher {
         // redraw only dynamic elements (edit text, button flash) on top.
         // Game-managed dialogs (all userItems) handle their own rendering
         // via the filter proc — skip restoration to avoid overwriting their content.
-        // While userItem draw procs are pending (rendered_pixels_final=false),
-        // skip restoration so the draw proc output accumulates in the framebuffer.
-        // After all draw procs complete, ModalDialog re-snapshots the final state
-        // and sets rendered_pixels_final=true before we begin restoring.
+        // While userItem draw procs or filter procs are pending
+        // (rendered_pixels_final=false), skip restoration so their output
+        // accumulates in the framebuffer. ModalDialog re-snapshots the final
+        // state and sets rendered_pixels_final=true before we begin restoring.
         if let Some(ref tracking) = self.dialog_tracking {
-            let restore_tracking_snapshot = tracking.rendered_pixels_final
-                || (tracking.draw_procs_done && !tracking.rendered_pixels.is_empty());
-            if !tracking.game_managed && restore_tracking_snapshot {
+            if !tracking.game_managed && tracking.rendered_pixels_final {
                 // Blit the pre-rendered dialog snapshot (includes pictures)
                 self.restore_dialog_pixels(bus, tracking.bounds, &tracking.rendered_pixels);
 
@@ -3751,6 +3749,52 @@ mod redraw_chrome_tests {
             bus.read_byte(probe),
             0x00,
             "once the dialog snapshot is final, normal port blitting should resume"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_does_not_restore_stale_dialog_pixels_while_filter_snapshot_pending() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        for i in 0..64u32 * 64 {
+            bus.write_byte(screen_base + i, 0x00);
+        }
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+
+        let bounds = (10, 10, 30, 30);
+        let stale_pixels = disp.save_dialog_pixels(&bus, bounds);
+        let probe = screen_base + 18 * 64 + 18;
+        bus.write_byte(probe, 0x44);
+
+        disp.dialog_tracking = Some(super::super::dispatch::DialogTrackingState {
+            bounds,
+            game_managed: false,
+            draw_procs_done: true,
+            rendered_pixels: stale_pixels,
+            rendered_pixels_final: false,
+            ..Default::default()
+        });
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x44,
+            "non-final ModalDialog snapshots must not overwrite live filter/userItem drawing"
+        );
+
+        if let Some(tracking) = disp.dialog_tracking.as_mut() {
+            tracking.rendered_pixels_final = true;
+        }
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x00,
+            "final ModalDialog snapshots should still be restored normally"
         );
     }
 

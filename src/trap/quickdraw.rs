@@ -4423,8 +4423,10 @@ impl super::TrapDispatcher {
                 let _ = self.init_cport(port_ptr, bus, true);
                 self.cport_ports.insert(port_ptr);
 
-                // Set as current port
-                let gd_handle = self.ensure_main_gdevice(bus);
+                // Set as current port on the active GDevice that seeded the
+                // port's PixMap. Offscreen code can select a freshly-created
+                // GDevice before OpenCPort.
+                let gd_handle = self.active_gdevice_or_main(bus);
                 self.set_current_port_state(bus, cpu, port_ptr, Some(gd_handle));
                 if trace_dialog_ports_enabled() {
                     eprintln!(
@@ -14568,7 +14570,7 @@ impl super::TrapDispatcher {
     /// Imaging With QuickDraw 1994 pp. 4-64 to 4-65:
     /// OpenCPort allocates storage, then calls InitCPort.
     fn allocate_cport_storage(&mut self, port: u32, bus: &mut MacMemoryBus) {
-        let gd_handle = self.ensure_main_gdevice(bus);
+        let gd_handle = self.active_gdevice_or_main(bus);
         let gd_ptr = bus.read_long(gd_handle);
 
         // Read GDevice rect for region initialization.
@@ -14644,7 +14646,7 @@ impl super::TrapDispatcher {
             return false;
         }
 
-        let gd_handle = self.ensure_main_gdevice(bus);
+        let gd_handle = self.active_gdevice_or_main(bus);
         let gd_ptr = bus.read_long(gd_handle);
 
         // Read GDevice rect for portRect and visRgn.
@@ -14699,6 +14701,14 @@ impl super::TrapDispatcher {
         bus.write_long(port + 28, clip_rgn); // +28 clipRgn
         self.init_cgraf_port_defaults(port, bus);
         true
+    }
+
+    fn active_gdevice_or_main(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if Self::gdevice_pixmap_handle(bus, self.current_gdevice) != 0 {
+            self.current_gdevice
+        } else {
+            self.ensure_main_gdevice(bus)
+        }
     }
 
     fn extend_recording_bbox(
@@ -16188,6 +16198,21 @@ impl super::TrapDispatcher {
     }
 
     fn gdevice_ctab_handle(bus: &MacMemoryBus, gdh: u32) -> u32 {
+        let pm_handle = Self::gdevice_pixmap_handle(bus, gdh);
+        if pm_handle == 0 {
+            return 0;
+        }
+        let pm_ptr = bus.read_long(pm_handle);
+        if pm_ptr == 0 {
+            return 0;
+        }
+        let Some(ctab_handle_addr) = pm_ptr.checked_add(42) else {
+            return 0;
+        };
+        bus.read_long(ctab_handle_addr)
+    }
+
+    fn gdevice_pixmap_handle(bus: &MacMemoryBus, gdh: u32) -> u32 {
         if gdh == 0 {
             return 0;
         }
@@ -16206,10 +16231,7 @@ impl super::TrapDispatcher {
         if pm_ptr == 0 {
             return 0;
         }
-        let Some(ctab_handle_addr) = pm_ptr.checked_add(42) else {
-            return 0;
-        };
-        bus.read_long(ctab_handle_addr)
+        pm_handle
     }
 
     fn gdevice_pixel_size(bus: &MacMemoryBus, gdh: u32) -> Option<u32> {
@@ -30051,6 +30073,53 @@ mod tests {
         assert_eq!(
             read_rgn_bbox(&bus, clip_rgn),
             (-32767, -32767, 32767, 32767)
+        );
+    }
+
+    #[test]
+    fn open_cport_initializes_pixmap_from_current_gdevice() {
+        // Imaging With QuickDraw 1994, pp. 4-64 to 4-66: OpenCPort allocates
+        // port-owned storage, then InitCPort initializes it from the current
+        // device. Apps can SetGDevice to an offscreen GDevice before opening
+        // a temporary CGrafPort.
+        let (mut d, mut cpu, mut bus) = setup();
+        let offscreen_gdh = d.allocate_detached_gdevice(&mut bus);
+        let offscreen_gd = bus.read_long(offscreen_gdh);
+        let offscreen_pm_handle = bus.read_long(offscreen_gd + 22);
+        let offscreen_pm = bus.read_long(offscreen_pm_handle);
+        let offscreen_base = bus.alloc(64 * 64);
+
+        bus.write_long(offscreen_pm, offscreen_base);
+        bus.write_word(offscreen_pm + 4, 0x8000 | 64);
+        bus.write_word(offscreen_pm + 6, 7);
+        bus.write_word(offscreen_pm + 8, 9);
+        bus.write_word(offscreen_pm + 10, 47);
+        bus.write_word(offscreen_pm + 12, 73);
+        bus.write_word(offscreen_gd + 34, 7);
+        bus.write_word(offscreen_gd + 36, 9);
+        bus.write_word(offscreen_gd + 38, 47);
+        bus.write_word(offscreen_gd + 40, 73);
+
+        d.current_gdevice = offscreen_gdh;
+        bus.write_long(0x0CC8, offscreen_gdh);
+
+        let port_ptr = 0x300000u32;
+        bus.write_long(TEST_SP, port_ptr);
+        let result = d.dispatch_quickdraw(true, 0x200, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(d.current_gdevice, offscreen_gdh);
+
+        let port_pm_handle = bus.read_long(port_ptr + 2);
+        let port_pm = bus.read_long(port_pm_handle);
+        assert_ne!(port_pm_handle, offscreen_pm_handle);
+        assert_eq!(bus.read_long(port_pm), offscreen_base);
+        assert_eq!(bus.read_word(port_pm + 4), 0x8000 | 64);
+        assert_eq!(read_rect(&bus, port_pm + 6), (7, 9, 47, 73));
+        assert_eq!(read_rect(&bus, port_ptr + 16), (7, 9, 47, 73));
+        assert_eq!(
+            read_rgn_bbox(&bus, bus.read_long(port_ptr + 24)),
+            (7, 9, 47, 73)
         );
     }
 
