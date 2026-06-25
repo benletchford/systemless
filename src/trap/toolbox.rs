@@ -477,6 +477,20 @@ impl super::TrapDispatcher {
     const ALIAS_EXTRA_PARENT_DIR_NAME: i16 = 0;
     const ALIAS_EXTRA_END: i16 = -1;
 
+    fn apple_event_handler_for(&self, event_class: u32, event_id: u32) -> Option<(u32, u32)> {
+        // Inside Macintosh Volume VI, 6-28 to 6-29: AEInstallEventHandler
+        // entries may use typeWildCard ('****') for event class, event ID,
+        // or both; wildcard entries match all possible values.
+        [
+            (event_class, event_id),
+            (event_class, AE_TYPE_WILDCARD),
+            (AE_TYPE_WILDCARD, event_id),
+            (AE_TYPE_WILDCARD, AE_TYPE_WILDCARD),
+        ]
+        .into_iter()
+        .find_map(|key| self.ae_handlers.get(&key).copied())
+    }
+
     fn stack_bool_slot(bus: &MacMemoryBus, addr: u32) -> bool {
         // MPW Pascal callers store BOOLEAN in the high byte of the
         // 2-byte stack slot. The low byte is padding and can retain
@@ -3758,8 +3772,8 @@ impl super::TrapDispatcher {
                             bus.read_word(event_record + 14)
                         );
                     }
-                    if let Some(&(handler_ptr, refcon)) =
-                        self.ae_handlers.get(&(oapp_class, oapp_id))
+                    if let Some((handler_ptr, refcon)) =
+                        self.apple_event_handler_for(oapp_class, oapp_id)
                     {
                         // Lazily allocate the trampoline on first use.
                         // Six bytes encode `MOVE.W #$FEFE, D0; _Pack8`,
@@ -19180,6 +19194,49 @@ mod tests {
         );
         assert_eq!(bus.read_long(passed_event_desc), event_class);
         assert_ne!(bus.read_long(passed_event_desc + 4), 0);
+    }
+
+    #[test]
+    fn pack8_aeprocessappleevent_dispatches_double_wildcard_handler() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let handler_ptr = 0x0040_8800u32;
+        let handler_refcon = 0xCAFE_BABEu32;
+        let return_pc = 0x00F0_2468u32;
+
+        // Install a typeWildCard/typeWildCard handler. Inside Macintosh
+        // Volume VI, 6-28 to 6-29 says this entry receives all Apple events.
+        cpu.write_reg(Register::D0, 0x091F);
+        bus.write_word(sp, 0); // isSysHandler
+        bus.write_long(sp + 2, handler_refcon);
+        bus.write_long(sp + 6, handler_ptr);
+        bus.write_long(sp + 10, AE_TYPE_WILDCARD);
+        bus.write_long(sp + 14, AE_TYPE_WILDCARD);
+        bus.write_word(sp + 18, 0xBEEF);
+        let install = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(install.is_some());
+        assert!(install.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::D0, 0x021B);
+        bus.write_long(sp, 0x0032_0000);
+        bus.write_word(sp + 4, 0xBEEF);
+        let process = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(process.is_some());
+        assert!(process.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::PC), handler_ptr);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 12);
+        assert_eq!(bus.read_long(sp - 8), handler_refcon);
+        assert!(disp.fired_oapp_handler);
+
+        let state = disp
+            .ae_call_state
+            .clone()
+            .expect("expected in-flight AE call state");
+        assert_eq!(state.return_pc, return_pc);
+        assert_eq!(state.expected_sp_after_rtd, sp + 4);
     }
 
     #[test]
