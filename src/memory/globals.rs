@@ -41,6 +41,12 @@ pub mod addr {
     /// byte must be initialized non-zero at boot to satisfy classic clients.
     pub const SD_VOLUME: u32 = 0x0260;
 
+    /// SoundBase: pointer to the free-form synthesizer's main sound buffer.
+    /// Inside Macintosh Volume III, III-425; Volume IV, IV-247 documents
+    /// that programs should use this low-memory global rather than fixed
+    /// hardware-dependent sound-buffer addresses.
+    pub const SOUND_BASE: u32 = 0x0266;
+
     /// SoundLevel: amplitude in the Sound Driver's 740-byte buffer (1 byte).
     /// Inside Macintosh Volume III, III-425.
     pub const SOUND_LEVEL: u32 = 0x027F;
@@ -328,6 +334,11 @@ mod tests {
             addr::SOUND_LEVEL,
             0x027F,
             "SoundLevel must be at $027F per Inside Macintosh Volume III."
+        );
+        assert_eq!(
+            addr::SOUND_BASE,
+            0x0266,
+            "SoundBase must be at $0266 per Inside Macintosh Volume III."
         );
 
         // Other heavily-load-bearing globals; a regression in any

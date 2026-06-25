@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 
 use super::globals::LowMemGlobals;
 
+const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
+const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
 // Release-mode tracer for writes to a guest address range. Use to
 // localize the source of unexpected pixel writes in the framebuffer
 // or to any other narrow guest memory range. Format:
@@ -577,6 +579,29 @@ impl MacMemoryBus {
         ((size + 3) & !3).max(4)
     }
 
+    fn legacy_sound_base_address(ram_size: usize, screen_base: u32, screen_bytes: u32) -> u32 {
+        let ram_size = ram_size as u32;
+        let preferred = screen_base.saturating_add(screen_bytes);
+        if preferred >= 0x1000 && preferred + LEGACY_SOUND_BUFFER_BYTES <= ram_size {
+            preferred
+        } else if ram_size >= 0x1000 + LEGACY_SOUND_BUFFER_BYTES {
+            ram_size - LEGACY_SOUND_BUFFER_BYTES
+        } else {
+            0
+        }
+    }
+
+    fn init_legacy_sound_buffer(&mut self, sound_base: u32) {
+        if sound_base == 0 {
+            return;
+        }
+        for word in 0..LEGACY_SOUND_BUFFER_WORDS {
+            let addr = sound_base + word * 2;
+            self.write_byte(addr, 0x80);
+            self.write_byte(addr + 1, 0x00);
+        }
+    }
+
     /// `BlockMove` fast path. Copies `count` bytes from `src` to
     /// `dst`, handling overlap correctly. When both ranges are fully
     /// inside RAM and no watchpoint is armed, uses `slice::copy_within`
@@ -656,11 +681,28 @@ impl MacMemoryBus {
         // ScrnBase ($0824) - pointer to screen buffer
         bus.write_long(0x0824, screen_base);
 
+        // SoundBase ($0266) - pointer to the 370-word main sound buffer
+        // used by the original free-form synthesizer. Keep it in the
+        // display/sound hardware reservation just past the active 800x600
+        // framebuffer: still outside the heap, but below Systemless's
+        // top-of-RAM stack window. Direct Sound Driver clients such as
+        // Crystal Quest clear this buffer themselves via
+        // `MOVEA.L (SoundBase).W,A0`; if NIL, those writes land in low
+        // memory and corrupt Ticks ($016A). Inside Macintosh Volume III,
+        // III-21 and III-425; Volume IV, IV-247.
+        use super::globals::addr;
+        let sound_base = Self::legacy_sound_base_address(
+            ram_size,
+            screen_base,
+            screen_row_bytes as u32 * screen_height as u32,
+        );
+        bus.write_long(addr::SOUND_BASE, sound_base);
+        bus.init_legacy_sound_buffer(sound_base);
+
         // screenBits BitMap structure at $083C (14 bytes)
         // BitMap: baseAddr(4) + rowBytes(2) + bounds(8) = 14 bytes
         // Stored at $083C to avoid conflicting with mouse globals at $0828-$0833.
         // Reference: Executor docs/globals.cpp — $0828 is MTemp, $082C is MouseLocation
-        use super::globals::addr;
         bus.write_long(addr::SCREEN_BITS, screen_base); // baseAddr
         bus.write_word(addr::SCREEN_BITS + 4, screen_row_bytes); // rowBytes
         bus.write_word(addr::SCREEN_BITS + 6, 0); // bounds.top
@@ -1268,6 +1310,66 @@ mod tests {
             second,
             first + 12,
             "re-reserving the same zone-header range must not create a second gap"
+        );
+    }
+
+    #[test]
+    fn new_initializes_legacy_sound_base_buffer() {
+        let bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let sound_base = bus.read_long(crate::memory::globals::addr::SOUND_BASE);
+
+        assert_eq!(
+            sound_base, 0x003F_5300,
+            "SoundBase should sit just past the active framebuffer in the reserved hardware-buffer area"
+        );
+        assert!(
+            sound_base + LEGACY_SOUND_BUFFER_BYTES <= bus.ram_size(),
+            "the full 370-word sound buffer must be inside RAM"
+        );
+        assert_eq!(
+            bus.read_byte(sound_base),
+            0x80,
+            "legacy sound high bytes should start at neutral amplitude"
+        );
+        assert_eq!(
+            bus.read_byte(sound_base + 1),
+            0,
+            "legacy sound low bytes overlap disk-speed data and should start clear"
+        );
+        assert_eq!(
+            bus.read_byte(sound_base + LEGACY_SOUND_BUFFER_BYTES - 2),
+            0x80,
+            "last legacy sound high byte"
+        );
+        assert_eq!(
+            bus.read_byte(sound_base + LEGACY_SOUND_BUFFER_BYTES - 1),
+            0,
+            "last legacy sound low byte"
+        );
+    }
+
+    #[test]
+    fn writes_through_legacy_sound_base_do_not_corrupt_ticks() {
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let sound_base = bus.read_long(crate::memory::globals::addr::SOUND_BASE);
+        bus.write_long(crate::memory::globals::addr::TICKS, 1234);
+
+        // Mirrors the classic free-form Sound Driver pattern Crystal Quest
+        // uses: write the high byte of each 370-word sample slot directly
+        // through the SoundBase low-memory pointer.
+        for offset in (0..LEGACY_SOUND_BUFFER_BYTES).step_by(2) {
+            bus.write_byte(sound_base + offset, 0x80);
+        }
+
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::TICKS),
+            1234,
+            "SoundBase must never point at low memory; direct sound-buffer clears must not wrap Ticks"
+        );
+        assert_eq!(bus.read_byte(sound_base), 0x80);
+        assert_eq!(
+            bus.read_byte(sound_base + LEGACY_SOUND_BUFFER_BYTES - 2),
+            0x80
         );
     }
 

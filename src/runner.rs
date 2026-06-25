@@ -5022,6 +5022,18 @@ mod tests {
             0,
             "SoundLevel ($027F) is a distinct Sound Driver amplitude byte"
         );
+        let sound_base = runner
+            .bus
+            .read_long(crate::memory::globals::addr::SOUND_BASE);
+        assert_eq!(
+            sound_base, 0x007F_5300,
+            "SoundBase ($0266) should point at the 370-word legacy sound buffer in reserved display memory"
+        );
+        assert_eq!(
+            runner.bus.read_byte(sound_base),
+            0x80,
+            "legacy SoundBase buffer starts at neutral amplitude"
+        );
     }
 
     #[test]
