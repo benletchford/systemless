@@ -948,9 +948,20 @@ impl super::TrapDispatcher {
                 // drawCntl/testCntl implementations selected by procID. Systemless
                 // cannot execute arbitrary guest CDEFs here, so preserve the
                 // ControlRecord title and rectangle as a generic button fallback.
-                self.draw_push_button_control(
-                    cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
-                );
+                if !self.draw_picture_title_control(
+                    bus,
+                    abs_top,
+                    abs_left,
+                    abs_bottom,
+                    abs_right,
+                    hilite,
+                    value,
+                    &title_bytes,
+                ) {
+                    self.draw_push_button_control(
+                        cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                    );
+                }
             }
         }
 
@@ -958,6 +969,66 @@ impl super::TrapDispatcher {
         self.pn_size = saved_pn_size;
         self.pn_mode = saved_pn_mode;
         self.pn_pat = saved_pn_pat;
+    }
+
+    fn draw_picture_title_control(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        abs_top: i16,
+        abs_left: i16,
+        abs_bottom: i16,
+        abs_right: i16,
+        hilite: u8,
+        value: i16,
+        title_bytes: &[u8],
+    ) -> bool {
+        let Some((off_id, on_id)) = Self::picture_ids_from_control_title(title_bytes) else {
+            return false;
+        };
+        let Some((_, off_pic_ptr)) = self.find_resource_any(*b"PICT", off_id) else {
+            return false;
+        };
+        let Some((_, on_pic_ptr)) = self.find_resource_any(*b"PICT", on_id) else {
+            return false;
+        };
+
+        // IM:I I-317..I-331 says custom CDEFs interpret ControlRecord
+        // fields, and IM:I I-369 says DrawPicture scales a Picture into a
+        // destination Rect. If a custom control's title bytes are exactly two
+        // valid PICT resource IDs, use those resources as a generic CDEF
+        // fallback and leave all other custom controls on the text/button path.
+        let pic_ptr = if hilite == 1 || value != 0 {
+            on_pic_ptr
+        } else {
+            off_pic_ptr
+        };
+        let device_ct_seed =
+            Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus)).unwrap_or(0);
+        let (drawn, _) = super::pict::draw_picture(
+            bus,
+            pic_ptr,
+            abs_top,
+            abs_left,
+            abs_bottom,
+            abs_right,
+            self.screen_mode,
+            &self.device_clut,
+            device_ct_seed,
+            None,
+        );
+        if drawn && hilite == 255 {
+            self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
+        }
+        drawn
+    }
+
+    fn picture_ids_from_control_title(title_bytes: &[u8]) -> Option<(i16, i16)> {
+        (title_bytes.len() == 4).then(|| {
+            (
+                i16::from_be_bytes([title_bytes[0], title_bytes[1]]),
+                i16::from_be_bytes([title_bytes[2], title_bytes[3]]),
+            )
+        })
     }
 
     fn draw_push_button_control<C: CpuOps>(
@@ -3259,6 +3330,29 @@ mod tests {
         data
     }
 
+    fn fill_rect_pict_resource(
+        frame: (i16, i16, i16, i16),
+        fill_rect: (i16, i16, i16, i16),
+    ) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u16.to_be_bytes()); // picSize placeholder
+        for value in [frame.0, frame.1, frame.2, frame.3] {
+            data.extend_from_slice(&(value as u16).to_be_bytes());
+        }
+        data.push(0x11); // versionOp
+        data.push(0x01); // PICT v1
+        data.push(0x0A); // FillPat
+        data.extend_from_slice(&[0xFF; 8]);
+        data.push(0x34); // fillRect
+        for value in [fill_rect.0, fill_rect.1, fill_rect.2, fill_rect.3] {
+            data.extend_from_slice(&(value as u16).to_be_bytes());
+        }
+        data.push(0xFF); // EndOfPicture
+        let size = data.len() as u16;
+        data[0..2].copy_from_slice(&size.to_be_bytes());
+        data
+    }
+
     fn alloc_control_handle(
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
@@ -5327,6 +5421,70 @@ mod tests {
             .unwrap();
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn draw1control_unknown_cdef_pict_title_draws_resource_pair() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = 0x300000u32;
+        let window = 0x181000u32;
+        disp.set_current_port_for_test(window);
+        let base = bus.read_long(window + 2);
+        let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+
+        disp.install_test_resource(
+            &mut bus,
+            *b"PICT",
+            4096,
+            &fill_rect_pict_resource((0, 0, 8, 8), (0, 0, 8, 4)),
+        );
+        disp.install_test_resource(
+            &mut bus,
+            *b"PICT",
+            4097,
+            &fill_rect_pict_resource((0, 0, 8, 8), (0, 4, 8, 8)),
+        );
+
+        let (ctrl_handle, ctrl_ptr) =
+            alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 100));
+        disp.control_proc_ids.insert(ctrl_ptr, 3216);
+        bus.write_byte(ctrl_ptr + 40, 4);
+        bus.write_word(ctrl_ptr + 41, 4096);
+        bus.write_word(ctrl_ptr + 43, 4097);
+
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, ctrl_handle);
+        disp.dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert!(
+            screen_pixel_is_set(&bus, base, row_bytes, 35, 30),
+            "normal unknown CDEF with a PICT-pair title should draw the first PICT"
+        );
+        assert!(
+            !screen_pixel_is_set(&bus, base, row_bytes, 85, 30),
+            "normal state should not draw the highlighted PICT"
+        );
+
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+        bus.write_byte(ctrl_ptr + 17, 1);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, ctrl_handle);
+        disp.dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert!(
+            !screen_pixel_is_set(&bus, base, row_bytes, 35, 30),
+            "highlighted state should not draw the normal PICT"
+        );
+        assert!(
+            screen_pixel_is_set(&bus, base, row_bytes, 85, 30),
+            "highlighted unknown CDEF with a PICT-pair title should draw the second PICT"
+        );
     }
 
     #[test]
