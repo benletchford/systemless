@@ -9622,7 +9622,9 @@ impl super::TrapDispatcher {
                         pt_h,
                         rgn_handle,
                         Self::region_bbox(bus, rgn_handle),
-                        Self::region_ptr_and_size(bus, rgn_handle).map(|(_, size)| size).unwrap_or(0),
+                        Self::region_ptr_and_size(bus, rgn_handle)
+                            .map(|(_, size)| size)
+                            .unwrap_or(0),
                         in_rgn
                     );
                 }
@@ -20803,6 +20805,7 @@ mod tests {
     use crate::trap::quickdraw::CopyBitmapInfo;
     use crate::trap::types::{Rect, ShapeOp};
     use crate::trap::TrapDispatcher;
+    use crate::ui_theme::UiThemeId;
     use std::collections::HashMap;
 
     /// Helper: write a rect (top, left, bottom, right) at addr.
@@ -24524,6 +24527,165 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(TEST_SP + 8) as i16, width_b + width_c);
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct QuickDrawTextMetricResults {
+        font_info: [u16; 4],
+        get_font_info_stack: u32,
+        get_font_info_tail: u32,
+        string_width: u16,
+        string_width_stack: u32,
+        string_width_tail: u16,
+        char_width: u16,
+        char_width_stack: u32,
+        char_width_tail: u16,
+        text_width: u16,
+        text_width_stack: u32,
+        text_width_tail: u16,
+        measure_locs: [u16; 5],
+        measure_text_stack: u32,
+        measure_text_tail: u16,
+    }
+
+    fn quickdraw_text_metric_results_for_theme(theme_id: UiThemeId) -> QuickDrawTextMetricResults {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.set_ui_theme_id(theme_id);
+        d.tx_font = 3; // Geneva
+        d.tx_size = 14;
+        const SAMPLE: &[u8] = b"WIDE";
+
+        let info_ptr = 0x300100u32;
+        for off in [0u32, 2, 4, 6] {
+            bus.write_word(info_ptr + off, 0xDEAD);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, info_ptr);
+        bus.write_long(TEST_SP + 4, 0xCAFE_BABE);
+        d.dispatch_quickdraw(true, 0x08B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let font_info = [
+            bus.read_word(info_ptr),
+            bus.read_word(info_ptr + 2),
+            bus.read_word(info_ptr + 4),
+            bus.read_word(info_ptr + 6),
+        ];
+        let get_font_info_stack = cpu.read_reg(Register::A7);
+        let get_font_info_tail = bus.read_long(TEST_SP + 4);
+
+        let string_ptr = 0x300200u32;
+        bus.write_byte(string_ptr, SAMPLE.len() as u8);
+        for (idx, byte) in SAMPLE.iter().enumerate() {
+            bus.write_byte(string_ptr + 1 + idx as u32, *byte);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, string_ptr);
+        bus.write_word(TEST_SP + 4, 0xBEEF);
+        bus.write_word(TEST_SP + 6, 0xCAFE);
+        d.dispatch_quickdraw(true, 0x08C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let string_width = bus.read_word(TEST_SP + 4);
+        let string_width_stack = cpu.read_reg(Register::A7);
+        let string_width_tail = bus.read_word(TEST_SP + 6);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, b'W' as u16);
+        bus.write_word(TEST_SP + 2, 0xBEEF);
+        bus.write_word(TEST_SP + 4, 0xCAFE);
+        d.dispatch_quickdraw(true, 0x08D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let char_width = bus.read_word(TEST_SP + 2);
+        let char_width_stack = cpu.read_reg(Register::A7);
+        let char_width_tail = bus.read_word(TEST_SP + 4);
+
+        let text_ptr = 0x300300u32;
+        for (idx, byte) in SAMPLE.iter().enumerate() {
+            bus.write_byte(text_ptr + idx as u32, *byte);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, SAMPLE.len() as u16);
+        bus.write_word(TEST_SP + 2, 0);
+        bus.write_long(TEST_SP + 4, text_ptr);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        bus.write_word(TEST_SP + 10, 0xCAFE);
+        d.dispatch_quickdraw(true, 0x086, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let text_width = bus.read_word(TEST_SP + 8);
+        let text_width_stack = cpu.read_reg(Register::A7);
+        let text_width_tail = bus.read_word(TEST_SP + 10);
+
+        let measure_locs_ptr = 0x300500u32;
+        for idx in 0..=SAMPLE.len() {
+            bus.write_word(measure_locs_ptr + (idx as u32) * 2, 0x7777);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, measure_locs_ptr);
+        bus.write_long(TEST_SP + 4, text_ptr);
+        bus.write_word(TEST_SP + 8, SAMPLE.len() as u16);
+        bus.write_word(TEST_SP + 10, 0xCAFE);
+        d.dispatch_quickdraw(true, 0x037, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let mut measure_locs = [0u16; 5];
+        for (idx, slot) in measure_locs.iter_mut().enumerate() {
+            *slot = bus.read_word(measure_locs_ptr + (idx as u32) * 2);
+        }
+        let measure_text_stack = cpu.read_reg(Register::A7);
+        let measure_text_tail = bus.read_word(TEST_SP + 10);
+
+        QuickDrawTextMetricResults {
+            font_info,
+            get_font_info_stack,
+            get_font_info_tail,
+            string_width,
+            string_width_stack,
+            string_width_tail,
+            char_width,
+            char_width_stack,
+            char_width_tail,
+            text_width,
+            text_width_stack,
+            text_width_tail,
+            measure_locs,
+            measure_text_stack,
+            measure_text_tail,
+        }
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_quickdraw_text_metrics() {
+        // IM:I I-173: CharWidth, StringWidth, TextWidth, and GetFontInfo
+        // report guest-visible font metrics for the current GrafPort text
+        // state. IM:IV IV-25 / IV-32: MeasureText writes count+1 pixel
+        // offsets with the first entry 0. Theme chrome must not alter these
+        // QuickDraw text measurements or their trap stack protocols.
+        let classic = quickdraw_text_metric_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = quickdraw_text_metric_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert!(classic.font_info.iter().any(|value| *value != 0));
+        assert_eq!(classic.get_font_info_stack, TEST_SP + 4);
+        assert_eq!(classic.get_font_info_tail, 0xCAFE_BABE);
+        assert_eq!(classic.string_width, classic.text_width);
+        assert!(classic.char_width > 0);
+        assert_eq!(classic.string_width_stack, TEST_SP + 4);
+        assert_eq!(classic.string_width_tail, 0xCAFE);
+        assert_eq!(classic.char_width_stack, TEST_SP + 2);
+        assert_eq!(classic.char_width_tail, 0xCAFE);
+        assert_eq!(classic.text_width_stack, TEST_SP + 8);
+        assert_eq!(classic.text_width_tail, 0xCAFE);
+        assert_eq!(classic.measure_locs[0], 0);
+        assert_eq!(classic.measure_locs[1], classic.char_width);
+        assert_eq!(classic.measure_locs[4], classic.text_width);
+        assert_eq!(classic.measure_text_stack, TEST_SP + 10);
+        assert_eq!(classic.measure_text_tail, 0xCAFE);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change QuickDraw text metrics or stack protocol"
+        );
     }
 
     #[test]

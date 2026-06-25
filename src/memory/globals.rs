@@ -157,6 +157,13 @@ pub mod addr {
     /// Inside Macintosh Volume I, I-411.
     pub const DA_BEEPER: u32 = 0x0A9C;
 
+    /// DlgFont: font number for subsequently created dialog and alert
+    /// grafPorts. SetDAFont / SetDialogFont are documented glue routines;
+    /// assembly code can also set this low-memory global directly.
+    /// Inside Macintosh Volume I, I-412; Macintosh Toolbox Essentials 1992,
+    /// p. 6-104.
+    pub const DLG_FONT: u32 = 0x0AFA;
+
     /// TEScrpLength: size of the TextEdit scrap in bytes (2-byte
     /// INTEGER). Per IM:I I-389 + I-390 + assembly note at
     /// I-12606: contains the byte count of the cut/copied text

@@ -21,9 +21,11 @@
 //! [u8; data_len]                            coverage bytes (0 or 255)
 //! ```
 //!
-//! Glyph order matches the baked catalogue: ASCII printable 0x20..=0x7E
-//! (95 entries). Missing glyphs are encoded as zero-sized entries with a
-//! positive advance for spaces or `0` advance for "not in font".
+//! Glyph order starts with the baked catalogue's ASCII printable 0x20..=0x7E
+//! entries, then appends classic menu symbols that live below ASCII in the
+//! System font: Command key (Mac Roman 0x11) and checkmark (0x12). Missing
+//! glyphs are encoded as zero-sized entries with a positive advance for spaces
+//! or `0` advance for "not in font".
 
 use std::collections::HashMap;
 use std::fs;
@@ -36,7 +38,10 @@ const MAGIC: &[u8; 4] = b"KFOV";
 const VERSION: u16 = 1;
 const HEADER_BYTES: usize = 48;
 const GLYPH_ENTRY_BYTES: usize = 12;
-pub const GLYPH_COUNT: u16 = 95;
+pub const ASCII_GLYPH_COUNT: u16 = 95;
+pub const COMMAND_SYMBOL_GLYPH_INDEX: usize = ASCII_GLYPH_COUNT as usize;
+pub const CHECKMARK_SYMBOL_GLYPH_INDEX: usize = COMMAND_SYMBOL_GLYPH_INDEX + 1;
+pub const GLYPH_COUNT: u16 = ASCII_GLYPH_COUNT + 2;
 
 pub const STYLE_PLAIN: u8 = 0;
 pub const STYLE_BOLD: u8 = 1;

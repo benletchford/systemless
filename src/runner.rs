@@ -5,6 +5,7 @@ use crate::loader::{Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp};
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::TrapDispatcher;
+use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -16,6 +17,8 @@ static TRACE_TIMER: OnceLock<bool> = OnceLock::new();
 static TRACE_VBL: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RUNNER: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
+
+const APP_ZONE_HEADER_SIZE: u32 = 64;
 
 fn trace_dialog_filter_enabled() -> bool {
     *TRACE_DIALOG_FILTER
@@ -280,6 +283,7 @@ const DIALOG_FILTER_TRAMPOLINE_OFFSET: u32 = 0x40;
 const DIALOG_FILTER_EVENT_OFFSET: u32 = 0x80;
 // 2-byte scratch where the filter trampoline writes its Boolean return value.
 const DIALOG_FILTER_RESULT_OFFSET: u32 = 0x96;
+const MENU_HOOK_TRAMPOLINE_OFFSET: u32 = 0xA0;
 const DIALOG_CALLBACK_SCRATCH_FALLBACK: u32 = 0x0000_1200;
 /// Compact Mac video hardware refreshes at approximately 60.15 Hz.
 pub const DEFAULT_VBL_HZ: f64 = 60.15;
@@ -315,6 +319,7 @@ enum ActiveInterruptCallbackSource {
     SoundDoubleBack,
     DialogDrawProc,
     DialogFilterProc,
+    MenuHook,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -356,6 +361,13 @@ pub struct FixtureRunnerConfig {
     /// Useful on keyboards without a numeric keypad, since many classic Mac games use
     /// the numpad for movement. Inside Macintosh Volume V, V-191.
     pub arrows_as_numpad: bool,
+    /// Selected UI rendering provider. The default `classic-system7` provider
+    /// represents the existing renderer; non-classic themes are explicit and
+    /// must not alter guest-visible Toolbox behavior in classic metrics mode.
+    pub ui_theme: UiThemeId,
+    /// Declares whether theme rendering preserves classic guest metrics or opts
+    /// into future themed hit/measurement behavior.
+    pub theme_metrics_mode: ThemeMetricsMode,
 }
 
 impl Default for FixtureRunnerConfig {
@@ -364,6 +376,8 @@ impl Default for FixtureRunnerConfig {
             max_instructions: 10_000_000,
             load_address: 0x10000,
             arrows_as_numpad: false,
+            ui_theme: UiThemeId::ClassicSystem7,
+            theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
         }
     }
 }
@@ -461,6 +475,9 @@ pub struct FixtureRunner {
     /// Guest-memory address of the ModalDialog filter proc trampoline.
     /// Allocated once on first use and reused for all callback invocations.
     dialog_filter_trampoline: u32,
+    /// Guest-memory address of the MenuSelect MenuHook trampoline.
+    /// Allocated once on first use and reused for all callback invocations.
+    menu_hook_trampoline: u32,
     /// Guest-memory address of a scratch EventRecord passed to ModalDialog filters.
     dialog_filter_event: u32,
     /// Last dialog/tick pair that received a synthetic ModalDialog null event.
@@ -505,7 +522,8 @@ impl FixtureRunner {
     /// [`set_menu_bar_visible`](Self::set_menu_bar_visible) to opt back
     /// in to the original Mac menu-bar behaviour.
     pub fn new(ram_size: usize, config: FixtureRunnerConfig) -> Self {
-        let dispatcher = TrapDispatcher::new();
+        let mut dispatcher = TrapDispatcher::new();
+        dispatcher.set_ui_theme_id(config.ui_theme);
         Self {
             cpu: M68kCpu::new(),
             bus: MacMemoryBus::new(ram_size),
@@ -532,6 +550,7 @@ impl FixtureRunner {
             sound_file_completion_trampoline: 0,
             dialog_draw_trampoline: 0,
             dialog_filter_trampoline: 0,
+            menu_hook_trampoline: 0,
             dialog_filter_event: 0,
             dialog_filter_last_null_event_tick: None,
             app_start_time: None,
@@ -604,6 +623,27 @@ impl FixtureRunner {
 
     pub fn dispatcher_mut(&mut self) -> &mut crate::trap::dispatch::TrapDispatcher {
         &mut self.dispatcher
+    }
+
+    /// Returns the selected UI theme provider. `classic-system7` is the
+    /// default and maps to the existing renderer path; non-classic providers
+    /// are explicit Systemless-owned rendering contracts.
+    pub fn ui_theme(&self) -> &'static dyn UiTheme {
+        self.config.ui_theme.provider()
+    }
+
+    pub fn ui_theme_id(&self) -> UiThemeId {
+        self.config.ui_theme
+    }
+
+    pub fn theme_metrics_mode(&self) -> ThemeMetricsMode {
+        self.config.theme_metrics_mode
+    }
+
+    pub fn uses_classic_guest_metrics(&self) -> bool {
+        self.config
+            .theme_metrics_mode
+            .preserves_classic_guest_metrics()
     }
 
     /// Show or hide the Mac menu bar.
@@ -1035,11 +1075,12 @@ impl FixtureRunner {
     /// directly only when you've already parsed the resource fork
     /// yourself (e.g. building a custom test fixture).
     pub fn load_app(&mut self, fork: &ResourceFork) -> Option<LoadedApp> {
-        // init_app writes the Memory Manager zone header at the start of the
-        // heap. Reserve that header before resource loading so eager resource
-        // allocations cannot land at $200000 and be overwritten later.
-        self.bus.reserve_heap(64);
-
+        // Resource data is allocated before `init_app` writes the
+        // application heap zone header. Reserve the header range first so
+        // early app resources cannot land at the zone base and later be
+        // overwritten by `bkLim`, `hFstFree`, or `zcbFree`.
+        // Inside Macintosh Volume II, II-22.
+        self.bus.reserve_heap(APP_ZONE_HEADER_SIZE);
         // Load resources into dispatcher for GetResource trap
         self.dispatcher.load_resources(fork, &mut self.bus);
 
@@ -1228,7 +1269,7 @@ impl FixtureRunner {
         // Apps and the Memory Manager read the zone header to determine
         // available memory. zcbFree (offset +12) must reflect free bytes.
         // Reserve heap space so alloc() doesn't overwrite the zone header.
-        let zone_header_size: u32 = 64;
+        let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
         self.bus.reserve_heap(zone_header_size);
         let zone_size = appl_limit - heap_start;
         let free_bytes = zone_size - zone_header_size;
@@ -2315,13 +2356,24 @@ impl FixtureRunner {
                                 }
                                 self.cpu.write_reg(Register::PC, pc);
 
+                                // Fire MenuSelect's documented MenuHook while
+                                // the dropdown is still live on screen. The
+                                // hook is guest code, so inject it before the
+                                // next A93D re-fire instead of approximating it
+                                // inside the HLE trap body.
+                                let fired_menu_hook = self.fire_menu_hook_proc(opcode);
+
                                 // Fire pending dialog userItem draw procs.
                                 // The trampoline redirects PC to execute the
                                 // 68K draw proc; when it RTS's, PC returns to
                                 // the ModalDialog A-line for the next re-fire.
-                                let fired_draw_proc = self.fire_dialog_draw_procs();
+                                let fired_draw_proc = if fired_menu_hook {
+                                    false
+                                } else {
+                                    self.fire_dialog_draw_procs()
+                                };
                                 let mut fired_filter_proc = false;
-                                if !fired_draw_proc {
+                                if !fired_menu_hook && !fired_draw_proc {
                                     // Fire the filter proc for any dialog that has one,
                                     // once draw procs are complete. On a real Mac,
                                     // ModalDialog calls the filter for every event
@@ -2338,7 +2390,11 @@ impl FixtureRunner {
                                 // dialog draw/filter proc has not run yet, so
                                 // presenting here shows half-painted screens.
                                 // Headless mode keeps executing as before.
-                                if yield_for_ui && !fired_draw_proc && !fired_filter_proc {
+                                if yield_for_ui
+                                    && !fired_menu_hook
+                                    && !fired_draw_proc
+                                    && !fired_filter_proc
+                                {
                                     if (opcode & !0x0400) == 0xA991
                                         && !self.service_gui_modal_dialog_idle_tick(tick_cap)
                                     {
@@ -3503,6 +3559,88 @@ impl FixtureRunner {
         self.fire_modeless_dialog_draw_proc()
     }
 
+    fn fire_menu_hook_proc(&mut self, opcode: u16) -> bool {
+        if self.active_interrupt_callback.is_some() || (opcode & !0x0400) != 0xA93D {
+            return false;
+        }
+        if self.dispatcher.menu_tracking.is_none() || self.bus.read_byte(0x0172) != 0x00 {
+            return false;
+        }
+
+        // MenuHook ($0A30)
+        // Address of a no-argument routine that MenuSelect calls repeatedly
+        // while the mouse button is down.
+        // PROCEDURE MyMenuHook;
+        // Inside Macintosh Volume I, I-356; Inside Macintosh Volume III, III-446
+        let hook_addr = self.bus.read_long(0x0A30);
+        let Some(call_addr) = self.resolve_dialog_draw_proc_addr(hook_addr) else {
+            return false;
+        };
+
+        // Trampoline (22 bytes):
+        //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)   ; 48E7 F0F0
+        //   +4:  JSR     hook_addr            ; 4EB9 xxxx xxxx
+        //   +10: MOVEA.L #savedRegsSP,A7      ; 4FF9 xxxx xxxx
+        //   +16: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F
+        //   +20: RTS                          ; 4E75
+        if self.menu_hook_trampoline == 0 {
+            let tramp = self.dialog_callback_scratch_base() + MENU_HOOK_TRAMPOLINE_OFFSET;
+            self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
+            self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
+            self.bus.write_word(tramp + 4, 0x4EB9); // JSR abs.L
+                                                    // +6..+9: hook_addr
+            self.bus.write_word(tramp + 10, 0x4FF9); // MOVEA.L #imm,A7
+                                                     // +12..+15: savedRegsSP
+            self.bus.write_word(tramp + 16, 0x4CDF); // MOVEM.L (SP)+,regs
+            self.bus.write_word(tramp + 18, 0x0F0F); // D0-D3/A0-A3
+            self.bus.write_word(tramp + 20, 0x4E75); // RTS
+            self.menu_hook_trampoline = tramp;
+        }
+
+        let tramp = self.menu_hook_trampoline;
+        self.bus.write_long(tramp + 6, call_addr);
+
+        let current_pc = self.cpu.read_reg(Register::PC);
+        let sp = self.cpu.read_reg(Register::A7);
+        let d_regs = [
+            self.cpu.read_reg(Register::D0),
+            self.cpu.read_reg(Register::D1),
+            self.cpu.read_reg(Register::D2),
+            self.cpu.read_reg(Register::D3),
+            self.cpu.read_reg(Register::D4),
+            self.cpu.read_reg(Register::D5),
+            self.cpu.read_reg(Register::D6),
+            self.cpu.read_reg(Register::D7),
+        ];
+        let a_regs = [
+            self.cpu.read_reg(Register::A0),
+            self.cpu.read_reg(Register::A1),
+            self.cpu.read_reg(Register::A2),
+            self.cpu.read_reg(Register::A3),
+            self.cpu.read_reg(Register::A4),
+            self.cpu.read_reg(Register::A5),
+            self.cpu.read_reg(Register::A6),
+            sp,
+        ];
+        let ccr = self.cpu.core.get_ccr();
+        let new_sp = sp.wrapping_sub(4);
+        let saved_regs_sp = new_sp.wrapping_sub(32);
+        self.bus.write_long(tramp + 12, saved_regs_sp);
+        self.bus.write_long(new_sp, current_pc);
+        self.cpu.write_reg(Register::A7, new_sp);
+        self.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source: ActiveInterruptCallbackSource::MenuHook,
+            resume_pc: current_pc,
+            resume_sp: sp,
+            d_regs,
+            a_regs,
+            ccr,
+            restore_port: None,
+        });
+        self.cpu.write_reg(Register::PC, tramp);
+        true
+    }
+
     fn dialog_filter_has_real_event_pending(&self, dialog_ptr: u32) -> bool {
         self.dispatcher
             .event_queue
@@ -4467,6 +4605,47 @@ mod tests {
             bgas,
             "init_app must not overwrite resources loaded before zone setup"
         );
+    }
+
+    #[test]
+    fn fixture_runner_defaults_to_classic_system7_theme() {
+        let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        assert_eq!(runner.ui_theme_id(), UiThemeId::ClassicSystem7);
+        assert_eq!(runner.dispatcher().ui_theme_id(), UiThemeId::ClassicSystem7);
+        assert_eq!(runner.ui_theme().id(), UiThemeId::ClassicSystem7);
+        assert_eq!(
+            runner.theme_metrics_mode(),
+            ThemeMetricsMode::ClassicGuestMetrics
+        );
+        assert!(runner.uses_classic_guest_metrics());
+    }
+
+    #[test]
+    fn fixture_runner_accepts_explicit_systemless_theme_without_themed_metrics() {
+        let runner = FixtureRunner::new(
+            8 * 1024 * 1024,
+            FixtureRunnerConfig {
+                ui_theme: UiThemeId::SystemlessDefault,
+                theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
+                ..FixtureRunnerConfig::default()
+            },
+        );
+        let classic = UiThemeId::ClassicSystem7.provider();
+
+        assert_eq!(runner.ui_theme_id(), UiThemeId::SystemlessDefault);
+        assert_eq!(
+            runner.dispatcher().ui_theme_id(),
+            UiThemeId::SystemlessDefault
+        );
+        assert_eq!(runner.ui_theme().id(), UiThemeId::SystemlessDefault);
+        assert!(runner.uses_classic_guest_metrics());
+        assert_eq!(runner.ui_theme().menu_metrics(), classic.menu_metrics());
+        assert_eq!(
+            runner.ui_theme().control_metrics(),
+            classic.control_metrics()
+        );
+        assert_ne!(runner.ui_theme().palette(), classic.palette());
     }
 
     fn write_double_buffer(bus: &mut MacMemoryBus, ptr: u32, samples: &[u8]) {

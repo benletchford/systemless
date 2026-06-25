@@ -1,8 +1,9 @@
 //! Dialog Manager, Cursor Manager, and misc stub trap handlers.
 
 use super::dispatch::{
-    DialogItem, DialogPopupTrackingState, DialogTrackingState, DialogUserItemTrackingState,
-    PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent, RetainedModalDialogClickState,
+    DialogItem, DialogPopupDraw, DialogPopupTrackingState, DialogTrackingState,
+    DialogUserItemTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
+    RetainedModalDialogClickState,
 };
 use super::types::{Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
@@ -10,6 +11,7 @@ use crate::display::CursorImage;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::get_font_face_scaled;
 use crate::quickdraw::text::get_font_metrics;
+use crate::ui_theme::{ControlKind, UiThemeId};
 use crate::Result;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
@@ -19,6 +21,18 @@ static TRACE_DIALOG_FILTER: OnceLock<bool> = OnceLock::new();
 static TRACE_TEXTEDIT: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_ITEMS: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_TEXT_INLINE: OnceLock<bool> = OnceLock::new();
+
+struct DialogCIconLayout {
+    width: i16,
+    height: i16,
+    pm_row_bytes: u32,
+    mask_row_bytes: u32,
+    bmap_row_bytes: u32,
+    pixel_size: u16,
+    mask_data_ptr: u32,
+    bmap_data_ptr: u32,
+    pixel_data_ptr: u32,
+}
 
 fn trace_dialog_procs_enabled() -> bool {
     *TRACE_DIALOG_PROCS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_PROCS").is_some())
@@ -42,12 +56,357 @@ fn trace_dialog_text_inline_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_TEXT").is_some())
 }
 
+fn input_trace_event_name(what: u16) -> &'static str {
+    match what {
+        0 => "nullEvent",
+        1 => "mouseDown",
+        2 => "mouseUp",
+        3 => "keyDown",
+        4 => "keyUp",
+        5 => "autoKey",
+        6 => "updateEvt",
+        7 => "diskEvt",
+        8 => "activateEvt",
+        _ => "unknownEvent",
+    }
+}
+
+fn input_trace_nonzero(value: u32) -> String {
+    if value == 0 {
+        "$00000000".to_string()
+    } else {
+        "$NONZERO".to_string()
+    }
+}
+
+fn input_trace_event_message(what: u16, message: u32) -> String {
+    match what {
+        6 | 8 => input_trace_nonzero(message),
+        _ => format!("${message:08X}"),
+    }
+}
+
+fn input_trace_text_bytes(value: &str) -> String {
+    if value.is_empty() {
+        return "empty".to_string();
+    }
+    let mut out = String::from("hex:");
+    for byte in value.as_bytes() {
+        out.push_str(&format!("{byte:02X}"));
+    }
+    out
+}
+
 impl super::TrapDispatcher {
+    fn record_dialog_input_trace(
+        &mut self,
+        trap: &str,
+        event_ptr: u32,
+        what: u16,
+        message: u32,
+        where_v: i16,
+        where_h: i16,
+        modifiers: u16,
+        active_dialog: Option<u32>,
+        result: bool,
+        detail: &str,
+    ) {
+        if !self.input_trace_enabled {
+            return;
+        }
+        let active_dialog = active_dialog
+            .map(input_trace_nonzero)
+            .unwrap_or_else(|| "none".to_string());
+        let mut line = format!(
+            "{trap} action=guest_event:{} event_ptr={} delivered=EventRecord{{what={}({}), message={}, where=({where_v},{where_h}), modifiers=${modifiers:04X}}} {} active_dialog={} result={}",
+            input_trace_event_name(what),
+            input_trace_nonzero(event_ptr),
+            input_trace_event_name(what),
+            what,
+            input_trace_event_message(what, message),
+            self.input_trace_state_fields(),
+            active_dialog,
+            if result { "true" } else { "false" },
+        );
+        if !detail.is_empty() {
+            line.push(' ');
+            line.push_str(detail);
+        }
+        self.record_input_trace_line(line);
+    }
+
+    fn record_modal_dialog_input_trace(
+        &mut self,
+        action: &str,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        item_hit: i16,
+        item_type: Option<u8>,
+        highlighted: Option<bool>,
+        result: &str,
+        outcome: &str,
+    ) {
+        if !self.input_trace_enabled {
+            return;
+        }
+        let item_type = item_type
+            .map(|value| format!("${value:02X}"))
+            .unwrap_or_else(|| "none".to_string());
+        let highlighted = highlighted
+            .map(|value| if value { "true" } else { "false" }.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        self.record_input_trace_line(format!(
+            "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) item_hit={} item_type={} highlighted={} result={} outcome={}",
+            action,
+            self.mouse_pos.0,
+            self.mouse_pos.1,
+            self.input_trace_state_fields(),
+            input_trace_nonzero(dialog_ptr),
+            bounds.0,
+            bounds.1,
+            bounds.2,
+            bounds.3,
+            item_hit,
+            item_type,
+            highlighted,
+            result,
+            outcome,
+        ));
+    }
+
+    fn record_modal_dialog_text_input_trace(
+        &mut self,
+        action: &str,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        edit_item: i16,
+        item_type: Option<u8>,
+        key_code: u8,
+        char_code: u8,
+        text_before: &str,
+        text_after: &str,
+        result: &str,
+        outcome: &str,
+    ) {
+        if !self.input_trace_enabled {
+            return;
+        }
+        let item_type = item_type
+            .map(|value| format!("${value:02X}"))
+            .unwrap_or_else(|| "none".to_string());
+        self.record_input_trace_line(format!(
+            "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) edit_item={} item_type={} key_code=${:02X} char_code=${:02X} text_before={} text_after={} result={} outcome={}",
+            action,
+            self.mouse_pos.0,
+            self.mouse_pos.1,
+            self.input_trace_state_fields(),
+            input_trace_nonzero(dialog_ptr),
+            bounds.0,
+            bounds.1,
+            bounds.2,
+            bounds.3,
+            edit_item,
+            item_type,
+            key_code,
+            char_code,
+            input_trace_text_bytes(text_before),
+            input_trace_text_bytes(text_after),
+            result,
+            outcome,
+        ));
+    }
+
+    fn record_modal_dialog_filter_input_trace(
+        &mut self,
+        action: &str,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        filter_proc: u32,
+        event: Option<&QueuedEvent>,
+        item_hit: i16,
+        item_type: Option<u8>,
+        handled_mouse_down: bool,
+        dialog_retained: bool,
+        result: &str,
+        outcome: &str,
+    ) {
+        if !self.input_trace_enabled {
+            return;
+        }
+        let item_type = item_type
+            .map(|value| format!("${value:02X}"))
+            .unwrap_or_else(|| "none".to_string());
+        let (event_name, message, where_text, modifiers) = if let Some(event) = event {
+            (
+                format!("{}({})", input_trace_event_name(event.what), event.what),
+                input_trace_event_message(event.what, event.message),
+                format!("({},{})", event.where_v, event.where_h),
+                format!("${:04X}", event.modifiers),
+            )
+        } else {
+            (
+                "none".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+            )
+        };
+        self.record_input_trace_line(format!(
+            "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) filter_proc={} event={} message={} where={} modifiers={} item_hit={} item_type={} handled_mouse_down={} dialog_retained={} result={} outcome={}",
+            action,
+            self.mouse_pos.0,
+            self.mouse_pos.1,
+            self.input_trace_state_fields(),
+            input_trace_nonzero(dialog_ptr),
+            bounds.0,
+            bounds.1,
+            bounds.2,
+            bounds.3,
+            input_trace_nonzero(filter_proc),
+            event_name,
+            message,
+            where_text,
+            modifiers,
+            item_hit,
+            item_type,
+            handled_mouse_down,
+            dialog_retained,
+            result,
+            outcome,
+        ));
+    }
+
     fn dialog_template_res_err(&self, dialog_id: i16) -> i16 {
         if self.find_resource_any(*b"DLOG", dialog_id).is_some() {
             0
         } else {
             0
+        }
+    }
+
+    fn loaded_resource_handle_in_file(
+        &self,
+        res_type: [u8; 4],
+        res_id: i16,
+        ptr: u32,
+        refnum: u16,
+    ) -> Option<u32> {
+        self.loaded_handles
+            .iter()
+            .find_map(|(&handle, &(loaded_ptr, loaded_type, loaded_id))| {
+                if loaded_ptr == ptr
+                    && loaded_type == res_type
+                    && loaded_id == res_id
+                    && self.resource_handle_files.get(&handle).copied() == Some(refnum)
+                {
+                    Some(handle)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn set_handle_purgeable(&mut self, handle: u32, purgeable: bool) {
+        if handle == 0 {
+            return;
+        }
+
+        if purgeable {
+            *self.handle_state_bits.entry(handle).or_insert(0) |= 0x40;
+        } else if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
+            *bits &= !0x40;
+            if *bits == 0 {
+                self.handle_state_bits.remove(&handle);
+            }
+        }
+    }
+
+    fn prepare_dialog_resource_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_type: [u8; 4],
+        res_id: i16,
+        purgeable: bool,
+        load_if_missing: bool,
+    ) -> Option<(u32, u32)> {
+        let (refnum, ptr) = self.find_resource_any(res_type, res_id)?;
+        let handle = if load_if_missing {
+            let handle =
+                self.get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, refnum);
+            if ptr != 0 && bus.read_long(handle) == 0 {
+                bus.write_long(handle, ptr);
+                self.ptr_to_handle.insert(ptr, handle);
+            }
+            handle
+        } else {
+            self.loaded_resource_handle_in_file(res_type, res_id, ptr, refnum)?
+        };
+
+        self.set_handle_purgeable(handle, purgeable);
+        Some((handle, ptr))
+    }
+
+    fn dialog_item_resource_type(item_type: u8) -> Option<[u8; 4]> {
+        match item_type & 0x7F {
+            7 => Some(*b"CNTL"),
+            32 => Some(*b"ICON"),
+            64 => Some(*b"PICT"),
+            _ => None,
+        }
+    }
+
+    fn cascade_dialog_resource_purgeability(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        template_type: [u8; 4],
+        template_id: i16,
+        purgeable: bool,
+        load_if_missing: bool,
+    ) {
+        let Some((_, template_ptr)) = self.prepare_dialog_resource_handle(
+            bus,
+            template_type,
+            template_id,
+            purgeable,
+            load_if_missing,
+        ) else {
+            return;
+        };
+
+        let items_id = match template_type {
+            // IM:I I-437: DLOG item-list ID is at offset 18.
+            [b'D', b'L', b'O', b'G'] if bus.get_alloc_size(template_ptr).unwrap_or(0) >= 20 => {
+                bus.read_word(template_ptr + 18) as i16
+            }
+            // IM:I I-425..I-426: ALRT item-list ID is at offset 8.
+            [b'A', b'L', b'R', b'T'] if bus.get_alloc_size(template_ptr).unwrap_or(0) >= 10 => {
+                bus.read_word(template_ptr + 8) as i16
+            }
+            _ => return,
+        };
+
+        let Some((_, ditl_ptr)) = self.prepare_dialog_resource_handle(
+            bus,
+            *b"DITL",
+            items_id,
+            purgeable,
+            load_if_missing,
+        ) else {
+            return;
+        };
+
+        let ditl_len = bus.get_alloc_size(ditl_ptr).unwrap_or(0);
+        let items = Self::parse_ditl(bus, ditl_ptr, ditl_len);
+        for item in items {
+            if let Some(res_type) = Self::dialog_item_resource_type(item.item_type) {
+                self.prepare_dialog_resource_handle(
+                    bus,
+                    res_type,
+                    item.resource_id,
+                    purgeable,
+                    load_if_missing,
+                );
+            }
         }
     }
 
@@ -73,6 +432,46 @@ impl super::TrapDispatcher {
     const TE_N_LINES_OFFSET: u32 = 0x5E;
     const TE_LINE_STARTS_OFFSET: u32 = 0x60;
     const TE_REC_MIN_SIZE: u32 = 128;
+    // TextEdit draws inside the destination rectangle (IM:I I-373 to I-374);
+    // BasiliskII/System 7.5.3 `dialog_visual_textedit_smoke` pins the ROM's
+    // flush-left glyph origin one pixel in from destRect.left.
+    const TE_LINE_LEFT_INSET: i16 = 1;
+
+    const DBOX_FRAME_MARGIN: i16 = 8;
+    const EDIT_TEXT_FRAME_OUTSET: i16 = 3;
+    const STANDARD_CONTROL_MARK_SIZE: i16 = 12;
+    const STANDARD_CONTROL_MARK_LEFT_INSET: i16 = 2;
+    const STANDARD_CONTROL_MARK_TOP_INSET: i16 = 4;
+    const STANDARD_CONTROL_TITLE_GAP: i16 = 4;
+    const STANDARD_CONTROL_TITLE_BASELINE_OFFSET: i16 = 2;
+    const CLASSIC_RADIO_OUTLINE_12: [&'static str; 12] = [
+        "....####....",
+        "..##....##..",
+        ".#........#.",
+        ".#........#.",
+        "#..........#",
+        "#..........#",
+        "#..........#",
+        "#..........#",
+        ".#........#.",
+        ".#........#.",
+        "..##....##..",
+        "....####....",
+    ];
+    const CLASSIC_RADIO_DOT_12: [&'static str; 12] = [
+        "............",
+        "............",
+        "............",
+        ".....##.....",
+        "....####....",
+        "...######...",
+        "...######...",
+        "....####....",
+        ".....##.....",
+        "............",
+        "............",
+        "............",
+    ];
 
     const TE_STYLE_N_RUNS_OFFSET: u32 = 0x00;
     const TE_STYLE_N_STYLES_OFFSET: u32 = 0x02;
@@ -172,18 +571,25 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         item_handle: u32,
     ) -> Option<String> {
+        Self::text_item_bytes_from_handle_if_present(bus, item_handle)
+            .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    fn text_item_bytes_from_handle_if_present(
+        bus: &MacMemoryBus,
+        item_handle: u32,
+    ) -> Option<Vec<u8>> {
         if item_handle == 0 {
             return None;
         }
 
         let data_ptr = bus.read_long(item_handle);
         if data_ptr == 0 {
-            return Some(String::new());
+            return Some(Vec::new());
         }
 
         let len = bus.get_alloc_size(data_ptr).unwrap_or(0) as usize;
-        let bytes = bus.read_bytes(data_ptr, len);
-        Some(String::from_utf8_lossy(&bytes).to_string())
+        Some(bus.read_bytes(data_ptr, len))
     }
 
     fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
@@ -294,15 +700,116 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         dialog_ptr: u32,
     ) {
+        self.queue_modeless_dialog_draw_procs_intersecting(bus, dialog_ptr, None);
+    }
+
+    fn update_dialog_window_contents<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        dialog_ptr: u32,
+        update_rect: Option<(i16, i16, i16, i16)>,
+    ) -> bool {
+        let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
+            return false;
+        };
+        Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
+        let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+        let update_screen_rect =
+            update_rect.and_then(|rect| Self::dialog_update_screen_rect(bounds, rect));
+        let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
+        let (edit_text, edit_item, default_item) = Self::dialog_edit_state(bus, dialog_ptr, &items);
+        // MTE 1992 p. 6-141: DialogSelect handles update events by calling
+        // DrawDialog. MTE 1992 p. 6-143: UpdateDialog uses SetPort before
+        // redrawing the update region. Keep both dialog update paths on the
+        // dialog port before any standard-item drawing or userItem callbacks.
+        self.set_current_port_state(bus, cpu, dialog_ptr, None);
+        let Some(update_screen_rect) = update_screen_rect else {
+            return false;
+        };
+        let before_pixels = self.save_dialog_pixels(bus, bounds);
+        self.dialog_initial_draw_deferred.remove(&dialog_ptr);
+        self.draw_dialog(
+            bus,
+            bounds,
+            proc_id,
+            "",
+            &items,
+            default_item,
+            &edit_text,
+            edit_item,
+            false,
+            dialog_ptr,
+        );
+        // MTE 1992 p. 6-143: UpdateDialog redraws only the supplied update
+        // region. Most Dialog Manager HLE drawing helpers write directly to the
+        // framebuffer, so clip the full redraw by restoring pre-update pixels
+        // outside the update region after standard items have been refreshed.
+        self.restore_dialog_pixels_outside_rect(bus, bounds, &before_pixels, update_screen_rect);
+        self.dialog_items.insert(dialog_ptr, items);
+        // Application-defined userItems are guest-owned. IM:I I-405 says
+        // their item handle is a draw procedure; queue only the callbacks
+        // whose display rectangles intersect the active update region.
+        self.queue_modeless_dialog_draw_procs_intersecting(bus, dialog_ptr, update_rect);
+        true
+    }
+
+    fn dialog_update_screen_rect(
+        bounds: (i16, i16, i16, i16),
+        rect: (i16, i16, i16, i16),
+    ) -> Option<(i16, i16, i16, i16)> {
+        let screen_rect = if Self::rects_intersect(rect, bounds) {
+            rect
+        } else {
+            (
+                bounds.0.saturating_add(rect.0),
+                bounds.1.saturating_add(rect.1),
+                bounds.0.saturating_add(rect.2),
+                bounds.1.saturating_add(rect.3),
+            )
+        };
+        Self::rect_intersection(
+            screen_rect,
+            (
+                bounds.0 - Self::DBOX_FRAME_MARGIN,
+                bounds.1 - Self::DBOX_FRAME_MARGIN,
+                bounds.2 + Self::DBOX_FRAME_MARGIN,
+                bounds.3 + Self::DBOX_FRAME_MARGIN,
+            ),
+        )
+    }
+
+    fn queue_modeless_dialog_draw_procs_intersecting(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        update_rect: Option<(i16, i16, i16, i16)>,
+    ) {
         let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
             return;
         };
         Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
         let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+        let effective_update_rect = update_rect.map(|rect| {
+            if Self::rects_intersect(rect, bounds) {
+                rect
+            } else {
+                (
+                    bounds.0.saturating_add(rect.0),
+                    bounds.1.saturating_add(rect.1),
+                    bounds.0.saturating_add(rect.2),
+                    bounds.1.saturating_add(rect.3),
+                )
+            }
+        });
         for (i, item) in items.iter().enumerate() {
+            let item_rect = Self::dialog_item_screen_rect(bounds, item.rect);
             if (item.item_type & 0x7F) == 0
                 && item.proc_ptr != 0
-                && Self::dialog_item_intersects_bounds(bounds, item)
+                && Self::rects_intersect(item_rect, bounds)
+                && effective_update_rect
+                    .map(|rect| Self::rects_intersect(item_rect, rect))
+                    .unwrap_or(true)
             {
                 self.modeless_dialog_draw_proc_queue.push_back((
                     dialog_ptr,
@@ -557,6 +1064,18 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn font_lookup_size(size: i16) -> i16 {
+        // QuickDraw grafPorts initialize txSize to 0, which the Font Manager
+        // interprets as the system font size. Preserve that sentinel for font
+        // lookup; coercing it to 1 selects the wrong strike/fallback.
+        // Inside Macintosh Volume I, I-163 and I-178.
+        if size == 0 {
+            0
+        } else {
+            size.max(1)
+        }
+    }
+
     fn te_char_to_point(&self, bus: &MacMemoryBus, te_handle: u32, offset: usize) -> (i16, i16) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
@@ -590,7 +1109,7 @@ impl super::TrapDispatcher {
                     rect_width
                         .saturating_sub(self.te_measure_text_width(
                             font,
-                            size.max(1),
+                            Self::font_lookup_size(size),
                             &text_bytes,
                             line_start,
                             line_end,
@@ -603,7 +1122,7 @@ impl super::TrapDispatcher {
                     line_width
                 }
             }
-            _ => 0,
+            _ => Self::TE_LINE_LEFT_INSET,
         };
         let x = if on_break {
             dest_rect.1.saturating_add(left_offset)
@@ -613,7 +1132,7 @@ impl super::TrapDispatcher {
                 .saturating_add(left_offset)
                 .saturating_add(self.te_measure_text_width(
                     font,
-                    size.max(1),
+                    Self::font_lookup_size(size),
                     &text_bytes,
                     line_start,
                     clamped,
@@ -683,7 +1202,7 @@ impl super::TrapDispatcher {
                 let line_width = rect_width
                     .saturating_sub(self.te_measure_text_width(
                         font,
-                        size.max(1),
+                        Self::font_lookup_size(size),
                         &text_bytes,
                         line_start,
                         line_end,
@@ -695,7 +1214,7 @@ impl super::TrapDispatcher {
                     line_width
                 }
             }
-            _ => 0,
+            _ => Self::TE_LINE_LEFT_INSET,
         };
 
         let mut x_cursor = dest_rect.1.saturating_add(left_offset);
@@ -704,7 +1223,7 @@ impl super::TrapDispatcher {
             if matches!(*byte, b'\r' | b'\n') {
                 return index.min(i16::MAX as usize) as i16;
             }
-            let advance = self.te_char_width(font, size.max(1), *byte);
+            let advance = self.te_char_width(font, Self::font_lookup_size(size), *byte);
             // Hit-test against the glyph midpoint so a click on the right
             // half of a character lands on the next offset, matching the
             // semantics described in Inside Macintosh Volume V, V-172.
@@ -836,11 +1355,12 @@ impl super::TrapDispatcher {
     ) -> (i16, i16, i16, (u16, u16, u16), i16, i16) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
-            let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+            let size = Self::font_lookup_size(self.tx_size);
+            let metrics = get_font_metrics(self.tx_font, size);
             return (
                 self.tx_font,
                 self.tx_face,
-                self.tx_size.max(1),
+                size,
                 self.fg_color,
                 metrics.ascent + metrics.descent + metrics.leading,
                 metrics.ascent,
@@ -881,12 +1401,13 @@ impl super::TrapDispatcher {
 
         let tx_font = bus.read_word(te_ptr + Self::TE_TX_FONT_OFFSET) as i16;
         let tx_face = bus.read_word(te_ptr + Self::TE_TX_FACE_OFFSET) as i16;
-        let tx_size = bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16;
-        let metrics = get_font_metrics(tx_font, tx_size.max(1));
+        let tx_size =
+            Self::font_lookup_size(bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16);
+        let metrics = get_font_metrics(tx_font, tx_size);
         (
             tx_font,
             tx_face,
-            tx_size.max(1),
+            tx_size,
             self.fg_color,
             metrics.ascent + metrics.descent + metrics.leading,
             metrics.ascent,
@@ -897,7 +1418,7 @@ impl super::TrapDispatcher {
     fn te_line_metrics(&self, bus: &MacMemoryBus, te_handle: u32) -> (i16, i16) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
-            let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+            let metrics = get_font_metrics(self.tx_font, Self::font_lookup_size(self.tx_size));
             return (
                 metrics.ascent + metrics.descent + metrics.leading,
                 metrics.ascent,
@@ -927,7 +1448,7 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+        let metrics = get_font_metrics(self.tx_font, Self::font_lookup_size(self.tx_size));
         let line_height = metrics.ascent + metrics.descent + metrics.leading;
         let h_text = bus.alloc(4);
         if h_text != 0 {
@@ -965,7 +1486,8 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let metrics = get_font_metrics(self.tx_font, self.tx_size.max(1));
+        let style_size = Self::font_lookup_size(self.tx_size);
+        let metrics = get_font_metrics(self.tx_font, style_size);
         let line_height = metrics.ascent + metrics.descent + metrics.leading;
 
         let h_text = Self::allocate_handle_with_data(bus, 0);
@@ -1000,7 +1522,7 @@ impl super::TrapDispatcher {
             );
             bus.write_word(
                 style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
-                self.tx_size.max(1) as u16,
+                style_size as u16,
             );
             bus.write_word(
                 style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
@@ -1061,7 +1583,7 @@ impl super::TrapDispatcher {
             );
             bus.write_word(
                 null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_SIZE_OFFSET,
-                self.tx_size.max(1) as u16,
+                style_size as u16,
             );
             bus.write_word(
                 null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_COLOR_OFFSET,
@@ -1281,6 +1803,12 @@ impl super::TrapDispatcher {
         self.te_recalculate_layout(bus, te_handle);
     }
 
+    fn textedit_idle(&mut self, _bus: &mut MacMemoryBus, te_handle: u32) {
+        if trace_textedit_enabled() {
+            eprintln!("[TE] TEIdle hTE=${te_handle:08X}");
+        }
+    }
+
     fn te_insert_text(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
@@ -1310,9 +1838,10 @@ impl super::TrapDispatcher {
     }
 
     fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
-        let (_face, scale) = get_font_face_scaled(font, size.max(1));
+        let size = Self::font_lookup_size(size);
+        let (_face, scale) = get_font_face_scaled(font, size);
         let ch = byte as char;
-        if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(font, size.max(1), ch) {
+        if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(font, size, ch) {
             self.glyph_advance(glyph) * scale
         } else {
             self.missing_glyph_advance() * scale
@@ -1420,12 +1949,7 @@ impl super::TrapDispatcher {
         let lines = if text_bytes.is_empty() {
             Vec::new()
         } else {
-            self.te_wrap_lines(
-                font,
-                size.max(1),
-                &text_bytes,
-                (dest_rect.3 - dest_rect.1).max(0),
-            )
+            self.te_wrap_lines(font, size, &text_bytes, (dest_rect.3 - dest_rect.1).max(0))
         };
         let line_count = lines.len();
         let te_ptr = Self::ensure_te_record_line_capacity(bus, te_handle, line_count);
@@ -1507,7 +2031,7 @@ impl super::TrapDispatcher {
         match just {
             1 => box_left + ((box_right - box_left) - line_width) / 2,
             -1 => box_right - line_width,
-            _ => box_left, // 0 / -2 / any other → flush left
+            _ => box_left.saturating_add(Self::TE_LINE_LEFT_INSET), // 0 / -2 / any other → flush left inside destRect
         }
     }
 
@@ -1667,7 +2191,7 @@ impl super::TrapDispatcher {
 
         self.tx_font = font;
         self.tx_face = face;
-        self.tx_size = size.max(1);
+        self.tx_size = size;
         self.fg_color = color;
 
         let clip_top = view_rect.0;
@@ -1687,10 +2211,11 @@ impl super::TrapDispatcher {
             },
             ShapeOp::Erase,
         );
-        let lines = self.te_wrap_lines(font, size.max(1), &text_bytes, box_width);
+        let lines = self.te_wrap_lines(font, size, &text_bytes, box_width);
 
         let mut top = dest_rect.0;
         let mut visible_lines = Vec::new();
+        let mut visual_lines = Vec::new();
         for (index, (start, end)) in lines.iter().enumerate() {
             let line_height = Self::te_height_for_line(bus, te_handle, index);
             let line_ascent = Self::te_ascent_for_line(bus, te_handle, index);
@@ -1710,13 +2235,103 @@ impl super::TrapDispatcher {
                 trimmed_end -= 1;
             }
             let line_width =
-                self.te_measure_text_width(font, size.max(1), &text_bytes, *start, trimmed_end);
+                self.te_measure_text_width(font, size, &text_bytes, *start, trimmed_end);
             let x = Self::te_line_origin_x(just, dest_rect.1, dest_rect.3, line_width);
+            visual_lines.push((*start, *end, top, line_bottom, x));
             self.pn_loc = (top.saturating_add(line_ascent), x);
             for &byte in &text_bytes[*start..trimmed_end] {
                 self.draw_char(cpu, bus, byte as char);
             }
             top = line_bottom;
+        }
+
+        let te_active = bus.read_word(te_ptr + Self::TE_ACTIVE_OFFSET) != 0;
+        let outline_hilite = self.te_feature_bit(te_handle, Self::TE_FEATURE_OUTLINE_HILITE);
+        let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+        let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+        let (selection_start, selection_end) = if sel_start <= sel_end {
+            (sel_start, sel_end)
+        } else {
+            (sel_end, sel_start)
+        };
+        if selection_start == selection_end {
+            if self.ui_theme_id() != UiThemeId::ClassicSystem7 && te_active {
+                if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) = visual_lines
+                    .iter()
+                    .find(|&&(start, end, _, _, _)| {
+                        selection_start >= start && selection_start <= end
+                    })
+                    .or_else(|| visual_lines.last())
+                {
+                    let caret_offset = selection_start.min(line_end).max(line_start);
+                    let caret_x = line_x
+                        + self.te_measure_text_width(
+                            font,
+                            size,
+                            &text_bytes,
+                            line_start,
+                            caret_offset,
+                        );
+                    let caret_width = self.ui_theme().text_theme().caret_width.max(1);
+                    self.draw_theme_caret(
+                        bus,
+                        line_top,
+                        caret_x,
+                        line_bottom,
+                        caret_x.saturating_add(caret_width),
+                    );
+                }
+            }
+        } else if te_active || outline_hilite {
+            // IM:I I-375/I-385 and Text 1993 p. 2-80: an active edit
+            // record displays its selection range by highlighting the
+            // selected characters. Classic black-and-white TextEdit uses
+            // inverse video; non-classic themes own their selection chrome.
+            for &(line_start, line_end, line_top, line_bottom, line_x) in &visual_lines {
+                let start = selection_start.max(line_start);
+                let end = selection_end.min(line_end);
+                if start >= end {
+                    continue;
+                }
+                let mut selection_left =
+                    line_x + self.te_measure_text_width(font, size, &text_bytes, line_start, start);
+                let selection_right =
+                    line_x + self.te_measure_text_width(font, size, &text_bytes, line_start, end);
+                if start == line_start && matches!(just, 0 | -2) {
+                    // BasiliskII/System 7.5.3 `a9d3_teupdate_selection_visual`
+                    // shows a selection beginning at a left-justified visual
+                    // line includes TextEdit's one-pixel left inset; glyphs
+                    // still draw at destRect.left + TE_LINE_LEFT_INSET.
+                    selection_left = selection_left.saturating_sub(Self::TE_LINE_LEFT_INSET);
+                }
+                if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+                    if te_active {
+                        self.draw_rect(
+                            cpu,
+                            bus,
+                            &Rect {
+                                top: line_top,
+                                left: selection_left,
+                                bottom: line_bottom,
+                                right: selection_right,
+                            },
+                            ShapeOp::Invert,
+                        );
+                    }
+                } else {
+                    // Text 1993, "Outline Highlighting" and TEFeatureFlag
+                    // teFOutlineHilite: inactive selection ranges are framed,
+                    // while active ranges keep normal highlighted selection chrome.
+                    self.draw_theme_text_selection(
+                        bus,
+                        line_top,
+                        selection_left,
+                        line_bottom,
+                        selection_right,
+                        te_active,
+                    );
+                }
+            }
         }
 
         self.tx_font = old_font;
@@ -1775,9 +2390,10 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         items: &[DialogItem],
     ) {
-        // NewDialog/GetNewDialog duplicates the DITL and replaces itmhand with
-        // live item handles (text handles, control handles, picture handles).
-        // Inside Macintosh Volume I, I-412; executor dialCreate.cpp
+        // Item lists in memory hold live item handles or userItem ProcPtrs.
+        // GetNewDialog reaches here with a copy of the DITL resource; NewDialog
+        // initializes the caller-supplied item-list handle.
+        // Inside Macintosh Volume I, I-405, I-412; MTE 1992 p. 6-114.
         for (index, item) in items.iter().enumerate() {
             let item_no = index as i16 + 1;
             let Some(item_handle_addr) = Self::dialog_item_handle_addr(bus, dialog_ptr, item_no)
@@ -1911,11 +2527,58 @@ impl super::TrapDispatcher {
         )
     }
 
+    /// Parse an ALRT resource from guest memory.
+    /// Returns (bounds, itemsID, stages, position).
+    /// Inside Macintosh Volume I, I-425 to I-426
+    /// Macintosh Toolbox Essentials 1992, p. 6-150
+    fn parse_alrt(
+        bus: &MacMemoryBus,
+        ptr: u32,
+        data_len: u32,
+    ) -> ((i16, i16, i16, i16), i16, u16, u16) {
+        let bounds = if data_len >= 8 {
+            (
+                bus.read_word(ptr) as i16,
+                bus.read_word(ptr + 2) as i16,
+                bus.read_word(ptr + 4) as i16,
+                bus.read_word(ptr + 6) as i16,
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
+        let items_id = if data_len >= 10 {
+            bus.read_word(ptr + 8) as i16
+        } else {
+            0
+        };
+        let stages = if data_len >= 12 {
+            bus.read_word(ptr + 10)
+        } else {
+            0
+        };
+        // System 7 compiled ALRT resources append the same positioning
+        // constants as DLOG resources after the 12-byte classic template.
+        // Macintosh Toolbox Essentials 1992, p. 6-150
+        let position = if data_len >= 14 {
+            bus.read_word(ptr + 12)
+        } else {
+            0
+        };
+        (bounds, items_id, stages, position)
+    }
+
     /// Parse a DITL resource from guest memory into a list of DialogItems.
     /// Inside Macintosh Volume I, I-439
     fn parse_ditl(bus: &MacMemoryBus, ptr: u32, data_len: u32) -> Vec<DialogItem> {
+        if data_len < 2 {
+            return Vec::new();
+        }
         let max_index = bus.read_word(ptr) as i16; // number of items minus 1
-        let count = (max_index + 1) as usize;
+        let count = if max_index < 0 {
+            0
+        } else {
+            max_index as usize + 1
+        };
         let mut items = Vec::with_capacity(count);
         let mut offset = 2u32; // skip dlgMaxIndex
 
@@ -1937,23 +2600,50 @@ impl super::TrapDispatcher {
             offset += 8;
             // Read type byte and data length
             let item_type = bus.read_byte(ptr + offset);
-            let data_len_byte = bus.read_byte(ptr + offset + 1) as u32;
+            let data_len_byte = bus.read_byte(ptr + offset + 1);
             offset += 2;
 
             let base_type = item_type & 0x7F; // strip itemDisable bit
 
             let mut text = String::new();
             let mut resource_id: i16 = 0;
-
-            if data_len_byte > 0 {
-                match base_type {
-                    // icon, picture, resCtrl: 2-byte resource ID
-                    32 | 64 | 7 if data_len_byte >= 2 => {
-                        resource_id = bus.read_word(ptr + offset) as i16;
+            let remaining = data_len - offset;
+            let payload_len = match base_type {
+                // userItem has only the byte after itmtype (reserved/empty),
+                // not a following payload.
+                0 => 0,
+                // Help items use the byte after itmtype as a sized payload.
+                // Macintosh Toolbox Essentials 1992, p. 6-154
+                1 => u32::from(data_len_byte),
+                // icon, picture, resCtrl: 2-byte resource ID. IM:I I-427
+                // describes the byte after itmtype as length=2; MTE 1992
+                // p. 6-153 documents the same compiled records as a
+                // reserved byte plus the two-byte resource ID. Accept both.
+                7 | 32 | 64 => {
+                    if remaining < 2 {
+                        break;
                     }
-                    // button (4), statText (8), editText (16): text data
+                    resource_id = bus.read_word(ptr + offset) as i16;
+                    if data_len_byte >= 2 {
+                        u32::from(data_len_byte)
+                    } else {
+                        2
+                    }
+                }
+                _ => u32::from(data_len_byte),
+            };
+
+            let padded = (payload_len + 1) & !1;
+            if padded > remaining {
+                break;
+            }
+
+            if payload_len > 0 {
+                match base_type {
+                    // button (4), checkbox (5), radio (6), statText (8),
+                    // editText (16): title/text data. IM:I I-427.
                     4 | 5 | 6 | 8 | 16 => {
-                        let bytes = bus.read_bytes(ptr + offset, data_len_byte as usize);
+                        let bytes = bus.read_bytes(ptr + offset, payload_len as usize);
                         text = String::from_utf8_lossy(&bytes).to_string();
                     }
                     _ => {}
@@ -1961,7 +2651,6 @@ impl super::TrapDispatcher {
             }
 
             // Advance past data, padded to even boundary
-            let padded = (data_len_byte + 1) & !1;
             offset += padded;
 
             // For userItems, itmhand is a ProcPtr, not a relocatable handle.
@@ -2043,6 +2732,229 @@ impl super::TrapDispatcher {
         }
         bus.write_long(new_handle, new_data_ptr);
         new_handle
+    }
+
+    fn dispose_dialog_handle_storage(&mut self, bus: &mut MacMemoryBus, handle: u32) {
+        if handle == 0 {
+            return;
+        }
+
+        let resource_backing = self.loaded_handles.get(&handle).copied();
+        self.detached_handles.remove(&handle);
+        self.loaded_handles.remove(&handle);
+        self.resource_handle_files.remove(&handle);
+        self.detached_handle_files.remove(&handle);
+        self.handle_state_bits.remove(&handle);
+
+        let data_ptr = bus.read_long(handle);
+        if resource_backing.is_none() {
+            bus.free(data_ptr);
+        }
+        bus.free(handle);
+    }
+
+    fn dispose_dialog_te_storage(&mut self, bus: &mut MacMemoryBus, te_handle: u32) {
+        if te_handle == 0 {
+            return;
+        }
+
+        let te_ptr = bus.read_long(te_handle);
+        if te_ptr != 0 {
+            let h_text = bus.read_long(te_ptr + Self::TE_HTEXT_OFFSET);
+            self.dispose_dialog_handle_storage(bus, h_text);
+
+            if Self::te_is_styled_record(bus, te_ptr) {
+                let style_handle = bus.read_long(te_ptr + Self::TE_TX_FONT_OFFSET);
+                self.dispose_dialog_handle_storage(bus, style_handle);
+            }
+            bus.free(te_ptr);
+        }
+        bus.free(te_handle);
+        self.textedit_states.remove(&te_handle);
+    }
+
+    fn dispose_dialog_control_storage(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) {
+        if ctrl_handle == 0 {
+            return;
+        }
+
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        if ctrl_ptr != 0 {
+            let owner = bus.read_long(ctrl_ptr + 4);
+            if owner != 0 {
+                let mut prev_handle = 0u32;
+                let mut cur_handle = bus.read_long(owner + 140);
+                while cur_handle != 0 {
+                    let cur_ptr = bus.read_long(cur_handle);
+                    if cur_ptr == 0 {
+                        break;
+                    }
+                    if cur_handle == ctrl_handle {
+                        let next = bus.read_long(cur_ptr);
+                        if prev_handle == 0 {
+                            bus.write_long(owner + 140, next);
+                        } else {
+                            let prev_ptr = bus.read_long(prev_handle);
+                            if prev_ptr != 0 {
+                                bus.write_long(prev_ptr, next);
+                            }
+                        }
+                        break;
+                    }
+                    prev_handle = cur_handle;
+                    cur_handle = bus.read_long(cur_ptr);
+                }
+            }
+            self.release_control_aux_record(bus, ctrl_handle);
+            self.control_proc_ids.remove(&ctrl_ptr);
+            bus.free(ctrl_ptr);
+        }
+        bus.free(ctrl_handle);
+    }
+
+    fn dialog_item_storage_handles_from_ditl(
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+    ) -> Vec<(u8, u32)> {
+        let items_handle = bus.read_long(dialog_ptr + 156);
+        if items_handle == 0 {
+            return Vec::new();
+        }
+        let ditl_ptr = bus.read_long(items_handle);
+        if ditl_ptr == 0 {
+            return Vec::new();
+        }
+        let data_len = bus.get_alloc_size(ditl_ptr).unwrap_or(0);
+        if data_len < 2 {
+            return Vec::new();
+        }
+
+        let max_index = bus.read_word(ditl_ptr) as i16;
+        if max_index < 0 {
+            return Vec::new();
+        }
+
+        let mut handles = Vec::new();
+        let mut offset = 2u32;
+        for _ in 0..=max_index {
+            if offset + 14 > data_len {
+                break;
+            }
+
+            let item_handle = bus.read_long(ditl_ptr + offset);
+            offset += 12;
+            let item_type = bus.read_byte(ditl_ptr + offset);
+            let data_len_byte = bus.read_byte(ditl_ptr + offset + 1);
+            offset += 2;
+
+            let base_type = item_type & 0x7F;
+            handles.push((base_type, item_handle));
+
+            let payload_len = match base_type {
+                0 => 0,
+                7 | 32 | 64 if data_len_byte < 2 => 2,
+                _ => u32::from(data_len_byte),
+            };
+            let padded = (payload_len + 1) & !1;
+            if padded > data_len.saturating_sub(offset) {
+                break;
+            }
+            offset += padded;
+        }
+
+        handles
+    }
+
+    fn clear_dialog_scoped_item_state(&mut self, dialog_ptr: u32) {
+        self.dialog_items.remove(&dialog_ptr);
+        self.dialog_item_handles
+            .retain(|_, (dlg, _)| *dlg != dialog_ptr);
+        self.dialog_control_handles
+            .retain(|_, (dlg, _)| *dlg != dialog_ptr);
+        self.dialog_control_values
+            .retain(|(dlg, _), _| *dlg != dialog_ptr);
+        self.hidden_dialog_item_rects
+            .retain(|(dlg, _), _| *dlg != dialog_ptr);
+        self.dialog_item_popup_menus
+            .retain(|(dlg, _), _| *dlg != dialog_ptr);
+        self.dialog_popup_original_rects
+            .retain(|(dlg, _), _| *dlg != dialog_ptr);
+        if self
+            .pending_dialog_popup_menu
+            .is_some_and(|pending| pending.dialog_ptr == dialog_ptr)
+        {
+            self.pending_dialog_popup_menu = None;
+        }
+        self.dialog_cancel_items.remove(&dialog_ptr);
+    }
+
+    fn dispose_dialog_owned_items(&mut self, bus: &mut MacMemoryBus, dialog_ptr: u32) {
+        let can_read_dialog_record =
+            self.dialog_items.contains_key(&dialog_ptr) || self.window_list.contains(&dialog_ptr);
+        let mut text_handles = Vec::new();
+        let mut control_handles = Vec::new();
+
+        if can_read_dialog_record {
+            for (base_type, handle) in Self::dialog_item_storage_handles_from_ditl(bus, dialog_ptr)
+            {
+                match base_type {
+                    8 | 16 => text_handles.push(handle),
+                    4..=7 => control_handles.push(handle),
+                    _ => {}
+                }
+            }
+        }
+
+        text_handles.extend(
+            self.dialog_item_handles
+                .iter()
+                .filter_map(|(&handle, &(dlg, _))| {
+                    if dlg == dialog_ptr {
+                        Some(handle)
+                    } else {
+                        None
+                    }
+                }),
+        );
+        control_handles.extend(self.dialog_control_handles.iter().filter_map(
+            |(&handle, &(dlg, _))| {
+                if dlg == dialog_ptr {
+                    Some(handle)
+                } else {
+                    None
+                }
+            },
+        ));
+
+        text_handles.sort_unstable();
+        text_handles.dedup();
+        control_handles.sort_unstable();
+        control_handles.dedup();
+
+        for handle in text_handles {
+            self.dispose_dialog_handle_storage(bus, handle);
+        }
+        for handle in control_handles {
+            self.dispose_dialog_control_storage(bus, handle);
+        }
+
+        if can_read_dialog_record {
+            let text_h = bus.read_long(dialog_ptr + 160);
+            self.dispose_dialog_te_storage(bus, text_h);
+            bus.write_long(dialog_ptr + 160, 0);
+        }
+
+        self.clear_dialog_scoped_item_state(dialog_ptr);
+    }
+
+    fn dispose_dialog_record_and_item_list(&mut self, bus: &mut MacMemoryBus, dialog_ptr: u32) {
+        if !self.dialog_items.contains_key(&dialog_ptr) && !self.window_list.contains(&dialog_ptr) {
+            return;
+        }
+
+        let items_handle = bus.read_long(dialog_ptr + 156);
+        self.dispose_dialog_handle_storage(bus, items_handle);
+        bus.free(dialog_ptr);
     }
 
     pub(crate) fn dialog_screen_bounds(
@@ -2135,6 +3047,153 @@ impl super::TrapDispatcher {
                 item.text = tracking.edit_text.clone();
             }
         }
+    }
+
+    fn textedit_key_result(
+        existing: &[u8],
+        sel_start: usize,
+        sel_end: usize,
+        key: u8,
+    ) -> (Vec<u8>, usize) {
+        let text_len = existing.len();
+        let s = sel_start.min(text_len);
+        let e = sel_end.min(text_len);
+        let (s, e) = if s > e { (e, s) } else { (s, e) };
+
+        if key == 0x08 {
+            if s != e {
+                let mut merged = Vec::with_capacity(text_len - (e - s));
+                merged.extend_from_slice(&existing[..s]);
+                merged.extend_from_slice(&existing[e..]);
+                return (merged, s);
+            }
+            if s > 0 {
+                let mut merged = Vec::with_capacity(text_len - 1);
+                merged.extend_from_slice(&existing[..s - 1]);
+                merged.extend_from_slice(&existing[s..]);
+                return (merged, s - 1);
+            }
+            return (existing.to_vec(), s);
+        }
+
+        let mut merged = Vec::with_capacity(s + 1 + text_len.saturating_sub(e));
+        merged.extend_from_slice(&existing[..s]);
+        merged.push(key);
+        merged.extend_from_slice(&existing[e..]);
+        (merged, s + 1)
+    }
+
+    fn apply_dialog_select_key_to_edit_item(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        items: &mut [DialogItem],
+        edit_item: i16,
+        key: u8,
+    ) -> bool {
+        if edit_item <= 0 {
+            return false;
+        }
+        let Some(item) = items.get_mut((edit_item - 1) as usize) else {
+            return false;
+        };
+        let base_type = item.item_type & 0x7F;
+        let is_disabled = (item.item_type & 0x80) != 0;
+        if base_type != 16 || is_disabled {
+            return false;
+        }
+
+        let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
+        let existing = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
+            .unwrap_or_else(|| item.text.as_bytes().to_vec());
+        let text_handle = bus.read_long(dialog_ptr + 160);
+        let te_ptr = Self::te_record_ptr(bus, text_handle);
+        let (sel_start, sel_end) = if te_ptr != 0 {
+            (
+                bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize,
+                bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize,
+            )
+        } else {
+            (item.sel_start.max(0) as usize, item.sel_end.max(0) as usize)
+        };
+
+        let (updated, insertion_point) =
+            Self::textedit_key_result(&existing, sel_start, sel_end, key);
+        let clamped_insertion = insertion_point.min(u16::MAX as usize) as u16;
+        item.text = String::from_utf8_lossy(&updated).to_string();
+        item.sel_start = clamped_insertion as i16;
+        item.sel_end = clamped_insertion as i16;
+
+        if item_handle != 0 {
+            let len = updated.len().min(255);
+            let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
+            if data_ptr != 0 && len > 0 {
+                bus.write_bytes(data_ptr, &updated[..len]);
+            }
+        }
+
+        if te_ptr != 0 {
+            self.te_set_text_contents(bus, text_handle, &updated);
+            bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, clamped_insertion);
+            bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, clamped_insertion);
+        }
+
+        true
+    }
+
+    fn activate_dialog_edit_item(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        items: &[DialogItem],
+        edit_item: i16,
+    ) -> bool {
+        if edit_item <= 0 {
+            return false;
+        }
+        let Some(item) = items.get((edit_item - 1) as usize) else {
+            return false;
+        };
+        if (item.item_type & 0x7F) != 16 || (item.item_type & 0x80) != 0 {
+            return false;
+        }
+
+        bus.write_word(dialog_ptr + 164, (edit_item - 1) as u16);
+
+        let text_handle = bus.read_long(dialog_ptr + 160);
+        let te_ptr = Self::te_record_ptr(bus, text_handle);
+        if te_ptr == 0 {
+            return true;
+        }
+
+        let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
+        let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
+            .unwrap_or_else(|| item.text.as_bytes().to_vec());
+        self.te_set_text_contents(bus, text_handle, &text);
+
+        let text_len = text.len().min(u16::MAX as usize);
+        let sel_start = item.sel_start.max(0) as usize;
+        let sel_end = item.sel_end.max(0) as usize;
+        bus.write_word(
+            te_ptr + Self::TE_SEL_START_OFFSET,
+            sel_start.min(text_len) as u16,
+        );
+        bus.write_word(
+            te_ptr + Self::TE_SEL_END_OFFSET,
+            sel_end.min(text_len) as u16,
+        );
+        true
+    }
+
+    fn dialog_item_selection_range(item: &DialogItem, text_len: usize) -> Option<(usize, usize)> {
+        let start = (item.sel_start.max(0) as usize).min(text_len);
+        let end = (item.sel_end.max(0) as usize).min(text_len);
+        let (start, end) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        (start < end).then_some((start, end))
     }
 
     fn redraw_dialog_text_item(&mut self, bus: &mut MacMemoryBus, dialog_ptr: u32, item_no: i16) {
@@ -2269,9 +3328,19 @@ impl super::TrapDispatcher {
         // DialogRecord starts with a WindowRecord; +108 is windowKind,
         // not the WDEF procID. Dialog boxes and alerts must use
         // dialogKind=2. The WDEF procID is retained in window_proc_ids.
-        // Inside Macintosh Volume I, I-408, I-273; Volume VI, 11-42.
+        // Inside Macintosh Volume I, I-407..I-408, I-273; Volume VI, 11-42.
         bus.write_word(dlg_ptr + 108, 2);
         bus.write_long(dlg_ptr + 156, items_handle);
+
+        // SetDAFont / SetDialogFont affect subsequently created dialog and
+        // alert grafPorts; assembly callers may set DlgFont directly.
+        // Inside Macintosh Volume I, I-412; MTE 1992 p. 6-104.
+        let dialog_font = bus.read_word(crate::memory::globals::addr::DLG_FONT) as i16;
+        bus.write_word(dlg_ptr + 68, dialog_font as u16);
+        self.tx_font = dialog_font;
+        if let Some(state) = self.port_draw_states.get_mut(&dlg_ptr) {
+            state.tx_font = dialog_font;
+        }
 
         let text_h = Self::allocate_te_handle(bus);
         bus.write_long(dlg_ptr + 160, text_h);
@@ -2327,10 +3396,11 @@ impl super::TrapDispatcher {
     ) -> Vec<u8> {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
-        let save_top = top - 5; // dBoxProc outer border
-        let save_left = left - 5;
-        let save_bottom = bottom + 5; // shadow + dBoxProc border
-        let save_right = right + 5;
+        let margin = Self::DBOX_FRAME_MARGIN;
+        let save_top = top - margin; // dBoxProc structure region
+        let save_left = left - margin;
+        let save_bottom = bottom + margin;
+        let save_right = right + margin;
         // Guard against negative y (top < 5) and y >= screen_h. `y as u32`
         // sign-extends a negative i16 to a huge value that overflows when
         // multiplied by row_bytes. Off-screen rows contribute zeros.
@@ -2421,10 +3491,11 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
-        let save_top = top - 5;
-        let save_left = left - 5;
-        let save_bottom = bottom + 5;
-        let save_right = right + 5;
+        let margin = Self::DBOX_FRAME_MARGIN;
+        let save_top = top - margin;
+        let save_left = left - margin;
+        let save_bottom = bottom + margin;
+        let save_right = right + margin;
         // Mirror save_dialog_pixels y-bounds guard — saved bytes for off-screen
         // rows are skipped so write position stays aligned with the packed input buffer.
         let row_width = (save_right - save_left) as usize;
@@ -2479,6 +3550,82 @@ impl super::TrapDispatcher {
             }
             // 1bpp off-screen: save produced no bytes for this row,
             // so there's nothing to advance idx over here.
+        }
+    }
+
+    fn restore_dialog_pixels_outside_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        saved: &[u8],
+        keep_rect: (i16, i16, i16, i16),
+    ) {
+        let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        let margin = Self::DBOX_FRAME_MARGIN;
+        let save_top = top - margin;
+        let save_left = left - margin;
+        let save_bottom = bottom + margin;
+        let save_right = right + margin;
+        let row_width = (save_right - save_left) as usize;
+        let mut idx = 0;
+        let screen_h_i16 = screen_h;
+        for y in save_top..save_bottom {
+            let y_on_screen = y >= 0 && y < screen_h_i16;
+            if pixel_size == 8 {
+                if y_on_screen {
+                    for x in save_left..save_right {
+                        if idx < saved.len() {
+                            if (y < keep_rect.0
+                                || y >= keep_rect.2
+                                || x < keep_rect.1
+                                || x >= keep_rect.3)
+                                && x >= 0
+                                && (x as u32) < row_bytes
+                            {
+                                let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+                                bus.write_byte(addr, saved[idx]);
+                            }
+                            idx += 1;
+                        }
+                    }
+                } else {
+                    idx += row_width.min(saved.len().saturating_sub(idx));
+                }
+            } else if y_on_screen {
+                let byte_left = (save_left.max(0) as u32) / 8;
+                let byte_right = (save_right as u32).div_ceil(8);
+                let bx_end = byte_right.min(row_bytes);
+                if byte_left < bx_end {
+                    for bx in byte_left..bx_end {
+                        if idx >= saved.len() {
+                            break;
+                        }
+                        let mut restore_mask = 0u8;
+                        for bit in 0..8u32 {
+                            let x = (bx * 8 + bit) as i16;
+                            if x >= save_left
+                                && x < save_right
+                                && (y < keep_rect.0
+                                    || y >= keep_rect.2
+                                    || x < keep_rect.1
+                                    || x >= keep_rect.3)
+                            {
+                                restore_mask |= 0x80 >> bit;
+                            }
+                        }
+                        if restore_mask != 0 {
+                            let addr = screen_base + (y as u32) * row_bytes + bx;
+                            let current = bus.read_byte(addr);
+                            bus.write_byte(
+                                addr,
+                                (current & !restore_mask) | (saved[idx] & restore_mask),
+                            );
+                        }
+                        idx += 1;
+                    }
+                }
+            }
         }
     }
 
@@ -2657,6 +3804,34 @@ impl super::TrapDispatcher {
         );
     }
 
+    fn dialog_item_enclosing_local_rect(
+        item_type: u8,
+        rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16, i16) {
+        match item_type & 0x7F {
+            // IM:IV IV-59 notes that Dialog Manager drawing can extend
+            // outside an editText item's display rectangle by 3 pixels.
+            16 => (rect.0 - 3, rect.1 - 3, rect.2 + 3, rect.3 + 3),
+            _ => rect,
+        }
+    }
+
+    fn erase_dialog_item_enclosing_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        local_rect: (i16, i16, i16, i16),
+    ) {
+        let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+        let screen_rect = (
+            bounds.0 + local_rect.0,
+            bounds.1 + local_rect.1,
+            bounds.0 + local_rect.2,
+            bounds.1 + local_rect.3,
+        );
+        self.fill_rect_clipped_to_dialog(bus, bounds, screen_rect, false);
+    }
+
     /// Restore framebuffer pixels to an exact rectangle (no margin).
     ///
     /// Mirrors save_rect_pixels off-screen guards so the idx position stays
@@ -2748,21 +3923,7 @@ impl super::TrapDispatcher {
         // dialogs whose in-bounds items are userItems, since the game draws
         // its own background and the white fill would overwrite that content.
         let game_managed = Self::dialog_is_game_managed(bounds, items);
-        if !game_managed {
-            Self::fb_fill_rect(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                top,
-                left,
-                bottom,
-                right,
-                false,
-            );
-        } else {
+        if game_managed {
             eprintln!(
                 "[DIALOG] Skipping white fill for game-managed dialog at ({},{},{},{}), {} items",
                 top,
@@ -2772,18 +3933,24 @@ impl super::TrapDispatcher {
                 items.len()
             );
         }
-
-        // Draw border
-        // Inside Macintosh Volume I, I-299:
-        // procID 0 = documentProc (title bar + border)
-        // procID 1 = dBoxProc (double border, no title)
-        // procID 2 = plainDBox (single border, no title)
-        // procID 3 = altDBoxProc (shadow border, no title)
-        // procID 4 = noGrowDocProc (title bar + border, no grow)
-        match proc_id {
-            1 => {
-                // dBoxProc: double border with 3px white gap between them.
-                // Inside Macintosh Volume I, I-299
+        let themed_frame = match proc_id {
+            1 => (
+                top - Self::DBOX_FRAME_MARGIN,
+                left - Self::DBOX_FRAME_MARGIN,
+                bottom + Self::DBOX_FRAME_MARGIN,
+                right + Self::DBOX_FRAME_MARGIN,
+            ),
+            _ => (top, left, bottom + 2, right + 2),
+        };
+        if !self.draw_theme_dialog_frame(
+            bus,
+            (top, left, bottom, right),
+            themed_frame,
+            proc_id,
+            true,
+            !game_managed,
+        ) {
+            if !game_managed {
                 Self::fb_fill_rect(
                     bus,
                     screen_base,
@@ -2791,33 +3958,37 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    top - 5,
-                    left - 5,
-                    bottom + 5,
-                    right + 5,
+                    top,
+                    left,
+                    bottom,
+                    right,
                     false,
                 );
-                // Inner border at content edge
-                self.draw_rect_border(bus, top, left, bottom, right);
-                // Outer border with 3px gap
-                self.draw_rect_border(bus, top - 4, left - 4, bottom + 4, right + 4);
-                // Basilisk's platinum theme adds a 3-pixel decorative shadow
-                // at top-5..top-3 and bottom+3..+5 (lavender/gray/purple
-                // gradient, not pure white) — proper fidelity requires
-                // emulating the platinum theme window manager.
             }
-            3 => {
-                // altDBoxProc: single border + shadow
-                self.draw_rect_border(bus, top, left, bottom, right);
-                self.draw_shadow(bus, top, left, bottom, right);
-            }
-            _ => {
-                // Default: single border + shadow
-                self.draw_rect_border(bus, top, left, bottom, right);
-                self.draw_shadow(bus, top, left, bottom, right);
+
+            // Draw border
+            // Inside Macintosh Volume I, I-299:
+            // procID 0 = documentProc (title bar + border)
+            // procID 1 = dBoxProc (double border, no title)
+            // procID 2 = plainDBox (single border, no title)
+            // procID 3 = altDBoxProc (shadow border, no title)
+            // procID 4 = noGrowDocProc (title bar + border, no grow)
+            match proc_id {
+                1 => {
+                    self.draw_classic_dbox_frame(bus, top, left, bottom, right);
+                }
+                3 => {
+                    // altDBoxProc: single border + shadow
+                    self.draw_rect_border(bus, top, left, bottom, right);
+                    self.draw_shadow(bus, top, left, bottom, right);
+                }
+                _ => {
+                    // Default: single border + shadow
+                    self.draw_rect_border(bus, top, left, bottom, right);
+                    self.draw_shadow(bus, top, left, bottom, right);
+                }
             }
         }
-
         // Optional per-iteration trace: gate SYSTEMLESS_TRACE_DIALOG_ITEMS=1
         // logs each item's type + relative rect + computed absolute rect.
         // Use to localize artifact-producing items in modal dialog rendering.
@@ -2835,6 +4006,15 @@ impl super::TrapDispatcher {
                 items.len()
             );
         }
+
+        // IM:I I-407 and MTE 1992 p. 6-56: aDefItem/first-item default
+        // controls Return/Enter semantics for modal dialogs, but ordinary
+        // dialogs draw any bold default-button outline with an application
+        // userItem. MTE 1992 glossary confirms Dialog Manager auto-draws
+        // the bold outline for alerts, while applications draw it for
+        // dialogs. DrawDialog therefore draws standard buttons without
+        // synthesizing default-button chrome.
+        let auto_default_outline = false;
 
         // Draw each item
         for (i, item) in items.iter().enumerate() {
@@ -2881,17 +4061,24 @@ impl super::TrapDispatcher {
                 continue;
             }
 
+            let enabled = (item.item_type & 0x80) == 0;
             match base_type {
                 // Button (ctrlItem + btnCtrl = 4)
                 4 => {
-                    self.draw_button(
+                    // IM:I I-405: itemDisable stops Dialog Manager event
+                    // reporting, while the standard System 7 control
+                    // appearance is unchanged. Route the semantic state to
+                    // non-classic theme chrome without changing metrics or
+                    // existing hit handling.
+                    self.draw_button_with_enabled(
                         bus,
                         abs_top,
                         abs_left,
                         abs_bottom,
                         abs_right,
                         &item.text,
-                        item_num == default_item,
+                        auto_default_outline && item_num == default_item,
+                        enabled,
                     );
                 }
                 // Checkbox (ctrlItem + chkCtrl = 5)
@@ -2902,14 +4089,14 @@ impl super::TrapDispatcher {
                         .copied()
                         .unwrap_or(0)
                         != 0;
-                    self.draw_checkbox(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
+                    self.draw_checkbox_with_enabled(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked, enabled,
                     );
                 }
                 // Radio button (ctrlItem + radCtrl = 6)
                 6 => {
-                    self.draw_radio(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    self.draw_radio_with_enabled(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, enabled,
                     );
                 }
                 // Static text (8)
@@ -2925,6 +4112,15 @@ impl super::TrapDispatcher {
                     } else {
                         &item.text
                     };
+                    // MTE 1992 glossary "disabled item": disabled dialog
+                    // items do not report user events. Route that semantic
+                    // state to themed field chrome while leaving TextEdit
+                    // metrics and existing hit handling unchanged.
+                    let selection_range = if item_num == edit_item {
+                        Self::dialog_item_selection_range(item, display_text.len())
+                    } else {
+                        None
+                    };
                     self.draw_edit_text_with_cursor(
                         bus,
                         abs_top,
@@ -2932,19 +4128,31 @@ impl super::TrapDispatcher {
                         abs_bottom,
                         abs_right,
                         display_text,
-                        item_num == edit_item,
+                        selection_range,
                         false,
+                        enabled,
                     );
                 }
                 // Icon (32)
                 32 => {
                     if !skip_pictures && item.resource_id != 0 {
-                        if let Some((_, icon_ptr)) =
-                            self.find_resource_any(*b"ICON", item.resource_id)
-                        {
-                            // ICON resource: 32x32 1-bit bitmap = 128 bytes
-                            // Inside Macintosh Volume I, I-205
-                            self.draw_icon(bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr);
+                        let drew_cicn = self
+                            .find_resource_any(*b"cicn", item.resource_id)
+                            .is_some_and(|(_, icon_ptr)| {
+                                self.draw_cicn_icon(
+                                    bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
+                                )
+                            });
+                        if !drew_cicn {
+                            if let Some((_, icon_ptr)) =
+                                self.find_resource_any(*b"ICON", item.resource_id)
+                            {
+                                // ICON resource: 32x32 1-bit bitmap = 128 bytes
+                                // Inside Macintosh Volume I, I-205
+                                self.draw_icon(
+                                    bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
+                                );
+                            }
                         }
                     }
                 }
@@ -2997,16 +4205,17 @@ impl super::TrapDispatcher {
                                 .into_owned();
 
                         match proc_id_ctrl {
-                            0 => self.draw_button(
+                            0 => self.draw_button_with_enabled(
                                 bus,
                                 abs_top,
                                 abs_left,
                                 abs_bottom,
                                 abs_right,
                                 &title,
-                                item_num == default_item,
+                                auto_default_outline && item_num == default_item,
+                                enabled,
                             ),
-                            1 => self.draw_checkbox(
+                            1 => self.draw_checkbox_with_enabled(
                                 bus,
                                 abs_top,
                                 abs_left,
@@ -3014,8 +4223,9 @@ impl super::TrapDispatcher {
                                 abs_right,
                                 &title,
                                 value != 0,
+                                enabled,
                             ),
-                            2 => self.draw_radio(
+                            2 => self.draw_radio_with_enabled(
                                 bus,
                                 abs_top,
                                 abs_left,
@@ -3023,6 +4233,7 @@ impl super::TrapDispatcher {
                                 abs_right,
                                 &title,
                                 value != 0,
+                                enabled,
                             ),
                             16 => self.draw_scroll_bar(
                                 bus, abs_top, abs_left, abs_bottom, abs_right, value, min, max,
@@ -3031,36 +4242,40 @@ impl super::TrapDispatcher {
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, min, selected);
-                                self.draw_popup_control(
+                                self.draw_popup_control_with_state(
                                     bus,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
                                     abs_right,
                                     &item_title.unwrap_or_default(),
+                                    enabled && hilite != 255,
+                                    hilite == 1,
                                 );
                             }
                             _ => {
-                                self.draw_button(
+                                self.draw_button_with_enabled(
                                     bus,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
                                     abs_right,
                                     &title,
-                                    item_num == default_item,
+                                    auto_default_outline && item_num == default_item,
+                                    enabled,
                                 );
                             }
                         }
                     } else {
-                        self.draw_button(
+                        self.draw_button_with_enabled(
                             bus,
                             abs_top,
                             abs_left,
                             abs_bottom,
                             abs_right,
                             "",
-                            item_num == default_item,
+                            auto_default_outline && item_num == default_item,
+                            enabled,
                         );
                     }
                 }
@@ -3082,6 +4297,10 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
     ) {
         let (top, left, bottom, right) = bounds;
+        // Ordinary dialog default outlines are application-owned userItem
+        // drawing, not synthesized by DrawDialog. See the DrawDialog path
+        // above for the IM:I/MTE references.
+        let auto_default_outline = false;
         for (i, item) in items.iter().enumerate() {
             let item_num = (i + 1) as i16;
             let (it, il, ib, ir) = item.rect;
@@ -3093,15 +4312,17 @@ impl super::TrapDispatcher {
                 continue;
             }
 
+            let enabled = (item.item_type & 0x80) == 0;
             match item.item_type & 0x7F {
-                4 => self.draw_button(
+                4 => self.draw_button_with_enabled(
                     bus,
                     abs_top,
                     abs_left,
                     abs_bottom,
                     abs_right,
                     &item.text,
-                    item_num == default_item,
+                    auto_default_outline && item_num == default_item,
+                    enabled,
                 ),
                 5 => {
                     let checked = self
@@ -3116,8 +4337,8 @@ impl super::TrapDispatcher {
                         (abs_top, abs_left, abs_bottom, abs_right),
                         false,
                     );
-                    self.draw_checkbox(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
+                    self.draw_checkbox_with_enabled(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked, enabled,
                     );
                 }
                 6 => {
@@ -3127,8 +4348,8 @@ impl super::TrapDispatcher {
                         (abs_top, abs_left, abs_bottom, abs_right),
                         false,
                     );
-                    self.draw_radio(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false,
+                    self.draw_radio_with_enabled(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, enabled,
                     );
                 }
                 7 => {
@@ -3150,14 +4371,15 @@ impl super::TrapDispatcher {
                             String::from_utf8_lossy(&Self::control_title_bytes(bus, ctrl_ptr))
                                 .into_owned();
                         match proc_id_ctrl {
-                            0 => self.draw_button(
+                            0 => self.draw_button_with_enabled(
                                 bus,
                                 abs_top,
                                 abs_left,
                                 abs_bottom,
                                 abs_right,
                                 &title,
-                                item_num == default_item,
+                                auto_default_outline && item_num == default_item,
+                                enabled,
                             ),
                             1 => {
                                 self.fill_rect_clipped_to_dialog(
@@ -3166,7 +4388,7 @@ impl super::TrapDispatcher {
                                     (abs_top, abs_left, abs_bottom, abs_right),
                                     false,
                                 );
-                                self.draw_checkbox(
+                                self.draw_checkbox_with_enabled(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -3174,6 +4396,7 @@ impl super::TrapDispatcher {
                                     abs_right,
                                     &title,
                                     value != 0,
+                                    enabled,
                                 )
                             }
                             2 => {
@@ -3183,7 +4406,7 @@ impl super::TrapDispatcher {
                                     (abs_top, abs_left, abs_bottom, abs_right),
                                     false,
                                 );
-                                self.draw_radio(
+                                self.draw_radio_with_enabled(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -3191,6 +4414,7 @@ impl super::TrapDispatcher {
                                     abs_right,
                                     &title,
                                     value != 0,
+                                    enabled,
                                 )
                             }
                             16 => self.draw_scroll_bar(
@@ -3200,34 +4424,38 @@ impl super::TrapDispatcher {
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, min, selected);
-                                self.draw_popup_control(
+                                self.draw_popup_control_with_state(
                                     bus,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
                                     abs_right,
                                     &item_title.unwrap_or_default(),
+                                    enabled && hilite != 255,
+                                    hilite == 1,
                                 );
                             }
-                            _ => self.draw_button(
+                            _ => self.draw_button_with_enabled(
                                 bus,
                                 abs_top,
                                 abs_left,
                                 abs_bottom,
                                 abs_right,
                                 &title,
-                                item_num == default_item,
+                                auto_default_outline && item_num == default_item,
+                                enabled,
                             ),
                         }
                     } else {
-                        self.draw_button(
+                        self.draw_button_with_enabled(
                             bus,
                             abs_top,
                             abs_left,
                             abs_bottom,
                             abs_right,
                             "",
-                            item_num == default_item,
+                            auto_default_outline && item_num == default_item,
+                            enabled,
                         );
                     }
                 }
@@ -3246,6 +4474,11 @@ impl super::TrapDispatcher {
                     } else {
                         &item.text
                     };
+                    let selection_range = if item_num == edit_item {
+                        Self::dialog_item_selection_range(item, display_text.len())
+                    } else {
+                        None
+                    };
                     self.draw_edit_text_with_cursor(
                         bus,
                         abs_top,
@@ -3253,8 +4486,9 @@ impl super::TrapDispatcher {
                         abs_bottom,
                         abs_right,
                         display_text,
-                        item_num == edit_item,
+                        selection_range,
                         false,
+                        enabled,
                     );
                 }
                 _ => {}
@@ -3346,7 +4580,7 @@ impl super::TrapDispatcher {
             .map(|snapshot| snapshot.bounds)
             .unwrap_or_else(|| Self::dialog_screen_bounds(bus, click.dialog_ptr));
         let rect = Self::dialog_item_screen_rect(bounds, click.rect);
-        self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+        self.draw_dialog_button_highlight_state(bus, rect, &click.title, click.is_default, true);
     }
 
     pub(crate) fn finalize_dialog_draw_procs_if_idle(&mut self, bus: &mut MacMemoryBus) {
@@ -3464,6 +4698,70 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn fill_dialog_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        black: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            black,
+        );
+    }
+
+    fn draw_classic_dbox_frame(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let margin = Self::DBOX_FRAME_MARGIN;
+        // dBoxProc is a Window Manager WDEF variant, not a content-edge
+        // dialog item border. IM:I I-273 describes a modal dialog box as a
+        // rectangular window with its border inside the structure edge; the
+        // boundsRect remains the grafPort content region (IM:I I-282).
+        self.fill_dialog_rect(
+            bus,
+            top - margin,
+            left - margin,
+            bottom + margin,
+            right + margin,
+            false,
+        );
+
+        // System 7.5.3's standard WDEF draws an asymmetric black structure
+        // edge: one pixel on top/left and a two-pixel shadow edge on
+        // bottom/right, with a two-pixel inner band inset from the outer edge.
+        self.fill_dialog_rect(bus, top - 8, left - 8, top - 7, right + 8, true);
+        self.fill_dialog_rect(bus, top - 8, left - 8, bottom + 8, left - 7, true);
+        self.fill_dialog_rect(bus, top - 8, right + 6, bottom + 8, right + 8, true);
+        self.fill_dialog_rect(bus, bottom + 6, left - 8, bottom + 8, right + 8, true);
+
+        self.fill_dialog_rect(bus, top - 5, left - 5, top - 4, right + 5, true);
+        self.fill_dialog_rect(bus, top - 4, left - 5, top - 3, right + 4, true);
+        self.fill_dialog_rect(bus, top - 5, left - 5, bottom + 5, left - 4, true);
+        self.fill_dialog_rect(bus, top - 5, left - 4, bottom + 4, left - 3, true);
+        self.fill_dialog_rect(bus, top - 5, right + 3, bottom + 4, right + 4, true);
+        self.fill_dialog_rect(bus, bottom + 3, left - 5, bottom + 4, right + 4, true);
+    }
+
     /// Draw a 2-pixel shadow on bottom and right edges.
     pub(crate) fn draw_shadow(
         &self,
@@ -3521,29 +4819,135 @@ impl super::TrapDispatcher {
         right: i16,
         title: &str,
     ) {
+        self.draw_popup_control_with_state(bus, top, left, bottom, right, title, true, false);
+    }
+
+    pub(crate) fn draw_popup_control_with_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        enabled: bool,
+        pressed: bool,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
 
         let font_id = 0i16; // Chicago
         let font_size = 12i16;
 
-        // Standard popup menu button appearance.
-        // Macintosh Toolbox Essentials 1992, 5-26
-        let oval_w: i16 = 8;
-        let oval_h: i16 = 8;
-        let r = Rect {
+        if !self.draw_theme_control_chrome(
+            bus,
+            ControlKind::PopupButton,
             top,
             left,
             bottom,
             right,
-        };
+            enabled,
+            pressed,
+            false,
+            false,
+        ) {
+            // Standard popup menu button appearance.
+            // Macintosh Toolbox Essentials 1992, 5-26
+            let oval_w: i16 = 8;
+            let oval_h: i16 = 8;
+            let r = Rect {
+                top,
+                left,
+                bottom,
+                right,
+            };
 
-        // Fill interior with white using round-rect spans
-        let fill_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
-        for y in top..bottom {
-            let idx = (y - top) as usize;
-            if idx < fill_spans.len() {
-                let (sl, sr) = fill_spans[idx];
+            // Fill interior with white using round-rect spans
+            let fill_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
+            for y in top..bottom {
+                let idx = (y - top) as usize;
+                if idx < fill_spans.len() {
+                    let (sl, sr) = fill_spans[idx];
+                    Self::fb_hline(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        y,
+                        sl,
+                        sr,
+                        false,
+                    );
+                }
+            }
+
+            // 1-px round-rect border
+            self.fb_frame_round_rect(bus, top, left, bottom, right, oval_w, oval_h, 1);
+
+            // 1-px drop shadow (right edge and bottom edge, offset +1)
+            // Macintosh Toolbox Essentials 1992, 5-26
+            let shadow_r = Rect {
+                top: top + 2,
+                left: left + 2,
+                bottom: bottom + 1,
+                right: right + 1,
+            };
+            let shadow_spans = self.compute_rrect_spans(&shadow_r, oval_w, oval_h);
+            let inner_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
+            for y in shadow_r.top..shadow_r.bottom {
+                let si = (y - shadow_r.top) as usize;
+                if si >= shadow_spans.len() {
+                    continue;
+                }
+                let (sl, sr) = shadow_spans[si];
+                // Only draw shadow pixels outside the main rect fill area
+                let ii = (y - top) as usize;
+                let (_il, ir) = if y >= top && y < bottom && ii < inner_spans.len() {
+                    inner_spans[ii]
+                } else {
+                    (sr, sl) // no inner overlap, draw full shadow span
+                };
+                // Right shadow segment
+                if sr > ir {
+                    for x in ir.max(sl)..sr {
+                        Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            true,
+                        );
+                    }
+                }
+                // Bottom shadow segment (below main rect)
+                if y >= bottom {
+                    for x in sl..sr {
+                        Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            true,
+                        );
+                    }
+                }
+            }
+
+            // Downward-pointing triangle on right side (popup indicator)
+            // Macintosh Toolbox Essentials 1992, 5-26
+            let mid_y = (top + bottom) / 2;
+            let tri_x = right - 10;
+            for row in 0..4i16 {
                 Self::fb_hline(
                     bus,
                     screen_base,
@@ -3551,91 +4955,12 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    y,
-                    sl,
-                    sr,
-                    false,
+                    mid_y - 2 + row,
+                    tri_x - 3 + row,
+                    tri_x + 3 - row,
+                    true,
                 );
             }
-        }
-
-        // 1-px round-rect border
-        self.fb_frame_round_rect(bus, top, left, bottom, right, oval_w, oval_h, 1);
-
-        // 1-px drop shadow (right edge and bottom edge, offset +1)
-        // Macintosh Toolbox Essentials 1992, 5-26
-        let shadow_r = Rect {
-            top: top + 2,
-            left: left + 2,
-            bottom: bottom + 1,
-            right: right + 1,
-        };
-        let shadow_spans = self.compute_rrect_spans(&shadow_r, oval_w, oval_h);
-        let inner_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
-        for y in shadow_r.top..shadow_r.bottom {
-            let si = (y - shadow_r.top) as usize;
-            if si >= shadow_spans.len() {
-                continue;
-            }
-            let (sl, sr) = shadow_spans[si];
-            // Only draw shadow pixels outside the main rect fill area
-            let ii = (y - top) as usize;
-            let (_il, ir) = if y >= top && y < bottom && ii < inner_spans.len() {
-                inner_spans[ii]
-            } else {
-                (sr, sl) // no inner overlap, draw full shadow span
-            };
-            // Right shadow segment
-            if sr > ir {
-                for x in ir.max(sl)..sr {
-                    Self::fb_set_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        x,
-                        y,
-                        true,
-                    );
-                }
-            }
-            // Bottom shadow segment (below main rect)
-            if y >= bottom {
-                for x in sl..sr {
-                    Self::fb_set_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        x,
-                        y,
-                        true,
-                    );
-                }
-            }
-        }
-
-        // Downward-pointing triangle on right side (popup indicator)
-        // Macintosh Toolbox Essentials 1992, 5-26
-        let mid_y = (top + bottom) / 2;
-        let tri_x = right - 10;
-        for row in 0..4i16 {
-            Self::fb_hline(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                mid_y - 2 + row,
-                tri_x - 3 + row,
-                tri_x + 3 - row,
-                true,
-            );
         }
 
         // Selected item text inside the box
@@ -3664,10 +4989,24 @@ impl super::TrapDispatcher {
     fn redraw_dialog_popup_controls(
         &self,
         bus: &mut MacMemoryBus,
-        popup_draws: &[(i16, i16, i16, i16, String)],
+        popup_draws: &[DialogPopupDraw],
     ) {
-        for (top, left, bottom, right, title) in popup_draws {
-            self.draw_popup_control(bus, *top, *left, *bottom, *right, title);
+        for draw in popup_draws {
+            let (top, left, bottom, right) = draw.rect;
+            if draw.enabled && !draw.pressed {
+                self.draw_popup_control(bus, top, left, bottom, right, &draw.title);
+                continue;
+            }
+            self.draw_popup_control_with_state(
+                bus,
+                top,
+                left,
+                bottom,
+                right,
+                &draw.title,
+                draw.enabled,
+                draw.pressed,
+            );
         }
     }
 
@@ -3765,48 +5104,96 @@ impl super::TrapDispatcher {
         title: &str,
         is_default: bool,
     ) {
+        self.draw_button_state(bus, top, left, bottom, right, title, is_default, true);
+    }
+
+    fn draw_button_with_enabled(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        is_default: bool,
+        enabled: bool,
+    ) {
+        if enabled {
+            self.draw_button(bus, top, left, bottom, right, title, is_default);
+            return;
+        }
+        self.draw_button_state(bus, top, left, bottom, right, title, is_default, enabled);
+    }
+
+    fn draw_button_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+        is_default: bool,
+        enabled: bool,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        // White fill
-        Self::fb_fill_rect(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            top,
-            left,
-            bottom,
-            right,
-            false,
-        );
-        // Border
-        self.draw_rect_border(bus, top, left, bottom, right);
-
-        // Default button: rounded bold outline (3px thick)
-        // Macintosh Toolbox Essentials 1992, Listing 6-17
-        // references/executor/src/error/system_error.cpp
-        if is_default {
-            let hilite_top = top - 4;
-            let hilite_left = left - 4;
-            let hilite_bottom = bottom + 4;
-            let hilite_right = right + 4;
-            let hilite_height = hilite_bottom - hilite_top;
-            let oval = (hilite_height / 2 - 4).max(4);
-            self.fb_frame_round_rect(
+        if !self.draw_theme_push_button_chrome(
+            bus, top, left, bottom, right, enabled, false, is_default,
+        ) {
+            // White fill
+            Self::fb_fill_rect(
                 bus,
-                hilite_top,
-                hilite_left,
-                hilite_bottom,
-                hilite_right,
-                oval,
-                oval,
-                3,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                false,
             );
+            self.draw_classic_button_outline(bus, top, left, bottom, right);
+
+            // Default button: rounded bold outline (3px thick)
+            // Macintosh Toolbox Essentials 1992, Listing 6-17
+            // references/executor/src/error/system_error.cpp
+            if is_default {
+                let hilite_top = top - 4;
+                let hilite_left = left - 4;
+                let hilite_bottom = bottom + 4;
+                let hilite_right = right + 4;
+                let hilite_height = hilite_bottom - hilite_top;
+                let oval = (hilite_height / 2 - 4).max(4);
+                self.fb_frame_round_rect(
+                    bus,
+                    hilite_top,
+                    hilite_left,
+                    hilite_bottom,
+                    hilite_right,
+                    oval,
+                    oval,
+                    3,
+                );
+            }
         }
 
-        // Center text
+        self.draw_button_label(bus, top, left, bottom, right, title);
+    }
+
+    fn draw_button_label(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        title: &str,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
         let font_id = 0i16; // Chicago
         let font_size = 12i16;
         let metrics = get_font_metrics(font_id, font_size);
@@ -3828,6 +5215,62 @@ impl super::TrapDispatcher {
         );
     }
 
+    fn draw_classic_button_outline(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        if bottom - top < 8 || right - left < 8 {
+            self.draw_rect_border(bus, top, left, bottom, right);
+            return;
+        }
+
+        // Dialog Manager buttons are standard controls whose display
+        // rectangle becomes the control's enclosing rectangle (IM:I I-405).
+        // The classic System 7 control definition draws the push button as a
+        // one-pixel rounded rectangle inside that enclosing rectangle.
+        self.fill_dialog_rect(bus, top, left + 3, top + 1, right - 3, true);
+        self.fill_dialog_rect(bus, top + 1, left + 1, top + 2, left + 3, true);
+        self.fill_dialog_rect(bus, top + 1, right - 3, top + 2, right - 1, true);
+        self.fill_dialog_rect(bus, top + 2, left + 1, top + 3, left + 2, true);
+        self.fill_dialog_rect(bus, top + 2, right - 2, top + 3, right - 1, true);
+        self.fill_dialog_rect(bus, top + 3, left, bottom - 3, left + 1, true);
+        self.fill_dialog_rect(bus, top + 3, right - 1, bottom - 3, right, true);
+        self.fill_dialog_rect(bus, bottom - 3, left + 1, bottom - 2, left + 2, true);
+        self.fill_dialog_rect(bus, bottom - 3, right - 2, bottom - 2, right - 1, true);
+        self.fill_dialog_rect(bus, bottom - 2, left + 1, bottom - 1, left + 3, true);
+        self.fill_dialog_rect(bus, bottom - 2, right - 3, bottom - 1, right - 1, true);
+        self.fill_dialog_rect(bus, bottom - 1, left + 3, bottom, right - 3, true);
+    }
+
+    fn draw_dialog_button_highlight_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        title: &str,
+        is_default: bool,
+        highlighted: bool,
+    ) {
+        let (top, left, bottom, right) = rect;
+        if self.draw_theme_push_button_chrome(
+            bus,
+            top,
+            left,
+            bottom,
+            right,
+            true,
+            highlighted,
+            is_default,
+        ) {
+            self.draw_button_label(bus, top, left, bottom, right, title);
+            return;
+        }
+        self.invert_button_rect(bus, top, left, bottom, right);
+    }
+
     /// Draw a checkbox item.
     pub(crate) fn draw_checkbox(
         &self,
@@ -3839,65 +5282,115 @@ impl super::TrapDispatcher {
         title: &str,
         checked: bool,
     ) {
+        self.draw_checkbox_state(bus, top, left, _bottom, _right, title, checked, true);
+    }
+
+    fn draw_checkbox_with_enabled(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        _bottom: i16,
+        _right: i16,
+        title: &str,
+        checked: bool,
+        enabled: bool,
+    ) {
+        if enabled {
+            self.draw_checkbox(bus, top, left, _bottom, _right, title, checked);
+            return;
+        }
+        self.draw_checkbox_state(bus, top, left, _bottom, _right, title, checked, enabled);
+    }
+
+    fn draw_checkbox_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        _bottom: i16,
+        _right: i16,
+        title: &str,
+        checked: bool,
+        enabled: bool,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let box_size = 12i16;
-        let box_top = top + 1;
-        let box_left = left;
-        // Draw checkbox box
-        Self::fb_fill_rect(
+        let box_size = Self::STANDARD_CONTROL_MARK_SIZE;
+        // Standard dialog checkbox/radio controls are drawn by the System
+        // CDEF as a 12-pixel mark plus title inside the item rectangle
+        // (MTE 1992 pp. 5-4..5-5; HIG 1992 pp. 209..212).
+        let box_top = top + Self::STANDARD_CONTROL_MARK_TOP_INSET;
+        let box_left = left + Self::STANDARD_CONTROL_MARK_LEFT_INSET;
+        if !self.draw_theme_control_chrome(
             bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
+            ControlKind::Checkbox,
             box_top,
             box_left,
             box_top + box_size,
             box_left + box_size,
+            enabled,
             false,
-        );
-        self.draw_rect_border(
-            bus,
-            box_top,
-            box_left,
-            box_top + box_size,
-            box_left + box_size,
-        );
-        if checked {
-            // Draw X inside
-            for i in 2..box_size - 2 {
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    box_left + i,
-                    box_top + i,
-                    true,
-                );
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    box_left + box_size - 1 - i,
-                    box_top + i,
-                    true,
-                );
+            checked,
+            false,
+        ) {
+            // Draw checkbox box
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                box_top,
+                box_left,
+                box_top + box_size,
+                box_left + box_size,
+                false,
+            );
+            self.draw_rect_border(
+                bus,
+                box_top,
+                box_left,
+                box_top + box_size,
+                box_left + box_size,
+            );
+            if checked {
+                // Draw X inside
+                for i in 2..box_size - 2 {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        box_left + i,
+                        box_top + i,
+                        true,
+                    );
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        box_left + box_size - 1 - i,
+                        box_top + i,
+                        true,
+                    );
+                }
             }
         }
-        // Draw label text to the right of the box
+        // Draw label text to the right of the box. Checkbox/radio items are
+        // controls, and SetDialogFont/SetDAFont does not affect control
+        // titles (IM:I I-412; MTE 1992 p. 6-105).
         let font_id = 0i16;
         let font_size = 12i16;
         let metrics = get_font_metrics(font_id, font_size);
-        let text_x = box_left + box_size + 4;
-        let text_y = box_top + (box_size - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
+        let text_x = box_left + box_size + Self::STANDARD_CONTROL_TITLE_GAP;
+        let text_y = top + metrics.ascent + Self::STANDARD_CONTROL_TITLE_BASELINE_OFFSET;
         Self::fb_draw_string(
             bus,
             screen_base,
@@ -3924,27 +5417,55 @@ impl super::TrapDispatcher {
         title: &str,
         selected: bool,
     ) {
+        self.draw_radio_state(bus, top, left, _bottom, _right, title, selected, true);
+    }
+
+    fn draw_radio_with_enabled(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        _bottom: i16,
+        _right: i16,
+        title: &str,
+        selected: bool,
+        enabled: bool,
+    ) {
+        if enabled {
+            self.draw_radio(bus, top, left, _bottom, _right, title, selected);
+            return;
+        }
+        self.draw_radio_state(bus, top, left, _bottom, _right, title, selected, enabled);
+    }
+
+    fn draw_radio_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        _bottom: i16,
+        _right: i16,
+        title: &str,
+        selected: bool,
+        enabled: bool,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let r = 6i16; // radius
-        let cx = left + r;
-        let cy = top + r + 1;
-        // Simple circle approximation: draw a box for now
-        Self::fb_fill_rect(
+        let mark_size = Self::STANDARD_CONTROL_MARK_SIZE;
+        let mark_top = top + Self::STANDARD_CONTROL_MARK_TOP_INSET;
+        let mark_left = left + Self::STANDARD_CONTROL_MARK_LEFT_INSET;
+        if !self.draw_theme_control_chrome(
             bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            cy - r,
-            cx - r,
-            cy + r,
-            cx + r,
+            ControlKind::RadioButton,
+            mark_top,
+            mark_left,
+            mark_top + mark_size,
+            mark_left + mark_size,
+            enabled,
             false,
-        );
-        self.draw_rect_border(bus, cy - r, cx - r, cy + r, cx + r);
-        if selected {
+            selected,
+            false,
+        ) {
             Self::fb_fill_rect(
                 bus,
                 screen_base,
@@ -3952,19 +5473,47 @@ impl super::TrapDispatcher {
                 pixel_size,
                 screen_width,
                 screen_height,
-                cy - 3,
-                cx - 3,
-                cy + 3,
-                cx + 3,
-                true,
+                mark_top,
+                mark_left,
+                mark_top + mark_size,
+                mark_left + mark_size,
+                false,
             );
+            // Radio buttons are small circles, with a dot when selected
+            // (IM:I I-312; MTE 1992 pp. 5-5..5-6; HIG 1992 pp. 209..210).
+            self.draw_control_mask_12(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                mark_left,
+                mark_top,
+                &Self::CLASSIC_RADIO_OUTLINE_12,
+            );
+            if selected {
+                self.draw_control_mask_12(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    mark_left,
+                    mark_top,
+                    &Self::CLASSIC_RADIO_DOT_12,
+                );
+            }
         }
         // Label
+        // SetDialogFont/SetDAFont affects statText and editText items but
+        // not control titles (IM:I I-412; MTE 1992 p. 6-105).
         let font_id = 0i16;
         let font_size = 12i16;
         let metrics = get_font_metrics(font_id, font_size);
-        let text_x = cx + r + 4;
-        let text_y = cy - r + (2 * r - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
+        let text_x = mark_left + mark_size + Self::STANDARD_CONTROL_TITLE_GAP;
+        let text_y = top + metrics.ascent + Self::STANDARD_CONTROL_TITLE_BASELINE_OFFSET;
         Self::fb_draw_string(
             bus,
             screen_base,
@@ -3978,6 +5527,37 @@ impl super::TrapDispatcher {
             font_id,
             font_size,
         );
+    }
+
+    fn draw_control_mask_12(
+        &self,
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        left: i16,
+        top: i16,
+        mask: &[&str; 12],
+    ) {
+        for (dy, row) in mask.iter().enumerate() {
+            for (dx, pixel) in row.as_bytes().iter().enumerate() {
+                if *pixel == b'#' {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        left + dx as i16,
+                        top + dy as i16,
+                        true,
+                    );
+                }
+            }
+        }
     }
 
     /// Replace `^0`..`^3` in dialog/alert text with the strings most
@@ -4020,65 +5600,54 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let font_id = 0i16;
-        let font_size = 12i16;
+        // SetDialogFont/SetDAFont affects statText and editText items but
+        // not control titles (IM:I I-412; MTE 1992 p. 6-105).
+        let font_id = self.tx_font;
+        let font_size = Self::font_lookup_size(self.tx_size);
         let metrics = get_font_metrics(font_id, font_size);
-        let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
-        let max_width = right - left;
+        let line_height = metrics.ascent + metrics.descent + metrics.leading;
+        let max_width = (right - left).saturating_sub(Self::TE_LINE_LEFT_INSET);
         let mut y = top + metrics.ascent;
         if y >= bottom && bottom > top {
             y = bottom - 1;
         }
 
         let substituted = self.apply_param_text(text);
-        // Word-wrap text to fit within the display rect
-        let words: Vec<&str> = substituted.split(' ').collect();
-        let mut current_line = String::new();
+        let text_bytes = substituted.as_bytes();
+        let lines = self.te_wrap_lines(font_id, self.tx_size, text_bytes, max_width);
 
-        for word in &words {
-            let test_line = if current_line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{} {}", current_line, word)
-            };
-            let test_width = Self::fb_measure_string(&test_line, font_id, font_size);
-            if test_width > max_width && !current_line.is_empty() {
-                if y <= bottom {
-                    Self::fb_draw_string(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        left,
-                        y,
-                        &current_line,
-                        font_id,
-                        font_size,
-                    );
-                }
-                y += line_height;
-                current_line = word.to_string();
-            } else {
-                current_line = test_line;
+        for (start, end) in lines {
+            let mut trimmed_end = end;
+            while trimmed_end > start && matches!(text_bytes[trimmed_end - 1], b' ' | b'\r' | b'\n')
+            {
+                trimmed_end -= 1;
             }
-        }
-        // Draw the last line
-        if !current_line.is_empty() && y <= bottom {
-            Self::fb_draw_string(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                left,
-                y,
-                &current_line,
-                font_id,
-                font_size,
-            );
+            if trimmed_end > start && y <= bottom {
+                // IM:I I-405 to I-406: statText draws like editText text
+                // inside the display rectangle, including wrap and clipping,
+                // but without the editText frame.
+                let line: String = text_bytes[start..trimmed_end]
+                    .iter()
+                    .map(|&byte| byte as char)
+                    .collect();
+                Self::fb_draw_string(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    left + Self::TE_LINE_LEFT_INSET,
+                    y,
+                    &line,
+                    font_id,
+                    font_size,
+                );
+            }
+            y += line_height;
+            if y > bottom {
+                break;
+            }
         }
     }
 
@@ -4093,7 +5662,18 @@ impl super::TrapDispatcher {
         text: &str,
         selected: bool,
     ) {
-        self.draw_edit_text_with_cursor(bus, top, left, bottom, right, text, selected, !selected);
+        let selection_range = selected.then_some((0, text.len()));
+        self.draw_edit_text_with_cursor(
+            bus,
+            top,
+            left,
+            bottom,
+            right,
+            text,
+            selection_range,
+            !selected,
+            true,
+        );
     }
 
     fn draw_edit_text_with_cursor(
@@ -4104,32 +5684,53 @@ impl super::TrapDispatcher {
         bottom: i16,
         right: i16,
         text: &str,
-        selected: bool,
+        selection_range: Option<(usize, usize)>,
         show_cursor: bool,
+        enabled: bool,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        // White fill
-        Self::fb_fill_rect(
+        // IM:I I-414 and HIG 1992 p. 184: the active editText item is a
+        // text-entry field with visible focus feedback. The theme provider owns
+        // that field chrome only; TextEdit metrics, text drawing, selection,
+        // and caret positioning remain classic guest-visible behavior.
+        let frame_top = top - Self::EDIT_TEXT_FRAME_OUTSET;
+        let frame_left = left - Self::EDIT_TEXT_FRAME_OUTSET;
+        let frame_bottom = bottom + Self::EDIT_TEXT_FRAME_OUTSET;
+        let frame_right = right + Self::EDIT_TEXT_FRAME_OUTSET;
+
+        if !self.draw_theme_text_field(
             bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            top,
-            left,
-            bottom,
-            right,
-            false,
-        );
-        // Border (inset look)
-        self.draw_rect_border(bus, top, left, bottom, right);
-        // Text inside with 2px padding
-        let font_id = 0i16;
-        let font_size = 12i16;
+            frame_top,
+            frame_left,
+            frame_bottom,
+            frame_right,
+            enabled,
+            selection_range.is_some() || show_cursor,
+        ) {
+            // White fill
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                frame_top,
+                frame_left,
+                frame_bottom,
+                frame_right,
+                false,
+            );
+            // IM:I I-405: editText's display rectangle becomes the TextEdit
+            // view/dest rectangle, and Dialog Manager frames it three pixels
+            // outside that display rectangle.
+            self.draw_rect_border(bus, frame_top, frame_left, frame_bottom, frame_right);
+        }
+        let font_id = self.tx_font;
+        let font_size = Self::font_lookup_size(self.tx_size);
         let metrics = get_font_metrics(font_id, font_size);
-        let text_y = top + 2 + metrics.ascent;
+        let text_y = top + metrics.ascent;
         Self::fb_draw_string(
             bus,
             screen_base,
@@ -4137,24 +5738,73 @@ impl super::TrapDispatcher {
             pixel_size,
             screen_width,
             screen_height,
-            left + 3,
+            left + 1,
             text_y,
             text,
             font_id,
             font_size,
         );
-        if selected {
-            // Select all text (invert the inner area to show selection highlight)
-            // On a real Mac, ModalDialog selects all text in the active editText field
-            // by default. TextEdit inverts the selection rectangle.
+        if let Some((selection_start, selection_end)) = selection_range {
+            // IM:I I-422 and MTE 1992 p. 6-131: SelIText /
+            // SelectDialogItemText displays the selected range by inverting
+            // the selected characters. Match TextEdit's left-justified
+            // selection rectangle: glyphs draw at destRect.left+1, but a
+            // selection beginning at character 0 includes the one-pixel inset.
             if !text.is_empty() {
-                self.invert_button_rect(bus, top + 1, left + 1, bottom - 1, right - 1);
+                let text_bytes = text.as_bytes();
+                let start = selection_start.min(text_bytes.len());
+                let end = selection_end.min(text_bytes.len());
+                if start < end {
+                    let line_height = metrics.ascent + metrics.descent + metrics.leading;
+                    let selection_top = top;
+                    let selection_bottom = top.saturating_add(line_height).min(bottom);
+                    let selection_left = if start == 0 {
+                        left
+                    } else {
+                        left + Self::TE_LINE_LEFT_INSET
+                            + self.te_measure_text_width(
+                                font_id,
+                                self.tx_size,
+                                text_bytes,
+                                0,
+                                start,
+                            )
+                    };
+                    let selection_right = if end >= text_bytes.len() {
+                        right
+                    } else {
+                        left + Self::TE_LINE_LEFT_INSET
+                            + self.te_measure_text_width(font_id, self.tx_size, text_bytes, 0, end)
+                    };
+                    if selection_left < selection_right && selection_top < selection_bottom {
+                        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+                            self.invert_rect_exact(
+                                bus,
+                                selection_top,
+                                selection_left,
+                                selection_bottom,
+                                selection_right,
+                            );
+                        } else {
+                            self.draw_theme_text_selection(
+                                bus,
+                                selection_top,
+                                selection_left,
+                                selection_bottom,
+                                selection_right,
+                                true,
+                            );
+                        }
+                    }
+                }
             }
         } else if show_cursor {
             // Draw cursor bar at end of text
             let text_width = Self::fb_measure_string(text, font_id, font_size);
             let cursor_x = left + 3 + text_width;
-            if cursor_x < right - 1 {
+            if cursor_x < right - 1
+                && !self.draw_theme_caret(bus, top + 2, cursor_x, bottom - 1, cursor_x + 1)
+            {
                 for y in (top + 2)..=(bottom - 2) {
                     Self::fb_set_pixel(
                         bus,
@@ -4170,6 +5820,197 @@ impl super::TrapDispatcher {
                 }
             }
         }
+    }
+
+    fn dialog_cicn_layout(bus: &MacMemoryBus, icon_ptr: u32) -> Option<DialogCIconLayout> {
+        if bus.get_alloc_size(icon_ptr).is_some_and(|size| size < 82) {
+            return None;
+        }
+
+        // Imaging With QuickDraw 1994 p. 4-106: a compiled 'cicn'
+        // resource starts with a 50-byte PixMap, 14-byte mask BitMap,
+        // 14-byte 1-bit fallback BitMap, 4-byte iconData handle, then
+        // mask bits, fallback bitmap bits, ColorTable, and PixMap data.
+        let pm_row_bytes = (bus.read_word(icon_ptr + 4) & 0x3FFF) as u32;
+        let pm_top = bus.read_word(icon_ptr + 6) as i16;
+        let pm_left = bus.read_word(icon_ptr + 8) as i16;
+        let pm_bottom = bus.read_word(icon_ptr + 10) as i16;
+        let pm_right = bus.read_word(icon_ptr + 12) as i16;
+        let pixel_size = bus.read_word(icon_ptr + 32);
+        let mask_row_bytes = (bus.read_word(icon_ptr + 54) & 0x3FFF) as u32;
+        let bmap_row_bytes = (bus.read_word(icon_ptr + 68) & 0x3FFF) as u32;
+
+        let width = pm_right - pm_left;
+        let height = pm_bottom - pm_top;
+        if width <= 0 || height <= 0 || pm_row_bytes == 0 || mask_row_bytes == 0 {
+            return None;
+        }
+
+        let height_u32 = height as u32;
+        let mask_data_size = mask_row_bytes.checked_mul(height_u32)?;
+        let bmap_data_size = bmap_row_bytes.checked_mul(height_u32)?;
+        let mask_data_ptr = icon_ptr + 82;
+        let bmap_data_ptr = mask_data_ptr.checked_add(mask_data_size)?;
+        let ctab_ptr = bmap_data_ptr.checked_add(bmap_data_size)?;
+
+        if let Some(resource_size) = bus.get_alloc_size(icon_ptr) {
+            let resource_end = icon_ptr.checked_add(resource_size)?;
+            if ctab_ptr.checked_add(8)? > resource_end {
+                return None;
+            }
+        }
+
+        let ct_size = bus.read_word(ctab_ptr + 6) as u32;
+        let ctab_total_bytes = 8u32.checked_add((ct_size + 1).checked_mul(8)?)?;
+        let pixel_data_ptr = ctab_ptr.checked_add(ctab_total_bytes)?;
+
+        if let Some(resource_size) = bus.get_alloc_size(icon_ptr) {
+            let resource_end = icon_ptr.checked_add(resource_size)?;
+            let pixel_data_size = pm_row_bytes.checked_mul(height_u32)?;
+            if pixel_data_ptr.checked_add(pixel_data_size)? > resource_end {
+                return None;
+            }
+        }
+
+        Some(DialogCIconLayout {
+            width,
+            height,
+            pm_row_bytes,
+            mask_row_bytes,
+            bmap_row_bytes,
+            pixel_size,
+            mask_data_ptr,
+            bmap_data_ptr,
+            pixel_data_ptr,
+        })
+    }
+
+    fn dialog_cicn_pixel_index(
+        bus: &MacMemoryBus,
+        data_ptr: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        x: u32,
+        y: u32,
+    ) -> Option<u8> {
+        let row_ptr = data_ptr.checked_add(y.checked_mul(row_bytes)?)?;
+        match pixel_size {
+            1 => {
+                let byte = bus.read_byte(row_ptr.checked_add(x / 8)?);
+                Some(((byte >> (7 - (x % 8))) & 1) as u8)
+            }
+            2 => {
+                let byte = bus.read_byte(row_ptr.checked_add(x / 4)?);
+                Some((byte >> (6 - 2 * (x % 4))) & 0x03)
+            }
+            4 => {
+                let byte = bus.read_byte(row_ptr.checked_add(x / 2)?);
+                Some(if x % 2 == 0 {
+                    (byte >> 4) & 0x0F
+                } else {
+                    byte & 0x0F
+                })
+            }
+            8 => Some(bus.read_byte(row_ptr.checked_add(x)?)),
+            size if size > 8 && size % 8 == 0 => {
+                let bytes_per_pixel = u32::from(size / 8);
+                Some(bus.read_byte(row_ptr.checked_add(x.checked_mul(bytes_per_pixel)?)?))
+            }
+            _ => None,
+        }
+    }
+
+    fn draw_cicn_icon(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        icon_ptr: u32,
+    ) -> bool {
+        let Some(layout) = Self::dialog_cicn_layout(bus, icon_ptr) else {
+            return false;
+        };
+        let (screen_base, row_bytes, screen_width, screen_height, screen_pixel_size) =
+            self.get_screen_params();
+        let dst_w = right - left;
+        let dst_h = bottom - top;
+        if dst_w <= 0 || dst_h <= 0 {
+            return false;
+        }
+
+        for dy in 0..dst_h {
+            let sy = (dy as i32 * i32::from(layout.height) / i32::from(dst_h)) as u32;
+            let dst_y = top + dy;
+            for dx in 0..dst_w {
+                let sx = (dx as i32 * i32::from(layout.width) / i32::from(dst_w)) as u32;
+                let dst_x = left + dx;
+                let mask_byte =
+                    bus.read_byte(layout.mask_data_ptr + sy * layout.mask_row_bytes + sx / 8);
+                if (mask_byte & (0x80 >> (sx % 8))) == 0 {
+                    continue;
+                }
+
+                if screen_pixel_size == 8 && layout.pixel_size >= 2 {
+                    let Some(pixel_index) = Self::dialog_cicn_pixel_index(
+                        bus,
+                        layout.pixel_data_ptr,
+                        layout.pm_row_bytes,
+                        layout.pixel_size,
+                        sx,
+                        sy,
+                    ) else {
+                        continue;
+                    };
+                    if dst_x >= 0 && dst_y >= 0 && dst_x < screen_width && dst_y < screen_height {
+                        bus.write_byte(
+                            screen_base + (dst_y as u32) * row_bytes + dst_x as u32,
+                            pixel_index,
+                        );
+                    }
+                    continue;
+                }
+
+                let source_data_ptr = if layout.bmap_row_bytes != 0 {
+                    layout.bmap_data_ptr
+                } else {
+                    layout.pixel_data_ptr
+                };
+                let source_row_bytes = if layout.bmap_row_bytes != 0 {
+                    layout.bmap_row_bytes
+                } else {
+                    layout.pm_row_bytes
+                };
+                let source_pixel_size = if layout.bmap_row_bytes != 0 {
+                    1
+                } else {
+                    layout.pixel_size
+                };
+                let Some(pixel_index) = Self::dialog_cicn_pixel_index(
+                    bus,
+                    source_data_ptr,
+                    source_row_bytes,
+                    source_pixel_size,
+                    sx,
+                    sy,
+                ) else {
+                    continue;
+                };
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    screen_pixel_size,
+                    screen_width,
+                    screen_height,
+                    dst_x,
+                    dst_y,
+                    pixel_index != 0,
+                );
+            }
+        }
+        true
     }
 
     /// Draw a 32x32 1-bit ICON resource, scaled to fit the display rect.
@@ -4228,6 +6069,42 @@ impl super::TrapDispatcher {
         let y_end = (bottom as i32 - 1).clamp(0, screen_height as i32);
         let x_start = (left as i32 + 1).clamp(0, screen_width as i32);
         let x_end = (right as i32 - 1).clamp(0, screen_width as i32);
+        if y_start >= y_end || x_start >= x_end {
+            return;
+        }
+
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                if pixel_size == 8 {
+                    let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+                    let b = bus.read_byte(addr);
+                    bus.write_byte(addr, 255 - b);
+                } else {
+                    let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
+                    let bit = 7 - (x as u32 % 8);
+                    let addr = screen_base + byte_offset;
+                    let b = bus.read_byte(addr);
+                    bus.write_byte(addr, b ^ (1 << bit));
+                }
+            }
+        }
+    }
+
+    fn invert_rect_exact(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+
+        let y_start = (top as i32).clamp(0, screen_height as i32);
+        let y_end = (bottom as i32).clamp(0, screen_height as i32);
+        let x_start = (left as i32).clamp(0, screen_width as i32);
+        let x_end = (right as i32).clamp(0, screen_width as i32);
         if y_start >= y_end || x_start >= x_end {
             return;
         }
@@ -4526,6 +6403,8 @@ impl super::TrapDispatcher {
             dialog_ptr,
             item_no: hit,
             rect: item.rect,
+            title: item.text.clone(),
+            is_default: false,
             highlighted: true,
             delivered_to_app: true,
         });
@@ -4597,15 +6476,9 @@ impl super::TrapDispatcher {
             self.retained_modal_dialog_click = None;
         }
 
+        self.dispose_dialog_owned_items(bus, dialog_ptr);
         if dispose_storage {
-            self.dialog_items.remove(&dialog_ptr);
-            self.dialog_item_handles
-                .retain(|_, (dlg, _)| *dlg != dialog_ptr);
-            self.dialog_control_handles
-                .retain(|_, (dlg, _)| *dlg != dialog_ptr);
-            self.dialog_control_values
-                .retain(|(dlg, _), _| *dlg != dialog_ptr);
-            self.dialog_cancel_items.remove(&dialog_ptr);
+            self.dispose_dialog_record_and_item_list(bus, dialog_ptr);
         }
 
         self.untrack_window(bus, dialog_ptr);
@@ -4671,6 +6544,8 @@ impl super::TrapDispatcher {
                         dialog_ptr,
                         item_no: 0,
                         rect: (0, 0, 0, 0),
+                        title: String::new(),
+                        is_default: false,
                         highlighted: false,
                         delivered_to_app: false,
                     });
@@ -4701,6 +6576,8 @@ impl super::TrapDispatcher {
                         dialog_ptr,
                         item_no: 0,
                         rect: (0, 0, 0, 0),
+                        title: String::new(),
+                        is_default: false,
                         highlighted: false,
                         delivered_to_app: false,
                     });
@@ -4712,11 +6589,16 @@ impl super::TrapDispatcher {
                 let is_disabled = (item.item_type & 0x80) != 0;
                 if base_type == 4 && !is_disabled {
                     let rect = Self::dialog_item_screen_rect(bounds, item.rect);
-                    self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+                    let is_default = hit == bus.read_word(dialog_ptr + 168) as i16;
+                    self.draw_dialog_button_highlight_state(
+                        bus, rect, &item.text, is_default, true,
+                    );
                     self.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
                         dialog_ptr,
                         item_no: hit,
                         rect: item.rect,
+                        title: item.text.clone(),
+                        is_default,
                         highlighted: true,
                         delivered_to_app: false,
                     });
@@ -4725,6 +6607,8 @@ impl super::TrapDispatcher {
                         dialog_ptr,
                         item_no: 0,
                         rect: (0, 0, 0, 0),
+                        title: String::new(),
+                        is_default: false,
                         highlighted: false,
                         delivered_to_app: false,
                     });
@@ -4739,7 +6623,13 @@ impl super::TrapDispatcher {
                     let bounds = Self::dialog_screen_bounds(bus, click.dialog_ptr);
                     let rect = Self::dialog_item_screen_rect(bounds, click.rect);
                     if click.highlighted {
-                        self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+                        self.draw_dialog_button_highlight_state(
+                            bus,
+                            rect,
+                            &click.title,
+                            click.is_default,
+                            false,
+                        );
                     }
                     if self.front_window == click.dialog_ptr
                         && Self::point_in_screen_rect(event.where_v, event.where_h, rect)
@@ -4799,11 +6689,13 @@ impl super::TrapDispatcher {
         bounds: (i16, i16, i16, i16),
         item_no: i16,
         rect: (i16, i16, i16, i16),
+        title: &str,
+        is_default: bool,
         highlighted: bool,
     ) {
         if !highlighted {
-            let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
-            self.invert_button_rect(bus, top, left, bottom, right);
+            let screen_rect = Self::dialog_item_screen_rect(bounds, rect);
+            self.draw_dialog_button_highlight_state(bus, screen_rect, title, is_default, true);
         }
         if let Some(t) = self.dialog_tracking.as_mut() {
             t.flash_remaining = 6;
@@ -4866,7 +6758,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn dialog_popup_item_at_point(&self, mouse_x: i16, mouse_y: i16) -> i16 {
+    fn dialog_popup_item_at_point(&self, bus: &MacMemoryBus, mouse_x: i16, mouse_y: i16) -> i16 {
         let Some(popup) = self
             .dialog_tracking
             .as_ref()
@@ -4881,22 +6773,24 @@ impl super::TrapDispatcher {
         let Some(menu) = self.menus.get(popup.active_menu) else {
             return 0;
         };
-        let item_height: i16 = 16;
-        let item_idx = (mouse_y - top - 1) / item_height;
-        if item_idx < 0 || (item_idx as usize) >= menu.items.len() {
-            return 0;
+        let mut item_top = top + 1;
+        for (item_idx, item) in menu.items.iter().enumerate() {
+            let item_bottom = item_top + self.menu_item_height(bus, item);
+            if mouse_y >= item_top && mouse_y < item_bottom {
+                if item.text == "-" || !item.enabled {
+                    return 0;
+                }
+                return item_idx as i16 + 1;
+            }
+            item_top = item_bottom;
         }
-        let item = &menu.items[item_idx as usize];
-        if item.text == "-" || !item.enabled {
-            return 0;
-        }
-        item_idx + 1
+        0
     }
 
     fn handle_dialog_popup_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         if self.mouse_button {
             let (mv, mh) = self.mouse_pos;
-            let new_item = self.dialog_popup_item_at_point(mh, mv);
+            let new_item = self.dialog_popup_item_at_point(bus, mh, mv);
             let old_item = self
                 .dialog_tracking
                 .as_ref()
@@ -4904,14 +6798,14 @@ impl super::TrapDispatcher {
                 .map(|popup| popup.highlighted_item)
                 .unwrap_or(0);
             if new_item != old_item {
-                let dropdown_rect = self
+                let popup_state = self
                     .dialog_tracking
                     .as_ref()
                     .and_then(|tracking| tracking.active_popup.as_ref())
-                    .map(|popup| popup.dropdown_rect);
-                if let Some(dropdown_rect) = dropdown_rect {
+                    .map(|popup| (popup.active_menu, popup.dropdown_rect));
+                if let Some((active_menu, dropdown_rect)) = popup_state {
                     if old_item > 0 {
-                        self.invert_dropdown_item_rect(bus, dropdown_rect, old_item);
+                        self.invert_dropdown_item_rect(bus, active_menu, dropdown_rect, old_item);
                     }
                     if let Some(popup) = self
                         .dialog_tracking
@@ -4921,7 +6815,7 @@ impl super::TrapDispatcher {
                         popup.highlighted_item = new_item;
                     }
                     if new_item > 0 {
-                        self.invert_dropdown_item_rect(bus, dropdown_rect, new_item);
+                        self.invert_dropdown_item_rect(bus, active_menu, dropdown_rect, new_item);
                     }
                 }
             }
@@ -4973,14 +6867,22 @@ impl super::TrapDispatcher {
     }
 
     fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
-        let Some((bounds, item_no, rect, highlighted)) =
+        let Some((dialog_ptr, bounds, item_no, rect, title, is_default, highlighted, item_type)) =
             self.dialog_tracking.as_ref().and_then(|tracking| {
                 tracking.active_button.as_ref().map(|button| {
                     (
+                        tracking.dialog_ptr,
                         tracking.bounds,
                         button.item_no,
                         button.rect,
+                        button.title.clone(),
+                        button.is_default,
                         button.highlighted,
+                        tracking
+                            .items
+                            .get(button.item_no.saturating_sub(1) as usize)
+                            .map(|item| item.item_type)
+                            .unwrap_or(4),
                     )
                 })
             })
@@ -4994,7 +6896,13 @@ impl super::TrapDispatcher {
 
         if self.mouse_button {
             if inside != highlighted {
-                self.invert_button_rect(bus, top, left, bottom, right);
+                self.draw_dialog_button_highlight_state(
+                    bus,
+                    (top, left, bottom, right),
+                    &title,
+                    is_default,
+                    inside,
+                );
                 if let Some(button) = self
                     .dialog_tracking
                     .as_mut()
@@ -5002,6 +6910,20 @@ impl super::TrapDispatcher {
                 {
                     button.highlighted = inside;
                 }
+                self.record_modal_dialog_input_trace(
+                    "tracking_update",
+                    dialog_ptr,
+                    bounds,
+                    item_no,
+                    Some(item_type),
+                    Some(inside),
+                    "pending",
+                    if inside {
+                        "button_highlighted"
+                    } else {
+                        "button_unhighlighted"
+                    },
+                );
             }
             return;
         }
@@ -5012,9 +6934,54 @@ impl super::TrapDispatcher {
         }
 
         if inside {
-            self.start_dialog_button_flash(bus, bounds, item_no, rect, highlighted);
+            self.record_modal_dialog_input_trace(
+                "release",
+                dialog_ptr,
+                bounds,
+                item_no,
+                Some(item_type),
+                Some(true),
+                "pending",
+                "start_flash",
+            );
+            self.start_dialog_button_flash(
+                bus,
+                bounds,
+                item_no,
+                rect,
+                &title,
+                is_default,
+                highlighted,
+            );
         } else if highlighted {
-            self.invert_button_rect(bus, top, left, bottom, right);
+            self.draw_dialog_button_highlight_state(
+                bus,
+                (top, left, bottom, right),
+                &title,
+                is_default,
+                false,
+            );
+            self.record_modal_dialog_input_trace(
+                "release",
+                dialog_ptr,
+                bounds,
+                item_no,
+                Some(item_type),
+                Some(false),
+                "pending",
+                "button_no_selection",
+            );
+        } else {
+            self.record_modal_dialog_input_trace(
+                "release",
+                dialog_ptr,
+                bounds,
+                item_no,
+                Some(item_type),
+                Some(false),
+                "pending",
+                "button_no_selection",
+            );
         }
     }
 
@@ -5152,16 +7119,23 @@ impl super::TrapDispatcher {
                         .find_resource_any(*b"DITL", items_id)
                         .map(|(_, ptr)| ptr);
 
-                    let items = if let Some(ditl_data) = ditl_info {
-                        let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
-                        Self::parse_ditl(bus, ditl_data, ditl_len)
-                    } else {
+                    let Some(ditl_data) = ditl_info else {
                         eprintln!(
                             "[TRAP] GetNewDialog({}): DITL {} not found",
                             dialog_id, items_id
                         );
-                        Vec::new()
+                        // MTE 1992 p. 6-114: GetNewDialog returns NIL if
+                        // either the DLOG or item-list resource cannot be
+                        // read. Resource Manager ResError reports
+                        // resNotFound (-192) for missing resources.
+                        bus.write_word(0x0A60, Self::RES_NOT_FOUND as u16);
+                        bus.write_long(sp + 10, 0);
+                        cpu.write_reg(Register::A7, sp + 10);
+                        return Some(Ok(()));
                     };
+                    bus.write_word(0x0A60, 0);
+                    let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
+                    let items = Self::parse_ditl(bus, ditl_data, ditl_len);
 
                     // Apply positioning constant.
                     // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
@@ -5283,8 +7257,10 @@ impl super::TrapDispatcher {
                     bus.write_long(sp + 10, dlg_ptr);
                 } else {
                     eprintln!("[TRAP] GetNewDialog({}): DLOG not found -> NIL", dialog_id);
-                    // IM:I-410: GetNewDialog returns NIL when the DLOG
-                    // resource can't be found.
+                    // MTE 1992 p. 6-114: GetNewDialog returns NIL if the
+                    // DLOG resource cannot be read. Resource Manager ResError
+                    // reports resNotFound (-192) for missing resources.
+                    bus.write_word(0x0A60, Self::RES_NOT_FOUND as u16);
                     bus.write_long(sp + 10, 0);
                 }
                 cpu.write_reg(Register::A7, sp + 10);
@@ -5315,15 +7291,15 @@ impl super::TrapDispatcher {
             //   +10 stages:       INTEGER (16-bit, 4 nibbles, 1
             //                     per stage 1..4 from low nibble
             //                     to high). Each nibble:
-            //                       bit 0:    boldItmNum flag
+            //                       bit 3:    boldItmNum flag
             //                                 (0 = item 1 bold/
             //                                 default, 1 = item 2
             //                                 bold/default)
-            //                       bit 1:    boxDrawn flag
+            //                       bit 2:    boxDrawn flag
             //                                 (alert is shown if
             //                                 set; suppressed if
             //                                 clear)
-            //                       bits 2-3: soundNum (0..3 —
+            //                       bits 0-1: soundNum (0..3 —
             //                                 0=silent, 1=note,
             //                                 2=caution, 3=stop)
             //
@@ -5349,7 +7325,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-417..I-422 (Alert
             // family + ALRT template); Macintosh Toolbox Essentials
             // 1992, 6-105..6-119 (System 7 alert dispatch).
-            // Alert ($A985): Looks up ALRT, parses stages word at +10 per IM:I I-422, returns bold item (1 or 2) for current AlertStage ($0A9A) or -1 if ALRT missing; increments AlertStage capped at 3; filterProc NOT invoked
+            // Alert ($A985): Looks up ALRT, parses stages word at +10 per IM:I I-422, returns bold item (1 or 2) for current visible AlertStage ($0A9A) or -1 if ALRT missing / boxDrwn is clear; increments AlertStage capped at 3; filterProc NOT invoked
             // StopAlert ($A986): Same as Alert with Stop icon; identical dispatch path
             // NoteAlert ($A987): Same as Alert with Note icon; identical dispatch path
             // CautionAlert ($A988): Same as Alert with Caution icon; identical dispatch path
@@ -5366,6 +7342,7 @@ impl super::TrapDispatcher {
                 };
                 let alert_stage_before = bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
                 let anumber_before = bus.read_word(crate::memory::globals::addr::ANUMBER);
+                let mut alert_trace_stage: Option<(u16, u16, u32, u32)> = None;
                 // Look up the ALRT resource and, if present, also pull
                 // the referenced DITL's static-text items so the trap
                 // log surfaces the alert message before we silently
@@ -5379,9 +7356,8 @@ impl super::TrapDispatcher {
                     .find_resource_any(*b"ALRT", alert_id)
                     .map(|(_, ptr)| ptr);
                 let result: i16 = if let Some(alrt_data) = alrt_ptr {
-                    // Read the 16-bit stages word at offset +10
-                    // (after 8-byte boundsRect + 2-byte itemsID).
-                    let stages = bus.read_word(alrt_data + 10);
+                    let alrt_len = bus.get_alloc_size(alrt_data).unwrap_or(0);
+                    let (_, _, stages, _) = Self::parse_alrt(bus, alrt_data, alrt_len);
                     // AlertStage / ACount lives at $0A9A as a
                     // 16-bit WORD (NOT a byte) per IM:I I-423 +
                     // MTb 1992 22620 `#define GetAlertStage()
@@ -5396,10 +7372,13 @@ impl super::TrapDispatcher {
                     // low nibble (bits 0..3), stage 4 in the high
                     // nibble (bits 12..15).
                     let nibble = ((stages as u32) >> (stage_idx * 4)) & 0xF;
+                    alert_trace_stage = Some((stages, stage_word, stage_idx, nibble));
                     // bit 3 (MSB) of nibble = boldItm per StageList
                     // PACKED RECORD layout (IM:I I-422): boldItm,
                     // boxDrwn, sound[2]. Assembly mask okDismissal=8
-                    // (IM:I I-424) confirms bit 3. 0=item 1, 1=item 2.
+                    // and alBit=4 confirm bit masks. MTE 1992 p. 6-106
+                    // says Alert returns -1 when boxDrwn is clear.
+                    let box_drawn = (nibble & 0x04) != 0;
                     let bold_item: i16 = if (nibble & 0x08) == 0 { 1 } else { 2 };
                     // Increment AlertStage, capped at 3, so the
                     // next call uses the next stage's nibble.
@@ -5411,7 +7390,11 @@ impl super::TrapDispatcher {
                     // calls expect this to reflect the most-recent
                     // ID — used by some defensive resume logic.
                     bus.write_word(crate::memory::globals::addr::ANUMBER, alert_id as u16);
-                    bold_item
+                    if box_drawn {
+                        bold_item
+                    } else {
+                        ALERT_MISSING_RESOURCE_RESULT
+                    }
                 } else {
                     bus.write_word(
                         crate::memory::globals::addr::ALERT_STAGE,
@@ -5429,6 +7412,11 @@ impl super::TrapDispatcher {
                         result,
                         cpu.read_reg(Register::PC)
                     );
+                    if let Some((stages, stage_word, stage_idx, nibble)) = alert_trace_stage {
+                        detail.push_str(&format!(
+                            " stages=${stages:04X} alertStage={stage_word} stageIdx={stage_idx} nibble=${nibble:X}"
+                        ));
+                    }
                     if let Some(alrt_data) = alrt_ptr {
                         // ALRT template: bounds(8) + itemsID(2) + stages(2).
                         // Inside Macintosh Volume I, I-422. Some titles
@@ -5440,10 +7428,9 @@ impl super::TrapDispatcher {
                         // wildly negative coordinates) and suppress the
                         // usual itemsID lookup so the trace reflects that
                         // the resource isn't in the documented format.
-                        let top = bus.read_word(alrt_data) as i16;
-                        let left = bus.read_word(alrt_data + 2) as i16;
-                        let bottom = bus.read_word(alrt_data + 4) as i16;
-                        let right = bus.read_word(alrt_data + 6) as i16;
+                        let alrt_len = bus.get_alloc_size(alrt_data).unwrap_or(0);
+                        let ((top, left, bottom, right), items_id, _, _) =
+                            Self::parse_alrt(bus, alrt_data, alrt_len);
                         let bounds_plausible = (-32..1024).contains(&top)
                             && (-32..2048).contains(&left)
                             && bottom > top
@@ -5456,7 +7443,6 @@ impl super::TrapDispatcher {
                                 top, left, bottom, right
                             ));
                         } else {
-                            let items_id = bus.read_word(alrt_data + 8) as i16;
                             let ditl_match = self.find_resource_any(*b"DITL", items_id);
                             detail.push_str(&format!(
                                 " bounds=({},{},{},{}) itemsID={} ditl={}",
@@ -5495,14 +7481,17 @@ impl super::TrapDispatcher {
             }
 
             // IsDialogEvent ($A97F)
-            // IsDialogEvent ($A97F): Reads event record, checks dialog window, matches event types, performs point containment
+            // Tests whether an event should be handled as part of an active
+            // modeless or movable modal dialog.
+            // FUNCTION IsDialogEvent(theEvent: EventRecord): Boolean;
+            // Inside Macintosh Volume I, I-416; Macintosh Toolbox Essentials 1992, 6-138
             (true, 0x17F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let event_ptr = bus.read_long(sp);
                 let (what, message, where_v, where_h, _modifiers) =
                     Self::read_guest_event_record(bus, event_ptr);
-                let result = if let Some(dialog_ptr) = self.dialog_from_window_event(what, message)
-                {
+                let target_dialog = self.dialog_from_window_event(what, message);
+                let result = if let Some(dialog_ptr) = target_dialog {
                     match what {
                         6 | 8 => message == dialog_ptr,
                         1 => Self::dialog_contains_screen_point(
@@ -5515,13 +7504,27 @@ impl super::TrapDispatcher {
                 } else {
                     false
                 };
+                self.record_dialog_input_trace(
+                    "A97F",
+                    event_ptr,
+                    what,
+                    message,
+                    where_v,
+                    where_h,
+                    _modifiers,
+                    target_dialog,
+                    result,
+                    "outcome=is_dialog_event",
+                );
                 bus.write_word(sp + 4, if result { 0xFFFF } else { 0 });
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
             // DialogSelect ($A980)
-            // DialogSelect ($A980): Handles keyboard/mouse events in modeless dialogs, hit testing, item updates
+            // Handles events for modeless and movable modal dialogs.
+            // FUNCTION DialogSelect(theEvent: EventRecord; VAR theDialog: DialogPtr; VAR itemHit: INTEGER): BOOLEAN;
+            // Inside Macintosh Volume I, I-417; Macintosh Toolbox Essentials 1992, 6-139
             (true, 0x180) => {
                 let sp = cpu.read_reg(Register::A7);
                 let item_hit_ptr = bus.read_long(sp);
@@ -5530,28 +7533,35 @@ impl super::TrapDispatcher {
                 let (what, message, where_v, where_h, _modifiers) =
                     Self::read_guest_event_record(bus, event_ptr);
                 let mut result = false;
+                let mut trace_detail = String::from("outcome=no_dialog_target");
 
-                if let Some(dialog_ptr) = self.dialog_from_window_event(what, message) {
+                let target_dialog = self.dialog_from_window_event(what, message);
+                if let Some(dialog_ptr) = target_dialog {
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+                    trace_detail = format!(
+                        "bounds=({},{},{},{}) outcome=no_item",
+                        bounds.0, bounds.1, bounds.2, bounds.3
+                    );
                     if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                         Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
                         match what {
                             6 => {
-                                let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
-                                let (edit_text, edit_item, default_item) =
-                                    Self::dialog_edit_state(bus, dialog_ptr, &items);
-                                self.dialog_initial_draw_deferred.remove(&dialog_ptr);
-                                self.draw_dialog(
+                                // MTE 1992 p. 6-141: DialogSelect wraps the
+                                // update redraw in BeginUpdate/EndUpdate,
+                                // calls DrawDialog, and returns FALSE.
+                                let update_rect =
+                                    Self::region_handle_rect(bus, bus.read_long(dialog_ptr + 122));
+                                self.begin_update_window(bus, dialog_ptr);
+                                self.update_dialog_window_contents(
                                     bus,
-                                    bounds,
-                                    proc_id,
-                                    "",
-                                    &items,
-                                    default_item,
-                                    &edit_text,
-                                    edit_item,
-                                    false,
+                                    cpu,
                                     dialog_ptr,
+                                    update_rect,
+                                );
+                                self.end_update_window(bus, dialog_ptr);
+                                trace_detail = format!(
+                                    "bounds=({},{},{},{}) outcome=update_redraw",
+                                    bounds.0, bounds.1, bounds.2, bounds.3
                                 );
                             }
                             1 if Self::dialog_contains_screen_point(bounds, where_v, where_h) => {
@@ -5567,10 +7577,51 @@ impl super::TrapDispatcher {
                                 if hit > 0 {
                                     let item = &items[(hit - 1) as usize];
                                     let is_disabled = (item.item_type & 0x80) != 0;
+                                    trace_detail = format!(
+                                        "bounds=({},{},{},{}) item_hit={} item_type=${:02X} disabled={} outcome={}",
+                                        bounds.0,
+                                        bounds.1,
+                                        bounds.2,
+                                        bounds.3,
+                                        hit,
+                                        item.item_type,
+                                        if is_disabled { "true" } else { "false" },
+                                        if is_disabled {
+                                            "disabled_item"
+                                        } else {
+                                            "enabled_item"
+                                        },
+                                    );
+                                    if trace_dialog_items_enabled() {
+                                        eprintln!(
+                                            "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) bounds=({},{},{},{}) hit={} type=${:02X} disabled={}",
+                                            dialog_ptr,
+                                            where_v,
+                                            where_h,
+                                            bounds.0,
+                                            bounds.1,
+                                            bounds.2,
+                                            bounds.3,
+                                            hit,
+                                            item.item_type,
+                                            is_disabled,
+                                        );
+                                    }
                                     if !is_disabled {
                                         self.cancel_app_owned_modal_dialog_button_tracking(
                                             bus, dialog_ptr,
                                         );
+                                        if (item.item_type & 0x7F) == 16 {
+                                            // MTE 1992 p. 6-139 / IM:I I-417:
+                                            // mouseDown in an enabled editText item makes
+                                            // that item the active edit field before
+                                            // reporting the item hit. TEClick's pixel-to-
+                                            // caret mapping remains the documented HLE
+                                            // compromise in the TEClick trap.
+                                            self.activate_dialog_edit_item(
+                                                bus, dialog_ptr, &items, hit,
+                                            );
+                                        }
                                         if dialog_out_ptr != 0 {
                                             bus.write_long(dialog_out_ptr, dialog_ptr);
                                         }
@@ -5579,19 +7630,98 @@ impl super::TrapDispatcher {
                                         }
                                         result = true;
                                     }
+                                } else {
+                                    trace_detail = format!(
+                                        "bounds=({},{},{},{}) item_hit=0 outcome=no_item",
+                                        bounds.0, bounds.1, bounds.2, bounds.3
+                                    );
+                                    if trace_dialog_items_enabled() {
+                                        eprintln!(
+                                            "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) bounds=({},{},{},{}) hit=0",
+                                            dialog_ptr,
+                                            where_v,
+                                            where_h,
+                                            bounds.0,
+                                            bounds.1,
+                                            bounds.2,
+                                            bounds.3,
+                                        );
+                                    }
+                                }
+                            }
+                            0 => {
+                                let (_edit_text, edit_item, _default_item) =
+                                    Self::dialog_edit_state(bus, dialog_ptr, &items);
+                                trace_detail = format!(
+                                    "bounds=({},{},{},{}) edit_item={} outcome=teidle",
+                                    bounds.0, bounds.1, bounds.2, bounds.3, edit_item
+                                );
+                                if edit_item > 0 {
+                                    // MTE 1992 p. 6-139 / IM:I I-417:
+                                    // DialogSelect calls TEIdle for null events when an
+                                    // editText item is present. Systemless TEIdle is a
+                                    // no-op for caret blinking but preserves TERec state,
+                                    // so no guest-visible state changes here.
+                                    let text_handle = bus.read_long(dialog_ptr + 160);
+                                    self.textedit_idle(bus, text_handle);
+                                }
+                            }
+                            1 => {
+                                trace_detail = format!(
+                                    "bounds=({},{},{},{}) item_hit=0 outcome=outside_dialog",
+                                    bounds.0, bounds.1, bounds.2, bounds.3
+                                );
+                                if trace_dialog_items_enabled() {
+                                    eprintln!(
+                                        "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) outside bounds=({},{},{},{})",
+                                        dialog_ptr,
+                                        where_v,
+                                        where_h,
+                                        bounds.0,
+                                        bounds.1,
+                                        bounds.2,
+                                        bounds.3,
+                                    );
                                 }
                             }
                             3 | 5 => {
                                 let (_edit_text, edit_item, _default_item) =
                                     Self::dialog_edit_state(bus, dialog_ptr, &items);
+                                trace_detail = format!(
+                                    "bounds=({},{},{},{}) edit_item={} outcome=no_enabled_edittext",
+                                    bounds.0, bounds.1, bounds.2, bounds.3, edit_item
+                                );
                                 if edit_item > 0 {
                                     // IM:I I-417: keyDown/autoKey dialog handling applies to
                                     // editable text items. If no enabled editText item is
                                     // active, DialogSelect returns FALSE.
                                     if let Some(item) = items.get((edit_item - 1) as usize) {
-                                        let base_type = item.item_type & 0x7F;
-                                        let is_disabled = (item.item_type & 0x80) != 0;
+                                        let item_type = item.item_type;
+                                        let base_type = item_type & 0x7F;
+                                        let is_disabled = (item_type & 0x80) != 0;
+                                        trace_detail = format!(
+                                            "bounds=({},{},{},{}) edit_item={} item_type=${:02X} disabled={} outcome={}",
+                                            bounds.0,
+                                            bounds.1,
+                                            bounds.2,
+                                            bounds.3,
+                                            edit_item,
+                                            item_type,
+                                            if is_disabled { "true" } else { "false" },
+                                            if base_type == 16 && !is_disabled {
+                                                "enabled_edittext"
+                                            } else {
+                                                "no_enabled_edittext"
+                                            },
+                                        );
                                         if base_type == 16 && !is_disabled {
+                                            let char_code = (message & 0xFF) as u8;
+                                            // MTE 1992 p. 6-139: DialogSelect uses TextEdit
+                                            // to handle key-down and auto-key events in
+                                            // editable text items before reporting itemHit.
+                                            self.apply_dialog_select_key_to_edit_item(
+                                                bus, dialog_ptr, &mut items, edit_item, char_code,
+                                            );
                                             if dialog_out_ptr != 0 {
                                                 bus.write_long(dialog_out_ptr, dialog_ptr);
                                             }
@@ -5606,8 +7736,36 @@ impl super::TrapDispatcher {
                             _ => {}
                         }
                         self.dialog_items.insert(dialog_ptr, items);
+                    } else {
+                        trace_detail = format!(
+                            "bounds=({},{},{},{}) outcome=no_dialog_items",
+                            bounds.0, bounds.1, bounds.2, bounds.3
+                        );
+                        if trace_dialog_items_enabled() {
+                            eprintln!(
+                                "[DIALOG-SELECT] event what={} dialog=${:08X} has no dialog_items",
+                                what, dialog_ptr
+                            );
+                        }
                     }
+                } else if trace_dialog_items_enabled() {
+                    eprintln!(
+                        "[DIALOG-SELECT] event what={} message=${:08X} where=({},{}) has no dialog target front=${:08X}",
+                        what, message, where_v, where_h, self.front_window
+                    );
                 }
+                self.record_dialog_input_trace(
+                    "A980",
+                    event_ptr,
+                    what,
+                    message,
+                    where_v,
+                    where_h,
+                    _modifiers,
+                    target_dialog,
+                    result,
+                    &trace_detail,
+                );
 
                 bus.write_word(sp + 12, if result { 0xFFFF } else { 0 });
                 cpu.write_reg(Register::A7, sp + 12);
@@ -5958,6 +8116,11 @@ impl super::TrapDispatcher {
                     Self::dialog_item_handle_addr(bus, dialog_ptr, item_no)
                 {
                     bus.write_long(item_handle_addr, item_handle);
+                    bus.write_word(item_handle_addr + 4, box_top as u16);
+                    bus.write_word(item_handle_addr + 6, box_left as u16);
+                    bus.write_word(item_handle_addr + 8, box_bottom as u16);
+                    bus.write_word(item_handle_addr + 10, box_right as u16);
+                    bus.write_byte(item_handle_addr + 12, item_type);
                 }
                 if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
                     if item_no > 0 && (item_no as usize) <= items.len() {
@@ -6164,16 +8327,20 @@ impl super::TrapDispatcher {
                                 .get((hit - 1) as usize)
                                 .map(|item| (item.item_type & 0x7F) != 4)
                                 .unwrap_or(true);
+                            let item_type =
+                                items.get((hit - 1) as usize).map(|item| item.item_type);
                             self.flush_dialog_edit_item_texts(
                                 bus, dialog_ptr, &items, edit_item, &edit_text,
                             );
                             // Filter handled the event — end tracking and return.
                             let saved = self.dialog_tracking.take().unwrap();
+                            let saved_dialog_ptr = saved.dialog_ptr;
+                            let saved_bounds = saved.bounds;
                             if keep_dialog_visible {
                                 self.persist_visible_dialog_snapshot(bus, &saved);
                             }
                             self.dialog_saved_pixels
-                                .insert(saved.dialog_ptr, saved.saved_pixels);
+                                .insert(saved_dialog_ptr, saved.saved_pixels);
                             if handled_mouse_down {
                                 self.consume_dialog_mouse_up();
                             }
@@ -6184,40 +8351,91 @@ impl super::TrapDispatcher {
                                     hit, item_hit_ptr, actual_hit, handled_mouse_down, stack_ptr, self.event_queue.len()
                                 );
                             }
+                            let outcome = if hit > 0 {
+                                if keep_dialog_visible {
+                                    "filter_item_hit_retained"
+                                } else {
+                                    "filter_item_hit_dismissed"
+                                }
+                            } else {
+                                "filter_true_zero_hit"
+                            };
+                            self.record_modal_dialog_filter_input_trace(
+                                "filter_result",
+                                saved_dialog_ptr,
+                                saved_bounds,
+                                filter_proc,
+                                filter_event.as_ref(),
+                                hit,
+                                item_type,
+                                handled_mouse_down,
+                                keep_dialog_visible,
+                                "returned",
+                                outcome,
+                            );
                             cpu.write_reg(Register::A7, stack_ptr + 8);
                             return Some(Ok(()));
                         }
                         pending_event = filter_event;
+                        if let Some(ref event) = pending_event {
+                            self.record_modal_dialog_filter_input_trace(
+                                "filter_result",
+                                tracking_dialog_ptr,
+                                bounds,
+                                filter_proc,
+                                Some(event),
+                                0,
+                                None,
+                                false,
+                                true,
+                                "passed",
+                                "filter_declined",
+                            );
+                        }
                         waiting_for_filter_proc_event = pending_event.is_none();
                     }
 
                     if flash_remaining > 0 {
                         // Button flash animation
                         let flash_item = self.dialog_tracking.as_ref().unwrap().flash_item;
-                        let t = self.dialog_tracking.as_mut().unwrap();
-                        if t.flash_delay > 0 {
-                            t.flash_delay -= 1;
-                            return Some(Ok(()));
-                        }
-                        t.flash_remaining -= 1;
-                        t.flash_delay = 3;
-                        let remaining = t.flash_remaining;
-
-                        if remaining > 0 {
-                            // Toggle button highlight
-                            let items = &t.items;
-                            if flash_item > 0 && (flash_item as usize) <= items.len() {
-                                let item = &items[(flash_item - 1) as usize];
-                                let (it, il, ib, ir) = item.rect;
-                                let abs_top = bounds.0 + it;
-                                let abs_left = bounds.1 + il;
-                                let abs_bottom = bounds.0 + ib;
-                                let abs_right = bounds.1 + ir;
-                                self.invert_button_rect(
-                                    bus, abs_top, abs_left, abs_bottom, abs_right,
-                                );
+                        let (remaining, button_draw) = {
+                            let t = self.dialog_tracking.as_mut().unwrap();
+                            if t.flash_delay > 0 {
+                                t.flash_delay -= 1;
+                                return Some(Ok(()));
                             }
-                        } else {
+                            t.flash_remaining -= 1;
+                            t.flash_delay = 3;
+                            let remaining = t.flash_remaining;
+                            let button_draw = if remaining > 0
+                                && flash_item > 0
+                                && (flash_item as usize) <= t.items.len()
+                            {
+                                let item = &t.items[(flash_item - 1) as usize];
+                                Some((
+                                    Self::dialog_item_screen_rect(bounds, item.rect),
+                                    item.text.clone(),
+                                    flash_item == t.default_item,
+                                    remaining % 2 == 0,
+                                ))
+                            } else {
+                                None
+                            };
+                            (remaining, button_draw)
+                        };
+
+                        if let Some((screen_rect, title, is_default, highlighted)) = button_draw {
+                            // Toggle button highlight.
+                            self.draw_dialog_button_highlight_state(
+                                bus,
+                                screen_rect,
+                                &title,
+                                is_default,
+                                highlighted,
+                            );
+                        }
+
+                        if remaining == 0 {
                             // Flash complete — write all editText item handles
                             // back before returning the hit item to the app.
                             let (dialog_ptr, edit_item, edit_text, items) = {
@@ -6235,9 +8453,15 @@ impl super::TrapDispatcher {
                             );
 
                             let saved = self.dialog_tracking.take().unwrap();
+                            let saved_dialog_ptr = saved.dialog_ptr;
+                            let saved_bounds = saved.bounds;
+                            let item_type = saved
+                                .items
+                                .get(flash_item.saturating_sub(1) as usize)
+                                .map(|item| item.item_type);
                             self.persist_visible_dialog_snapshot(bus, &saved);
                             self.dialog_saved_pixels
-                                .insert(saved.dialog_ptr, saved.saved_pixels);
+                                .insert(saved_dialog_ptr, saved.saved_pixels);
 
                             // ModalDialog button clicks should consume the
                             // matching mouseUp before returning to the app.
@@ -6248,6 +8472,16 @@ impl super::TrapDispatcher {
                             if item_hit_ptr != 0 {
                                 bus.write_word(item_hit_ptr, flash_item as u16);
                             }
+                            self.record_modal_dialog_input_trace(
+                                "finish",
+                                saved_dialog_ptr,
+                                saved_bounds,
+                                flash_item,
+                                item_type,
+                                None,
+                                "returned",
+                                "button_item_hit",
+                            );
                             cpu.write_reg(Register::A7, stack_ptr + 8);
                         }
                         return Some(Ok(()));
@@ -6293,6 +8527,13 @@ impl super::TrapDispatcher {
                             // may have drawn narrow indicator boxes that would
                             // taint the snapshot.
                             6 => {
+                                // MTE 1992 pp. 6-135 and 6-141: ModalDialog
+                                // handles dialog update events through the same
+                                // DialogSelect path that brackets DrawDialog
+                                // with BeginUpdate/EndUpdate and makes the
+                                // dialog the current graphics port.
+                                self.begin_update_window(bus, dialog_ptr);
+                                self.set_current_port_state(bus, cpu, dialog_ptr, None);
                                 let previous_rendered = self
                                     .dialog_tracking
                                     .as_ref()
@@ -6321,6 +8562,7 @@ impl super::TrapDispatcher {
                                 let t = self.dialog_tracking.as_mut().unwrap();
                                 t.rendered_pixels = rendered;
                                 t.rendered_pixels_final = true;
+                                self.end_update_window(bus, dialog_ptr);
                             }
                             // mouseDown
                             1 => {
@@ -6361,8 +8603,18 @@ impl super::TrapDispatcher {
                                                     Self::dialog_item_screen_rect(
                                                         bounds, item.rect,
                                                     );
-                                                self.invert_button_rect(
-                                                    bus, abs_top, abs_left, abs_bottom, abs_right,
+                                                let is_default = hit
+                                                    == self
+                                                        .dialog_tracking
+                                                        .as_ref()
+                                                        .map(|tracking| tracking.default_item)
+                                                        .unwrap_or(0);
+                                                self.draw_dialog_button_highlight_state(
+                                                    bus,
+                                                    (abs_top, abs_left, abs_bottom, abs_right),
+                                                    &item.text,
+                                                    is_default,
+                                                    true,
                                                 );
                                                 if self.mouse_button {
                                                     let t = self.dialog_tracking.as_mut().unwrap();
@@ -6370,12 +8622,35 @@ impl super::TrapDispatcher {
                                                         super::dispatch::DialogButtonTrackingState {
                                                             item_no: hit,
                                                             rect: item.rect,
+                                                            title: item.text.clone(),
+                                                            is_default,
                                                             highlighted: true,
                                                         },
                                                     );
+                                                    self.record_modal_dialog_input_trace(
+                                                        "mouse_down",
+                                                        dialog_ptr,
+                                                        bounds,
+                                                        hit,
+                                                        Some(item.item_type),
+                                                        Some(true),
+                                                        "pending",
+                                                        "button_tracking_started",
+                                                    );
                                                 } else {
                                                     self.start_dialog_button_flash(
-                                                        bus, bounds, hit, item.rect, true,
+                                                        bus, bounds, hit, item.rect, &item.text,
+                                                        is_default, true,
+                                                    );
+                                                    self.record_modal_dialog_input_trace(
+                                                        "mouse_down",
+                                                        dialog_ptr,
+                                                        bounds,
+                                                        hit,
+                                                        Some(item.item_type),
+                                                        Some(true),
+                                                        "pending",
+                                                        "start_flash",
                                                     );
                                                 }
                                             }
@@ -6400,29 +8675,81 @@ impl super::TrapDispatcher {
                                                 );
                                                 // Preserve saved background pixels for re-entry
                                                 let saved = self.dialog_tracking.take().unwrap();
+                                                let saved_dialog_ptr = saved.dialog_ptr;
+                                                let saved_bounds = saved.bounds;
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
-                                                    .insert(dlg_ptr, saved.saved_pixels);
+                                                    .insert(saved_dialog_ptr, saved.saved_pixels);
                                                 self.consume_dialog_mouse_up();
                                                 // Don't restore pixels — dialog stays visible
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
+                                                self.record_modal_dialog_input_trace(
+                                                    "mouse_down",
+                                                    saved_dialog_ptr,
+                                                    saved_bounds,
+                                                    hit,
+                                                    Some(item.item_type),
+                                                    None,
+                                                    "returned",
+                                                    "checkbox_item_hit_retained",
+                                                );
                                                 cpu.write_reg(Register::A7, stack_ptr + 8);
                                             }
                                             // EditText click: set as active
                                             16 => {
-                                                let t = self.dialog_tracking.as_mut().unwrap();
-                                                Self::sync_tracking_active_edit_item(t);
-                                                t.edit_item = hit;
-                                                t.edit_text = t
-                                                    .items
-                                                    .get((hit - 1) as usize)
-                                                    .map(|item| item.text.clone())
-                                                    .unwrap_or_default();
-                                                t.edit_text_modified = false;
-                                                bus.write_word(dialog_ptr + 164, (hit - 1) as u16);
-                                                self.refresh_dialog_tracking_snapshot(bus);
+                                                let (dlg_ptr, edit_item, edit_text, items) = {
+                                                    let tracking =
+                                                        self.dialog_tracking.as_mut().unwrap();
+                                                    Self::sync_tracking_active_edit_item(tracking);
+                                                    tracking.edit_item = hit;
+                                                    tracking.edit_text = tracking
+                                                        .items
+                                                        .get((hit - 1) as usize)
+                                                        .map(|item| item.text.clone())
+                                                        .unwrap_or_default();
+                                                    tracking.edit_text_modified = false;
+                                                    (
+                                                        tracking.dialog_ptr,
+                                                        tracking.edit_item,
+                                                        tracking.edit_text.clone(),
+                                                        tracking.items.clone(),
+                                                    )
+                                                };
+                                                // IM:I I-415: mouseDown in an enabled editText
+                                                // item is TextEdit-handled and ModalDialog
+                                                // returns that item. TEClick's pixel-to-caret
+                                                // mapping remains the documented HLE compromise,
+                                                // but the active editField/TERecord mirror is
+                                                // still guest-visible Dialog Manager state.
+                                                self.activate_dialog_edit_item(
+                                                    bus, dlg_ptr, &items, edit_item,
+                                                );
+                                                self.flush_dialog_edit_item_texts(
+                                                    bus, dlg_ptr, &items, edit_item, &edit_text,
+                                                );
+                                                let saved = self.dialog_tracking.take().unwrap();
+                                                let saved_dialog_ptr = saved.dialog_ptr;
+                                                let saved_bounds = saved.bounds;
+                                                self.persist_visible_dialog_snapshot(bus, &saved);
+                                                self.dialog_saved_pixels
+                                                    .insert(saved_dialog_ptr, saved.saved_pixels);
+                                                self.consume_dialog_mouse_up();
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(item_hit_ptr, hit as u16);
+                                                }
+                                                self.record_modal_dialog_input_trace(
+                                                    "mouse_down",
+                                                    saved_dialog_ptr,
+                                                    saved_bounds,
+                                                    hit,
+                                                    Some(item.item_type),
+                                                    None,
+                                                    "returned",
+                                                    "edittext_item_hit_retained",
+                                                );
+                                                cpu.write_reg(Register::A7, stack_ptr + 8);
                                             }
                                             // resCtrl popup controls are tracked by
                                             // ModalDialog itself, matching the standard
@@ -6517,22 +8844,34 @@ impl super::TrapDispatcher {
                             // keyDown
                             3 => {
                                 let char_code = (e.message & 0xFF) as u8;
-                                let tracking = self.dialog_tracking.as_mut().unwrap();
-                                let mut refresh_after_key = false;
-
+                                let key_code = ((e.message >> 8) & 0xFF) as u8;
+                                let command_period =
+                                    char_code == b'.' && (e.modifiers & 0x0100) != 0;
                                 match char_code {
                                     // Return or Enter: trigger default button
                                     0x0D | 0x03 => {
-                                        let def = tracking.default_item;
-                                        if def > 0 && (def as usize) <= tracking.items.len() {
-                                            let item = &tracking.items[(def - 1) as usize];
-                                            let (it, il, ib, ir) = item.rect;
-                                            let abs_top = bounds.0 + it;
-                                            let abs_left = bounds.1 + il;
-                                            let abs_bottom = bounds.0 + ib;
-                                            let abs_right = bounds.1 + ir;
-                                            self.invert_button_rect(
-                                                bus, abs_top, abs_left, abs_bottom, abs_right,
+                                        let target =
+                                            self.dialog_tracking.as_ref().and_then(|tracking| {
+                                                let def = tracking.default_item;
+                                                if def <= 0 {
+                                                    return None;
+                                                }
+                                                tracking
+                                                    .items
+                                                    .get(def.saturating_sub(1) as usize)
+                                                    .map(|item| {
+                                                        (def, item.rect, item.text.clone(), true)
+                                                    })
+                                            });
+                                        if let Some((def, rect, title, is_default)) = target {
+                                            let screen_rect =
+                                                Self::dialog_item_screen_rect(bounds, rect);
+                                            self.draw_dialog_button_highlight_state(
+                                                bus,
+                                                screen_rect,
+                                                &title,
+                                                is_default,
+                                                true,
                                             );
                                             let t = self.dialog_tracking.as_mut().unwrap();
                                             t.flash_remaining = 6;
@@ -6540,18 +8879,37 @@ impl super::TrapDispatcher {
                                             t.flash_item = def;
                                         }
                                     }
-                                    // Escape: trigger cancel button
-                                    0x1B => {
-                                        let cancel = tracking.cancel_item;
-                                        if cancel > 0 && (cancel as usize) <= tracking.items.len() {
-                                            let item = &tracking.items[(cancel - 1) as usize];
-                                            let (it, il, ib, ir) = item.rect;
-                                            let abs_top = bounds.0 + it;
-                                            let abs_left = bounds.1 + il;
-                                            let abs_bottom = bounds.0 + ib;
-                                            let abs_right = bounds.1 + ir;
-                                            self.invert_button_rect(
-                                                bus, abs_top, abs_left, abs_bottom, abs_right,
+                                    // Escape or Command-period: trigger cancel button.
+                                    // MTE 1992 p. 6-138 maps Esc and Command-period
+                                    // to Cancel before dialog-select style handling.
+                                    0x1B | b'.' if char_code == 0x1B || command_period => {
+                                        let target =
+                                            self.dialog_tracking.as_ref().and_then(|tracking| {
+                                                let cancel = tracking.cancel_item;
+                                                if cancel <= 0 {
+                                                    return None;
+                                                }
+                                                tracking
+                                                    .items
+                                                    .get(cancel.saturating_sub(1) as usize)
+                                                    .map(|item| {
+                                                        (
+                                                            cancel,
+                                                            item.rect,
+                                                            item.text.clone(),
+                                                            cancel == tracking.default_item,
+                                                        )
+                                                    })
+                                            });
+                                        if let Some((cancel, rect, title, is_default)) = target {
+                                            let screen_rect =
+                                                Self::dialog_item_screen_rect(bounds, rect);
+                                            self.draw_dialog_button_highlight_state(
+                                                bus,
+                                                screen_rect,
+                                                &title,
+                                                is_default,
+                                                true,
                                             );
                                             let t = self.dialog_tracking.as_mut().unwrap();
                                             t.flash_remaining = 6;
@@ -6561,57 +8919,157 @@ impl super::TrapDispatcher {
                                     }
                                     // Tab: move to the next editText item, wrapping.
                                     0x09 => {
-                                        if tracking.edit_item > 0 {
-                                            Self::sync_tracking_active_edit_item(tracking);
-                                        }
-                                        let start = tracking.edit_item.max(0) as usize;
-                                        let next = (0..tracking.items.len()).find_map(|offset| {
-                                            let idx = (start + offset) % tracking.items.len();
-                                            if (tracking.items[idx].item_type & 0x7F) == 16 {
-                                                Some(idx)
-                                            } else {
-                                                None
+                                        let mut switched = false;
+                                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                            if tracking.edit_item > 0 {
+                                                Self::sync_tracking_active_edit_item(tracking);
                                             }
-                                        });
-                                        if let Some(idx) = next {
-                                            tracking.edit_item = (idx + 1) as i16;
-                                            tracking.edit_text = tracking.items[idx].text.clone();
-                                            tracking.edit_text_modified = false;
-                                            bus.write_word(dialog_ptr + 164, idx as u16);
+                                            if !tracking.items.is_empty() {
+                                                let start = tracking.edit_item.max(0) as usize;
+                                                let next =
+                                                    (0..tracking.items.len()).find_map(|offset| {
+                                                        let idx =
+                                                            (start + offset) % tracking.items.len();
+                                                        if (tracking.items[idx].item_type & 0x7F)
+                                                            == 16
+                                                        {
+                                                            Some(idx)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    });
+                                                if let Some(idx) = next {
+                                                    tracking.edit_item = (idx + 1) as i16;
+                                                    tracking.edit_text =
+                                                        tracking.items[idx].text.clone();
+                                                    tracking.edit_text_modified = false;
+                                                    bus.write_word(dialog_ptr + 164, idx as u16);
+                                                    switched = true;
+                                                }
+                                            }
+                                        }
+                                        if switched {
                                             self.refresh_dialog_tracking_snapshot(bus);
                                         }
                                     }
-                                    // Backspace/Delete
-                                    0x08 => {
-                                        if tracking.edit_item > 0 {
-                                            if !tracking.edit_text_modified {
-                                                // First backspace clears selection
-                                                tracking.edit_text.clear();
-                                                tracking.edit_text_modified = true;
-                                            } else if !tracking.edit_text.is_empty() {
-                                                tracking.edit_text.pop();
+                                    // Backspace/Delete or printable ASCII.
+                                    0x08 | 0x20..=0x7E => {
+                                        let mut text_trace = None;
+                                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                            let text_before = tracking.edit_text.clone();
+                                            if tracking.edit_item > 0 {
+                                                if char_code == 0x08 {
+                                                    if !tracking.edit_text_modified {
+                                                        // First backspace clears selection
+                                                        tracking.edit_text.clear();
+                                                        tracking.edit_text_modified = true;
+                                                    } else if !tracking.edit_text.is_empty() {
+                                                        tracking.edit_text.pop();
+                                                    }
+                                                } else {
+                                                    if !tracking.edit_text_modified {
+                                                        // First keypress replaces selection
+                                                        tracking.edit_text.clear();
+                                                        tracking.edit_text_modified = true;
+                                                    }
+                                                    tracking.edit_text.push(char_code as char);
+                                                }
+                                                Self::sync_tracking_active_edit_item(tracking);
+
+                                                let edit_item = tracking.edit_item;
+                                                let item_type = tracking
+                                                    .items
+                                                    .get((edit_item - 1) as usize)
+                                                    .map(|item| item.item_type);
+                                                let enabled_edit_text = item_type
+                                                    .map(|ty| (ty & 0x7F) == 16 && (ty & 0x80) == 0)
+                                                    .unwrap_or(false);
+                                                let text_after = tracking.edit_text.clone();
+                                                text_trace = Some((
+                                                    edit_item,
+                                                    item_type,
+                                                    text_before,
+                                                    text_after,
+                                                    enabled_edit_text,
+                                                ));
                                             }
-                                            Self::sync_tracking_active_edit_item(tracking);
-                                            refresh_after_key = true;
                                         }
-                                    }
-                                    // Printable ASCII
-                                    0x20..=0x7E => {
-                                        if tracking.edit_item > 0 {
-                                            if !tracking.edit_text_modified {
-                                                // First keypress replaces selection
-                                                tracking.edit_text.clear();
-                                                tracking.edit_text_modified = true;
+                                        if let Some((
+                                            edit_item,
+                                            item_type,
+                                            text_before,
+                                            text_after,
+                                            enabled_edit_text,
+                                        )) = text_trace
+                                        {
+                                            self.refresh_dialog_tracking_snapshot(bus);
+                                            let outcome = if enabled_edit_text {
+                                                "enabled_edittext_item_hit"
+                                            } else {
+                                                "edittext_updated"
+                                            };
+                                            if enabled_edit_text {
+                                                let (dlg_ptr, active_edit_item, edit_text, items) = {
+                                                    let tracking =
+                                                        self.dialog_tracking.as_mut().unwrap();
+                                                    Self::sync_tracking_active_edit_item(tracking);
+                                                    (
+                                                        tracking.dialog_ptr,
+                                                        tracking.edit_item,
+                                                        tracking.edit_text.clone(),
+                                                        tracking.items.clone(),
+                                                    )
+                                                };
+                                                self.flush_dialog_edit_item_texts(
+                                                    bus,
+                                                    dlg_ptr,
+                                                    &items,
+                                                    active_edit_item,
+                                                    &edit_text,
+                                                );
+                                                let saved = self.dialog_tracking.take().unwrap();
+                                                let saved_dialog_ptr = saved.dialog_ptr;
+                                                self.persist_visible_dialog_snapshot(bus, &saved);
+                                                self.dialog_saved_pixels
+                                                    .insert(saved_dialog_ptr, saved.saved_pixels);
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(
+                                                        item_hit_ptr,
+                                                        active_edit_item as u16,
+                                                    );
+                                                }
+                                                cpu.write_reg(Register::A7, stack_ptr + 8);
+                                                self.record_modal_dialog_text_input_trace(
+                                                    "key_down",
+                                                    dialog_ptr,
+                                                    bounds,
+                                                    edit_item,
+                                                    item_type,
+                                                    key_code,
+                                                    char_code,
+                                                    &text_before,
+                                                    &text_after,
+                                                    "returned",
+                                                    outcome,
+                                                );
+                                            } else {
+                                                self.record_modal_dialog_text_input_trace(
+                                                    "key_down",
+                                                    dialog_ptr,
+                                                    bounds,
+                                                    edit_item,
+                                                    item_type,
+                                                    key_code,
+                                                    char_code,
+                                                    &text_before,
+                                                    &text_after,
+                                                    "pending",
+                                                    outcome,
+                                                );
                                             }
-                                            tracking.edit_text.push(char_code as char);
-                                            Self::sync_tracking_active_edit_item(tracking);
-                                            refresh_after_key = true;
                                         }
                                     }
                                     _ => {}
-                                }
-                                if refresh_after_key {
-                                    self.refresh_dialog_tracking_snapshot(bus);
                                 }
                             }
                             _ => {}
@@ -6749,7 +9207,7 @@ impl super::TrapDispatcher {
                         // controls in dialogs.  We find the checked item (mark=0x12)
                         // in each menu and draw a standard popup button for it.
                         // Inside Macintosh Volume I, I-405 (userItem draw responsibilities)
-                        let popup_draws: Vec<(i16, i16, i16, i16, String)> = items
+                        let popup_draws: Vec<DialogPopupDraw> = items
                             .iter()
                             .enumerate()
                             .filter_map(|(i, item)| {
@@ -6776,13 +9234,17 @@ impl super::TrapDispatcher {
                                     .get(&(dialog_ptr, item_no))
                                     .copied()
                                     .unwrap_or(item.rect);
-                                Some((
-                                    bounds.0 + it_t,
-                                    bounds.1 + it_l,
-                                    bounds.0 + it_b,
-                                    bounds.1 + it_r,
-                                    checked_text,
-                                ))
+                                Some(DialogPopupDraw {
+                                    rect: (
+                                        bounds.0 + it_t,
+                                        bounds.1 + it_l,
+                                        bounds.0 + it_b,
+                                        bounds.1 + it_r,
+                                    ),
+                                    title: checked_text,
+                                    enabled: (item.item_type & 0x80) == 0,
+                                    pressed: false,
+                                })
                             })
                             .collect();
                         self.redraw_dialog_popup_controls(bus, &popup_draws);
@@ -6839,6 +9301,16 @@ impl super::TrapDispatcher {
                             active_button: None,
                             active_user_item: None,
                         });
+                        self.record_modal_dialog_input_trace(
+                            "start",
+                            dialog_ptr,
+                            bounds,
+                            0,
+                            None,
+                            None,
+                            "pending",
+                            "open_modal_tracking",
+                        );
                         // Don't pop stack or advance PC — re-fire pattern
                     } else {
                         // No items found — fall back to returning item 1
@@ -7802,7 +10274,7 @@ impl super::TrapDispatcher {
                                                 as i16;
                                             let metrics = get_font_metrics(
                                                 resolved_font,
-                                                resolved_size.max(1),
+                                                Self::font_lookup_size(resolved_size),
                                             );
                                             let line_height =
                                                 metrics.ascent + metrics.descent + metrics.leading;
@@ -7859,8 +10331,10 @@ impl super::TrapDispatcher {
                                         bus.read_word(te_ptr + Self::TE_TX_FONT_OFFSET) as i16;
                                     let resolved_size =
                                         bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16;
-                                    let metrics =
-                                        get_font_metrics(resolved_font, resolved_size.max(1));
+                                    let metrics = get_font_metrics(
+                                        resolved_font,
+                                        Self::font_lookup_size(resolved_size),
+                                    );
                                     bus.write_word(
                                         te_ptr + Self::TE_LINE_HEIGHT_OFFSET,
                                         (metrics.ascent + metrics.descent + metrics.leading) as u16,
@@ -8908,11 +11382,7 @@ impl super::TrapDispatcher {
                             //   teJustCenter =  1 (centered)
                             //   teJustRight  = -1 (flush right)
                             //   teForceLeft  = -2 (force flush left)
-                            let x = match align {
-                                1 => box_left + (box_width - lw) / 2, // teJustCenter
-                                -1 => box_right - lw,                 // teJustRight
-                                _ => box_left, // teJustLeft / teForceLeft / 0
-                            };
+                            let x = Self::te_line_origin_x(align, box_left, box_right, lw);
                             self.pn_loc = (y, x);
                             for &byte in &text_bytes[*start..trimmed_end] {
                                 self.draw_char(cpu, bus, byte as char);
@@ -9446,9 +11916,8 @@ impl super::TrapDispatcher {
             //   dialog::tests::teidle_repeated_calls_balance_stack_and_preserve_terec_state
             (true, 0x1DA) => {
                 let sp = cpu.read_reg(Register::A7);
-                if trace_textedit_enabled() {
-                    eprintln!("[TE] TEIdle hTE=${:08X}", bus.read_long(sp));
-                }
+                let te_handle = bus.read_long(sp);
+                self.textedit_idle(bus, te_handle);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -9635,10 +12104,9 @@ impl super::TrapDispatcher {
             // SelectDialogItemText ($A97E)
             // PROCEDURE SelectDialogItemText(theDialog: DialogPtr;
             //     itemNo: INTEGER; strtSel: INTEGER; endSel: INTEGER);
-            // Sets the active edit field + its selection range in the
-            // dialog so the next ModalDialog / UpdtDialog redraw
-            // displays the caret in the right place.
-            // Inside Macintosh Volume I, I-414
+            // Selects and highlights text in an editable text dialog item.
+            // Inside Macintosh Volume I, I-414; Macintosh Toolbox Essentials
+            // 1992, 6-131..6-132
             //
             // Pascal stack frame:
             //   SP+0  endSel: INTEGER     (2) — last arg, shallowest
@@ -9659,24 +12127,17 @@ impl super::TrapDispatcher {
             //   - The named item becomes the dialog's active edit
             //     field (DialogRecord.editField at offset 164).
             //
-            // HLE compromise: real-Mac SelectDialogItemText also
-            // calls TESetSelect on the item's TEHandle. Systemless's
-            // DialogItem doesn't carry a TEHandle (the dialog
-            // edit-text path is implemented entirely via
-            // DialogItem.text + sel_start/sel_end fields, not via
-            // a per-item TERec). The clamped (sel_start, sel_end)
-            // pair is stored back into the DialogItem so a future
-            // ModalDialog redraw can highlight the right bytes.
-            // Apps that programmatically GetDialogItemText after
-            // the call see the same text; SetDialogItemText
-            // ($A98F, Partial) replaces it.
-            // SelectDialogItemText ($A97E): Per IM:I I-414 selects text [strtSel..endSel) in editText item itemNo: clamps both indices to text.len(), normalizes (0,-1) → (0,text.len()) per "select all" special case, swaps if strtSel > endSel, stores back into DialogItem.sel_start/sel_end, marks the item as DialogRecord.editField at offset 164. No-op for non-editText items per IM. Pops 10 bytes (theDialog 4 + itemNo 2 + strtSel 2 + endSel 2).
+            // Systemless stores the normalized range in DialogItem and mirrors
+            // it into DialogRecord.textH's TERecord when present, then redraws
+            // the visible editText item so the selection highlight is
+            // immediate like SelIText / SelectDialogItemText.
             (true, 0x17E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let end_sel = bus.read_word(sp) as i16;
                 let start_sel = bus.read_word(sp + 2) as i16;
                 let item_no = bus.read_word(sp + 4) as i16;
                 let dialog_ptr = bus.read_long(sp + 6);
+                let mut redraw_item = None;
                 if dialog_ptr != 0 && item_no > 0 {
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
                         if let Some(item) = items.get_mut((item_no - 1) as usize) {
@@ -9719,9 +12180,13 @@ impl super::TrapDispatcher {
                                         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, e as u16);
                                     }
                                 }
+                                redraw_item = Some((dialog_ptr, item_no));
                             }
                         }
                     }
+                }
+                if let Some((dialog_ptr, item_no)) = redraw_item {
+                    self.redraw_dialog_text_item(bus, dialog_ptr, item_no);
                 }
                 cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
@@ -9841,15 +12306,9 @@ impl super::TrapDispatcher {
             }
 
             // UpdtDialog ($A978)
-            // Redraws all items in the update region of the dialog.
+            // Redraws the dialog items in the specified update region.
             // PROCEDURE UpdtDialog(theDialog: DialogPtr; updateRgn: RgnHandle);
-            // Inside Macintosh Volume I, I-415
-            //
-            // Delegates to the full dialog redraw path (same as DrawDialog) —
-            // BeginUpdate/EndUpdate on the calling side already clips drawing
-            // to the actual update region, so redrawing every item is correct
-            // if somewhat wasteful.
-            // UpdtDialog ($A978): Redraws every item in the dialog (BeginUpdate/EndUpdate already clip drawing to the actual updateRgn on the caller side); does not honor updateRgn for sub-region selection. Pops 8 bytes per IM:I I-415
+            // Inside Macintosh Volume I, I-415; Macintosh Toolbox Essentials 1992, 6-142..6-143
             (true, 0x178) => {
                 let sp = cpu.read_reg(Register::A7);
                 let update_rgn = bus.read_long(sp);
@@ -9858,27 +12317,8 @@ impl super::TrapDispatcher {
                 if update_rgn == 0 {
                     return Some(Ok(()));
                 }
-                if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
-                    Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
-                    let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
-                    let proc_id = self.dialog_window_proc_id(bus, dialog_ptr);
-                    let (edit_text, edit_item, default_item) =
-                        Self::dialog_edit_state(bus, dialog_ptr, &items);
-                    self.dialog_initial_draw_deferred.remove(&dialog_ptr);
-                    self.draw_dialog(
-                        bus,
-                        bounds,
-                        proc_id,
-                        "",
-                        &items,
-                        default_item,
-                        &edit_text,
-                        edit_item,
-                        false,
-                        dialog_ptr,
-                    );
-                    self.dialog_items.insert(dialog_ptr, items);
-                }
+                let update_rect = Self::region_handle_rect(bus, update_rgn);
+                self.update_dialog_window_contents(bus, cpu, dialog_ptr, update_rect);
                 Ok(())
             }
 
@@ -9887,20 +12327,27 @@ impl super::TrapDispatcher {
             // PROCEDURE FreeDialog (dialogID: INTEGER);
             // Inside Macintosh Volume I, I-415
             //
-            // Both traps validate the primary 'DLOG' resource and
-            // propagate ResError ($0A60). Per IM:I I-415 they also
-            // cascade to the dialog window's WDEF, the DITL, and
-            // any items defined as resources — but Systemless's HLE
-            // has no resource-purgeability axis (loaded resources
-            // live in the bus allocator until shutdown and no
-            // heap compaction runs), so the cascade collapses to
-            // the primary-template lookup. The ResErr write is
-            // the only HLE-visible side effect.
-            // CouldDialog ($A979): Validates DLOG resource is loaded; writes ResErr noErr on both hit and miss in BasiliskII. WDEF/DITL/items cascade omitted (HLE has no purgeable-bit axis).
-            // FreeDialog ($A97A): Validates DLOG resource is loaded; writes ResErr noErr on both hit and miss in BasiliskII. WDEF/DITL/items cascade omitted (HLE has no purgeable-bit axis).
+            // Per IM:I I-415, CouldDialog makes the DLOG, its DITL, and
+            // resource-backed DITL items unpurgeable, loading them first if
+            // needed; FreeDialog makes the same already-loaded resources
+            // purgeable again. Systemless models that visible handle-state
+            // axis for DLOG/DITL plus CNTL/ICON/PICT DITL resources. WDEF
+            // cascade is intentionally omitted: HLE dialog window procs are
+            // not loaded or executed as guest WDEF resources.
+            // CouldDialog ($A979): Loads and HNoPurge-equivalent marks DLOG/DITL/resource-backed items; writes ResErr noErr on both hit and miss in BasiliskII.
+            // FreeDialog ($A97A): HPurge-equivalent marks the already-loaded DLOG/DITL/resource-backed items; writes ResErr noErr on both hit and miss in BasiliskII.
             (true, 0x179) | (true, 0x17A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_id = bus.read_word(sp) as i16;
+                let load_if_missing = trap_num == 0x179;
+                let purgeable = trap_num == 0x17A;
+                self.cascade_dialog_resource_purgeability(
+                    bus,
+                    *b"DLOG",
+                    dialog_id,
+                    purgeable,
+                    load_if_missing,
+                );
                 let res_err = self.dialog_template_res_err(dialog_id);
                 bus.write_word(0x0A60, res_err as u16);
                 cpu.write_reg(Register::A7, sp + 2);
@@ -9908,14 +12355,17 @@ impl super::TrapDispatcher {
             }
 
             // HideDialogItem ($A827)
-            // Moves the item's rect offscreen so it isn't drawn or
-            // hit-tested. The original rect is saved so ShowDialogItem
-            // can restore it.
+            // Erases the item's enclosing rectangle, then moves the
+            // item's display rect offscreen so it isn't drawn or hit-tested.
+            // The original rect is saved so ShowDialogItem can restore it.
             // PROCEDURE HideDialogItem(theDialog: DialogPtr; itemNo: INTEGER);
             // Inside Macintosh Volume IV, IV-59
             // Stack: SP+0=itemNo(2), SP+2=theDialog(4). Pop 6.
-            // HideDialogItem ($A827): If itemRect.left < 8192, offsets itemRect.left/right by +16384
-            // so the item becomes offscreen; already-hidden items are unchanged (MTE 1992, 6-123).
+            // HideDialogItem ($A827): If itemRect.left < 8192, calls EraseRect on
+            // the item's enclosing rectangle, adds that rectangle to the update
+            // region, and offsets itemRect.left/right by +16384 so the item
+            // becomes offscreen; already-hidden items are unchanged
+            // (Inside Macintosh Volume IV, IV-59; MTE 1992, 6-123).
             // Pops 6 bytes per IM:IV IV-59.
             (true, 0x027) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -9923,6 +12373,7 @@ impl super::TrapDispatcher {
                 let dialog_ptr = bus.read_long(sp + 2);
                 cpu.write_reg(Register::A7, sp + 6);
                 let mut updated_control_rect = None;
+                let mut redraw_local_rect = None;
                 if dialog_ptr != 0 && item_no > 0 {
                     let key = (dialog_ptr, item_no);
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
@@ -9931,13 +12382,21 @@ impl super::TrapDispatcher {
                             let rect = items[idx].rect;
                             // MTE 1992, 6-123: already-hidden items (left > 8192) are a no-op.
                             if rect.1 < 8192 {
+                                let enclosing = Self::dialog_item_enclosing_local_rect(
+                                    items[idx].item_type,
+                                    rect,
+                                );
                                 self.hidden_dialog_item_rects.entry(key).or_insert(rect);
                                 items[idx].rect.1 = rect.1.wrapping_add(16384);
                                 items[idx].rect.3 = rect.3.wrapping_add(16384);
                                 updated_control_rect = Some(items[idx].rect);
-                                self.invalidate_window_rect(bus, dialog_ptr, rect);
+                                redraw_local_rect = Some(enclosing);
                             }
                         }
+                    }
+                    if let Some(rect) = redraw_local_rect {
+                        self.erase_dialog_item_enclosing_rect(bus, dialog_ptr, rect);
+                        self.invalidate_window_rect(bus, dialog_ptr, rect);
                     }
                     if let Some(rect) = updated_control_rect {
                         if let Some(ctrl_handle) =
@@ -9978,6 +12437,7 @@ impl super::TrapDispatcher {
                 let dialog_ptr = bus.read_long(sp + 2);
                 cpu.write_reg(Register::A7, sp + 6);
                 let mut updated_control_rect = None;
+                let mut redraw_local_rect = None;
                 if dialog_ptr != 0 && item_no > 0 {
                     let key = (dialog_ptr, item_no);
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
@@ -9998,11 +12458,18 @@ impl super::TrapDispatcher {
                                         rect.3.wrapping_sub(16384),
                                     )
                                 };
+                                let enclosing = Self::dialog_item_enclosing_local_rect(
+                                    items[idx].item_type,
+                                    restored_rect,
+                                );
                                 items[idx].rect = restored_rect;
                                 updated_control_rect = Some(restored_rect);
-                                self.invalidate_window_rect(bus, dialog_ptr, restored_rect);
+                                redraw_local_rect = Some(enclosing);
                             }
                         }
+                    }
+                    if let Some(rect) = redraw_local_rect {
+                        self.invalidate_window_rect(bus, dialog_ptr, rect);
                     }
                     if let Some(rect) = updated_control_rect {
                         if let Some(ctrl_handle) =
@@ -10078,29 +12545,28 @@ impl super::TrapDispatcher {
             // PROCEDURE CouldAlert(alertID: INTEGER);
             // Inside Macintosh Volume I, I-420
             //
-            // Companion of CouldDialog/FreeDialog ($A979/$A97A —
-            // see arm above). HLE collapses the trap to writing
-            // ResErr ($0A60) = noErr and otherwise leaves the
-            // loaded ALRT handle untouched. BasiliskII treats
-            // missing alert IDs as harmless no-ops; the
-            // WDEF/DITL/items cascade documented at IM:I I-420 is
-            // still omitted.
-            (true, 0x189) => {
-                let sp = cpu.read_reg(Register::A7);
-                let _alert_id = bus.read_word(sp) as i16;
-                bus.write_word(0x0A60, 0);
-                cpu.write_reg(Register::A7, sp + 2);
-                Ok(())
-            }
-
             // FreeAlert ($A98A)
             // PROCEDURE FreeAlert(alertID: INTEGER);
             // Inside Macintosh Volume I, I-420
             //
-            // See CouldAlert ($A989) above.
-            (true, 0x18A) => {
+            // Companion of CouldDialog/FreeDialog ($A979/$A97A) for ALRT
+            // templates. Per IM:I I-420, CouldAlert loads and makes the
+            // ALRT, DITL, and resource-backed DITL items unpurgeable;
+            // FreeAlert marks the already-loaded equivalents purgeable.
+            // BasiliskII treats missing alert IDs as harmless no-ops and
+            // leaves ResErr at noErr.
+            (true, 0x189) | (true, 0x18A) => {
                 let sp = cpu.read_reg(Register::A7);
-                let _alert_id = bus.read_word(sp) as i16;
+                let alert_id = bus.read_word(sp) as i16;
+                let load_if_missing = trap_num == 0x189;
+                let purgeable = trap_num == 0x18A;
+                self.cascade_dialog_resource_purgeability(
+                    bus,
+                    *b"ALRT",
+                    alert_id,
+                    purgeable,
+                    load_if_missing,
+                );
                 bus.write_word(0x0A60, 0);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -10154,7 +12620,6 @@ impl super::TrapDispatcher {
             // Sets the text of a dialog item (statText or editText).
             // PROCEDURE SetDialogItemText(item: Handle; text: Str255);
             // Inside Macintosh Volume I, I-422; Macintosh Toolbox Essentials 1992, 6-131
-            // SetDialogItemText ($A98F): Replaces a statText/editText item handle's raw text bytes, updates cached DialogItem text, and redraws the item when the dialog is visible.
             (true, 0x18F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pc = cpu.read_reg(Register::PC);
@@ -10231,7 +12696,6 @@ impl super::TrapDispatcher {
             // Returns the text of a dialog item (statText or editText).
             // PROCEDURE GetDialogItemText(item: Handle; VAR text: Str255);
             // Inside Macintosh Volume I, I-422
-            // GetDialogItemText ($A990): Returns text from tracking state or reads from item handle
             (true, 0x190) => {
                 let sp = cpu.read_reg(Register::A7);
                 let text_ptr = bus.read_long(sp);
@@ -10547,13 +13011,61 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
+    use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
-    use crate::trap::dispatch::{DialogItem, PersistentDialogSnapshot};
+    use crate::trap::dispatch::{
+        DialogButtonTrackingState, DialogItem, DialogPopupDraw, DialogTrackingState,
+        PendingDialogPopupMenu, PersistentDialogSnapshot, RetainedModalDialogClickState,
+    };
     use crate::trap::menu::{Menu, MenuItem};
     use crate::trap::TrapDispatcher;
+    use crate::ui_theme::UiThemeId;
     use std::collections::VecDeque;
+
+    fn screen_pixel_is_set(bus: &MacMemoryBus, base: u32, row_bytes: u32, x: i16, y: i16) -> bool {
+        let byte = bus.read_byte(base + (y as u32 * row_bytes) + ((x as u32) / 8));
+        byte & (0x80u8 >> ((x as u8) & 7)) != 0
+    }
+
+    fn count_set_pixels(
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> u32 {
+        let mut count = 0;
+        for y in top..bottom {
+            for x in left..right {
+                if screen_pixel_is_set(bus, base, row_bytes, x, y) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn sum_screen_bytes(
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> u64 {
+        let mut sum = 0;
+        for y in top..bottom {
+            let row = base + (y as u32 * row_bytes);
+            for x in left..right {
+                sum += u64::from(bus.read_byte(row + x as u32));
+            }
+        }
+        sum
+    }
 
     // ---- InitDialogs ($A97B) ----
 
@@ -10689,8 +13201,299 @@ mod tests {
         assert_eq!(position, 0x280A);
     }
 
+    #[test]
+    fn dlog_parse_title_alignment_even_and_odd() {
+        let (_disp, _cpu, mut bus) = setup();
+        let odd = build_test_dlog_with_title((10, 20, 110, 220), 701, "Odd", 0x300A);
+        let even = build_test_dlog_with_title((11, 21, 111, 221), 702, "Even", 0x700A);
+
+        let odd_ptr = bus.alloc(odd.len() as u32);
+        bus.write_bytes(odd_ptr, &odd);
+        let even_ptr = bus.alloc(even.len() as u32);
+        bus.write_bytes(even_ptr, &even);
+
+        // MTE 1992 p. 6-148: the optional position word follows the Pascal
+        // title string after a 0-or-1-byte alignment pad.
+        let (odd_bounds, _, _, odd_items, odd_title, odd_position) =
+            TrapDispatcher::parse_dlog(&bus, odd_ptr, odd.len() as u32);
+        let (even_bounds, _, _, even_items, even_title, even_position) =
+            TrapDispatcher::parse_dlog(&bus, even_ptr, even.len() as u32);
+
+        assert_eq!(odd_bounds, (10, 20, 110, 220));
+        assert_eq!(odd_items, 701);
+        assert_eq!(odd_title, "Odd");
+        assert_eq!(odd_position, 0x300A);
+        assert_eq!(odd.len(), 26);
+
+        assert_eq!(even_bounds, (11, 21, 111, 221));
+        assert_eq!(even_items, 702);
+        assert_eq!(even_title, "Even");
+        assert_eq!(even_position, 0x700A);
+        assert_eq!(even.len(), 28);
+    }
+
+    #[test]
+    fn dlog_parse_position_constants() {
+        let (_disp, _cpu, mut bus) = setup();
+        // MTE 1992 p. 6-148 documents the compiled DLOG position constants
+        // stored after the aligned title string.
+        for position in [0x0000u16, 0xB00A, 0x300A, 0x700A] {
+            let dlog = build_test_dlog_with_title((10, 20, 110, 220), 711, "P", position);
+            let ptr = bus.alloc(dlog.len() as u32);
+            bus.write_bytes(ptr, &dlog);
+
+            let (_, _, _, _, _, parsed_position) =
+                TrapDispatcher::parse_dlog(&bus, ptr, dlog.len() as u32);
+
+            assert_eq!(parsed_position, position);
+        }
+    }
+
+    #[test]
+    fn alrt_parse_stage_nibbles_and_position() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut alrt = build_alrt_template(-321, 0xF721);
+        alrt.extend_from_slice(&0xB00Au16.to_be_bytes());
+        let ptr = bus.alloc(alrt.len() as u32);
+        bus.write_bytes(ptr, &alrt);
+
+        let (bounds, items_id, stages, position) =
+            TrapDispatcher::parse_alrt(&bus, ptr, alrt.len() as u32);
+
+        assert_eq!(bounds, (0, 0, 80, 200));
+        assert_eq!(items_id, -321);
+        assert_eq!(stages, 0xF721);
+        // IM:I I-425 to I-426: low nibble is stage 1, high nibble is stage 4.
+        assert_eq!(stages & 0x000F, 0x0001);
+        assert_eq!((stages >> 4) & 0x000F, 0x0002);
+        assert_eq!((stages >> 8) & 0x000F, 0x0007);
+        assert_eq!((stages >> 12) & 0x000F, 0x000F);
+        assert_eq!(position, 0xB00A);
+
+        let classic_alrt = build_alrt_template(123, 0x0008);
+        let classic_ptr = bus.alloc(classic_alrt.len() as u32);
+        bus.write_bytes(classic_ptr, &classic_alrt);
+        let (_, classic_items_id, classic_stages, classic_position) =
+            TrapDispatcher::parse_alrt(&bus, classic_ptr, classic_alrt.len() as u32);
+        assert_eq!(classic_items_id, 123);
+        assert_eq!(classic_stages, 0x0008);
+        assert_eq!(classic_position, 0);
+    }
+
+    fn push_ditl_count(data: &mut Vec<u8>, count_minus_one: i16) {
+        data.extend_from_slice(&count_minus_one.to_be_bytes());
+    }
+
+    fn push_ditl_item(
+        data: &mut Vec<u8>,
+        item_handle: u32,
+        rect: (i16, i16, i16, i16),
+        item_type: u8,
+        length_or_reserved: u8,
+        payload: &[u8],
+    ) {
+        data.extend_from_slice(&item_handle.to_be_bytes());
+        data.extend_from_slice(&rect.0.to_be_bytes());
+        data.extend_from_slice(&rect.1.to_be_bytes());
+        data.extend_from_slice(&rect.2.to_be_bytes());
+        data.extend_from_slice(&rect.3.to_be_bytes());
+        data.push(item_type);
+        data.push(length_or_reserved);
+        data.extend_from_slice(payload);
+        if payload.len() % 2 != 0 {
+            data.push(0);
+        }
+    }
+
+    fn parse_ditl_bytes(bus: &mut MacMemoryBus, data: &[u8]) -> Vec<DialogItem> {
+        let ptr = bus.alloc(data.len() as u32);
+        bus.write_bytes(ptr, data);
+        TrapDispatcher::parse_ditl(bus, ptr, data.len() as u32)
+    }
+
+    #[test]
+    fn ditl_iter_empty_count_minus_one() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        // IM:I I-427: the first word stores the number of items minus 1.
+        push_ditl_count(&mut ditl, -1);
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn ditl_iter_button_checkbox_radio_static_edit_text() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 4);
+        for (item_type, rect, text) in [
+            (4, (1, 2, 11, 42), "OK"),
+            (5, (12, 2, 22, 72), "Check"),
+            (6, (23, 2, 33, 72), "Radio"),
+            (8, (34, 2, 44, 92), "Static"),
+            (16, (45, 2, 57, 122), "Edit"),
+        ] {
+            push_ditl_item(
+                &mut ditl,
+                0,
+                rect,
+                item_type,
+                text.len() as u8,
+                text.as_bytes(),
+            );
+        }
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0].item_type, 4);
+        assert_eq!(items[0].rect, (1, 2, 11, 42));
+        assert_eq!(items[0].text, "OK");
+        assert_eq!(items[1].item_type, 5);
+        assert_eq!(items[1].text, "Check");
+        assert_eq!(items[2].item_type, 6);
+        assert_eq!(items[2].text, "Radio");
+        assert_eq!(items[3].item_type, 8);
+        assert_eq!(items[3].text, "Static");
+        assert_eq!(items[4].item_type, 16);
+        assert_eq!(items[4].rect, (45, 2, 57, 122));
+        assert_eq!(items[4].text, "Edit");
+    }
+
+    #[test]
+    fn ditl_iter_control_icon_picture_resource_id() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 2);
+        // MTE 1992 p. 6-153 documents resource-backed DITL items as a
+        // reserved byte followed by a signed 16-bit resource ID.
+        push_ditl_item(&mut ditl, 0, (1, 2, 11, 42), 7, 0, &128i16.to_be_bytes());
+        // IM:I I-427 describes the same slot as a length byte of 2.
+        push_ditl_item(
+            &mut ditl,
+            0,
+            (12, 2, 28, 34),
+            32,
+            2,
+            &(-42i16).to_be_bytes(),
+        );
+        push_ditl_item(&mut ditl, 0, (29, 2, 70, 90), 64, 0, &300i16.to_be_bytes());
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].item_type, 7);
+        assert_eq!(items[0].resource_id, 128);
+        assert_eq!(items[1].item_type, 32);
+        assert_eq!(items[1].resource_id, -42);
+        assert_eq!(items[2].item_type, 64);
+        assert_eq!(items[2].resource_id, 300);
+    }
+
+    #[test]
+    fn ditl_iter_user_item_without_data_bytes() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 0);
+        push_ditl_item(&mut ditl, 0x12345678, (10, 20, 30, 40), 0, 0, &[]);
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item_type, 0);
+        assert_eq!(items[0].rect, (10, 20, 30, 40));
+        assert_eq!(items[0].proc_ptr, 0x12345678);
+    }
+
+    #[test]
+    fn ditl_iter_help_item_sized_payload() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 1);
+        // MTE 1992 p. 6-154: help items use a 4- or 6-byte payload.
+        push_ditl_item(
+            &mut ditl,
+            0,
+            (0, 0, 0, 0),
+            1,
+            6,
+            &[0x00, 0x08, 0x01, 0x2C, 0x00, 0x02],
+        );
+        push_ditl_item(&mut ditl, 0, (5, 6, 17, 50), 4, 2, b"OK");
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].item_type, 1);
+        assert_eq!(items[1].item_type, 4);
+        assert_eq!(items[1].text, "OK");
+    }
+
+    #[test]
+    fn ditl_iter_odd_pascal_text_alignment() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 1);
+        push_ditl_item(&mut ditl, 0, (1, 2, 11, 42), 8, 3, b"Odd");
+        push_ditl_item(&mut ditl, 0, (12, 2, 22, 42), 4, 2, b"OK");
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "Odd");
+        assert_eq!(items[1].rect, (12, 2, 22, 42));
+        assert_eq!(items[1].text, "OK");
+    }
+
+    #[test]
+    fn ditl_iter_even_pascal_text_alignment() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 1);
+        push_ditl_item(&mut ditl, 0, (1, 2, 11, 42), 8, 4, b"Even");
+        push_ditl_item(&mut ditl, 0, (12, 2, 22, 42), 4, 2, b"OK");
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "Even");
+        assert_eq!(items[1].rect, (12, 2, 22, 42));
+        assert_eq!(items[1].text, "OK");
+    }
+
+    #[test]
+    fn ditl_iter_rejects_or_stops_at_truncated_item() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 1);
+        push_ditl_item(&mut ditl, 0, (1, 2, 11, 42), 4, 2, b"OK");
+        ditl.extend_from_slice(&0u32.to_be_bytes());
+        for coord in [12i16, 2, 22, 72] {
+            ditl.extend_from_slice(&coord.to_be_bytes());
+        }
+        ditl.push(8);
+        ditl.push(6);
+        ditl.extend_from_slice(b"Bad");
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "OK");
+    }
+
     fn build_test_dlog(bounds: (i16, i16, i16, i16), items_id: i16, position: u16) -> Vec<u8> {
-        let mut data = Vec::with_capacity(24);
+        build_test_dlog_with_title(bounds, items_id, "", position)
+    }
+
+    fn build_test_dlog_with_title(
+        bounds: (i16, i16, i16, i16),
+        items_id: i16,
+        title: &str,
+        position: u16,
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(22 + title.len() + (title.len() & 1));
         data.extend_from_slice(&bounds.0.to_be_bytes());
         data.extend_from_slice(&bounds.1.to_be_bytes());
         data.extend_from_slice(&bounds.2.to_be_bytes());
@@ -10702,8 +13505,11 @@ mod tests {
         data.push(0); // filler
         data.extend_from_slice(&0u32.to_be_bytes()); // refCon
         data.extend_from_slice(&items_id.to_be_bytes());
-        data.push(0); // empty title
-        data.push(0); // title padding
+        data.push(title.len() as u8);
+        data.extend_from_slice(title.as_bytes());
+        if (1 + title.len()) % 2 != 0 {
+            data.push(0); // title alignment padding
+        }
         data.extend_from_slice(&position.to_be_bytes());
         data
     }
@@ -10745,6 +13551,90 @@ mod tests {
         if item_data.len() % 2 != 0 {
             data.push(0);
         }
+    }
+
+    fn loaded_resource_handle_for_test(
+        disp: &TrapDispatcher,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) -> u32 {
+        disp.loaded_handles
+            .iter()
+            .find_map(|(&handle, &(_, loaded_type, loaded_id))| {
+                if loaded_type == res_type && loaded_id == res_id {
+                    Some(handle)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected loaded {} resource {}",
+                    String::from_utf8_lossy(&res_type),
+                    res_id
+                )
+            })
+    }
+
+    fn assert_resource_nonpurgeable(
+        disp: &TrapDispatcher,
+        bus: &MacMemoryBus,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) {
+        let handle = loaded_resource_handle_for_test(disp, res_type, res_id);
+        assert_ne!(
+            bus.read_long(handle),
+            0,
+            "{} {} should have a non-NIL master pointer",
+            String::from_utf8_lossy(&res_type),
+            res_id
+        );
+        assert_eq!(
+            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x40,
+            0,
+            "{} {} should be nonpurgeable",
+            String::from_utf8_lossy(&res_type),
+            res_id
+        );
+    }
+
+    fn assert_resource_purgeable(disp: &TrapDispatcher, res_type: [u8; 4], res_id: i16) {
+        let handle = loaded_resource_handle_for_test(disp, res_type, res_id);
+        assert_ne!(
+            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x40,
+            0,
+            "{} {} should be purgeable",
+            String::from_utf8_lossy(&res_type),
+            res_id
+        );
+    }
+
+    fn ditl_item_handle_field(bus: &MacMemoryBus, ditl_ptr: u32, item_no: i16) -> u32 {
+        if item_no <= 0 || ditl_ptr == 0 {
+            return 0;
+        }
+
+        let max_index = bus.read_word(ditl_ptr) as i16;
+        if item_no > max_index + 1 {
+            return 0;
+        }
+
+        let mut offset = 2u32;
+        for current_item in 1..=max_index + 1 {
+            let handle_addr = ditl_ptr + offset;
+            offset += 4; // itmHandle / userItem ProcPtr
+            offset += 8; // item display rectangle
+            let data_len = bus.read_byte(ditl_ptr + offset + 1) as u32;
+            offset += 2; // item type + data length
+            let padded = (data_len + 1) & !1;
+            if current_item == item_no {
+                return bus.read_long(handle_addr);
+            }
+            offset += padded;
+        }
+
+        0
     }
 
     // ---- DialogDispatch ($AA68) ----
@@ -10979,10 +13869,12 @@ mod tests {
     // ---- GetNewDialog ($A97C) ----
 
     #[test]
-    fn get_new_dialog_returns_nil_when_dlog_missing() {
-        // Inside Macintosh Volume I, I-410: GetNewDialog returns NIL when
-        // the DLOG resource can't be located.
+    fn get_new_dialog_missing_dlog_sets_reserr_and_returns_nil() {
+        // MTE 1992 p. 6-114: GetNewDialog returns NIL when the DLOG
+        // resource can't be read; the failed resource read surfaces through
+        // Resource Manager ResErr as resNotFound (-192).
         let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(0x0A60, 0);
 
         let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -10992,6 +13884,161 @@ mod tests {
             dlg_ptr, 0,
             "GetNewDialog must return NIL when DLOG is missing"
         );
+        assert_eq!(bus.read_word(0x0A60) as i16, -192);
+        assert!(disp.window_list.is_empty());
+    }
+
+    #[test]
+    fn get_new_dialog_missing_ditl_sets_reserr_and_returns_nil() {
+        // MTE 1992 p. 6-114: GetNewDialog also returns NIL when the item-list
+        // resource named by the DLOG cannot be read.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dlog = build_test_dlog((10, 20, 110, 220), 1909, 0);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1908, &dlog);
+        bus.write_word(0x0A60, 0);
+        bus.write_word(TEST_SP + 8, 1908);
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_long(TEST_SP + 10), 0);
+        assert_eq!(bus.read_word(0x0A60) as i16, -192);
+        assert!(disp.window_list.is_empty());
+        assert!(disp.dialog_items.is_empty());
+    }
+
+    #[test]
+    fn get_new_dialog_copies_ditl_not_aliases_resource() {
+        // IM:I I-403 and MTE 1992 p. 6-114: GetNewDialog reads the DITL
+        // resource, makes a copy, and uses that copy so several dialogs can
+        // share identical resource-backed items without aliasing the resource.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((640 * 480) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 640, 640, 480, 8);
+
+        let dlog = build_test_dlog((40, 50, 110, 230), 2201, 0);
+        let ditl = build_test_ditl_item(8, (10, 12, 28, 120), b"Shared");
+        disp.install_test_resource(&mut bus, *b"DLOG", 2200, &dlog);
+        let original_ditl_ptr = disp.install_test_resource(&mut bus, *b"DITL", 2201, &ditl);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 2200); // dialogID
+        bus.write_long(TEST_SP + 10, 0xDEAD_BEEF);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let first_dialog = bus.read_long(TEST_SP + 10);
+        let first_ditl_ptr = bus.read_long(bus.read_long(first_dialog + 156));
+
+        assert_ne!(first_dialog, 0);
+        assert_ne!(first_ditl_ptr, 0);
+        assert_ne!(first_ditl_ptr, original_ditl_ptr);
+        assert_eq!(ditl_item_handle_field(&bus, original_ditl_ptr, 1), 0);
+        assert_ne!(ditl_item_handle_field(&bus, first_ditl_ptr, 1), 0);
+
+        bus.write_long(first_ditl_ptr + 2, 0xAABB_CCDD);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 2200); // dialogID
+        bus.write_long(TEST_SP + 10, 0xDEAD_BEEF);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let second_dialog = bus.read_long(TEST_SP + 10);
+        let second_ditl_ptr = bus.read_long(bus.read_long(second_dialog + 156));
+        let second_text_handle = ditl_item_handle_field(&bus, second_ditl_ptr, 1);
+
+        assert_ne!(second_dialog, 0);
+        assert_ne!(second_ditl_ptr, original_ditl_ptr);
+        assert_ne!(second_ditl_ptr, first_ditl_ptr);
+        assert_ne!(second_text_handle, 0);
+        assert_ne!(second_text_handle, 0xAABB_CCDD);
+        assert_eq!(ditl_item_handle_field(&bus, original_ditl_ptr, 1), 0);
+    }
+
+    #[test]
+    fn get_new_dialog_rewrites_reserved_item_handles() {
+        // IM:I I-405: an item list in memory contains item handles for text,
+        // controls, icons, and pictures. GetNewDialog must rewrite the copied
+        // DITL's reserved handle fields, not the resource's fields.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((640 * 480) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 640, 640, 480, 8);
+
+        let cntl_id = 2301i16.to_be_bytes();
+        let icon_id = 2302i16.to_be_bytes();
+        let pict_id = 2303i16.to_be_bytes();
+        let dlog = build_test_dlog((40, 50, 130, 260), 2300, 0);
+        let ditl = build_test_ditl_items(&[
+            (8, (10, 12, 24, 140), b"Static".as_slice()),
+            (16, (30, 12, 44, 140), b"Edit".as_slice()),
+            (7, (50, 12, 70, 120), cntl_id.as_slice()),
+            (32, (10, 150, 42, 182), icon_id.as_slice()),
+            (64, (48, 150, 80, 220), pict_id.as_slice()),
+        ]);
+
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 110, 1, -1, 3, 0, 0] {
+            cntl.extend_from_slice(&(word as u16).to_be_bytes());
+        }
+        cntl.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+        cntl.push(4);
+        cntl.extend_from_slice(b"Pick");
+        disp.install_test_resource(&mut bus, *b"DLOG", 2299, &dlog);
+        disp.install_test_resource(&mut bus, *b"CNTL", 2301, &cntl);
+        let icon_ptr = disp.install_test_resource(&mut bus, *b"ICON", 2302, &[0xAA; 128]);
+        let pict_ptr = disp.install_test_resource(&mut bus, *b"PICT", 2303, &[0x11; 32]);
+        let original_ditl_ptr = disp.install_test_resource(&mut bus, *b"DITL", 2300, &ditl);
+
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 2299); // dialogID
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        let copied_ditl_ptr = bus.read_long(bus.read_long(dialog_ptr + 156));
+        assert_ne!(dialog_ptr, 0);
+        assert_ne!(copied_ditl_ptr, original_ditl_ptr);
+
+        for item_no in 1..=5 {
+            assert_eq!(
+                ditl_item_handle_field(&bus, original_ditl_ptr, item_no),
+                0,
+                "resource DITL item {} handle field must stay reserved",
+                item_no
+            );
+        }
+
+        let static_handle = ditl_item_handle_field(&bus, copied_ditl_ptr, 1);
+        let edit_handle = ditl_item_handle_field(&bus, copied_ditl_ptr, 2);
+        let control_handle = ditl_item_handle_field(&bus, copied_ditl_ptr, 3);
+        let icon_handle = ditl_item_handle_field(&bus, copied_ditl_ptr, 4);
+        let pict_handle = ditl_item_handle_field(&bus, copied_ditl_ptr, 5);
+
+        assert_eq!(
+            bus.read_bytes(bus.read_long(static_handle), 6),
+            b"Static".to_vec()
+        );
+        assert_eq!(
+            bus.read_bytes(bus.read_long(edit_handle), 4),
+            b"Edit".to_vec()
+        );
+        assert_eq!(bus.read_long(bus.read_long(control_handle) + 4), dialog_ptr);
+        assert_eq!(
+            disp.dialog_control_handles.get(&control_handle),
+            Some(&(dialog_ptr, 3))
+        );
+        assert_eq!(bus.read_long(icon_handle), icon_ptr);
+        assert_eq!(bus.read_long(pict_handle), pict_ptr);
     }
 
     #[test]
@@ -11170,10 +14217,11 @@ mod tests {
     }
 
     // save_dialog_pixels / restore_dialog_pixels must guard against off-screen y
-    // (negative after top-5, or beyond screen_h). Without the guard, (y as u32)
-    // sign-extends a negative i16 and multiply-with-overflow panics in debug.
+    // (negative after the dBoxProc structure margin, or beyond screen_h).
+    // Without the guard, (y as u32) sign-extends a negative i16 and
+    // multiply-with-overflow panics in debug.
     #[test]
-    fn save_dialog_pixels_handles_top_below_five_without_overflow() {
+    fn save_dialog_pixels_handles_top_below_dbox_margin_without_overflow() {
         let (disp, _cpu, mut bus) = setup();
         let screen_base = bus.alloc((800 * 600) as u32);
         for i in 0..800u32 * 600 {
@@ -11183,15 +14231,15 @@ mod tests {
         bus.write_long(0x0824, screen_base);
         d.screen_mode = (screen_base, 800, 800, 600, 8);
 
-        // Bounds with top=2 → save_top = -3 (negative).
+        // Bounds with top=2 → save_top = -6 (negative).
         let saved = d.save_dialog_pixels(&bus, (2, 2, 50, 50));
-        // Row width = (55 - (-3)) = 58; row count = 58.
-        let row_width = 58usize;
-        let row_count = 58usize;
+        // Row width = (58 - (-6)) = 64; row count = 64.
+        let row_width = 64usize;
+        let row_count = 64usize;
         assert_eq!(saved.len(), row_width * row_count);
 
-        // First 3 rows are off-screen (y = -3, -2, -1) → zero-padded.
-        for row in 0..3 {
+        // First 6 rows are off-screen (y = -6..-1) → zero-padded.
+        for row in 0..6 {
             for col in 0..row_width {
                 assert_eq!(
                     saved[row * row_width + col],
@@ -11202,17 +14250,17 @@ mod tests {
                 );
             }
         }
-        // y=0 row, save_left=-3 so cols 0..3 are off-screen → 0,
-        // cols 3..58 read from the 0x42-filled framebuffer.
-        let row0 = &saved[3 * row_width..4 * row_width];
-        for (col, &px) in row0.iter().enumerate().take(3) {
+        // y=0 row, save_left=-6 so cols 0..6 are off-screen → 0,
+        // cols 6..64 read from the 0x42-filled framebuffer.
+        let row0 = &saved[6 * row_width..7 * row_width];
+        for (col, &px) in row0.iter().enumerate().take(6) {
             assert_eq!(
                 px, 0x00,
                 "off-screen column {} within on-screen row must be zero",
                 col
             );
         }
-        for (col, &px) in row0.iter().enumerate().skip(3) {
+        for (col, &px) in row0.iter().enumerate().skip(6) {
             assert_eq!(
                 px, 0x42,
                 "on-screen pixel at col {} must round-trip via framebuffer",
@@ -11264,9 +14312,237 @@ mod tests {
         // Bounds way below screen → save_top = 595+ and save_bottom
         // = 700+, many rows off-screen on the bottom side.
         let saved = d.save_dialog_pixels(&bus, (600, 0, 700, 50));
-        let row_count = (700 + 5 - (600 - 5)) as usize;
-        let row_width = (50 + 5 - (0 - 5)) as usize;
+        let row_count = (700 + TrapDispatcher::DBOX_FRAME_MARGIN
+            - (600 - TrapDispatcher::DBOX_FRAME_MARGIN)) as usize;
+        let row_width = (50 + TrapDispatcher::DBOX_FRAME_MARGIN
+            - (0 - TrapDispatcher::DBOX_FRAME_MARGIN)) as usize;
         assert_eq!(saved.len(), row_count * row_width);
+    }
+
+    fn install_new_dialog_test_screen(
+        disp: &mut TrapDispatcher,
+        bus: &mut MacMemoryBus,
+        fill: u8,
+    ) -> u32 {
+        let screen_base = bus.alloc((640 * 480) as u32);
+        bus.write_bytes(screen_base, &vec![fill; 640 * 480]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 640, 640, 480, 8);
+        screen_base
+    }
+
+    fn call_new_dialog_for_test(
+        disp: &mut TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut MacMemoryBus,
+        storage_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        visible: bool,
+        proc_id: i16,
+        behind: u32,
+        items_handle: u32,
+    ) -> (u32, u32) {
+        let title_ptr = bus.alloc(32);
+        bus.write_pstring(title_ptr, b"Lifecycle");
+        let bounds_ptr = bus.alloc(8);
+        bus.write_word(bounds_ptr, bounds.0 as u16);
+        bus.write_word(bounds_ptr + 2, bounds.1 as u16);
+        bus.write_word(bounds_ptr + 4, bounds.2 as u16);
+        bus.write_word(bounds_ptr + 6, bounds.3 as u16);
+
+        let sp = TEST_SP - 30;
+        cpu.write_reg(Register::A7, sp);
+        for offset in 0..34u32 {
+            bus.write_byte(sp + offset, 0);
+        }
+        bus.write_long(sp, items_handle);
+        bus.write_long(sp + 4, 0x1234_5678); // refCon
+        bus.write_byte(sp + 8, 0xFF); // goAwayFlag
+        bus.write_long(sp + 10, behind);
+        bus.write_word(sp + 14, proc_id as u16);
+        bus.write_byte(sp + 16, if visible { 0xFF } else { 0 });
+        bus.write_long(sp + 18, title_ptr);
+        bus.write_long(sp + 22, bounds_ptr);
+        bus.write_long(sp + 26, storage_ptr);
+        bus.write_long(sp + 30, 0xDEAD_BEEF);
+
+        disp.dispatch_dialog(true, 0x17D, cpu, bus)
+            .unwrap()
+            .unwrap();
+        (sp, bus.read_long(sp + 30))
+    }
+
+    fn install_ditl_handle_for_test(bus: &mut MacMemoryBus, ditl: &[u8]) -> (u32, u32) {
+        let items_ptr = bus.alloc(ditl.len() as u32);
+        bus.write_bytes(items_ptr, ditl);
+        let items_handle = bus.alloc(4);
+        bus.write_long(items_handle, items_ptr);
+        (items_handle, items_ptr)
+    }
+
+    #[test]
+    fn new_dialog_with_storage_uses_caller_record() {
+        // IM:I I-412: dStorage supplies the DialogRecord storage; NIL asks
+        // the Dialog Manager to allocate the record instead.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        let storage_ptr = bus.alloc(170);
+
+        let (sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            storage_ptr,
+            (80, 90, 150, 260),
+            false,
+            4,
+            0xFFFF_FFFF,
+            0,
+        );
+
+        assert_eq!(dialog_ptr, storage_ptr);
+        assert_eq!(bus.read_long(sp + 30), storage_ptr);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 30);
+        assert_eq!(disp.window_list, vec![storage_ptr]);
+    }
+
+    #[test]
+    fn new_dialog_without_storage_allocates_record() {
+        // IM:I I-412 and MTE 1992 p. 6-118: passing NIL for dStorage
+        // allocates the DialogRecord in the heap.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            false,
+            2,
+            0xFFFF_FFFF,
+            0,
+        );
+
+        assert_ne!(dialog_ptr, 0);
+        assert_eq!(bus.get_alloc_size(dialog_ptr), Some(170));
+        assert_eq!(disp.window_list, vec![dialog_ptr]);
+    }
+
+    #[test]
+    fn new_dialog_sets_window_kind_dialog_kind() {
+        // IM:I I-407 and I-412: a DialogPtr is a WindowPtr whose
+        // WindowRecord.windowKind is dialogKind, independent of the WDEF
+        // procID used to draw modeless or modal chrome.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            false,
+            4,
+            0xFFFF_FFFF,
+            0,
+        );
+
+        assert_eq!(bus.read_word(dialog_ptr + 108) as i16, 2);
+        assert_eq!(disp.window_proc_ids.get(&dialog_ptr), Some(&4));
+    }
+
+    #[test]
+    fn new_dialog_sets_dialog_port_font_to_dialog_font() {
+        // IM:I I-412 and MTE 1992 p. 6-104: SetDAFont/SetDialogFont set
+        // DlgFont for subsequently created dialog and alert grafPorts.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        bus.write_word(crate::memory::globals::addr::DLG_FONT, 3); // Geneva
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            false,
+            2,
+            0xFFFF_FFFF,
+            0,
+        );
+
+        assert_eq!(bus.read_word(dialog_ptr + 68) as i16, 3);
+        assert_eq!(disp.tx_font, 3);
+        assert_eq!(
+            disp.port_draw_states
+                .get(&dialog_ptr)
+                .map(|state| state.tx_font),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn new_dialog_visible_queues_or_draws_expected_update_path() {
+        // IM:I I-412 and I-287: visible NewDialog draws the dialog window and
+        // generates an update event for the contents.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            true,
+            2,
+            0xFFFF_FFFF,
+            0,
+        );
+
+        assert_eq!(bus.read_byte(dialog_ptr + 110), 0xFF);
+        assert!(disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == dialog_ptr));
+        assert!(
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(dialog_ptr + 122)).is_some()
+        );
+        assert_ne!(bus.read_byte(screen_base + 100 * 640 + 110), 0x77);
+    }
+
+    #[test]
+    fn new_dialog_invisible_defers_screen_pixels() {
+        // IM:I I-412: if visible is FALSE, the window is initially invisible
+        // and may later be shown with ShowWindow.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            false,
+            2,
+            0xFFFF_FFFF,
+            0,
+        );
+
+        assert_eq!(bus.read_byte(dialog_ptr + 110), 0);
+        assert!(!disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == dialog_ptr));
+        assert_eq!(
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(dialog_ptr + 122)),
+            None
+        );
+        assert_eq!(bus.read_byte(screen_base + 100 * 640 + 110), 0x77);
     }
 
     #[test]
@@ -11538,11 +14814,11 @@ mod tests {
 
     #[test]
     fn te_line_origin_te_just_left_flush_left() {
-        // teJustLeft (0): origin = box_left.
+        // teJustLeft (0): origin = box_left + TextEdit's left inset.
         assert_eq!(
             TrapDispatcher::te_line_origin_x(0, 20, 200, 80),
-            20,
-            "teJustLeft (0) must anchor at box_left"
+            21,
+            "teJustLeft (0) must anchor one pixel inside box_left"
         );
     }
 
@@ -11570,22 +14846,24 @@ mod tests {
 
     #[test]
     fn te_line_origin_te_force_left_flush_left() {
-        // teForceLeft (-2): origin = box_left (overrides any
+        // teForceLeft (-2): origin = box_left + TextEdit's left inset
+        // (overrides any
         // localised right-to-left default).
         assert_eq!(
             TrapDispatcher::te_line_origin_x(-2, 20, 200, 80),
-            20,
-            "teForceLeft (-2) must anchor at box_left"
+            21,
+            "teForceLeft (-2) must anchor one pixel inside box_left"
         );
     }
 
     #[test]
     fn te_line_origin_te_just_system_defaults_left() {
-        // teJustSystem (0): localised default = left for LTR.
+        // teJustSystem (0): localised default = left for LTR, with the
+        // same TextEdit left inset.
         assert_eq!(
             TrapDispatcher::te_line_origin_x(0, 20, 200, 80),
-            20,
-            "teJustSystem must default to flush left"
+            21,
+            "teJustSystem must default to flush left inside box_left"
         );
     }
 
@@ -11645,8 +14923,9 @@ mod tests {
     // (default) item for the current AlertStage low-mem byte.
     //
     // ALRT stages encoding (IM:I I-422): 16-bit word, 4 nibbles
-    // (low to high = stage 1..4). Each nibble's bit 0 = boldItmNum
-    // (0 → item 1 default, 1 → item 2 default).
+    // (low to high = stage 1..4). Within each nibble, bit 3 is
+    // boldItmNum (`okDismissal = 8`), bit 2 is boxDrwn (`alBit = 4`),
+    // and bits 0..1 are the sound number.
 
     /// Build a 12-byte ALRT template: bounds=(0,0,80,200) +
     /// itemsID + stages + 0 padding. Real ALRTs are typically
@@ -11726,6 +15005,67 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
         assert_eq!(bus.read_word(0x0A60) as i16, 0);
+    }
+
+    #[test]
+    fn could_dialog_free_dialog_purgeability() {
+        // IM:I I-415: CouldDialog reads the dialog resource family into
+        // memory if needed and makes it unpurgeable; FreeDialog reverses
+        // the purgeability state for those already-loaded resources.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dlog_id: i16 = 3100;
+        let ditl_id: i16 = 3101;
+        let cntl_id: i16 = 3102;
+        let icon_id: i16 = 3103;
+        let pict_id: i16 = 3104;
+        let dlog = build_test_dlog((10, 20, 110, 220), ditl_id, 0);
+        let ditl = build_test_ditl_items(&[
+            (7, (1, 2, 12, 82), &cntl_id.to_be_bytes()),
+            (32, (14, 2, 46, 34), &icon_id.to_be_bytes()),
+            (64, (48, 2, 88, 82), &pict_id.to_be_bytes()),
+        ]);
+        disp.install_test_resource(&mut bus, *b"DLOG", dlog_id, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+        disp.install_test_resource(&mut bus, *b"CNTL", cntl_id, &[0u8; 32]);
+        disp.install_test_resource(&mut bus, *b"ICON", icon_id, &[0xAA; 128]);
+        disp.install_test_resource(&mut bus, *b"PICT", pict_id, &[0x11; 32]);
+        disp.res_load = false;
+
+        bus.write_word(0x0A60, 0x7FFF);
+        bus.write_word(TEST_SP, dlog_id as u16);
+        let pre_a7 = cpu.read_reg(Register::A7);
+        assert!(disp
+            .dispatch_dialog(true, 0x179, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        for (res_type, res_id) in [
+            (*b"DLOG", dlog_id),
+            (*b"DITL", ditl_id),
+            (*b"CNTL", cntl_id),
+            (*b"ICON", icon_id),
+            (*b"PICT", pict_id),
+        ] {
+            assert_resource_nonpurgeable(&disp, &bus, res_type, res_id);
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, dlog_id as u16);
+        assert!(disp
+            .dispatch_dialog(true, 0x17A, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        for (res_type, res_id) in [
+            (*b"DLOG", dlog_id),
+            (*b"DITL", ditl_id),
+            (*b"CNTL", cntl_id),
+            (*b"ICON", icon_id),
+            (*b"PICT", pict_id),
+        ] {
+            assert_resource_purgeable(&disp, res_type, res_id);
+        }
     }
 
     // ---- CouldAlert ($A989) / FreeAlert ($A98A) ----
@@ -11827,11 +15167,71 @@ mod tests {
     }
 
     #[test]
-    fn alert_returns_item_1_when_stage_1_bold_flag_clear() {
-        // stages = 0x0000 → all 4 nibbles have bit 0 clear →
-        // bold item = 1 (OK button) at every stage.
+    fn could_alert_free_alert_purgeability() {
+        // IM:I I-420 gives CouldAlert/FreeAlert the same resource-family
+        // purgeability contract as CouldDialog/FreeDialog, rooted at ALRT.
         let (mut disp, mut cpu, mut bus) = setup();
-        let alrt = build_alrt_template(/*itemsID*/ 200, /*stages*/ 0x0000);
+        let alrt_id: i16 = 3200;
+        let ditl_id: i16 = 3201;
+        let cntl_id: i16 = 3202;
+        let icon_id: i16 = 3203;
+        let pict_id: i16 = 3204;
+        let alrt = build_alrt_template(ditl_id, 0x0000);
+        let ditl = build_test_ditl_items(&[
+            (7, (1, 2, 12, 82), &cntl_id.to_be_bytes()),
+            (32, (14, 2, 46, 34), &icon_id.to_be_bytes()),
+            (64, (48, 2, 88, 82), &pict_id.to_be_bytes()),
+        ]);
+        disp.install_test_resource(&mut bus, *b"ALRT", alrt_id, &alrt);
+        disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+        disp.install_test_resource(&mut bus, *b"CNTL", cntl_id, &[0u8; 32]);
+        disp.install_test_resource(&mut bus, *b"ICON", icon_id, &[0xAA; 128]);
+        disp.install_test_resource(&mut bus, *b"PICT", pict_id, &[0x11; 32]);
+        disp.res_load = false;
+
+        bus.write_word(0x0A60, 0x7FFF);
+        bus.write_word(TEST_SP, alrt_id as u16);
+        let pre_a7 = cpu.read_reg(Register::A7);
+        assert!(disp
+            .dispatch_dialog(true, 0x189, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), pre_a7 + 2);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        for (res_type, res_id) in [
+            (*b"ALRT", alrt_id),
+            (*b"DITL", ditl_id),
+            (*b"CNTL", cntl_id),
+            (*b"ICON", icon_id),
+            (*b"PICT", pict_id),
+        ] {
+            assert_resource_nonpurgeable(&disp, &bus, res_type, res_id);
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, alrt_id as u16);
+        assert!(disp
+            .dispatch_dialog(true, 0x18A, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        for (res_type, res_id) in [
+            (*b"ALRT", alrt_id),
+            (*b"DITL", ditl_id),
+            (*b"CNTL", cntl_id),
+            (*b"ICON", icon_id),
+            (*b"PICT", pict_id),
+        ] {
+            assert_resource_purgeable(&disp, res_type, res_id);
+        }
+    }
+
+    #[test]
+    fn alert_returns_item_1_when_stage_1_bold_flag_clear() {
+        // stages = 0x4444 → all 4 nibbles have boxDrwn set and
+        // bold item clear, so item 1 (OK button) is the default.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(/*itemsID*/ 200, /*stages*/ 0x4444);
         disp.install_test_resource(&mut bus, *b"ALRT", 128, &alrt);
         bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0); // stage 1
         bus.write_word(TEST_SP + 4, 128);
@@ -11846,10 +15246,10 @@ mod tests {
 
     #[test]
     fn alert_returns_item_2_when_stage_1_bold_flag_set() {
-        // stages = 0x0008 → stage 1 nibble bit 3 set (okDismissal
-        // mask per IM:I I-424) → bold item = 2 (Cancel button).
+        // stages = 0xCCCC → all 4 nibbles have boxDrwn and bit 3 set
+        // (okDismissal mask per IM:I I-424), so item 2 is default.
         let (mut disp, mut cpu, mut bus) = setup();
-        let alrt = build_alrt_template(200, 0x0008);
+        let alrt = build_alrt_template(200, 0xCCCC);
         disp.install_test_resource(&mut bus, *b"ALRT", 129, &alrt);
         bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
         bus.write_word(TEST_SP + 4, 129);
@@ -11864,11 +15264,11 @@ mod tests {
 
     #[test]
     fn alert_steps_through_stages_and_caps_at_stage_4() {
-        // stages = 0x8080 → bit 3 of stage 1/3 nibble = 0 (item 1),
-        // bit 3 of stage 2/4 nibble = 1 (item 2). Per IM:I I-422
-        // okDismissal mask = 8 = bit 3. 5th call stays at stage 4.
+        // stages = 0xC4C4 → boxDrwn set in every nibble; bit 3 of
+        // stage 1/3 nibble = 0 (item 1), bit 3 of stage 2/4 nibble
+        // = 1 (item 2). Per IM:I I-422 okDismissal mask = 8.
         let (mut disp, mut cpu, mut bus) = setup();
-        let alrt = build_alrt_template(200, 0x8080);
+        let alrt = build_alrt_template(200, 0xC4C4);
         disp.install_test_resource(&mut bus, *b"ALRT", 130, &alrt);
         bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
         bus.write_word(TEST_SP + 4, 130);
@@ -11900,7 +15300,7 @@ mod tests {
         // First call from stage 0 must leave AlertStage = 1. Read
         // and write as 16-bit WORD per IM:I I-423 + MTb 1992 22620.
         let (mut disp, mut cpu, mut bus) = setup();
-        let alrt = build_alrt_template(200, 0x0000);
+        let alrt = build_alrt_template(200, 0x4444);
         disp.install_test_resource(&mut bus, *b"ALRT", 131, &alrt);
         bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
         bus.write_word(TEST_SP + 4, 131);
@@ -11932,11 +15332,43 @@ mod tests {
     }
 
     #[test]
+    fn alert_returns_minus_one_when_stage_box_drawn_clear_but_updates_stage() {
+        // IM:I I-418 and MTE 1992 p. 6-106: Alert calls the alert
+        // sound procedure for the stage and returns -1 when boxDrwn
+        // is clear, but it is still an occurrence of that alert.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt = build_alrt_template(200, 0x0000);
+        disp.install_test_resource(&mut bus, *b"ALRT", 133, &alrt);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xCAFE);
+        bus.write_word(TEST_SP + 4, 133);
+
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            bus.read_word(TEST_SP + 6) as i16,
+            -1,
+            "boxDrwn clear must suppress the alert box and return -1"
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ALERT_STAGE),
+            1,
+            "suppressed present ALRT must still advance ACount"
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::ANUMBER) as i16,
+            133,
+            "suppressed present ALRT must still record ANumber"
+        );
+    }
+
+    #[test]
     fn alert_writes_anumber_with_alert_id_after_successful_dispatch() {
         // ANumber at $0A98 records the resource ID of the last
         // alert that occurred per IM:I I-423.
         let (mut disp, mut cpu, mut bus) = setup();
-        let alrt = build_alrt_template(200, 0x0000);
+        let alrt = build_alrt_template(200, 0x4444);
         disp.install_test_resource(&mut bus, *b"ALRT", 250, &alrt);
         bus.write_word(crate::memory::globals::addr::ANUMBER, 0xCAFE);
         bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
@@ -11972,7 +15404,7 @@ mod tests {
         // displayed icon — their dispatch into the ALRT template
         // is identical. With the same ALRT installed and the same
         // AlertStage all four must return the same item number.
-        let alrt = build_alrt_template(200, 0x0000);
+        let alrt = build_alrt_template(200, 0x4444);
         let trap_words = [
             (0x185, "Alert"),
             (0x186, "StopAlert"),
@@ -12212,6 +15644,7 @@ mod tests {
         let event_ptr = 0x300000u32;
 
         disp.front_window = dialog_ptr;
+        disp.enable_input_trace_capture();
         bus.write_word(dialog_ptr + 8, (-100i16) as u16);
         bus.write_word(dialog_ptr + 10, (-200i16) as u16);
         bus.write_word(dialog_ptr + 16, 0);
@@ -12231,6 +15664,10 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_word(TEST_SP + 4), 0xFFFF);
+        let trace = disp.input_trace_text();
+        assert!(trace.contains("A97F action=guest_event:mouseDown"));
+        assert!(trace.contains("tracking=menu:idle dialog:idle control:idle"));
+        assert!(trace.contains("result=true outcome=is_dialog_event"));
     }
 
     #[test]
@@ -12242,6 +15679,7 @@ mod tests {
         let event_ptr = 0x300000u32;
 
         disp.front_window = dialog_ptr;
+        disp.enable_input_trace_capture();
         bus.write_word(dialog_ptr + 8, (-100i16) as u16);
         bus.write_word(dialog_ptr + 10, (-200i16) as u16);
         bus.write_word(dialog_ptr + 16, 0);
@@ -12320,6 +15758,7 @@ mod tests {
         let item_hit_ptr = 0x300104u32;
 
         disp.front_window = dialog_ptr;
+        disp.enable_input_trace_capture();
         bus.write_word(dialog_ptr + 8, (-100i16) as u16);
         bus.write_word(dialog_ptr + 10, (-200i16) as u16);
         bus.write_word(dialog_ptr + 16, 0);
@@ -12356,6 +15795,4424 @@ mod tests {
         assert_eq!(bus.read_word(TEST_SP + 12), 0xFFFF);
         assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
+        let trace = disp.input_trace_text();
+        assert!(trace.contains("A980 action=guest_event:mouseDown"));
+        assert!(trace.contains("item_hit=1 item_type=$00 disabled=false outcome=enabled_item"));
+    }
+
+    fn dialog_select_enabled_user_item_hit_for_theme(theme_id: UiThemeId) -> (u16, u32, u16, u32) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-200i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (20, 30, 60, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(event_ptr, 1);
+        bus.write_long(event_ptr + 2, 0);
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 130);
+        bus.write_word(event_ptr + 12, 240);
+        bus.write_word(event_ptr + 14, 0x0080);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+
+        disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            bus.read_word(TEST_SP + 12),
+            bus.read_long(dialog_out_ptr),
+            bus.read_word(item_hit_ptr),
+            cpu.read_reg(Register::A7),
+        )
+    }
+
+    fn dialog_select_enabled_checkbox_hit_for_theme(
+        theme_id: UiThemeId,
+    ) -> (u16, u32, u16, u32, u16, u16) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+        let box_ptr = 0x300108u32;
+        let item_ptr = 0x300110u32;
+        let type_ptr = 0x300114u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 5,
+                rect: (20, 30, 40, 130),
+                text: "Enabled".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.dialog_control_values.insert((dialog_ptr, 1), 1);
+
+        bus.write_long(TEST_SP, box_ptr);
+        bus.write_long(TEST_SP + 4, item_ptr);
+        bus.write_long(TEST_SP + 8, type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 18);
+        let ctrl_handle = bus.read_long(item_ptr);
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        assert_ne!(ctrl_ptr, 0);
+        assert_eq!(bus.read_word(type_ptr), 5);
+        assert_eq!(bus.read_word(ctrl_ptr + 18), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(event_ptr, 1);
+        bus.write_long(event_ptr + 2, 0);
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 30);
+        bus.write_word(event_ptr + 12, 40);
+        bus.write_word(event_ptr + 14, 0x0080);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+
+        disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            bus.read_word(TEST_SP + 12),
+            bus.read_long(dialog_out_ptr),
+            bus.read_word(item_hit_ptr),
+            cpu.read_reg(Register::A7),
+            bus.read_word(ctrl_ptr + 18),
+            disp.dialog_control_values
+                .get(&(dialog_ptr, 1))
+                .copied()
+                .unwrap_or(-1) as u16,
+        )
+    }
+
+    fn findditem_results_for_theme(theme_id: UiThemeId) -> Vec<(i16, u32)> {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = 0x220400u32;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0x80 | 4,
+                    rect: (10, 20, 40, 60),
+                    text: "DisabledFirst".into(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 30, 55, 80),
+                    text: "EnabledSecond".into(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 16,
+                    rect: (60, 16384 + 20, 80, 16384 + 100),
+                    text: "HiddenEdit".into(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        let mut out = Vec::new();
+        for (pt_v, pt_h) in [(25i16, 35i16), (45, 70), (65, 40), (90, 110)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, pt_v as u16);
+            bus.write_word(TEST_SP + 2, pt_h as u16);
+            bus.write_long(TEST_SP + 4, dialog_ptr);
+            bus.write_word(TEST_SP + 8, 0xBEEF);
+            disp.dispatch_dialog(true, 0x184, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            out.push((
+                bus.read_word(TEST_SP + 8) as i16,
+                cpu.read_reg(Register::A7),
+            ));
+        }
+        out
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DItemGetSnapshot {
+        item_type: u16,
+        item: u32,
+        rect: (u16, u16, u16, u16),
+        stack_after: u32,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DItemUserItemRecordSnapshot {
+        initial_get: DItemGetSnapshot,
+        set_stack_after: u32,
+        stored_type: u8,
+        stored_proc_ptr: u32,
+        stored_rect: (i16, i16, i16, i16),
+        post_set_get: DItemGetSnapshot,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DItemTextControlRecordSnapshot {
+        text_initial_get: DItemGetSnapshot,
+        text_set_stack_after: u32,
+        text_old_handle_mapped_after: bool,
+        text_new_handle_map_value_after: Option<(u32, usize)>,
+        text_ditl_handle_after: u32,
+        text_ditl_rect_after: (u16, u16, u16, u16),
+        text_ditl_type_after: u8,
+        text_stored_type_after: u8,
+        text_stored_rect_after: (i16, i16, i16, i16),
+        text_cached_text_after: String,
+        text_handle_bytes_after: Vec<u8>,
+        text_post_set_get: DItemGetSnapshot,
+        control_initial_get: DItemGetSnapshot,
+        control_set_stack_after: u32,
+        control_old_handle_mapped_after: bool,
+        control_new_handle_map_value_after: Option<(u32, i16)>,
+        control_ditl_handle_after: u32,
+        control_ditl_rect_after: (u16, u16, u16, u16),
+        control_ditl_type_after: u8,
+        control_stored_type_after: u8,
+        control_stored_rect_after: (i16, i16, i16, i16),
+        control_record_rect_after: (u16, u16, u16, u16),
+        control_value_after: Option<i16>,
+        control_post_set_get: DItemGetSnapshot,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DItemVisibilitySnapshot {
+        initial_get: DItemGetSnapshot,
+        hide_stack_after: u32,
+        hidden_item_rect: (i16, i16, i16, i16),
+        hidden_saved_rect: Option<(i16, i16, i16, i16)>,
+        hidden_control_rect: (u16, u16, u16, u16),
+        hidden_get: DItemGetSnapshot,
+        hidden_find: (i16, u32),
+        show_stack_after: u32,
+        restored_item_rect: (i16, i16, i16, i16),
+        restored_saved_rect: Option<(i16, i16, i16, i16)>,
+        restored_control_rect: (u16, u16, u16, u16),
+        restored_get: DItemGetSnapshot,
+        restored_find: (i16, u32),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParamTextSnapshot {
+        initial_slots: [Vec<u8>; 4],
+        initial_da_handles: [u32; 4],
+        initial_da_strings: [Vec<u8>; 4],
+        initial_stack_after: u32,
+        initial_substitution: String,
+        nil_slots: [Vec<u8>; 4],
+        nil_da_handles: [u32; 4],
+        nil_da_strings: [Vec<u8>; 4],
+        nil_stack_after: u32,
+        nil_substitution: String,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogItemTextSnapshot {
+        initial_get_text: Vec<u8>,
+        initial_get_stack_after: u32,
+        set_stack_after: u32,
+        handle_size_after_set: Option<u32>,
+        handle_bytes_after_set: Vec<u8>,
+        cached_text_after_set: String,
+        post_set_get_text: Vec<u8>,
+        post_set_get_stack_after: u32,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogItemTextSelectionSnapshot {
+        whole_selection: (i16, i16),
+        whole_edit_field: u16,
+        whole_te_selection: (u16, u16),
+        whole_stack_after: u32,
+        normalized_selection: (i16, i16),
+        normalized_edit_field: u16,
+        normalized_te_selection: (u16, u16),
+        normalized_stack_after: u32,
+        non_edit_selection: (i16, i16),
+        non_edit_edit_field: u16,
+        non_edit_te_selection: (u16, u16),
+        non_edit_stack_after: u32,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct IsDialogEventSnapshot {
+        null_event: (u16, u32),
+        key_down: (u16, u32),
+        mouse_inside: (u16, u32),
+        mouse_outside: (u16, u32),
+        update_target: (u16, u32),
+        activate_target: (u16, u32),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogSelectWindowEventSnapshot {
+        dialog_ptr: u32,
+        update_result: u16,
+        update_dialog_out: u32,
+        update_item_hit: u16,
+        update_stack_after: u32,
+        update_deferred_after: bool,
+        update_region_after: Option<(i16, i16, i16, i16)>,
+        update_vis_region_after: Option<(i16, i16, i16, i16)>,
+        update_the_port_after: u32,
+        update_current_port_after: u32,
+        update_saved_vis_after: bool,
+        update_queued_draw_procs: Vec<(u32, u32, i16)>,
+        update_item_count_after: usize,
+        activate_result: u16,
+        activate_dialog_out: u32,
+        activate_item_hit: u16,
+        activate_stack_after: u32,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogSelectEditTextMouseSnapshot {
+        mouse_result: u16,
+        mouse_dialog_out: u32,
+        mouse_item_hit: u16,
+        mouse_stack_after: u32,
+        mouse_edit_field: u16,
+        mouse_item_selection: (i16, i16),
+        mouse_te_text: Vec<u8>,
+        mouse_te_length: u16,
+        mouse_te_selection: (u16, u16),
+        null_result: u16,
+        null_dialog_out: u32,
+        null_item_hit: u16,
+        null_stack_after: u32,
+        null_edit_field: u16,
+        null_te_text: Vec<u8>,
+        null_te_length: u16,
+        null_te_selection: (u16, u16),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ModalDialogEditTextMouseSnapshot {
+        item_hit: u16,
+        stack_after: u32,
+        tracking_finished: bool,
+        retained_visible_snapshot: bool,
+        saved_background_retained: bool,
+        queued_mouse_up_consumed: bool,
+        edit_field: u16,
+        item_selection: (i16, i16),
+        te_text: Vec<u8>,
+        te_length: u16,
+        te_selection: (u16, u16),
+        handle_bytes: Vec<u8>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ModalDialogKeyboardButtonSnapshot {
+        return_key: ModalDialogKeyboardButtonCase,
+        enter_key: ModalDialogKeyboardButtonCase,
+        escape_key: ModalDialogKeyboardButtonCase,
+        command_period: ModalDialogKeyboardButtonCase,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ModalDialogKeyboardButtonCase {
+        flash_item_after_key: i16,
+        stack_after_key: u32,
+        item_hit_after_key: u16,
+        item_hit_after_flash: u16,
+        stack_after_flash: u32,
+        tracking_finished: bool,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ModalDialogUpdateEventSnapshot {
+        dialog_ptr: u32,
+        item_hit_after: u16,
+        stack_after: u32,
+        tracking_finished: bool,
+        rendered_pixels_final: bool,
+        retained_pixel_after: u8,
+        retained_snapshot_pixel_after: u8,
+        update_region_after: Option<(i16, i16, i16, i16)>,
+        vis_region_after: Option<(i16, i16, i16, i16)>,
+        the_port_after: u32,
+        current_port_after: u32,
+        saved_vis_after: bool,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogLifecycleCleanupSnapshot {
+        close_stack_after: u32,
+        close_tracking_cleared: bool,
+        close_retained_click_cleared: bool,
+        close_visible_snapshot_cleared: bool,
+        close_modal_entered_cleared: bool,
+        close_saved_pixels_cleared: bool,
+        close_window_list_contains_dialog: bool,
+        close_front_window_after: u32,
+        close_the_port_after: u32,
+        close_current_port_after: u32,
+        close_update_event_for_previous_window: bool,
+        close_dialog_items_present_after: bool,
+        dispose_stack_after: u32,
+        dispose_tracking_cleared: bool,
+        dispose_retained_click_cleared: bool,
+        dispose_visible_snapshot_cleared: bool,
+        dispose_modal_entered_cleared: bool,
+        dispose_saved_pixels_cleared: bool,
+        dispose_window_list_contains_dialog: bool,
+        dispose_front_window_after: u32,
+        dispose_the_port_after: u32,
+        dispose_current_port_after: u32,
+        dispose_update_event_for_previous_window: bool,
+        dispose_dialog_items_present_after: bool,
+        dispose_other_dialog_items_present_after: bool,
+        dispose_dialog_item_handle_present_after: bool,
+        dispose_other_dialog_item_handle_present_after: bool,
+        dispose_dialog_control_handle_present_after: bool,
+        dispose_other_dialog_control_handle_present_after: bool,
+        dispose_dialog_control_value_present_after: bool,
+        dispose_other_dialog_control_value_present_after: bool,
+        dispose_hidden_rect_present_after: bool,
+        dispose_other_hidden_rect_present_after: bool,
+        dispose_cancel_item_present_after: bool,
+        dispose_other_cancel_item_present_after: bool,
+        dispose_pending_popup_cleared: bool,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogCreationSnapshot {
+        new_dialog_ptr: u32,
+        new_stack_after: u32,
+        new_result_slot: u32,
+        new_window_list: Vec<u32>,
+        new_front_window: u32,
+        new_current_port: u32,
+        new_the_port: u32,
+        new_visible_byte: u8,
+        new_goaway_byte: u8,
+        new_refcon: u32,
+        new_window_kind: i16,
+        new_proc_id: i16,
+        new_port_rect: (i16, i16, i16, i16),
+        new_items_handle: u32,
+        new_items_data_ptr: u32,
+        new_first_item_handle_nonzero: bool,
+        new_cached_items: Vec<(u8, (i16, i16, i16, i16), String, i16)>,
+        new_update_region: Option<(i16, i16, i16, i16)>,
+        new_update_event_queued: bool,
+        new_edit_field: u16,
+        new_default_item: u16,
+        get_dialog_ptr: u32,
+        get_stack_after: u32,
+        get_result_slot: u32,
+        get_window_list: Vec<u32>,
+        get_front_window: u32,
+        get_current_port: u32,
+        get_the_port: u32,
+        get_visible_byte: u8,
+        get_refcon: u32,
+        get_window_kind: i16,
+        get_proc_id: i16,
+        get_port_rect: (i16, i16, i16, i16),
+        get_items_handle: u32,
+        get_items_data_ptr: u32,
+        get_uses_distinct_ditl_copy: bool,
+        get_original_ditl_handle_field: u32,
+        get_first_item_handle_nonzero: bool,
+        get_cached_items: Vec<(u8, (i16, i16, i16, i16), String, i16)>,
+        get_update_region: Option<(i16, i16, i16, i16)>,
+        get_update_event_queued: bool,
+        get_edit_field: u16,
+        get_default_item: u16,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct AlertTrapCallSnapshot {
+        trap_word: u16,
+        result: i16,
+        stack_after: u32,
+        alert_stage_after: u16,
+        anumber_after: u16,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct AlertResourcePrepSnapshot {
+        could_present: (i16, u32),
+        free_present: (i16, u32),
+        could_missing: (i16, u32),
+        free_missing: (i16, u32),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct AlertFamilySnapshot {
+        staged_calls: Vec<AlertTrapCallSnapshot>,
+        missing_call: AlertTrapCallSnapshot,
+        resource_prep: AlertResourcePrepSnapshot,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogInitSoundSnapshot {
+        init_stack_after: u32,
+        resume_proc_after_init: u32,
+        da_beeper_after_init: u32,
+        alert_stage_after_init: u16,
+        anumber_after_init: u16,
+        da_strings_after_init: [u32; 4],
+        error_sound_stack_after: u32,
+        da_beeper_after_error_sound: u32,
+        nil_error_sound_stack_after: u32,
+        da_beeper_after_nil_error_sound: u32,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogDispatchDefaultCancelSnapshot {
+        default_result: u16,
+        default_stack_after: u32,
+        default_adef_item: u16,
+        default_tracking_item: i16,
+        cancel_result: u16,
+        cancel_stack_after: u32,
+        cancel_map_item: Option<i16>,
+        cancel_tracking_item: i16,
+        tracks_result: u16,
+        tracks_stack_after: u32,
+        tracks_adef_item: u16,
+        tracks_cancel_map_item: Option<i16>,
+        tracks_tracking_items: (i16, i16),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct UpdtDialogUpdateRegionSnapshot {
+        stack_after: u32,
+        the_port_after: u32,
+        current_port_after: u32,
+        deferred_after: bool,
+        queued_draw_procs: Vec<(u32, u32, i16)>,
+        item_count_after: usize,
+        inside_update_pixel_after: u8,
+        outside_update_pixel_after: u8,
+        outside_item_pixel_after: u8,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DialogSelectEditTextKeySnapshot {
+        keydown_result: u16,
+        keydown_dialog_out: u32,
+        keydown_item_hit: u16,
+        keydown_stack_after: u32,
+        keydown_handle_bytes: Vec<u8>,
+        keydown_cached_text: String,
+        keydown_item_selection: (i16, i16),
+        keydown_te_text: Vec<u8>,
+        keydown_te_length: u16,
+        keydown_te_selection: (u16, u16),
+        autokey_result: u16,
+        autokey_dialog_out: u32,
+        autokey_item_hit: u16,
+        autokey_stack_after: u32,
+        autokey_handle_bytes: Vec<u8>,
+        autokey_cached_text: String,
+        autokey_item_selection: (i16, i16),
+        autokey_te_text: Vec<u8>,
+        autokey_te_length: u16,
+        autokey_te_selection: (u16, u16),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TextEditScrapEditCase {
+        text: Vec<u8>,
+        selection: (u16, u16),
+        scrap_length: u16,
+        scrap_bytes: Vec<u8>,
+        stack_after: u32,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TextEditPrivateScrapEditingSnapshot {
+        copy: TextEditScrapEditCase,
+        cut: TextEditScrapEditCase,
+        paste: TextEditScrapEditCase,
+        delete: TextEditScrapEditCase,
+    }
+
+    fn paramtext_da_strings(bus: &MacMemoryBus) -> ([u32; 4], [Vec<u8>; 4]) {
+        let mut handles = [0u32; 4];
+        let mut strings: [Vec<u8>; 4] = std::array::from_fn(|_| Vec::new());
+        for i in 0..4 {
+            let handle = bus.read_long(crate::memory::globals::addr::DA_STRINGS + i as u32 * 4);
+            handles[i] = handle;
+            if handle != 0 {
+                let data_ptr = bus.read_long(handle);
+                if data_ptr != 0 {
+                    strings[i] = bus.read_pstring(data_ptr);
+                }
+            }
+        }
+        (handles, strings)
+    }
+
+    fn paramtext_results_for_theme(theme_id: UiThemeId) -> ParamTextSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let p0 = bus.alloc(32);
+        let p1 = bus.alloc(32);
+        let p2 = bus.alloc(32);
+        let p3 = bus.alloc(32);
+
+        bus.write_pstring(p0, b"Doc");
+        bus.write_pstring(p1, b"42");
+        bus.write_pstring(p2, b"");
+        bus.write_pstring(p3, b"Tail");
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, p3);
+        bus.write_long(TEST_SP + 4, p2);
+        bus.write_long(TEST_SP + 8, p1);
+        bus.write_long(TEST_SP + 12, p0);
+        disp.dispatch_dialog(true, 0x18B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let initial_slots = [
+            disp.param_text[0].clone(),
+            disp.param_text[1].clone(),
+            disp.param_text[2].clone(),
+            disp.param_text[3].clone(),
+        ];
+        let (initial_da_handles, initial_da_strings) = paramtext_da_strings(&bus);
+        let initial_stack_after = cpu.read_reg(Register::A7);
+        let initial_substitution = disp
+            .apply_param_text("Cannot open ^0 (^1)^2^3 ^9")
+            .into_owned();
+
+        let new0 = bus.alloc(32);
+        bus.write_pstring(new0, b"NewDoc");
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0); // param3 = NIL; preserve previous slot
+        bus.write_long(TEST_SP + 4, 0); // param2 = NIL; preserve previous slot
+        bus.write_long(TEST_SP + 8, 0); // param1 = NIL; preserve previous slot
+        bus.write_long(TEST_SP + 12, new0);
+        disp.dispatch_dialog(true, 0x18B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let nil_slots = [
+            disp.param_text[0].clone(),
+            disp.param_text[1].clone(),
+            disp.param_text[2].clone(),
+            disp.param_text[3].clone(),
+        ];
+        let (nil_da_handles, nil_da_strings) = paramtext_da_strings(&bus);
+        let nil_stack_after = cpu.read_reg(Register::A7);
+        let nil_substitution = disp
+            .apply_param_text("Cannot open ^0 (^1)^2^3 ^9")
+            .into_owned();
+
+        ParamTextSnapshot {
+            initial_slots,
+            initial_da_handles,
+            initial_da_strings,
+            initial_stack_after,
+            initial_substitution,
+            nil_slots,
+            nil_da_handles,
+            nil_da_strings,
+            nil_stack_after,
+            nil_substitution,
+        }
+    }
+
+    fn dialog_item_text_results_for_theme(theme_id: UiThemeId) -> DialogItemTextSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let text_handle = bus.alloc(4);
+        let text_ptr = bus.alloc(3);
+        let out_ptr = bus.alloc(256);
+        let new_text_ptr = bus.alloc(32);
+
+        bus.write_long(text_handle, text_ptr);
+        bus.write_bytes(text_ptr, b"Old");
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16,
+                rect: (10, 20, 30, 120),
+                text: "Old".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.dialog_item_handles
+            .insert(text_handle, (dialog_ptr, 0));
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, out_ptr);
+        bus.write_long(TEST_SP + 4, text_handle);
+        disp.dispatch_dialog(true, 0x190, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let initial_get_text = bus.read_pstring(out_ptr);
+        let initial_get_stack_after = cpu.read_reg(Register::A7);
+
+        bus.write_pstring(new_text_ptr, b"Edited Text");
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, new_text_ptr);
+        bus.write_long(TEST_SP + 4, text_handle);
+        disp.dispatch_dialog(true, 0x18F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let set_stack_after = cpu.read_reg(Register::A7);
+        let data_ptr_after_set = bus.read_long(text_handle);
+        let handle_size_after_set = bus.get_alloc_size(data_ptr_after_set);
+        let handle_bytes_after_set = bus.read_bytes(
+            data_ptr_after_set,
+            handle_size_after_set.unwrap_or(0) as usize,
+        );
+        let cached_text_after_set = disp.dialog_items.get(&dialog_ptr).unwrap()[0].text.clone();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, out_ptr);
+        bus.write_long(TEST_SP + 4, text_handle);
+        disp.dispatch_dialog(true, 0x190, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let post_set_get_text = bus.read_pstring(out_ptr);
+        let post_set_get_stack_after = cpu.read_reg(Register::A7);
+
+        DialogItemTextSnapshot {
+            initial_get_text,
+            initial_get_stack_after,
+            set_stack_after,
+            handle_size_after_set,
+            handle_bytes_after_set,
+            cached_text_after_set,
+            post_set_get_text,
+            post_set_get_stack_after,
+        }
+    }
+
+    fn select_dialog_item_text_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DialogItemTextSelectionSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let text_handle = bus.alloc(4);
+        let te_ptr = bus.alloc(0x40);
+
+        bus.write_long(dialog_ptr + 160, text_handle);
+        bus.write_long(text_handle, te_ptr);
+        bus.write_word(dialog_ptr + 164, 0xFFFF);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 16,
+                    rect: (10, 20, 30, 120),
+                    text: "ABCDE".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 1,
+                    sel_end: 1,
+                },
+                DialogItem {
+                    item_type: 8,
+                    rect: (34, 20, 50, 120),
+                    text: "STATIC".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 1,
+                    sel_end: 3,
+                },
+            ],
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 32767); // endSel
+        bus.write_word(TEST_SP + 2, 0); // strtSel
+        bus.write_word(TEST_SP + 4, 1); // itemNo
+        bus.write_long(TEST_SP + 6, dialog_ptr); // theDialog
+        disp.dispatch_dialog(true, 0x17E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        let whole_selection = (item.sel_start, item.sel_end);
+        let whole_edit_field = bus.read_word(dialog_ptr + 164);
+        let whole_te_selection = (
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+        );
+        let whole_stack_after = cpu.read_reg(Register::A7);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2); // endSel
+        bus.write_word(TEST_SP + 2, 9); // strtSel, beyond text length
+        bus.write_word(TEST_SP + 4, 1); // itemNo
+        bus.write_long(TEST_SP + 6, dialog_ptr); // theDialog
+        disp.dispatch_dialog(true, 0x17E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        let normalized_selection = (item.sel_start, item.sel_end);
+        let normalized_edit_field = bus.read_word(dialog_ptr + 164);
+        let normalized_te_selection = (
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+        );
+        let normalized_stack_after = cpu.read_reg(Register::A7);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 4); // endSel
+        bus.write_word(TEST_SP + 2, 0); // strtSel
+        bus.write_word(TEST_SP + 4, 2); // non-edit itemNo
+        bus.write_long(TEST_SP + 6, dialog_ptr); // theDialog
+        disp.dispatch_dialog(true, 0x17E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let item = &disp.dialog_items[&dialog_ptr][1];
+        let non_edit_selection = (item.sel_start, item.sel_end);
+        let non_edit_edit_field = bus.read_word(dialog_ptr + 164);
+        let non_edit_te_selection = (
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+        );
+        let non_edit_stack_after = cpu.read_reg(Register::A7);
+
+        DialogItemTextSelectionSnapshot {
+            whole_selection,
+            whole_edit_field,
+            whole_te_selection,
+            whole_stack_after,
+            normalized_selection,
+            normalized_edit_field,
+            normalized_te_selection,
+            normalized_stack_after,
+            non_edit_selection,
+            non_edit_edit_field,
+            non_edit_te_selection,
+            non_edit_stack_after,
+        }
+    }
+
+    fn is_dialog_event_results_for_theme(theme_id: UiThemeId) -> IsDialogEventSnapshot {
+        fn dispatch_is_dialog_event(
+            disp: &mut TrapDispatcher,
+            cpu: &mut impl CpuOps,
+            bus: &mut MacMemoryBus,
+            event_ptr: u32,
+            what: u16,
+            message: u32,
+            where_v: i16,
+            where_h: i16,
+        ) -> (u16, u32) {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(event_ptr, what);
+            bus.write_long(event_ptr + 2, message);
+            bus.write_long(event_ptr + 6, 0);
+            bus.write_word(event_ptr + 10, where_v as u16);
+            bus.write_word(event_ptr + 12, where_h as u16);
+            bus.write_word(event_ptr + 14, 0);
+            bus.write_word(TEST_SP + 4, 0xBEEF);
+            bus.write_long(TEST_SP, event_ptr);
+
+            disp.dispatch_dialog(true, 0x17F, cpu, bus)
+                .unwrap()
+                .unwrap();
+            (bus.read_word(TEST_SP + 4), cpu.read_reg(Register::A7))
+        }
+
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-200i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 80);
+        bus.write_word(dialog_ptr + 22, 120);
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+
+        let null_event =
+            dispatch_is_dialog_event(&mut disp, &mut cpu, &mut bus, event_ptr, 0, 0, 0, 0);
+        let key_down = dispatch_is_dialog_event(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            event_ptr,
+            3,
+            u32::from(b'A'),
+            0,
+            0,
+        );
+        let mouse_inside =
+            dispatch_is_dialog_event(&mut disp, &mut cpu, &mut bus, event_ptr, 1, 0, 120, 240);
+        let mouse_outside =
+            dispatch_is_dialog_event(&mut disp, &mut cpu, &mut bus, event_ptr, 1, 0, 40, 40);
+        let update_target = dispatch_is_dialog_event(
+            &mut disp, &mut cpu, &mut bus, event_ptr, 6, dialog_ptr, 0, 0,
+        );
+        let activate_target = dispatch_is_dialog_event(
+            &mut disp, &mut cpu, &mut bus, event_ptr, 8, dialog_ptr, 0, 0,
+        );
+
+        IsDialogEventSnapshot {
+            null_event,
+            key_down,
+            mouse_inside,
+            mouse_outside,
+            update_target,
+            activate_target,
+        }
+    }
+
+    fn text_handle_bytes(bus: &MacMemoryBus, handle: u32) -> Vec<u8> {
+        let ptr = bus.read_long(handle);
+        if ptr == 0 {
+            return Vec::new();
+        }
+        let len = bus.get_alloc_size(ptr).unwrap_or(0) as usize;
+        bus.read_bytes(ptr, len)
+    }
+
+    fn textedit_scrap_contents(bus: &MacMemoryBus) -> (u16, Vec<u8>) {
+        let scrap_length = bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH);
+        let scrap_handle = bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE);
+        if scrap_length == 0 || scrap_handle == 0 {
+            return (scrap_length, Vec::new());
+        }
+        let scrap_ptr = bus.read_long(scrap_handle);
+        if scrap_ptr == 0 {
+            return (scrap_length, Vec::new());
+        }
+        (
+            scrap_length,
+            bus.read_bytes(scrap_ptr, scrap_length as usize),
+        )
+    }
+
+    fn textedit_scrap_edit_case(
+        bus: &MacMemoryBus,
+        te_handle: u32,
+        stack_after: u32,
+    ) -> TextEditScrapEditCase {
+        let te_ptr = bus.read_long(te_handle);
+        let (scrap_length, scrap_bytes) = textedit_scrap_contents(bus);
+        TextEditScrapEditCase {
+            text: TrapDispatcher::te_text_bytes(bus, te_handle),
+            selection: (
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+            ),
+            scrap_length,
+            scrap_bytes,
+            stack_after,
+        }
+    }
+
+    fn dialog_select_window_event_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DialogSelectWindowEventSnapshot {
+        fn install_region(
+            bus: &mut MacMemoryBus,
+            handle: u32,
+            data: u32,
+            rect: (i16, i16, i16, i16),
+        ) {
+            bus.write_long(handle, data);
+            bus.write_word(data, 10);
+            bus.write_word(data + 2, rect.0 as u16);
+            bus.write_word(data + 4, rect.1 as u16);
+            bus.write_word(data + 6, rect.2 as u16);
+            bus.write_word(data + 8, rect.3 as u16);
+        }
+
+        fn dispatch_dialog_select(
+            disp: &mut TrapDispatcher,
+            cpu: &mut impl CpuOps,
+            bus: &mut MacMemoryBus,
+            event_ptr: u32,
+            dialog_out_ptr: u32,
+            item_hit_ptr: u32,
+            what: u16,
+            message: u32,
+        ) -> (u16, u32, u16, u32) {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(event_ptr, what);
+            bus.write_long(event_ptr + 2, message);
+            bus.write_long(event_ptr + 6, 0);
+            bus.write_word(event_ptr + 10, 0);
+            bus.write_word(event_ptr + 12, 0);
+            bus.write_word(event_ptr + 14, 0);
+            bus.write_word(TEST_SP + 12, 0xBEEF);
+            bus.write_long(dialog_out_ptr, 0xDEAD_BEEF);
+            bus.write_word(item_hit_ptr, 0xCAFE);
+            bus.write_long(TEST_SP, item_hit_ptr);
+            bus.write_long(TEST_SP + 4, dialog_out_ptr);
+            bus.write_long(TEST_SP + 8, event_ptr);
+
+            disp.dispatch_dialog(true, 0x180, cpu, bus)
+                .unwrap()
+                .unwrap();
+
+            (
+                bus.read_word(TEST_SP + 12),
+                bus.read_long(dialog_out_ptr),
+                bus.read_word(item_hit_ptr),
+                cpu.read_reg(Register::A7),
+            )
+        }
+
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(theme_id);
+        let initial_port = 0x181000;
+        disp.set_current_port_state(&mut bus, &mut cpu, initial_port, None);
+
+        let screen_base = bus.alloc(100 * 100);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+
+        let vis_rgn = bus.alloc(10);
+        let vis_rgn_handle = bus.alloc(4);
+        install_region(&mut bus, vis_rgn_handle, vis_rgn, (0, 0, 100, 100));
+        let clip_rgn = bus.alloc(10);
+        let clip_rgn_handle = bus.alloc(4);
+        install_region(&mut bus, clip_rgn_handle, clip_rgn, (0, 0, 100, 100));
+        let update_rgn = bus.alloc(10);
+        let update_rgn_handle = bus.alloc(4);
+        install_region(&mut bus, update_rgn_handle, update_rgn, (0, 0, 40, 40));
+
+        disp.front_window = dialog_ptr;
+        disp.window_list.push(dialog_ptr);
+        bus.write_word(dialog_ptr, 0);
+        bus.write_long(dialog_ptr + 2, screen_base);
+        bus.write_word(dialog_ptr + 6, 100);
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 12, 100);
+        bus.write_word(dialog_ptr + 14, 100);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 100);
+        bus.write_long(dialog_ptr + 24, vis_rgn_handle);
+        bus.write_long(dialog_ptr + 28, clip_rgn_handle);
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_long(dialog_ptr + 122, update_rgn_handle);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0,
+                    rect: (8, 8, 24, 32),
+                    proc_ptr: 0x500000,
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 0,
+                    rect: (60, 60, 80, 80),
+                    proc_ptr: 0x600000,
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 8,
+                    rect: (90, 90, 96, 96),
+                    text: "x".to_string(),
+                    ..Default::default()
+                },
+            ],
+        );
+        disp.dialog_initial_draw_deferred.insert(dialog_ptr);
+
+        let (update_result, update_dialog_out, update_item_hit, update_stack_after) =
+            dispatch_dialog_select(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                event_ptr,
+                dialog_out_ptr,
+                item_hit_ptr,
+                6,
+                dialog_ptr,
+            );
+        let update_deferred_after = disp.dialog_initial_draw_deferred.contains(&dialog_ptr);
+        let update_region_after =
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(dialog_ptr + 122));
+        let update_vis_region_after =
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(dialog_ptr + 24));
+        let update_the_port_after = bus.read_long(crate::memory::globals::addr::THE_PORT);
+        let update_current_port_after = disp.current_port;
+        let update_saved_vis_after = disp.saved_vis_regions.contains_key(&dialog_ptr);
+        let update_queued_draw_procs = disp
+            .modeless_dialog_draw_proc_queue
+            .iter()
+            .copied()
+            .collect();
+        let update_item_count_after = disp
+            .dialog_items
+            .get(&dialog_ptr)
+            .map(Vec::len)
+            .unwrap_or_default();
+
+        let (activate_result, activate_dialog_out, activate_item_hit, activate_stack_after) =
+            dispatch_dialog_select(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                event_ptr,
+                dialog_out_ptr,
+                item_hit_ptr,
+                8,
+                dialog_ptr,
+            );
+
+        DialogSelectWindowEventSnapshot {
+            dialog_ptr,
+            update_result,
+            update_dialog_out,
+            update_item_hit,
+            update_stack_after,
+            update_deferred_after,
+            update_region_after,
+            update_vis_region_after,
+            update_the_port_after,
+            update_current_port_after,
+            update_saved_vis_after,
+            update_queued_draw_procs,
+            update_item_count_after,
+            activate_result,
+            activate_dialog_out,
+            activate_item_hit,
+            activate_stack_after,
+        }
+    }
+
+    fn dialog_select_edit_text_mouse_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DialogSelectEditTextMouseSnapshot {
+        fn dispatch_dialog_select(
+            disp: &mut TrapDispatcher,
+            cpu: &mut impl CpuOps,
+            bus: &mut MacMemoryBus,
+            event_ptr: u32,
+            dialog_out_ptr: u32,
+            item_hit_ptr: u32,
+            what: u16,
+            where_v: i16,
+            where_h: i16,
+        ) -> (u16, u32, u16, u32) {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(event_ptr, what);
+            bus.write_long(event_ptr + 2, 0);
+            bus.write_long(event_ptr + 6, 0);
+            bus.write_word(event_ptr + 10, where_v as u16);
+            bus.write_word(event_ptr + 12, where_h as u16);
+            bus.write_word(event_ptr + 14, 0);
+            bus.write_word(TEST_SP + 12, 0xBEEF);
+            bus.write_long(dialog_out_ptr, 0xDEAD_BEEF);
+            bus.write_word(item_hit_ptr, 0xCAFE);
+            bus.write_long(TEST_SP, item_hit_ptr);
+            bus.write_long(TEST_SP + 4, dialog_out_ptr);
+            bus.write_long(TEST_SP + 8, event_ptr);
+
+            disp.dispatch_dialog(true, 0x180, cpu, bus)
+                .unwrap()
+                .unwrap();
+
+            (
+                bus.read_word(TEST_SP + 12),
+                bus.read_long(dialog_out_ptr),
+                bus.read_word(item_hit_ptr),
+                cpu.read_reg(Register::A7),
+            )
+        }
+
+        fn write_ditl_item(
+            bus: &mut MacMemoryBus,
+            ditl_ptr: u32,
+            offset: u32,
+            handle: u32,
+            rect: (i16, i16, i16, i16),
+            item_type: u8,
+        ) {
+            bus.write_long(ditl_ptr + offset, handle);
+            bus.write_word(ditl_ptr + offset + 4, rect.0 as u16);
+            bus.write_word(ditl_ptr + offset + 6, rect.1 as u16);
+            bus.write_word(ditl_ptr + offset + 8, rect.2 as u16);
+            bus.write_word(ditl_ptr + offset + 10, rect.3 as u16);
+            bus.write_byte(ditl_ptr + offset + 12, item_type);
+            bus.write_byte(ditl_ptr + offset + 13, 0);
+        }
+
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(30);
+        let item1_text_handle = bus.alloc(4);
+        let item1_text_ptr = bus.alloc(5);
+        let item2_text_handle = bus.alloc(4);
+        let item2_text_ptr = bus.alloc(6);
+        let text_h = TrapDispatcher::allocate_te_handle(&mut bus);
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-200i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_long(dialog_ptr + 160, text_h);
+        bus.write_word(dialog_ptr + 164, 0); // editField = first item
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_word(ditl_ptr, 1); // two items
+        write_ditl_item(
+            &mut bus,
+            ditl_ptr,
+            2,
+            item1_text_handle,
+            (20, 20, 38, 120),
+            16,
+        );
+        write_ditl_item(
+            &mut bus,
+            ditl_ptr,
+            16,
+            item2_text_handle,
+            (42, 20, 62, 120),
+            16,
+        );
+        bus.write_long(item1_text_handle, item1_text_ptr);
+        bus.write_bytes(item1_text_ptr, b"First");
+        bus.write_long(item2_text_handle, item2_text_ptr);
+        bus.write_bytes(item2_text_ptr, b"Second");
+
+        disp.te_set_text_contents(&mut bus, text_h, b"First");
+        let te_ptr = bus.read_long(text_h);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 16,
+                    rect: (20, 20, 38, 120),
+                    text: "First".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 1,
+                    sel_end: 1,
+                },
+                DialogItem {
+                    item_type: 16,
+                    rect: (42, 20, 62, 120),
+                    text: "Second".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 2,
+                    sel_end: 4,
+                },
+            ],
+        );
+
+        let (mouse_result, mouse_dialog_out, mouse_item_hit, mouse_stack_after) =
+            dispatch_dialog_select(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                event_ptr,
+                dialog_out_ptr,
+                item_hit_ptr,
+                1,
+                150,
+                240,
+            );
+        let mouse_edit_field = bus.read_word(dialog_ptr + 164);
+        let mouse_item = &disp.dialog_items[&dialog_ptr][1];
+        let mouse_item_selection = (mouse_item.sel_start, mouse_item.sel_end);
+        let mouse_te_text = TrapDispatcher::te_text_bytes(&bus, text_h);
+        let mouse_te_length = bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET);
+        let mouse_te_selection = (
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+        );
+
+        let (null_result, null_dialog_out, null_item_hit, null_stack_after) =
+            dispatch_dialog_select(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                event_ptr,
+                dialog_out_ptr,
+                item_hit_ptr,
+                0,
+                0,
+                0,
+            );
+        let null_edit_field = bus.read_word(dialog_ptr + 164);
+        let null_te_text = TrapDispatcher::te_text_bytes(&bus, text_h);
+        let null_te_length = bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET);
+        let null_te_selection = (
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+        );
+
+        DialogSelectEditTextMouseSnapshot {
+            mouse_result,
+            mouse_dialog_out,
+            mouse_item_hit,
+            mouse_stack_after,
+            mouse_edit_field,
+            mouse_item_selection,
+            mouse_te_text,
+            mouse_te_length,
+            mouse_te_selection,
+            null_result,
+            null_dialog_out,
+            null_item_hit,
+            null_stack_after,
+            null_edit_field,
+            null_te_text,
+            null_te_length,
+            null_te_selection,
+        }
+    }
+
+    fn modal_dialog_edit_text_mouse_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> ModalDialogEditTextMouseSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let item_hit_ptr = 0x300100u32;
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(30);
+        let item1_text_handle = bus.alloc(4);
+        let item1_text_ptr = bus.alloc(5);
+        let item2_text_handle = bus.alloc(4);
+        let item2_text_ptr = bus.alloc(6);
+        let text_h = TrapDispatcher::allocate_te_handle(&mut bus);
+
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-200i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_long(dialog_ptr + 160, text_h);
+        bus.write_word(dialog_ptr + 164, 0); // editField = first item
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_word(ditl_ptr, 1); // two items
+        bus.write_long(ditl_ptr + 2, item1_text_handle);
+        bus.write_word(ditl_ptr + 6, 20);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 38);
+        bus.write_word(ditl_ptr + 12, 120);
+        bus.write_byte(ditl_ptr + 14, 16);
+        bus.write_byte(ditl_ptr + 15, 0);
+        bus.write_long(ditl_ptr + 16, item2_text_handle);
+        bus.write_word(ditl_ptr + 20, 42);
+        bus.write_word(ditl_ptr + 22, 20);
+        bus.write_word(ditl_ptr + 24, 62);
+        bus.write_word(ditl_ptr + 26, 120);
+        bus.write_byte(ditl_ptr + 28, 16);
+        bus.write_byte(ditl_ptr + 29, 0);
+
+        bus.write_long(item1_text_handle, item1_text_ptr);
+        bus.write_bytes(item1_text_ptr, b"First");
+        bus.write_long(item2_text_handle, item2_text_ptr);
+        bus.write_bytes(item2_text_ptr, b"Second");
+        disp.te_set_text_contents(&mut bus, text_h, b"First");
+        let te_ptr = bus.read_long(text_h);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+
+        let items = vec![
+            DialogItem {
+                item_type: 16,
+                rect: (20, 20, 38, 120),
+                text: "First".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 1,
+                sel_end: 1,
+            },
+            DialogItem {
+                item_type: 16,
+                rect: (42, 20, 62, 120),
+                text: "Second".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 2,
+                sel_end: 4,
+            },
+        ];
+        disp.dialog_items.insert(dialog_ptr, items.clone());
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items,
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: "First".to_string(),
+            edit_item: 1,
+            saved_pixels: vec![0x11, 0x22, 0x33],
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+        bus.write_word(item_hit_ptr, 0xCAFE);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.mouse_button = true;
+        disp.mouse_pos = (150, 240);
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 150,
+                where_h: 240,
+                modifiers: 0,
+            });
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 150,
+                where_h: 240,
+                modifiers: 0,
+            });
+
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let item = &disp.dialog_items[&dialog_ptr][1];
+
+        ModalDialogEditTextMouseSnapshot {
+            item_hit: bus.read_word(item_hit_ptr),
+            stack_after: cpu.read_reg(Register::A7),
+            tracking_finished: disp.dialog_tracking.is_none(),
+            retained_visible_snapshot: disp.dialog_visible_snapshots.contains_key(&dialog_ptr),
+            saved_background_retained: disp.dialog_saved_pixels.contains_key(&dialog_ptr),
+            queued_mouse_up_consumed: !disp.event_queue.iter().any(|event| event.what == 2),
+            edit_field: bus.read_word(dialog_ptr + 164),
+            item_selection: (item.sel_start, item.sel_end),
+            te_text: TrapDispatcher::te_text_bytes(&bus, text_h),
+            te_length: bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+            te_selection: (
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+            ),
+            handle_bytes: text_handle_bytes(&bus, item2_text_handle),
+        }
+    }
+
+    fn modal_dialog_keyboard_button_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> ModalDialogKeyboardButtonSnapshot {
+        fn run_key(
+            theme_id: UiThemeId,
+            key_code: u8,
+            char_code: u8,
+            modifiers: u16,
+        ) -> ModalDialogKeyboardButtonCase {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            disp.set_ui_theme_id(theme_id);
+            let dialog_ptr = 0x200000u32;
+            let item_hit_ptr = 0x300000u32;
+            let items = vec![
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 30, 60, 110),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 124, 60, 214),
+                    text: "Cancel".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ];
+            disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+                dialog_ptr,
+                bounds: (100, 200, 200, 440),
+                title: String::new(),
+                proc_id: 2,
+                items,
+                default_item: 1,
+                cancel_item: 2,
+                edit_text: String::new(),
+                edit_item: 0,
+                saved_pixels: Vec::new(),
+                stack_ptr: TEST_SP,
+                item_hit_ptr,
+                rendered_pixels: Vec::new(),
+                flash_remaining: 0,
+                flash_delay: 0,
+                flash_item: 0,
+                edit_text_modified: false,
+                draw_proc_queue: VecDeque::new(),
+                draw_procs_done: true,
+                rendered_pixels_final: true,
+                filter_proc: 0,
+                game_managed: false,
+                last_filter_event: None,
+                popup_draws: Vec::new(),
+                active_popup: None,
+                active_button: None,
+                active_user_item: None,
+            });
+            disp.event_queue
+                .push_back(crate::trap::dispatch::QueuedEvent {
+                    what: 3,
+                    message: (u32::from(key_code) << 8) | u32::from(char_code),
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers,
+                });
+            bus.write_word(item_hit_ptr, 0xCAFE);
+            cpu.write_reg(Register::A7, TEST_SP);
+
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let flash_item_after_key = disp
+                .dialog_tracking
+                .as_ref()
+                .map(|tracking| tracking.flash_item)
+                .unwrap_or(0);
+            let stack_after_key = cpu.read_reg(Register::A7);
+            let item_hit_after_key = bus.read_word(item_hit_ptr);
+
+            {
+                let tracking = disp.dialog_tracking.as_mut().unwrap();
+                tracking.flash_remaining = 1;
+                tracking.flash_delay = 0;
+            }
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            ModalDialogKeyboardButtonCase {
+                flash_item_after_key,
+                stack_after_key,
+                item_hit_after_key,
+                item_hit_after_flash: bus.read_word(item_hit_ptr),
+                stack_after_flash: cpu.read_reg(Register::A7),
+                tracking_finished: disp.dialog_tracking.is_none(),
+            }
+        }
+
+        ModalDialogKeyboardButtonSnapshot {
+            return_key: run_key(theme_id, 0x24, 0x0D, 0),
+            enter_key: run_key(theme_id, 0x4C, 0x03, 0),
+            escape_key: run_key(theme_id, 0x35, 0x1B, 0),
+            command_period: run_key(theme_id, 0x2F, b'.', 0x0100),
+        }
+    }
+
+    fn modal_dialog_update_event_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> ModalDialogUpdateEventSnapshot {
+        fn install_region(
+            bus: &mut MacMemoryBus,
+            handle: u32,
+            data: u32,
+            rect: (i16, i16, i16, i16),
+        ) {
+            bus.write_long(handle, data);
+            bus.write_word(data, 10);
+            bus.write_word(data + 2, rect.0 as u16);
+            bus.write_word(data + 4, rect.1 as u16);
+            bus.write_word(data + 6, rect.2 as u16);
+            bus.write_word(data + 8, rect.3 as u16);
+        }
+
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(theme_id);
+
+        let initial_port = 0x181000;
+        disp.set_current_port_state(&mut bus, &mut cpu, initial_port, None);
+
+        let screen_base = bus.alloc(80 * 80);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 80, 80, 80, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        let item_hit_ptr = 0x300100u32;
+        let bounds = (10, 10, 40, 40);
+        let snapshot_width = (bounds.3 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let snapshot_height =
+            (bounds.2 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let snapshot_index = (17 - (bounds.0 - TrapDispatcher::DBOX_FRAME_MARGIN)) as usize
+            * snapshot_width
+            + (19 - (bounds.1 - TrapDispatcher::DBOX_FRAME_MARGIN)) as usize;
+        let mut rendered_pixels = vec![0x00; snapshot_width * snapshot_height];
+        rendered_pixels[snapshot_index] = 0x44;
+
+        let vis_rgn = bus.alloc(10);
+        let vis_rgn_handle = bus.alloc(4);
+        install_region(&mut bus, vis_rgn_handle, vis_rgn, (0, 0, 80, 80));
+        let clip_rgn = bus.alloc(10);
+        let clip_rgn_handle = bus.alloc(4);
+        install_region(&mut bus, clip_rgn_handle, clip_rgn, (0, 0, 80, 80));
+        let update_rgn = bus.alloc(10);
+        let update_rgn_handle = bus.alloc(4);
+        install_region(&mut bus, update_rgn_handle, update_rgn, (0, 0, 40, 40));
+
+        bus.write_word(dialog_ptr, 0);
+        bus.write_long(dialog_ptr + 2, screen_base);
+        bus.write_word(dialog_ptr + 6, 80);
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 12, 80);
+        bus.write_word(dialog_ptr + 14, 80);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 80);
+        bus.write_word(dialog_ptr + 22, 80);
+        bus.write_long(dialog_ptr + 24, vis_rgn_handle);
+        bus.write_long(dialog_ptr + 28, clip_rgn_handle);
+        bus.write_long(dialog_ptr + 122, update_rgn_handle);
+
+        bus.write_word(item_hit_ptr, 0xCAFE);
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds,
+            title: String::new(),
+            proc_id: 2,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 6,
+                message: dialog_ptr,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+        cpu.write_reg(Register::A7, TEST_SP);
+
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        ModalDialogUpdateEventSnapshot {
+            dialog_ptr,
+            item_hit_after: bus.read_word(item_hit_ptr),
+            stack_after: cpu.read_reg(Register::A7),
+            tracking_finished: disp.dialog_tracking.is_none(),
+            rendered_pixels_final: tracking.rendered_pixels_final,
+            retained_pixel_after: bus.read_byte(screen_base + 17 * 80 + 19),
+            retained_snapshot_pixel_after: tracking.rendered_pixels[snapshot_index],
+            update_region_after: TrapDispatcher::region_handle_rect(
+                &bus,
+                bus.read_long(dialog_ptr + 122),
+            ),
+            vis_region_after: TrapDispatcher::region_handle_rect(
+                &bus,
+                bus.read_long(dialog_ptr + 24),
+            ),
+            the_port_after: bus.read_long(crate::memory::globals::addr::THE_PORT),
+            current_port_after: disp.current_port,
+            saved_vis_after: disp.saved_vis_regions.contains_key(&dialog_ptr),
+        }
+    }
+
+    fn dialog_select_edit_text_key_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DialogSelectEditTextKeySnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+        let item_text_handle = bus.alloc(4);
+        let item_text_ptr = bus.alloc(5);
+        let text_h = TrapDispatcher::allocate_te_handle(&mut bus);
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_long(dialog_ptr + 160, text_h);
+        bus.write_word(dialog_ptr + 164, 0); // editField = first item
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_word(ditl_ptr, 0); // one item
+        bus.write_long(ditl_ptr + 2, item_text_handle);
+        bus.write_word(ditl_ptr + 6, 20);
+        bus.write_word(ditl_ptr + 8, 30);
+        bus.write_word(ditl_ptr + 10, 60);
+        bus.write_word(ditl_ptr + 12, 110);
+        bus.write_byte(ditl_ptr + 14, 16); // editText
+        bus.write_byte(ditl_ptr + 15, 0);
+        bus.write_long(item_text_handle, item_text_ptr);
+        bus.write_bytes(item_text_ptr, b"Hello");
+
+        disp.te_set_text_contents(&mut bus, text_h, b"Hello");
+        let te_ptr = bus.read_long(text_h);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16,
+                rect: (20, 30, 60, 110),
+                text: "Hello".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 1,
+                sel_end: 4,
+            }],
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(event_ptr, 3); // keyDown
+        bus.write_long(event_ptr + 2, u32::from(b'Y'));
+        bus.write_long(event_ptr + 6, 0);
+        bus.write_word(event_ptr + 10, 0);
+        bus.write_word(event_ptr + 12, 0);
+        bus.write_word(event_ptr + 14, 0);
+        bus.write_word(TEST_SP + 12, 0xBEEF);
+        bus.write_long(dialog_out_ptr, 0xDEAD_BEEF);
+        bus.write_word(item_hit_ptr, 0xCAFE);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+        disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let keydown_result = bus.read_word(TEST_SP + 12);
+        let keydown_dialog_out = bus.read_long(dialog_out_ptr);
+        let keydown_item_hit = bus.read_word(item_hit_ptr);
+        let keydown_stack_after = cpu.read_reg(Register::A7);
+        let keydown_handle_bytes = text_handle_bytes(&bus, item_text_handle);
+        let keydown_cached_text = disp.dialog_items[&dialog_ptr][0].text.clone();
+        let keydown_item_selection = (
+            disp.dialog_items[&dialog_ptr][0].sel_start,
+            disp.dialog_items[&dialog_ptr][0].sel_end,
+        );
+        let keydown_te_text = TrapDispatcher::te_text_bytes(&bus, text_h);
+        let keydown_te_length = bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET);
+        let keydown_te_selection = (
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(event_ptr, 5); // autoKey
+        bus.write_long(event_ptr + 2, 0x0000_0008); // backspace
+        bus.write_word(TEST_SP + 12, 0xBEEF);
+        bus.write_long(dialog_out_ptr, 0xDEAD_BEEF);
+        bus.write_word(item_hit_ptr, 0xCAFE);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+        disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let autokey_result = bus.read_word(TEST_SP + 12);
+        let autokey_dialog_out = bus.read_long(dialog_out_ptr);
+        let autokey_item_hit = bus.read_word(item_hit_ptr);
+        let autokey_stack_after = cpu.read_reg(Register::A7);
+        let autokey_handle_bytes = text_handle_bytes(&bus, item_text_handle);
+        let autokey_cached_text = disp.dialog_items[&dialog_ptr][0].text.clone();
+        let autokey_item_selection = (
+            disp.dialog_items[&dialog_ptr][0].sel_start,
+            disp.dialog_items[&dialog_ptr][0].sel_end,
+        );
+        let autokey_te_text = TrapDispatcher::te_text_bytes(&bus, text_h);
+        let autokey_te_length = bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET);
+        let autokey_te_selection = (
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+        );
+
+        DialogSelectEditTextKeySnapshot {
+            keydown_result,
+            keydown_dialog_out,
+            keydown_item_hit,
+            keydown_stack_after,
+            keydown_handle_bytes,
+            keydown_cached_text,
+            keydown_item_selection,
+            keydown_te_text,
+            keydown_te_length,
+            keydown_te_selection,
+            autokey_result,
+            autokey_dialog_out,
+            autokey_item_hit,
+            autokey_stack_after,
+            autokey_handle_bytes,
+            autokey_cached_text,
+            autokey_item_selection,
+            autokey_te_text,
+            autokey_te_length,
+            autokey_te_selection,
+        }
+    }
+
+    fn getsetditem_useritem_record_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DItemUserItemRecordSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+        let initial_proc_ptr = 0x0012_3456u32;
+        let new_proc_ptr = 0x00AB_CDEFu32;
+        let set_box_ptr = bus.alloc(8);
+        let get_box_ptr = bus.alloc(8);
+        let get_item_ptr = bus.alloc(4);
+        let get_type_ptr = bus.alloc(2);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0); // one item
+        bus.write_long(ditl_ptr + 2, initial_proc_ptr);
+        bus.write_word(ditl_ptr + 6, 12);
+        bus.write_word(ditl_ptr + 8, 24);
+        bus.write_word(ditl_ptr + 10, 36);
+        bus.write_word(ditl_ptr + 12, 48);
+        bus.write_byte(ditl_ptr + 14, 0);
+        bus.write_byte(ditl_ptr + 15, 0);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (12, 24, 36, 48),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: initial_proc_ptr,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let initial_get = DItemGetSnapshot {
+            item_type: bus.read_word(get_type_ptr),
+            item: bus.read_long(get_item_ptr),
+            rect: (
+                bus.read_word(get_box_ptr),
+                bus.read_word(get_box_ptr + 2),
+                bus.read_word(get_box_ptr + 4),
+                bus.read_word(get_box_ptr + 6),
+            ),
+            stack_after: cpu.read_reg(Register::A7),
+        };
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(set_box_ptr, 50);
+        bus.write_word(set_box_ptr + 2, 60);
+        bus.write_word(set_box_ptr + 4, 70);
+        bus.write_word(set_box_ptr + 6, 80);
+        bus.write_long(TEST_SP, set_box_ptr);
+        bus.write_long(TEST_SP + 4, new_proc_ptr);
+        bus.write_word(TEST_SP + 8, 0);
+        bus.write_word(TEST_SP + 10, 1);
+        bus.write_long(TEST_SP + 12, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let set_stack_after = cpu.read_reg(Register::A7);
+        let stored_item = disp
+            .dialog_items
+            .get(&dialog_ptr)
+            .and_then(|items| items.first())
+            .cloned()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let post_set_get = DItemGetSnapshot {
+            item_type: bus.read_word(get_type_ptr),
+            item: bus.read_long(get_item_ptr),
+            rect: (
+                bus.read_word(get_box_ptr),
+                bus.read_word(get_box_ptr + 2),
+                bus.read_word(get_box_ptr + 4),
+                bus.read_word(get_box_ptr + 6),
+            ),
+            stack_after: cpu.read_reg(Register::A7),
+        };
+
+        DItemUserItemRecordSnapshot {
+            initial_get,
+            set_stack_after,
+            stored_type: stored_item.item_type,
+            stored_proc_ptr: stored_item.proc_ptr,
+            stored_rect: stored_item.rect,
+            post_set_get,
+        }
+    }
+
+    fn get_ditem_snapshot_for_test(
+        disp: &mut TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        item_no: i16,
+        box_ptr: u32,
+        item_ptr: u32,
+        type_ptr: u32,
+    ) -> DItemGetSnapshot {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, box_ptr);
+        bus.write_long(TEST_SP + 4, item_ptr);
+        bus.write_long(TEST_SP + 8, type_ptr);
+        bus.write_word(TEST_SP + 12, item_no as u16);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, cpu, bus)
+            .unwrap()
+            .unwrap();
+
+        DItemGetSnapshot {
+            item_type: bus.read_word(type_ptr),
+            item: bus.read_long(item_ptr),
+            rect: (
+                bus.read_word(box_ptr),
+                bus.read_word(box_ptr + 2),
+                bus.read_word(box_ptr + 4),
+                bus.read_word(box_ptr + 6),
+            ),
+            stack_after: cpu.read_reg(Register::A7),
+        }
+    }
+
+    fn write_control_record_for_ditem_test(
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        ctrl_ptr: u32,
+        dialog_ptr: u32,
+        rect: (i16, i16, i16, i16),
+        value: i16,
+        title: &[u8],
+    ) {
+        bus.write_long(handle, ctrl_ptr);
+        bus.write_long(ctrl_ptr, 0);
+        bus.write_long(ctrl_ptr + 4, dialog_ptr);
+        bus.write_word(ctrl_ptr + 8, rect.0 as u16);
+        bus.write_word(ctrl_ptr + 10, rect.1 as u16);
+        bus.write_word(ctrl_ptr + 12, rect.2 as u16);
+        bus.write_word(ctrl_ptr + 14, rect.3 as u16);
+        bus.write_byte(ctrl_ptr + 16, 255);
+        bus.write_byte(ctrl_ptr + 17, 0);
+        bus.write_word(ctrl_ptr + 18, value as u16);
+        bus.write_word(ctrl_ptr + 20, 0);
+        bus.write_word(ctrl_ptr + 22, 1);
+        bus.write_byte(ctrl_ptr + 40, title.len() as u8);
+        bus.write_bytes(ctrl_ptr + 41, title);
+    }
+
+    fn getsetditem_text_control_record_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DItemTextControlRecordSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(32);
+        let old_text_handle = bus.alloc(4);
+        let old_text_ptr = bus.alloc(3);
+        let new_text_handle = bus.alloc(4);
+        let new_text_ptr = bus.alloc(7);
+        let old_control_handle = bus.alloc(4);
+        let old_control_ptr = bus.alloc(44);
+        let new_control_handle = bus.alloc(4);
+        let new_control_ptr = bus.alloc(47);
+        let text_set_box_ptr = bus.alloc(8);
+        let control_set_box_ptr = bus.alloc(8);
+        let get_box_ptr = bus.alloc(8);
+        let get_item_ptr = bus.alloc(4);
+        let get_type_ptr = bus.alloc(2);
+        let text_entry = ditl_ptr + 2;
+        let control_entry = ditl_ptr + 16;
+
+        bus.write_bytes(old_text_ptr, b"Old");
+        bus.write_bytes(new_text_ptr, b"Updated");
+        bus.write_long(old_text_handle, old_text_ptr);
+        bus.write_long(new_text_handle, new_text_ptr);
+        write_control_record_for_ditem_test(
+            &mut bus,
+            old_control_handle,
+            old_control_ptr,
+            dialog_ptr,
+            (30, 40, 50, 140),
+            1,
+            b"OK",
+        );
+        write_control_record_for_ditem_test(
+            &mut bus,
+            new_control_handle,
+            new_control_ptr,
+            dialog_ptr,
+            (1, 2, 3, 4),
+            2,
+            b"Apply",
+        );
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 1); // two items
+        bus.write_long(text_entry, old_text_handle);
+        bus.write_word(text_entry + 4, 10);
+        bus.write_word(text_entry + 6, 20);
+        bus.write_word(text_entry + 8, 24);
+        bus.write_word(text_entry + 10, 160);
+        bus.write_byte(text_entry + 12, 16);
+        bus.write_byte(text_entry + 13, 0);
+        bus.write_long(control_entry, old_control_handle);
+        bus.write_word(control_entry + 4, 30);
+        bus.write_word(control_entry + 6, 40);
+        bus.write_word(control_entry + 8, 50);
+        bus.write_word(control_entry + 10, 140);
+        bus.write_byte(control_entry + 12, 4);
+        bus.write_byte(control_entry + 13, 2);
+        bus.write_bytes(control_entry + 14, b"OK");
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 16,
+                    rect: (10, 20, 24, 160),
+                    text: "Old".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (30, 40, 50, 140),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+        disp.dialog_item_handles
+            .insert(old_text_handle, (dialog_ptr, 0));
+        disp.dialog_control_handles
+            .insert(old_control_handle, (dialog_ptr, 2));
+        disp.dialog_control_values.insert((dialog_ptr, 2), 1);
+
+        let text_initial_get = get_ditem_snapshot_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            dialog_ptr,
+            1,
+            get_box_ptr,
+            get_item_ptr,
+            get_type_ptr,
+        );
+        let control_initial_get = get_ditem_snapshot_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            dialog_ptr,
+            2,
+            get_box_ptr,
+            get_item_ptr,
+            get_type_ptr,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(text_set_box_ptr, 12);
+        bus.write_word(text_set_box_ptr + 2, 22);
+        bus.write_word(text_set_box_ptr + 4, 28);
+        bus.write_word(text_set_box_ptr + 6, 168);
+        bus.write_long(TEST_SP, text_set_box_ptr);
+        bus.write_long(TEST_SP + 4, new_text_handle);
+        bus.write_word(TEST_SP + 8, 16);
+        bus.write_word(TEST_SP + 10, 1);
+        bus.write_long(TEST_SP + 12, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let text_set_stack_after = cpu.read_reg(Register::A7);
+        let text_stored_item = disp.dialog_items.get(&dialog_ptr).unwrap()[0].clone();
+        let text_post_set_get = get_ditem_snapshot_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            dialog_ptr,
+            1,
+            get_box_ptr,
+            get_item_ptr,
+            get_type_ptr,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(control_set_box_ptr, 42);
+        bus.write_word(control_set_box_ptr + 2, 52);
+        bus.write_word(control_set_box_ptr + 4, 62);
+        bus.write_word(control_set_box_ptr + 6, 172);
+        bus.write_long(TEST_SP, control_set_box_ptr);
+        bus.write_long(TEST_SP + 4, new_control_handle);
+        bus.write_word(TEST_SP + 8, 5);
+        bus.write_word(TEST_SP + 10, 2);
+        bus.write_long(TEST_SP + 12, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let control_set_stack_after = cpu.read_reg(Register::A7);
+        let control_stored_item = disp.dialog_items.get(&dialog_ptr).unwrap()[1].clone();
+        let control_post_set_get = get_ditem_snapshot_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            dialog_ptr,
+            2,
+            get_box_ptr,
+            get_item_ptr,
+            get_type_ptr,
+        );
+
+        DItemTextControlRecordSnapshot {
+            text_initial_get,
+            text_set_stack_after,
+            text_old_handle_mapped_after: disp.dialog_item_handles.contains_key(&old_text_handle),
+            text_new_handle_map_value_after: disp
+                .dialog_item_handles
+                .get(&new_text_handle)
+                .copied(),
+            text_ditl_handle_after: bus.read_long(text_entry),
+            text_ditl_rect_after: (
+                bus.read_word(text_entry + 4),
+                bus.read_word(text_entry + 6),
+                bus.read_word(text_entry + 8),
+                bus.read_word(text_entry + 10),
+            ),
+            text_ditl_type_after: bus.read_byte(text_entry + 12),
+            text_stored_type_after: text_stored_item.item_type,
+            text_stored_rect_after: text_stored_item.rect,
+            text_cached_text_after: text_stored_item.text,
+            text_handle_bytes_after: text_handle_bytes(&bus, new_text_handle),
+            text_post_set_get,
+            control_initial_get,
+            control_set_stack_after,
+            control_old_handle_mapped_after: disp
+                .dialog_control_handles
+                .contains_key(&old_control_handle),
+            control_new_handle_map_value_after: disp
+                .dialog_control_handles
+                .get(&new_control_handle)
+                .copied(),
+            control_ditl_handle_after: bus.read_long(control_entry),
+            control_ditl_rect_after: (
+                bus.read_word(control_entry + 4),
+                bus.read_word(control_entry + 6),
+                bus.read_word(control_entry + 8),
+                bus.read_word(control_entry + 10),
+            ),
+            control_ditl_type_after: bus.read_byte(control_entry + 12),
+            control_stored_type_after: control_stored_item.item_type,
+            control_stored_rect_after: control_stored_item.rect,
+            control_record_rect_after: (
+                bus.read_word(new_control_ptr + 8),
+                bus.read_word(new_control_ptr + 10),
+                bus.read_word(new_control_ptr + 12),
+                bus.read_word(new_control_ptr + 14),
+            ),
+            control_value_after: disp.dialog_control_values.get(&(dialog_ptr, 2)).copied(),
+            control_post_set_get,
+        }
+    }
+
+    fn hide_show_ditem_visibility_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DItemVisibilitySnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(18);
+        let get_box_ptr = bus.alloc(8);
+        let get_item_ptr = bus.alloc(4);
+        let get_type_ptr = bus.alloc(2);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0); // one item
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 120);
+        bus.write_byte(ditl_ptr + 14, 4);
+        bus.write_byte(ditl_ptr + 15, 2);
+        bus.write_bytes(ditl_ptr + 16, b"OK");
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20, 30, 120),
+                text: "OK".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let initial_get = DItemGetSnapshot {
+            item_type: bus.read_word(get_type_ptr),
+            item: bus.read_long(get_item_ptr),
+            rect: (
+                bus.read_word(get_box_ptr),
+                bus.read_word(get_box_ptr + 2),
+                bus.read_word(get_box_ptr + 4),
+                bus.read_word(get_box_ptr + 6),
+            ),
+            stack_after: cpu.read_reg(Register::A7),
+        };
+        assert_ne!(initial_get.item, 0);
+        let ctrl_ptr = bus.read_long(initial_get.item);
+        assert_ne!(ctrl_ptr, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+        disp.dispatch_dialog(true, 0x027, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let hide_stack_after = cpu.read_reg(Register::A7);
+        let hidden_item_rect = disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect;
+        let hidden_saved_rect = disp.hidden_dialog_item_rects.get(&(dialog_ptr, 1)).copied();
+        let hidden_control_rect = (
+            bus.read_word(ctrl_ptr + 8),
+            bus.read_word(ctrl_ptr + 10),
+            bus.read_word(ctrl_ptr + 12),
+            bus.read_word(ctrl_ptr + 14),
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let hidden_get = DItemGetSnapshot {
+            item_type: bus.read_word(get_type_ptr),
+            item: bus.read_long(get_item_ptr),
+            rect: (
+                bus.read_word(get_box_ptr),
+                bus.read_word(get_box_ptr + 2),
+                bus.read_word(get_box_ptr + 4),
+                bus.read_word(get_box_ptr + 6),
+            ),
+            stack_after: cpu.read_reg(Register::A7),
+        };
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 20);
+        bus.write_word(TEST_SP + 2, 40);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        disp.dispatch_dialog(true, 0x184, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let hidden_find = (
+            bus.read_word(TEST_SP + 8) as i16,
+            cpu.read_reg(Register::A7),
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, dialog_ptr);
+        disp.dispatch_dialog(true, 0x028, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let show_stack_after = cpu.read_reg(Register::A7);
+        let restored_item_rect = disp.dialog_items.get(&dialog_ptr).unwrap()[0].rect;
+        let restored_saved_rect = disp.hidden_dialog_item_rects.get(&(dialog_ptr, 1)).copied();
+        let restored_control_rect = (
+            bus.read_word(ctrl_ptr + 8),
+            bus.read_word(ctrl_ptr + 10),
+            bus.read_word(ctrl_ptr + 12),
+            bus.read_word(ctrl_ptr + 14),
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, get_box_ptr);
+        bus.write_long(TEST_SP + 4, get_item_ptr);
+        bus.write_long(TEST_SP + 8, get_type_ptr);
+        bus.write_word(TEST_SP + 12, 1);
+        bus.write_long(TEST_SP + 14, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let restored_get = DItemGetSnapshot {
+            item_type: bus.read_word(get_type_ptr),
+            item: bus.read_long(get_item_ptr),
+            rect: (
+                bus.read_word(get_box_ptr),
+                bus.read_word(get_box_ptr + 2),
+                bus.read_word(get_box_ptr + 4),
+                bus.read_word(get_box_ptr + 6),
+            ),
+            stack_after: cpu.read_reg(Register::A7),
+        };
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 20);
+        bus.write_word(TEST_SP + 2, 40);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        disp.dispatch_dialog(true, 0x184, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let restored_find = (
+            bus.read_word(TEST_SP + 8) as i16,
+            cpu.read_reg(Register::A7),
+        );
+
+        DItemVisibilitySnapshot {
+            initial_get,
+            hide_stack_after,
+            hidden_item_rect,
+            hidden_saved_rect,
+            hidden_control_rect,
+            hidden_get,
+            hidden_find,
+            show_stack_after,
+            restored_item_rect,
+            restored_saved_rect,
+            restored_control_rect,
+            restored_get,
+            restored_find,
+        }
+    }
+
+    fn drawdialog_useritem_pixel_results_for_theme(theme_id: UiThemeId) -> (u8, u32, u32) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+        assert_eq!(pixel_size, 8);
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 40);
+        bus.write_word(dialog_ptr + 22, 80);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0, // enabled userItem
+                    rect: (8, 8, 20, 32),
+                    text: String::new(),
+                    resource_id: 0,
+                    proc_ptr: 0x00C0_FFEE,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (24, 8, 36, 40),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        let user_x = 10u32;
+        let user_y = 10u32;
+        let user_pixel = screen_base + user_y * row_bytes + user_x;
+        bus.write_byte(user_pixel, 0xA5);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        bus.write_long(TEST_SP + 4, 0xCAFE_BABE);
+
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            bus.read_byte(user_pixel),
+            cpu.read_reg(Register::A7),
+            bus.read_long(TEST_SP + 4),
+        )
+    }
+
+    fn monochrome_icon_resource_with_points(points: &[(u8, u8)]) -> Vec<u8> {
+        let mut icon = vec![0u8; 128];
+        for &(x, y) in points {
+            let byte = y as usize * 4 + x as usize / 8;
+            icon[byte] |= 0x80 >> (x & 7);
+        }
+        icon
+    }
+
+    fn write_be_word(data: &mut [u8], offset: usize, value: u16) {
+        data[offset] = (value >> 8) as u8;
+        data[offset + 1] = value as u8;
+    }
+
+    fn cicn_resource_with_points(width: u16, height: u16, points: &[(u8, u8, u8)]) -> Vec<u8> {
+        let pixel_row_bytes = u32::from(width);
+        let mask_row_bytes = u32::from(width).div_ceil(8);
+        let mask_size = mask_row_bytes * u32::from(height);
+        let bmap_size = mask_row_bytes * u32::from(height);
+        let ctab_size = 16u32;
+        let pixel_size = pixel_row_bytes * u32::from(height);
+        let bmap_offset = 82 + mask_size as usize;
+        let ctab_offset = bmap_offset + bmap_size as usize;
+        let pixel_offset = ctab_offset + ctab_size as usize;
+        let mut data = vec![0u8; pixel_offset + pixel_size as usize];
+
+        write_be_word(&mut data, 4, pixel_row_bytes as u16);
+        write_be_word(&mut data, 10, height);
+        write_be_word(&mut data, 12, width);
+        write_be_word(&mut data, 32, 8);
+
+        write_be_word(&mut data, 54, mask_row_bytes as u16);
+        write_be_word(&mut data, 60, height);
+        write_be_word(&mut data, 62, width);
+
+        write_be_word(&mut data, 68, mask_row_bytes as u16);
+        write_be_word(&mut data, 74, height);
+        write_be_word(&mut data, 76, width);
+
+        write_be_word(&mut data, ctab_offset + 6, 0);
+
+        for &(x, y, pixel) in points {
+            let mask_row = 82 + y as usize * mask_row_bytes as usize;
+            data[mask_row + x as usize / 8] |= 0x80 >> (x & 7);
+            let pixel_row = pixel_offset + y as usize * pixel_row_bytes as usize;
+            data[pixel_row + x as usize] = pixel;
+        }
+        data
+    }
+
+    fn drawdialog_icon_item_pixel_results_for_theme(theme_id: UiThemeId) -> ([u8; 3], u32, u32) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+        assert_eq!(pixel_size, 8);
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 56);
+        bus.write_word(dialog_ptr + 22, 88);
+        disp.install_test_resource(
+            &mut bus,
+            *b"ICON",
+            421,
+            &monochrome_icon_resource_with_points(&[(0, 0), (15, 15), (31, 31)]),
+        );
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 32, // icon item
+                    rect: (8, 8, 40, 40),
+                    text: String::new(),
+                    resource_id: 421,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (44, 8, 54, 40),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        for (x, y) in [(8u32, 8u32), (23, 23), (39, 39)] {
+            bus.write_byte(screen_base + y * row_bytes + x, 0x42);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        bus.write_long(TEST_SP + 4, 0xCAFE_BABE);
+
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            [
+                bus.read_byte(screen_base + 8 * row_bytes + 8),
+                bus.read_byte(screen_base + 23 * row_bytes + 23),
+                bus.read_byte(screen_base + 39 * row_bytes + 39),
+            ],
+            cpu.read_reg(Register::A7),
+            bus.read_long(TEST_SP + 4),
+        )
+    }
+
+    fn drawdialog_cicn_item_pixel_results_for_theme(theme_id: UiThemeId) -> ([u8; 3], u32, u32) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+        assert_eq!(pixel_size, 8);
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 56);
+        bus.write_word(dialog_ptr + 22, 88);
+        let sample_points = [(0, 0), (15, 15), (31, 31)];
+        disp.install_test_resource(
+            &mut bus,
+            *b"ICON",
+            422,
+            &monochrome_icon_resource_with_points(&sample_points),
+        );
+        disp.install_test_resource(
+            &mut bus,
+            *b"cicn",
+            422,
+            &cicn_resource_with_points(32, 32, &[(0, 0, 0x33), (15, 15, 0x55), (31, 31, 0x77)]),
+        );
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 32, // icon item with same-ID cicn override
+                    rect: (8, 8, 40, 40),
+                    text: String::new(),
+                    resource_id: 422,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (44, 8, 54, 40),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        for (x, y) in [(8u32, 8u32), (23, 23), (39, 39)] {
+            bus.write_byte(screen_base + y * row_bytes + x, 0x42);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        bus.write_long(TEST_SP + 4, 0xCAFE_BABE);
+
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            [
+                bus.read_byte(screen_base + 8 * row_bytes + 8),
+                bus.read_byte(screen_base + 23 * row_bytes + 23),
+                bus.read_byte(screen_base + 39 * row_bytes + 39),
+            ],
+            cpu.read_reg(Register::A7),
+            bus.read_long(TEST_SP + 4),
+        )
+    }
+
+    fn solid_fill_pict_resource(width: i16, height: i16) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u16.to_be_bytes()); // picSize placeholder
+        for value in [0i16, 0, height, width] {
+            data.extend_from_slice(&(value as u16).to_be_bytes());
+        }
+        data.push(0x11); // versionOp
+        data.push(0x01); // PICT v1
+        data.push(0x0A); // FillPat
+        data.extend_from_slice(&[0xFF; 8]);
+        data.push(0x34); // fillRect
+        for value in [0i16, 0, height, width] {
+            data.extend_from_slice(&(value as u16).to_be_bytes());
+        }
+        data.push(0xFF); // EndOfPicture
+        let size = data.len() as u16;
+        data[0..2].copy_from_slice(&size.to_be_bytes());
+        data
+    }
+
+    fn drawdialog_picture_item_pixel_results_for_theme(theme_id: UiThemeId) -> ([u8; 3], u32, u32) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+        assert_eq!(pixel_size, 8);
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 48);
+        bus.write_word(dialog_ptr + 22, 80);
+        disp.install_test_resource(&mut bus, *b"PICT", 420, &solid_fill_pict_resource(16, 16));
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 64, // picture item
+                    rect: (8, 8, 24, 24),
+                    text: String::new(),
+                    resource_id: 420,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (30, 8, 42, 40),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        for (x, y) in [(9u32, 9u32), (16, 16), (22, 22)] {
+            bus.write_byte(screen_base + y * row_bytes + x, 0x42);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        bus.write_long(TEST_SP + 4, 0xCAFE_BABE);
+
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            [
+                bus.read_byte(screen_base + 9 * row_bytes + 9),
+                bus.read_byte(screen_base + 16 * row_bytes + 16),
+                bus.read_byte(screen_base + 22 * row_bytes + 22),
+            ],
+            cpu.read_reg(Register::A7),
+            bus.read_long(TEST_SP + 4),
+        )
+    }
+
+    fn dialog_tracking_state_for_test(dialog_ptr: u32) -> DialogTrackingState {
+        DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 0, 0),
+            title: String::new(),
+            proc_id: 0,
+            items: Vec::new(),
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        }
+    }
+
+    fn dialog_lifecycle_cleanup_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DialogLifecycleCleanupSnapshot {
+        let bounds = (100, 100, 150, 200);
+        let previous_bounds = (0, 0, 342, 512);
+        let saved_pixels = vec![0x33; 66 * 116];
+
+        let (mut close_disp, mut close_cpu, mut close_bus) = setup();
+        close_disp.set_ui_theme_id(theme_id);
+        close_disp.set_screen_mode_for_test(0x300000, 640, 640, 480, 8);
+        let close_dialog_ptr = close_bus.alloc(170);
+        let close_previous_window = close_bus.alloc(170);
+        seed_window_regions(&mut close_bus, close_dialog_ptr, bounds);
+        seed_window_regions(&mut close_bus, close_previous_window, previous_bounds);
+        close_bus.write_word(close_dialog_ptr + 108, 2);
+        close_disp.front_window = close_dialog_ptr;
+        close_disp.current_port = close_dialog_ptr;
+        close_disp.window_bounds = bounds;
+        close_disp.window_proc_id = 2;
+        close_disp.window_list = vec![close_dialog_ptr, close_previous_window];
+        close_disp.window_stack.push((
+            close_previous_window,
+            previous_bounds,
+            0,
+            "Previous".to_string(),
+        ));
+        close_disp.dialog_items.insert(
+            close_dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (20, 40, 40, 100),
+                text: "OK".to_string(),
+                ..Default::default()
+            }],
+        );
+        close_disp.dialog_tracking = Some(dialog_tracking_state_for_test(close_dialog_ptr));
+        close_disp.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+            dialog_ptr: close_dialog_ptr,
+            item_no: 1,
+            rect: (20, 40, 40, 100),
+            title: "OK".to_string(),
+            is_default: true,
+            highlighted: true,
+            delivered_to_app: false,
+        });
+        close_disp.dialog_visible_snapshots.insert(
+            close_dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: saved_pixels.clone(),
+            },
+        );
+        close_disp.dialog_modal_entered.insert(close_dialog_ptr);
+        close_disp
+            .dialog_saved_pixels
+            .insert(close_dialog_ptr, saved_pixels.clone());
+        close_bus.write_long(crate::memory::globals::addr::THE_PORT, close_dialog_ptr);
+        let close_global_ptr = close_bus.read_long(close_cpu.read_reg(Register::A5));
+        close_bus.write_long(close_global_ptr, close_dialog_ptr);
+        close_cpu.write_reg(Register::A7, TEST_SP);
+        close_bus.write_long(TEST_SP, close_dialog_ptr);
+        close_disp
+            .dispatch_dialog(true, 0x182, &mut close_cpu, &mut close_bus)
+            .unwrap()
+            .unwrap();
+
+        let close_stack_after = close_cpu.read_reg(Register::A7);
+        let close_tracking_cleared = close_disp.dialog_tracking.is_none();
+        let close_retained_click_cleared = close_disp.retained_modal_dialog_click.is_none();
+        let close_visible_snapshot_cleared = !close_disp
+            .dialog_visible_snapshots
+            .contains_key(&close_dialog_ptr);
+        let close_modal_entered_cleared =
+            !close_disp.dialog_modal_entered.contains(&close_dialog_ptr);
+        let close_saved_pixels_cleared = !close_disp
+            .dialog_saved_pixels
+            .contains_key(&close_dialog_ptr);
+        let close_window_list_contains_dialog = close_disp.window_list.contains(&close_dialog_ptr);
+        let close_front_window_after = close_disp.front_window;
+        let close_the_port_after = close_bus.read_long(crate::memory::globals::addr::THE_PORT);
+        let close_current_port_after = close_disp.current_port;
+        let close_update_event_for_previous_window = close_disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == close_previous_window);
+        let close_dialog_items_present_after =
+            close_disp.dialog_items.contains_key(&close_dialog_ptr);
+
+        let (mut dispose_disp, mut dispose_cpu, mut dispose_bus) = setup();
+        dispose_disp.set_ui_theme_id(theme_id);
+        dispose_disp.set_screen_mode_for_test(0x300000, 640, 640, 480, 8);
+        let dispose_dialog_ptr = dispose_bus.alloc(170);
+        let dispose_other_dialog_ptr = dispose_bus.alloc(170);
+        let dispose_previous_window = dispose_bus.alloc(170);
+        let dispose_text_handle = dispose_bus.alloc(4);
+        let dispose_other_text_handle = dispose_bus.alloc(4);
+        let dispose_ctrl_handle = dispose_bus.alloc(4);
+        let dispose_other_ctrl_handle = dispose_bus.alloc(4);
+        seed_window_regions(&mut dispose_bus, dispose_dialog_ptr, bounds);
+        seed_window_regions(&mut dispose_bus, dispose_previous_window, previous_bounds);
+        dispose_bus.write_word(dispose_dialog_ptr + 108, 2);
+        dispose_disp.front_window = dispose_dialog_ptr;
+        dispose_disp.current_port = dispose_dialog_ptr;
+        dispose_disp.window_bounds = bounds;
+        dispose_disp.window_proc_id = 2;
+        dispose_disp.window_list = vec![
+            dispose_dialog_ptr,
+            dispose_previous_window,
+            dispose_other_dialog_ptr,
+        ];
+        dispose_disp.window_stack.push((
+            dispose_previous_window,
+            previous_bounds,
+            0,
+            "Previous".to_string(),
+        ));
+        dispose_disp
+            .dialog_items
+            .insert(dispose_dialog_ptr, vec![DialogItem::default()]);
+        dispose_disp
+            .dialog_items
+            .insert(dispose_other_dialog_ptr, vec![DialogItem::default()]);
+        dispose_disp.dialog_tracking = Some(dialog_tracking_state_for_test(dispose_dialog_ptr));
+        dispose_disp.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+            dialog_ptr: dispose_dialog_ptr,
+            item_no: 1,
+            rect: (20, 40, 40, 100),
+            title: "OK".to_string(),
+            is_default: true,
+            highlighted: true,
+            delivered_to_app: false,
+        });
+        dispose_disp.dialog_visible_snapshots.insert(
+            dispose_dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: saved_pixels.clone(),
+            },
+        );
+        dispose_disp.dialog_modal_entered.insert(dispose_dialog_ptr);
+        dispose_disp
+            .dialog_saved_pixels
+            .insert(dispose_dialog_ptr, saved_pixels);
+        dispose_disp
+            .dialog_item_handles
+            .insert(dispose_text_handle, (dispose_dialog_ptr, 0));
+        dispose_disp
+            .dialog_item_handles
+            .insert(dispose_other_text_handle, (dispose_other_dialog_ptr, 0));
+        dispose_disp
+            .dialog_control_handles
+            .insert(dispose_ctrl_handle, (dispose_dialog_ptr, 1));
+        dispose_disp
+            .dialog_control_handles
+            .insert(dispose_other_ctrl_handle, (dispose_other_dialog_ptr, 1));
+        dispose_disp
+            .dialog_control_values
+            .insert((dispose_dialog_ptr, 1), 1);
+        dispose_disp
+            .dialog_control_values
+            .insert((dispose_other_dialog_ptr, 1), 1);
+        dispose_disp
+            .hidden_dialog_item_rects
+            .insert((dispose_dialog_ptr, 1), (10, 20, 30, 40));
+        dispose_disp
+            .hidden_dialog_item_rects
+            .insert((dispose_other_dialog_ptr, 1), (50, 60, 70, 80));
+        dispose_disp
+            .dialog_cancel_items
+            .insert(dispose_dialog_ptr, 2);
+        dispose_disp
+            .dialog_cancel_items
+            .insert(dispose_other_dialog_ptr, 3);
+        dispose_disp.pending_dialog_popup_menu = Some(PendingDialogPopupMenu {
+            dialog_ptr: dispose_dialog_ptr,
+            item_no: 1,
+            menu_id: 900,
+            rect: (10, 20, 30, 130),
+        });
+        dispose_bus.write_long(crate::memory::globals::addr::THE_PORT, dispose_dialog_ptr);
+        let dispose_global_ptr = dispose_bus.read_long(dispose_cpu.read_reg(Register::A5));
+        dispose_bus.write_long(dispose_global_ptr, dispose_dialog_ptr);
+        dispose_cpu.write_reg(Register::A7, TEST_SP);
+        dispose_bus.write_long(TEST_SP, dispose_dialog_ptr);
+        dispose_disp
+            .dispatch_dialog(true, 0x183, &mut dispose_cpu, &mut dispose_bus)
+            .unwrap()
+            .unwrap();
+
+        DialogLifecycleCleanupSnapshot {
+            close_stack_after,
+            close_tracking_cleared,
+            close_retained_click_cleared,
+            close_visible_snapshot_cleared,
+            close_modal_entered_cleared,
+            close_saved_pixels_cleared,
+            close_window_list_contains_dialog,
+            close_front_window_after,
+            close_the_port_after,
+            close_current_port_after,
+            close_update_event_for_previous_window,
+            close_dialog_items_present_after,
+            dispose_stack_after: dispose_cpu.read_reg(Register::A7),
+            dispose_tracking_cleared: dispose_disp.dialog_tracking.is_none(),
+            dispose_retained_click_cleared: dispose_disp.retained_modal_dialog_click.is_none(),
+            dispose_visible_snapshot_cleared: !dispose_disp
+                .dialog_visible_snapshots
+                .contains_key(&dispose_dialog_ptr),
+            dispose_modal_entered_cleared: !dispose_disp
+                .dialog_modal_entered
+                .contains(&dispose_dialog_ptr),
+            dispose_saved_pixels_cleared: !dispose_disp
+                .dialog_saved_pixels
+                .contains_key(&dispose_dialog_ptr),
+            dispose_window_list_contains_dialog: dispose_disp
+                .window_list
+                .contains(&dispose_dialog_ptr),
+            dispose_front_window_after: dispose_disp.front_window,
+            dispose_the_port_after: dispose_bus.read_long(crate::memory::globals::addr::THE_PORT),
+            dispose_current_port_after: dispose_disp.current_port,
+            dispose_update_event_for_previous_window: dispose_disp
+                .event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == dispose_previous_window),
+            dispose_dialog_items_present_after: dispose_disp
+                .dialog_items
+                .contains_key(&dispose_dialog_ptr),
+            dispose_other_dialog_items_present_after: dispose_disp
+                .dialog_items
+                .contains_key(&dispose_other_dialog_ptr),
+            dispose_dialog_item_handle_present_after: dispose_disp
+                .dialog_item_handles
+                .contains_key(&dispose_text_handle),
+            dispose_other_dialog_item_handle_present_after: dispose_disp
+                .dialog_item_handles
+                .contains_key(&dispose_other_text_handle),
+            dispose_dialog_control_handle_present_after: dispose_disp
+                .dialog_control_handles
+                .contains_key(&dispose_ctrl_handle),
+            dispose_other_dialog_control_handle_present_after: dispose_disp
+                .dialog_control_handles
+                .contains_key(&dispose_other_ctrl_handle),
+            dispose_dialog_control_value_present_after: dispose_disp
+                .dialog_control_values
+                .contains_key(&(dispose_dialog_ptr, 1)),
+            dispose_other_dialog_control_value_present_after: dispose_disp
+                .dialog_control_values
+                .contains_key(&(dispose_other_dialog_ptr, 1)),
+            dispose_hidden_rect_present_after: dispose_disp
+                .hidden_dialog_item_rects
+                .contains_key(&(dispose_dialog_ptr, 1)),
+            dispose_other_hidden_rect_present_after: dispose_disp
+                .hidden_dialog_item_rects
+                .contains_key(&(dispose_other_dialog_ptr, 1)),
+            dispose_cancel_item_present_after: dispose_disp
+                .dialog_cancel_items
+                .contains_key(&dispose_dialog_ptr),
+            dispose_other_cancel_item_present_after: dispose_disp
+                .dialog_cancel_items
+                .contains_key(&dispose_other_dialog_ptr),
+            dispose_pending_popup_cleared: dispose_disp.pending_dialog_popup_menu.is_none(),
+        }
+    }
+
+    fn cached_dialog_items(
+        disp: &TrapDispatcher,
+        dialog_ptr: u32,
+    ) -> Vec<(u8, (i16, i16, i16, i16), String, i16)> {
+        disp.dialog_items
+            .get(&dialog_ptr)
+            .into_iter()
+            .flatten()
+            .map(|item| {
+                (
+                    item.item_type,
+                    item.rect,
+                    item.text.clone(),
+                    item.resource_id,
+                )
+            })
+            .collect()
+    }
+
+    fn dialog_port_rect(bus: &MacMemoryBus, dialog_ptr: u32) -> (i16, i16, i16, i16) {
+        (
+            bus.read_word(dialog_ptr + 16) as i16,
+            bus.read_word(dialog_ptr + 18) as i16,
+            bus.read_word(dialog_ptr + 20) as i16,
+            bus.read_word(dialog_ptr + 22) as i16,
+        )
+    }
+
+    fn dialog_creation_results_for_theme(theme_id: UiThemeId) -> DialogCreationSnapshot {
+        let (mut new_disp, mut new_cpu, mut new_bus) = setup();
+        new_disp.set_ui_theme_id(theme_id);
+        let new_screen_base = new_bus.alloc((640 * 480) as u32);
+        new_bus.write_long(0x0824, new_screen_base);
+        new_disp.screen_mode = (new_screen_base, 640, 640, 480, 8);
+
+        let new_ditl = build_test_ditl_items(&[
+            (16, (10, 12, 28, 120), b"Alpha".as_slice()),
+            (4, (44, 70, 66, 132), b"OK".as_slice()),
+        ]);
+        let new_items_data_ptr = new_bus.alloc(new_ditl.len() as u32);
+        new_bus.write_bytes(new_items_data_ptr, &new_ditl);
+        let new_items_handle = new_bus.alloc(4);
+        new_bus.write_long(new_items_handle, new_items_data_ptr);
+
+        let new_title = new_bus.alloc(32);
+        new_bus.write_pstring(new_title, b"Modeless");
+        let new_bounds = new_bus.alloc(8);
+        new_bus.write_word(new_bounds, 60);
+        new_bus.write_word(new_bounds + 2, 70);
+        new_bus.write_word(new_bounds + 4, 140);
+        new_bus.write_word(new_bounds + 6, 220);
+        let new_storage = new_bus.alloc(170);
+        let new_sp = TEST_SP - 30;
+        new_cpu.write_reg(Register::A7, new_sp);
+        new_bus.write_long(new_sp, new_items_handle);
+        new_bus.write_long(new_sp + 4, 0x1234_5678);
+        new_bus.write_byte(new_sp + 8, 0xFF); // goAwayFlag
+        new_bus.write_long(new_sp + 10, 0xFFFF_FFFF); // behind = front
+        new_bus.write_word(new_sp + 14, 4); // noGrowDocProc/modeless
+        new_bus.write_byte(new_sp + 16, 0xFF); // visible
+        new_bus.write_long(new_sp + 18, new_title);
+        new_bus.write_long(new_sp + 22, new_bounds);
+        new_bus.write_long(new_sp + 26, new_storage);
+        new_bus.write_long(new_sp + 30, 0xDEAD_BEEF);
+        new_disp
+            .dispatch_dialog(true, 0x17D, &mut new_cpu, &mut new_bus)
+            .unwrap()
+            .unwrap();
+        let new_dialog_ptr = new_bus.read_long(new_sp + 30);
+        let new_update_region =
+            TrapDispatcher::region_handle_rect(&new_bus, new_bus.read_long(new_dialog_ptr + 122));
+        let new_update_event_queued = new_disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == new_dialog_ptr);
+
+        let (mut get_disp, mut get_cpu, mut get_bus) = setup();
+        get_disp.set_ui_theme_id(theme_id);
+        let get_screen_base = get_bus.alloc((640 * 480) as u32);
+        get_bus.write_long(0x0824, get_screen_base);
+        get_disp.screen_mode = (get_screen_base, 640, 640, 480, 8);
+
+        let mut dlog = build_test_dlog((80, 90, 160, 240), 1901, 0);
+        dlog[10] = 1; // visible
+        let get_ditl = build_test_ditl_items(&[
+            (16, (12, 18, 30, 128), b"Beta".as_slice()),
+            (4, (46, 78, 68, 138), b"OK".as_slice()),
+        ]);
+        get_disp.install_test_resource(&mut get_bus, *b"DLOG", 1900, &dlog);
+        let original_ditl_ptr =
+            get_disp.install_test_resource(&mut get_bus, *b"DITL", 1901, &get_ditl);
+        let get_storage = get_bus.alloc(170);
+        get_cpu.write_reg(Register::A7, TEST_SP);
+        get_bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind = front
+        get_bus.write_long(TEST_SP + 4, get_storage);
+        get_bus.write_word(TEST_SP + 8, 1900);
+        get_bus.write_long(TEST_SP + 10, 0xDEAD_BEEF);
+        get_disp
+            .dispatch_dialog(true, 0x17C, &mut get_cpu, &mut get_bus)
+            .unwrap()
+            .unwrap();
+        let get_dialog_ptr = get_bus.read_long(TEST_SP + 10);
+        let get_items_handle = get_bus.read_long(get_dialog_ptr + 156);
+        let get_items_data_ptr = get_bus.read_long(get_items_handle);
+        let get_update_region =
+            TrapDispatcher::region_handle_rect(&get_bus, get_bus.read_long(get_dialog_ptr + 122));
+        let get_update_event_queued = get_disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == get_dialog_ptr);
+
+        DialogCreationSnapshot {
+            new_dialog_ptr,
+            new_stack_after: new_cpu.read_reg(Register::A7),
+            new_result_slot: new_bus.read_long(new_sp + 30),
+            new_window_list: new_disp.window_list.clone(),
+            new_front_window: new_disp.front_window,
+            new_current_port: new_disp.current_port,
+            new_the_port: new_bus.read_long(crate::memory::globals::addr::THE_PORT),
+            new_visible_byte: new_bus.read_byte(new_dialog_ptr + 110),
+            new_goaway_byte: new_bus.read_byte(new_dialog_ptr + 112),
+            new_refcon: new_bus.read_long(new_dialog_ptr + 152),
+            new_window_kind: new_bus.read_word(new_dialog_ptr + 108) as i16,
+            new_proc_id: new_disp
+                .window_proc_ids
+                .get(&new_dialog_ptr)
+                .copied()
+                .unwrap_or_default(),
+            new_port_rect: dialog_port_rect(&new_bus, new_dialog_ptr),
+            new_items_handle: new_bus.read_long(new_dialog_ptr + 156),
+            new_items_data_ptr: new_bus.read_long(new_items_handle),
+            new_first_item_handle_nonzero: new_bus.read_long(new_items_data_ptr + 2) != 0,
+            new_cached_items: cached_dialog_items(&new_disp, new_dialog_ptr),
+            new_update_region,
+            new_update_event_queued,
+            new_edit_field: new_bus.read_word(new_dialog_ptr + 164),
+            new_default_item: new_bus.read_word(new_dialog_ptr + 168),
+            get_dialog_ptr,
+            get_stack_after: get_cpu.read_reg(Register::A7),
+            get_result_slot: get_bus.read_long(TEST_SP + 10),
+            get_window_list: get_disp.window_list.clone(),
+            get_front_window: get_disp.front_window,
+            get_current_port: get_disp.current_port,
+            get_the_port: get_bus.read_long(crate::memory::globals::addr::THE_PORT),
+            get_visible_byte: get_bus.read_byte(get_dialog_ptr + 110),
+            get_refcon: get_bus.read_long(get_dialog_ptr + 152),
+            get_window_kind: get_bus.read_word(get_dialog_ptr + 108) as i16,
+            get_proc_id: get_disp
+                .window_proc_ids
+                .get(&get_dialog_ptr)
+                .copied()
+                .unwrap_or_default(),
+            get_port_rect: dialog_port_rect(&get_bus, get_dialog_ptr),
+            get_items_handle,
+            get_items_data_ptr,
+            get_uses_distinct_ditl_copy: get_items_data_ptr != original_ditl_ptr,
+            get_original_ditl_handle_field: get_bus.read_long(original_ditl_ptr + 2),
+            get_first_item_handle_nonzero: get_bus.read_long(get_items_data_ptr + 2) != 0,
+            get_cached_items: cached_dialog_items(&get_disp, get_dialog_ptr),
+            get_update_region,
+            get_update_event_queued,
+            get_edit_field: get_bus.read_word(get_dialog_ptr + 164),
+            get_default_item: get_bus.read_word(get_dialog_ptr + 168),
+        }
+    }
+
+    fn alert_family_results_for_theme(theme_id: UiThemeId) -> AlertFamilySnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+
+        let ditl = build_test_ditl_items(&[
+            (4, (48, 70, 70, 132), b"OK".as_slice()),
+            (4, (48, 144, 70, 212), b"Cancel".as_slice()),
+        ]);
+        let alrt = build_alrt_template(2100, 0xC4C4);
+        disp.install_test_resource(&mut bus, *b"DITL", 2100, &ditl);
+        disp.install_test_resource(&mut bus, *b"ALRT", 2099, &alrt);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 0);
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xCAFE);
+
+        let mut staged_calls = Vec::new();
+        for trap_word in [0x185u16, 0x186, 0x187, 0x188, 0x185] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP + 4, 2099);
+            disp.dispatch_dialog(true, trap_word, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            staged_calls.push(AlertTrapCallSnapshot {
+                trap_word,
+                result: bus.read_word(TEST_SP + 6) as i16,
+                stack_after: cpu.read_reg(Register::A7),
+                alert_stage_after: bus.read_word(crate::memory::globals::addr::ALERT_STAGE),
+                anumber_after: bus.read_word(crate::memory::globals::addr::ANUMBER),
+            });
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(crate::memory::globals::addr::ALERT_STAGE, 2);
+        bus.write_word(crate::memory::globals::addr::ANUMBER, 0xBEEF);
+        bus.write_word(TEST_SP + 4, 2999);
+        disp.dispatch_dialog(true, 0x187, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let missing_call = AlertTrapCallSnapshot {
+            trap_word: 0x187,
+            result: bus.read_word(TEST_SP + 6) as i16,
+            stack_after: cpu.read_reg(Register::A7),
+            alert_stage_after: bus.read_word(crate::memory::globals::addr::ALERT_STAGE),
+            anumber_after: bus.read_word(crate::memory::globals::addr::ANUMBER),
+        };
+
+        let (mut prep_disp, mut prep_cpu, mut prep_bus) = setup();
+        prep_disp.set_ui_theme_id(theme_id);
+        let prep_alrt = build_alrt_template(2101, 0);
+        prep_disp.install_test_resource(&mut prep_bus, *b"ALRT", 2102, &prep_alrt);
+        let mut prep_call = |trap_word: u16, alert_id: i16| -> (i16, u32) {
+            prep_cpu.write_reg(Register::A7, TEST_SP);
+            prep_bus.write_word(0x0A60, 0x7FFF);
+            prep_bus.write_word(TEST_SP, alert_id as u16);
+            prep_disp
+                .dispatch_dialog(true, trap_word, &mut prep_cpu, &mut prep_bus)
+                .unwrap()
+                .unwrap();
+            (
+                prep_bus.read_word(0x0A60) as i16,
+                prep_cpu.read_reg(Register::A7),
+            )
+        };
+        let resource_prep = AlertResourcePrepSnapshot {
+            could_present: prep_call(0x189, 2102),
+            free_present: prep_call(0x18A, 2102),
+            could_missing: prep_call(0x189, 2998),
+            free_missing: prep_call(0x18A, 2998),
+        };
+
+        AlertFamilySnapshot {
+            staged_calls,
+            missing_call,
+            resource_prep,
+        }
+    }
+
+    fn dialog_init_sound_results_for_theme(theme_id: UiThemeId) -> DialogInitSoundSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        use crate::memory::globals::addr;
+
+        bus.write_long(addr::RESUME_PROC, 0xDEAD_BEEF);
+        bus.write_long(addr::DA_BEEPER, 0x00AA_BBCC);
+        bus.write_word(addr::ALERT_STAGE, 3);
+        bus.write_word(addr::ANUMBER, 0xCAFE);
+        for i in 0..4u32 {
+            bus.write_long(addr::DA_STRINGS + i * 4, 0x00D0_0000 | i);
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0x0012_3456);
+        disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let init_stack_after = cpu.read_reg(Register::A7);
+        let resume_proc_after_init = bus.read_long(addr::RESUME_PROC);
+        let da_beeper_after_init = bus.read_long(addr::DA_BEEPER);
+        let alert_stage_after_init = bus.read_word(addr::ALERT_STAGE);
+        let anumber_after_init = bus.read_word(addr::ANUMBER);
+        let da_strings_after_init =
+            std::array::from_fn(|i| bus.read_long(addr::DA_STRINGS + i as u32 * 4));
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0x00AB_CDEF);
+        disp.dispatch_dialog(true, 0x18C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let error_sound_stack_after = cpu.read_reg(Register::A7);
+        let da_beeper_after_error_sound = bus.read_long(addr::DA_BEEPER);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        disp.dispatch_dialog(true, 0x18C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let nil_error_sound_stack_after = cpu.read_reg(Register::A7);
+        let da_beeper_after_nil_error_sound = bus.read_long(addr::DA_BEEPER);
+
+        DialogInitSoundSnapshot {
+            init_stack_after,
+            resume_proc_after_init,
+            da_beeper_after_init,
+            alert_stage_after_init,
+            anumber_after_init,
+            da_strings_after_init,
+            error_sound_stack_after,
+            da_beeper_after_error_sound,
+            nil_error_sound_stack_after,
+            da_beeper_after_nil_error_sound,
+        }
+    }
+
+    fn dialogdispatch_default_cancel_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> DialogDispatchDefaultCancelSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let dialog_ptr = bus.alloc(256);
+        bus.write_word(dialog_ptr + 168, 1);
+        disp.dialog_tracking = Some(dialog_tracking_state_for_test(dialog_ptr));
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 9); // newItem
+        bus.write_long(TEST_SP + 2, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 6, 0xBEEF); // OSErr result slot
+        cpu.write_reg(Register::D0, 0x0304); // selector 4, 6 param bytes
+        disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let default_result = bus.read_word(TEST_SP + 6);
+        let default_stack_after = cpu.read_reg(Register::A7);
+        let default_adef_item = bus.read_word(dialog_ptr + 168);
+        let default_tracking_item = disp
+            .dialog_tracking
+            .as_ref()
+            .map(|tracking| tracking.default_item)
+            .unwrap_or(-1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 7); // newItem
+        bus.write_long(TEST_SP + 2, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 6, 0xCAFE); // OSErr result slot
+        cpu.write_reg(Register::D0, 0x0305); // selector 5, 6 param bytes
+        disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let cancel_result = bus.read_word(TEST_SP + 6);
+        let cancel_stack_after = cpu.read_reg(Register::A7);
+        let cancel_map_item = disp.dialog_cancel_items.get(&dialog_ptr).copied();
+        let cancel_tracking_item = disp
+            .dialog_tracking
+            .as_ref()
+            .map(|tracking| tracking.cancel_item)
+            .unwrap_or(-1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1); // tracks = TRUE
+        bus.write_long(TEST_SP + 2, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 6, 0xCAFE); // OSErr result slot
+        cpu.write_reg(Register::D0, 0x0306); // selector 6, 6 param bytes
+        disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let tracks_result = bus.read_word(TEST_SP + 6);
+        let tracks_stack_after = cpu.read_reg(Register::A7);
+        let tracks_adef_item = bus.read_word(dialog_ptr + 168);
+        let tracks_cancel_map_item = disp.dialog_cancel_items.get(&dialog_ptr).copied();
+        let tracks_tracking_items = disp
+            .dialog_tracking
+            .as_ref()
+            .map(|tracking| (tracking.default_item, tracking.cancel_item))
+            .unwrap_or((-1, -1));
+
+        DialogDispatchDefaultCancelSnapshot {
+            default_result,
+            default_stack_after,
+            default_adef_item,
+            default_tracking_item,
+            cancel_result,
+            cancel_stack_after,
+            cancel_map_item,
+            cancel_tracking_item,
+            tracks_result,
+            tracks_stack_after,
+            tracks_adef_item,
+            tracks_cancel_map_item,
+            tracks_tracking_items,
+        }
+    }
+
+    fn updtdialog_update_region_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> UpdtDialogUpdateRegionSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(theme_id);
+
+        let initial_port = 0x181000;
+        disp.set_current_port_state(&mut bus, &mut cpu, initial_port, None);
+
+        let screen_base = bus.alloc(100 * 100);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        bus.write_word(dialog_ptr, 0);
+        bus.write_long(dialog_ptr + 2, screen_base);
+        bus.write_word(dialog_ptr + 6, 100);
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 12, 100);
+        bus.write_word(dialog_ptr + 14, 100);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 100);
+        bus.write_word(dialog_ptr + 108, 2);
+        disp.window_list.push(dialog_ptr);
+        disp.front_window = dialog_ptr;
+        disp.dialog_initial_draw_deferred.insert(dialog_ptr);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0,
+                    rect: (8, 8, 24, 32),
+                    proc_ptr: 0x500000,
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 0,
+                    rect: (60, 60, 80, 80),
+                    proc_ptr: 0x600000,
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 8,
+                    rect: (90, 90, 96, 96),
+                    text: "x".to_string(),
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (52, 8, 72, 44),
+                    text: "OK".to_string(),
+                    ..Default::default()
+                },
+            ],
+        );
+        let inside_update_pixel = screen_base + 4 * 100 + 4;
+        let outside_update_pixel = screen_base + 70 * 100 + 70;
+        let outside_item_pixel = screen_base + 52 * 100 + 9;
+        bus.write_byte(inside_update_pixel, 0xA5);
+        bus.write_byte(outside_update_pixel, 0x5A);
+        bus.write_byte(outside_item_pixel, 0x3C);
+
+        let update_rgn_ptr = bus.alloc(10);
+        let update_rgn = bus.alloc(4);
+        bus.write_long(update_rgn, update_rgn_ptr);
+        bus.write_word(update_rgn_ptr, 10);
+        bus.write_word(update_rgn_ptr + 2, 0);
+        bus.write_word(update_rgn_ptr + 4, 0);
+        bus.write_word(update_rgn_ptr + 6, 40);
+        bus.write_word(update_rgn_ptr + 8, 40);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, update_rgn);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        disp.dispatch_dialog(true, 0x178, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        UpdtDialogUpdateRegionSnapshot {
+            stack_after: cpu.read_reg(Register::A7),
+            the_port_after: bus.read_long(crate::memory::globals::addr::THE_PORT),
+            current_port_after: disp.current_port,
+            deferred_after: disp.dialog_initial_draw_deferred.contains(&dialog_ptr),
+            queued_draw_procs: disp
+                .modeless_dialog_draw_proc_queue
+                .iter()
+                .copied()
+                .collect(),
+            item_count_after: disp
+                .dialog_items
+                .get(&dialog_ptr)
+                .map(Vec::len)
+                .unwrap_or_default(),
+            inside_update_pixel_after: bus.read_byte(inside_update_pixel),
+            outside_update_pixel_after: bus.read_byte(outside_update_pixel),
+            outside_item_pixel_after: bus.read_byte(outside_item_pixel),
+        }
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialogselect_item_hits() {
+        // IM:I I-417: DialogSelect reports enabled dialog item hits through
+        // its Boolean result, dialog pointer, and itemHit. Theme rendering is
+        // outside that guest-visible event contract.
+        let classic = dialog_select_enabled_user_item_hit_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_select_enabled_user_item_hit_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.0, 0xFFFF);
+        assert_eq!(classic.2, 1);
+        assert_eq!(classic.3, TEST_SP + 12);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DialogSelect item-hit semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialogselect_control_item_hits() {
+        // IM:I I-417: for mouseDown in an enabled control, DialogSelect
+        // returns TRUE and itemHit after Control Manager tracking succeeds.
+        // The app owns checkbox value changes, so theme chrome must not alter
+        // the ControlRecord value or dialog-scoped control-value mirror.
+        let classic = dialog_select_enabled_checkbox_hit_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_select_enabled_checkbox_hit_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.0, 0xFFFF);
+        assert_eq!(classic.2, 1);
+        assert_eq!(classic.3, TEST_SP + 12);
+        assert_eq!(classic.4, 1);
+        assert_eq!(classic.5, 1);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DialogSelect control item-hit or value semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialogselect_window_events() {
+        // MTE 1992 p. 6-139 and IM:I I-417: activate/update events for a
+        // dialog window are handled by DialogSelect and return FALSE rather
+        // than reporting an enabled item through theDialog/itemHit.
+        // MTE 1992 pp. 6-141 and 6-143 plus IM:I I-291: update handling
+        // brackets the redraw with BeginUpdate/EndUpdate, uses the dialog
+        // port, redraws the dialog, and leaves app-owned userItem drawing
+        // to the guest draw procs.
+        // Theme rendering can change pixels, but not this function ABI,
+        // output-slot behavior, stack protocol, or update bookkeeping.
+        let classic = dialog_select_window_event_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_select_window_event_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.update_result, 0);
+        assert_eq!(classic.update_dialog_out, 0xDEAD_BEEF);
+        assert_eq!(classic.update_item_hit, 0xCAFE);
+        assert_eq!(classic.update_stack_after, TEST_SP + 12);
+        assert!(!classic.update_deferred_after);
+        assert_eq!(classic.update_region_after, None);
+        assert_eq!(classic.update_vis_region_after, Some((0, 0, 100, 100)));
+        assert_eq!(
+            classic.update_the_port_after,
+            classic.update_current_port_after
+        );
+        assert_eq!(classic.update_current_port_after, classic.dialog_ptr);
+        assert!(!classic.update_saved_vis_after);
+        assert_eq!(
+            classic.update_queued_draw_procs,
+            vec![(classic.dialog_ptr, 0x500000, 1)]
+        );
+        assert_eq!(classic.update_item_count_after, 3);
+        assert_eq!(classic.activate_result, 0);
+        assert_eq!(classic.activate_dialog_out, 0xDEAD_BEEF);
+        assert_eq!(classic.activate_item_hit, 0xCAFE);
+        assert_eq!(classic.activate_stack_after, TEST_SP + 12);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DialogSelect update/activate handling"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_modaldialog_edit_text_mouse_handling() {
+        // IM:I I-415: ModalDialog handles mouseDown in an editText item using
+        // TextEdit and returns the item when it is enabled. Theme rendering
+        // must not change the returned item, retained-dialog state, active
+        // editField, TERecord mirroring, queued mouse-up consumption, or stack
+        // protocol.
+        let classic = modal_dialog_edit_text_mouse_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = modal_dialog_edit_text_mouse_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.item_hit, 2);
+        assert_eq!(classic.stack_after, TEST_SP + 8);
+        assert!(classic.tracking_finished);
+        assert!(classic.retained_visible_snapshot);
+        assert!(classic.saved_background_retained);
+        assert!(classic.queued_mouse_up_consumed);
+        assert_eq!(classic.edit_field, 1);
+        assert_eq!(classic.item_selection, (2, 4));
+        assert_eq!(classic.te_text, b"Second".to_vec());
+        assert_eq!(classic.te_length, 6);
+        assert_eq!(classic.te_selection, (2, 4));
+        assert_eq!(classic.handle_bytes, b"Second".to_vec());
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change ModalDialog editText mouse handling"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_modaldialog_keyboard_default_cancel_items() {
+        // MTE 1992 p. 6-30 and p. 6-138: Return/Enter activate the default
+        // button; Esc and Command-period activate the Cancel button. Theme
+        // chrome must not change the key-to-item mapping, flash lifecycle,
+        // returned itemHit, or Pascal stack protocol.
+        let classic = modal_dialog_keyboard_button_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = modal_dialog_keyboard_button_results_for_theme(UiThemeId::SystemlessDefault);
+
+        for case in [&classic.return_key, &classic.enter_key] {
+            assert_eq!(case.flash_item_after_key, 1);
+            assert_eq!(case.stack_after_key, TEST_SP);
+            assert_eq!(case.item_hit_after_key, 0xCAFE);
+            assert_eq!(case.item_hit_after_flash, 1);
+            assert_eq!(case.stack_after_flash, TEST_SP + 8);
+            assert!(case.tracking_finished);
+        }
+        for case in [&classic.escape_key, &classic.command_period] {
+            assert_eq!(case.flash_item_after_key, 2);
+            assert_eq!(case.stack_after_key, TEST_SP);
+            assert_eq!(case.item_hit_after_key, 0xCAFE);
+            assert_eq!(case.item_hit_after_flash, 2);
+            assert_eq!(case.stack_after_flash, TEST_SP + 8);
+            assert!(case.tracking_finished);
+        }
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change ModalDialog keyboard default/cancel handling"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_modaldialog_update_events() {
+        // MTE 1992 pp. 6-135 and 6-141: ModalDialog routes update events
+        // through IsDialogEvent/DialogSelect-style handling. That brackets
+        // the redraw with BeginUpdate/EndUpdate and makes the dialog the
+        // current graphics port, while ModalDialog itself does not return
+        // an item for update events. Theme chrome must not alter this ABI or
+        // the retained visible dialog snapshot used across modal refires.
+        let classic = modal_dialog_update_event_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = modal_dialog_update_event_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.item_hit_after, 0xCAFE);
+        assert_eq!(classic.stack_after, TEST_SP);
+        assert!(!classic.tracking_finished);
+        assert!(classic.rendered_pixels_final);
+        assert_eq!(classic.retained_pixel_after, 0x44);
+        assert_eq!(classic.retained_snapshot_pixel_after, 0x44);
+        assert_eq!(classic.update_region_after, None);
+        assert_eq!(classic.vis_region_after, Some((0, 0, 80, 80)));
+        assert_eq!(classic.the_port_after, classic.current_port_after);
+        assert_eq!(classic.current_port_after, classic.dialog_ptr);
+        assert!(!classic.saved_vis_after);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change ModalDialog update-event handling"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialog_lifecycle_cleanup() {
+        // MTE 1992 pp. 6-119..6-120: CloseDialog removes the dialog from
+        // the screen/window list, while DisposeDialog calls CloseDialog and
+        // additionally releases dialog-owned item-list/dialog-record storage.
+        // Theme chrome must not alter Pascal stack discipline, active
+        // ModalDialog cleanup, retained-click cleanup, saved snapshot
+        // cleanup, front-window promotion, current-port side effects, or
+        // dialog-scoped side-map cleanup.
+        let classic = dialog_lifecycle_cleanup_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_lifecycle_cleanup_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.close_stack_after, TEST_SP + 4);
+        assert!(classic.close_tracking_cleared);
+        assert!(classic.close_retained_click_cleared);
+        assert!(classic.close_visible_snapshot_cleared);
+        assert!(classic.close_modal_entered_cleared);
+        assert!(classic.close_saved_pixels_cleared);
+        assert!(!classic.close_window_list_contains_dialog);
+        assert_eq!(
+            classic.close_front_window_after,
+            classic.close_the_port_after
+        );
+        assert_eq!(
+            classic.close_front_window_after,
+            classic.close_current_port_after
+        );
+        assert!(classic.close_update_event_for_previous_window);
+        assert!(!classic.close_dialog_items_present_after);
+
+        assert_eq!(classic.dispose_stack_after, TEST_SP + 4);
+        assert!(classic.dispose_tracking_cleared);
+        assert!(classic.dispose_retained_click_cleared);
+        assert!(classic.dispose_visible_snapshot_cleared);
+        assert!(classic.dispose_modal_entered_cleared);
+        assert!(classic.dispose_saved_pixels_cleared);
+        assert!(!classic.dispose_window_list_contains_dialog);
+        assert_eq!(
+            classic.dispose_front_window_after,
+            classic.dispose_the_port_after
+        );
+        assert_eq!(
+            classic.dispose_front_window_after,
+            classic.dispose_current_port_after
+        );
+        assert!(classic.dispose_update_event_for_previous_window);
+        assert!(!classic.dispose_dialog_items_present_after);
+        assert!(classic.dispose_other_dialog_items_present_after);
+        assert!(!classic.dispose_dialog_item_handle_present_after);
+        assert!(classic.dispose_other_dialog_item_handle_present_after);
+        assert!(!classic.dispose_dialog_control_handle_present_after);
+        assert!(classic.dispose_other_dialog_control_handle_present_after);
+        assert!(!classic.dispose_dialog_control_value_present_after);
+        assert!(classic.dispose_other_dialog_control_value_present_after);
+        assert!(!classic.dispose_hidden_rect_present_after);
+        assert!(classic.dispose_other_hidden_rect_present_after);
+        assert!(!classic.dispose_cancel_item_present_after);
+        assert!(classic.dispose_other_cancel_item_present_after);
+        assert!(classic.dispose_pending_popup_cleared);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change CloseDialog/DisposeDialog lifecycle cleanup"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialog_creation_records() {
+        // IM:I I-412 and MTE 1992 pp. 6-118..6-119: NewDialog creates a
+        // dialog from caller-supplied parameters and an item-list handle,
+        // sets dialogKind/default dialog fields, and returns a DialogPtr.
+        // IM:I I-412 and I-424: GetNewDialog reads DLOG/DITL resources and
+        // uses a copy of the item list. Theme chrome must not alter resource
+        // parsing, item-list ownership, DialogRecord fields, visible/update
+        // bookkeeping, current-port side effects, or Pascal stack ABI.
+        let classic = dialog_creation_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_creation_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_ne!(classic.new_dialog_ptr, 0);
+        assert_eq!(classic.new_stack_after, TEST_SP);
+        assert_eq!(classic.new_result_slot, classic.new_dialog_ptr);
+        assert_eq!(classic.new_window_list, vec![classic.new_dialog_ptr]);
+        assert_eq!(classic.new_front_window, classic.new_dialog_ptr);
+        assert_eq!(classic.new_current_port, classic.new_dialog_ptr);
+        assert_eq!(classic.new_the_port, classic.new_dialog_ptr);
+        assert_eq!(classic.new_visible_byte, 0xFF);
+        assert_eq!(classic.new_goaway_byte, 0xFF);
+        assert_eq!(classic.new_refcon, 0x1234_5678);
+        assert_eq!(classic.new_window_kind, 2);
+        assert_eq!(classic.new_proc_id, 4);
+        assert_eq!(classic.new_port_rect, (0, 0, 80, 150));
+        assert_ne!(classic.new_items_handle, 0);
+        assert_ne!(classic.new_items_data_ptr, 0);
+        assert!(classic.new_first_item_handle_nonzero);
+        assert_eq!(
+            classic.new_cached_items,
+            vec![
+                (16, (10, 12, 28, 120), "Alpha".to_string(), 0),
+                (4, (44, 70, 66, 132), "OK".to_string(), 0),
+            ]
+        );
+        assert!(classic.new_update_region.is_some());
+        assert!(classic.new_update_event_queued);
+        assert_eq!(classic.new_edit_field, 0xFFFF);
+        assert_eq!(classic.new_default_item, 1);
+
+        assert_ne!(classic.get_dialog_ptr, 0);
+        assert_eq!(classic.get_stack_after, TEST_SP + 10);
+        assert_eq!(classic.get_result_slot, classic.get_dialog_ptr);
+        assert_eq!(classic.get_window_list, vec![classic.get_dialog_ptr]);
+        assert_eq!(classic.get_front_window, classic.get_dialog_ptr);
+        assert_eq!(classic.get_current_port, classic.get_dialog_ptr);
+        assert_eq!(classic.get_the_port, classic.get_dialog_ptr);
+        assert_eq!(classic.get_visible_byte, 0xFF);
+        assert_eq!(classic.get_refcon, 0);
+        assert_eq!(classic.get_window_kind, 2);
+        assert_eq!(classic.get_proc_id, 2);
+        assert_eq!(classic.get_port_rect, (0, 0, 80, 150));
+        assert_ne!(classic.get_items_handle, 0);
+        assert_ne!(classic.get_items_data_ptr, 0);
+        assert!(classic.get_uses_distinct_ditl_copy);
+        assert_eq!(classic.get_original_ditl_handle_field, 0);
+        assert!(classic.get_first_item_handle_nonzero);
+        assert_eq!(
+            classic.get_cached_items,
+            vec![
+                (16, (12, 18, 30, 128), "Beta".to_string(), 0),
+                (4, (46, 78, 68, 138), "OK".to_string(), 0),
+            ]
+        );
+        assert!(classic.get_update_region.is_some());
+        assert!(classic.get_update_event_queued);
+        assert_eq!(classic.get_edit_field, 0xFFFF);
+        assert_eq!(classic.get_default_item, 1);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change NewDialog/GetNewDialog creation semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_alert_family_resource_state() {
+        // IM:I I-417..I-423 and MTE 1992 pp. 6-105..6-112: Alert,
+        // StopAlert, NoteAlert, and CautionAlert read ALRT/DITL resources,
+        // use the current alert stage to choose the default item, update
+        // ACount/ANumber low-memory state, and share behavior apart from
+        // icon drawing. IM:I I-420 also defines CouldAlert/FreeAlert as
+        // resource-preparation routines. Theme chrome must not alter those
+        // resource, low-memory, result-slot, or stack contracts.
+        let classic = alert_family_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = alert_family_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(
+            classic.staged_calls,
+            vec![
+                AlertTrapCallSnapshot {
+                    trap_word: 0x185,
+                    result: 1,
+                    stack_after: TEST_SP + 6,
+                    alert_stage_after: 1,
+                    anumber_after: 2099,
+                },
+                AlertTrapCallSnapshot {
+                    trap_word: 0x186,
+                    result: 2,
+                    stack_after: TEST_SP + 6,
+                    alert_stage_after: 2,
+                    anumber_after: 2099,
+                },
+                AlertTrapCallSnapshot {
+                    trap_word: 0x187,
+                    result: 1,
+                    stack_after: TEST_SP + 6,
+                    alert_stage_after: 3,
+                    anumber_after: 2099,
+                },
+                AlertTrapCallSnapshot {
+                    trap_word: 0x188,
+                    result: 2,
+                    stack_after: TEST_SP + 6,
+                    alert_stage_after: 3,
+                    anumber_after: 2099,
+                },
+                AlertTrapCallSnapshot {
+                    trap_word: 0x185,
+                    result: 2,
+                    stack_after: TEST_SP + 6,
+                    alert_stage_after: 3,
+                    anumber_after: 2099,
+                },
+            ]
+        );
+        assert_eq!(
+            classic.missing_call,
+            AlertTrapCallSnapshot {
+                trap_word: 0x187,
+                result: -1,
+                stack_after: TEST_SP + 6,
+                alert_stage_after: 2,
+                anumber_after: 0xBEEF,
+            }
+        );
+        assert_eq!(
+            classic.resource_prep,
+            AlertResourcePrepSnapshot {
+                could_present: (0, TEST_SP + 2),
+                free_present: (0, TEST_SP + 2),
+                could_missing: (0, TEST_SP + 2),
+                free_missing: (0, TEST_SP + 2),
+            }
+        );
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change Alert family resource or low-memory semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_initdialogs_errorsound_state() {
+        // IM:I I-411 and MTE 1992 pp. 6-103..6-104: InitDialogs stores
+        // ResumeProc, initializes alert sound state, and prepares the
+        // ParamText/DAStrings globals; ErrorSound stores the current alert
+        // sound ProcPtr in DABeeper, with NIL disabling sound/menu-bar blink.
+        // Those low-memory globals and procedure stack pops are app-visible
+        // Dialog Manager state and must not depend on the selected renderer.
+        let classic = dialog_init_sound_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_init_sound_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.init_stack_after, TEST_SP + 4);
+        assert_eq!(classic.resume_proc_after_init, 0x0012_3456);
+        assert_eq!(classic.da_beeper_after_init, 0);
+        assert_eq!(classic.alert_stage_after_init, 0);
+        assert_eq!(classic.anumber_after_init, 0xCAFE);
+        assert_eq!(classic.da_strings_after_init, [0, 0, 0, 0]);
+        assert_eq!(classic.error_sound_stack_after, TEST_SP + 4);
+        assert_eq!(classic.da_beeper_after_error_sound, 0x00AB_CDEF);
+        assert_eq!(classic.nil_error_sound_stack_after, TEST_SP + 4);
+        assert_eq!(classic.da_beeper_after_nil_error_sound, 0);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change InitDialogs/ErrorSound low-memory state"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialogdispatch_default_cancel_selectors() {
+        // MTE 1992 pp. 6-162..6-166: DialogDispatch selectors extend the
+        // Dialog Manager with default-item, cancel-item, and cursor-tracking
+        // state. MTE 1992 p. 6-138 ties Return/Enter and Esc/Command-period
+        // handling to the default and Cancel items, so theme chrome must not
+        // alter selector OSErr results, stack ABI, DialogRecord.aDefItem, the
+        // cancel-item side state, or active ModalDialog tracking mirrors.
+        let classic = dialogdispatch_default_cancel_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialogdispatch_default_cancel_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.default_result, 0);
+        assert_eq!(classic.default_stack_after, TEST_SP + 6);
+        assert_eq!(classic.default_adef_item, 9);
+        assert_eq!(classic.default_tracking_item, 9);
+
+        assert_eq!(classic.cancel_result, 0);
+        assert_eq!(classic.cancel_stack_after, TEST_SP + 6);
+        assert_eq!(classic.cancel_map_item, Some(7));
+        assert_eq!(classic.cancel_tracking_item, 7);
+
+        assert_eq!(classic.tracks_result, 0);
+        assert_eq!(classic.tracks_stack_after, TEST_SP + 6);
+        assert_eq!(classic.tracks_adef_item, 9);
+        assert_eq!(classic.tracks_cancel_map_item, Some(7));
+        assert_eq!(classic.tracks_tracking_items, (9, 7));
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DialogDispatch default/cancel selector semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_updtdialog_update_region_semantics() {
+        // MTE 1992 pp. 6-142..6-143: UpdateDialog redraws only items in the
+        // supplied update region, calls application-defined item draw procs,
+        // and uses SetPort to make the dialog box current before updating.
+        // Theme chrome can change pixels but must not change that update-item
+        // selection, current-port side effect, deferred redraw state, or stack
+        // ABI.
+        let classic = updtdialog_update_region_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = updtdialog_update_region_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.stack_after, TEST_SP + 8);
+        assert_ne!(classic.the_port_after, 0x181000);
+        assert_eq!(classic.the_port_after, classic.current_port_after);
+        assert!(!classic.deferred_after);
+        assert_eq!(classic.queued_draw_procs.len(), 1);
+        assert_eq!(classic.queued_draw_procs[0].0, classic.the_port_after);
+        assert_eq!(classic.queued_draw_procs[0].1, 0x500000);
+        assert_eq!(classic.queued_draw_procs[0].2, 1);
+        assert_eq!(classic.item_count_after, 4);
+        assert_eq!(classic.inside_update_pixel_after, 0);
+        assert_eq!(classic.outside_update_pixel_after, 0x5A);
+        assert_eq!(classic.outside_item_pixel_after, 0x3C);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change UpdtDialog update-region semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialogselect_edit_text_mouse_and_null_events() {
+        // MTE 1992 p. 6-139 and IM:I I-417: mouseDown in an enabled
+        // editText item is handled through TextEdit and reports the item,
+        // while null events with an editText item call TEIdle and return
+        // FALSE. Systemless TEClick/TEIdle preserve the TERec text/selection
+        // intersection currently shared with the BasiliskII strict bakes, so
+        // theme rendering must not alter the active editField, result slots,
+        // output-slot behavior, TERecord mirroring, or stack protocol.
+        let classic = dialog_select_edit_text_mouse_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_select_edit_text_mouse_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.mouse_result, 0xFFFF);
+        assert_ne!(classic.mouse_dialog_out, 0);
+        assert_eq!(classic.mouse_item_hit, 2);
+        assert_eq!(classic.mouse_stack_after, TEST_SP + 12);
+        assert_eq!(classic.mouse_edit_field, 1);
+        assert_eq!(classic.mouse_item_selection, (2, 4));
+        assert_eq!(classic.mouse_te_text, b"Second".to_vec());
+        assert_eq!(classic.mouse_te_length, 6);
+        assert_eq!(classic.mouse_te_selection, (2, 4));
+        assert_eq!(classic.null_result, 0);
+        assert_eq!(classic.null_dialog_out, 0xDEAD_BEEF);
+        assert_eq!(classic.null_item_hit, 0xCAFE);
+        assert_eq!(classic.null_stack_after, TEST_SP + 12);
+        assert_eq!(classic.null_edit_field, 1);
+        assert_eq!(classic.null_te_text, b"Second".to_vec());
+        assert_eq!(classic.null_te_length, 6);
+        assert_eq!(classic.null_te_selection, (2, 4));
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DialogSelect editText mouse/null handling"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialogselect_edit_text_key_handling() {
+        // MTE 1992 p. 6-139: for keyDown/autoKey events in editable text
+        // items, DialogSelect uses TextEdit to handle text entry/editing and
+        // reports the edit item through itemHit. Text mutation, selection
+        // collapse, shared TERecord state, result slots, and stack ABI are
+        // guest-visible Dialog Manager behavior, not theme rendering choices.
+        let classic = dialog_select_edit_text_key_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_select_edit_text_key_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.keydown_result, 0xFFFF);
+        assert_ne!(classic.keydown_dialog_out, 0);
+        assert_eq!(classic.keydown_item_hit, 1);
+        assert_eq!(classic.keydown_stack_after, TEST_SP + 12);
+        assert_eq!(classic.keydown_handle_bytes, b"HYo".to_vec());
+        assert_eq!(classic.keydown_cached_text, "HYo");
+        assert_eq!(classic.keydown_item_selection, (2, 2));
+        assert_eq!(classic.keydown_te_text, b"HYo".to_vec());
+        assert_eq!(classic.keydown_te_length, 3);
+        assert_eq!(classic.keydown_te_selection, (2, 2));
+        assert_eq!(classic.autokey_result, 0xFFFF);
+        assert_eq!(classic.autokey_dialog_out, classic.keydown_dialog_out);
+        assert_eq!(classic.autokey_item_hit, 1);
+        assert_eq!(classic.autokey_stack_after, TEST_SP + 12);
+        assert_eq!(classic.autokey_handle_bytes, b"Ho".to_vec());
+        assert_eq!(classic.autokey_cached_text, "Ho");
+        assert_eq!(classic.autokey_item_selection, (1, 1));
+        assert_eq!(classic.autokey_te_text, b"Ho".to_vec());
+        assert_eq!(classic.autokey_te_length, 2);
+        assert_eq!(classic.autokey_te_selection, (1, 1));
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DialogSelect editText key handling"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_isdialogevent_active_dialog_routing() {
+        // MTE 1992 p. 6-138: IsDialogEvent returns TRUE for events that
+        // belong to an active dialog, including null events; IM:I I-416 also
+        // calls out active-dialog key events, mouse-downs in the content
+        // region, and update/activate events targeting a dialog window.
+        // Themes must not alter that event-routing or function-stack ABI.
+        let classic = is_dialog_event_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = is_dialog_event_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.null_event, (0xFFFF, TEST_SP + 4));
+        assert_eq!(classic.key_down, (0xFFFF, TEST_SP + 4));
+        assert_eq!(classic.mouse_inside, (0xFFFF, TEST_SP + 4));
+        assert_eq!(classic.mouse_outside, (0, TEST_SP + 4));
+        assert_eq!(classic.update_target, (0xFFFF, TEST_SP + 4));
+        assert_eq!(classic.activate_target, (0xFFFF, TEST_SP + 4));
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change IsDialogEvent routing"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_findditem_hit_testing() {
+        // MTE 1992 p. 6-125: FindDialogItem/FindDItem returns the first
+        // item-list index containing the local point, including disabled
+        // items; themes must not alter this guest-visible hit test.
+        let classic = findditem_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = findditem_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(
+            classic,
+            vec![
+                (0, TEST_SP + 8),
+                (1, TEST_SP + 8),
+                (-1, TEST_SP + 8),
+                (-1, TEST_SP + 8),
+            ]
+        );
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change FindDItem hit-test semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_getsetditem_useritem_records() {
+        // MTE 1992 p. 6-121..6-123: GetDialogItem and SetDialogItem expose
+        // item type, item handle/ProcPtr, and display rectangle. For
+        // application-defined userItems, `item` is the app's draw ProcPtr;
+        // theme chrome must not alter that record ABI or stack contract.
+        let classic = getsetditem_useritem_record_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = getsetditem_useritem_record_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.initial_get.item_type, 0);
+        assert_eq!(classic.initial_get.item, 0x0012_3456);
+        assert_eq!(classic.initial_get.rect, (12, 24, 36, 48));
+        assert_eq!(classic.initial_get.stack_after, TEST_SP + 18);
+        assert_eq!(classic.set_stack_after, TEST_SP + 16);
+        assert_eq!(classic.stored_type, 0);
+        assert_eq!(classic.stored_proc_ptr, 0x00AB_CDEF);
+        assert_eq!(classic.stored_rect, (50, 60, 70, 80));
+        assert_eq!(classic.post_set_get.item_type, 0);
+        assert_eq!(classic.post_set_get.item, 0x00AB_CDEF);
+        assert_eq!(classic.post_set_get.rect, (50, 60, 70, 80));
+        assert_eq!(classic.post_set_get.stack_after, TEST_SP + 18);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change GetDItem/SetDItem userItem record semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_getsetditem_text_control_records() {
+        // MTE 1992 p. 6-121..6-123 and IM:I I-421: GetDialogItem and
+        // SetDialogItem expose item type, item handle, and display rectangle.
+        // Text items use handles consumed by Get/SetDialogItemText; control
+        // items use ControlRecord handles. Theme chrome must not alter that
+        // guest ABI, DITL storage, side-map relinking, or stack contract.
+        let classic = getsetditem_text_control_record_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed =
+            getsetditem_text_control_record_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.text_initial_get.item_type, 16);
+        assert_ne!(classic.text_initial_get.item, 0);
+        assert_eq!(classic.text_initial_get.rect, (10, 20, 24, 160));
+        assert_eq!(classic.text_initial_get.stack_after, TEST_SP + 18);
+        assert_eq!(classic.text_set_stack_after, TEST_SP + 16);
+        assert!(!classic.text_old_handle_mapped_after);
+        let mapped_dialog = classic.text_new_handle_map_value_after.unwrap().0;
+        let text_new_handle = classic.text_post_set_get.item;
+        assert_ne!(mapped_dialog, 0);
+        assert_eq!(classic.text_new_handle_map_value_after.unwrap().1, 0);
+        assert_ne!(text_new_handle, classic.text_initial_get.item);
+        assert_eq!(classic.text_ditl_handle_after, text_new_handle);
+        assert_eq!(classic.text_ditl_rect_after, (12, 22, 28, 168));
+        assert_eq!(classic.text_ditl_type_after, 16);
+        assert_eq!(classic.text_stored_type_after, 16);
+        assert_eq!(classic.text_stored_rect_after, (12, 22, 28, 168));
+        assert_eq!(classic.text_cached_text_after, "Updated");
+        assert_eq!(classic.text_handle_bytes_after, b"Updated".to_vec());
+        assert_eq!(classic.text_post_set_get.item_type, 16);
+        assert_eq!(classic.text_post_set_get.item, text_new_handle);
+        assert_eq!(classic.text_post_set_get.rect, (12, 22, 28, 168));
+        assert_eq!(classic.text_post_set_get.stack_after, TEST_SP + 18);
+
+        assert_eq!(classic.control_initial_get.item_type, 4);
+        assert_ne!(classic.control_initial_get.item, 0);
+        assert_eq!(classic.control_initial_get.rect, (30, 40, 50, 140));
+        assert_eq!(classic.control_initial_get.stack_after, TEST_SP + 18);
+        assert_eq!(classic.control_set_stack_after, TEST_SP + 16);
+        assert!(!classic.control_old_handle_mapped_after);
+        let control_new_handle = classic.control_post_set_get.item;
+        assert_eq!(
+            classic.control_new_handle_map_value_after.unwrap().0,
+            mapped_dialog
+        );
+        assert_eq!(classic.control_new_handle_map_value_after.unwrap().1, 2);
+        assert_ne!(control_new_handle, classic.control_initial_get.item);
+        assert_eq!(classic.control_ditl_handle_after, control_new_handle);
+        assert_eq!(classic.control_ditl_rect_after, (42, 52, 62, 172));
+        assert_eq!(classic.control_ditl_type_after, 5);
+        assert_eq!(classic.control_stored_type_after, 5);
+        assert_eq!(classic.control_stored_rect_after, (42, 52, 62, 172));
+        assert_eq!(classic.control_record_rect_after, (42, 52, 62, 172));
+        assert_eq!(classic.control_value_after, Some(2));
+        assert_eq!(classic.control_post_set_get.item_type, 5);
+        assert_eq!(classic.control_post_set_get.item, control_new_handle);
+        assert_eq!(classic.control_post_set_get.rect, (42, 52, 62, 172));
+        assert_eq!(classic.control_post_set_get.stack_after, TEST_SP + 18);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change GetDItem/SetDItem text/control record semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_hide_show_ditem_visibility_records() {
+        // MTE 1992 p. 6-123..6-124: HideDialogItem moves an item's display
+        // rectangle offscreen by offsetting left/right, while ShowDialogItem
+        // restores the visible rectangle and queues redraw. Themes must not
+        // alter that item/control record state, hit testing, or stack ABI.
+        let classic = hide_show_ditem_visibility_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = hide_show_ditem_visibility_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.initial_get.item_type, 4);
+        assert_eq!(classic.initial_get.rect, (10, 20, 30, 120));
+        assert_eq!(classic.initial_get.stack_after, TEST_SP + 18);
+        assert_eq!(classic.hide_stack_after, TEST_SP + 6);
+        assert_eq!(classic.hidden_item_rect, (10, 16404, 30, 16504));
+        assert_eq!(classic.hidden_saved_rect, Some((10, 20, 30, 120)));
+        assert_eq!(classic.hidden_control_rect, (10, 16404, 30, 16504));
+        assert_eq!(classic.hidden_get.item_type, 4);
+        assert_eq!(classic.hidden_get.item, classic.initial_get.item);
+        assert_eq!(classic.hidden_get.rect, (10, 16404, 30, 16504));
+        assert_eq!(classic.hidden_get.stack_after, TEST_SP + 18);
+        assert_eq!(classic.hidden_find, (-1, TEST_SP + 8));
+        assert_eq!(classic.show_stack_after, TEST_SP + 6);
+        assert_eq!(classic.restored_item_rect, (10, 20, 30, 120));
+        assert_eq!(classic.restored_saved_rect, None);
+        assert_eq!(classic.restored_control_rect, (10, 20, 30, 120));
+        assert_eq!(classic.restored_get.item_type, 4);
+        assert_eq!(classic.restored_get.item, classic.initial_get.item);
+        assert_eq!(classic.restored_get.rect, (10, 20, 30, 120));
+        assert_eq!(classic.restored_get.stack_after, TEST_SP + 18);
+        assert_eq!(classic.restored_find, (0, TEST_SP + 8));
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change HideDItem/ShowDItem visibility semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_paramtext_storage_and_substitution() {
+        // MTE 1992 p. 6-129..6-130: ParamText stores up to four strings in
+        // DAStrings and substitutes ^0..^3 in subsequently created dialog or
+        // alert text. This low-memory/global text contract is app-visible and
+        // must not depend on the selected rendering provider.
+        let classic = paramtext_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = paramtext_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(
+            classic.initial_slots,
+            [
+                b"Doc".to_vec(),
+                b"42".to_vec(),
+                Vec::<u8>::new(),
+                b"Tail".to_vec(),
+            ]
+        );
+        assert!(classic.initial_da_handles.iter().all(|handle| *handle != 0));
+        assert_eq!(classic.initial_da_strings, classic.initial_slots);
+        assert_eq!(classic.initial_stack_after, TEST_SP + 16);
+        assert_eq!(classic.initial_substitution, "Cannot open Doc (42)Tail ^9");
+        assert_eq!(
+            classic.nil_slots,
+            [
+                b"NewDoc".to_vec(),
+                b"42".to_vec(),
+                Vec::<u8>::new(),
+                b"Tail".to_vec(),
+            ]
+        );
+        assert!(classic.nil_da_handles.iter().all(|handle| *handle != 0));
+        assert_eq!(classic.nil_da_strings, classic.nil_slots);
+        assert_eq!(classic.nil_da_handles[1], classic.initial_da_handles[1]);
+        assert_eq!(classic.nil_da_handles[2], classic.initial_da_handles[2]);
+        assert_eq!(classic.nil_da_handles[3], classic.initial_da_handles[3]);
+        assert_eq!(classic.nil_stack_after, TEST_SP + 16);
+        assert_eq!(classic.nil_substitution, "Cannot open NewDoc (42)Tail ^9");
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change ParamText storage or substitution semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_dialog_item_text_storage() {
+        // MTE 1992 p. 6-130..6-131: GetDialogItemText/GetIText returns the
+        // text in a statText/editText item, and SetDialogItemText/SetIText
+        // replaces that text. Theme rendering must not alter the text handle,
+        // cached item text, Pascal-string output, or stack ABI.
+        let classic = dialog_item_text_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = dialog_item_text_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.initial_get_text, b"Old".to_vec());
+        assert_eq!(classic.initial_get_stack_after, TEST_SP + 8);
+        assert_eq!(classic.set_stack_after, TEST_SP + 8);
+        assert_eq!(classic.handle_size_after_set, Some(11));
+        assert_eq!(classic.handle_bytes_after_set, b"Edited Text".to_vec());
+        assert_eq!(classic.cached_text_after_set, "Edited Text");
+        assert_eq!(classic.post_set_get_text, b"Edited Text".to_vec());
+        assert_eq!(classic.post_set_get_stack_after, TEST_SP + 8);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change Get/SetDialogItemText storage semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_select_dialog_item_text_selection() {
+        // MTE 1992 p. 6-131..6-132: SelectDialogItemText/SelIText sets the
+        // selection range in an editable text item and supports the 0..32767
+        // whole-text selection convention. The active editField, TERecord
+        // mirrored selection, non-edit no-op, and stack ABI are guest-visible
+        // Dialog Manager behavior, not theme rendering choices.
+        let classic = select_dialog_item_text_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = select_dialog_item_text_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.whole_selection, (0, 5));
+        assert_eq!(classic.whole_edit_field, 0);
+        assert_eq!(classic.whole_te_selection, (0, 5));
+        assert_eq!(classic.whole_stack_after, TEST_SP + 10);
+        assert_eq!(classic.normalized_selection, (2, 5));
+        assert_eq!(classic.normalized_edit_field, 0);
+        assert_eq!(classic.normalized_te_selection, (2, 5));
+        assert_eq!(classic.normalized_stack_after, TEST_SP + 10);
+        assert_eq!(classic.non_edit_selection, (1, 3));
+        assert_eq!(classic.non_edit_edit_field, 0);
+        assert_eq!(classic.non_edit_te_selection, (2, 5));
+        assert_eq!(classic.non_edit_stack_after, TEST_SP + 10);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change SelectDialogItemText selection semantics"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_drawdialog_useritem_pixels() {
+        // MTE 1992 p. 6-142: DrawDialog calls application-defined item
+        // draw procedures when their rectangles are in the update region.
+        // MTE 1992 p. 6-155 defines application-defined items as userItem
+        // records; theme chrome must not erase the app-owned rectangle.
+        let classic = drawdialog_useritem_pixel_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = drawdialog_useritem_pixel_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.0, 0xA5);
+        assert_eq!(classic.1, TEST_SP + 4);
+        assert_eq!(classic.2, 0xCAFE_BABE);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DrawDialog userItem pixel preservation"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_drawdialog_icon_item_pixels() {
+        // MTE 1992 p. 6-155: an icon item's item-list record names an
+        // `ICON` resource. MTE 1992 p. 7-63 defines `ICON` as application
+        // resource content used in dialog boxes; theme chrome must not alter
+        // those pixels inside the icon item rectangle.
+        let classic = drawdialog_icon_item_pixel_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = drawdialog_icon_item_pixel_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.0, [0xFF, 0xFF, 0xFF]);
+        assert_eq!(classic.1, TEST_SP + 4);
+        assert_eq!(classic.2, 0xCAFE_BABE);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DrawDialog ICON item pixels"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_drawdialog_cicn_item_pixels() {
+        // MTE 1992 p. 6-155: an icon item's item-list record names an
+        // `ICON` resource and optionally a same-ID `cicn` resource. MTE 1992
+        // p. 7-64 specifies that the Dialog Manager displays that color icon
+        // instead of the black-and-white icon on color displays.
+        let classic = drawdialog_cicn_item_pixel_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = drawdialog_cicn_item_pixel_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.0, [0x33, 0x55, 0x77]);
+        assert_eq!(classic.1, TEST_SP + 4);
+        assert_eq!(classic.2, 0xCAFE_BABE);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DrawDialog cicn item pixels"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_drawdialog_picture_item_pixels() {
+        // MTE 1992 p. 6-155: a picture item's item-list record names a
+        // `PICT` resource. That resource is application-supplied picture
+        // content, so theme chrome must not alter the pixels DrawDialog
+        // renders inside the picture item rectangle.
+        let classic = drawdialog_picture_item_pixel_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = drawdialog_picture_item_pixel_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.0, [0xFF, 0xFF, 0xFF]);
+        assert_eq!(classic.1, TEST_SP + 4);
+        assert_eq!(classic.2, 0xCAFE_BABE);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change DrawDialog PICT item pixels"
+        );
     }
 
     #[test]
@@ -12571,6 +20428,362 @@ mod tests {
     }
 
     #[test]
+    fn draw_button_systemless_theme_routes_dialog_chrome_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_button(&mut classic_bus, 20, 20, 40, 80, "", true);
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_button(&mut themed_bus, 20, 20, 40, 80, "", true);
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 16, 16),
+            "classic default-button round rect should leave its outer corner as background"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 16, 16),
+            "systemless-default provider chrome should own the default-button outline corner"
+        );
+    }
+
+    #[test]
+    fn draw_checkbox_and_radio_systemless_theme_route_dialog_chrome_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_checkbox(&mut classic_bus, 20, 20, 40, 120, "", true);
+        classic.draw_radio(&mut classic_bus, 50, 20, 70, 120, "", true);
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_checkbox(&mut themed_bus, 20, 20, 40, 120, "", true);
+        themed.draw_radio(&mut themed_bus, 50, 20, 70, 120, "", true);
+
+        let classic_checkbox_pixels =
+            count_set_pixels(&classic_bus, screen_base, row_bytes, 21, 20, 33, 32);
+        let themed_checkbox_pixels =
+            count_set_pixels(&themed_bus, screen_base, row_bytes, 21, 20, 33, 32);
+        assert!(
+            themed_checkbox_pixels > classic_checkbox_pixels,
+            "systemless-default dialog checkbox provider should draw a denser selected mark ({themed_checkbox_pixels} <= {classic_checkbox_pixels})"
+        );
+        let classic_radio_pixels =
+            count_set_pixels(&classic_bus, screen_base, row_bytes, 51, 20, 63, 32);
+        let themed_radio_pixels =
+            count_set_pixels(&themed_bus, screen_base, row_bytes, 51, 20, 63, 32);
+        assert!(
+            themed_radio_pixels > classic_radio_pixels,
+            "systemless-default dialog radio provider should draw a denser selected mark ({themed_radio_pixels} <= {classic_radio_pixels})"
+        );
+    }
+
+    #[test]
+    fn draw_popup_control_systemless_theme_routes_dialog_chrome_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_popup_control(&mut classic_bus, 20, 20, 40, 120, "");
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_popup_control(&mut themed_bus, 20, 20, 40, 120, "");
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 20, 20),
+            "classic popup round rect should leave its outer corner as background"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 20, 20),
+            "systemless-default popup provider should own the dialog popup corner"
+        );
+    }
+
+    #[test]
+    fn draw_edit_text_systemless_theme_routes_caret_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_edit_text(&mut classic_bus, 20, 20, 40, 100, "", false);
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_edit_text(&mut themed_bus, 20, 20, 40, 100, "", false);
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 22, 22),
+            "classic editText caret should remain a single vertical bar"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 22, 22),
+            "systemless-default provider should draw the caret cap"
+        );
+    }
+
+    #[test]
+    fn draw_edit_text_systemless_theme_routes_field_frame_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_edit_text(&mut classic_bus, 20, 20, 40, 100, "", false);
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_edit_text(&mut themed_bus, 20, 20, 40, 100, "", false);
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 19, 22),
+            "classic editText field should keep the upper interior clear"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 19, 22),
+            "systemless-default provider should draw focused editText field chrome"
+        );
+    }
+
+    #[test]
+    fn draw_dialog_systemless_theme_routes_disabled_edit_text_state_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 110, 190);
+        let items = vec![DialogItem {
+            item_type: 0x80 | 16,
+            rect: (20, 20, 44, 130),
+            text: "Disabled".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_dialog(
+            &mut classic_bus,
+            bounds,
+            1,
+            "",
+            &items,
+            0,
+            "",
+            0,
+            false,
+            0x2000,
+        );
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_dialog(
+            &mut themed_bus,
+            bounds,
+            1,
+            "",
+            &items,
+            0,
+            "",
+            0,
+            false,
+            0x2000,
+        );
+
+        let disabled_inner_x =
+            bounds.1 + items[0].rect.1 - TrapDispatcher::EDIT_TEXT_FRAME_OUTSET + 2;
+        let disabled_inner_y = bounds.0 + items[0].rect.0 + 2;
+        assert!(
+            !screen_pixel_is_set(
+                &classic_bus,
+                screen_base,
+                row_bytes,
+                disabled_inner_x,
+                disabled_inner_y
+            ),
+            "classic editText field should keep the disabled-state inner frame pixel clear"
+        );
+        assert!(
+            screen_pixel_is_set(
+                &themed_bus,
+                screen_base,
+                row_bytes,
+                disabled_inner_x,
+                disabled_inner_y
+            ),
+            "systemless-default provider should receive disabled editText field state"
+        );
+    }
+
+    #[test]
+    fn draw_dialog_systemless_theme_routes_disabled_standard_controls_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 140, 210);
+        let items = vec![
+            DialogItem {
+                item_type: 0x80 | 4,
+                rect: (20, 20, 40, 82),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 0x80 | 5,
+                rect: (52, 20, 72, 120),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 0x80 | 6,
+                rect: (84, 20, 104, 120),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_dialog(
+            &mut classic_bus,
+            bounds,
+            1,
+            "",
+            &items,
+            0,
+            "",
+            0,
+            false,
+            0x2000,
+        );
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_dialog(
+            &mut themed_bus,
+            bounds,
+            1,
+            "",
+            &items,
+            0,
+            "",
+            0,
+            false,
+            0x2000,
+        );
+
+        // The unselected disabled checkbox is intentionally pixel-equivalent
+        // after classic CDEF mark alignment; selected checkbox routing is
+        // covered by draw_checkbox_and_radio_systemless_theme_route_dialog_chrome_through_provider.
+        let probes = [
+            (
+                bounds.1 + items[0].rect.1 + 2,
+                bounds.0 + items[0].rect.0 + 2,
+            ),
+            (
+                bounds.1 + items[2].rect.1 + 2,
+                bounds.0 + items[2].rect.0 + TrapDispatcher::STANDARD_CONTROL_MARK_TOP_INSET,
+            ),
+        ];
+        for (x, y) in probes {
+            assert!(
+                !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, x, y),
+                "classic disabled DITL controls should keep standard appearance at ({x},{y})"
+            );
+            assert!(
+                screen_pixel_is_set(&themed_bus, screen_base, row_bytes, x, y),
+                "systemless-default provider should receive disabled DITL control state at ({x},{y})"
+            );
+        }
+    }
+
+    #[test]
+    fn draw_dialog_systemless_theme_routes_frame_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 100, 140);
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.draw_dialog(
+            &mut classic_bus,
+            bounds,
+            1,
+            "",
+            &[],
+            0,
+            "",
+            0,
+            false,
+            0x2000,
+        );
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.draw_dialog(&mut themed_bus, bounds, 1, "", &[], 0, "", 0, false, 0x2000);
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 50, 38),
+            "classic dBoxProc leaves the gap between outer and inner borders clear"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 38),
+            "systemless-default provider should own dialog frame accent pixels"
+        );
+    }
+
+    #[test]
+    fn draw_window_frame_systemless_theme_routes_border_through_provider() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup();
+        classic.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        classic.window_bounds = (40, 40, 100, 140);
+        classic.window_proc_id = 1;
+        classic.draw_window_frame(&mut classic_bus);
+
+        let (mut themed, _themed_cpu, mut themed_bus) = setup();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        themed.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        themed.window_bounds = (40, 40, 100, 140);
+        themed.window_proc_id = 1;
+        themed.draw_window_frame(&mut themed_bus);
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 50, 34),
+            "classic dBoxProc window frame keeps the structure gap clear"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 34),
+            "systemless-default provider should own window frame accent pixels"
+        );
+    }
+
+    #[test]
     fn draw_dialog_preserves_existing_user_item_pixels() {
         // UserItems are application-owned drawing areas. Games often draw
         // into them before calling DrawDialog; the Dialog Manager redraw
@@ -12772,6 +20985,63 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_byte(probe_addr), 0xFF);
+    }
+
+    #[test]
+    fn updtdialog_queues_user_item_draw_proc_for_intersecting_update_region() {
+        // MTE 1992, 6-142 to 6-143: UpdateDialog redraws only items in
+        // the supplied update region and calls application-defined item
+        // draw procedures.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(100 * 100);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 100);
+        bus.write_word(dialog_ptr + 108, 2); // plain dialog box
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0,
+                    rect: (8, 8, 24, 32),
+                    proc_ptr: 0x500000,
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 0,
+                    rect: (60, 60, 80, 80),
+                    proc_ptr: 0x600000,
+                    ..Default::default()
+                },
+            ],
+        );
+        let update_rgn_ptr = bus.alloc(10);
+        let update_rgn = bus.alloc(4);
+        bus.write_long(update_rgn, update_rgn_ptr);
+        bus.write_word(update_rgn_ptr, 10);
+        bus.write_word(update_rgn_ptr + 2, 0);
+        bus.write_word(update_rgn_ptr + 4, 0);
+        bus.write_word(update_rgn_ptr + 6, 40);
+        bus.write_word(update_rgn_ptr + 8, 40);
+
+        bus.write_long(TEST_SP, update_rgn);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x178, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(
+            disp.modeless_dialog_draw_proc_queue
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(dialog_ptr, 0x500000, 1)]
+        );
     }
 
     #[test]
@@ -13210,21 +21480,21 @@ mod tests {
         disp.front_window = dialog_ptr;
         disp.window_bounds = bounds;
 
-        for y in 95u32..155 {
-            for x in 95u32..205 {
+        for y in 92u32..158 {
+            for x in 92u32..208 {
                 bus.write_byte(screen_base + y * row_bytes + x, 0xCC);
             }
         }
 
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 60 * 110]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116]);
 
         bus.write_long(TEST_SP, dialog_ptr);
         let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
 
-        for y in 95u32..155 {
-            for x in 95u32..205 {
+        for y in 92u32..158 {
+            for x in 92u32..208 {
                 assert_eq!(
                     bus.read_byte(screen_base + y * row_bytes + x),
                     0x33,
@@ -13271,6 +21541,57 @@ mod tests {
             1,
             "non-front CloseDialog should not consume the saved front-window stack entry"
         );
+    }
+
+    #[test]
+    fn close_dialog_removes_window_but_preserves_caller_storage() {
+        // MTE 1992 pp. 6-119..6-120: CloseDialog releases dialog-owned
+        // items but does not dispose caller-supplied DialogRecord or item-list
+        // storage.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        let storage_ptr = bus.alloc(170);
+        let ditl = build_test_ditl_item(8, (10, 12, 24, 140), b"Static");
+        let (items_handle, items_ptr) = install_ditl_handle_for_test(&mut bus, &ditl);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            storage_ptr,
+            (80, 90, 150, 260),
+            false,
+            4,
+            0xFFFF_FFFF,
+            items_handle,
+        );
+
+        let text_handle = ditl_item_handle_field(&bus, items_ptr, 1);
+        let text_ptr = bus.read_long(text_handle);
+        let te_handle = bus.read_long(dialog_ptr + 160);
+        let te_ptr = bus.read_long(te_handle);
+        assert_ne!(text_handle, 0);
+        assert_ne!(text_ptr, 0);
+        assert_ne!(te_handle, 0);
+        assert_ne!(te_ptr, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert!(!disp.window_list.contains(&dialog_ptr));
+        assert_eq!(bus.get_alloc_size(storage_ptr), Some(170));
+        assert_eq!(bus.get_alloc_size(items_handle), Some(4));
+        assert_eq!(bus.get_alloc_size(items_ptr), Some(ditl.len() as u32));
+        assert_eq!(bus.get_alloc_size(text_ptr), None);
+        assert_eq!(bus.get_alloc_size(text_handle), None);
+        assert_eq!(bus.get_alloc_size(te_ptr), None);
+        assert_eq!(bus.get_alloc_size(te_handle), None);
+        assert!(!disp.dialog_items.contains_key(&dialog_ptr));
+        assert!(!disp.dialog_item_handles.contains_key(&text_handle));
     }
 
     // ---- DisposDialog ($A983) ----
@@ -13382,7 +21703,7 @@ mod tests {
             }],
         );
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 60 * 110]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116]);
         disp.window_stack
             .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
 
@@ -13394,6 +21715,203 @@ mod tests {
         assert_eq!(disp.front_window, dialog_ptr);
         assert!(disp.dialog_items.contains_key(&dialog_ptr));
         assert!(disp.dialog_saved_pixels.contains_key(&dialog_ptr));
+    }
+
+    #[test]
+    fn dispose_dialog_disposes_allocated_storage_and_items() {
+        // MTE 1992 p. 6-120: DisposeDialog calls CloseDialog, then releases
+        // the copied item list and DialogRecord allocated for a NIL dStorage.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        let ditl = build_test_ditl_item(8, (10, 12, 24, 140), b"Static");
+        let (items_handle, items_ptr) = install_ditl_handle_for_test(&mut bus, &ditl);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            false,
+            4,
+            0xFFFF_FFFF,
+            items_handle,
+        );
+
+        let text_handle = ditl_item_handle_field(&bus, items_ptr, 1);
+        let text_ptr = bus.read_long(text_handle);
+        let te_handle = bus.read_long(dialog_ptr + 160);
+        let te_ptr = bus.read_long(te_handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.get_alloc_size(text_ptr), None);
+        assert_eq!(bus.get_alloc_size(text_handle), None);
+        assert_eq!(bus.get_alloc_size(te_ptr), None);
+        assert_eq!(bus.get_alloc_size(te_handle), None);
+        assert_eq!(bus.get_alloc_size(items_ptr), None);
+        assert_eq!(bus.get_alloc_size(items_handle), None);
+        assert_eq!(bus.get_alloc_size(dialog_ptr), None);
+        assert!(!disp.dialog_items.contains_key(&dialog_ptr));
+    }
+
+    #[test]
+    fn dispose_dialog_releases_text_handles() {
+        // IM:I I-413 and I-425: CloseDialog releases standard dialog items;
+        // DisposeDialog inherits that item cleanup before freeing the record.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        let ditl = build_test_ditl_item(16, (10, 12, 24, 140), b"Edit");
+        let (items_handle, items_ptr) = install_ditl_handle_for_test(&mut bus, &ditl);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            false,
+            4,
+            0xFFFF_FFFF,
+            items_handle,
+        );
+        let item_text_handle = ditl_item_handle_field(&bus, items_ptr, 1);
+        let item_text_ptr = bus.read_long(item_text_handle);
+        let dialog_te_handle = bus.read_long(dialog_ptr + 160);
+        let dialog_te_ptr = bus.read_long(dialog_te_handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.get_alloc_size(item_text_ptr), None);
+        assert_eq!(bus.get_alloc_size(item_text_handle), None);
+        assert_eq!(bus.get_alloc_size(dialog_te_ptr), None);
+        assert_eq!(bus.get_alloc_size(dialog_te_handle), None);
+        assert!(!disp.dialog_item_handles.contains_key(&item_text_handle));
+    }
+
+    #[test]
+    fn dispose_dialog_releases_control_mappings() {
+        // IM:I I-413 and I-425: dialog-owned controls are released with the
+        // dialog, including dispatcher-side control mappings.
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        let ditl = build_test_ditl_item(4, (36, 40, 58, 120), b"OK");
+        let (items_handle, _items_ptr) = install_ditl_handle_for_test(&mut bus, &ditl);
+
+        let (_sp, dialog_ptr) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 150, 260),
+            false,
+            4,
+            0xFFFF_FFFF,
+            items_handle,
+        );
+        let box_ptr = bus.alloc(8);
+        let item_ptr = bus.alloc(4);
+        let type_ptr = bus.alloc(2);
+        let snapshot = get_ditem_snapshot_for_test(
+            &mut disp, &mut cpu, &mut bus, dialog_ptr, 1, box_ptr, item_ptr, type_ptr,
+        );
+        let control_handle = snapshot.item;
+        let control_ptr = bus.read_long(control_handle);
+        assert_ne!(control_handle, 0);
+        assert_ne!(control_ptr, 0);
+        assert_eq!(
+            disp.dialog_control_handles.get(&control_handle),
+            Some(&(dialog_ptr, 1))
+        );
+        assert!(disp.control_proc_ids.contains_key(&control_ptr));
+        let aux_handle = disp.ensure_control_aux_record(&mut bus, control_handle);
+        let aux_ptr = bus.read_long(aux_handle);
+        assert_ne!(aux_handle, 0);
+        assert_ne!(aux_ptr, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.get_alloc_size(control_ptr), None);
+        assert_eq!(bus.get_alloc_size(control_handle), None);
+        assert_eq!(bus.get_alloc_size(aux_ptr), None);
+        assert_eq!(bus.get_alloc_size(aux_handle), None);
+        assert!(disp.control_aux_state(control_handle).is_none());
+        assert!(!disp.dialog_control_handles.contains_key(&control_handle));
+        assert!(!disp.control_proc_ids.contains_key(&control_ptr));
+    }
+
+    #[test]
+    fn dispose_dialog_clears_visible_snapshot() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        disp.window_list = vec![dialog_ptr];
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds: (10, 20, 30, 40),
+                pixels: vec![0x55; 400],
+            },
+        );
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(!disp.dialog_visible_snapshots.contains_key(&dialog_ptr));
+    }
+
+    #[test]
+    fn dispose_dialog_clears_retained_click_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        disp.window_list = vec![dialog_ptr];
+        disp.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
+            dialog_ptr,
+            item_no: 1,
+            rect: (10, 20, 30, 40),
+            title: "OK".to_string(),
+            is_default: true,
+            highlighted: true,
+            delivered_to_app: false,
+        });
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(disp.retained_modal_dialog_click.is_none());
+    }
+
+    #[test]
+    fn dispose_dialog_with_active_tracking_cancels_tracking() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        disp.dialog_tracking = Some(DialogTrackingState {
+            dialog_ptr,
+            ..Default::default()
+        });
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(disp.dialog_tracking.is_none());
     }
 
     #[test]
@@ -13610,6 +22128,90 @@ mod tests {
     }
 
     #[test]
+    fn modal_dialog_button_tracking_systemless_theme_routes_pressed_state_through_provider() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (0, 0, 100, 220);
+        let item_rect = (60, 120, 80, 180);
+        let screen_rect = TrapDispatcher::dialog_item_screen_rect(bounds, item_rect);
+
+        disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        disp.draw_button(
+            &mut bus,
+            screen_rect.0,
+            screen_rect.1,
+            screen_rect.2,
+            screen_rect.3,
+            "",
+            true,
+        );
+
+        let probe_x = 150;
+        let probe_y = 70;
+        assert!(
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, probe_x, probe_y),
+            "unpressed provider button interior should start clear"
+        );
+
+        let dialog_ptr = bus.alloc(170);
+        disp.dialog_tracking = Some(DialogTrackingState {
+            dialog_ptr,
+            bounds,
+            items: vec![DialogItem {
+                item_type: 4,
+                rect: item_rect,
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            active_button: Some(DialogButtonTrackingState {
+                item_no: 1,
+                rect: item_rect,
+                title: String::new(),
+                is_default: true,
+                highlighted: false,
+            }),
+            ..Default::default()
+        });
+
+        disp.mouse_button = true;
+        disp.mouse_pos = (probe_y, probe_x);
+        disp.handle_dialog_button_tracking(&mut bus);
+
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, probe_x, probe_y),
+            "inside tracking should paint the provider pressed fill"
+        );
+        assert_eq!(
+            disp.dialog_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.active_button.as_ref())
+                .map(|button| button.highlighted),
+            Some(true)
+        );
+
+        disp.mouse_pos = (40, 50);
+        disp.handle_dialog_button_tracking(&mut bus);
+
+        assert!(
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, probe_x, probe_y),
+            "outside tracking should redraw unpressed provider chrome"
+        );
+        assert_eq!(
+            disp.dialog_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.active_button.as_ref())
+                .map(|button| button.highlighted),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn retained_modal_dialog_capture_does_not_apply_to_modeless_dialogs() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
@@ -13667,6 +22269,84 @@ mod tests {
         assert!(disp.dialog_tracking.is_none());
     }
 
+    #[test]
+    fn dispos_dialog_clears_dialog_scoped_side_maps_for_disposed_dialog() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let other_dialog_ptr = 0x210000u32;
+        let text_handle = 0x300000u32;
+        let other_text_handle = 0x300010u32;
+        let ctrl_handle = 0x300020u32;
+        let other_ctrl_handle = 0x300030u32;
+
+        disp.dialog_items
+            .insert(dialog_ptr, vec![DialogItem::default()]);
+        disp.dialog_items
+            .insert(other_dialog_ptr, vec![DialogItem::default()]);
+        disp.dialog_item_handles
+            .insert(text_handle, (dialog_ptr, 0));
+        disp.dialog_item_handles
+            .insert(other_text_handle, (other_dialog_ptr, 0));
+        disp.dialog_control_handles
+            .insert(ctrl_handle, (dialog_ptr, 1));
+        disp.dialog_control_handles
+            .insert(other_ctrl_handle, (other_dialog_ptr, 1));
+        disp.dialog_control_values.insert((dialog_ptr, 1), 1);
+        disp.dialog_control_values.insert((other_dialog_ptr, 1), 1);
+        disp.hidden_dialog_item_rects
+            .insert((dialog_ptr, 1), (10, 20, 30, 40));
+        disp.hidden_dialog_item_rects
+            .insert((other_dialog_ptr, 1), (50, 60, 70, 80));
+        disp.dialog_item_popup_menus.insert((dialog_ptr, 1), 900);
+        disp.dialog_item_popup_menus
+            .insert((other_dialog_ptr, 1), 901);
+        disp.dialog_popup_original_rects
+            .insert((dialog_ptr, 1), (10, 20, 30, 130));
+        disp.dialog_popup_original_rects
+            .insert((other_dialog_ptr, 1), (50, 60, 70, 180));
+        disp.dialog_cancel_items.insert(dialog_ptr, 2);
+        disp.dialog_cancel_items.insert(other_dialog_ptr, 3);
+        disp.pending_dialog_popup_menu = Some(PendingDialogPopupMenu {
+            dialog_ptr,
+            item_no: 1,
+            menu_id: 900,
+            rect: (10, 20, 30, 130),
+        });
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(!disp.dialog_items.contains_key(&dialog_ptr));
+        assert!(disp.dialog_items.contains_key(&other_dialog_ptr));
+        assert!(!disp.dialog_item_handles.contains_key(&text_handle));
+        assert!(disp.dialog_item_handles.contains_key(&other_text_handle));
+        assert!(!disp.dialog_control_handles.contains_key(&ctrl_handle));
+        assert!(disp.dialog_control_handles.contains_key(&other_ctrl_handle));
+        assert!(!disp.dialog_control_values.contains_key(&(dialog_ptr, 1)));
+        assert!(disp
+            .dialog_control_values
+            .contains_key(&(other_dialog_ptr, 1)));
+        assert!(!disp.hidden_dialog_item_rects.contains_key(&(dialog_ptr, 1)));
+        assert!(disp
+            .hidden_dialog_item_rects
+            .contains_key(&(other_dialog_ptr, 1)));
+        assert!(!disp.dialog_item_popup_menus.contains_key(&(dialog_ptr, 1)));
+        assert!(disp
+            .dialog_item_popup_menus
+            .contains_key(&(other_dialog_ptr, 1)));
+        assert!(!disp
+            .dialog_popup_original_rects
+            .contains_key(&(dialog_ptr, 1)));
+        assert!(disp
+            .dialog_popup_original_rects
+            .contains_key(&(other_dialog_ptr, 1)));
+        assert!(!disp.dialog_cancel_items.contains_key(&dialog_ptr));
+        assert!(disp.dialog_cancel_items.contains_key(&other_dialog_ptr));
+        assert!(disp.pending_dialog_popup_menu.is_none());
+    }
+
     // Regression: games that run their own event loop (e.g. Escape
     // Velocity's "enter pilot/ship name" text dialogs) call
     // GetNewDialog → custom event loop → DisposDialog without ever
@@ -13677,10 +22357,10 @@ mod tests {
     // whose PaintBehind/CalcVisBehind is supposed to restore the
     // underlying content. These three tests pin that contract.
     //
-    // Save/restore geometry note: save_dialog_pixels adds a 5-pixel
-    // margin around the bounds (for dBoxProc drop-shadow). The tests
-    // use bounds (100,100,150,200) → save area (95,95)..(155,205) =
-    // 60 rows × 110 cols = 6600 bytes.
+    // Save/restore geometry note: save_dialog_pixels adds the dBoxProc
+    // structure margin around the bounds. The tests use bounds
+    // (100,100,150,200) → save area (92,92)..(158,208) =
+    // 66 rows × 116 cols = 7656 bytes.
 
     #[test]
     fn disposdialog_restores_saved_background_pixels() {
@@ -13698,24 +22378,24 @@ mod tests {
 
         // Paint the save area with 0xCC — the "dialog pixels" that
         // should be overwritten on dispose.
-        for y in 95u32..155 {
-            for x in 95u32..205 {
+        for y in 92u32..158 {
+            for x in 92u32..208 {
                 bus.write_byte(screen_base + y * row_bytes + x, 0xCC);
             }
         }
 
         // Install a saved background snapshot filled with 0x33 (the
-        // "what was behind the dialog" pattern). 60*110=6600 bytes.
+        // "what was behind the dialog" pattern). 66*116=7656 bytes.
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 60 * 110]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116]);
 
         bus.write_long(TEST_SP, dialog_ptr);
         let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
 
         // Every byte in the save area should now be 0x33, not 0xCC.
-        for y in 95u32..155 {
-            for x in 95u32..205 {
+        for y in 92u32..158 {
+            for x in 92u32..208 {
                 let addr = screen_base + y * row_bytes + x;
                 let got = bus.read_byte(addr);
                 assert_eq!(
@@ -13733,7 +22413,7 @@ mod tests {
 
     #[test]
     fn disposdialog_restore_is_bounded_by_save_margin() {
-        // Pin that the restore writes EXACTLY the 5-pixel-margin
+        // Pin that the restore writes exactly the dBoxProc structure-margin
         // rectangle and does not stomp adjacent bytes. This catches
         // off-by-one errors in the save/restore geometry.
         let (mut disp, mut cpu, mut bus) = setup();
@@ -13755,7 +22435,7 @@ mod tests {
         }
 
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 60 * 110]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116]);
 
         bus.write_long(TEST_SP, dialog_ptr);
         disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
@@ -13765,23 +22445,23 @@ mod tests {
         // Bytes OUTSIDE the save area must still be 0xAA.
         // Above the save rect:
         for x in 85u32..215 {
-            assert_eq!(bus.read_byte(screen_base + 94 * row_bytes + x), 0xAA);
+            assert_eq!(bus.read_byte(screen_base + 91 * row_bytes + x), 0xAA);
         }
         // Below the save rect:
         for x in 85u32..215 {
-            assert_eq!(bus.read_byte(screen_base + 155 * row_bytes + x), 0xAA);
+            assert_eq!(bus.read_byte(screen_base + 158 * row_bytes + x), 0xAA);
         }
         // Left of the save rect:
         for y in 85u32..165 {
-            assert_eq!(bus.read_byte(screen_base + y * row_bytes + 94), 0xAA);
+            assert_eq!(bus.read_byte(screen_base + y * row_bytes + 91), 0xAA);
         }
         // Right of the save rect:
         for y in 85u32..165 {
-            assert_eq!(bus.read_byte(screen_base + y * row_bytes + 205), 0xAA);
+            assert_eq!(bus.read_byte(screen_base + y * row_bytes + 208), 0xAA);
         }
         // Bytes INSIDE the save area must now be 0x33.
-        for y in 95u32..155 {
-            for x in 95u32..205 {
+        for y in 92u32..158 {
+            for x in 92u32..208 {
                 assert_eq!(bus.read_byte(screen_base + y * row_bytes + x), 0x33);
             }
         }
@@ -13850,7 +22530,7 @@ mod tests {
             }
         }
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x99; 60 * 110]);
+            .insert(dialog_ptr, vec![0x99; 66 * 116]);
 
         bus.write_long(TEST_SP, dialog_ptr);
         disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
@@ -15351,7 +24031,12 @@ mod tests {
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
-            popup_draws: vec![(20, 30, 42, 180, String::new())],
+            popup_draws: vec![DialogPopupDraw {
+                rect: (20, 30, 42, 180),
+                title: String::new(),
+                enabled: true,
+                pressed: false,
+            }],
             active_popup: None,
             active_button: None,
             active_user_item: None,
@@ -15371,6 +24056,81 @@ mod tests {
                 .as_ref()
                 .is_some_and(|tracking| tracking.rendered_pixels_final),
             "ModalDialog should re-snapshot after popup redraw"
+        );
+    }
+
+    #[test]
+    fn modal_dialog_popup_resnapshot_preserves_theme_pressed_and_inactive_states() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
+
+        let row_bytes = 64u32;
+        let screen_base = bus.alloc(row_bytes * 160);
+        for i in 0..row_bytes * 160 {
+            bus.write_byte(screen_base + i, 0);
+        }
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 160, 1);
+        cpu.write_reg(Register::A7, TEST_SP);
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr: 0x200000,
+            bounds: (0, 0, 120, 220),
+            title: String::new(),
+            proc_id: 2,
+            items: Vec::new(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: vec![
+                DialogPopupDraw {
+                    rect: (20, 30, 42, 180),
+                    title: String::new(),
+                    enabled: true,
+                    pressed: true,
+                },
+                DialogPopupDraw {
+                    rect: (60, 30, 82, 180),
+                    title: String::new(),
+                    enabled: false,
+                    pressed: false,
+                },
+            ],
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 35, 25),
+            "pressed popup redraw should preserve the provider pressed fill"
+        );
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 32, 62),
+            "inactive popup redraw should preserve the provider inactive frame"
+        );
+        assert!(
+            disp.dialog_tracking
+                .as_ref()
+                .is_some_and(|tracking| tracking.rendered_pixels_final),
+            "ModalDialog should re-snapshot after stateful popup redraw"
         );
     }
 
@@ -15446,8 +24206,14 @@ mod tests {
         );
         let tracking = disp.dialog_tracking.as_ref().unwrap();
         assert!(tracking.rendered_pixels_final);
-        assert_eq!(tracking.rendered_pixels.len(), 30 * 30);
-        let snapshot_index = (7 + 5) * 30 + (9 + 5);
+        let snapshot_width = 20 + (TrapDispatcher::DBOX_FRAME_MARGIN as usize * 2);
+        let snapshot_height = 20 + (TrapDispatcher::DBOX_FRAME_MARGIN as usize * 2);
+        assert_eq!(
+            tracking.rendered_pixels.len(),
+            snapshot_width * snapshot_height
+        );
+        let snapshot_index = (7 + TrapDispatcher::DBOX_FRAME_MARGIN as usize) * snapshot_width
+            + (9 + TrapDispatcher::DBOX_FRAME_MARGIN as usize);
         assert_eq!(tracking.rendered_pixels[snapshot_index], 0x44);
     }
 
@@ -15465,8 +24231,11 @@ mod tests {
         disp.front_window = dialog_ptr;
         disp.window_bounds = (0, 0, 20, 20);
 
-        let mut rendered_pixels = vec![0x00; 30 * 30];
-        let snapshot_index = (7 + 5) * 30 + (9 + 5);
+        let snapshot_width = 20 + (TrapDispatcher::DBOX_FRAME_MARGIN as usize * 2);
+        let snapshot_height = 20 + (TrapDispatcher::DBOX_FRAME_MARGIN as usize * 2);
+        let mut rendered_pixels = vec![0x00; snapshot_width * snapshot_height];
+        let snapshot_index = (7 + TrapDispatcher::DBOX_FRAME_MARGIN as usize) * snapshot_width
+            + (9 + TrapDispatcher::DBOX_FRAME_MARGIN as usize);
         rendered_pixels[snapshot_index] = 0x44;
 
         disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
@@ -15570,7 +24339,9 @@ mod tests {
         let tracking = disp.dialog_tracking.as_ref().unwrap();
         assert!(tracking.draw_procs_done);
         assert!(tracking.rendered_pixels_final);
-        let snapshot_index = (7 + 5) * 30 + (9 + 5);
+        let snapshot_width = 20 + (TrapDispatcher::DBOX_FRAME_MARGIN as usize * 2);
+        let snapshot_index = (7 + TrapDispatcher::DBOX_FRAME_MARGIN as usize) * snapshot_width
+            + (9 + TrapDispatcher::DBOX_FRAME_MARGIN as usize);
         assert_eq!(tracking.rendered_pixels[snapshot_index], 0x44);
     }
 
@@ -16474,6 +25245,388 @@ mod tests {
     }
 
     #[test]
+    fn teupdate_systemless_theme_routes_active_caret_through_provider() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let classic_te_handle = make_te_with_text(&mut classic, &mut classic_bus, b"HELLO");
+        let classic_te_ptr = classic_bus.read_long(classic_te_handle);
+        classic_bus.write_word(classic_te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+        classic_bus.write_word(classic_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        classic_bus.write_word(classic_te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
+        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = classic.screen_mode;
+        for i in 0..(row_bytes * 80) {
+            classic_bus.write_byte(screen_base + i, 0);
+        }
+        classic_bus.write_long(TEST_SP, classic_te_handle);
+        classic_bus.write_word(TEST_SP + 4, 0);
+        classic_bus.write_word(TEST_SP + 6, 0);
+        classic_bus.write_word(TEST_SP + 8, 40);
+        classic_bus.write_word(TEST_SP + 10, 120);
+        let result = classic.dispatch_dialog(true, 0x1D3, &mut classic_cpu, &mut classic_bus);
+        assert!(result.unwrap().is_ok());
+
+        let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let themed_te_handle = make_te_with_text(&mut themed, &mut themed_bus, b"HELLO");
+        let themed_te_ptr = themed_bus.read_long(themed_te_handle);
+        themed_bus.write_word(themed_te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+        themed_bus.write_word(themed_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        themed_bus.write_word(themed_te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
+        for i in 0..(row_bytes * 80) {
+            themed_bus.write_byte(screen_base + i, 0);
+        }
+        themed_bus.write_long(TEST_SP, themed_te_handle);
+        themed_bus.write_word(TEST_SP + 4, 0);
+        themed_bus.write_word(TEST_SP + 6, 0);
+        themed_bus.write_word(TEST_SP + 8, 40);
+        themed_bus.write_word(TEST_SP + 10, 120);
+        let result = themed.dispatch_dialog(true, 0x1D3, &mut themed_cpu, &mut themed_bus);
+        assert!(result.unwrap().is_ok());
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 0, 0),
+            "classic TEUpdate should remain text-only in this HLE path"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 0, 0),
+            "systemless-default TEUpdate should draw provider-owned caret chrome"
+        );
+    }
+
+    #[test]
+    fn teupdate_classic_active_selection_inverts_selected_text_range() {
+        fn render_classic_selection(selected: bool) -> u64 {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+            let te_ptr = bus.read_long(te_handle);
+            bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+            bus.write_word(
+                te_ptr + TrapDispatcher::TE_SEL_END_OFFSET,
+                if selected { 3 } else { 0 },
+            );
+            let line_height = bus.read_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET) as i16;
+            let port = bus.read_long(te_ptr + TrapDispatcher::TE_IN_PORT_OFFSET);
+            let base = bus.read_long(port + 2);
+            let row_bytes = u32::from(bus.read_word(port + 6) & 0x3FFF);
+            for i in 0..(row_bytes * 80) {
+                bus.write_byte(base + i, 0);
+            }
+            bus.write_long(TEST_SP, te_handle);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_word(TEST_SP + 6, 0);
+            bus.write_word(TEST_SP + 8, 40);
+            bus.write_word(TEST_SP + 10, 120);
+            let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            sum_screen_bytes(&bus, base, row_bytes, 0, 0, line_height, 32)
+        }
+
+        // IM:I I-375/I-385 and Text 1993 p. 2-80: active non-empty TextEdit
+        // selections are highlighted. Classic highlighting is inverse video
+        // over the selected character range, so the selected render must
+        // differ from the same active insertion-point redraw.
+        let selected = render_classic_selection(true);
+        let unselected = render_classic_selection(false);
+        assert!(
+            selected != unselected,
+            "classic TEUpdate should invert active non-empty selection pixels; selected={selected}, unselected={unselected}"
+        );
+    }
+
+    #[test]
+    fn teupdate_systemless_theme_routes_multiline_selection_through_provider() {
+        fn render_themed_multiline_selection(selected: bool) -> (u16, u16, i16, u64, u64) {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
+            let te_handle = make_te_with_text(&mut disp, &mut bus, b"A\rB");
+            let te_ptr = bus.read_long(te_handle);
+            bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+            bus.write_word(
+                te_ptr + TrapDispatcher::TE_SEL_END_OFFSET,
+                if selected { 3 } else { 0 },
+            );
+            let line_height = bus.read_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET) as i16;
+            let (base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+            for i in 0..(row_bytes * 80) {
+                bus.write_byte(base + i, 0);
+            }
+            bus.write_long(TEST_SP, te_handle);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_word(TEST_SP + 6, 0);
+            bus.write_word(TEST_SP + 8, 40);
+            bus.write_word(TEST_SP + 10, 120);
+            let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+
+            let first_line = sum_screen_bytes(&bus, base, row_bytes, 0, 0, line_height, 24);
+            let second_line =
+                sum_screen_bytes(&bus, base, row_bytes, line_height, 0, line_height * 2, 24);
+            (
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+                line_height,
+                first_line,
+                second_line,
+            )
+        }
+
+        let selected = render_themed_multiline_selection(true);
+        let unselected = render_themed_multiline_selection(false);
+
+        // Text 1993, appendix C: TERec.active marks whether the selection
+        // range is highlighted or the caret is displayed; selStart/selEnd are
+        // byte offsets into the contiguous selection range.
+        assert_eq!((selected.0, selected.1), (0, 3));
+        assert_eq!((unselected.0, unselected.1), (0, 0));
+        assert_eq!(selected.2, unselected.2);
+        assert!(
+            selected.4 != unselected.4,
+            "systemless-default TEUpdate should draw provider selection chrome on the second selected line"
+        );
+    }
+
+    #[test]
+    fn teupdate_systemless_theme_renders_reversed_selection_without_rewriting_offsets() {
+        fn render_themed_selection(sel_start: u16, sel_end: u16) -> (u16, u16, u16, i16, u32, u32) {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
+            let te_handle = make_te_with_text(&mut disp, &mut bus, b"A\rB");
+            let te_ptr = bus.read_long(te_handle);
+            bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, sel_start);
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, sel_end);
+            let line_height = bus.read_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET) as i16;
+            let (base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+            for i in 0..(row_bytes * 80) {
+                bus.write_byte(base + i, 0);
+            }
+
+            bus.write_long(TEST_SP, te_handle);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_word(TEST_SP + 6, 0);
+            bus.write_word(TEST_SP + 8, 40);
+            bus.write_word(TEST_SP + 10, 120);
+            let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+            let first_line_bottom_band =
+                count_set_pixels(&bus, base, row_bytes, line_height - 2, 0, line_height, 24);
+            let second_line_bottom_band = count_set_pixels(
+                &bus,
+                base,
+                row_bytes,
+                line_height * 2 - 2,
+                0,
+                line_height * 2,
+                24,
+            );
+
+            (
+                bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+                bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+                line_height,
+                first_line_bottom_band,
+                second_line_bottom_band,
+            )
+        }
+
+        let forward = render_themed_selection(0, 3);
+        let reversed = render_themed_selection(3, 0);
+
+        // IM:I I-385 says TESetSelect owns selection-range changes, while
+        // IM:I I-387 / Text 1993 p. 2-88 define TEUpdate as redraw. The theme
+        // path can normalize reversed endpoints for drawing but must not
+        // rewrite the guest TERec.
+        assert_eq!(forward.0, 3);
+        assert_eq!(reversed.0, 3);
+        assert_eq!((forward.1, forward.2), (0, 3));
+        assert_eq!((reversed.1, reversed.2), (3, 0));
+        assert_eq!(forward.3, reversed.3);
+        assert!(forward.4 > 0 && forward.5 > 0);
+        assert_eq!(
+            (reversed.4, reversed.5),
+            (forward.4, forward.5),
+            "systemless-default TEUpdate should render reversed selection ranges like their normalized range without rewriting selStart/selEnd"
+        );
+    }
+
+    #[test]
+    fn teupdate_systemless_theme_routes_inactive_outline_selection_through_provider() {
+        let (mut inactive_plain, mut inactive_plain_cpu, mut inactive_plain_bus) =
+            setup_with_port();
+        inactive_plain.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let inactive_plain_te_handle =
+            make_te_with_text(&mut inactive_plain, &mut inactive_plain_bus, b"HELLO");
+        let inactive_plain_te_ptr = inactive_plain_bus.read_long(inactive_plain_te_handle);
+        inactive_plain_bus.write_word(inactive_plain_te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0);
+        inactive_plain_bus.write_word(
+            inactive_plain_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET,
+            0,
+        );
+        inactive_plain_bus.write_word(inactive_plain_te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 3);
+        let (plain_base, plain_row_bytes, _screen_w, _screen_h, _pixel_size) =
+            inactive_plain.screen_mode;
+        for i in 0..(plain_row_bytes * 80) {
+            inactive_plain_bus.write_byte(plain_base + i, 0);
+        }
+        inactive_plain_bus.write_long(TEST_SP, inactive_plain_te_handle);
+        inactive_plain_bus.write_word(TEST_SP + 4, 0);
+        inactive_plain_bus.write_word(TEST_SP + 6, 0);
+        inactive_plain_bus.write_word(TEST_SP + 8, 40);
+        inactive_plain_bus.write_word(TEST_SP + 10, 120);
+        let result = inactive_plain.dispatch_dialog(
+            true,
+            0x1D3,
+            &mut inactive_plain_cpu,
+            &mut inactive_plain_bus,
+        );
+        assert!(result.unwrap().is_ok());
+
+        let (mut inactive_outline, mut inactive_outline_cpu, mut inactive_outline_bus) =
+            setup_with_port();
+        inactive_outline.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let inactive_outline_te_handle =
+            make_te_with_text(&mut inactive_outline, &mut inactive_outline_bus, b"HELLO");
+        let inactive_outline_te_ptr = inactive_outline_bus.read_long(inactive_outline_te_handle);
+        inactive_outline_bus.write_word(
+            inactive_outline_te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET,
+            0,
+        );
+        inactive_outline_bus.write_word(
+            inactive_outline_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET,
+            0,
+        );
+        inactive_outline_bus.write_word(
+            inactive_outline_te_ptr + TrapDispatcher::TE_SEL_END_OFFSET,
+            3,
+        );
+        let inactive_line_height = inactive_outline_bus
+            .read_word(inactive_outline_te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET)
+            as i16;
+        let (outline_base, outline_row_bytes, _screen_w, _screen_h, _pixel_size) =
+            inactive_outline.screen_mode;
+        for i in 0..(outline_row_bytes * 80) {
+            inactive_outline_bus.write_byte(outline_base + i, 0);
+        }
+
+        inactive_outline_cpu.write_reg(Register::A7, TEST_SP);
+        inactive_outline_bus.write_word(TEST_SP, 0x000E);
+        inactive_outline_bus.write_long(TEST_SP + 2, inactive_outline_te_handle);
+        inactive_outline_bus.write_word(TEST_SP + 6, TrapDispatcher::TE_BIT_SET as u16);
+        inactive_outline_bus.write_word(TEST_SP + 8, TrapDispatcher::TE_FEATURE_OUTLINE_HILITE);
+        inactive_outline_bus.write_word(TEST_SP + 10, 0xBEEF);
+        let result = inactive_outline.dispatch_dialog(
+            true,
+            0x03D,
+            &mut inactive_outline_cpu,
+            &mut inactive_outline_bus,
+        );
+        assert!(result.unwrap().is_ok());
+        assert_eq!(inactive_outline_bus.read_word(TEST_SP + 10), 0);
+
+        inactive_outline_cpu.write_reg(Register::A7, TEST_SP);
+        inactive_outline_bus.write_long(TEST_SP, inactive_outline_te_handle);
+        inactive_outline_bus.write_word(TEST_SP + 4, 0);
+        inactive_outline_bus.write_word(TEST_SP + 6, 0);
+        inactive_outline_bus.write_word(TEST_SP + 8, 40);
+        inactive_outline_bus.write_word(TEST_SP + 10, 120);
+        let result = inactive_outline.dispatch_dialog(
+            true,
+            0x1D3,
+            &mut inactive_outline_cpu,
+            &mut inactive_outline_bus,
+        );
+        assert!(result.unwrap().is_ok());
+
+        let (mut active, mut active_cpu, mut active_bus) = setup_with_port();
+        active.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let active_te_handle = make_te_with_text(&mut active, &mut active_bus, b"HELLO");
+        let active_te_ptr = active_bus.read_long(active_te_handle);
+        active_bus.write_word(active_te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+        active_bus.write_word(active_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        active_bus.write_word(active_te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 3);
+        let active_line_height =
+            active_bus.read_word(active_te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET) as i16;
+        let (active_base, active_row_bytes, _screen_w, _screen_h, _pixel_size) = active.screen_mode;
+        for i in 0..(active_row_bytes * 80) {
+            active_bus.write_byte(active_base + i, 0);
+        }
+        active_bus.write_long(TEST_SP, active_te_handle);
+        active_bus.write_word(TEST_SP + 4, 0);
+        active_bus.write_word(TEST_SP + 6, 0);
+        active_bus.write_word(TEST_SP + 8, 40);
+        active_bus.write_word(TEST_SP + 10, 120);
+        let result = active.dispatch_dialog(true, 0x1D3, &mut active_cpu, &mut active_bus);
+        assert!(result.unwrap().is_ok());
+
+        // Text 1993 describes outline highlighting as framing an inactive
+        // selection; TEActivate/TEDeactivate tie it to teFOutlineHilite.
+        let inactive_plain_top_band = count_set_pixels(
+            &inactive_plain_bus,
+            plain_base,
+            plain_row_bytes,
+            0,
+            0,
+            1,
+            24,
+        );
+        let inactive_outline_top_band = count_set_pixels(
+            &inactive_outline_bus,
+            outline_base,
+            outline_row_bytes,
+            0,
+            0,
+            1,
+            24,
+        );
+        assert_eq!(
+            inactive_plain_top_band, 0,
+            "inactive TextEdit selection without teFOutlineHilite should not draw provider selection chrome"
+        );
+        assert!(
+            inactive_outline_top_band > 0,
+            "inactive TextEdit selection with teFOutlineHilite should draw provider outline chrome"
+        );
+        assert_eq!(
+            inactive_outline_bus
+                .read_word(inactive_outline_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            0
+        );
+        assert_eq!(
+            inactive_outline_bus
+                .read_word(inactive_outline_te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+            3
+        );
+        assert_eq!(inactive_line_height, active_line_height);
+
+        let inactive_bottom_band = count_set_pixels(
+            &inactive_outline_bus,
+            outline_base,
+            outline_row_bytes,
+            inactive_line_height - 2,
+            0,
+            inactive_line_height,
+            24,
+        );
+        let active_bottom_band = count_set_pixels(
+            &active_bus,
+            active_base,
+            active_row_bytes,
+            active_line_height - 2,
+            0,
+            active_line_height,
+            24,
+        );
+        assert!(
+            active_bottom_band > inactive_bottom_band,
+            "inactive outline selection should stay outline-only instead of drawing active bottom-stripe chrome"
+        );
+    }
+
+    #[test]
     fn teupdate_c_rect_pointer_form_is_accepted_and_pops_eight_bytes() {
         // Inside Macintosh: Text 1993, 2-88 update semantics plus
         // MPW C call-shape compatibility (Rect* + TEHandle).
@@ -16691,6 +25844,169 @@ mod tests {
             assert!(result.unwrap().is_ok());
             assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         }
+    }
+
+    fn textedit_selection_replacement_for_theme(
+        theme_id: UiThemeId,
+    ) -> (Vec<u8>, u16, u16, u16, u32) {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(theme_id);
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 6, 0);
+        bus.write_word(TEST_SP + 8, 40);
+        bus.write_word(TEST_SP + 10, 120);
+        let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, u16::from(b'Y'));
+        let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        (
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET),
+            cpu.read_reg(Register::A7),
+        )
+    }
+
+    fn textedit_private_scrap_editing_results_for_theme(
+        theme_id: UiThemeId,
+    ) -> TextEditPrivateScrapEditingSnapshot {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+
+        let copy_te = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let copy_ptr = bus.read_long(copy_te);
+        bus.write_word(copy_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(copy_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, copy_te);
+        disp.dispatch_dialog(true, 0x1D5, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let copy = textedit_scrap_edit_case(&bus, copy_te, cpu.read_reg(Register::A7));
+
+        let cut_te = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let cut_ptr = bus.read_long(cut_te);
+        bus.write_word(cut_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(cut_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, cut_te);
+        disp.dispatch_dialog(true, 0x1D6, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let cut = textedit_scrap_edit_case(&bus, cut_te, cpu.read_reg(Register::A7));
+
+        let paste_te = make_te_with_text(&mut disp, &mut bus, b"HEXXO");
+        let paste_ptr = bus.read_long(paste_te);
+        bus.write_word(paste_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(paste_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        let paste_scrap = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let paste_scrap_ptr = bus.read_long(paste_scrap);
+        bus.write_bytes(paste_scrap_ptr, b"LL");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, paste_scrap);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, paste_te);
+        disp.dispatch_dialog(true, 0x1DB, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let paste = textedit_scrap_edit_case(&bus, paste_te, cpu.read_reg(Register::A7));
+
+        let delete_te = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let delete_ptr = bus.read_long(delete_te);
+        bus.write_word(delete_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(delete_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+        let delete_scrap = TrapDispatcher::allocate_handle_with_data(&mut bus, 2);
+        let delete_scrap_ptr = bus.read_long(delete_scrap);
+        bus.write_bytes(delete_scrap_ptr, b"QQ");
+        bus.write_long(crate::memory::globals::addr::TE_SCRP_HANDLE, delete_scrap);
+        bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, delete_te);
+        disp.dispatch_dialog(true, 0x1D7, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let delete = textedit_scrap_edit_case(&bus, delete_te, cpu.read_reg(Register::A7));
+
+        TextEditPrivateScrapEditingSnapshot {
+            copy,
+            cut,
+            paste,
+            delete,
+        }
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_textedit_selection_offsets() {
+        // Text 1993 appendix C defines selStart/selEnd as byte offsets into
+        // the selection range; Text 1993 p. 2-81 says TEKey replaces that
+        // range and positions the insertion point just past the inserted byte.
+        // Theme selection chrome must not change those guest-visible fields.
+        let classic = textedit_selection_replacement_for_theme(UiThemeId::ClassicSystem7);
+        let themed = textedit_selection_replacement_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.0, b"HYO".to_vec());
+        assert_eq!(classic.1, 3);
+        assert_eq!(classic.2, 2);
+        assert_eq!(classic.3, 2);
+        assert_eq!(classic.4, TEST_SP + 6);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change TextEdit replacement selection offsets"
+        );
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_textedit_private_scrap_editing() {
+        // IM:I I-373 says TextEdit's scrap is private to TextEdit, not the
+        // Scrap Manager desk scrap. IM:I I-385..I-387 define TECopy, TECut,
+        // TEPaste, and TEDelete selection/scrap effects; MTE 1992 p.
+        // 6-132..6-134 routes dialog edit commands through those TextEdit
+        // operations. Theme chrome must not change the private-scrap globals,
+        // TERec text/selection fields, or stack ABI for these edit actions.
+        let classic = textedit_private_scrap_editing_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = textedit_private_scrap_editing_results_for_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(classic.copy.text, b"HELLO".to_vec());
+        assert_eq!(classic.copy.selection, (1, 4));
+        assert_eq!(classic.copy.scrap_length, 3);
+        assert_eq!(classic.copy.scrap_bytes, b"ELL".to_vec());
+        assert_eq!(classic.copy.stack_after, TEST_SP + 4);
+
+        assert_eq!(classic.cut.text, b"HO".to_vec());
+        assert_eq!(classic.cut.selection, (1, 1));
+        assert_eq!(classic.cut.scrap_length, 3);
+        assert_eq!(classic.cut.scrap_bytes, b"ELL".to_vec());
+        assert_eq!(classic.cut.stack_after, TEST_SP + 4);
+
+        assert_eq!(classic.paste.text, b"HELLO".to_vec());
+        assert_eq!(classic.paste.selection, (4, 4));
+        assert_eq!(classic.paste.scrap_length, 2);
+        assert_eq!(classic.paste.scrap_bytes, b"LL".to_vec());
+        assert_eq!(classic.paste.stack_after, TEST_SP + 4);
+
+        assert_eq!(classic.delete.text, b"HO".to_vec());
+        assert_eq!(classic.delete.selection, (1, 1));
+        assert_eq!(classic.delete.scrap_length, 2);
+        assert_eq!(classic.delete.scrap_bytes, b"QQ".to_vec());
+        assert_eq!(classic.delete.stack_after, TEST_SP + 4);
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change TextEdit private-scrap edit semantics"
+        );
     }
 
     #[test]

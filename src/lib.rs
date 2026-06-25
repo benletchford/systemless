@@ -47,5 +47,6 @@ pub mod quickdraw;
 pub mod runner;
 pub mod sound;
 pub mod trap;
+pub mod ui_theme;
 
 pub use error::{Error, Result};

@@ -11,6 +11,7 @@ use crate::machine_profile::oracle_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::oracle::{OracleEvent, OracleRecorder, OracleSource};
+use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -342,6 +343,14 @@ pub(crate) struct PendingDialogPopupMenu {
     pub rect: (i16, i16, i16, i16),
 }
 
+#[derive(Clone, Debug)]
+pub struct DialogPopupDraw {
+    pub rect: (i16, i16, i16, i16),
+    pub title: String,
+    pub enabled: bool,
+    pub pressed: bool,
+}
+
 /// State for ModalDialog mouse/key tracking across frames.
 /// Mirrors MenuTrackingState; follows the same re-fire pattern.
 /// Inside Macintosh Volume I, I-415
@@ -399,10 +408,10 @@ pub struct DialogTrackingState {
     /// Most recent event passed to the ModalDialog filter proc.
     /// If the filter returns FALSE, ModalDialog must still process this event.
     pub last_filter_event: Option<QueuedEvent>,
-    /// HLE popup draw data: (abs_top, abs_left, abs_bottom, abs_right, title).
-    /// Stored so updateEvt re-snapshots can redraw popups on top of the
-    /// game's narrow indicator rendering.
-    pub popup_draws: Vec<(i16, i16, i16, i16, String)>,
+    /// HLE popup draw data. Stored so updateEvt re-snapshots can redraw popups
+    /// on top of the game's narrow indicator rendering while preserving the
+    /// enabled/pressed state captured from the original dialog/control record.
+    pub popup_draws: Vec<DialogPopupDraw>,
     /// Active popup-menu control tracking inside ModalDialog.
     pub active_popup: Option<DialogPopupTrackingState>,
     /// Active push-button tracking inside ModalDialog.
@@ -426,6 +435,8 @@ pub struct DialogPopupTrackingState {
 pub struct DialogButtonTrackingState {
     pub item_no: i16,
     pub rect: (i16, i16, i16, i16),
+    pub title: String,
+    pub is_default: bool,
     pub highlighted: bool,
 }
 
@@ -436,6 +447,8 @@ pub struct RetainedModalDialogClickState {
     pub dialog_ptr: u32,
     pub item_no: i16,
     pub rect: (i16, i16, i16, i16),
+    pub title: String,
+    pub is_default: bool,
     pub highlighted: bool,
     pub delivered_to_app: bool,
 }
@@ -454,16 +467,21 @@ pub(crate) struct PersistentDialogSnapshot {
     pub pixels: Vec<u8>,
 }
 
-/// State for popup-menu controls tracked through TrackControl.
-/// The popup CDEF blocks until mouse-up, so HLE keeps the trap active
-/// across refires in the same style as MenuSelect and ModalDialog.
+/// State for controls tracked through TrackControl.
+/// TrackControl blocks until mouse-up, so HLE keeps the trap active across
+/// refires in the same style as MenuSelect and ModalDialog.
 pub(crate) struct ControlTrackingState {
     pub ctrl_handle: u32,
     pub ctrl_ptr: u32,
+    pub popup_tracking: bool,
     pub active_menu: usize,
     pub highlighted_item: i16,
     pub saved_pixels: Vec<u8>,
     pub dropdown_rect: (i16, i16, i16, i16),
+    pub simple_part: u16,
+    pub simple_screen_rect: (i16, i16, i16, i16),
+    pub simple_highlighted: bool,
+    pub saved_hilite: u8,
     pub stack_ptr: u32,
 }
 
@@ -938,6 +956,10 @@ pub struct TrapDispatcher {
     /// drawn dialog/alert static-text item. Inside Macintosh Volume I,
     /// I-422 (ParamText).
     pub(crate) param_text: [Vec<u8>; 4],
+    /// Selected UI rendering provider. The default preserves the legacy
+    /// System 7 renderer; explicit non-classic providers are allowed to change
+    /// chrome pixels without changing guest-visible Toolbox behavior.
+    pub(crate) ui_theme_id: UiThemeId,
     /// Virtual filesystem: filename -> data fork contents
     pub vfs: HashMap<String, Vec<u8>>,
     /// Virtual filesystem: filename -> resource fork contents
@@ -1182,6 +1204,11 @@ pub struct TrapDispatcher {
     pub debug_scroll_rect_last_row_bytes: u16,
     pub debug_scroll_rect_last_port_bounds_top_left: (i16, i16),
     pub debug_scroll_rect_last_is_color: bool,
+    /// Per-fixture deterministic input trace. Catalogue tests opt in through
+    /// `TrapDispatcher::enable_input_trace_capture`; normal execution leaves
+    /// this off so dialog/menu/control hot paths do not allocate.
+    pub(crate) input_trace_enabled: bool,
+    pub(crate) input_trace_log: Vec<String>,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
     pub(crate) event_queue: VecDeque<QueuedEvent>,
     /// One-shot update events recovered after FlushEvents drops queue entries
@@ -2006,6 +2033,60 @@ impl TrapDispatcher {
         modifiers
     }
 
+    pub fn enable_input_trace_capture(&mut self) {
+        self.input_trace_enabled = true;
+        self.input_trace_log.clear();
+        self.input_trace_log
+            .push("# systemless deterministic input trace v1".to_string());
+    }
+
+    pub fn input_trace_text(&self) -> String {
+        if self.input_trace_log.is_empty() {
+            String::new()
+        } else {
+            let mut out = self.input_trace_log.join("\n");
+            out.push('\n');
+            out
+        }
+    }
+
+    pub(crate) fn record_input_trace_line(&mut self, line: String) {
+        if self.input_trace_enabled {
+            self.input_trace_log.push(line);
+        }
+    }
+
+    pub(crate) fn input_trace_state_fields(&self) -> String {
+        let key_map = if self.key_map.iter().any(|&byte| byte != 0) {
+            self.key_map
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join("")
+        } else {
+            "none".to_string()
+        };
+        format!(
+            "state=mouse=({},{}) button={} live_modifiers=${:04X} key_map={} tracking=menu:{} dialog:{} control:{}",
+            self.mouse_pos.0,
+            self.mouse_pos.1,
+            if self.mouse_button { "down" } else { "up" },
+            self.current_event_modifiers(),
+            key_map,
+            if self.is_menu_tracking() { "active" } else { "idle" },
+            if self.is_dialog_tracking() {
+                "active"
+            } else {
+                "idle"
+            },
+            if self.is_control_tracking() {
+                "active"
+            } else {
+                "idle"
+            },
+        )
+    }
+
     /// Dump the top-N traps by dispatch count in descending order. No-op
     /// when `SYSTEMLESS_TRACE_TRAP_COUNTS` was not set at startup. Format:
     ///   [TRAP-HIST]   100234  $A9ED PostEvent
@@ -2147,6 +2228,7 @@ impl TrapDispatcher {
             system_clut_cache: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            ui_theme_id: UiThemeId::ClassicSystem7,
             vfs: HashMap::new(),
             vfs_rsrc: HashMap::new(),
             vfs_metadata: HashMap::new(),
@@ -2258,6 +2340,8 @@ impl TrapDispatcher {
             debug_scroll_rect_last_row_bytes: 0,
             debug_scroll_rect_last_port_bounds_top_left: (0, 0),
             debug_scroll_rect_last_is_color: false,
+            input_trace_enabled: false,
+            input_trace_log: Vec::new(),
             event_queue: VecDeque::new(),
             flushed_update_events: VecDeque::new(),
             system_event_mask: 0xFFEF, // everyEvent - keyUpMask
@@ -2354,6 +2438,18 @@ impl TrapDispatcher {
         dispatcher.ensure_vfs_directory("System Folder");
         dispatcher.ensure_vfs_directory("System Folder/Preferences");
         dispatcher
+    }
+
+    pub fn set_ui_theme_id(&mut self, ui_theme_id: UiThemeId) {
+        self.ui_theme_id = ui_theme_id;
+    }
+
+    pub fn ui_theme_id(&self) -> UiThemeId {
+        self.ui_theme_id
+    }
+
+    pub fn ui_theme(&self) -> &'static dyn UiTheme {
+        self.ui_theme_id.provider()
     }
 
     /// Whether MenuSelect is actively tracking the mouse.
@@ -4426,10 +4522,15 @@ mod tests {
         disp.control_tracking = Some(ControlTrackingState {
             ctrl_handle: 0,
             ctrl_ptr: 0,
+            popup_tracking: true,
             active_menu: 0,
             highlighted_item: 0,
             saved_pixels: Vec::new(),
             dropdown_rect: (0, 0, 0, 0),
+            simple_part: 0,
+            simple_screen_rect: (0, 0, 0, 0),
+            simple_highlighted: false,
+            saved_hilite: 0,
             stack_ptr: 0,
         });
     }

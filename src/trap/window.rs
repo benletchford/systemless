@@ -204,7 +204,7 @@ impl super::TrapDispatcher {
         aux_handle
     }
 
-    pub(super) fn rect_intersection(
+    pub(crate) fn rect_intersection(
         a: (i16, i16, i16, i16),
         b: (i16, i16, i16, i16),
     ) -> Option<(i16, i16, i16, i16)> {
@@ -1020,6 +1020,51 @@ impl super::TrapDispatcher {
 
     pub(super) fn window_has_pending_update(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
         self.window_update_rect(bus, window_ptr).is_some()
+    }
+
+    pub(crate) fn begin_update_window(&mut self, bus: &mut MacMemoryBus, window: u32) {
+        if window == 0 {
+            return;
+        }
+        if trace_inval_enabled() {
+            let update_handle = bus.read_long(window + Self::WINDOW_UPDATE_RGN_OFFSET);
+            let rect = Self::region_handle_rect(bus, update_handle);
+            eprintln!(
+                "[INVAL] BeginUpdate window=${:08X} update_handle=${:08X} update_rect_before={:?} tick={}",
+                window, update_handle, rect, self.tick_count
+            );
+        }
+        let Some(update_rect) = self.window_update_rect(bus, window) else {
+            self.clear_queued_update_events(window);
+            return;
+        };
+        if let Some(saved_vis) = Self::region_handle_rect(bus, bus.read_long(window + 24)) {
+            self.saved_vis_regions.insert(window, saved_vis);
+        }
+        let (port_top, port_left, _, _) = self.window_port_rect(bus, window);
+        let update_rect = (
+            update_rect.0.wrapping_add(port_top),
+            update_rect.1.wrapping_add(port_left),
+            update_rect.2.wrapping_add(port_top),
+            update_rect.3.wrapping_add(port_left),
+        );
+        let new_vis = Self::rect_intersection(
+            Self::region_handle_rect(bus, bus.read_long(window + 24)).unwrap_or((0, 0, 0, 0)),
+            update_rect,
+        );
+        Self::write_region_handle_rect(bus, bus.read_long(window + 24), new_vis);
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(window + Self::WINDOW_UPDATE_RGN_OFFSET),
+            None,
+        );
+        self.clear_queued_update_events(window);
+    }
+
+    pub(crate) fn end_update_window(&mut self, bus: &mut MacMemoryBus, window: u32) {
+        if let Some(saved_vis) = self.saved_vis_regions.remove(&window) {
+            Self::write_region_handle_rect(bus, bus.read_long(window + 24), Some(saved_vis));
+        }
     }
 
     fn set_window_vis_from_content(&self, bus: &mut MacMemoryBus, window_ptr: u32, visible: bool) {
@@ -2434,45 +2479,7 @@ impl super::TrapDispatcher {
             (true, 0x122) => {
                 let sp = cpu.read_reg(Register::A7);
                 let window = bus.read_long(sp);
-                if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
-                    let update_handle = bus.read_long(window + Self::WINDOW_UPDATE_RGN_OFFSET);
-                    let rect = Self::region_handle_rect(bus, update_handle);
-                    eprintln!(
-                        "[INVAL] BeginUpdate window=${:08X} update_handle=${:08X} update_rect_before={:?} tick={}",
-                        window, update_handle, rect, self.tick_count
-                    );
-                }
-                if window != 0 {
-                    let Some(update_rect) = self.window_update_rect(bus, window) else {
-                        self.clear_queued_update_events(window);
-                        cpu.write_reg(Register::A7, sp + 4);
-                        return Some(Ok(()));
-                    };
-                    if let Some(saved_vis) =
-                        Self::region_handle_rect(bus, bus.read_long(window + 24))
-                    {
-                        self.saved_vis_regions.insert(window, saved_vis);
-                    }
-                    let (port_top, port_left, _, _) = self.window_port_rect(bus, window);
-                    let update_rect = (
-                        update_rect.0.wrapping_add(port_top),
-                        update_rect.1.wrapping_add(port_left),
-                        update_rect.2.wrapping_add(port_top),
-                        update_rect.3.wrapping_add(port_left),
-                    );
-                    let new_vis = Self::rect_intersection(
-                        Self::region_handle_rect(bus, bus.read_long(window + 24))
-                            .unwrap_or((0, 0, 0, 0)),
-                        update_rect,
-                    );
-                    Self::write_region_handle_rect(bus, bus.read_long(window + 24), new_vis);
-                    Self::write_region_handle_rect(
-                        bus,
-                        bus.read_long(window + Self::WINDOW_UPDATE_RGN_OFFSET),
-                        None,
-                    );
-                    self.clear_queued_update_events(window);
-                }
+                self.begin_update_window(bus, window);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -2482,13 +2489,7 @@ impl super::TrapDispatcher {
             (true, 0x123) => {
                 let sp = cpu.read_reg(Register::A7);
                 let window = bus.read_long(sp);
-                if let Some(saved_vis) = self.saved_vis_regions.remove(&window) {
-                    Self::write_region_handle_rect(
-                        bus,
-                        bus.read_long(window + 24),
-                        Some(saved_vis),
-                    );
-                }
+                self.end_update_window(bus, window);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }

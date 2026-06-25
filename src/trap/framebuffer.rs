@@ -3,7 +3,16 @@
 use std::sync::OnceLock;
 
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::quickdraw::text::{get_font_metrics, get_glyph};
+use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
+use crate::quickdraw::text::{
+    get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness,
+};
+use crate::ui_theme::{
+    CaretState, ControlKind, ControlState, DialogFrameKind, DialogFrameState, MenuBarState,
+    MenuDropdownState, MenuItemState, MenuTitleState, Rgb8, ScrollbarOrientation, ScrollbarPart,
+    ScrollbarState, TextFieldState, TextSelectionState, ThemeBitmap, ThemeDrawCtx, ThemeRect,
+    UiThemeId,
+};
 
 /// Opt-in gate for visRgn auto-expansion. Setting
 /// `SYSTEMLESS_NO_VISRGN_AUTO_EXPAND=1` skips expanding the front window's
@@ -15,12 +24,571 @@ fn no_visrgn_auto_expand_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_NO_VISRGN_AUTO_EXPAND").is_some())
 }
 
+// MTE 1992 p. 3-60 defines the low-order `Style` byte bit assignments:
+// bold, italic, underline, outline, shadow, condensed, and extended.
+const TEXT_STYLE_BOLD: u8 = 0x01;
+const TEXT_STYLE_ITALIC: u8 = 0x02;
+const TEXT_STYLE_UNDERLINE: u8 = 0x04;
+const TEXT_STYLE_OUTLINE: u8 = 0x08;
+const TEXT_STYLE_SHADOW: u8 = 0x10;
+const TEXT_STYLE_CONDENSE: u8 = 0x20;
+const TEXT_STYLE_EXTEND: u8 = 0x40;
+
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
     /// Returns (screen_base, row_bytes, width, height, pixel_size).
     pub(super) fn get_screen_params(&self) -> (u32, u32, i16, i16, u16) {
         let (base, rb, w, h, ps) = self.screen_mode;
         (base, rb, w as i16, h as i16, ps)
+    }
+
+    pub(crate) fn draw_theme_push_button_chrome(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        enabled: bool,
+        pressed: bool,
+        is_default: bool,
+    ) -> bool {
+        self.draw_theme_control_chrome(
+            bus,
+            ControlKind::PushButton,
+            top,
+            left,
+            bottom,
+            right,
+            enabled,
+            pressed,
+            false,
+            is_default,
+        )
+    }
+
+    pub(crate) fn draw_theme_control_chrome(
+        &self,
+        bus: &mut MacMemoryBus,
+        kind: ControlKind,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        enabled: bool,
+        pressed: bool,
+        selected: bool,
+        is_default: bool,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let pad = if kind == ControlKind::PushButton && is_default {
+            theme.dialog_metrics().default_button_outline.max(0)
+        } else {
+            0
+        };
+        let bitmap_width = width.saturating_add(pad.saturating_mul(2)) as u32;
+        let bitmap_height = height.saturating_add(pad.saturating_mul(2)) as u32;
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(bitmap_width, bitmap_height, palette.window_background);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_control(
+            &mut ctx,
+            ControlState {
+                kind,
+                rect: ThemeRect {
+                    top: pad,
+                    left: pad,
+                    bottom: pad + height,
+                    right: pad + width,
+                },
+                enabled,
+                pressed,
+                selected,
+                is_default,
+            },
+        );
+
+        self.blit_theme_bitmap_mono(
+            bus,
+            top.saturating_sub(pad),
+            left.saturating_sub(pad),
+            &bitmap,
+        );
+        true
+    }
+
+    pub(crate) fn draw_theme_scrollbar_chrome(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        value: i16,
+        min: i16,
+        max: i16,
+        hilite: u8,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_scrollbar(
+            &mut ctx,
+            ScrollbarState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: width,
+                },
+                orientation: if height > width {
+                    ScrollbarOrientation::Vertical
+                } else {
+                    ScrollbarOrientation::Horizontal
+                },
+                enabled: hilite != 255 && min < max,
+                value,
+                min,
+                max,
+                highlighted_part: ScrollbarPart::from_control_part_code(hilite),
+            },
+        );
+        self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_menu_bar_chrome(&self, bus: &mut MacMemoryBus, height: i16) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let (_, _, screen_width, _, _) = self.get_screen_params();
+        if screen_width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(
+            screen_width as u32,
+            height as u32,
+            palette.window_background,
+        );
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_menu_bar(
+            &mut ctx,
+            MenuBarState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: screen_width,
+                },
+            },
+        );
+        self.blit_theme_bitmap_mono(bus, 0, 0, &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_menu_title_chrome(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        enabled: bool,
+        highlighted: bool,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_menu_title(
+            &mut ctx,
+            MenuTitleState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: width,
+                },
+                enabled,
+                highlighted,
+            },
+        );
+        self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_menu_dropdown_chrome(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_menu_dropdown(
+            &mut ctx,
+            MenuDropdownState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: width,
+                },
+            },
+        );
+        self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_menu_item_chrome(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        enabled: bool,
+        highlighted: bool,
+        separator: bool,
+        has_icon: bool,
+        checked: bool,
+        has_command_key: bool,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.frame_light);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_menu_item(
+            &mut ctx,
+            MenuItemState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: width,
+                },
+                enabled,
+                highlighted,
+                separator,
+                has_icon,
+                checked,
+                has_command_key,
+            },
+        );
+        self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_text_selection(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        active: bool,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_text_selection(
+            &mut ctx,
+            TextSelectionState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: width,
+                },
+                active,
+            },
+        );
+        self.blit_theme_bitmap_mono_masked(bus, top, left, &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_text_field(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        enabled: bool,
+        focused: bool,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_text_field(
+            &mut ctx,
+            TextFieldState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: width,
+                },
+                enabled,
+                focused,
+            },
+        );
+        self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_caret(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        let theme = self.ui_theme();
+        let pad = 1i16;
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(
+            width.saturating_add(pad.saturating_mul(2)) as u32,
+            height as u32,
+            palette.window_background,
+        );
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_caret(
+            &mut ctx,
+            CaretState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: pad,
+                    bottom: height,
+                    right: pad + width,
+                },
+                active: true,
+            },
+        );
+        self.blit_theme_bitmap_mono_masked(bus, top, left.saturating_sub(pad), &bitmap);
+        true
+    }
+
+    pub(crate) fn draw_theme_dialog_frame(
+        &self,
+        bus: &mut MacMemoryBus,
+        content: (i16, i16, i16, i16),
+        frame: (i16, i16, i16, i16),
+        proc_id: i16,
+        active: bool,
+        fill_content: bool,
+    ) -> bool {
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+            return false;
+        }
+
+        let (frame_top, frame_left, frame_bottom, frame_right) = frame;
+        let width = frame_right.saturating_sub(frame_left);
+        let height = frame_bottom.saturating_sub(frame_top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+
+        if !fill_content {
+            self.erase_structure_frame_around_content(bus, frame, content);
+        }
+
+        let (content_top, content_left, content_bottom, content_right) = content;
+        let theme = self.ui_theme();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
+        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+        theme.draw_dialog_frame(
+            &mut ctx,
+            DialogFrameState {
+                frame_rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: height,
+                    right: width,
+                },
+                content_rect: ThemeRect {
+                    top: content_top.saturating_sub(frame_top),
+                    left: content_left.saturating_sub(frame_left),
+                    bottom: content_bottom.saturating_sub(frame_top),
+                    right: content_right.saturating_sub(frame_left),
+                },
+                kind: DialogFrameKind::from_window_proc_id(proc_id),
+                active,
+                fill_content,
+            },
+        );
+        if fill_content {
+            self.blit_theme_bitmap_mono(bus, frame_top, frame_left, &bitmap);
+        } else {
+            self.blit_theme_bitmap_mono_masked(bus, frame_top, frame_left, &bitmap);
+        }
+        true
+    }
+
+    fn blit_theme_bitmap_mono(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bitmap: &ThemeBitmap,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let rgba = bitmap.rgba();
+        for y in 0..bitmap.height() {
+            for x in 0..bitmap.width() {
+                let offset = ((y * bitmap.width() + x) * 4) as usize;
+                let color = Rgb8 {
+                    r: rgba[offset],
+                    g: rgba[offset + 1],
+                    b: rgba[offset + 2],
+                };
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    left.saturating_add(x as i16),
+                    top.saturating_add(y as i16),
+                    Self::theme_color_is_mono_black(color),
+                );
+            }
+        }
+    }
+
+    fn blit_theme_bitmap_mono_masked(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bitmap: &ThemeBitmap,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let rgba = bitmap.rgba();
+        for y in 0..bitmap.height() {
+            for x in 0..bitmap.width() {
+                let offset = ((y * bitmap.width() + x) * 4) as usize;
+                let color = Rgb8 {
+                    r: rgba[offset],
+                    g: rgba[offset + 1],
+                    b: rgba[offset + 2],
+                };
+                if !Self::theme_color_is_mono_black(color) {
+                    continue;
+                }
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    left.saturating_add(x as i16),
+                    top.saturating_add(y as i16),
+                    true,
+                );
+            }
+        }
+    }
+
+    fn theme_color_is_mono_black(color: Rgb8) -> bool {
+        u16::from(color.r) + u16::from(color.g) + u16::from(color.b) < 128 * 3
     }
 
     fn active_gdevice_ctab(bus: &MacMemoryBus) -> Option<u32> {
@@ -117,6 +685,56 @@ impl super::TrapDispatcher {
         found.then_some(best_index)
     }
 
+    pub(crate) fn fb_pixel_index_for_rgb(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
+        let ctab = Self::active_gdevice_ctab(bus)?;
+        let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+
+        // Imaging With QuickDraw 1994 p. 4-82 describes inverse-table
+        // lookup as the Color Manager path from RGB colors to device pixel
+        // values. Keep canonical endpoints pinned when the active table has
+        // the standard white/black entries, then prefer exact matches before
+        // falling back to nearest Euclidean distance in 16-bit RGB space.
+        if rgb == [0, 0, 0] && Self::ctab_value_luma(bus, ctab, 255) == Some(0) {
+            return Some(255);
+        }
+        if rgb == [0xFFFF, 0xFFFF, 0xFFFF]
+            && Self::ctab_value_luma(bus, ctab, 0) == Some(0xFFFF * 3)
+        {
+            return Some(0);
+        }
+
+        let mut best_index = None;
+        let mut best_distance = u64::MAX;
+        for ordinal in 0..count {
+            let entry = ctab + 8 + ordinal * 8;
+            let value = bus.read_word(entry);
+            if value > 255 {
+                continue;
+            }
+            let entry_rgb = [
+                bus.read_word(entry + 2),
+                bus.read_word(entry + 4),
+                bus.read_word(entry + 6),
+            ];
+            let index = value as u8;
+            if entry_rgb == rgb {
+                return Some(index);
+            }
+
+            let dr = i64::from(entry_rgb[0]) - i64::from(rgb[0]);
+            let dg = i64::from(entry_rgb[1]) - i64::from(rgb[1]);
+            let db = i64::from(entry_rgb[2]) - i64::from(rgb[2]);
+            let distance = (dr * dr + dg * dg + db * db) as u64;
+            if distance < best_distance
+                || (distance == best_distance && best_index.map_or(true, |best| index < best))
+            {
+                best_distance = distance;
+                best_index = Some(index);
+            }
+        }
+        best_index
+    }
+
     fn logical_white_pixel_index(bus: &MacMemoryBus) -> u8 {
         let Some(ctab) = Self::active_gdevice_ctab(bus) else {
             return 0;
@@ -182,6 +800,82 @@ impl super::TrapDispatcher {
                 bus.write_byte(addr, b | (1 << bit));
             } else {
                 bus.write_byte(addr, b & !(1 << bit));
+            }
+        }
+    }
+
+    pub(crate) fn fb_set_pixel_index(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        pixel_index: u8,
+    ) {
+        if pixel_size != 8 {
+            Self::fb_set_pixel(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                pixel_index != 0,
+            );
+            return;
+        }
+        if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
+            return;
+        }
+        let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+        bus.write_byte(addr, pixel_index);
+    }
+
+    pub(crate) fn fb_fill_rect_index(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        pixel_index: u8,
+    ) {
+        if pixel_size != 8 {
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                pixel_index != 0,
+            );
+            return;
+        }
+        let top = top.max(0).min(screen_height) as u32;
+        let left = left.max(0).min(screen_width) as u32;
+        let bottom = bottom.max(0).min(screen_height) as u32;
+        let right = right.max(0).min(screen_width) as u32;
+        if top >= bottom || left >= right {
+            return;
+        }
+        for y in top..bottom {
+            let row_addr = screen_base + y * row_bytes;
+            for x in left..right {
+                bus.write_byte(row_addr + x, pixel_index);
             }
         }
     }
@@ -341,29 +1035,119 @@ impl super::TrapDispatcher {
         font_size: i16,
     ) -> i16 {
         if let Some((glyph, data)) = get_glyph(font_id, font_size, ch) {
-            let gx = x + glyph.origin_x as i16;
-            let gy = y + glyph.origin_y as i16;
-            let gw = glyph.width as usize;
-            let gh = glyph.height as usize;
-            let black_index = if pixel_size == 8 {
-                Some(Self::logical_black_pixel_index(bus))
-            } else {
-                None
-            };
+            Self::fb_draw_glyph_bitmap(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                glyph,
+                data,
+            );
+            glyph.advance as i16
+        } else {
+            6 // default advance for missing glyph
+        }
+    }
 
-            // Glyph data is 8-bit coverage per pixel (row-major, one byte
-            // per pixel). Threshold at >=128 (bitmap glyphs are exclusively
-            // 0 or 255).
-            for row in 0..gh {
-                for col in 0..gw {
-                    let byte_idx = glyph.data_offset + row * gw + col;
-                    if byte_idx < data.len() && data[byte_idx] >= 128 {
-                        let px = gx + col as i16;
-                        let py = gy + row as i16;
-                        if let Some(black_index) = black_index {
+    fn fb_draw_glyph_bitmap(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        glyph: &Glyph,
+        data: &[u8],
+    ) {
+        Self::fb_draw_glyph_bitmap_with_slant(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            glyph,
+            data,
+            None,
+            0,
+            None,
+            true,
+        );
+    }
+
+    fn fb_draw_glyph_bitmap_with_slant(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        glyph: &Glyph,
+        data: &[u8],
+        synthetic_italic: Option<(i16, i16)>,
+        style: u8,
+        pixel_index_override: Option<u8>,
+        black: bool,
+    ) {
+        let gx = x + glyph.origin_x as i16;
+        let gy = y + glyph.origin_y as i16;
+        let gw = glyph.width as usize;
+        let gh = glyph.height as usize;
+        let metrics = synthetic_italic
+            .map(|(font_id, font_size)| (font_id, font_size, get_font_metrics(font_id, font_size)));
+        let text_index = if pixel_size == 8 {
+            Some(pixel_index_override.unwrap_or_else(|| {
+                if black {
+                    Self::logical_black_pixel_index(bus)
+                } else {
+                    Self::logical_white_pixel_index(bus)
+                }
+            }))
+        } else {
+            None
+        };
+
+        // Glyph data is 8-bit coverage per pixel (row-major, one byte
+        // per pixel). Threshold at >=128 (bitmap glyphs are exclusively
+        // 0 or 255).
+        for row in 0..gh {
+            for col in 0..gw {
+                let byte_idx = glyph.data_offset + row * gw + col;
+                if byte_idx < data.len() && data[byte_idx] >= 128 {
+                    let py = gy + row as i16;
+                    let slant = metrics
+                        .as_ref()
+                        .map(|(font_id, font_size, metrics)| {
+                            get_italic_slant(*font_id, *font_size, metrics, y, py)
+                        })
+                        .unwrap_or(0);
+                    let (dst_start, dst_end) = if (style & TEXT_STYLE_EXTEND) != 0 {
+                        let start = (col as i16 * 4) / 3;
+                        let end = (((col as i16 + 1) * 4) / 3).max(start + 1);
+                        (start, end)
+                    } else if (style & TEXT_STYLE_CONDENSE) != 0 {
+                        let start = (col as i16 * 3) / 4;
+                        (start, start + 1)
+                    } else {
+                        let start = col as i16;
+                        (start, start + 1)
+                    };
+                    for dst_col in dst_start..dst_end {
+                        let px = gx + dst_col + slant;
+                        if let Some(text_index) = text_index {
                             if px >= 0 && py >= 0 && px < screen_width && py < screen_height {
                                 let addr = screen_base + (py as u32) * row_bytes + (px as u32);
-                                bus.write_byte(addr, black_index);
+                                bus.write_byte(addr, text_index);
                             }
                         } else {
                             Self::fb_set_pixel(
@@ -375,16 +1159,126 @@ impl super::TrapDispatcher {
                                 screen_height,
                                 px,
                                 py,
-                                true,
+                                black,
                             );
                         }
                     }
                 }
             }
-            glyph.advance as i16
-        } else {
-            6 // default advance for missing glyph
         }
+    }
+
+    fn fb_draw_glyph_with_style(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        glyph: &Glyph,
+        data: &[u8],
+        synthetic_italic: Option<(i16, i16)>,
+        style: u8,
+        pixel_index_override: Option<u8>,
+        black: bool,
+    ) {
+        Self::fb_draw_glyph_bitmap_with_slant(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            glyph,
+            data,
+            synthetic_italic,
+            style,
+            pixel_index_override,
+            black,
+        );
+    }
+
+    fn fb_draw_char_styled(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        ch: char,
+        font_id: i16,
+        font_size: i16,
+        style: u8,
+        pixel_index_override: Option<u8>,
+        black: bool,
+    ) -> i16 {
+        let italic = (style & TEXT_STYLE_ITALIC) != 0;
+        let (glyph_hit, synthetic_italic) = if italic {
+            if let Some(hit) = get_glyph_italic(font_id, font_size, ch) {
+                (Some(hit), None)
+            } else {
+                (
+                    get_glyph(font_id, font_size, ch),
+                    Some((font_id, font_size)),
+                )
+            }
+        } else {
+            (get_glyph(font_id, font_size, ch), None)
+        };
+
+        let Some((glyph, data)) = glyph_hit else {
+            return 6;
+        };
+
+        let mut draw_at = |dx: i16, dy: i16| {
+            Self::fb_draw_glyph_with_style(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x + dx,
+                y + dy,
+                glyph,
+                data,
+                synthetic_italic,
+                style,
+                pixel_index_override,
+                black,
+            );
+        };
+
+        if (style & TEXT_STYLE_SHADOW) != 0 {
+            draw_at(1, 1);
+        }
+        if (style & TEXT_STYLE_OUTLINE) != 0 {
+            draw_at(-1, 0);
+            draw_at(1, 0);
+            draw_at(0, -1);
+            draw_at(0, 1);
+        }
+        draw_at(0, 0);
+        if (style & TEXT_STYLE_BOLD) != 0 {
+            draw_at(1, 0);
+        }
+
+        let mut advance = glyph.advance as i16;
+        if (style & TEXT_STYLE_BOLD) != 0 {
+            // Menu item styles follow the classic Style bitset; the
+            // System 7 MDEF renders bold item names with the synthetic
+            // one-pixel strike and matching one-pixel pen advance while
+            // CalcMenuSize keeps plain guest metrics. MTE 1992 pp. 3-133
+            // to 3-134.
+            advance += 1;
+        }
+        advance
     }
 
     /// Draw a string to the framebuffer, return total width
@@ -420,6 +1314,196 @@ impl super::TrapDispatcher {
         cx - x
     }
 
+    /// Draw a string to the framebuffer with a classic Style bitset.
+    ///
+    /// MTE 1992 pp. 3-60 and 3-133 to 3-134 define menu item text
+    /// styles as the `Style` bitset used by `SetItemStyle`; HIG 1992
+    /// pp. 72 to 74 show Style menu item names displayed in their
+    /// corresponding text styles. This helper changes drawn pixels only;
+    /// callers keep measurements on the plain glyph advances so themed
+    /// and classic-compatible guest metrics remain stable.
+    pub(crate) fn fb_draw_string_styled(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        s: &str,
+        font_id: i16,
+        font_size: i16,
+        style: u8,
+    ) -> i16 {
+        Self::fb_draw_string_styled_with_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            s,
+            font_id,
+            font_size,
+            style,
+            None,
+            true,
+        )
+    }
+
+    pub(crate) fn fb_draw_string_styled_ink(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        s: &str,
+        font_id: i16,
+        font_size: i16,
+        style: u8,
+        black: bool,
+    ) -> i16 {
+        Self::fb_draw_string_styled_with_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            s,
+            font_id,
+            font_size,
+            style,
+            None,
+            black,
+        )
+    }
+
+    pub(crate) fn fb_draw_string_styled_index(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        s: &str,
+        font_id: i16,
+        font_size: i16,
+        style: u8,
+        pixel_index: u8,
+    ) -> i16 {
+        Self::fb_draw_string_styled_with_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            s,
+            font_id,
+            font_size,
+            style,
+            Some(pixel_index),
+            true,
+        )
+    }
+
+    fn fb_draw_string_styled_with_index(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        s: &str,
+        font_id: i16,
+        font_size: i16,
+        style: u8,
+        pixel_index_override: Option<u8>,
+        black: bool,
+    ) -> i16 {
+        let mut cx = x;
+        for ch in s.chars() {
+            cx += Self::fb_draw_char_styled(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                cx,
+                y,
+                ch,
+                font_id,
+                font_size,
+                style,
+                pixel_index_override,
+                black,
+            );
+        }
+
+        if (style & TEXT_STYLE_UNDERLINE) != 0 && cx > x {
+            let thickness = get_underline_thickness(font_id, font_size).max(1);
+            for dy in 1..=thickness {
+                if let Some(pixel_index) = pixel_index_override {
+                    Self::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y + dy,
+                        pixel_index,
+                    );
+                    for underline_x in (x + 1)..cx {
+                        Self::fb_set_pixel_index(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            underline_x,
+                            y + dy,
+                            pixel_index,
+                        );
+                    }
+                } else {
+                    Self::fb_hline(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        y + dy,
+                        x,
+                        cx,
+                        black,
+                    );
+                }
+            }
+        }
+
+        cx - x
+    }
+
     /// Draw the menu bar at the top of the screen.
     /// Height is read from the MBarHeight low-memory global ($0BAA).
     /// If MBarHeight is 0, the menu bar is hidden (full-screen mode).
@@ -433,35 +1517,63 @@ impl super::TrapDispatcher {
         if menu_bar_height <= 0 {
             return;
         }
+        let menu_bar_bg_index = self.menu_bar_background_pixel_index(bus, pixel_size);
 
-        // Fill menu bar area with white
-        Self::fb_fill_rect(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            0,
-            0,
-            menu_bar_height,
-            screen_width,
-            false,
-        );
+        if !self.draw_theme_menu_bar_chrome(bus, menu_bar_height) {
+            // The System 7 menu bar is a white strip with a one-pixel
+            // lower border. Macintosh Toolbox Essentials 1992, glossary
+            // "menu bar".
+            if let Some(bg_index) = menu_bar_bg_index {
+                Self::fb_fill_rect_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    0,
+                    0,
+                    menu_bar_height,
+                    screen_width,
+                    bg_index,
+                );
+            } else {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    0,
+                    0,
+                    menu_bar_height,
+                    screen_width,
+                    false,
+                );
+            }
 
-        // Draw black bottom border line
-        Self::fb_hline(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            menu_bar_height - 1,
-            0,
-            screen_width,
-            true,
-        );
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                menu_bar_height - 1,
+                0,
+                screen_width,
+                true,
+            );
+            Self::fb_draw_menu_bar_rounded_corners(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+            );
+        }
 
         // Chicago 12 is the system font for menus (font_id=0, size=12)
         let font_id: i16 = 0;
@@ -479,7 +1591,83 @@ impl super::TrapDispatcher {
                 continue;
             }
             let title = &menu.title;
-            let width = Self::fb_draw_string(
+            let title_width = Self::fb_measure_string(title, font_id, font_size);
+            // HIG 1992 p. 54 says unavailable menu titles remain visible
+            // but dimmed; p. 55 says pressing a menu title highlights it.
+            // Route title-state chrome through the provider while keeping
+            // classic text metrics and title hit regions unchanged.
+            self.draw_theme_menu_title_chrome(
+                bus,
+                1,
+                x - 7,
+                menu_bar_height - 1,
+                x + title_width + 6,
+                menu.enabled,
+                false,
+            );
+            let title_index = Self::menu_title_pixel_index(bus, menu.id, pixel_size);
+            let width = if let Some(pixel_index) = title_index {
+                Self::fb_draw_string_styled_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    text_y,
+                    title,
+                    font_id,
+                    font_size,
+                    0,
+                    pixel_index,
+                )
+            } else {
+                Self::fb_draw_string(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    text_y,
+                    title,
+                    font_id,
+                    font_size,
+                )
+            };
+            x += width + 13;
+        }
+    }
+
+    fn fb_draw_menu_bar_rounded_corners(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+    ) {
+        // The standard menu bar stamps the classic rounded screen-corner
+        // mask when drawn at the top edge. IM:I I-354 defines DrawMenuBar
+        // as the routine that redraws the current menu bar.
+        const LEFT: &[(i16, i16)] = &[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (0, 2),
+            (1, 2),
+            (0, 3),
+            (0, 4),
+        ];
+        for &(x, y) in LEFT {
+            Self::fb_set_pixel(
                 bus,
                 screen_base,
                 row_bytes,
@@ -487,12 +1675,20 @@ impl super::TrapDispatcher {
                 screen_width,
                 screen_height,
                 x,
-                text_y,
-                title,
-                font_id,
-                font_size,
+                y,
+                true,
             );
-            x += width + 14; // 14px gap between menu titles
+            Self::fb_set_pixel(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                screen_width - 1 - x,
+                y,
+                true,
+            );
         }
     }
 
@@ -1334,6 +2530,32 @@ impl super::TrapDispatcher {
 
     pub(crate) fn draw_window_frame(&self, bus: &mut MacMemoryBus) {
         let (wind_top, wind_left, wind_bottom, wind_right) = self.window_bounds;
+        if matches!(self.window_proc_id, 1 | 2 | 3 | 5) {
+            let frame = match self.window_proc_id {
+                1 => (wind_top - 8, wind_left - 8, wind_bottom + 3, wind_right + 8),
+                2 => (wind_top - 1, wind_left - 1, wind_bottom + 1, wind_right + 1),
+                3 => (wind_top - 1, wind_left - 1, wind_bottom + 3, wind_right + 3),
+                5 => (
+                    wind_top - 23,
+                    wind_left - 8,
+                    wind_bottom + 8,
+                    wind_right + 8,
+                ),
+                _ => (wind_top, wind_left, wind_bottom, wind_right),
+            };
+            if self.draw_theme_dialog_frame(
+                bus,
+                (wind_top, wind_left, wind_bottom, wind_right),
+                frame,
+                self.window_proc_id,
+                true,
+                false,
+            ) {
+                self.capture_gui_frame(bus, "draw_window_frame");
+                return;
+            }
+        }
+
         match self.window_proc_id {
             2 => {
                 // plainDBox: single 1-pixel black border, no chrome.
@@ -1767,6 +2989,7 @@ impl super::TrapDispatcher {
                     if popup.highlighted_item > 0 {
                         self.invert_dropdown_item_rect(
                             bus,
+                            popup.active_menu,
                             popup.dropdown_rect,
                             popup.highlighted_item,
                         );

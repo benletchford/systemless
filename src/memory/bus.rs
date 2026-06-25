@@ -1250,6 +1250,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reserve_heap_is_idempotent_start_of_heap_guard() {
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+
+        bus.reserve_heap(64);
+        let first = bus.alloc(12);
+        bus.reserve_heap(64);
+        let second = bus.alloc(12);
+
+        assert_eq!(
+            first,
+            0x200000 + 64,
+            "first allocation after zone-header reservation must skip the header"
+        );
+        assert_eq!(
+            second,
+            first + 12,
+            "re-reserving the same zone-header range must not create a second gap"
+        );
+    }
+
     /// Pascal strings are length-byte + up-to-255-byte data; passing a
     /// longer source must clamp to 255 (the length byte's max value),
     /// never wrap or truncate via the unchecked `len as u8` cast.

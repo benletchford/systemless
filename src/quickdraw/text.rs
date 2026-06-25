@@ -12,7 +12,7 @@
 
 use crate::quickdraw::fonts::{
     get_font_face_or_default, get_italic_glyph as get_italic_glyph_fn, get_macroman_glyph,
-    FontMetrics, Glyph,
+    override_format, FontMetrics, Glyph,
 };
 
 pub fn get_font_metrics(font_id: i16, size: i16) -> FontMetrics {
@@ -44,15 +44,41 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
     }
 
     // Unicode codepoints emitted directly by HLE code paths that don't
-    // fit in the Mac Roman byte range. The Menu Manager emits
-    // U+2713 (CHECK MARK) for checked items (menu.rs:1653); route it
-    // through the Mac Roman 0x12 entry the rasterizer populates with
-    // whichever check-shaped glyph Atkinson Hyperlegible exposes.
+    // fit in the Mac Roman byte range. The Menu Manager emits U+2318
+    // (COMMAND KEY) for command-key equivalents and U+2713 (CHECK MARK)
+    // for checked items; route them through the classic System font
+    // Mac Roman symbol slots. Inside Macintosh Volume I, I-247 and I-358.
+    if ch == '\u{2318}' {
+        if let Some(hit) =
+            override_symbol_glyph(font_id, size, override_format::COMMAND_SYMBOL_GLYPH_INDEX)
+        {
+            return Some(hit);
+        }
+        return get_macroman_glyph(font_id, size, 0x11);
+    }
     if ch == '\u{2713}' {
+        if let Some(hit) =
+            override_symbol_glyph(font_id, size, override_format::CHECKMARK_SYMBOL_GLYPH_INDEX)
+        {
+            return Some(hit);
+        }
         return get_macroman_glyph(font_id, size, 0x12);
     }
 
     None
+}
+
+fn override_symbol_glyph(
+    font_id: i16,
+    size: i16,
+    index: usize,
+) -> Option<(&'static Glyph, &'static [u8])> {
+    let face = get_font_face_or_default(font_id, size);
+    let glyph = face.glyphs.get(index)?;
+    if glyph.width == 0 && glyph.height == 0 && glyph.advance == 0 {
+        return None;
+    }
+    Some((glyph, face.data))
 }
 
 fn macroman_or_ascii_fallback(

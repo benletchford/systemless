@@ -30,8 +30,9 @@ pub mod heuristics;
 pub mod override_format;
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 pub use self::heuristics::{
     FONT_APPLICATION, FONT_ATHENS, FONT_CAIRO, FONT_CHICAGO, FONT_COURIER, FONT_GENEVA,
@@ -304,23 +305,33 @@ pub fn font_id_for_name(name: &str) -> Option<i16> {
         .map(|(id, _)| *id)
 }
 
-/// Optional runtime override map populated from `SYSTEMLESS_ORIGINAL_FONTS_DIR`
-/// at first access. Entries here win over the baked DejaVu catalogue — the
-/// opt-in hook for substituting authentic Mac bitmap glyphs at runtime
-/// without committing Apple-copyrighted data into this repo. Empty when
-/// the env var is unset, missing, or points at a directory with no valid
-/// blobs.
-static OVERRIDES: LazyLock<HashMap<(i16, i16), &'static FontFace>> = LazyLock::new(|| {
-    let Some(dir) = std::env::var_os("SYSTEMLESS_ORIGINAL_FONTS_DIR") else {
-        return HashMap::new();
-    };
-    override_format::load_directory(Path::new(&dir))
-});
-
-pub fn get_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
-    get_font_face_with_overrides(&OVERRIDES, font_id, size)
+#[derive(Default)]
+struct OverrideCache {
+    env_dir: Option<OsString>,
+    faces: HashMap<(i16, i16), &'static FontFace>,
 }
 
+/// Optional runtime override map populated from `SYSTEMLESS_ORIGINAL_FONTS_DIR`.
+/// Entries here win over the baked DejaVu catalogue — the opt-in hook for
+/// substituting authentic Mac bitmap glyphs at runtime without committing
+/// Apple-copyrighted data into this repo.
+///
+/// The cache follows the current env path instead of freezing the first
+/// lookup. Test harnesses and embedders can validate or set the local font
+/// cache shortly before launching a fixture, after unrelated code has already
+/// queried fallback metrics.
+static OVERRIDES: LazyLock<Mutex<OverrideCache>> =
+    LazyLock::new(|| Mutex::new(OverrideCache::default()));
+
+pub fn get_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
+    let size = if size == 0 { 12 } else { size };
+    if let Some(face) = get_override_font_face(font_id, size) {
+        return Some(face);
+    }
+    get_baked_font_face(font_id, size)
+}
+
+#[cfg(test)]
 fn get_font_face_with_overrides(
     overrides: &HashMap<(i16, i16), &'static FontFace>,
     font_id: i16,
@@ -330,6 +341,23 @@ fn get_font_face_with_overrides(
     if let Some(face) = overrides.get(&(font_id, size)) {
         return Some(*face);
     }
+    get_baked_font_face(font_id, size)
+}
+
+fn get_override_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
+    let env_dir = std::env::var_os("SYSTEMLESS_ORIGINAL_FONTS_DIR");
+    let mut cache = OVERRIDES.lock().expect("font override cache poisoned");
+    if cache.env_dir != env_dir {
+        cache.faces = env_dir
+            .as_ref()
+            .map(|dir| override_format::load_directory(Path::new(dir)))
+            .unwrap_or_default();
+        cache.env_dir = env_dir;
+    }
+    cache.faces.get(&(font_id, size)).copied()
+}
+
+fn get_baked_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
     FONT_TABLE
         .iter()
         .find(|face| face.font_id == font_id && face.size == size)

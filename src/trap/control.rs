@@ -5,6 +5,7 @@ use super::types::{Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::text::get_font_metrics;
+use crate::ui_theme::ControlKind;
 use crate::Result;
 
 use std::sync::OnceLock;
@@ -22,6 +23,76 @@ impl super::TrapDispatcher {
     const AUX_CTL_RESERVED_OFFSET: u32 = 14;
     const AUX_CTL_REFCON_OFFSET: u32 = 18;
     const AUX_CTL_RECORD_SIZE: u32 = 22;
+
+    fn control_trace_nonzero(value: u32) -> String {
+        if value == 0 {
+            "$00000000".to_string()
+        } else {
+            "$NONZERO".to_string()
+        }
+    }
+
+    fn control_trace_control_fields(&self, bus: &MacMemoryBus, ctrl_handle: u32) -> String {
+        let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+        if ctrl_ptr == 0 {
+            return "control_handle=$00000000 control_ptr=$00000000 rect=none visible=false hilite=none proc_id=none".to_string();
+        }
+        let top = bus.read_word(ctrl_ptr + 8) as i16;
+        let left = bus.read_word(ctrl_ptr + 10) as i16;
+        let bottom = bus.read_word(ctrl_ptr + 12) as i16;
+        let right = bus.read_word(ctrl_ptr + 14) as i16;
+        let vis = bus.read_byte(ctrl_ptr + 16);
+        let hilite = bus.read_byte(ctrl_ptr + 17);
+        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        format!(
+            "control_handle={} control_ptr={} rect=({top},{left},{bottom},{right}) visible={} hilite={} proc_id={proc_id}",
+            Self::control_trace_nonzero(ctrl_handle),
+            Self::control_trace_nonzero(ctrl_ptr),
+            vis == 255,
+            hilite,
+        )
+    }
+
+    fn record_trackcontrol_input_trace(
+        &mut self,
+        bus: &MacMemoryBus,
+        action: &str,
+        ctrl_handle: u32,
+        start_pt: Option<(i16, i16)>,
+        action_proc: u32,
+        part: Option<u16>,
+        highlighted_item: Option<i16>,
+        outcome: &str,
+    ) {
+        if !self.input_trace_enabled {
+            return;
+        }
+        let start = start_pt
+            .map(|(v, h)| format!("({v},{h})"))
+            .unwrap_or_else(|| "none".to_string());
+        let part = part
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "pending".to_string());
+        let highlighted = highlighted_item
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        // IM:I I-323 / MTE 1992 5-89..5-90: TrackControl takes the
+        // mouse-down point in the control window's local coordinates and
+        // returns the release part code, or 0 when no control part remains hit.
+        self.record_input_trace_line(format!(
+            "A968 action={} start={} action_proc={} live_mouse=({},{}) {} {} part={} highlighted_item={} outcome={}",
+            action,
+            start,
+            Self::control_trace_nonzero(action_proc),
+            self.mouse_pos.0,
+            self.mouse_pos.1,
+            self.input_trace_state_fields(),
+            self.control_trace_control_fields(bus, ctrl_handle),
+            part,
+            highlighted,
+            outcome,
+        ));
+    }
 
     fn control_record_ptr(bus: &MacMemoryBus, ctrl_handle: u32) -> u32 {
         if ctrl_handle == 0 {
@@ -149,16 +220,17 @@ impl super::TrapDispatcher {
         let r_right = bus.read_word(ctrl_ptr + 14) as i16;
         let abs_left = owner_left + r_left;
         let abs_bottom = owner_top + r_bottom;
-        let item_height: i16 = 16;
 
         let mut width = (r_right - r_left).max(80);
         if let Some(menu) = self.menus.get(menu_idx) {
             for item in &menu.items {
-                let w = Self::fb_measure_string(&item.text, 0, 12) + 30;
+                let w = Self::fb_measure_string(&item.text, 0, 12)
+                    + self.menu_item_width_extra(bus, item)
+                    + 24;
                 width = width.max(w);
             }
             let bottom =
-                (abs_bottom + menu.items.len() as i16 * item_height + 2).min(screen_height);
+                (abs_bottom + self.menu_items_height(bus, &menu.items) + 2).min(screen_height);
             return (
                 abs_bottom,
                 abs_left,
@@ -175,7 +247,12 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn control_tracking_item_at_point(&self, mouse_x: i16, mouse_y: i16) -> i16 {
+    fn control_tracking_item_at_point(
+        &self,
+        bus: &MacMemoryBus,
+        mouse_x: i16,
+        mouse_y: i16,
+    ) -> i16 {
         let Some(tracking) = self.control_tracking.as_ref() else {
             return 0;
         };
@@ -186,23 +263,59 @@ impl super::TrapDispatcher {
         let Some(menu) = self.menus.get(tracking.active_menu) else {
             return 0;
         };
-        let item_height: i16 = 16;
-        let item_idx = (mouse_y - top - 1) / item_height;
-        if item_idx < 0 || (item_idx as usize) >= menu.items.len() {
-            return 0;
+        let mut item_top = top + 1;
+        for (item_idx, item) in menu.items.iter().enumerate() {
+            let item_bottom = item_top + self.menu_item_height(bus, item);
+            if mouse_y >= item_top && mouse_y < item_bottom {
+                if item.text == "-" || !item.enabled {
+                    return 0;
+                }
+                return item_idx as i16 + 1;
+            }
+            item_top = item_bottom;
         }
-        let item = &menu.items[item_idx as usize];
-        if item.text == "-" || !item.enabled {
-            return 0;
-        }
-        item_idx + 1
+        0
     }
 
     fn invert_control_tracking_item(&self, bus: &mut MacMemoryBus, item: i16) {
         let Some(tracking) = self.control_tracking.as_ref() else {
             return;
         };
-        self.invert_dropdown_item_rect(bus, tracking.dropdown_rect, item);
+        self.invert_dropdown_item_rect(bus, tracking.active_menu, tracking.dropdown_rect, item);
+    }
+
+    fn set_control_tracking_highlight(&mut self, bus: &mut MacMemoryBus, item: i16) {
+        let Some(old_item) = self
+            .control_tracking
+            .as_ref()
+            .map(|tracking| tracking.highlighted_item)
+        else {
+            return;
+        };
+        if old_item == item {
+            return;
+        }
+
+        if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 {
+            if old_item > 0 {
+                self.invert_control_tracking_item(bus, old_item);
+            }
+            if let Some(tracking) = self.control_tracking.as_mut() {
+                tracking.highlighted_item = item;
+            }
+            if item > 0 {
+                self.invert_control_tracking_item(bus, item);
+            }
+            return;
+        }
+
+        let Some((active_menu, dropdown_rect)) = self.control_tracking.as_mut().map(|tracking| {
+            tracking.highlighted_item = item;
+            (tracking.active_menu, tracking.dropdown_rect)
+        }) else {
+            return;
+        };
+        self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
     }
 
     fn finish_popup_control_tracking<C: CpuOps>(
@@ -223,6 +336,80 @@ impl super::TrapDispatcher {
         } else {
             0u16
         };
+        self.record_trackcontrol_input_trace(
+            bus,
+            "tracking_finish",
+            tracking.ctrl_handle,
+            None,
+            0,
+            Some(part),
+            Some(selected_item),
+            if selected_item > 0 {
+                "popup_item_selected"
+            } else {
+                "popup_no_selection"
+            },
+        );
+        bus.write_word(tracking.stack_ptr + 12, part);
+        cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+    }
+
+    fn simple_control_tracking_inside(&self) -> bool {
+        let Some(tracking) = self.control_tracking.as_ref() else {
+            return false;
+        };
+        let (top, left, bottom, right) = tracking.simple_screen_rect;
+        let (mouse_v, mouse_h) = self.mouse_pos;
+        mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right
+    }
+
+    fn redraw_simple_control_tracking_state<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        highlighted: bool,
+    ) {
+        let Some((ctrl_ptr, saved_hilite)) = self
+            .control_tracking
+            .as_ref()
+            .map(|tracking| (tracking.ctrl_ptr, tracking.saved_hilite))
+        else {
+            return;
+        };
+        bus.write_byte(ctrl_ptr + 17, if highlighted { 1 } else { saved_hilite });
+        self.draw_control(cpu, bus, ctrl_ptr);
+        if let Some(tracking) = self.control_tracking.as_mut() {
+            tracking.simple_highlighted = highlighted;
+        }
+    }
+
+    fn finish_simple_control_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        inside: bool,
+    ) {
+        let Some(tracking) = self.control_tracking.take() else {
+            return;
+        };
+        bus.write_byte(tracking.ctrl_ptr + 17, tracking.saved_hilite);
+        self.draw_control(cpu, bus, tracking.ctrl_ptr);
+
+        let part = if inside { tracking.simple_part } else { 0 };
+        self.record_trackcontrol_input_trace(
+            bus,
+            "tracking_finish",
+            tracking.ctrl_handle,
+            None,
+            0,
+            Some(part),
+            None,
+            if inside {
+                "simple_part_selected"
+            } else {
+                "simple_no_selection"
+            },
+        );
         bus.write_word(tracking.stack_ptr + 12, part);
         cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
     }
@@ -368,7 +555,7 @@ impl super::TrapDispatcher {
         aux_handle
     }
 
-    fn release_control_aux_record(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) {
+    pub(crate) fn release_control_aux_record(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) {
         let Some(state) = self.control_aux_records.remove(&ctrl_handle) else {
             return;
         };
@@ -514,31 +701,47 @@ impl super::TrapDispatcher {
         match proc_id {
             0 => {
                 // pushButProc — push button
-                // Standard CDEF uses FrameRoundRect with oval 10x10
-                // Macintosh Revealed Volume One, p. 412
-                let oval: i16 = 10;
+                if self.draw_theme_push_button_chrome(
+                    bus,
+                    abs_top,
+                    abs_left,
+                    abs_bottom,
+                    abs_right,
+                    hilite != 255,
+                    hilite == 1,
+                    false,
+                ) {
+                    self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, &title);
+                    if hilite == 255 {
+                        self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
+                    }
+                } else {
+                    // Standard CDEF uses FrameRoundRect with oval 10x10
+                    // Macintosh Revealed Volume One, p. 412
+                    let oval: i16 = 10;
 
-                // Erase first so a re-draw (e.g. from SetCTitle) overwrites the old title
-                // instead of overlapping the new one. Checkbox / radio CDEFs already do this.
-                self.draw_round_rect(cpu, bus, &r, oval, oval, ShapeOp::Erase);
-                self.draw_round_rect(cpu, bus, &r, oval, oval, ShapeOp::Frame);
+                    // Erase first so a re-draw (e.g. from SetCTitle) overwrites the old title
+                    // instead of overlapping the new one. Checkbox / radio CDEFs already do this.
+                    self.draw_round_rect(cpu, bus, &r, oval, oval, ShapeOp::Erase);
+                    self.draw_round_rect(cpu, bus, &r, oval, oval, ShapeOp::Frame);
 
-                // Center title text
-                self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, &title);
+                    // Center title text
+                    self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, &title);
 
-                if hilite == 1 {
-                    // Pressed: invert the interior
-                    let inv = Rect {
-                        top: r_top + 1,
-                        left: r_left + 1,
-                        bottom: r_bottom - 1,
-                        right: r_right - 1,
-                    };
-                    let inv_oval = (oval - 2).max(0);
-                    self.draw_round_rect(cpu, bus, &inv, inv_oval, inv_oval, ShapeOp::Invert);
-                } else if hilite == 255 {
-                    // Inactive: dim by clearing every other pixel to white
-                    self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
+                    if hilite == 1 {
+                        // Pressed: invert the interior
+                        let inv = Rect {
+                            top: r_top + 1,
+                            left: r_left + 1,
+                            bottom: r_bottom - 1,
+                            right: r_right - 1,
+                        };
+                        let inv_oval = (oval - 2).max(0);
+                        self.draw_round_rect(cpu, bus, &inv, inv_oval, inv_oval, ShapeOp::Invert);
+                    } else if hilite == 255 {
+                        // Inactive: dim by clearing every other pixel to white
+                        self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
+                    }
                 }
             }
             1 => {
@@ -555,14 +758,27 @@ impl super::TrapDispatcher {
                     right: box_left + box_size,
                 };
 
-                // Erase checkbox area
-                self.draw_rect(cpu, bus, &box_r, ShapeOp::Erase);
-                // Frame checkbox border
-                self.draw_rect(cpu, bus, &box_r, ShapeOp::Frame);
+                if !self.draw_theme_control_chrome(
+                    bus,
+                    ControlKind::Checkbox,
+                    scr_top + box_top,
+                    scr_left + box_left,
+                    scr_top + box_top + box_size,
+                    scr_left + box_left + box_size,
+                    hilite != 255,
+                    hilite == 1,
+                    checked,
+                    false,
+                ) {
+                    // Erase checkbox area
+                    self.draw_rect(cpu, bus, &box_r, ShapeOp::Erase);
+                    // Frame checkbox border
+                    self.draw_rect(cpu, bus, &box_r, ShapeOp::Frame);
 
-                if checked {
-                    // Draw X inside the checkbox
-                    self.draw_checkbox_x(bus, scr_top + box_top, scr_left + box_left, box_size);
+                    if checked {
+                        // Draw X inside the checkbox
+                        self.draw_checkbox_x(bus, scr_top + box_top, scr_left + box_left, box_size);
+                    }
                 }
 
                 // Draw label text to the right of the checkbox
@@ -587,7 +803,7 @@ impl super::TrapDispatcher {
                     font_size,
                 );
 
-                if hilite == 1 {
+                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
                     // Pressed: invert the checkbox box area
                     self.draw_rect(cpu, bus, &box_r, ShapeOp::Invert);
                 } else if hilite == 255 {
@@ -612,20 +828,33 @@ impl super::TrapDispatcher {
                     right: circle_left + circle_size,
                 };
 
-                // Erase circle area
-                self.draw_oval(cpu, bus, &circle_r, ShapeOp::Erase);
-                // Frame circle
-                self.draw_oval(cpu, bus, &circle_r, ShapeOp::Frame);
+                if !self.draw_theme_control_chrome(
+                    bus,
+                    ControlKind::RadioButton,
+                    scr_top + circle_top,
+                    scr_left + circle_left,
+                    scr_top + circle_top + circle_size,
+                    scr_left + circle_left + circle_size,
+                    hilite != 255,
+                    hilite == 1,
+                    selected,
+                    false,
+                ) {
+                    // Erase circle area
+                    self.draw_oval(cpu, bus, &circle_r, ShapeOp::Erase);
+                    // Frame circle
+                    self.draw_oval(cpu, bus, &circle_r, ShapeOp::Frame);
 
-                if selected {
-                    // Fill inner circle (smaller by 3px on each side)
-                    let inner_r = Rect {
-                        top: circle_top + 3,
-                        left: circle_left + 3,
-                        bottom: circle_top + circle_size - 3,
-                        right: circle_left + circle_size - 3,
-                    };
-                    self.draw_oval(cpu, bus, &inner_r, ShapeOp::Paint);
+                    if selected {
+                        // Fill inner circle (smaller by 3px on each side)
+                        let inner_r = Rect {
+                            top: circle_top + 3,
+                            left: circle_left + 3,
+                            bottom: circle_top + circle_size - 3,
+                            right: circle_left + circle_size - 3,
+                        };
+                        self.draw_oval(cpu, bus, &inner_r, ShapeOp::Paint);
+                    }
                 }
 
                 // Draw label text to the right of the circle
@@ -650,7 +879,7 @@ impl super::TrapDispatcher {
                     font_size,
                 );
 
-                if hilite == 1 {
+                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
                     // Pressed: invert the circle area
                     self.draw_oval(cpu, bus, &circle_r, ShapeOp::Invert);
                 } else if hilite == 255 {
@@ -670,13 +899,20 @@ impl super::TrapDispatcher {
                 // the selected MENU resource item.
                 let selected = value.max(1) as usize;
                 let item_title = self.popup_menu_item_title(bus, min, selected);
-                self.draw_popup_control(
+                // HIG 1992 p. 87 describes the closed pop-up menu as the
+                // rectangle/triangle control; MTE 1992 p. 6-98 says
+                // HiliteControl dims inactive pop-up menus. Keep part-code
+                // and menu tracking behavior unchanged while routing that
+                // semantic state to non-classic theme chrome.
+                self.draw_popup_control_with_state(
                     bus,
                     abs_top,
                     abs_left,
                     abs_bottom,
                     abs_right,
                     &item_title.unwrap_or_default(),
+                    hilite != 255,
+                    hilite == 1,
                 );
             }
             _ => {
@@ -814,6 +1050,15 @@ impl super::TrapDispatcher {
         max: i16,
         hilite: u8,
     ) {
+        // IM:I I-332 / MTE 1992 5-58..5-61 define scroll-bar CDEF state in
+        // terms of orientation, value range, arrows, page regions, and the
+        // scroll box. Theme providers can own those pixels without changing
+        // ControlRecord fields, hit testing, or guest-visible part codes.
+        if self.draw_theme_scrollbar_chrome(bus, top, left, bottom, right, value, min, max, hilite)
+        {
+            return;
+        }
+
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let is_vertical = (bottom - top) > (right - left);
@@ -2053,57 +2298,118 @@ impl super::TrapDispatcher {
             //   actionProc: ProcPtr): INTEGER;
             // Macintosh Toolbox Essentials 1992, pp. 5-89 to 5-90
             // Stack: SP+0=actionProc(4), SP+4=startPt(4), SP+8=theControl(4), SP+12=result(2)
-            // TrackControl ($A968): HLE subset for button-style controls:
-            // start-point hit test against contrlRect, returns part code
-            // 10 (inButton) for visible active controls, else 0.
+            // TrackControl ($A968): tracks popup controls and held-mouse
+            // simple push/checkbox/radio controls across refires; preserves
+            // the old immediate hit-test path when the mouse is already up.
             (true, 0x168) => {
                 if self.control_tracking.is_some() {
-                    if self.mouse_button {
-                        let (mv, mh) = self.mouse_pos;
-                        let new_item = self.control_tracking_item_at_point(mh, mv);
-                        let old_item = self
-                            .control_tracking
-                            .as_ref()
-                            .map(|tracking| tracking.highlighted_item)
-                            .unwrap_or(0);
-                        if new_item != old_item {
-                            if old_item > 0 {
-                                self.invert_control_tracking_item(bus, old_item);
+                    let popup_tracking = self
+                        .control_tracking
+                        .as_ref()
+                        .map(|tracking| tracking.popup_tracking)
+                        .unwrap_or(false);
+                    if popup_tracking {
+                        if self.mouse_button {
+                            let ctrl_handle = self
+                                .control_tracking
+                                .as_ref()
+                                .map(|tracking| tracking.ctrl_handle)
+                                .unwrap_or(0);
+                            let (mv, mh) = self.mouse_pos;
+                            let new_item = self.control_tracking_item_at_point(bus, mh, mv);
+                            let old_item = self
+                                .control_tracking
+                                .as_ref()
+                                .map(|tracking| tracking.highlighted_item)
+                                .unwrap_or(0);
+                            if new_item != old_item {
+                                self.set_control_tracking_highlight(bus, new_item);
                             }
-                            if let Some(tracking) = self.control_tracking.as_mut() {
-                                tracking.highlighted_item = new_item;
-                            }
-                            if new_item > 0 {
-                                self.invert_control_tracking_item(bus, new_item);
-                            }
+                            self.record_trackcontrol_input_trace(
+                                bus,
+                                "tracking_update",
+                                ctrl_handle,
+                                None,
+                                0,
+                                None,
+                                Some(new_item),
+                                if new_item > 0 {
+                                    "popup_item_highlighted"
+                                } else {
+                                    "popup_no_item"
+                                },
+                            );
+                        } else {
+                            let selected_item = self
+                                .control_tracking
+                                .as_ref()
+                                .map(|tracking| tracking.highlighted_item)
+                                .unwrap_or(0);
+                            self.finish_popup_control_tracking(cpu, bus, selected_item);
                         }
                     } else {
-                        let selected_item = self
+                        let ctrl_handle = self
                             .control_tracking
                             .as_ref()
-                            .map(|tracking| tracking.highlighted_item)
+                            .map(|tracking| tracking.ctrl_handle)
                             .unwrap_or(0);
-                        self.finish_popup_control_tracking(cpu, bus, selected_item);
+                        let inside = self.simple_control_tracking_inside();
+                        if self.mouse_button {
+                            let highlighted = self
+                                .control_tracking
+                                .as_ref()
+                                .map(|tracking| tracking.simple_highlighted)
+                                .unwrap_or(false);
+                            if inside != highlighted {
+                                self.redraw_simple_control_tracking_state(cpu, bus, inside);
+                            }
+                            self.record_trackcontrol_input_trace(
+                                bus,
+                                "tracking_update",
+                                ctrl_handle,
+                                None,
+                                0,
+                                self.control_tracking.as_ref().map(|tracking| {
+                                    if inside {
+                                        tracking.simple_part
+                                    } else {
+                                        0
+                                    }
+                                }),
+                                None,
+                                if inside {
+                                    "simple_part_highlighted"
+                                } else {
+                                    "simple_no_part"
+                                },
+                            );
+                        } else {
+                            self.finish_simple_control_tracking(cpu, bus, inside);
+                        }
                     }
                     return Some(Ok(()));
                 }
 
                 let sp = cpu.read_reg(Register::A7);
+                let action_proc = bus.read_long(sp);
                 let ctrl_handle = bus.read_long(sp + 8);
                 let pt_v = bus.read_word(sp + 4) as i16;
                 let pt_h = bus.read_word(sp + 6) as i16;
 
                 let mut part: u16 = 0;
+                let mut outcome = "no_control";
                 if ctrl_handle != 0 {
                     let ctrl_ptr = bus.read_long(ctrl_handle);
                     if ctrl_ptr != 0 {
                         let vis = bus.read_byte(ctrl_ptr + 16);
                         let hilite = bus.read_byte(ctrl_ptr + 17);
+                        outcome = "inactive_or_invisible";
                         if vis == 255 && hilite != 255 {
                             let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                             let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                             let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
                             let r_right = bus.read_word(ctrl_ptr + 14) as i16;
+                            outcome = "outside_control";
                             if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
                             {
                                 let proc_id =
@@ -2120,24 +2426,98 @@ impl super::TrapDispatcher {
                                         self.control_tracking = Some(ControlTrackingState {
                                             ctrl_handle,
                                             ctrl_ptr,
+                                            popup_tracking: true,
                                             active_menu: menu_idx,
                                             highlighted_item: 0,
                                             saved_pixels: saved,
                                             dropdown_rect,
+                                            simple_part: 0,
+                                            simple_screen_rect: (0, 0, 0, 0),
+                                            simple_highlighted: false,
+                                            saved_hilite: hilite,
                                             stack_ptr: sp,
                                         });
+                                        self.record_trackcontrol_input_trace(
+                                            bus,
+                                            "start",
+                                            ctrl_handle,
+                                            Some((pt_v, pt_h)),
+                                            action_proc,
+                                            None,
+                                            Some(0),
+                                            "open_popup_tracking",
+                                        );
                                         return Some(Ok(()));
                                     }
+                                }
+
+                                // IM:I I-323: TrackControl follows mouse
+                                // movement, highlights simple controls, and
+                                // returns the part code only after mouse-up.
+                                // Preserve the old immediate path when the
+                                // mouse is already up; scripted callers that
+                                // model a real mouse-down take the refire path.
+                                if self.mouse_button
+                                    && action_proc == 0
+                                    && matches!(proc_id, 0 | 1 | 2)
+                                {
+                                    let part = self.standard_testcontrol_part_code(ctrl_ptr);
+                                    let window_ptr = bus.read_long(ctrl_ptr + 4);
+                                    let (scr_top, scr_left, _, _) =
+                                        Self::dialog_screen_bounds(bus, window_ptr);
+                                    let screen_rect = (
+                                        scr_top + r_top,
+                                        scr_left + r_left,
+                                        scr_top + r_bottom,
+                                        scr_left + r_right,
+                                    );
+                                    self.control_tracking = Some(ControlTrackingState {
+                                        ctrl_handle,
+                                        ctrl_ptr,
+                                        popup_tracking: false,
+                                        active_menu: 0,
+                                        highlighted_item: 0,
+                                        saved_pixels: Vec::new(),
+                                        dropdown_rect: (0, 0, 0, 0),
+                                        simple_part: part,
+                                        simple_screen_rect: screen_rect,
+                                        simple_highlighted: false,
+                                        saved_hilite: hilite,
+                                        stack_ptr: sp,
+                                    });
+                                    self.redraw_simple_control_tracking_state(cpu, bus, true);
+                                    self.record_trackcontrol_input_trace(
+                                        bus,
+                                        "start",
+                                        ctrl_handle,
+                                        Some((pt_v, pt_h)),
+                                        action_proc,
+                                        None,
+                                        None,
+                                        "simple_tracking_started",
+                                    );
+                                    return Some(Ok(()));
                                 }
 
                                 // Return inButton (10) for simple controls.
                                 // Inside Macintosh Volume I, I-316
                                 part = 10;
+                                outcome = "visible_active_hit";
                             }
                         }
                     }
                 }
 
+                self.record_trackcontrol_input_trace(
+                    bus,
+                    "start",
+                    ctrl_handle,
+                    Some((pt_v, pt_h)),
+                    action_proc,
+                    Some(part),
+                    None,
+                    outcome,
+                );
                 bus.write_word(sp + 12, part);
                 cpu.write_reg(Register::A7, sp + 12);
                 Ok(())
@@ -2172,7 +2552,7 @@ impl super::TrapDispatcher {
                             // popupMenuProc needs special MENU resource lookup
                             let vis = bus.read_byte(ctrl_ptr + 16);
                             let hilite = bus.read_byte(ctrl_ptr + 17);
-                            if vis == 255 && hilite != 255 {
+                            if vis == 255 {
                                 let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                                 let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                                 let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
@@ -2187,13 +2567,15 @@ impl super::TrapDispatcher {
                                 let abs_right = scr_left + r_right;
                                 let selected = ctrl_value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
-                                self.draw_popup_control(
+                                self.draw_popup_control_with_state(
                                     bus,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
                                     abs_right,
                                     &item_title.unwrap_or_default(),
+                                    hilite != 255,
+                                    hilite == 1,
                                 );
                             }
                         } else {
@@ -2653,6 +3035,7 @@ mod tests {
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::menu::{Menu, MenuItem};
     use crate::trap::TrapDispatcher;
+    use crate::ui_theme::UiThemeId;
 
     fn build_cntl_resource(
         rect: (i16, i16, i16, i16),
@@ -3700,6 +4083,7 @@ mod tests {
     #[test]
     fn track_control_visible_active_button_hit_returns_inbutton() {
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.enable_input_trace_capture();
         let sp = 0x300000u32;
         let (ctrl_handle, _) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
 
@@ -3714,11 +4098,279 @@ mod tests {
 
         assert_eq!(bus.read_word(sp + 12), 10);
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        let trace = disp.input_trace_text();
+        assert!(trace.contains("A968 action=start start=(15,25)"));
+        assert!(trace.contains("part=10 highlighted_item=none outcome=visible_active_hit"));
+    }
+
+    #[test]
+    fn track_control_button_systemless_theme_tracks_pressed_state_until_release() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        disp.enable_input_trace_capture();
+        let sp = 0x300000u32;
+        let window = disp.current_port;
+        let row_bytes = 64u32;
+        let base = bus.alloc(row_bytes * 342);
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+        let (ctrl_handle, ctrl_ptr) =
+            alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+        let probe_x = 30;
+        let probe_y = 30;
+
+        disp.mouse_button = true;
+        disp.mouse_pos = (probe_y, probe_x);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, probe_y as u16);
+        bus.write_word(sp + 6, probe_x as u16);
+        bus.write_long(sp + 8, ctrl_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp,
+            "simple TrackControl should defer the stack pop until mouse-up"
+        );
+        assert!(disp.control_tracking.is_some());
+        assert_eq!(bus.read_word(sp + 12), 0xBEEF);
+        assert_eq!(bus.read_byte(ctrl_ptr + 17), 1);
+        assert!(
+            screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
+            "held simple TrackControl should route pressed button chrome through the provider"
+        );
+
+        disp.mouse_pos = (10, 10);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(ctrl_ptr + 17), 0);
+        assert!(
+            !screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
+            "dragging outside should redraw unpressed provider chrome"
+        );
+
+        disp.mouse_pos = (probe_y, probe_x);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(ctrl_ptr + 17), 1);
+        assert!(
+            screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
+            "dragging back inside should restore provider pressed chrome"
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 10);
+        assert_eq!(bus.read_byte(ctrl_ptr + 17), 0);
+        assert!(disp.control_tracking.is_none());
+        assert!(
+            !screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
+            "release should restore unpressed provider chrome before returning"
+        );
+        let trace = disp.input_trace_text();
+        assert!(trace.contains("outcome=simple_tracking_started"));
+        assert!(trace.contains("outcome=simple_no_part"));
+        assert!(trace.contains("outcome=simple_part_highlighted"));
+        assert!(trace.contains("part=10 highlighted_item=none outcome=simple_part_selected"));
+    }
+
+    fn trackcontrol_button_release_result_for_theme(
+        theme_id: UiThemeId,
+        release_inside: bool,
+    ) -> (u16, u32, u8, bool) {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(theme_id);
+        let sp = 0x300000u32;
+        let window = disp.current_port;
+        let screen_base = bus.read_long(window + 2);
+        let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        let (ctrl_handle, ctrl_ptr) =
+            alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+
+        disp.mouse_button = true;
+        disp.mouse_pos = (30, 30);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 30);
+        bus.write_word(sp + 6, 30);
+        bus.write_long(sp + 8, ctrl_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        if !release_inside {
+            disp.mouse_pos = (10, 10);
+            disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        disp.mouse_button = false;
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            bus.read_word(sp + 12),
+            cpu.read_reg(Register::A7),
+            bus.read_byte(ctrl_ptr + 17),
+            disp.control_tracking.is_some(),
+        )
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_trackcontrol_part_codes() {
+        // IM:I I-323: TrackControl returns the same part code on inside
+        // release and 0 on outside release. Theme chrome must not alter those
+        // guest-visible Control Manager results.
+        let classic_inside =
+            trackcontrol_button_release_result_for_theme(UiThemeId::ClassicSystem7, true);
+        let themed_inside =
+            trackcontrol_button_release_result_for_theme(UiThemeId::SystemlessDefault, true);
+        let classic_outside =
+            trackcontrol_button_release_result_for_theme(UiThemeId::ClassicSystem7, false);
+        let themed_outside =
+            trackcontrol_button_release_result_for_theme(UiThemeId::SystemlessDefault, false);
+
+        assert_eq!(classic_inside, (10, 0x30000C, 0, false));
+        assert_eq!(classic_outside, (0, 0x30000C, 0, false));
+        assert_eq!(
+            themed_inside, classic_inside,
+            "systemless-default must not change TrackControl inside-release part codes"
+        );
+        assert_eq!(
+            themed_outside, classic_outside,
+            "systemless-default must not change TrackControl outside-release part codes"
+        );
+    }
+
+    fn trackcontrol_popup_value_result_for_theme(
+        theme_id: UiThemeId,
+        select_second_item: bool,
+    ) -> (u16, u32, i16, bool) {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(theme_id);
+        let sp = 0x300000u32;
+        let window = disp.current_port;
+        let screen_base = bus.read_long(window + 2);
+        let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, screen_base, row_bytes, 342);
+
+        let owner = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+        let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 130), 255, 0);
+        bus.write_long(ctrl_ptr + 4, owner);
+        bus.write_word(ctrl_ptr + 18, 1);
+        bus.write_word(ctrl_ptr + 20, 902);
+        bus.write_word(ctrl_ptr + 22, 0);
+        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        disp.menus.push(Menu {
+            id: 902,
+            title: "Mode".to_string(),
+            items: vec![
+                MenuItem {
+                    text: "First".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+                MenuItem {
+                    text: "Second".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+            ],
+            enabled: true,
+            handle: 0,
+            in_menu_bar: false,
+        });
+
+        disp.mouse_button = true;
+        disp.mouse_pos = (15, 25);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0xFFFF_FFFF);
+        bus.write_word(sp + 4, 15);
+        bus.write_word(sp + 6, 25);
+        bus.write_long(sp + 8, ctrl_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+
+        let (dropdown_top, dropdown_left, dropdown_bottom, _) = disp
+            .control_tracking
+            .as_ref()
+            .map(|tracking| tracking.dropdown_rect)
+            .expect("popup tracking should open a dropdown");
+        if select_second_item {
+            disp.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
+        } else {
+            disp.mouse_pos = (dropdown_bottom + 8, dropdown_left + 5);
+        }
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        disp.mouse_button = false;
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            bus.read_word(sp + 12),
+            cpu.read_reg(Register::A7),
+            bus.read_word(ctrl_ptr + 18) as i16,
+            disp.control_tracking.is_some(),
+        )
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_popup_trackcontrol_value_results() {
+        // MTE 1992 describes popup contrlValue as the chosen menu item
+        // number, and TrackControl as returning the release part code.
+        // Theme chrome must not alter either guest-visible result.
+        let classic_select =
+            trackcontrol_popup_value_result_for_theme(UiThemeId::ClassicSystem7, true);
+        let themed_select =
+            trackcontrol_popup_value_result_for_theme(UiThemeId::SystemlessDefault, true);
+        let classic_no_selection =
+            trackcontrol_popup_value_result_for_theme(UiThemeId::ClassicSystem7, false);
+        let themed_no_selection =
+            trackcontrol_popup_value_result_for_theme(UiThemeId::SystemlessDefault, false);
+
+        assert_eq!(classic_select, (10, 0x30000C, 2, false));
+        assert_eq!(classic_no_selection, (0, 0x30000C, 1, false));
+        assert_eq!(
+            themed_select, classic_select,
+            "systemless-default must not change popup TrackControl selected values"
+        );
+        assert_eq!(
+            themed_no_selection, classic_no_selection,
+            "systemless-default must not change popup TrackControl no-selection values"
+        );
     }
 
     #[test]
     fn track_control_popup_menu_tracks_and_updates_value_on_release() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.enable_input_trace_capture();
         let sp = 0x300000u32;
         let owner = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
         let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 130), 255, 0);
@@ -3794,6 +4446,140 @@ mod tests {
         assert_eq!(bus.read_word(sp + 12), 10);
         assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
         assert!(disp.control_tracking.is_none());
+        let trace = disp.input_trace_text();
+        assert!(trace.contains("A968 action=start start=(15,25)"));
+        assert!(trace.contains("outcome=open_popup_tracking"));
+        assert!(trace.contains("A968 action=tracking_update"));
+        assert!(trace.contains("tracking=menu:idle dialog:idle control:active"));
+        assert!(trace.contains("highlighted_item=2 outcome=popup_item_highlighted"));
+        assert!(trace.contains("A968 action=tracking_finish"));
+        assert!(trace.contains("part=10 highlighted_item=2 outcome=popup_item_selected"));
+    }
+
+    #[test]
+    fn track_control_popup_systemless_theme_routes_highlight_through_menu_provider() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        disp.enable_input_trace_capture();
+        let sp = 0x300000u32;
+        let window = disp.current_port;
+        let screen_base = bus.read_long(window + 2);
+        let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, screen_base, row_bytes, 342);
+
+        let owner = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+        let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 130), 255, 0);
+        bus.write_long(ctrl_ptr + 4, owner);
+        bus.write_word(ctrl_ptr + 18, 1);
+        bus.write_word(ctrl_ptr + 20, 901);
+        bus.write_word(ctrl_ptr + 22, 0);
+        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        disp.menus.push(Menu {
+            id: 901,
+            title: "Formation".to_string(),
+            items: vec![
+                MenuItem {
+                    text: "Duke".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+                MenuItem {
+                    text: "Carnage".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                },
+            ],
+            enabled: true,
+            handle: 0,
+            in_menu_bar: false,
+        });
+
+        disp.mouse_button = true;
+        disp.mouse_pos = (15, 25);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 15);
+        bus.write_word(sp + 6, 25);
+        bus.write_long(sp + 8, ctrl_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let (dropdown_top, dropdown_left, _dropdown_bottom, dropdown_right) = disp
+            .control_tracking
+            .as_ref()
+            .map(|tracking| tracking.dropdown_rect)
+            .expect("popup tracking should open a dropdown");
+        let item_two_top = dropdown_top + 1 + 16;
+        let raw_inversion_probe_x = dropdown_right - 10;
+        let raw_inversion_probe_y = item_two_top + 5;
+        assert!(
+            !screen_pixel_is_set(
+                &bus,
+                screen_base,
+                row_bytes,
+                raw_inversion_probe_x,
+                raw_inversion_probe_y
+            ),
+            "unhighlighted popup item row should leave blank row space clear"
+        );
+
+        disp.mouse_pos = (item_two_top + 1, dropdown_left + 5);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            disp.control_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(2)
+        );
+        let provider_rail_pixels = count_set_pixels(
+            &bus,
+            screen_base,
+            row_bytes,
+            item_two_top,
+            dropdown_left,
+            item_two_top + 16,
+            dropdown_left + 12,
+        );
+        assert!(
+            provider_rail_pixels > 0,
+            "systemless-default popup tracking should redraw provider-owned item rail chrome"
+        );
+        assert!(
+            !screen_pixel_is_set(
+                &bus,
+                screen_base,
+                row_bytes,
+                raw_inversion_probe_x,
+                raw_inversion_probe_y
+            ),
+            "systemless-default popup tracking must not use raw full-row inversion"
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 10);
+        assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
+        assert!(disp.control_tracking.is_none());
+        let trace = disp.input_trace_text();
+        assert!(trace.contains("A968 action=tracking_update"));
+        assert!(trace.contains("highlighted_item=2 outcome=popup_item_highlighted"));
+        assert!(trace.contains("part=10 highlighted_item=2 outcome=popup_item_selected"));
     }
 
     #[test]
@@ -4104,6 +4890,140 @@ mod tests {
         }
     }
 
+    fn dispatch_testcontrol_part<C: CpuOps>(
+        disp: &mut TrapDispatcher,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        sp: u32,
+        ctrl_handle: u32,
+        point: (i16, i16),
+    ) -> (u16, u32, u16) {
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, point.0 as u16);
+        bus.write_word(sp + 2, point.1 as u16);
+        bus.write_long(sp + 4, ctrl_handle);
+        bus.write_word(sp + 8, 0xBEEF);
+        bus.write_word(sp + 10, 0xCAFE);
+
+        disp.dispatch_control(true, 0x166, cpu, bus)
+            .unwrap()
+            .unwrap();
+
+        (
+            bus.read_word(sp + 8),
+            cpu.read_reg(Register::A7),
+            bus.read_word(sp + 10),
+        )
+    }
+
+    fn testcontrol_results_for_theme(theme_id: UiThemeId) -> Vec<(&'static str, u16, u32, u16)> {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_ui_theme_id(theme_id);
+        let sp = 0x300000u32;
+        let mut results = Vec::new();
+
+        let (button_handle, button_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
+        disp.control_proc_ids.insert(button_ptr, 0);
+        let (part, stack, tail) =
+            dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, button_handle, (15, 25));
+        results.push(("button", part, stack, tail));
+
+        let (checkbox_handle, checkbox_ptr) =
+            alloc_control_handle(&mut bus, (40, 50, 80, 120), 255, 0);
+        disp.control_proc_ids.insert(checkbox_ptr, 1);
+        let (part, stack, tail) =
+            dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, checkbox_handle, (60, 70));
+        results.push(("checkbox", part, stack, tail));
+
+        let (radio_handle, radio_ptr) = alloc_control_handle(&mut bus, (90, 30, 120, 100), 255, 0);
+        disp.control_proc_ids.insert(radio_ptr, 2);
+        let (part, stack, tail) =
+            dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, radio_handle, (100, 40));
+        results.push(("radio", part, stack, tail));
+
+        let (scroll_handle, _) =
+            alloc_scrollbar_control(&mut disp, &mut bus, (60, 240, 220, 256), 255, 0, 40, 0, 100);
+        for (name, point) in [
+            ("scroll_up_arrow", (70i16, 248i16)),
+            ("scroll_page_up", (95, 248)),
+            ("scroll_thumb", (126, 248)),
+            ("scroll_page_down", (150, 248)),
+            ("scroll_down_arrow", (210, 248)),
+        ] {
+            let (part, stack, tail) =
+                dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, scroll_handle, point);
+            results.push((name, part, stack, tail));
+        }
+
+        let (outside_handle, outside_ptr) =
+            alloc_control_handle(&mut bus, (130, 20, 160, 80), 255, 0);
+        disp.control_proc_ids.insert(outside_ptr, 0);
+        let (part, stack, tail) =
+            dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, outside_handle, (120, 15));
+        results.push(("outside", part, stack, tail));
+
+        let (inactive_handle, inactive_ptr) =
+            alloc_control_handle(&mut bus, (170, 20, 200, 80), 255, 255);
+        disp.control_proc_ids.insert(inactive_ptr, 0);
+        let (part, stack, tail) = dispatch_testcontrol_part(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            sp,
+            inactive_handle,
+            (180, 30),
+        );
+        results.push(("inactive", part, stack, tail));
+
+        let (invisible_handle, invisible_ptr) =
+            alloc_control_handle(&mut bus, (210, 20, 240, 80), 0, 0);
+        disp.control_proc_ids.insert(invisible_ptr, 0);
+        let (part, stack, tail) = dispatch_testcontrol_part(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            sp,
+            invisible_handle,
+            (220, 30),
+        );
+        results.push(("invisible", part, stack, tail));
+
+        results
+    }
+
+    #[test]
+    fn systemless_theme_does_not_change_testcontrol_part_codes() {
+        // IM:I I-315 defines standard Control Manager part codes. IM:I I-325
+        // specifies that TestControl returns those codes for visible active
+        // controls, or 0 for misses, invisible controls, and inactive controls.
+        // Theme chrome must not alter those guest-visible hit-test results.
+        let classic = testcontrol_results_for_theme(UiThemeId::ClassicSystem7);
+        let themed = testcontrol_results_for_theme(UiThemeId::SystemlessDefault);
+        let expected_stack = 0x300008u32;
+        let expected_tail = 0xCAFEu16;
+
+        assert_eq!(
+            classic,
+            vec![
+                ("button", 10, expected_stack, expected_tail),
+                ("checkbox", 11, expected_stack, expected_tail),
+                ("radio", 11, expected_stack, expected_tail),
+                ("scroll_up_arrow", 20, expected_stack, expected_tail),
+                ("scroll_page_up", 22, expected_stack, expected_tail),
+                ("scroll_thumb", 129, expected_stack, expected_tail),
+                ("scroll_page_down", 23, expected_stack, expected_tail),
+                ("scroll_down_arrow", 21, expected_stack, expected_tail),
+                ("outside", 0, expected_stack, expected_tail),
+                ("inactive", 0, expected_stack, expected_tail),
+                ("invisible", 0, expected_stack, expected_tail),
+            ]
+        );
+        assert_eq!(
+            themed, classic,
+            "systemless-default must not change TestControl part codes or stack protocol"
+        );
+    }
+
     // Draw1Control signature/no-op baseline per MTE (1992) 5-88.
     #[test]
     fn draw1control_nil_handle_is_noop_and_pops_arg() {
@@ -4138,6 +5058,652 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(disp.current_gdevice, gdevice_before);
+    }
+
+    #[test]
+    fn draw1control_systemless_theme_routes_popup_control_chrome_through_provider() {
+        let sp = 0x300000u32;
+        let bounds = (20, 20, 40, 120);
+
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let classic_window = classic.current_port;
+        let classic_base = classic_bus.read_long(classic_window + 2);
+        let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
+        classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut classic_bus, classic_base, classic_row_bytes, 342);
+        let (classic_handle, classic_ptr) =
+            alloc_button_control(&mut classic, &mut classic_bus, classic_window, bounds);
+        classic.control_proc_ids.insert(classic_ptr, 1008);
+        classic_cpu.write_reg(Register::A7, sp);
+        classic_bus.write_long(sp, classic_handle);
+        classic
+            .dispatch_control(true, 0x16D, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .unwrap();
+
+        let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let themed_window = themed.current_port;
+        let themed_base = themed_bus.read_long(themed_window + 2);
+        let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
+        themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
+        let (themed_handle, themed_ptr) =
+            alloc_button_control(&mut themed, &mut themed_bus, themed_window, bounds);
+        themed.control_proc_ids.insert(themed_ptr, 1008);
+        themed_cpu.write_reg(Register::A7, sp);
+        themed_bus.write_long(sp, themed_handle);
+        themed
+            .dispatch_control(true, 0x16D, &mut themed_cpu, &mut themed_bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 120, 39),
+            "classic popup CDEF should draw its offset shadow outside the control rect"
+        );
+        assert!(
+            !screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 120, 39),
+            "systemless-default popup provider should not draw the classic offset shadow"
+        );
+
+        themed_cpu.write_reg(Register::A7, sp);
+        themed_bus.write_word(sp, 25);
+        themed_bus.write_word(sp + 2, 25);
+        themed_bus.write_long(sp + 4, themed_handle);
+        themed_bus.write_word(sp + 8, 0xDEAD);
+        themed
+            .dispatch_control(true, 0x166, &mut themed_cpu, &mut themed_bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(themed_bus.read_word(sp + 8), 10);
+        assert_eq!(themed_cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn draw1control_systemless_theme_routes_popup_control_hilite_states_through_provider() {
+        let sp = 0x300000u32;
+        let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let themed_window = themed.current_port;
+        let row_bytes = 64u32;
+        let base = themed_bus.alloc(row_bytes * 342);
+        themed.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut themed_bus, base, row_bytes, 342);
+
+        let (normal_handle, normal_ptr) = alloc_button_control(
+            &mut themed,
+            &mut themed_bus,
+            themed_window,
+            (20, 20, 40, 120),
+        );
+        let (pressed_handle, pressed_ptr) = alloc_button_control(
+            &mut themed,
+            &mut themed_bus,
+            themed_window,
+            (52, 20, 72, 120),
+        );
+        let (inactive_handle, inactive_ptr) = alloc_button_control(
+            &mut themed,
+            &mut themed_bus,
+            themed_window,
+            (84, 20, 104, 120),
+        );
+        for ptr in [normal_ptr, pressed_ptr, inactive_ptr] {
+            themed.control_proc_ids.insert(ptr, 1008);
+        }
+        themed_bus.write_byte(pressed_ptr + 17, 1);
+        themed_bus.write_byte(inactive_ptr + 17, 255);
+
+        for handle in [normal_handle, pressed_handle, inactive_handle] {
+            themed_cpu.write_reg(Register::A7, sp);
+            themed_bus.write_long(sp, handle);
+            themed
+                .dispatch_control(true, 0x16D, &mut themed_cpu, &mut themed_bus)
+                .unwrap()
+                .unwrap();
+        }
+
+        assert!(
+            !screen_pixel_is_set(&themed_bus, base, row_bytes, 22, 30),
+            "normal systemless-default popup should keep the state inset clear"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, base, row_bytes, 30, 57),
+            "pressed systemless-default popup should route hilite state to provider fill"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, base, row_bytes, 22, 94),
+            "inactive systemless-default popup should route HiliteControl state to provider chrome"
+        );
+    }
+
+    #[test]
+    fn draw1control_systemless_theme_routes_push_button_chrome_through_provider() {
+        let sp = 0x300000u32;
+        let bounds = (20, 20, 40, 80);
+
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let classic_window = classic.current_port;
+        let classic_base = classic_bus.read_long(classic_window + 2);
+        let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
+        classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
+        let (classic_handle, _) =
+            alloc_button_control(&mut classic, &mut classic_bus, classic_window, bounds);
+        classic_cpu.write_reg(Register::A7, sp);
+        classic_bus.write_long(sp, classic_handle);
+        classic
+            .dispatch_control(true, 0x16D, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .unwrap();
+
+        let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let themed_window = themed.current_port;
+        let themed_base = themed_bus.read_long(themed_window + 2);
+        let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
+        themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
+        let (themed_handle, _) =
+            alloc_button_control(&mut themed, &mut themed_bus, themed_window, bounds);
+        themed_cpu.write_reg(Register::A7, sp);
+        themed_bus.write_long(sp, themed_handle);
+        themed
+            .dispatch_control(true, 0x16D, &mut themed_cpu, &mut themed_bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            !screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 20, 20),
+            "classic round-rect CDEF should leave the outer corner as background"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 20, 20),
+            "systemless-default provider chrome should own the HLE control corner pixel"
+        );
+
+        themed_cpu.write_reg(Register::A7, sp);
+        themed_bus.write_word(sp, 25);
+        themed_bus.write_word(sp + 2, 25);
+        themed_bus.write_long(sp + 4, themed_handle);
+        themed_bus.write_word(sp + 8, 0xDEAD);
+        themed
+            .dispatch_control(true, 0x166, &mut themed_cpu, &mut themed_bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(themed_bus.read_word(sp + 8), 10);
+        assert_eq!(themed_cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn draw1control_systemless_theme_routes_button_hilite_states_through_provider() {
+        let sp = 0x300000u32;
+        let (mut themed, mut cpu, mut bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let window = themed.current_port;
+        let row_bytes = 64u32;
+        let base = bus.alloc(row_bytes * 342);
+        themed.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+
+        let (enabled_handle, _enabled_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (20, 20, 40, 80));
+        let (pressed_handle, pressed_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (60, 20, 80, 80));
+        let (inactive_handle, inactive_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (100, 20, 120, 80));
+        bus.write_byte(pressed_ptr + 17, 1);
+        bus.write_byte(inactive_ptr + 17, 255);
+
+        for handle in [enabled_handle, pressed_handle, inactive_handle] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, handle);
+            themed
+                .dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        }
+
+        let enabled_body = count_set_pixels(&bus, base, row_bytes, 23, 23, 37, 77);
+        let pressed_body = count_set_pixels(&bus, base, row_bytes, 63, 23, 77, 77);
+        assert!(
+            pressed_body > enabled_body,
+            "systemless-default should route contrlHilite=1 into the provider pressed state ({pressed_body} <= {enabled_body})"
+        );
+
+        // MTE 1992 glossary, "inactive control": inactive controls are
+        // visually indicated and do not respond as active controls.
+        let inactive_body = count_set_pixels(&bus, base, row_bytes, 103, 23, 117, 77);
+        assert!(
+            pressed_body > inactive_body,
+            "systemless-default should keep inactive button chrome distinct from pressed chrome"
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 65);
+        bus.write_word(sp + 2, 25);
+        bus.write_long(sp + 4, pressed_handle);
+        bus.write_word(sp + 8, 0xDEAD);
+        themed
+            .dispatch_control(true, 0x166, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(sp + 8), 10);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 105);
+        bus.write_word(sp + 2, 25);
+        bus.write_long(sp + 4, inactive_handle);
+        bus.write_word(sp + 8, 0xDEAD);
+        themed
+            .dispatch_control(true, 0x166, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(sp + 8), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn draw1control_systemless_theme_routes_checkbox_and_radio_chrome_through_provider() {
+        let sp = 0x300000u32;
+
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let classic_window = classic.current_port;
+        let classic_base = classic_bus.read_long(classic_window + 2);
+        let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
+        classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
+        let (classic_checkbox_handle, classic_checkbox_ptr) = alloc_button_control(
+            &mut classic,
+            &mut classic_bus,
+            classic_window,
+            (20, 20, 40, 120),
+        );
+        classic.control_proc_ids.insert(classic_checkbox_ptr, 1);
+        classic_bus.write_word(classic_checkbox_ptr + 18, 1);
+        let (classic_radio_handle, classic_radio_ptr) = alloc_button_control(
+            &mut classic,
+            &mut classic_bus,
+            classic_window,
+            (50, 20, 70, 120),
+        );
+        classic.control_proc_ids.insert(classic_radio_ptr, 2);
+        classic_bus.write_word(classic_radio_ptr + 18, 1);
+        for handle in [classic_checkbox_handle, classic_radio_handle] {
+            classic_cpu.write_reg(Register::A7, sp);
+            classic_bus.write_long(sp, handle);
+            classic
+                .dispatch_control(true, 0x16D, &mut classic_cpu, &mut classic_bus)
+                .unwrap()
+                .unwrap();
+        }
+
+        let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let themed_window = themed.current_port;
+        let themed_base = themed_bus.read_long(themed_window + 2);
+        let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
+        themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
+        let (themed_checkbox_handle, themed_checkbox_ptr) = alloc_button_control(
+            &mut themed,
+            &mut themed_bus,
+            themed_window,
+            (20, 20, 40, 120),
+        );
+        themed.control_proc_ids.insert(themed_checkbox_ptr, 1);
+        themed_bus.write_word(themed_checkbox_ptr + 18, 1);
+        let (themed_radio_handle, themed_radio_ptr) = alloc_button_control(
+            &mut themed,
+            &mut themed_bus,
+            themed_window,
+            (50, 20, 70, 120),
+        );
+        themed.control_proc_ids.insert(themed_radio_ptr, 2);
+        themed_bus.write_word(themed_radio_ptr + 18, 1);
+        for handle in [themed_checkbox_handle, themed_radio_handle] {
+            themed_cpu.write_reg(Register::A7, sp);
+            themed_bus.write_long(sp, handle);
+            themed
+                .dispatch_control(true, 0x16D, &mut themed_cpu, &mut themed_bus)
+                .unwrap()
+                .unwrap();
+        }
+
+        let classic_checkbox_pixels = count_set_pixels(
+            &classic_bus,
+            classic_base,
+            classic_row_bytes,
+            24,
+            22,
+            36,
+            34,
+        );
+        let themed_checkbox_pixels =
+            count_set_pixels(&themed_bus, themed_base, themed_row_bytes, 24, 22, 36, 34);
+        assert!(
+            themed_checkbox_pixels > classic_checkbox_pixels,
+            "systemless-default checkbox provider should draw a denser selected mark ({themed_checkbox_pixels} <= {classic_checkbox_pixels})"
+        );
+        let classic_radio_pixels = count_set_pixels(
+            &classic_bus,
+            classic_base,
+            classic_row_bytes,
+            54,
+            22,
+            66,
+            34,
+        );
+        let themed_radio_pixels =
+            count_set_pixels(&themed_bus, themed_base, themed_row_bytes, 54, 22, 66, 34);
+        assert!(
+            themed_radio_pixels > classic_radio_pixels,
+            "systemless-default radio provider should draw a denser selected mark ({themed_radio_pixels} <= {classic_radio_pixels})"
+        );
+
+        themed_cpu.write_reg(Register::A7, sp);
+        themed_bus.write_word(sp, 25);
+        themed_bus.write_word(sp + 2, 25);
+        themed_bus.write_long(sp + 4, themed_checkbox_handle);
+        themed_bus.write_word(sp + 8, 0xDEAD);
+        themed
+            .dispatch_control(true, 0x166, &mut themed_cpu, &mut themed_bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(themed_bus.read_word(sp + 8), 11);
+        assert_eq!(themed_cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn draw1control_systemless_theme_routes_checkbox_radio_hilite_states_through_provider() {
+        let sp = 0x300000u32;
+        let (mut themed, mut cpu, mut bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let window = themed.current_port;
+        let row_bytes = 64u32;
+        let base = bus.alloc(row_bytes * 342);
+        themed.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+
+        let (checkbox_enabled_handle, checkbox_enabled_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (20, 20, 40, 100));
+        let (checkbox_pressed_handle, checkbox_pressed_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (52, 20, 72, 100));
+        let (checkbox_inactive_handle, checkbox_inactive_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (84, 20, 104, 100));
+        for ptr in [
+            checkbox_enabled_ptr,
+            checkbox_pressed_ptr,
+            checkbox_inactive_ptr,
+        ] {
+            themed.control_proc_ids.insert(ptr, 1);
+        }
+        bus.write_byte(checkbox_pressed_ptr + 17, 1);
+        bus.write_byte(checkbox_inactive_ptr + 17, 255);
+
+        let (radio_enabled_handle, radio_enabled_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (20, 140, 40, 220));
+        let (radio_pressed_handle, radio_pressed_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (52, 140, 72, 220));
+        let (radio_inactive_handle, radio_inactive_ptr) =
+            alloc_button_control(&mut themed, &mut bus, window, (84, 140, 104, 220));
+        for ptr in [radio_enabled_ptr, radio_pressed_ptr, radio_inactive_ptr] {
+            themed.control_proc_ids.insert(ptr, 2);
+        }
+        bus.write_byte(radio_pressed_ptr + 17, 1);
+        bus.write_byte(radio_inactive_ptr + 17, 255);
+
+        for handle in [
+            checkbox_enabled_handle,
+            checkbox_pressed_handle,
+            checkbox_inactive_handle,
+            radio_enabled_handle,
+            radio_pressed_handle,
+            radio_inactive_handle,
+        ] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, handle);
+            themed
+                .dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        }
+
+        let checkbox_enabled_body = count_set_pixels(&bus, base, row_bytes, 24, 22, 36, 34);
+        let checkbox_pressed_body = count_set_pixels(&bus, base, row_bytes, 56, 22, 68, 34);
+        let checkbox_inactive_body = count_set_pixels(&bus, base, row_bytes, 88, 22, 100, 34);
+        assert!(
+            checkbox_pressed_body > checkbox_enabled_body,
+            "systemless-default should route checkbox contrlHilite=1 to provider pressed fill ({checkbox_pressed_body} <= {checkbox_enabled_body})"
+        );
+        assert!(
+            checkbox_pressed_body > checkbox_inactive_body,
+            "systemless-default should keep inactive checkbox chrome distinct from pressed chrome"
+        );
+
+        let radio_enabled_body = count_set_pixels(&bus, base, row_bytes, 24, 142, 36, 154);
+        let radio_pressed_body = count_set_pixels(&bus, base, row_bytes, 56, 142, 68, 154);
+        let radio_inactive_body = count_set_pixels(&bus, base, row_bytes, 88, 142, 100, 154);
+        assert!(
+            radio_pressed_body > radio_enabled_body,
+            "systemless-default should route radio contrlHilite=1 to provider pressed fill ({radio_pressed_body} <= {radio_enabled_body})"
+        );
+        assert!(
+            radio_pressed_body > radio_inactive_body,
+            "systemless-default should keep inactive radio chrome distinct from pressed chrome"
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 57);
+        bus.write_word(sp + 2, 145);
+        bus.write_long(sp + 4, radio_pressed_handle);
+        bus.write_word(sp + 8, 0xDEAD);
+        themed
+            .dispatch_control(true, 0x166, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(sp + 8), 11);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn scrollbar_systemless_theme_routes_chrome_through_provider_and_keeps_part_codes() {
+        let sp = 0x300000u32;
+        let bounds = (20, 20, 180, 36);
+
+        let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
+        let classic_window = classic.current_port;
+        let classic_base = classic_bus.read_long(classic_window + 2);
+        let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
+        classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut classic_bus, classic_base, classic_row_bytes, 342);
+        let (_classic_handle, classic_ptr) =
+            alloc_button_control(&mut classic, &mut classic_bus, classic_window, bounds);
+        classic.control_proc_ids.insert(classic_ptr, 16);
+        classic_bus.write_word(classic_ptr + 18, 40);
+        classic_bus.write_word(classic_ptr + 20, 0);
+        classic_bus.write_word(classic_ptr + 22, 100);
+        assert!(
+            !classic.draw_theme_scrollbar_chrome(
+                &mut classic_bus,
+                bounds.0,
+                bounds.1,
+                bounds.2,
+                bounds.3,
+                40,
+                0,
+                100,
+                0,
+            ),
+            "classic-system7 keeps the existing scrollBarProc renderer"
+        );
+
+        let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let themed_window = themed.current_port;
+        let themed_base = themed_bus.read_long(themed_window + 2);
+        let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
+        themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
+        let (themed_handle, themed_ptr) =
+            alloc_button_control(&mut themed, &mut themed_bus, themed_window, bounds);
+        themed.control_proc_ids.insert(themed_ptr, 16);
+        themed_bus.write_word(themed_ptr + 18, 40);
+        themed_bus.write_word(themed_ptr + 20, 0);
+        themed_bus.write_word(themed_ptr + 22, 100);
+        assert!(
+            themed.draw_theme_scrollbar_chrome(
+                &mut themed_bus,
+                bounds.0,
+                bounds.1,
+                bounds.2,
+                bounds.3,
+                40,
+                0,
+                100,
+                0,
+            ),
+            "systemless-default routes scrollBarProc chrome through the theme provider"
+        );
+
+        themed_cpu.write_reg(Register::A7, sp);
+        themed_bus.write_word(sp, 85);
+        themed_bus.write_word(sp + 2, 28);
+        themed_bus.write_long(sp + 4, themed_handle);
+        themed_bus.write_word(sp + 8, 0xDEAD);
+        themed
+            .dispatch_control(true, 0x166, &mut themed_cpu, &mut themed_bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(themed_bus.read_word(sp + 8), 129);
+        assert_eq!(themed_cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn draw1control_systemless_theme_routes_scrollbar_hilite_states_through_provider() {
+        let sp = 0x300000u32;
+        let (mut themed, mut cpu, mut bus) = setup_with_port();
+        themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
+        let row_bytes = 64u32;
+        let base = bus.alloc(row_bytes * 342);
+        themed.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+
+        let (normal_handle, normal_ptr) =
+            alloc_scrollbar_control(&mut themed, &mut bus, (20, 20, 100, 36), 255, 0, 40, 0, 100);
+        let (arrow_handle, _) = alloc_scrollbar_control(
+            &mut themed,
+            &mut bus,
+            (20, 52, 100, 68),
+            255,
+            20,
+            40,
+            0,
+            100,
+        );
+        let (page_handle, _) = alloc_scrollbar_control(
+            &mut themed,
+            &mut bus,
+            (20, 84, 100, 100),
+            255,
+            22,
+            40,
+            0,
+            100,
+        );
+        let (inactive_handle, inactive_ptr) = alloc_scrollbar_control(
+            &mut themed,
+            &mut bus,
+            (20, 116, 100, 132),
+            255,
+            255,
+            40,
+            0,
+            100,
+        );
+
+        for handle in [normal_handle, arrow_handle, page_handle, inactive_handle] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, handle);
+            themed
+                .dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        }
+
+        let normal_arrow_fill = count_set_pixels(&bus, base, row_bytes, 21, 21, 35, 35);
+        let pressed_arrow_fill = count_set_pixels(&bus, base, row_bytes, 21, 53, 35, 67);
+        assert!(
+            pressed_arrow_fill > normal_arrow_fill,
+            "systemless-default should route scrollbar arrow part hilite through provider fill ({pressed_arrow_fill} <= {normal_arrow_fill})"
+        );
+
+        let normal_page_before_fill = count_set_pixels(&bus, base, row_bytes, 37, 22, 47, 34);
+        let pressed_page_before_fill = count_set_pixels(&bus, base, row_bytes, 37, 86, 47, 98);
+        assert!(
+            pressed_page_before_fill > normal_page_before_fill,
+            "systemless-default should route scrollbar page-region hilite through provider fill ({pressed_page_before_fill} <= {normal_page_before_fill})"
+        );
+
+        assert!(
+            screen_pixel_is_set(&bus, base, row_bytes, 28, 56),
+            "enabled scrollbar should draw its provider thumb"
+        );
+        assert!(
+            !screen_pixel_is_set(&bus, base, row_bytes, 124, 56),
+            "inactive scrollbar should suppress the provider thumb"
+        );
+
+        // IM:I I-313 / I-323: hilite values 1..253 name active parts,
+        // while 255 makes the control inactive and hit testing returns no part.
+        for (handle, pt_v, pt_h, expected) in [
+            (arrow_handle, 24i16, 60i16, 20u16),
+            (page_handle, 40, 92, 22),
+            (normal_handle, 56, 28, 129),
+            (inactive_handle, 56, 124, 0),
+        ] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, pt_v as u16);
+            bus.write_word(sp + 2, pt_h as u16);
+            bus.write_long(sp + 4, handle);
+            bus.write_word(sp + 8, 0xDEAD);
+            themed
+                .dispatch_control(true, 0x166, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(sp + 8), expected);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        }
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 20);
+        bus.write_long(sp + 2, normal_handle);
+        themed
+            .dispatch_control(true, 0x15D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(normal_ptr + 17), 20);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert!(
+            count_set_pixels(&bus, base, row_bytes, 21, 21, 35, 35) > normal_arrow_fill,
+            "HiliteControl should redraw scroll-bar part hilites through the provider"
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 255);
+        bus.write_long(sp + 2, normal_handle);
+        themed
+            .dispatch_control(true, 0x15D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(normal_ptr + 17), 255);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert!(
+            !screen_pixel_is_set(&bus, base, row_bytes, 28, 56),
+            "HiliteControl(255) should redraw the inactive provider state"
+        );
+        assert_eq!(bus.read_byte(inactive_ptr + 17), 255);
     }
 
     #[test]
@@ -4268,6 +5834,34 @@ mod tests {
     fn screen_pixel_is_set(bus: &MacMemoryBus, base: u32, row_bytes: u32, x: i16, y: i16) -> bool {
         let byte = bus.read_byte(base + (y as u32 * row_bytes) + ((x as u32) / 8));
         byte & (0x80u8 >> ((x as u8) & 7)) != 0
+    }
+
+    fn count_set_pixels(
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> u32 {
+        let mut count = 0;
+        for y in top..bottom {
+            for x in left..right {
+                if screen_pixel_is_set(bus, base, row_bytes, x, y) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn clear_1bpp_screen(bus: &mut MacMemoryBus, base: u32, row_bytes: u32, height: u32) {
+        for y in 0..height {
+            for x in 0..row_bytes {
+                bus.write_byte(base + y * row_bytes + x, 0);
+            }
+        }
     }
 
     #[test]
