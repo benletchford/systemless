@@ -3056,6 +3056,341 @@ impl super::TrapDispatcher {
         (bounds, items_id, stages, position)
     }
 
+    fn positioned_dialog_bounds(
+        &self,
+        mut bounds: (i16, i16, i16, i16),
+        position: u16,
+    ) -> (i16, i16, i16, i16) {
+        match position {
+            // alertPositionMainScreen: upper third of screen
+            // Macintosh Toolbox Essentials 1992, p. 4-126
+            0x300A | 0x700A | 0xB00A => {
+                let (_, _, screen_w, screen_h, _) = self.get_screen_params();
+                let dialog_w = bounds.3 - bounds.1;
+                let dialog_h = bounds.2 - bounds.0;
+                let new_left = (screen_w - dialog_w) / 2;
+                let new_top = (screen_h - dialog_h) / 3;
+                bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
+            }
+            // centerMainScreen / centerParentWindow: true vertical center
+            // Macintosh Toolbox Essentials 1992, p. 4-126
+            0x280A | 0x680A | 0xA80A | 0x380A => {
+                let (_, _, screen_w, screen_h, _) = self.get_screen_params();
+                let dialog_w = bounds.3 - bounds.1;
+                let dialog_h = bounds.2 - bounds.0;
+                let new_left = (screen_w - dialog_w) / 2;
+                let new_top = (screen_h - dialog_h) / 2;
+                bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
+            }
+            _ => {} // noAutoCenter (0x0000) or unknown: use raw bounds
+        }
+        bounds
+    }
+
+    fn alert_stage_default_item(stages: u16, stage_word: u16) -> (u32, u32, Option<i16>) {
+        let stage_idx = (stage_word as u32).min(3);
+        // Each stage occupies 4 bits, stage 1 in the low nibble.
+        let nibble = ((stages as u32) >> (stage_idx * 4)) & 0xF;
+        let box_drawn = (nibble & 0x04) != 0;
+        let default_item = if (nibble & 0x08) == 0 { 1 } else { 2 };
+        (stage_idx, nibble, box_drawn.then_some(default_item))
+    }
+
+    fn enabled_button_count(items: &[DialogItem]) -> usize {
+        items
+            .iter()
+            .filter(|item| (item.item_type & 0x7F) == 4 && (item.item_type & 0x80) == 0)
+            .count()
+    }
+
+    fn begin_interactive_alert<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        sp: u32,
+        alert_id: i16,
+        _filter_proc: u32,
+        bounds: (i16, i16, i16, i16),
+        items_id: i16,
+        position: u16,
+        default_item: i16,
+    ) -> bool {
+        let Some((_, ditl_data)) = self.find_resource_any(*b"DITL", items_id) else {
+            return false;
+        };
+        let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
+        let items = Self::parse_ditl(bus, ditl_data, ditl_len);
+        if Self::enabled_button_count(&items) <= 1 {
+            return false;
+        }
+
+        let items_handle = {
+            let handle = bus.alloc(4);
+            bus.write_long(handle, ditl_data);
+            Self::duplicate_handle_data(bus, handle)
+        };
+        let bounds = self.positioned_dialog_bounds(bounds, position);
+        let dialog_ptr = self.finish_dialog_creation(
+            bus,
+            cpu,
+            0,
+            bounds,
+            "",
+            true,
+            1,
+            false,
+            alert_id as u32,
+            items_handle,
+            items.clone(),
+        );
+        if dialog_ptr == 0 {
+            return false;
+        }
+        bus.write_word(dialog_ptr + 168, default_item as u16);
+
+        let saved_pixels = self
+            .dialog_saved_pixels
+            .get(&dialog_ptr)
+            .cloned()
+            .unwrap_or_else(|| self.save_dialog_pixels(bus, bounds));
+        let rendered_pixels = self.save_dialog_pixels(bus, bounds);
+        bus.write_word(sp + 6, 0);
+        self.dialog_modal_entered.insert(dialog_ptr);
+        self.dialog_tracking = Some(DialogTrackingState {
+            dialog_ptr,
+            bounds,
+            title: String::new(),
+            proc_id: 1,
+            items,
+            default_item,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels,
+            // Alert is a Pascal FUNCTION with a 6-byte argument frame
+            // (filterProc + alertID) and a 2-byte result slot at SP+6. The
+            // shared dialog completion code writes A7 as stack_ptr + 8, so
+            // store SP-2 for alerts.
+            stack_ptr: sp.wrapping_sub(2),
+            item_hit_ptr: sp + 6,
+            rendered_pixels,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+        true
+    }
+
+    fn finish_interactive_alert<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        hit: i16,
+    ) {
+        let Some(saved) = self.dialog_tracking.take() else {
+            return;
+        };
+        if saved.item_hit_ptr != 0 {
+            bus.write_word(saved.item_hit_ptr, hit as u16);
+        }
+        let stack_after = saved.stack_ptr + 8;
+        let dialog_ptr = saved.dialog_ptr;
+        self.dialog_saved_pixels
+            .insert(dialog_ptr, saved.saved_pixels.clone());
+        self.close_dialog_window(bus, cpu, dialog_ptr, true);
+        cpu.write_reg(Register::A7, stack_after);
+    }
+
+    fn handle_interactive_alert_refire<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        if self.dialog_tracking.is_none() {
+            return;
+        }
+
+        if self
+            .dialog_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.active_button.is_some())
+        {
+            self.handle_dialog_button_tracking(bus);
+            return;
+        }
+
+        if self
+            .dialog_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.flash_remaining > 0)
+        {
+            let (remaining, button_draw, finished_hit) = {
+                let t = self.dialog_tracking.as_mut().unwrap();
+                if t.flash_delay > 0 {
+                    t.flash_delay -= 1;
+                    return;
+                }
+                t.flash_remaining -= 1;
+                t.flash_delay = 3;
+                let remaining = t.flash_remaining;
+                let flash_item = t.flash_item;
+                let button_draw =
+                    if remaining > 0 && flash_item > 0 && (flash_item as usize) <= t.items.len() {
+                        let item = &t.items[(flash_item - 1) as usize];
+                        Some((
+                            Self::dialog_item_screen_rect(t.bounds, item.rect),
+                            item.text.clone(),
+                            flash_item == t.default_item,
+                            remaining % 2 == 0,
+                        ))
+                    } else {
+                        None
+                    };
+                (remaining, button_draw, flash_item)
+            };
+
+            if let Some((screen_rect, title, is_default, highlighted)) = button_draw {
+                self.draw_dialog_button_highlight_state(
+                    bus,
+                    screen_rect,
+                    &title,
+                    is_default,
+                    highlighted,
+                );
+            }
+            if remaining == 0 {
+                self.finish_interactive_alert(cpu, bus, finished_hit);
+            }
+            return;
+        }
+
+        let event = if !self.event_queue.is_empty() {
+            let mut event = None;
+            while let Some(e) = self.event_queue.pop_front() {
+                match e.what {
+                    1 | 2 | 3 | 6 => {
+                        event = Some(e);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            event
+        } else {
+            None
+        };
+
+        let Some(event) = event else {
+            return;
+        };
+
+        match event.what {
+            1 => {
+                let (dialog_ptr, bounds, items, default_item) = {
+                    let tracking = self.dialog_tracking.as_ref().unwrap();
+                    (
+                        tracking.dialog_ptr,
+                        tracking.bounds,
+                        tracking.items.clone(),
+                        tracking.default_item,
+                    )
+                };
+                let mut hit = self.dialog_item_hit_test(
+                    bus,
+                    &items,
+                    bounds,
+                    event.where_v,
+                    event.where_h,
+                    &self.dialog_popup_original_rects,
+                    dialog_ptr,
+                );
+                if hit <= 0 {
+                    hit =
+                        Self::dialog_button_hit_test(&items, bounds, event.where_v, event.where_h);
+                }
+                if hit <= 0 {
+                    return;
+                }
+                let item = &items[(hit - 1) as usize];
+                let base_type = item.item_type & 0x7F;
+                let is_disabled = (item.item_type & 0x80) != 0;
+                if base_type != 4 || is_disabled {
+                    return;
+                }
+                let rect = Self::dialog_item_screen_rect(bounds, item.rect);
+                let is_default = hit == default_item;
+                self.draw_dialog_button_highlight_state(bus, rect, &item.text, is_default, true);
+                if self.mouse_button {
+                    let tracking = self.dialog_tracking.as_mut().unwrap();
+                    tracking.active_button = Some(super::dispatch::DialogButtonTrackingState {
+                        item_no: hit,
+                        rect: item.rect,
+                        title: item.text.clone(),
+                        is_default,
+                        highlighted: true,
+                    });
+                } else {
+                    self.start_dialog_button_flash(
+                        bus, bounds, hit, item.rect, &item.text, is_default, true,
+                    );
+                }
+            }
+            3 => {
+                let (default_item, cancel_item) = self
+                    .dialog_tracking
+                    .as_ref()
+                    .map(|tracking| (tracking.default_item, tracking.cancel_item))
+                    .unwrap_or((0, 0));
+                let key_code = (event.message >> 8) as u16;
+                let char_code = (event.message & 0xFF) as u8;
+                let hit = if char_code == b'\r' || char_code == 0x03 {
+                    default_item
+                } else if char_code == 0x1B || key_code == 0x35 {
+                    cancel_item
+                } else {
+                    0
+                };
+                if hit > 0 {
+                    self.finish_interactive_alert(cpu, bus, hit);
+                }
+            }
+            6 => {
+                let Some(tracking) = self.dialog_tracking.as_ref() else {
+                    return;
+                };
+                let dialog_ptr = tracking.dialog_ptr;
+                let bounds = tracking.bounds;
+                let items = tracking.items.clone();
+                let default_item = tracking.default_item;
+                self.begin_update_window(bus, dialog_ptr);
+                self.set_current_port_state(bus, cpu, dialog_ptr, None);
+                self.redraw_standard_dialog_items(
+                    bus,
+                    bounds,
+                    &items,
+                    default_item,
+                    "",
+                    0,
+                    dialog_ptr,
+                );
+                let rendered = self.save_dialog_pixels(bus, bounds);
+                if let Some(tracking) = self.dialog_tracking.as_mut() {
+                    tracking.rendered_pixels = rendered;
+                    tracking.rendered_pixels_final = true;
+                }
+                self.end_update_window(bus, dialog_ptr);
+            }
+            _ => {}
+        }
+    }
+
     /// Parse a DITL resource from guest memory into a list of DialogItems.
     /// Inside Macintosh Volume I, I-439
     fn parse_ditl(bus: &MacMemoryBus, ptr: u32, data_len: u32) -> Vec<DialogItem> {
@@ -8429,14 +8764,11 @@ impl super::TrapDispatcher {
             // The four alert variants differ only in the ICON they
             // display (none / Stop hand / Note speaker / Caution
             // triangle); their dispatch into the ALRT template +
-            // ALRT stages logic is identical. In Systemless's HLE
-            // there's no user interaction, so each call collapses
-            // to "look up the ALRT, parse the stages word, return
-            // the bold (default) item for the current stage,
-            // increment AlertStage." This matches what a real
-            // user pressing Return would do — and is what most
-            // games defensively expect (return 1 = OK button =
-            // dismiss the alert).
+            // ALRT stages logic is identical. OK-only alerts collapse
+            // to "return the bold/default item for the current stage,
+            // increment AlertStage." Multi-button alerts enter the
+            // normal dialog tracking loop so a script or user can
+            // choose a non-default button before the trap returns.
             //
             // ALRT template per IM:I I-422:
             //   +0  boundsRect:   Rect (8 bytes)
@@ -8467,10 +8799,7 @@ impl super::TrapDispatcher {
             // HLE compromise: filterProc is NOT invoked (no guest-
             // fn dispatch infrastructure for the ProcPtr argument
             // — same compromise as Pack1 LSearch and other guest-
-            // ProcPtr-taking traps). The user-event-loop side of
-            // the alert (cursor tracking, button hit-testing) is
-            // also skipped — we just return the documented default
-            // item and advance the stage.
+            // ProcPtr-taking traps).
             // The missing-ALRT path is a defensive probe guard:
             // return -1 but leave AlertStage and ANumber exactly as
             // the caller left them.
@@ -8478,13 +8807,18 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-417..I-422 (Alert
             // family + ALRT template); Macintosh Toolbox Essentials
             // 1992, 6-105..6-119 (System 7 alert dispatch).
-            // Alert ($A985): Looks up ALRT, parses stages word at +10 per IM:I I-422, returns bold item (1 or 2) for current visible AlertStage ($0A9A) or -1 if ALRT missing / boxDrwn is clear; increments AlertStage capped at 3; filterProc NOT invoked
+            // Alert ($A985): Looks up ALRT, parses stages word at +10 per IM:I I-422, returns bold item (1 or 2) for current visible AlertStage ($0A9A) or -1 if ALRT missing / boxDrwn is clear; multi-button alerts track user/script button hits before returning; increments AlertStage capped at 3; filterProc NOT invoked
             // StopAlert ($A986): Same as Alert with Stop icon; identical dispatch path
             // NoteAlert ($A987): Same as Alert with Note icon; identical dispatch path
             // CautionAlert ($A988): Same as Alert with Caution icon; identical dispatch path
             (true, 0x185) | (true, 0x186) | (true, 0x187) | (true, 0x188) => {
                 const ALERT_MISSING_RESOURCE_RESULT: i16 = -1;
                 let sp = cpu.read_reg(Register::A7);
+                if self.dialog_tracking.is_some() {
+                    self.handle_interactive_alert_refire(cpu, bus);
+                    return Some(Ok(()));
+                }
+                let filter_proc = bus.read_long(sp);
                 let alert_id = bus.read_word(sp + 4) as i16;
                 let trap_name = match trap_num {
                     0x185 => "Alert",
@@ -8510,7 +8844,8 @@ impl super::TrapDispatcher {
                     .map(|(_, ptr)| ptr);
                 let result: i16 = if let Some(alrt_data) = alrt_ptr {
                     let alrt_len = bus.get_alloc_size(alrt_data).unwrap_or(0);
-                    let (_, _, stages, _) = Self::parse_alrt(bus, alrt_data, alrt_len);
+                    let (bounds, items_id, stages, position) =
+                        Self::parse_alrt(bus, alrt_data, alrt_len);
                     // AlertStage / ACount lives at $0A9A as a
                     // 16-bit WORD (NOT a byte) per IM:I I-423 +
                     // MTb 1992 22620 `#define GetAlertStage()
@@ -8520,19 +8855,14 @@ impl super::TrapDispatcher {
                     // $0A9A would always return 0 — must use
                     // read_word/write_word.
                     let stage_word = bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
-                    let stage_idx = (stage_word as u32).min(3);
-                    // Each stage occupies 4 bits, stage 1 in the
-                    // low nibble (bits 0..3), stage 4 in the high
-                    // nibble (bits 12..15).
-                    let nibble = ((stages as u32) >> (stage_idx * 4)) & 0xF;
+                    let (stage_idx, nibble, default_item) =
+                        Self::alert_stage_default_item(stages, stage_word);
                     alert_trace_stage = Some((stages, stage_word, stage_idx, nibble));
                     // bit 3 (MSB) of nibble = boldItm per StageList
                     // PACKED RECORD layout (IM:I I-422): boldItm,
                     // boxDrwn, sound[2]. Assembly mask okDismissal=8
                     // and alBit=4 confirm bit masks. MTE 1992 p. 6-106
                     // says Alert returns -1 when boxDrwn is clear.
-                    let box_drawn = (nibble & 0x04) != 0;
-                    let bold_item: i16 = if (nibble & 0x08) == 0 { 1 } else { 2 };
                     // Increment AlertStage, capped at 3, so the
                     // next call uses the next stage's nibble.
                     let next_stage = ((stage_word as u32) + 1).min(3) as u16;
@@ -8543,8 +8873,41 @@ impl super::TrapDispatcher {
                     // calls expect this to reflect the most-recent
                     // ID — used by some defensive resume logic.
                     bus.write_word(crate::memory::globals::addr::ANUMBER, alert_id as u16);
-                    if box_drawn {
-                        bold_item
+
+                    if let Some(default_item) = default_item {
+                        // Until Alert filterProc dispatch is implemented, keep
+                        // non-NIL filterProc calls on the old default-item
+                        // path. Entering local button tracking would ignore
+                        // caller-supplied filter decisions.
+                        if filter_proc == 0
+                            && self.begin_interactive_alert(
+                                cpu,
+                                bus,
+                                sp,
+                                alert_id,
+                                filter_proc,
+                                bounds,
+                                items_id,
+                                position,
+                                default_item,
+                            )
+                        {
+                            if super::dispatch::trace_dialog_traps_enabled() {
+                                eprintln!(
+                                    "[TRAP] {} id={} -> interactive dialog (PC=${:08X}) stages=${:04X} alertStage={} stageIdx={} nibble=${:X} defaultItem={}",
+                                    trap_name,
+                                    alert_id,
+                                    cpu.read_reg(Register::PC),
+                                    stages,
+                                    stage_word,
+                                    stage_idx,
+                                    nibble,
+                                    default_item
+                                );
+                            }
+                            return Some(Ok(()));
+                        }
+                        default_item
                     } else {
                         ALERT_MISSING_RESOURCE_RESULT
                     }
@@ -14961,6 +15324,87 @@ mod tests {
         }
     }
 
+    fn build_test_alrt(bounds: (i16, i16, i16, i16), items_id: i16, stages: u16) -> Vec<u8> {
+        let mut data = Vec::with_capacity(12);
+        data.extend_from_slice(&bounds.0.to_be_bytes());
+        data.extend_from_slice(&bounds.1.to_be_bytes());
+        data.extend_from_slice(&bounds.2.to_be_bytes());
+        data.extend_from_slice(&bounds.3.to_be_bytes());
+        data.extend_from_slice(&items_id.to_be_bytes());
+        data.extend_from_slice(&stages.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn multi_button_alert_tracks_click_and_returns_selected_item() {
+        // Multi-choice Alert resources are real modal dialogs, not merely
+        // OK-only notices. Keep the Alert function frame pending until a
+        // button is selected, then write the selected item number into the
+        // function result slot at SP+6.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alert_id = 3300;
+        let ditl_id = 3301;
+        let alrt = build_test_alrt((100, 100, 210, 400), ditl_id, 0x5555);
+        let ditl = build_test_ditl_items(&[
+            (4, (70, 230, 90, 290), b"Choice 1"),
+            (4, (70, 130, 90, 210), b"Choice 2"),
+            (4, (70, 20, 90, 100), b"Cancel"),
+            (
+                8,
+                (16, 20, 56, 280),
+                b"Select one of these options before continuing.",
+            ),
+        ]);
+        disp.install_test_resource(&mut bus, *b"ALRT", alert_id, &alrt);
+        disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+
+        bus.write_long(TEST_SP, 0); // filterProc
+        bus.write_word(TEST_SP + 4, alert_id as u16);
+        bus.write_word(TEST_SP + 6, 0xCAFE);
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(TEST_SP + 6), 0);
+        assert!(disp.dialog_tracking.is_some());
+        assert!(disp.is_tracking_refire(0xA985));
+
+        disp.push_mouse_down(180, 250);
+        for _ in 0..4 {
+            let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            if disp
+                .dialog_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.active_button.as_ref())
+                .is_some()
+            {
+                break;
+            }
+        }
+        assert!(disp
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_button.as_ref())
+            .is_some_and(|button| button.item_no == 2));
+
+        disp.push_mouse_up(180, 250);
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        for _ in 0..64 {
+            if disp.dialog_tracking.is_none() {
+                break;
+            }
+            let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+        }
+
+        assert!(disp.dialog_tracking.is_none());
+        assert_eq!(bus.read_word(TEST_SP + 6), 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
     fn loaded_resource_handle_for_test(
         disp: &TrapDispatcher,
         res_type: [u8; 4],
@@ -20437,7 +20881,9 @@ mod tests {
 
         let ditl = build_test_ditl_items(&[
             (4, (48, 70, 70, 132), b"OK".as_slice()),
-            (4, (48, 144, 70, 212), b"Cancel".as_slice()),
+            // Keep this fixture on the auto-return path while still verifying
+            // that stage defaults can report item 2.
+            (0x84, (48, 144, 70, 212), b"Cancel".as_slice()),
         ]);
         let alrt = build_alrt_template(2100, 0xC4C4);
         disp.install_test_resource(&mut bus, *b"DITL", 2100, &ditl);

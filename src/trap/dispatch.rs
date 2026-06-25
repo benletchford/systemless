@@ -2505,7 +2505,8 @@ impl TrapDispatcher {
     pub fn is_tracking_refire(&self, opcode: u16) -> bool {
         let trap_no_autopop = opcode & !0x0400;
         let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
-        let is_dialog_refire = trap_no_autopop == 0xA991;
+        let is_dialog_refire =
+            matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
         let is_control_refire = trap_no_autopop == 0xA968;
         (is_menu_refire && self.is_menu_tracking())
             || (is_dialog_refire && self.is_dialog_tracking())
@@ -4606,6 +4607,10 @@ mod tests {
         assert!(!disp.is_tracking_refire(0xA93D)); // MenuSelect
         assert!(!disp.is_tracking_refire(0xA80B)); // MenuKey
         assert!(!disp.is_tracking_refire(0xA991)); // ModalDialog
+        assert!(!disp.is_tracking_refire(0xA985)); // Alert
+        assert!(!disp.is_tracking_refire(0xA986)); // StopAlert
+        assert!(!disp.is_tracking_refire(0xA987)); // NoteAlert
+        assert!(!disp.is_tracking_refire(0xA988)); // CautionAlert
         assert!(!disp.is_tracking_refire(0xA968)); // TrackControl
                                                    // Auto-pop variants too.
         assert!(!disp.is_tracking_refire(0xAD3D));
@@ -4631,6 +4636,10 @@ mod tests {
         install_dialog_tracking(&mut disp);
         assert!(disp.is_tracking_refire(0xA991));
         assert!(disp.is_tracking_refire(0xAD91));
+        assert!(disp.is_tracking_refire(0xA985));
+        assert!(disp.is_tracking_refire(0xA986));
+        assert!(disp.is_tracking_refire(0xA987));
+        assert!(disp.is_tracking_refire(0xA988));
     }
 
     #[test]
@@ -4760,6 +4769,7 @@ mod tests {
         let mut menu_only = TrapDispatcher::new();
         install_menu_tracking(&mut menu_only);
         assert!(!menu_only.is_tracking_refire(0xA991));
+        assert!(!menu_only.is_tracking_refire(0xA985));
         let mut dialog_only = TrapDispatcher::new();
         install_dialog_tracking(&mut dialog_only);
         assert!(!dialog_only.is_tracking_refire(0xA93D));

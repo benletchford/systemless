@@ -5805,8 +5805,9 @@ impl super::TrapDispatcher {
 
                 // D0-based MPW fast paths (MOVEQ / MOVE.W to D0,
                 // then trap).
-                let d0 = cpu.read_reg(Register::D0) as u16;
-                if d0 == 0x0002 {
+                let d0 = cpu.read_reg(Register::D0);
+                let d0_selector = Self::palette_dispatch_selector(d0);
+                if d0_selector == 0x0002 {
                     // RestoreDeviceClut (public _PaletteDispatch selector $0002)
                     // PROCEDURE RestoreDeviceClut(gdh: GDHandle);
                     //
@@ -5826,7 +5827,7 @@ impl super::TrapDispatcher {
                     }
                     return Some(Ok(()));
                 }
-                if d0 == 0x0003 {
+                if d0_selector == 0x0003 {
                     // ResizePalette (public _PaletteDispatch selector $0003)
                     // PROCEDURE ResizePalette(srcPalette: PaletteHandle;
                     //                         size: Integer);
@@ -5842,7 +5843,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 6);
                     return Some(Ok(()));
                 }
-                if d0 == 0x0417 {
+                if d0_selector == 0x0417 {
                     // GetPaletteUpdates (public _PaletteDispatch selector $0417)
                     // FUNCTION GetPaletteUpdates(p: PaletteHandle): Integer;
                     // Inside Macintosh Volume VI (1991), p. 20-21; Table C-4.
@@ -5860,7 +5861,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 4);
                     return Some(Ok(()));
                 }
-                if d0 == 0x0616 {
+                if d0_selector == 0x0616 {
                     // SetPaletteUpdates (public _PaletteDispatch selector $0616)
                     // PROCEDURE SetPaletteUpdates(p: PaletteHandle;
                     //                             updates: Integer);
@@ -5881,7 +5882,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 6);
                     return Some(Ok(()));
                 }
-                if d0 & 0xFF == 0x15 {
+                if d0_selector == 0x0015 {
                     // PMgrVersion: returns a short Palette Mgr
                     // version. No args on stack. Callee just
                     // populates the 2-byte result slot at SP+0.
@@ -5895,7 +5896,7 @@ impl super::TrapDispatcher {
                 // Stack: SP+0=flags(2), SP+2=whichFlags(2), SP+4=depth(2),
                 //        SP+6=gd(4), SP+10=result(2). Imaging With QuickDraw
                 // 1994 pp.5-33..5-34; IM:VI VI-21-12.
-                if d0 == 0x0A14 {
+                if d0_selector == 0x0A14 {
                     // HasDepth (D0-based MPW calling convention)
                     // FUNCTION HasDepth(gd: GDHandle; depth, whichFlags,
                     //                   flags: Integer): Integer;
@@ -5908,7 +5909,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
                 }
-                if d0 == 0x0A13 {
+                if d0_selector == 0x0A13 {
                     // SetDepth (D0-based MPW calling convention)
                     // FUNCTION SetDepth(gd: GDHandle; depth, whichFlags,
                     //                   flags: Integer): OSErr;
@@ -15043,6 +15044,19 @@ impl super::TrapDispatcher {
             0x0080 | 0x0085 => Some(8),
             _ => None,
         }
+    }
+
+    fn palette_dispatch_selector(d0: u32) -> u16 {
+        if d0 <= 0xFFFF {
+            return d0 as u16;
+        }
+
+        // IM:VI Table C-3 lists _PaletteDispatch selectors as packed words:
+        // the high byte is the argument-frame byte count and the low byte is
+        // the routine selector (for example, SetDepth is $0A13). Some 68k
+        // callers place the same two fields in a longword D0 value, such as
+        // $000A0013. Normalize both encodings to the documented table value.
+        (((d0 >> 8) & 0xFF00) | (d0 & 0x00FF)) as u16
     }
 
     fn record_gdevice_depth_mode(
@@ -31163,6 +31177,25 @@ mod tests {
     }
 
     #[test]
+    fn has_depth_accepts_packed_long_d0_selector() {
+        // IM:VI Table C-3 lists HasDepth as selector $0A14. Some 68k
+        // compilers place the selector byte and argument byte count in a
+        // longword D0 value ($000A0014), which must route to the same public
+        // D0-selector stack layout as the word selector.
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        cpu.write_reg(Register::D0, 0x000A_0014);
+        bus.write_word(TEST_SP, 1); // flags (color)
+        bus.write_word(TEST_SP + 2, 1); // whichFlags: color flag matters
+        bus.write_word(TEST_SP + 4, 4); // depth
+        bus.write_long(TEST_SP + 6, gdh); // gd
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 4);
+    }
+
+    #[test]
     fn has_depth_unsupported_depth_returns_zero() {
         // Imaging With QuickDraw 1994 pp.5-33..5-34: HasDepth returns
         // 0 when the requested depth is unsupported.
@@ -31236,6 +31269,33 @@ mod tests {
         assert_eq!(bus.read_word(main_pm + 32), 1);
         assert_eq!(bus.read_word(main_pm + 36), 1);
         assert_eq!(bus.read_word(main_gd + 20) & 0x0001, 0);
+    }
+
+    #[test]
+    fn set_depth_accepts_packed_long_d0_selector() {
+        // IM:VI Table C-3 lists SetDepth as selector $0A13. Normalize the
+        // longword D0 form ($000A0013) before falling back to the legacy
+        // stack-selector path, otherwise the flags word at SP would be
+        // misread as a Palette Manager selector.
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let before_screen_mode = d.screen_mode;
+
+        cpu.write_reg(Register::D0, 0x000A_0013);
+        bus.write_word(TEST_SP, 1); // flags (color)
+        bus.write_word(TEST_SP + 2, 1); // whichFlags: gdDevType
+        bus.write_word(TEST_SP + 4, 4); // depth: 4bpp color mode
+        bus.write_long(TEST_SP + 6, gdh); // gd
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+        assert_eq!(d.screen_mode, before_screen_mode);
+
+        let gd = bus.read_long(gdh);
+        assert_eq!(bus.read_long(gd + 42), 4);
+        assert_ne!(bus.read_word(gd + 20) & 1, 0);
     }
 
     #[test]
