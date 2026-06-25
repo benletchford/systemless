@@ -668,7 +668,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn window_content_rect(
+    fn window_content_global_rect(
         &self,
         bus: &MacMemoryBus,
         window_ptr: u32,
@@ -677,6 +677,15 @@ impl super::TrapDispatcher {
             bus,
             bus.read_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET),
         )
+    }
+
+    fn window_content_rect(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> Option<(i16, i16, i16, i16)> {
+        self.window_content_global_rect(bus, window_ptr)
+            .map(|rect| self.global_rect_to_window_local(bus, window_ptr, rect))
     }
 
     fn window_port_rect(&self, bus: &MacMemoryBus, window_ptr: u32) -> (i16, i16, i16, i16) {
@@ -714,6 +723,40 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn window_local_rect_to_global(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+        rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16, i16) {
+        let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, window_ptr);
+        (
+            rect.0.wrapping_sub(bounds_top),
+            rect.1.wrapping_sub(bounds_left),
+            rect.2.wrapping_sub(bounds_top),
+            rect.3.wrapping_sub(bounds_left),
+        )
+    }
+
+    fn window_structure_global_rect_for_content(
+        &self,
+        bus: &MacMemoryBus,
+        content_rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16, i16) {
+        let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        let title_top = if self.menu_bar_hidden {
+            content_rect.0.saturating_sub(19).max(0)
+        } else {
+            content_rect.0.saturating_sub(19).max(mbar_h)
+        };
+        (
+            title_top,
+            content_rect.1.saturating_sub(1),
+            content_rect.2.saturating_add(2),
+            content_rect.3.saturating_add(2),
+        )
+    }
+
     pub(super) fn window_structure_rect(
         &self,
         bus: &MacMemoryBus,
@@ -722,22 +765,14 @@ impl super::TrapDispatcher {
         if window_ptr == 0 {
             return None;
         }
-        let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
-        if bottom <= top || right <= left {
-            return None;
+        if let Some(rect) = Self::region_handle_rect(
+            bus,
+            bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
+        ) {
+            return Some(rect);
         }
-        let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let title_top = if self.menu_bar_hidden {
-            top.saturating_sub(19).max(0)
-        } else {
-            top.saturating_sub(19).max(mbar_h)
-        };
-        Some((
-            title_top,
-            left.saturating_sub(1),
-            bottom.saturating_add(2),
-            right.saturating_add(2),
-        ))
+        self.window_content_global_rect(bus, window_ptr)
+            .map(|content| self.window_structure_global_rect_for_content(bus, content))
     }
 
     fn erase_exposed_desktop_rect(
@@ -954,6 +989,10 @@ impl super::TrapDispatcher {
         } else {
             None
         };
+        let local_content_rect = self
+            .window_content_rect(bus, the_window)
+            .unwrap_or_else(|| self.window_port_rect(bus, the_window));
+        let old_update_rect = self.window_update_rect(bus, the_window);
         let moved_pixels = old_structure.and_then(|rect| self.save_screen_rect_pixels(bus, rect));
         let delta_v = v_global.wrapping_sub(old_port_rect.0);
         let delta_h = h_global.wrapping_sub(old_port_rect.1);
@@ -980,6 +1019,30 @@ impl super::TrapDispatcher {
         }
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
+        let global_content = self.window_local_rect_to_global(bus, the_window, local_content_rect);
+        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
+            Some(global_content),
+        );
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
+            Some(global_structure),
+        );
+        if let Some(update_rect) = old_update_rect {
+            Self::write_region_handle_rect(
+                bus,
+                bus.read_long(the_window + Self::WINDOW_UPDATE_RGN_OFFSET),
+                Some((
+                    update_rect.0.wrapping_add(delta_v),
+                    update_rect.1.wrapping_add(delta_h),
+                    update_rect.2.wrapping_add(delta_v),
+                    update_rect.3.wrapping_add(delta_h),
+                )),
+            );
+        }
 
         // If front=TRUE, bring theWindow to the front
         // (equivalent to SelectWindow per IM:I I-287).
@@ -1076,13 +1139,7 @@ impl super::TrapDispatcher {
         if let Some(saved_vis) = Self::region_handle_rect(bus, bus.read_long(window + 24)) {
             self.saved_vis_regions.insert(window, saved_vis);
         }
-        let (port_top, port_left, _, _) = self.window_port_rect(bus, window);
-        let update_rect = (
-            update_rect.0.wrapping_add(port_top),
-            update_rect.1.wrapping_add(port_left),
-            update_rect.2.wrapping_add(port_top),
-            update_rect.3.wrapping_add(port_left),
-        );
+        let update_rect = self.global_rect_to_window_local(bus, window, update_rect);
         let new_vis = Self::rect_intersection(
             Self::region_handle_rect(bus, bus.read_long(window + 24)).unwrap_or((0, 0, 0, 0)),
             update_rect,
@@ -1119,21 +1176,29 @@ impl super::TrapDispatcher {
     ) {
         // CalcVis / CalcVisBehind clamp the top edge against the menu bar.
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let vis_top = source_rect.0.max(mbar_h);
-        let rect = (vis_top, source_rect.1, source_rect.2, source_rect.3);
+        let (bounds_top, _) = self.port_bounds_top_left(bus, window_ptr);
+        let local_mbar_bottom = mbar_h.saturating_add(bounds_top);
+        let local_vis_top = source_rect.0.max(local_mbar_bottom);
+        let local_rect = (local_vis_top, source_rect.1, source_rect.2, source_rect.3);
+        let global_content = self.window_local_rect_to_global(bus, window_ptr, local_rect);
+        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
 
         Self::write_region_handle_rect(
             bus,
             bus.read_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET),
-            Some(rect),
+            Some(global_content),
         );
         Self::write_region_handle_rect(
             bus,
             bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
-            Some(rect),
+            Some(global_structure),
         );
         for offset in [24u32, 28u32] {
-            Self::write_region_handle_rect(bus, bus.read_long(window_ptr + offset), Some(rect));
+            Self::write_region_handle_rect(
+                bus,
+                bus.read_long(window_ptr + offset),
+                Some(local_rect),
+            );
         }
     }
 
@@ -1157,9 +1222,13 @@ impl super::TrapDispatcher {
             if go_away_flag { 0xFF } else { 0x00 },
         );
         bus.write_byte(window_ptr + Self::WINDOW_SPARE_FLAG_OFFSET, 0);
-        let struc_rgn = Self::alloc_rect_region_handle(bus, Some(content_rect));
-        let cont_rgn = Self::alloc_rect_region_handle(bus, Some(content_rect));
-        let update_rgn = Self::alloc_rect_region_handle(bus, visible.then_some(content_rect));
+        // WindowRecord strucRgn, contRgn, and updateRgn are maintained in
+        // global coordinates. Inside Macintosh Volume I, p. I-278.
+        let global_content = self.window_local_rect_to_global(bus, window_ptr, content_rect);
+        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
+        let struc_rgn = Self::alloc_rect_region_handle(bus, Some(global_structure));
+        let cont_rgn = Self::alloc_rect_region_handle(bus, Some(global_content));
+        let update_rgn = Self::alloc_rect_region_handle(bus, visible.then_some(global_content));
         bus.write_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET, struc_rgn);
         bus.write_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET, cont_rgn);
         bus.write_long(window_ptr + Self::WINDOW_UPDATE_RGN_OFFSET, update_rgn);
@@ -1448,19 +1517,20 @@ impl super::TrapDispatcher {
             return;
         };
         let update_handle = bus.read_long(window_ptr + Self::WINDOW_UPDATE_RGN_OFFSET);
+        let clipped_global = self.window_local_rect_to_global(bus, window_ptr, clipped_rect);
         let merged = Self::rect_union(
             Self::region_handle_rect(bus, update_handle),
-            Some(clipped_rect),
+            Some(clipped_global),
         );
         Self::write_region_handle_rect(bus, update_handle, merged);
         if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
             eprintln!(
                 "[INVAL] invalidate_window_rect window=${:08X} rect=({},{},{},{}) tick={}",
                 window_ptr,
-                clipped_rect.0,
-                clipped_rect.1,
-                clipped_rect.2,
-                clipped_rect.3,
+                clipped_global.0,
+                clipped_global.1,
+                clipped_global.2,
+                clipped_global.3,
                 self.tick_count
             );
         }
@@ -1484,9 +1554,10 @@ impl super::TrapDispatcher {
         rect: (i16, i16, i16, i16),
     ) {
         let update_handle = bus.read_long(window_ptr + Self::WINDOW_UPDATE_RGN_OFFSET);
+        let global_rect = self.window_local_rect_to_global(bus, window_ptr, rect);
         let new_rect = self
             .window_update_rect(bus, window_ptr)
-            .map(|update| Self::rect_difference_bbox(update, rect))
+            .map(|update| Self::rect_difference_bbox(update, global_rect))
             .unwrap_or(None);
         Self::write_region_handle_rect(bus, update_handle, new_rect);
         if new_rect.is_none() {
@@ -2226,7 +2297,8 @@ impl super::TrapDispatcher {
                         self.save_window_under_pixels(bus, the_window);
                     }
                     if !was_visible {
-                        if let Some(content_rect) = self.window_content_rect(bus, the_window) {
+                        if let Some(content_rect) = self.window_content_global_rect(bus, the_window)
+                        {
                             Self::write_region_handle_rect(
                                 bus,
                                 bus.read_long(the_window + Self::WINDOW_UPDATE_RGN_OFFSET),
@@ -2621,15 +2693,19 @@ impl super::TrapDispatcher {
                     bus.write_word(the_window + 22, w as u16);
                     let content_top = old_content_rect.map(|rect| rect.0).unwrap_or(0);
                     let content_rect = (content_top, 0, h, w);
+                    let global_content =
+                        self.window_local_rect_to_global(bus, the_window, content_rect);
+                    let global_structure =
+                        self.window_structure_global_rect_for_content(bus, global_content);
                     Self::write_region_handle_rect(
                         bus,
                         bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
-                        Some(content_rect),
+                        Some(global_content),
                     );
                     Self::write_region_handle_rect(
                         bus,
                         bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
-                        Some(content_rect),
+                        Some(global_structure),
                     );
 
                     // Update visRgn in local coords
@@ -2909,7 +2985,8 @@ impl super::TrapDispatcher {
                     );
                     self.set_window_vis_from_content(bus, the_window, show_flag);
                     if show_flag {
-                        if let Some(content_rect) = self.window_content_rect(bus, the_window) {
+                        if let Some(content_rect) = self.window_content_global_rect(bus, the_window)
+                        {
                             Self::write_region_handle_rect(
                                 bus,
                                 bus.read_long(the_window + Self::WINDOW_UPDATE_RGN_OFFSET),
@@ -3109,7 +3186,7 @@ impl super::TrapDispatcher {
                                 bus,
                                 bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
                             ),
-                            content: self.window_content_rect(bus, the_window),
+                            content: self.window_content_global_rect(bus, the_window),
                         },
                     );
                 }
@@ -3142,7 +3219,7 @@ impl super::TrapDispatcher {
                             bus,
                             bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
                         );
-                        let current_content = self.window_content_rect(bus, the_window);
+                        let current_content = self.window_content_global_rect(bus, the_window);
                         let draw_rect = if let Some(saved_old) = saved_old {
                             Self::rect_union_all([
                                 saved_old.structure,
@@ -3536,18 +3613,20 @@ impl super::TrapDispatcher {
                                 );
                             }
 
-                            // contRgn and strucRgn in global coords
-                            let global_rect =
-                                Some((v_global, h_global, v_global + new_h, h_global + new_w));
+                            // WindowRecord manager regions are in global coords.
+                            let global_content =
+                                (v_global, h_global, v_global + new_h, h_global + new_w);
+                            let global_structure =
+                                self.window_structure_global_rect_for_content(bus, global_content);
                             Self::write_region_handle_rect(
                                 bus,
                                 bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
-                                global_rect,
+                                Some(global_content),
                             );
                             Self::write_region_handle_rect(
                                 bus,
                                 bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
-                                global_rect,
+                                Some(global_structure),
                             );
 
                             // visRgn and clipRgn in local coords
@@ -3862,8 +3941,131 @@ mod tests {
                 window_addr,
                 super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET
             ),
-            (-21, -1, 579, 799),
-            "initial update region should match the expanded visible region"
+            (0, 0, 600, 800),
+            "initial update region should be the expanded visible region in global coordinates"
+        );
+    }
+
+    #[test]
+    fn init_cgraf_window_stores_windowrecord_manager_regions_in_global_coordinates() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            100,
+            200,
+            300,
+            500,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 200, 300),
+            "visRgn remains in window-local coordinates"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+            ),
+            (100, 200, 300, 500),
+            "contRgn is stored in global coordinates"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET
+            ),
+            (81, 199, 302, 502),
+            "strucRgn is stored in global coordinates"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET
+            ),
+            (100, 200, 300, 500),
+            "updateRgn is stored in global coordinates"
+        );
+    }
+
+    #[test]
+    fn movewindow_offsets_windowrecord_manager_regions_globally() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            100,
+            200,
+            300,
+            500,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        disp.move_window_to_global(&mut bus, window_addr, 1800, 1600, false);
+
+        assert_eq!(
+            disp.window_global_port_rect(&bus, window_addr),
+            (1600, 1800, 1800, 2100),
+            "window-local origin should map to the new global MoveWindow point"
+        );
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 200, 300),
+            "MoveWindow should not rewrite visRgn out of local coordinates"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+            ),
+            (1600, 1800, 1800, 2100),
+            "contRgn should move with the window in global coordinates"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET
+            ),
+            (1581, 1799, 1802, 2102),
+            "strucRgn should move with the window in global coordinates"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET
+            ),
+            (1600, 1800, 1800, 2100),
+            "pending updateRgn should move with the window in global coordinates"
         );
     }
 
@@ -5359,6 +5561,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn showwindow_hidden_window_sets_global_update_region() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            100,
+            200,
+            300,
+            500,
+            "",
+            2,
+            false,
+            false,
+            false,
+            0,
+        );
+
+        assert!(disp.window_update_rect(&bus, window).is_none());
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window);
+        let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            disp.window_update_rect(&bus, window),
+            Some((100, 200, 300, 500)),
+            "ShowWindow should invalidate the revealed content in global coordinates"
+        );
+    }
+
     // ---------------------------------------------------------------
     // 10. HideWindow (0x116) -- pops 4 bytes
     // ---------------------------------------------------------------
@@ -5696,6 +5937,45 @@ mod tests {
         assert_eq!(bus.read_word(update_rgn + 4) as i16, 34, "updateRgn.left");
         assert_eq!(bus.read_word(update_rgn + 6) as i16, 80, "updateRgn.bottom");
         assert_eq!(bus.read_word(update_rgn + 8) as i16, 140, "updateRgn.right");
+    }
+
+    #[test]
+    fn showhide_true_sets_global_update_region_for_revealed_window() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            100,
+            200,
+            300,
+            500,
+            "",
+            2,
+            false,
+            false,
+            false,
+            0,
+        );
+
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(sp, 1);
+        bus.write_long(sp + 2, window);
+
+        let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            disp.window_update_rect(&bus, window),
+            Some((100, 200, 300, 500)),
+            "ShowHide(TRUE) should invalidate revealed content in global coordinates"
+        );
     }
 
     // IM:I I-285: ShowHide(FALSE) makes the target window invisible but does
@@ -6368,6 +6648,10 @@ mod tests {
         bus.write_word(window_addr + 18, (-143i16) as u16);
         bus.write_word(window_addr + 20, 492);
         bus.write_word(window_addr + 22, 655);
+        bus.write_word(window_addr + 8, (-86i16) as u16);
+        bus.write_word(window_addr + 10, (-143i16) as u16);
+        bus.write_word(window_addr + 12, 492);
+        bus.write_word(window_addr + 14, 655);
         bus.write_word(vis_rgn_data + 2, (-86i16) as u16);
         bus.write_word(vis_rgn_data + 4, (-143i16) as u16);
         bus.write_word(vis_rgn_data + 6, 492);
@@ -6604,6 +6888,7 @@ mod tests {
 
         disp.window_list = vec![front, middle, back];
         disp.sync_window_list_links(&mut bus);
+        disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 18);
 
         let clobbered_rgn_data: u32 = 0x303000;
@@ -6627,7 +6912,6 @@ mod tests {
 
         for (label, rgn_data) in [
             ("middle_cont", middle_cont),
-            ("middle_struc", middle_struc),
             ("middle_vis", middle_vis),
             ("middle_clip", middle_clip),
         ] {
@@ -6636,10 +6920,29 @@ mod tests {
             assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
             assert_eq!(bus.read_word(rgn_data + 8) as i16, 210, "{}.right", label);
         }
+        assert_eq!(
+            bus.read_word(middle_struc + 2) as i16,
+            18,
+            "middle_struc.top"
+        );
+        assert_eq!(
+            bus.read_word(middle_struc + 4) as i16,
+            19,
+            "middle_struc.left"
+        );
+        assert_eq!(
+            bus.read_word(middle_struc + 6) as i16,
+            112,
+            "middle_struc.bottom"
+        );
+        assert_eq!(
+            bus.read_word(middle_struc + 8) as i16,
+            212,
+            "middle_struc.right"
+        );
 
         for (label, rgn_data) in [
             ("back_cont", back_cont),
-            ("back_struc", back_struc),
             ("back_vis", back_vis),
             ("back_clip", back_clip),
         ] {
@@ -6648,6 +6951,18 @@ mod tests {
             assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
             assert_eq!(bus.read_word(rgn_data + 8) as i16, 210, "{}.right", label);
         }
+        assert_eq!(bus.read_word(back_struc + 2) as i16, 18, "back_struc.top");
+        assert_eq!(bus.read_word(back_struc + 4) as i16, 19, "back_struc.left");
+        assert_eq!(
+            bus.read_word(back_struc + 6) as i16,
+            112,
+            "back_struc.bottom"
+        );
+        assert_eq!(
+            bus.read_word(back_struc + 8) as i16,
+            212,
+            "back_struc.right"
+        );
 
         for (label, rgn_data) in [
             ("front_cont", front_cont),
@@ -6660,6 +6975,60 @@ mod tests {
             assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
             assert_eq!(bus.read_word(rgn_data + 8) as i16, 210, "{}.right", label);
         }
+    }
+
+    #[test]
+    fn calcvisbehind_menu_clamp_uses_window_local_coordinates() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            100,
+            200,
+            300,
+            500,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.window_list = vec![window_addr];
+        disp.sync_window_list_links(&mut bus);
+
+        let clobbered_rgn = super::super::TrapDispatcher::alloc_rect_region_handle(
+            &mut bus,
+            Some((100, 200, 300, 500)),
+        );
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, clobbered_rgn);
+        bus.write_long(sp + 4, window_addr);
+
+        let result = dispatch(&mut disp, 0x10A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 200, 300),
+            "a window below the menu bar should not be clipped by global MBarHeight in local coords"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+            ),
+            (100, 200, 300, 500),
+            "CalcVisBehind should preserve global content coordinates for nonzero window origins"
+        );
     }
 
     #[test]
@@ -8113,8 +8482,8 @@ mod tests {
                 &bus,
                 bus.read_long(main_window + 122),
             ),
-            Some((172, 197, 249, 431)),
-            "PaintBehind must invalidate only the overlay's global bounds converted into the back window's local coordinates"
+            Some((271, 283, 348, 517)),
+            "PaintBehind must store the overlay's invalidated bounds in global updateRgn coordinates"
         );
     }
 
@@ -8505,7 +8874,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(
             disp.window_update_rect(&bus, window_ptr),
-            Some((20, 10, 110, 70))
+            Some((60, 10, 150, 70))
         );
     }
 
@@ -8536,7 +8905,7 @@ mod tests {
         assert!(inval.unwrap().is_ok());
         assert_eq!(
             disp.window_update_rect(&bus, window_ptr),
-            Some((20, 10, 110, 70))
+            Some((60, 10, 150, 70))
         );
 
         cpu.write_reg(Register::A7, sp);
