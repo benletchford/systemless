@@ -299,6 +299,7 @@ pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_M
 // This lower value lets scripted harnesses run quickly without being wall-clock-paced.
 const INSTRUCTIONS_PER_TICK: u32 = 12_000;
 const MAC_EPOCH_OFFSET_FROM_UNIX: u64 = 2_082_844_800;
+const CURSOR_TASK_NOOP_ADDR: u32 = 0x0000_0060;
 
 fn current_mac_epoch_seconds() -> u32 {
     let unix_now = SystemTime::now()
@@ -314,6 +315,7 @@ fn current_mac_epoch_seconds() -> u32 {
 enum ActiveInterruptCallbackSource {
     Timer,
     Vbl,
+    CursorTask,
     SoundCallback,
     SoundFileCompletion,
     SoundDoubleBack,
@@ -449,6 +451,9 @@ pub struct FixtureRunner {
     /// Guest-memory address of the Vertical Retrace Manager trampoline code.
     /// Allocated once on first use and reused for all VBL callbacks.
     vbl_trampoline: u32,
+    /// Guest-memory address of the low-memory `JCrsrTask` callback trampoline.
+    /// Allocated once on first use and reused for cursor task callbacks.
+    cursor_task_trampoline: u32,
     /// Currently executing Time Manager callback, if any.
     ///
     /// Real timer delivery happens from interrupt context, so the same timer source
@@ -542,6 +547,7 @@ impl FixtureRunner {
             frozen_ticks: None,
             timer_trampoline: 0,
             vbl_trampoline: 0,
+            cursor_task_trampoline: 0,
             active_interrupt_callback: None,
             audio: None,
             audio_buffer: Vec::new(),
@@ -1192,6 +1198,15 @@ impl FixtureRunner {
         // GetKeys. Keep it explicitly clear at launch for direct pollers.
         // Inside Macintosh Volume I, I-260; MPW SysEqu.h `KeyMapLM`.
         self.sync_key_map_lowmem();
+        // JCrsrTask ($08EE): address of the cursor VBL task routine.
+        // MPW Interfaces/AIncludes/LowMemEqu.a lists `JCrsrTask EQU $8EE`.
+        // Classic applications can wrap this low-memory vector and then wait
+        // for their wrapper to run at interrupt time, so the default must be
+        // both non-NIL and callable. `$0060` is one of Systemless's low-memory
+        // RTS stubs for direct-call compatibility.
+        self.bus.write_word(CURSOR_TASK_NOOP_ADDR, 0x4E75);
+        self.bus
+            .write_long(addr::J_CRSR_TASK, CURSOR_TASK_NOOP_ADDR);
         // MBarHeight: 20 pixels (standard Roman system script value).
         // Games may set this to 0 to hide the menu bar for full-screen mode.
         // Inside Macintosh Volume V, V-245
@@ -2592,9 +2607,11 @@ impl FixtureRunner {
             self.bus.write_long(0x020C, time.wrapping_add(1));
         }
 
-        // Fire vertical-retrace tasks before Time Manager tasks. Games commonly
-        // drive screen/audio housekeeping from VBL, so letting those callbacks
-        // run first avoids starving them behind unrelated timer traffic.
+        // Fire the cursor task and vertical-retrace tasks before Time Manager
+        // tasks. Games commonly drive screen/audio housekeeping from VBL, so
+        // letting those callbacks run first avoids starving them behind
+        // unrelated timer traffic.
+        self.fire_cursor_task();
         self.fire_vbl_tasks();
         self.fire_timer_tasks(new_tick);
         new_tick
@@ -2746,6 +2763,51 @@ impl FixtureRunner {
             // `advance_guest_tick` does this during ordinary advancement.
             self.dispatcher.tick_count = target_tick;
         }
+    }
+
+    /// Fire the low-memory cursor task vector, if an app has installed one.
+    ///
+    /// JCrsrTask runs from interrupt-time cursor/VBL maintenance. MPW
+    /// Interfaces/AIncludes/LowMemEqu.a names the ProcPtr at $08EE.
+    fn fire_cursor_task(&mut self) {
+        if self.active_interrupt_callback.is_some() {
+            return;
+        }
+
+        let callback_addr = self
+            .bus
+            .read_long(crate::memory::globals::addr::J_CRSR_TASK);
+        if callback_addr == 0 || callback_addr == CURSOR_TASK_NOOP_ADDR {
+            return;
+        }
+
+        if self.cursor_task_trampoline == 0 {
+            // JCrsrTask is a no-argument ProcPtr. Invoke it from interrupt
+            // context and preserve the same volatile register set as VBL and
+            // Time Manager callbacks. MPW Interfaces/AIncludes/LowMemEqu.a:
+            // `JCrsrTask EQU $8EE`.
+            let tramp = self.bus.alloc(16);
+            self.bus.write_word(tramp, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+            self.bus.write_word(tramp + 2, 0xF0F0);
+            self.bus.write_word(tramp + 4, 0x4EB9); // JSR abs.L
+                                                    // +6..+9: callback_addr (patched per-fire)
+            self.bus.write_word(tramp + 10, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+            self.bus.write_word(tramp + 12, 0x0F0F);
+            self.bus.write_word(tramp + 14, 0x4E75); // RTS
+            self.cursor_task_trampoline = tramp;
+        }
+
+        let tramp = self.cursor_task_trampoline;
+        self.bus.write_long(tramp + 6, callback_addr);
+        if trace_vbl_enabled() {
+            eprintln!(
+                "[VBL] fire JCrsrTask addr=${:08X} interrupted_pc=${:08X} interrupted_sp=${:08X}",
+                callback_addr,
+                self.cpu.read_reg(Register::PC),
+                self.cpu.read_reg(Register::A7)
+            );
+        }
+        self.inject_interrupt_callback(ActiveInterruptCallbackSource::CursorTask, tramp);
     }
 
     /// Fire the next due Vertical Retrace Manager task.
@@ -4986,6 +5048,121 @@ mod tests {
                 .read_byte(crate::memory::globals::addr::MMU32_BIT),
             1,
             "MMU32Bit ($0CB2) should mirror Systemless's default 32-bit addressing mode"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_cursor_task_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+        };
+
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.bus.read_word(CURSOR_TASK_NOOP_ADDR),
+            0x4E75,
+            "default cursor task target should be a callable RTS stub"
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_long(crate::memory::globals::addr::J_CRSR_TASK),
+            CURSOR_TASK_NOOP_ADDR,
+            "JCrsrTask ($08EE) should boot to a callable no-op vector"
+        );
+    }
+
+    #[test]
+    fn cursor_task_noop_vector_does_not_fire_on_guest_tick() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0002_0000;
+        let interrupted_sp = 0x007F_FFC0;
+
+        runner.bus.write_long(
+            crate::memory::globals::addr::J_CRSR_TASK,
+            CURSOR_TASK_NOOP_ADDR,
+        );
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.advance_guest_tick();
+
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cursor_task_trampoline, 0);
+        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.bus.read_long(crate::memory::globals::addr::TICKS), 1);
+    }
+
+    #[test]
+    fn cursor_task_callback_arms_interrupt_from_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0002_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = 0x0004_1234;
+
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::J_CRSR_TASK, callback_addr);
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.write_reg(Register::D0, 0x1111_1111);
+        runner.cpu.write_reg(Register::D7, 0x7777_7777);
+        runner.cpu.write_reg(Register::A0, 0xAAAA_0000);
+        runner.cpu.write_reg(Register::A6, 0xCCCC_0000);
+        runner.cpu.core.set_ccr(0x04);
+
+        runner.advance_guest_tick();
+
+        let active = runner
+            .active_interrupt_callback
+            .expect("cursor task callback should have been armed");
+        assert!(matches!(
+            active.source,
+            ActiveInterruptCallbackSource::CursorTask
+        ));
+        assert_eq!(active.resume_pc, interrupted_pc);
+        assert_eq!(active.resume_sp, interrupted_sp);
+        assert_eq!(active.a_regs[7], interrupted_sp);
+        assert_eq!(active.a_regs[6], 0xCCCC_0000);
+        assert_eq!(active.d_regs[0], 0x1111_1111);
+        assert_eq!(active.d_regs[7], 0x7777_7777);
+        assert_eq!(active.ccr, 0x04);
+
+        assert_ne!(runner.cursor_task_trampoline, 0);
+        assert_eq!(
+            runner.cpu.read_reg(Register::PC),
+            runner.cursor_task_trampoline
+        );
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp - 4);
+        assert_eq!(runner.bus.read_long(interrupted_sp - 4), interrupted_pc);
+        assert_eq!(runner.bus.read_word(runner.cursor_task_trampoline), 0x48E7);
+        assert_eq!(
+            runner.bus.read_word(runner.cursor_task_trampoline + 4),
+            0x4EB9
+        );
+        assert_eq!(
+            runner.bus.read_long(runner.cursor_task_trampoline + 6),
+            callback_addr
+        );
+        assert_eq!(
+            runner.bus.read_word(runner.cursor_task_trampoline + 10),
+            0x4CDF
+        );
+        assert_eq!(
+            runner.bus.read_word(runner.cursor_task_trampoline + 14),
+            0x4E75
         );
     }
 

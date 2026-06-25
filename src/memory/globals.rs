@@ -93,6 +93,10 @@ pub mod addr {
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
     pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
     pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
+    /// JCrsrTask: address of the cursor VBL task routine (ProcPtr).
+    /// MPW Interfaces/AIncludes/LowMemEqu.a lists `JCrsrTask EQU $8EE`
+    /// immediately after `CrsrThresh` and before the interrupt mouse globals.
+    pub const J_CRSR_TASK: u32 = 0x08EE;
 
     // screenBits BitMap structure (14 bytes: baseAddr(4) + rowBytes(2) + bounds(8))
     // On a real Mac this lives in QD globals, but apps read it during InitGraf.
