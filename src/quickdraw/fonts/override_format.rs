@@ -23,9 +23,9 @@
 //!
 //! Glyph order starts with the baked catalogue's ASCII printable 0x20..=0x7E
 //! entries, then appends classic menu symbols that live below ASCII in the
-//! System font: Command key (Mac Roman 0x11) and checkmark (0x12). Missing
-//! glyphs are encoded as zero-sized entries with a positive advance for spaces
-//! or `0` advance for "not in font".
+//! System font: Command key (Mac Roman 0x11), checkmark (0x12), and Apple mark
+//! (0x14). Missing glyphs are encoded as zero-sized entries with a positive
+//! advance for spaces or `0` advance for "not in font".
 
 use std::collections::HashMap;
 use std::fs;
@@ -41,7 +41,8 @@ const GLYPH_ENTRY_BYTES: usize = 12;
 pub const ASCII_GLYPH_COUNT: u16 = 95;
 pub const COMMAND_SYMBOL_GLYPH_INDEX: usize = ASCII_GLYPH_COUNT as usize;
 pub const CHECKMARK_SYMBOL_GLYPH_INDEX: usize = COMMAND_SYMBOL_GLYPH_INDEX + 1;
-pub const GLYPH_COUNT: u16 = ASCII_GLYPH_COUNT + 2;
+pub const APPLE_SYMBOL_GLYPH_INDEX: usize = CHECKMARK_SYMBOL_GLYPH_INDEX + 1;
+pub const GLYPH_COUNT: u16 = ASCII_GLYPH_COUNT + 3;
 
 pub const STYLE_PLAIN: u8 = 0;
 pub const STYLE_BOLD: u8 = 1;

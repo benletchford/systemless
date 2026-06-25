@@ -389,9 +389,9 @@ pub struct SoundManager {
     pub debug_cmd_count: u32,
     pub debug_buffer_cmd_count: u32,
     /// `SndPlayDoubleBuffer` submissions (SoundDispatch routine
-    /// `$20`). Separate counter because Marathon 2 uses this path
-    /// exclusively and bufferCmd-based games like EV use the other
-    /// path; both feed `mix_frame` but through different dispatch.
+    /// `$20`). Separate counter because double-buffered playback and
+    /// bufferCmd-based games like EV both feed `mix_frame`, but through
+    /// different dispatch.
     pub debug_double_buffer_count: u32,
     pub debug_samples_mixed: u64,
     pub debug_unhandled_cmds: Vec<u16>,

@@ -97,6 +97,18 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
 
     // Set up TickCount low-memory global
     bus.write_long(0x016A, 100);
+    // MBState ($0172) is 0 when the mouse button is down and $80 when it is
+    // up. Real startup code initializes it to up; zero-filled test RAM would
+    // otherwise look like a held mouse. Inside Macintosh Volume II, II-371.
+    bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+    // Keep framebuffer tests from drawing into low memory. ScrnBase ($0824)
+    // names the screen base address; the test dispatcher's screen mode must
+    // match it. Inside Macintosh Volume II, II-371.
+    let screen_base = 0x300000u32;
+    let (_old_base, row_bytes, width, height, depth) = dispatcher.screen_mode;
+    dispatcher.set_screen_mode_for_test(screen_base, row_bytes, width, height, depth);
+    bus.write_long(0x0824, screen_base);
+    bus.write_word(0x0828, row_bytes as u16);
     // Sync dispatcher tick_count (normally done by runner's advance_guest_tick)
     dispatcher.tick_count = 100;
 

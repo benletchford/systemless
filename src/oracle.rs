@@ -1047,6 +1047,10 @@ fn scripted_menu_setup() -> (TrapDispatcher, M68kCpu, MacMemoryBus) {
     cpu.write_reg(Register::A5, a5_addr);
     bus.write_long(a5_addr, qd_globals);
     bus.write_long(0x016A, 100);
+    // MBState ($0172) defaults to mouse-up after startup; keep scripted
+    // dispatcher-only mouse transitions from inheriting zero-filled RAM as a
+    // held button. Inside Macintosh Volume II, II-371.
+    bus.write_byte(addr::MB_STATE, 0x80);
     dispatcher.tick_count = 100;
 
     let screen_base = 0x300000u32;

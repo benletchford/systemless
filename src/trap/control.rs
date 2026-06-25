@@ -1,9 +1,9 @@
 //! Control Manager trap handlers.
 
 use super::dispatch::{ControlAuxRecordState, ControlTrackingState};
-use super::types::{Rect, ShapeOp};
+use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
-use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::quickdraw::text::get_font_metrics;
 use crate::ui_theme::ControlKind;
 use crate::Result;
@@ -23,6 +23,7 @@ impl super::TrapDispatcher {
     const AUX_CTL_RESERVED_OFFSET: u32 = 14;
     const AUX_CTL_REFCON_OFFSET: u32 = 18;
     const AUX_CTL_RECORD_SIZE: u32 = 22;
+    const INACTIVE_CONTROL_TITLE_RGB: [u16; 3] = [0xA1A1, 0xA1A1, 0xA1A1];
 
     fn control_trace_nonzero(value: u32) -> String {
         if value == 0 {
@@ -92,6 +93,28 @@ impl super::TrapDispatcher {
             highlighted,
             outcome,
         ));
+    }
+
+    fn control_tracking_button_down(&self, bus: &MacMemoryBus) -> bool {
+        // TrackControl follows the mouse until button release (IM:I I-323).
+        // MBState ($0172) is the classic low-memory button mirror (0=down,
+        // $80=up), so guest callbacks/VBL tasks can hold or release tracking
+        // between trap re-fires. Inside Macintosh Volume II, p. II-371.
+        self.mouse_button || bus.read_byte(addr::MB_STATE) == 0x00
+    }
+
+    fn control_tracking_mouse_pos(&self, bus: &MacMemoryBus) -> (i16, i16) {
+        // Mouse ($0830) is the current low-memory mouse Point. Prefer it when
+        // a guest callback updates classic globals directly during tracking;
+        // otherwise keep dispatcher-driven tests and host input authoritative.
+        // Inside Macintosh Volume II, p. II-371; Volume III, p. III-446.
+        let v = bus.read_word(addr::MOUSE_LOC2) as i16;
+        let h = bus.read_word(addr::MOUSE_LOC2 + 2) as i16;
+        if v != 0 || h != 0 {
+            (v, h)
+        } else {
+            self.mouse_pos
+        }
     }
 
     fn control_record_ptr(bus: &MacMemoryBus, ctrl_handle: u32) -> u32 {
@@ -354,12 +377,12 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
     }
 
-    fn simple_control_tracking_inside(&self) -> bool {
+    fn simple_control_tracking_inside(&self, bus: &MacMemoryBus) -> bool {
         let Some(tracking) = self.control_tracking.as_ref() else {
             return false;
         };
         let (top, left, bottom, right) = tracking.simple_screen_rect;
-        let (mouse_v, mouse_h) = self.mouse_pos;
+        let (mouse_v, mouse_h) = self.control_tracking_mouse_pos(bus);
         mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right
     }
 
@@ -622,11 +645,64 @@ impl super::TrapDispatcher {
         bus.write_word(ctrl_ptr + 22, max as u16);
         let def_proc_handle = self.control_def_proc_handle(bus, proc_id);
         bus.write_long(ctrl_ptr + 24, def_proc_handle);
-        bus.write_long(ctrl_ptr + 28, 0); // contrlData
+        let contrl_data = if Self::is_popup_menu_proc_id(proc_id) {
+            self.create_popup_control_private_data(bus, min)
+        } else {
+            0
+        };
+        bus.write_long(ctrl_ptr + 28, contrl_data);
         bus.write_long(ctrl_ptr + 32, 0); // contrlAction
         bus.write_long(ctrl_ptr + 36, ref_con);
         Self::set_control_title_bytes(bus, ctrl_ptr, title);
         self.control_proc_ids.insert(ctrl_ptr, proc_id);
+    }
+
+    fn create_popup_control_private_data(&mut self, bus: &mut MacMemoryBus, menu_id: i16) -> u32 {
+        let menu_handle = self.create_popup_menu_handle(bus, menu_id);
+        if menu_handle == 0 {
+            return 0;
+        }
+
+        let data_ptr = bus.alloc(8);
+        let data_handle = bus.alloc(4);
+        if data_ptr == 0 || data_handle == 0 {
+            return 0;
+        }
+
+        // IM:VI 1991 pp. 3-18..3-19: popup control contrlData is a
+        // handle to popupPrivateData { mHandle: MenuHandle, mID: Integer,
+        // mPrivate: reserved bytes }.
+        bus.write_long(data_handle, data_ptr);
+        bus.write_long(data_ptr, menu_handle);
+        bus.write_word(data_ptr + 4, menu_id as u16);
+        bus.write_word(data_ptr + 6, 0);
+        self.ptr_to_handle.insert(data_ptr, data_handle);
+        data_handle
+    }
+
+    pub(crate) fn popup_control_menu_id(
+        &self,
+        bus: &MacMemoryBus,
+        ctrl_ptr: u32,
+        fallback_menu_id: i16,
+    ) -> i16 {
+        let data_handle = bus.read_long(ctrl_ptr + 28);
+        if data_handle != 0 {
+            let data_ptr = bus.read_long(data_handle);
+            if data_ptr != 0 && bus.get_alloc_size(data_ptr).unwrap_or(0) >= 6 {
+                let menu_handle = bus.read_long(data_ptr);
+                let menu_id = bus.read_word(data_ptr + 4) as i16;
+                if menu_id != 0
+                    && self
+                        .menus
+                        .iter()
+                        .any(|menu| menu.id == menu_id && menu.handle == menu_handle)
+                {
+                    return menu_id;
+                }
+            }
+        }
+        fallback_menu_id
     }
 
     /// Draw a single control based on its procID, using QuickDraw primitives
@@ -656,21 +732,7 @@ impl super::TrapDispatcher {
         let min = bus.read_word(ctrl_ptr + 20) as i16;
         let max = bus.read_word(ctrl_ptr + 22) as i16;
         let title_bytes = Self::control_title_bytes(bus, ctrl_ptr);
-        // Map MacRoman bytes to ASCII-compatible characters for rendering
-        let title: String = title_bytes
-            .iter()
-            .map(|&b| match b {
-                0xD2 | 0xD4 => '\u{201C}', // map to regular quote for display
-                0xD3 | 0xD5 => '\'',       // Mac curly quotes → ASCII apostrophe
-                0xC7 => '"',               // Mac double quote variants
-                0xC8 => '"',
-                0xCA => ' ', // non-breaking space
-                0xD0 => '-', // en-dash
-                0xD1 => '-', // em-dash
-                b if (0x20..=0x7E).contains(&b) => b as char,
-                _ => '?',
-            })
-            .collect();
+        let title = decode_mac_roman_for_render(&title_bytes);
 
         let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
 
@@ -782,36 +844,28 @@ impl super::TrapDispatcher {
                 }
 
                 // Draw label text to the right of the checkbox
-                let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-                    self.get_screen_params();
                 let font_id = 0i16;
                 let font_size = 12i16;
                 let metrics = get_font_metrics(font_id, font_size);
                 let text_x = scr_left + box_left + box_size + 4;
                 let text_y = scr_top + r_top + (height + metrics.ascent - metrics.descent) / 2;
-                Self::fb_draw_string(
+                self.draw_control_label_text(
                     bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
+                    abs_top,
+                    scr_left + box_left + box_size + 1,
+                    abs_bottom,
+                    abs_right,
                     text_x,
                     text_y,
                     &title,
                     font_id,
                     font_size,
+                    hilite == 255,
                 );
 
                 if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
                     // Pressed: invert the checkbox box area
                     self.draw_rect(cpu, bus, &box_r, ShapeOp::Invert);
-                } else if hilite == 255 {
-                    // Inactive: dim ONLY the label area (NOT the box).
-                    // Per IM:I I-323, an inactive control draws its title dimmed/grey
-                    // but the box outline stays solid.
-                    let label_left = scr_left + box_left + box_size + 1;
-                    self.dim_rect(bus, abs_top, label_left, abs_bottom, abs_right);
                 }
             }
             2 => {
@@ -858,34 +912,28 @@ impl super::TrapDispatcher {
                 }
 
                 // Draw label text to the right of the circle
-                let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-                    self.get_screen_params();
                 let font_id = 0i16;
                 let font_size = 12i16;
                 let metrics = get_font_metrics(font_id, font_size);
                 let text_x = scr_left + circle_left + circle_size + 4;
                 let text_y = scr_top + r_top + (height + metrics.ascent - metrics.descent) / 2;
-                Self::fb_draw_string(
+                self.draw_control_label_text(
                     bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
+                    abs_top,
+                    scr_left + circle_left + circle_size + 1,
+                    abs_bottom,
+                    abs_right,
                     text_x,
                     text_y,
                     &title,
                     font_id,
                     font_size,
+                    hilite == 255,
                 );
 
                 if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
                     // Pressed: invert the circle area
                     self.draw_oval(cpu, bus, &circle_r, ShapeOp::Invert);
-                } else if hilite == 255 {
-                    // Inactive: dim ONLY the label area (NOT the circle). See checkBoxProc above.
-                    let label_left = scr_left + circle_left + circle_size + 1;
-                    self.dim_rect(bus, abs_top, label_left, abs_bottom, abs_right);
                 }
             }
             16 => {
@@ -897,8 +945,21 @@ impl super::TrapDispatcher {
             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
                 // popupMenuProc — draw the CNTL-backed popup button using
                 // the selected MENU resource item.
+                let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                 let selected = value.max(1) as usize;
-                let item_title = self.popup_menu_item_title(bus, min, selected);
+                let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                let (draw_top, draw_left, draw_bottom, draw_right) = self.popup_control_box_rect(
+                    bus, abs_top, abs_left, abs_bottom, abs_right, menu_id, max, proc_id,
+                );
+                self.draw_popup_control_label(
+                    bus,
+                    abs_top,
+                    abs_left,
+                    abs_bottom,
+                    draw_left,
+                    &title,
+                    hilite != 255,
+                );
                 // HIG 1992 p. 87 describes the closed pop-up menu as the
                 // rectangle/triangle control; MTE 1992 p. 6-98 says
                 // HiliteControl dims inactive pop-up menus. Keep part-code
@@ -906,10 +967,10 @@ impl super::TrapDispatcher {
                 // semantic state to non-classic theme chrome.
                 self.draw_popup_control_with_state(
                     bus,
-                    abs_top,
-                    abs_left,
-                    abs_bottom,
-                    abs_right,
+                    draw_top,
+                    draw_left,
+                    draw_bottom,
+                    draw_right,
                     &item_title.unwrap_or_default(),
                     hilite != 255,
                     hilite == 1,
@@ -966,6 +1027,68 @@ impl super::TrapDispatcher {
         );
     }
 
+    fn draw_control_label_text(
+        &self,
+        bus: &mut MacMemoryBus,
+        label_top: i16,
+        label_left: i16,
+        label_bottom: i16,
+        label_right: i16,
+        text_x: i16,
+        text_y: i16,
+        title: &str,
+        font_id: i16,
+        font_size: i16,
+        inactive: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if inactive && pixel_size == 8 {
+            // Control drawing writes directly to the screen framebuffer, so
+            // resolve against the same live device CLUT used by screenshots
+            // instead of TheGDevice, which games may leave on an offscreen
+            // palette while redrawing dialogs.
+            let [r, g, b] = Self::INACTIVE_CONTROL_TITLE_RGB;
+            let gray_index = super::pict::closest_clut_index(r, g, b, &self.device_clut);
+            Self::fb_draw_string_styled_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                text_x,
+                text_y,
+                title,
+                font_id,
+                font_size,
+                0,
+                gray_index,
+            );
+            return;
+        }
+
+        Self::fb_draw_string(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            text_x,
+            text_y,
+            title,
+            font_id,
+            font_size,
+        );
+        if inactive {
+            // MTE 1992 p. 5-13 describes inactive controls as dimmed; when
+            // no indexed-gray device color is available, preserve the older
+            // monochrome CDEF fallback by pattern-dimming only the title.
+            self.dim_rect(bus, label_top, label_left, label_bottom, label_right);
+        }
+    }
+
     /// Draw the X mark inside a checkbox at screen coordinates.
     /// System 7.5.3 checkbox X spans the full interior diagonal (i=1..size-1),
     /// starting one pixel inside the box border on each side.
@@ -1007,7 +1130,14 @@ impl super::TrapDispatcher {
 
     /// Dim a rectangular area with a 50% gray pattern (checkerboard).
     /// Used for inactive (hilite=255) controls.
-    fn dim_rect(&self, bus: &mut MacMemoryBus, top: i16, left: i16, bottom: i16, right: i16) {
+    pub(crate) fn dim_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         for y in top..bottom {
@@ -2038,7 +2168,26 @@ impl super::TrapDispatcher {
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
                 if ctrl_ptr != 0 {
                     bus.write_byte(ctrl_ptr + 17, hilite_state);
+                    if trace_controls_enabled() {
+                        let dialog_item = self
+                            .dialog_control_handles
+                            .get(&ctrl_handle)
+                            .map(|(dlg, item)| format!(" dialog=${dlg:08X} item={item}"))
+                            .unwrap_or_default();
+                        eprintln!(
+                            "[CONTROL] HiliteControl state={}{} {}",
+                            hilite_state,
+                            dialog_item,
+                            self.control_trace_control_fields(bus, ctrl_handle),
+                        );
+                    }
                     self.draw_control(cpu, bus, ctrl_ptr);
+                } else if trace_controls_enabled() {
+                    eprintln!(
+                        "[CONTROL] HiliteControl state={} {}",
+                        hilite_state,
+                        self.control_trace_control_fields(bus, ctrl_handle),
+                    );
                 }
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
@@ -2151,6 +2300,20 @@ impl super::TrapDispatcher {
                     self.dialog_control_values.insert((dlg_ptr, item_no), value);
                 }
                 bus.write_word(ctrl_ptr + 18, value as u16);
+                if trace_controls_enabled() {
+                    let dialog_item = self
+                        .dialog_control_handles
+                        .get(&ctrl_handle)
+                        .map(|(dlg, item)| format!(" dialog=${dlg:08X} item={item}"))
+                        .unwrap_or_default();
+                    eprintln!(
+                        "[CONTROL] SetCtlValue requested={} value={}{} {}",
+                        requested,
+                        value,
+                        dialog_item,
+                        self.control_trace_control_fields(bus, ctrl_handle),
+                    );
+                }
                 self.draw_control(cpu, bus, ctrl_ptr);
                 Ok(())
             }
@@ -2309,13 +2472,13 @@ impl super::TrapDispatcher {
                         .map(|tracking| tracking.popup_tracking)
                         .unwrap_or(false);
                     if popup_tracking {
-                        if self.mouse_button {
+                        if self.control_tracking_button_down(bus) {
                             let ctrl_handle = self
                                 .control_tracking
                                 .as_ref()
                                 .map(|tracking| tracking.ctrl_handle)
                                 .unwrap_or(0);
-                            let (mv, mh) = self.mouse_pos;
+                            let (mv, mh) = self.control_tracking_mouse_pos(bus);
                             let new_item = self.control_tracking_item_at_point(bus, mh, mv);
                             let old_item = self
                                 .control_tracking
@@ -2353,8 +2516,8 @@ impl super::TrapDispatcher {
                             .as_ref()
                             .map(|tracking| tracking.ctrl_handle)
                             .unwrap_or(0);
-                        let inside = self.simple_control_tracking_inside();
-                        if self.mouse_button {
+                        let inside = self.simple_control_tracking_inside(bus);
+                        if self.control_tracking_button_down(bus) {
                             let highlighted = self
                                 .control_tracking
                                 .as_ref()
@@ -2415,9 +2578,13 @@ impl super::TrapDispatcher {
                                 let proc_id =
                                     self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
                                 if Self::is_popup_menu_proc_id(proc_id) {
-                                    let menu_id = bus.read_word(ctrl_ptr + 20) as i16;
+                                    let menu_id = self.popup_control_menu_id(
+                                        bus,
+                                        ctrl_ptr,
+                                        bus.read_word(ctrl_ptr + 20) as i16,
+                                    );
                                     if let Some(menu_idx) =
-                                        self.menus.iter().position(|menu| menu.id == menu_id)
+                                        self.menus.iter().rposition(|menu| menu.id == menu_id)
                                     {
                                         let dropdown_rect = self
                                             .popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
@@ -2558,7 +2725,11 @@ impl super::TrapDispatcher {
                                 let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
                                 let r_right = bus.read_word(ctrl_ptr + 14) as i16;
                                 let ctrl_value = bus.read_word(ctrl_ptr + 18) as i16;
-                                let menu_id = bus.read_word(ctrl_ptr + 20) as i16;
+                                let menu_id = self.popup_control_menu_id(
+                                    bus,
+                                    ctrl_ptr,
+                                    bus.read_word(ctrl_ptr + 20) as i16,
+                                );
                                 let (scr_top, scr_left, _, _) =
                                     Self::dialog_screen_bounds(bus, window_ptr);
                                 let abs_top = scr_top + r_top;
@@ -2785,7 +2956,7 @@ impl super::TrapDispatcher {
                         ctrl_id,
                         proc_id,
                         proc_id >> 4,
-                        String::from_utf8_lossy(&title),
+                        decode_mac_roman_for_render(&title),
                         r_top as i16,
                         r_left as i16,
                         r_bottom as i16,
@@ -4079,6 +4250,96 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
     }
 
+    #[test]
+    fn inactive_checkbox_and_radio_titles_use_gray_device_index() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(128 * 128);
+        let row_bytes = 128u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 128, 8);
+        disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut[42] = [0xA1A1, 0xA1A1, 0xA1A1];
+        disp.device_clut[255] = [0, 0, 0];
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(0x0828, row_bytes as u16);
+
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+        let gdevice = bus.read_long(gdevice_handle);
+        let pixmap_handle = bus.read_long(gdevice + 22);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+        for index in 0u32..256 {
+            let entry = ctab + 8 + index * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, 0x2020);
+            bus.write_word(entry + 4, 0x4040);
+            bus.write_word(entry + 6, 0x6060);
+        }
+        let white_entry = ctab + 8;
+        bus.write_word(white_entry, 0);
+        bus.write_word(white_entry + 2, 0xFFFF);
+        bus.write_word(white_entry + 4, 0xFFFF);
+        bus.write_word(white_entry + 6, 0xFFFF);
+        // Deliberately put the exact gray at a different GDevice-table index.
+        // The inactive title draw path should resolve against device_clut,
+        // matching screen export, not this current-GDevice table.
+        let gray_entry = ctab + 8 + 17 * 8;
+        bus.write_word(gray_entry, 17);
+        bus.write_word(gray_entry + 2, 0xA1A1);
+        bus.write_word(gray_entry + 4, 0xA1A1);
+        bus.write_word(gray_entry + 6, 0xA1A1);
+        let black_entry = ctab + 8 + 255 * 8;
+        bus.write_word(black_entry, 255);
+        bus.write_word(black_entry + 2, 0);
+        bus.write_word(black_entry + 4, 0);
+        bus.write_word(black_entry + 6, 0);
+
+        for offset in 0..(row_bytes * 128) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+        let window_ptr = disp.current_port;
+        bus.write_word(window_ptr + 8, 0);
+        bus.write_word(window_ptr + 10, 0);
+        bus.write_word(window_ptr + 16, 0);
+        bus.write_word(window_ptr + 18, 0);
+        bus.write_word(window_ptr + 20, 128);
+        bus.write_word(window_ptr + 22, 128);
+
+        for (proc_id, rect, value) in [(1, (20, 20, 40, 118), 1), (2, (52, 20, 72, 118), 1)] {
+            let ctrl_ptr = bus.alloc(296);
+            disp.initialize_control_record(
+                &mut bus, ctrl_ptr, window_ptr, rect, b"Sound", true, value, 0, 1, proc_id, 0,
+            );
+            bus.write_byte(ctrl_ptr + 17, 255);
+            disp.draw_control(&mut cpu, &mut bus, ctrl_ptr);
+        }
+
+        let checkbox_gray = count_pixel_index(&bus, screen_base, row_bytes, 20, 35, 40, 118, 42);
+        let checkbox_black = count_pixel_index(&bus, screen_base, row_bytes, 20, 35, 40, 118, 255);
+        let radio_gray = count_pixel_index(&bus, screen_base, row_bytes, 52, 35, 72, 118, 42);
+        let radio_black = count_pixel_index(&bus, screen_base, row_bytes, 52, 35, 72, 118, 255);
+
+        assert!(
+            checkbox_gray > 12,
+            "inactive checkbox title should draw with the device gray index"
+        );
+        assert_eq!(
+            checkbox_black, 0,
+            "inactive checkbox title must not leave black glyph pixels"
+        );
+        assert!(
+            radio_gray > 12,
+            "inactive radio title should draw with the device gray index"
+        );
+        assert_eq!(
+            radio_black, 0,
+            "inactive radio title must not leave black glyph pixels"
+        );
+    }
+
     // TrackControl semantics per Macintosh Toolbox Essentials 1992, pp. 5-89 to 5-90.
     #[test]
     fn track_control_visible_active_button_hit_returns_inbutton() {
@@ -4299,6 +4560,7 @@ mod tests {
             enabled: true,
             handle: 0,
             in_menu_bar: false,
+            visible_in_menu_bar: false,
         });
 
         disp.mouse_button = true;
@@ -4404,6 +4666,7 @@ mod tests {
             handle: 0,
             in_menu_bar: false,
             hierarchical: false,
+            visible_in_menu_bar: false,
         });
 
         disp.mouse_button = true;
@@ -4499,6 +4762,7 @@ mod tests {
             enabled: true,
             handle: 0,
             in_menu_bar: false,
+            visible_in_menu_bar: false,
         });
 
         disp.mouse_button = true;
@@ -5099,12 +5363,16 @@ mod tests {
             .unwrap();
 
         assert!(
-            screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 120, 39),
-            "classic popup CDEF should draw its offset shadow outside the control rect"
+            screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 100, 37),
+            "classic popup CDEF should draw its resolved auto-width offset shadow"
         );
         assert!(
-            !screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 120, 39),
-            "systemless-default popup provider should not draw the classic offset shadow"
+            screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 101, 37),
+            "classic popup CDEF should extend the resolved shadow one pixel past the provider frame"
+        );
+        assert!(
+            !screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 101, 37),
+            "systemless-default popup provider should not draw the classic resolved shadow extension"
         );
 
         themed_cpu.write_reg(Register::A7, sp);
@@ -5172,9 +5440,11 @@ mod tests {
             screen_pixel_is_set(&themed_bus, base, row_bytes, 30, 57),
             "pressed systemless-default popup should route hilite state to provider fill"
         );
+        let normal_chrome = count_set_pixels(&themed_bus, base, row_bytes, 21, 20, 38, 100);
+        let inactive_chrome = count_set_pixels(&themed_bus, base, row_bytes, 85, 20, 102, 100);
         assert!(
-            screen_pixel_is_set(&themed_bus, base, row_bytes, 22, 94),
-            "inactive systemless-default popup should route HiliteControl state to provider chrome"
+            inactive_chrome > normal_chrome,
+            "inactive systemless-default popup should route HiliteControl state to provider chrome ({inactive_chrome} <= {normal_chrome})"
         );
     }
 
@@ -5849,6 +6119,27 @@ mod tests {
         for y in top..bottom {
             for x in left..right {
                 if screen_pixel_is_set(bus, base, row_bytes, x, y) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn count_pixel_index(
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        pixel_index: u8,
+    ) -> u32 {
+        let mut count = 0;
+        for y in top..bottom {
+            for x in left..right {
+                if bus.read_byte(base + y as u32 * row_bytes + x as u32) == pixel_index {
                     count += 1;
                 }
             }

@@ -78,6 +78,27 @@ pub(crate) fn decode_mac_roman(bytes: &[u8]) -> String {
         .collect()
 }
 
+pub(crate) fn decode_mac_roman_for_render(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        match byte {
+            0x00..=0x7F => out.push(byte as char),
+            // Classic dialog/control strings use Mac Roman. The HLE chrome
+            // renderer only has ASCII glyphs plus a few symbol slots today, so
+            // expand common punctuation into renderable equivalents instead of
+            // letting it become replacement or blank glyphs. IM:I I-247.
+            0xA5 => out.push('*'),
+            0xC9 => out.push_str("..."),
+            0xCA => out.push(' '),
+            0xD0 | 0xD1 => out.push('-'),
+            0xD2 | 0xD3 => out.push('"'),
+            0xD4 | 0xD5 => out.push('\''),
+            _ => out.push(MAC_ROMAN_HIGH[(byte - 0x80) as usize]),
+        }
+    }
+    out
+}
+
 pub(crate) fn encode_mac_roman_lossy(value: &str) -> Vec<u8> {
     value
         .chars()
@@ -170,7 +191,7 @@ pub fn read_fsspec_name(bus: &MacMemoryBus, spec_ptr: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_mac_roman, encode_mac_roman_lossy};
+    use super::{decode_mac_roman, decode_mac_roman_for_render, encode_mac_roman_lossy};
 
     #[test]
     fn mac_roman_round_trips_classic_filename_symbols() {
@@ -178,5 +199,14 @@ mod tests {
         let decoded = decode_mac_roman(bytes);
         assert_eq!(decoded, "MORE\u{2122} Library");
         assert_eq!(encode_mac_roman_lossy(&decoded), bytes);
+    }
+
+    #[test]
+    fn mac_roman_render_decode_expands_classic_punctuation() {
+        assert_eq!(
+            decode_mac_roman_for_render(b"Choose Monitor\xC9"),
+            "Choose Monitor..."
+        );
+        assert_eq!(decode_mac_roman_for_render(b"Marathon\xD5s"), "Marathon's");
     }
 }

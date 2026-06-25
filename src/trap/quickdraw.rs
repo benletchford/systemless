@@ -5900,12 +5900,10 @@ impl super::TrapDispatcher {
                     // FUNCTION HasDepth(gd: GDHandle; depth, whichFlags,
                     //                   flags: Integer): Integer;
                     // Imaging With QuickDraw 1994 pp.5-33..5-34
+                    let flags = bus.read_word(sp);
+                    let which_flags = bus.read_word(sp + 2);
                     let depth = bus.read_word(sp + 4);
-                    let mode_id: u16 = if Self::hasdepth_supported_depth(depth) {
-                        1
-                    } else {
-                        0
-                    };
+                    let mode_id = Self::has_depth_mode_id(depth, which_flags, flags);
                     bus.write_word(sp + 10, mode_id);
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
@@ -5916,12 +5914,8 @@ impl super::TrapDispatcher {
                     //                   flags: Integer): OSErr;
                     // IM:VI VI-21-12
                     let depth = bus.read_word(sp + 4);
-                    let result = if Self::setdepth_supported_depth(depth) {
-                        self.do_setdepth(cpu, bus, depth);
-                        0
-                    } else {
-                        (-50i16) as u16 // paramErr
-                    };
+                    let gd = bus.read_long(sp + 6);
+                    let result = self.set_depth_or_mode(cpu, bus, gd, depth);
                     bus.write_word(sp + 10, result);
                     cpu.write_reg(Register::A7, sp + 10);
                     cpu.write_reg(Register::D0, result as i32 as u32);
@@ -6175,21 +6169,17 @@ impl super::TrapDispatcher {
                     // return 0 when the requested depth is unsupported, and a
                     // nonzero mode ID when supported.
                     //
-                    // HasDepth is also used by games as a Color QuickDraw
-                    // capability probe before selecting 2/4/8-bit art paths.
-                    // Systemless can render those indexed sources into its
-                    // 8bpp screen even when SetDepth does not expose a physical
-                    // 2bpp/4bpp framebuffer mode.
+                    // Systemless exposes the common classic Mac display
+                    // depths as device capabilities. 1bpp and 8bpp are wired
+                    // to screenBits/screen_mode; other supported depths are
+                    // recorded at the GDevice level without changing the
+                    // backing framebuffer.
                     0x0A14 => {
-                        let _flags = bus.read_word(sp + 2);
-                        let _which = bus.read_word(sp + 4);
+                        let flags = bus.read_word(sp + 2);
+                        let which_flags = bus.read_word(sp + 4);
                         let depth = bus.read_word(sp + 6);
                         let _gd = bus.read_long(sp + 8);
-                        let mode_id = if Self::hasdepth_supported_depth(depth) {
-                            1
-                        } else {
-                            0
-                        };
+                        let mode_id = Self::has_depth_mode_id(depth, which_flags, flags);
                         bus.write_word(sp + 12, mode_id);
                         cpu.write_reg(Register::A7, sp + 12);
                     }
@@ -6199,10 +6189,10 @@ impl super::TrapDispatcher {
                     // Inside Macintosh Volume VI, VI-21-12
                     //
                     // Stack: same layout as HasDepth (10-byte arg block).
-                    // Result is OSErr (Integer). Systemless updates screenBits,
-                    // the main GDevice PixMap, and screen_mode for 1bpp B&W or
-                    // 8bpp indexed color, then returns paramErr for depths that
-                    // are not backed by the renderer.
+                    // Result is OSErr (Integer). Systemless updates screenBits
+                    // and screen_mode for the wired 1bpp/8bpp paths, and
+                    // records other supported depth requests on the GDevice
+                    // without changing the backing framebuffer.
                     //
                     // Regression coverage:
                     //   setdepth_changes_device_depth
@@ -6210,13 +6200,8 @@ impl super::TrapDispatcher {
                         let _flags = bus.read_word(sp + 2);
                         let _which = bus.read_word(sp + 4);
                         let depth = bus.read_word(sp + 6);
-                        let _gd = bus.read_long(sp + 8);
-                        let result = if Self::setdepth_supported_depth(depth) {
-                            self.do_setdepth(cpu, bus, depth);
-                            0
-                        } else {
-                            (-50i16) as u16 // paramErr
-                        };
+                        let gd = bus.read_long(sp + 8);
+                        let result = self.set_depth_or_mode(cpu, bus, gd, depth);
                         bus.write_word(sp + 12, result);
                         cpu.write_reg(Register::A7, sp + 12);
                         cpu.write_reg(Register::D0, result as i32 as u32);
@@ -15037,6 +15022,83 @@ impl super::TrapDispatcher {
         bus.write_word(gd + 20, flags);
     }
 
+    fn has_depth_mode_id(depth: u16, which_flags: u16, flags: u16) -> u16 {
+        // HasDepth's flags bit 0 is the color-device constraint. When the
+        // caller explicitly asks for a non-color mode, only 1 bpp qualifies.
+        if which_flags & 1 != 0 && flags & 1 == 0 {
+            return if depth == 1 { depth } else { 0 };
+        }
+
+        if Self::supported_depth_from_mode(depth).is_some() {
+            depth
+        } else {
+            0
+        }
+    }
+
+    fn supported_depth_from_mode(depth_or_mode: u16) -> Option<u16> {
+        match depth_or_mode {
+            1 | 2 | 4 | 8 | 16 | 32 => Some(depth_or_mode),
+            // Display Manager mode tokens already used by the HLE paths.
+            0x0080 | 0x0085 => Some(8),
+            _ => None,
+        }
+    }
+
+    fn record_gdevice_depth_mode(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        gdh: u32,
+        mode: u16,
+        depth: u16,
+    ) {
+        let gdh = if gdh != 0 {
+            gdh
+        } else {
+            self.ensure_main_gdevice(bus)
+        };
+        let gd = bus.read_long(gdh);
+        if gd == 0 {
+            return;
+        }
+
+        bus.write_long(gd + 42, u32::from(mode));
+        let mut flags = bus.read_word(gd + 20);
+        flags &= !1;
+        if depth > 1 {
+            flags |= 1;
+        }
+        bus.write_word(gd + 20, flags);
+    }
+
+    fn set_depth_or_mode<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        gdh: u32,
+        depth_or_mode: u16,
+    ) -> u16 {
+        let Some(depth) = Self::supported_depth_from_mode(depth_or_mode) else {
+            return (-50i16) as u16; // paramErr
+        };
+
+        if matches!(depth, 1 | 8) {
+            if depth == 8 {
+                if let Some((width, height)) = Self::display_mode_geometry(u32::from(depth_or_mode))
+                {
+                    self.do_setdepth_with_geometry(cpu, bus, depth, width, height);
+                } else {
+                    self.do_setdepth(cpu, bus, depth);
+                }
+            } else {
+                self.do_setdepth(cpu, bus, depth);
+            }
+        }
+
+        self.record_gdevice_depth_mode(bus, gdh, depth_or_mode, depth);
+        0
+    }
+
     fn palette_ptr(bus: &MacMemoryBus, palette_handle: u32) -> u32 {
         if palette_handle == 0 {
             return 0;
@@ -17109,14 +17171,6 @@ impl super::TrapDispatcher {
             ORACLE_MACHINE_PROFILE.screen_width,
             ORACLE_MACHINE_PROFILE.screen_height,
         );
-    }
-
-    fn setdepth_supported_depth(depth: u16) -> bool {
-        matches!(depth, 1 | 8)
-    }
-
-    fn hasdepth_supported_depth(depth: u16) -> bool {
-        matches!(depth, 1 | 2 | 4 | 8)
     }
 
     fn row_bytes_for_depth(width: u16, depth: u16) -> Option<u32> {
@@ -31092,15 +31146,31 @@ mod tests {
     }
 
     #[test]
+    fn has_depth_d0_path_32bit_color_returns_nonzero_mode_id() {
+        // Marathon 2's preferences path uses the MPW D0-selector form and
+        // probes the main device for a 32bpp color mode.
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        cpu.write_reg(Register::D0, 0x0A14);
+        bus.write_word(TEST_SP, 1); // flags (color)
+        bus.write_word(TEST_SP + 2, 1); // whichFlags: color flag matters
+        bus.write_word(TEST_SP + 4, 32); // depth
+        bus.write_long(TEST_SP + 6, gdh); // gd
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 32);
+    }
+
+    #[test]
     fn has_depth_unsupported_depth_returns_zero() {
         // Imaging With QuickDraw 1994 pp.5-33..5-34: HasDepth returns
-        // 0 when the requested depth is outside the indexed depths Systemless
-        // can render into its 8bpp screen path.
+        // 0 when the requested depth is unsupported.
         let (mut d, mut cpu, mut bus) = setup();
         bus.write_word(TEST_SP, 0x0A14); // selector
         bus.write_word(TEST_SP + 2, 1); // flags (color)
         bus.write_word(TEST_SP + 4, 0); // whichFlags
-        bus.write_word(TEST_SP + 6, 16);
+        bus.write_word(TEST_SP + 6, 99); // unsupported depth in HLE
         bus.write_long(TEST_SP + 8, 0); // gd
         let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -31169,21 +31239,43 @@ mod tests {
     }
 
     #[test]
+    fn set_depth_accepts_has_depth_mode_id_without_rewiring_non_8bpp_framebuffer() {
+        // HasDepth's result can be passed back to SetDepth. Systemless records
+        // the requested display mode on the GDevice but keeps the real
+        // framebuffer in its wired shape for non-1/8bpp requests.
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let before_screen_mode = d.screen_mode;
+        bus.write_word(TEST_SP, 0x0A13); // selector
+        bus.write_word(TEST_SP + 2, 1); // flags (color)
+        bus.write_word(TEST_SP + 4, 1); // whichFlags: color flag matters
+        bus.write_word(TEST_SP + 6, 32); // HasDepth mode ID for 32bpp
+        bus.write_long(TEST_SP + 8, gdh); // gd
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0); // noErr
+        assert_eq!(d.screen_mode, before_screen_mode);
+
+        let gd = bus.read_long(gdh);
+        assert_eq!(bus.read_long(gd + 42), 32);
+        assert_ne!(bus.read_word(gd + 20) & 1, 0);
+    }
+
+    #[test]
     fn set_depth_unsupported_depth_returns_nonzero() {
         // Imaging With QuickDraw 1994 pp. 5-34..5-35: SetDepth returns
         // a nonzero OSErr when it cannot impose the requested depth.
-        for depth in [4, 99] {
-            let (mut d, mut cpu, mut bus) = setup();
-            bus.write_word(TEST_SP, 0x0A13); // selector
-            bus.write_word(TEST_SP + 2, 1); // flags (color)
-            bus.write_word(TEST_SP + 4, 0); // whichFlags
-            bus.write_word(TEST_SP + 6, depth); // unsupported depth in HLE
-            bus.write_long(TEST_SP + 8, 0); // gd
-            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
-            assert!(result.unwrap().is_ok());
-            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-            assert_ne!(bus.read_word(TEST_SP + 12), 0);
-        }
+        let (mut d, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 0x0A13); // selector
+        bus.write_word(TEST_SP + 2, 1); // flags (color)
+        bus.write_word(TEST_SP + 4, 0); // whichFlags
+        bus.write_word(TEST_SP + 6, 99); // unsupported depth in HLE
+        bus.write_long(TEST_SP + 8, 0); // gd
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_ne!(bus.read_word(TEST_SP + 12), 0);
     }
 
     // ==================== Palette ====================

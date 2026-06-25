@@ -5,7 +5,7 @@ use super::dispatch::{
     DialogUserItemTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
     RetainedModalDialogClickState,
 };
-use super::types::{Rect, ShapeOp};
+use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -419,6 +419,8 @@ impl super::TrapDispatcher {
     const TE_SEL_START_OFFSET: u32 = 0x20;
     const TE_SEL_END_OFFSET: u32 = 0x22;
     const TE_ACTIVE_OFFSET: u32 = 0x24;
+    const TE_CARET_TIME_OFFSET: u32 = 0x34;
+    const TE_CARET_STATE_OFFSET: u32 = 0x38;
     #[allow(dead_code)]
     const TE_CR_ONLY_OFFSET: u32 = 0x48;
     const TE_JUST_OFFSET: u32 = 0x3A;
@@ -432,6 +434,7 @@ impl super::TrapDispatcher {
     const TE_N_LINES_OFFSET: u32 = 0x5E;
     const TE_LINE_STARTS_OFFSET: u32 = 0x60;
     const TE_REC_MIN_SIZE: u32 = 128;
+    const TE_CARET_BLINK_TICKS: u32 = 32;
     // TextEdit draws inside the destination rectangle (IM:I I-373 to I-374);
     // BasiliskII/System 7.5.3 `dialog_visual_textedit_smoke` pins the ROM's
     // flush-left glyph origin one pixel in from destRect.left.
@@ -441,9 +444,8 @@ impl super::TrapDispatcher {
     const EDIT_TEXT_FRAME_OUTSET: i16 = 3;
     const STANDARD_CONTROL_MARK_SIZE: i16 = 12;
     const STANDARD_CONTROL_MARK_LEFT_INSET: i16 = 2;
-    const STANDARD_CONTROL_MARK_TOP_INSET: i16 = 4;
     const STANDARD_CONTROL_TITLE_GAP: i16 = 4;
-    const STANDARD_CONTROL_TITLE_BASELINE_OFFSET: i16 = 2;
+    const INACTIVE_STANDARD_CONTROL_TITLE_RGB: [u16; 3] = [0xA1A1, 0xA1A1, 0xA1A1];
     const CLASSIC_RADIO_OUTLINE_12: [&'static str; 12] = [
         "....####....",
         "..##....##..",
@@ -462,12 +464,12 @@ impl super::TrapDispatcher {
         "............",
         "............",
         "............",
-        ".....##.....",
         "....####....",
         "...######...",
         "...######...",
+        "...######...",
+        "...######...",
         "....####....",
-        ".....##.....",
         "............",
         "............",
         "............",
@@ -526,6 +528,23 @@ impl super::TrapDispatcher {
             .unwrap_or_else(|| bus.read_word(dialog_ptr + 108) as i16)
     }
 
+    fn dialog_window_title(bus: &MacMemoryBus, dialog_ptr: u32) -> String {
+        if dialog_ptr == 0 {
+            return String::new();
+        }
+        // WindowRecord.titleHandle is a StringHandle at +134; GetWTitle uses
+        // the same documented field (IM:I I-284).
+        let title_handle = bus.read_long(dialog_ptr + 134);
+        if title_handle == 0 {
+            return String::new();
+        }
+        let title_ptr = bus.read_long(title_handle);
+        if title_ptr == 0 {
+            return String::new();
+        }
+        decode_mac_roman_for_render(&bus.read_pstring(title_ptr))
+    }
+
     fn ensure_text_handle_size(bus: &mut MacMemoryBus, item_handle: u32, size: usize) -> u32 {
         if item_handle == 0 {
             return 0;
@@ -572,7 +591,7 @@ impl super::TrapDispatcher {
         item_handle: u32,
     ) -> Option<String> {
         Self::text_item_bytes_from_handle_if_present(bus, item_handle)
-            .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+            .map(|bytes| decode_mac_roman_for_render(&bytes))
     }
 
     fn text_item_bytes_from_handle_if_present(
@@ -611,14 +630,19 @@ impl super::TrapDispatcher {
             return None;
         }
 
+        let ditl_len = bus.get_alloc_size(ditl_ptr).unwrap_or(u32::MAX);
         let mut offset = 2u32;
         for current_item in 1..=max_index + 1 {
             let item_handle_addr = ditl_ptr + offset;
             offset += 4; // itmhand
             offset += 8; // itmr
-            let data_len = bus.read_byte(ditl_ptr + offset + 1) as u32;
+            let item_type = bus.read_byte(ditl_ptr + offset);
+            let data_len_byte = bus.read_byte(ditl_ptr + offset + 1);
             offset += 2; // itmtype + itmlen
-            let padded = (data_len + 1) & !1;
+            let base_type = item_type & 0x7F;
+            let remaining = ditl_len.saturating_sub(offset);
+            let payload_len = Self::ditl_item_payload_len(base_type, data_len_byte, remaining)?;
+            let padded = (payload_len + 1) & !1;
             if current_item == item_no {
                 return Some(item_handle_addr);
             }
@@ -1464,6 +1488,8 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
         bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
         bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
         bus.write_word(te_ptr + Self::TE_TX_FONT_OFFSET, self.tx_font as u16);
@@ -1634,6 +1660,8 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
         bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_JUST_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
         bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
@@ -1803,10 +1831,36 @@ impl super::TrapDispatcher {
         self.te_recalculate_layout(bus, te_handle);
     }
 
-    fn textedit_idle(&mut self, _bus: &mut MacMemoryBus, te_handle: u32) {
+    fn textedit_idle(&mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus, te_handle: u32) {
         if trace_textedit_enabled() {
             eprintln!("[TE] TEIdle hTE=${te_handle:08X}");
         }
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+        if bus.read_word(te_ptr + Self::TE_ACTIVE_OFFSET) == 0 {
+            return;
+        }
+
+        let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET);
+        let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET);
+        if sel_start != sel_end {
+            return;
+        }
+
+        let last_toggle = bus.read_long(te_ptr + Self::TE_CARET_TIME_OFFSET);
+        if self.tick_count.wrapping_sub(last_toggle) < Self::TE_CARET_BLINK_TICKS {
+            return;
+        }
+
+        let caret_state = bus.read_word(te_ptr + Self::TE_CARET_STATE_OFFSET);
+        bus.write_word(
+            te_ptr + Self::TE_CARET_STATE_OFFSET,
+            if caret_state == 0 { 1 } else { 0 },
+        );
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        self.draw_te_contents(cpu, bus, te_handle);
     }
 
     fn te_insert_text(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
@@ -2035,6 +2089,44 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn port_has_drawable_bitmap(bus: &MacMemoryBus, port: u32) -> bool {
+        if port == 0 {
+            return false;
+        }
+
+        let port_version = bus.read_word(port + 6);
+        let is_color = (port_version & 0xC000) != 0;
+        let (base, row_bytes, top, left, bottom, right) = if is_color {
+            let pix_map_handle = bus.read_long(port + 2);
+            if pix_map_handle == 0 {
+                return false;
+            }
+            let pix_map_ptr = bus.read_long(pix_map_handle);
+            if pix_map_ptr == 0 {
+                return false;
+            }
+            (
+                bus.read_long(pix_map_ptr),
+                bus.read_word(pix_map_ptr + 4) & 0x3FFF,
+                bus.read_word(pix_map_ptr + 6) as i16,
+                bus.read_word(pix_map_ptr + 8) as i16,
+                bus.read_word(pix_map_ptr + 10) as i16,
+                bus.read_word(pix_map_ptr + 12) as i16,
+            )
+        } else {
+            (
+                bus.read_long(port + 2),
+                bus.read_word(port + 6) & 0x3FFF,
+                bus.read_word(port + 8) as i16,
+                bus.read_word(port + 10) as i16,
+                bus.read_word(port + 12) as i16,
+                bus.read_word(port + 14) as i16,
+            )
+        };
+
+        base != 0 && row_bytes != 0 && top < bottom && left < right
+    }
+
     fn draw_te_contents(&mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus, te_handle: u32) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
@@ -2042,13 +2134,12 @@ impl super::TrapDispatcher {
         }
 
         let text_bytes = Self::te_text_bytes(bus, te_handle);
-        if text_bytes.is_empty() {
-            return;
-        }
-
         let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
         let view_rect = Self::te_read_rect(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET);
         let te_port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
+        if !Self::port_has_drawable_bitmap(bus, te_port) {
+            return;
+        }
         let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
         let (font, face, size, color, _, _) = self.te_primary_style(bus, te_handle);
         let old_font = self.tx_font;
@@ -2211,7 +2302,11 @@ impl super::TrapDispatcher {
             },
             ShapeOp::Erase,
         );
-        let lines = self.te_wrap_lines(font, size, &text_bytes, box_width);
+        let lines = if text_bytes.is_empty() {
+            vec![(0usize, 0usize)]
+        } else {
+            self.te_wrap_lines(font, size, &text_bytes, box_width)
+        };
 
         let mut top = dest_rect.0;
         let mut visible_lines = Vec::new();
@@ -2246,6 +2341,7 @@ impl super::TrapDispatcher {
         }
 
         let te_active = bus.read_word(te_ptr + Self::TE_ACTIVE_OFFSET) != 0;
+        let caret_visible = bus.read_word(te_ptr + Self::TE_CARET_STATE_OFFSET) == 0;
         let outline_hilite = self.te_feature_bit(te_handle, Self::TE_FEATURE_OUTLINE_HILITE);
         let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
         let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
@@ -2255,7 +2351,7 @@ impl super::TrapDispatcher {
             (sel_end, sel_start)
         };
         if selection_start == selection_end {
-            if self.ui_theme_id() != UiThemeId::ClassicSystem7 && te_active {
+            if te_active && caret_visible {
                 if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) = visual_lines
                     .iter()
                     .find(|&&(start, end, _, _, _)| {
@@ -2264,22 +2360,37 @@ impl super::TrapDispatcher {
                     .or_else(|| visual_lines.last())
                 {
                     let caret_offset = selection_start.min(line_end).max(line_start);
-                    let caret_x = line_x
-                        + self.te_measure_text_width(
-                            font,
-                            size,
-                            &text_bytes,
-                            line_start,
-                            caret_offset,
-                        );
+                    let measured_width = self.te_measure_text_width(
+                        font,
+                        size,
+                        &text_bytes,
+                        line_start,
+                        caret_offset,
+                    );
+                    let mut caret_x = line_x + measured_width;
+                    if caret_offset > line_start {
+                        caret_x = caret_x.saturating_sub(1);
+                    }
                     let caret_width = self.ui_theme().text_theme().caret_width.max(1);
-                    self.draw_theme_caret(
+                    if !self.draw_theme_caret(
                         bus,
                         line_top,
                         caret_x,
                         line_bottom,
                         caret_x.saturating_add(caret_width),
-                    );
+                    ) {
+                        self.draw_rect(
+                            cpu,
+                            bus,
+                            &Rect {
+                                top: line_top,
+                                left: caret_x,
+                                bottom: line_bottom,
+                                right: caret_x.saturating_add(1),
+                            },
+                            ShapeOp::Paint,
+                        );
+                    }
                 }
             }
         } else if te_active || outline_hilite {
@@ -2390,11 +2501,21 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         items: &[DialogItem],
     ) {
+        self.initialize_dialog_item_handles_from(bus, dialog_ptr, items, 0);
+    }
+
+    fn initialize_dialog_item_handles_from(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        items: &[DialogItem],
+        start_index: usize,
+    ) {
         // Item lists in memory hold live item handles or userItem ProcPtrs.
         // GetNewDialog reaches here with a copy of the DITL resource; NewDialog
         // initializes the caller-supplied item-list handle.
         // Inside Macintosh Volume I, I-405, I-412; MTE 1992 p. 6-114.
-        for (index, item) in items.iter().enumerate() {
+        for (index, item) in items.iter().enumerate().skip(start_index) {
             let item_no = index as i16 + 1;
             let Some(item_handle_addr) = Self::dialog_item_handle_addr(bus, dialog_ptr, item_no)
             else {
@@ -2423,7 +2544,14 @@ impl super::TrapDispatcher {
                         self.get_or_create_resource_handle(bus, *b"ICON", item.resource_id, ptr)
                     })
                     .unwrap_or(0),
-                4..=6 => bus.read_long(item_handle_addr),
+                4..=6 => {
+                    let existing = bus.read_long(item_handle_addr);
+                    if existing != 0 {
+                        existing
+                    } else {
+                        self.create_standard_dialog_control_handle(bus, dialog_ptr, item_no, item)
+                    }
+                }
                 7 => self
                     .find_resource_any(*b"CNTL", item.resource_id)
                     .map(|(_, cntl_ptr)| {
@@ -2476,6 +2604,367 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn create_standard_dialog_control_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        item_no: i16,
+        item: &DialogItem,
+    ) -> u32 {
+        let proc_id = match item.item_type & 0x7F {
+            4 => 0, // btnCtrl -> pushButProc
+            5 => 1, // chkCtrl -> checkBoxProc
+            6 => 2, // radCtrl -> radioButProc
+            _ => return 0,
+        };
+        let value = self
+            .dialog_control_values
+            .get(&(dialog_ptr, item_no))
+            .copied()
+            .unwrap_or(0);
+        let ctrl_ptr = bus.alloc(296);
+        let handle = bus.alloc(4);
+        if ctrl_ptr == 0 || handle == 0 {
+            return 0;
+        }
+
+        bus.write_long(handle, ctrl_ptr);
+        self.initialize_control_record(
+            bus,
+            ctrl_ptr,
+            dialog_ptr,
+            item.rect,
+            item.text.as_bytes(),
+            true,
+            value,
+            0,
+            1,
+            proc_id,
+            0,
+        );
+        self.ensure_control_aux_record(bus, handle);
+
+        let old_head = bus.read_long(dialog_ptr + 140);
+        bus.write_long(ctrl_ptr, old_head);
+        bus.write_long(dialog_ptr + 140, handle);
+        self.dialog_control_handles
+            .insert(handle, (dialog_ptr, item_no));
+        self.dialog_control_values
+            .insert((dialog_ptr, item_no), value);
+        handle
+    }
+
+    fn ditl_item_record_len_at(
+        bus: &MacMemoryBus,
+        ptr: u32,
+        data_len: u32,
+        record_offset: u32,
+    ) -> Option<u32> {
+        if record_offset + 14 > data_len {
+            return None;
+        }
+
+        let item_type = bus.read_byte(ptr + record_offset + 12);
+        let data_len_byte = bus.read_byte(ptr + record_offset + 13);
+        let base_type = item_type & 0x7F;
+        let payload_offset = record_offset + 14;
+        let remaining = data_len.saturating_sub(payload_offset);
+        let payload_len = Self::ditl_item_payload_len(base_type, data_len_byte, remaining)?;
+        let padded = (payload_len + 1) & !1;
+        if padded > remaining {
+            return None;
+        }
+
+        Some(14 + padded)
+    }
+
+    fn ditl_used_len(bus: &MacMemoryBus, ptr: u32, data_len: u32) -> u32 {
+        if ptr == 0 || data_len < 2 {
+            return data_len;
+        }
+
+        let max_index = bus.read_word(ptr) as i16;
+        let count = if max_index < 0 {
+            0
+        } else {
+            max_index as usize + 1
+        };
+        let mut offset = 2u32;
+        for _ in 0..count {
+            let Some(record_len) = Self::ditl_item_record_len_at(bus, ptr, data_len, offset) else {
+                break;
+            };
+            offset = offset.saturating_add(record_len);
+        }
+
+        offset.min(data_len)
+    }
+
+    fn dialog_local_size(bus: &MacMemoryBus, dialog_ptr: u32) -> (i16, i16) {
+        let height = (bus.read_word(dialog_ptr + 20) as i16)
+            .saturating_sub(bus.read_word(dialog_ptr + 16) as i16);
+        let width = (bus.read_word(dialog_ptr + 22) as i16)
+            .saturating_sub(bus.read_word(dialog_ptr + 18) as i16);
+        (height, width)
+    }
+
+    fn append_ditl_offset(&self, bus: &MacMemoryBus, dialog_ptr: u32, method: i16) -> (i16, i16) {
+        match method {
+            // overlayDITL: appended rectangles are already dialog-local.
+            // Macintosh Toolbox Essentials 1992, pp. 6-108, 6-153.
+            0 => (0, 0),
+            // appendDITLRight / appendDITLBottom position relative to the
+            // dialog's upper-right or lower-left coordinate. The HLE updates
+            // item rectangles here; full window resizing is handled by callers
+            // that subsequently show/redraw the dialog.
+            1 => {
+                let (_, width) = Self::dialog_local_size(bus, dialog_ptr);
+                (0, width)
+            }
+            2 => {
+                let (height, _) = Self::dialog_local_size(bus, dialog_ptr);
+                (height, 0)
+            }
+            item_method if item_method < 0 => {
+                let item_no = item_method.checked_neg().unwrap_or(i16::MAX) as usize;
+                self.dialog_items
+                    .get(&dialog_ptr)
+                    .and_then(|items| item_no.checked_sub(1).and_then(|index| items.get(index)))
+                    .map(|item| (item.rect.0, item.rect.1))
+                    .unwrap_or((0, 0))
+            }
+            _ => (0, 0),
+        }
+    }
+
+    fn offset_dialog_item_rect(item: &mut DialogItem, v_delta: i16, h_delta: i16) {
+        item.rect = (
+            item.rect.0.saturating_add(v_delta),
+            item.rect.1.saturating_add(h_delta),
+            item.rect.2.saturating_add(v_delta),
+            item.rect.3.saturating_add(h_delta),
+        );
+    }
+
+    fn erase_retained_dialog_items_after_ditl_shorten(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        removed_items: &[DialogItem],
+    ) {
+        if removed_items.is_empty() || dialog_ptr == 0 {
+            return;
+        }
+        let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+        for item in removed_items {
+            let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, item.rect);
+            self.fill_rect_clipped_to_dialog(
+                bus,
+                bounds,
+                (top - 2, left - 2, bottom + 2, right + 2),
+                false,
+            );
+        }
+        if self.dialog_visible_snapshots.contains_key(&dialog_ptr) {
+            let pixels = self.save_dialog_pixels(bus, bounds);
+            self.dialog_visible_snapshots
+                .insert(dialog_ptr, PersistentDialogSnapshot { bounds, pixels });
+        }
+        let tracking_bounds = self
+            .dialog_tracking
+            .as_ref()
+            .filter(|tracking| tracking.dialog_ptr == dialog_ptr)
+            .map(|tracking| tracking.bounds);
+        if let Some(bounds) = tracking_bounds {
+            let rendered = self.save_dialog_pixels(bus, bounds);
+            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                if tracking.dialog_ptr == dialog_ptr {
+                    tracking.rendered_pixels = rendered;
+                    tracking.rendered_pixels_final = true;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn append_ditl_to_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        ditl_handle: u32,
+        method: i16,
+    ) -> u16 {
+        if dialog_ptr == 0 || ditl_handle == 0 {
+            return self
+                .dialog_items
+                .get(&dialog_ptr)
+                .map(|items| items.len() as u16)
+                .unwrap_or(0);
+        }
+
+        let source_ptr = bus.read_long(ditl_handle);
+        let Some(source_alloc_len) = bus.get_alloc_size(source_ptr) else {
+            return self
+                .dialog_items
+                .get(&dialog_ptr)
+                .map(|items| items.len() as u16)
+                .unwrap_or(0);
+        };
+        let source_len = Self::ditl_used_len(bus, source_ptr, source_alloc_len);
+        if source_len <= 2 {
+            return self
+                .dialog_items
+                .get(&dialog_ptr)
+                .map(|items| items.len() as u16)
+                .unwrap_or(0);
+        }
+
+        let mut appended_items = Self::parse_ditl(bus, source_ptr, source_len);
+        if appended_items.is_empty() {
+            return self
+                .dialog_items
+                .get(&dialog_ptr)
+                .map(|items| items.len() as u16)
+                .unwrap_or(0);
+        }
+
+        let mut items_handle = bus.read_long(dialog_ptr + 156);
+        if items_handle == 0 {
+            items_handle = bus.alloc(4);
+            let empty_ditl_ptr = bus.alloc(2);
+            bus.write_word(empty_ditl_ptr, 0xFFFF);
+            bus.write_long(items_handle, empty_ditl_ptr);
+            bus.write_long(dialog_ptr + 156, items_handle);
+        }
+
+        let old_ptr = bus.read_long(items_handle);
+        let old_alloc_len = bus.get_alloc_size(old_ptr).unwrap_or(0);
+        let old_len = if old_ptr != 0 && old_alloc_len >= 2 {
+            Self::ditl_used_len(bus, old_ptr, old_alloc_len).max(2)
+        } else {
+            2
+        };
+        let raw_existing_items = if old_ptr != 0 && old_alloc_len >= 2 {
+            Self::parse_ditl(bus, old_ptr, old_len)
+        } else {
+            Vec::new()
+        };
+        let mut all_items = self
+            .dialog_items
+            .get(&dialog_ptr)
+            .cloned()
+            .unwrap_or_else(|| raw_existing_items.clone());
+        if all_items.len() != raw_existing_items.len() && !raw_existing_items.is_empty() {
+            all_items = raw_existing_items;
+        }
+
+        let start_index = all_items.len();
+        let source_body_len = source_len.saturating_sub(2);
+        let new_len = old_len.saturating_add(source_body_len);
+        let new_ptr = bus.alloc(new_len);
+        if new_ptr == 0 {
+            return all_items.len() as u16;
+        }
+
+        if old_ptr != 0 && old_alloc_len >= 2 {
+            let old_bytes = bus.read_bytes(old_ptr, old_len as usize);
+            bus.write_bytes(new_ptr, &old_bytes);
+        } else {
+            bus.write_word(new_ptr, 0xFFFF);
+        }
+        let source_body = bus.read_bytes(source_ptr + 2, source_body_len as usize);
+        bus.write_bytes(new_ptr + old_len, &source_body);
+
+        let (v_delta, h_delta) = self.append_ditl_offset(bus, dialog_ptr, method);
+        let mut source_offset = 2u32;
+        let mut dest_offset = old_len;
+        for item in &mut appended_items {
+            if v_delta != 0 || h_delta != 0 {
+                Self::offset_dialog_item_rect(item, v_delta, h_delta);
+                bus.write_word(new_ptr + dest_offset + 4, item.rect.0 as u16);
+                bus.write_word(new_ptr + dest_offset + 6, item.rect.1 as u16);
+                bus.write_word(new_ptr + dest_offset + 8, item.rect.2 as u16);
+                bus.write_word(new_ptr + dest_offset + 10, item.rect.3 as u16);
+            }
+
+            let Some(record_len) =
+                Self::ditl_item_record_len_at(bus, source_ptr, source_len, source_offset)
+            else {
+                break;
+            };
+            source_offset = source_offset.saturating_add(record_len);
+            dest_offset = dest_offset.saturating_add(record_len);
+        }
+
+        all_items.extend(appended_items);
+        let new_count = all_items.len();
+        let max_index = if new_count == 0 {
+            0xFFFF
+        } else {
+            (new_count as u16).saturating_sub(1)
+        };
+        bus.write_word(new_ptr, max_index);
+        bus.write_long(items_handle, new_ptr);
+
+        self.dialog_items.insert(dialog_ptr, all_items.clone());
+        self.initialize_dialog_item_handles_from(bus, dialog_ptr, &all_items, start_index);
+
+        new_count as u16
+    }
+
+    pub(crate) fn shorten_ditl_in_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        number_items: u16,
+    ) -> u16 {
+        if dialog_ptr == 0 {
+            return 0;
+        }
+
+        let items_handle = bus.read_long(dialog_ptr + 156);
+        let ditl_ptr = if items_handle != 0 {
+            bus.read_long(items_handle)
+        } else {
+            0
+        };
+        let ditl_len = bus.get_alloc_size(ditl_ptr).unwrap_or(0);
+        let raw_items = if ditl_ptr != 0 && ditl_len >= 2 {
+            Self::parse_ditl(bus, ditl_ptr, Self::ditl_used_len(bus, ditl_ptr, ditl_len))
+        } else {
+            Vec::new()
+        };
+        let mut items = self
+            .dialog_items
+            .get(&dialog_ptr)
+            .cloned()
+            .unwrap_or(raw_items);
+        let remove_count = (number_items as usize).min(items.len());
+        let keep_count = items.len().saturating_sub(remove_count);
+
+        for item_no in (keep_count + 1)..=items.len() {
+            let item_no = item_no as i16;
+            let handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+            self.dialog_control_values.remove(&(dialog_ptr, item_no));
+            self.dialog_control_handles.remove(&handle);
+            self.dialog_item_handles.remove(&handle);
+        }
+
+        let removed_items = items[keep_count..].to_vec();
+        items.truncate(keep_count);
+        if ditl_ptr != 0 && ditl_len >= 2 {
+            let max_index = if keep_count == 0 {
+                0xFFFF
+            } else {
+                (keep_count as u16).saturating_sub(1)
+            };
+            bus.write_word(ditl_ptr, max_index);
+        }
+        self.dialog_items.insert(dialog_ptr, items);
+        self.erase_retained_dialog_items_after_ditl_shorten(bus, dialog_ptr, &removed_items);
+
+        keep_count as u16
+    }
+
     // ========== DLOG / DITL Resource Parsing ==========
 
     /// Parse a DLOG resource from guest memory.
@@ -2504,7 +2993,7 @@ impl super::TrapDispatcher {
         for (i, byte) in title_bytes.iter_mut().enumerate() {
             *byte = bus.read_byte(ptr + 21 + i as u32);
         }
-        let title = String::from_utf8_lossy(&title_bytes).to_string();
+        let title = decode_mac_roman_for_render(&title_bytes);
 
         // Read positioning constant after the title Pascal string.
         // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
@@ -2608,30 +3097,14 @@ impl super::TrapDispatcher {
             let mut text = String::new();
             let mut resource_id: i16 = 0;
             let remaining = data_len - offset;
-            let payload_len = match base_type {
-                // userItem has only the byte after itmtype (reserved/empty),
-                // not a following payload.
-                0 => 0,
-                // Help items use the byte after itmtype as a sized payload.
-                // Macintosh Toolbox Essentials 1992, p. 6-154
-                1 => u32::from(data_len_byte),
-                // icon, picture, resCtrl: 2-byte resource ID. IM:I I-427
-                // describes the byte after itmtype as length=2; MTE 1992
-                // p. 6-153 documents the same compiled records as a
-                // reserved byte plus the two-byte resource ID. Accept both.
-                7 | 32 | 64 => {
-                    if remaining < 2 {
-                        break;
-                    }
-                    resource_id = bus.read_word(ptr + offset) as i16;
-                    if data_len_byte >= 2 {
-                        u32::from(data_len_byte)
-                    } else {
-                        2
-                    }
-                }
-                _ => u32::from(data_len_byte),
+            let Some(payload_len) =
+                Self::ditl_item_payload_len(base_type, data_len_byte, remaining)
+            else {
+                break;
             };
+            if matches!(base_type, 7 | 32 | 64) {
+                resource_id = bus.read_word(ptr + offset) as i16;
+            }
 
             let padded = (payload_len + 1) & !1;
             if padded > remaining {
@@ -2644,7 +3117,7 @@ impl super::TrapDispatcher {
                     // editText (16): title/text data. IM:I I-427.
                     4 | 5 | 6 | 8 | 16 => {
                         let bytes = bus.read_bytes(ptr + offset, payload_len as usize);
-                        text = String::from_utf8_lossy(&bytes).to_string();
+                        text = decode_mac_roman_for_render(&bytes);
                     }
                     _ => {}
                 }
@@ -2671,6 +3144,33 @@ impl super::TrapDispatcher {
             });
         }
         items
+    }
+
+    fn ditl_item_payload_len(base_type: u8, data_len_byte: u8, remaining: u32) -> Option<u32> {
+        let payload_len = match base_type {
+            // userItem has only the byte after itmtype (reserved/empty),
+            // not a following payload.
+            0 => 0,
+            // Help items use the byte after itmtype as a sized payload.
+            // Macintosh Toolbox Essentials 1992, p. 6-154
+            1 => u32::from(data_len_byte),
+            // icon, picture, resCtrl: 2-byte resource ID. IM:I I-427
+            // describes the byte after itmtype as length=2; MTE 1992
+            // p. 6-153 documents the same compiled records as a
+            // reserved byte plus the two-byte resource ID. Accept both.
+            7 | 32 | 64 => {
+                if remaining < 2 {
+                    return None;
+                }
+                if data_len_byte >= 2 {
+                    u32::from(data_len_byte)
+                } else {
+                    2
+                }
+            }
+            _ => u32::from(data_len_byte),
+        };
+        Some(payload_len)
     }
 
     /// Re-read userItem proc pointers from the DITL data in guest memory.
@@ -2873,12 +3373,16 @@ impl super::TrapDispatcher {
             .retain(|_, (dlg, _)| *dlg != dialog_ptr);
         self.dialog_control_values
             .retain(|(dlg, _), _| *dlg != dialog_ptr);
+        self.dialog_edit_text_modified_items
+            .retain(|(dlg, _)| *dlg != dialog_ptr);
         self.hidden_dialog_item_rects
             .retain(|(dlg, _), _| *dlg != dialog_ptr);
         self.dialog_item_popup_menus
             .retain(|(dlg, _), _| *dlg != dialog_ptr);
         self.dialog_popup_original_rects
             .retain(|(dlg, _), _| *dlg != dialog_ptr);
+        self.dialog_popup_candidate_items
+            .retain(|(dlg, _)| *dlg != dialog_ptr);
         if self
             .pending_dialog_popup_menu
             .is_some_and(|pending| pending.dialog_ptr == dialog_ptr)
@@ -3049,6 +3553,24 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn set_tracking_active_edit_selection(
+        tracking: &mut DialogTrackingState,
+        sel_start: usize,
+        sel_end: usize,
+    ) {
+        let edit_item = tracking.edit_item;
+        if edit_item <= 0 {
+            return;
+        }
+        if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
+            if (item.item_type & 0x7F) == 16 {
+                let text_len = tracking.edit_text.len();
+                item.sel_start = sel_start.min(text_len).min(i16::MAX as usize) as i16;
+                item.sel_end = sel_end.min(text_len).min(i16::MAX as usize) as i16;
+            }
+        }
+    }
+
     fn textedit_key_result(
         existing: &[u8],
         sel_start: usize,
@@ -3120,7 +3642,7 @@ impl super::TrapDispatcher {
         let (updated, insertion_point) =
             Self::textedit_key_result(&existing, sel_start, sel_end, key);
         let clamped_insertion = insertion_point.min(u16::MAX as usize) as u16;
-        item.text = String::from_utf8_lossy(&updated).to_string();
+        item.text = decode_mac_roman_for_render(&updated);
         item.sel_start = clamped_insertion as i16;
         item.sel_end = clamped_insertion as i16;
 
@@ -3141,9 +3663,10 @@ impl super::TrapDispatcher {
         true
     }
 
-    fn activate_dialog_edit_item(
+    fn activate_dialog_edit_item<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
+        cpu: &mut C,
         dialog_ptr: u32,
         items: &[DialogItem],
         edit_item: i16,
@@ -3182,6 +3705,15 @@ impl super::TrapDispatcher {
             te_ptr + Self::TE_SEL_END_OFFSET,
             sel_end.min(text_len) as u16,
         );
+        // MTE 1992 p. 6-139 and IM:I I-417: DialogSelect mouse-down in an
+        // enabled editText item displays the insertion point or selection.
+        // The Dialog Manager shares one TERecord across editText items, so
+        // activating an item must make that record active before later null
+        // events call TEIdle for caret blinking.
+        bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
+        self.draw_te_contents(cpu, bus, text_handle);
         true
     }
 
@@ -3274,6 +3806,8 @@ impl super::TrapDispatcher {
             if let Some(cached_items) = self.dialog_items.get_mut(&dialog_ptr) {
                 if idx < cached_items.len() {
                     cached_items[idx].text = text.to_string();
+                    cached_items[idx].sel_start = item.sel_start;
+                    cached_items[idx].sel_end = item.sel_end;
                 }
             }
         }
@@ -3904,7 +4438,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         bounds: (i16, i16, i16, i16),
         proc_id: i16,
-        _title: &str,
+        title: &str,
         items: &[DialogItem],
         default_item: i16,
         edit_text: &str,
@@ -3940,6 +4474,8 @@ impl super::TrapDispatcher {
                 bottom + Self::DBOX_FRAME_MARGIN,
                 right + Self::DBOX_FRAME_MARGIN,
             ),
+            2 => (top - 1, left - 1, bottom + 1, right + 1),
+            3 => (top - 1, left - 1, bottom + 3, right + 3),
             _ => (top, left, bottom + 2, right + 2),
         };
         if !self.draw_theme_dialog_frame(
@@ -3977,10 +4513,40 @@ impl super::TrapDispatcher {
                 1 => {
                     self.draw_classic_dbox_frame(bus, top, left, bottom, right);
                 }
+                2 => {
+                    // plainDBox: single-pixel WDEF border outside the content
+                    // bounds, matching the Window Manager procID 2 path.
+                    // Inside Macintosh Volume I, I-275.
+                    self.draw_rect_border(bus, top - 1, left - 1, bottom + 1, right + 1);
+                }
                 3 => {
                     // altDBoxProc: single border + shadow
-                    self.draw_rect_border(bus, top, left, bottom, right);
-                    self.draw_shadow(bus, top, left, bottom, right);
+                    self.draw_rect_border(bus, top - 1, left - 1, bottom + 1, right + 1);
+                    self.draw_shadow(bus, top - 1, left - 1, bottom + 1, right + 1);
+                }
+                0 | 4 => {
+                    // documentProc/noGrowDocProc use the Window Manager's
+                    // document WDEF title-bar chrome. DrawDialog is allowed
+                    // on modeless dialogs too (IM:I I-417; MTE 1992 p. 6-142),
+                    // so route through the same WDEF frame path used by
+                    // visible window creation instead of the modal-box fallback.
+                    let saved_bounds = self.window_bounds;
+                    let saved_proc_id = self.window_proc_id;
+                    let saved_title = self.window_title.clone();
+                    let saved_go_away = self.go_away_flag;
+                    self.window_bounds = bounds;
+                    self.window_proc_id = proc_id;
+                    self.window_title = if title.is_empty() {
+                        Self::dialog_window_title(bus, dialog_ptr)
+                    } else {
+                        title.to_string()
+                    };
+                    self.go_away_flag = dialog_ptr != 0 && bus.read_byte(dialog_ptr + 112) != 0;
+                    self.draw_window_frame(bus);
+                    self.window_bounds = saved_bounds;
+                    self.window_proc_id = saved_proc_id;
+                    self.window_title = saved_title;
+                    self.go_away_flag = saved_go_away;
                 }
                 _ => {
                     // Default: single border + shadow
@@ -4061,6 +4627,15 @@ impl super::TrapDispatcher {
                 continue;
             }
 
+            // Buttons, checkboxes, radios, and resource-backed controls are
+            // Control Manager controls. Draw them in a second pass below so
+            // their z-order matches DrawControls: reverse creation order,
+            // with the earliest-created control frontmost (IM:I I-322; MTE
+            // 1992 pp. 5-87..5-88).
+            if matches!(base_type, 4..=7) {
+                continue;
+            }
+
             let enabled = (item.item_type & 0x80) == 0;
             match base_type {
                 // Button (ctrlItem + btnCtrl = 4)
@@ -4095,8 +4670,15 @@ impl super::TrapDispatcher {
                 }
                 // Radio button (ctrlItem + radCtrl = 6)
                 6 => {
+                    let selected = self
+                        .dialog_control_values
+                        .get(&(dialog_ptr, item_num))
+                        .copied()
+                        .unwrap_or(0)
+                        != 0;
                     self.draw_radio_with_enabled(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, enabled,
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, selected,
+                        enabled,
                     );
                 }
                 // Static text (8)
@@ -4201,8 +4783,7 @@ impl super::TrapDispatcher {
                         let max = bus.read_word(ctrl_ptr + 22) as i16;
                         let hilite = bus.read_byte(ctrl_ptr + 17);
                         let title =
-                            String::from_utf8_lossy(&Self::control_title_bytes(bus, ctrl_ptr))
-                                .into_owned();
+                            decode_mac_roman_for_render(&Self::control_title_bytes(bus, ctrl_ptr));
 
                         match proc_id_ctrl {
                             0 => self.draw_button_with_enabled(
@@ -4240,14 +4821,29 @@ impl super::TrapDispatcher {
                                 hilite,
                             ),
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
-                                let item_title = self.popup_menu_item_title(bus, min, selected);
-                                self.draw_popup_control_with_state(
+                                let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                                let (draw_top, draw_left, draw_bottom, draw_right) = self
+                                    .popup_control_box_rect(
+                                        bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
+                                        max, proc_id,
+                                    );
+                                self.draw_popup_control_label(
                                     bus,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
-                                    abs_right,
+                                    draw_left,
+                                    &title,
+                                    enabled && hilite != 255,
+                                );
+                                self.draw_popup_control_with_state(
+                                    bus,
+                                    draw_top,
+                                    draw_left,
+                                    draw_bottom,
+                                    draw_right,
                                     &item_title.unwrap_or_default(),
                                     enabled && hilite != 255,
                                     hilite == 1,
@@ -4280,6 +4876,218 @@ impl super::TrapDispatcher {
                     }
                 }
                 // userItem (0) and unknown: skip
+                _ => {}
+            }
+        }
+
+        // Draw standard controls in reverse DITL/control creation order.
+        // NewControl adds each control to the beginning of the window's
+        // control list, and DrawControls draws that list in reverse so the
+        // earliest-created controls appear frontmost on overlap (IM:I
+        // I-319/I-322). Dialog Manager standard DITL controls use the same
+        // Control Manager semantics.
+        for (i, item) in items.iter().enumerate().rev() {
+            let item_num = (i + 1) as i16;
+            let (it, il, ib, ir) = item.rect;
+            let abs_top = top + it;
+            let abs_left = left + il;
+            let abs_bottom = top + ib;
+            let abs_right = left + ir;
+            let base_type = item.item_type & 0x7F;
+            if !matches!(base_type, 4..=7) {
+                continue;
+            }
+            if abs_top >= bottom || abs_bottom <= top || abs_left >= right || abs_right <= left {
+                continue;
+            }
+
+            let enabled = (item.item_type & 0x80) == 0;
+            if trace_items {
+                if let Some(ctrl_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_num)
+                {
+                    let ctrl_ptr = bus.read_long(ctrl_handle);
+                    let proc_id_ctrl = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                    eprintln!(
+                        "[DLG]     item={} control handle=${:08X} ptr=${:08X} visible={} hilite={} value={} min={} max={} proc_id={}",
+                        item_num,
+                        ctrl_handle,
+                        ctrl_ptr,
+                        ctrl_ptr != 0 && bus.read_byte(ctrl_ptr + 16) != 0,
+                        if ctrl_ptr == 0 {
+                            -1
+                        } else {
+                            bus.read_byte(ctrl_ptr + 17) as i16
+                        },
+                        if ctrl_ptr == 0 {
+                            0
+                        } else {
+                            bus.read_word(ctrl_ptr + 18) as i16
+                        },
+                        if ctrl_ptr == 0 {
+                            0
+                        } else {
+                            bus.read_word(ctrl_ptr + 20) as i16
+                        },
+                        if ctrl_ptr == 0 {
+                            0
+                        } else {
+                            bus.read_word(ctrl_ptr + 22) as i16
+                        },
+                        proc_id_ctrl,
+                    );
+                } else {
+                    eprintln!("[DLG]     item={} control handle=<none>", item_num);
+                }
+            }
+            match base_type {
+                4 => {
+                    self.draw_button_with_enabled(
+                        bus,
+                        abs_top,
+                        abs_left,
+                        abs_bottom,
+                        abs_right,
+                        &item.text,
+                        auto_default_outline && item_num == default_item,
+                        enabled,
+                    );
+                }
+                5 => {
+                    let inactive = self.dialog_control_inactive(bus, dialog_ptr, item_num);
+                    let checked = self
+                        .dialog_control_values
+                        .get(&(dialog_ptr, item_num))
+                        .copied()
+                        .unwrap_or(0)
+                        != 0;
+                    self.draw_checkbox_with_enabled_and_inactive(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
+                        enabled, inactive,
+                    );
+                }
+                6 => {
+                    let inactive = self.dialog_control_inactive(bus, dialog_ptr, item_num);
+                    let selected = self
+                        .dialog_control_values
+                        .get(&(dialog_ptr, item_num))
+                        .copied()
+                        .unwrap_or(0)
+                        != 0;
+                    self.draw_radio_with_enabled_and_inactive(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, selected,
+                        enabled, inactive,
+                    );
+                }
+                7 => {
+                    if let Some(ctrl_handle) =
+                        self.dialog_control_handle_for_item(dialog_ptr, item_num)
+                    {
+                        let ctrl_ptr = bus.read_long(ctrl_handle);
+                        let proc_id_ctrl =
+                            self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                        let value = self
+                            .dialog_control_values
+                            .get(&(dialog_ptr, item_num))
+                            .copied()
+                            .unwrap_or_else(|| bus.read_word(ctrl_ptr + 18) as i16);
+                        let min = bus.read_word(ctrl_ptr + 20) as i16;
+                        let max = bus.read_word(ctrl_ptr + 22) as i16;
+                        let hilite = bus.read_byte(ctrl_ptr + 17);
+                        let title =
+                            decode_mac_roman_for_render(&Self::control_title_bytes(bus, ctrl_ptr));
+
+                        match proc_id_ctrl {
+                            0 => self.draw_button_with_enabled(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                auto_default_outline && item_num == default_item,
+                                enabled,
+                            ),
+                            1 => self.draw_checkbox_with_enabled_and_inactive(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                value != 0,
+                                enabled,
+                                hilite == 255,
+                            ),
+                            2 => self.draw_radio_with_enabled_and_inactive(
+                                bus,
+                                abs_top,
+                                abs_left,
+                                abs_bottom,
+                                abs_right,
+                                &title,
+                                value != 0,
+                                enabled,
+                                hilite == 255,
+                            ),
+                            16 => self.draw_scroll_bar(
+                                bus, abs_top, abs_left, abs_bottom, abs_right, value, min, max,
+                                hilite,
+                            ),
+                            proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
+                                let selected = value.max(1) as usize;
+                                let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                                let (draw_top, draw_left, draw_bottom, draw_right) = self
+                                    .popup_control_box_rect(
+                                        bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
+                                        max, proc_id,
+                                    );
+                                self.draw_popup_control_label(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    draw_left,
+                                    &title,
+                                    enabled && hilite != 255,
+                                );
+                                self.draw_popup_control_with_state(
+                                    bus,
+                                    draw_top,
+                                    draw_left,
+                                    draw_bottom,
+                                    draw_right,
+                                    &item_title.unwrap_or_default(),
+                                    enabled && hilite != 255,
+                                    hilite == 1,
+                                );
+                            }
+                            _ => {
+                                self.draw_button_with_enabled(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &title,
+                                    auto_default_outline && item_num == default_item,
+                                    enabled,
+                                );
+                            }
+                        }
+                    } else {
+                        self.draw_button_with_enabled(
+                            bus,
+                            abs_top,
+                            abs_left,
+                            abs_bottom,
+                            abs_right,
+                            "",
+                            auto_default_outline && item_num == default_item,
+                            enabled,
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -4325,6 +5133,7 @@ impl super::TrapDispatcher {
                     enabled,
                 ),
                 5 => {
+                    let inactive = self.dialog_control_inactive(bus, dialog_ptr, item_num);
                     let checked = self
                         .dialog_control_values
                         .get(&(dialog_ptr, item_num))
@@ -4337,19 +5146,22 @@ impl super::TrapDispatcher {
                         (abs_top, abs_left, abs_bottom, abs_right),
                         false,
                     );
-                    self.draw_checkbox_with_enabled(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked, enabled,
+                    self.draw_checkbox_with_enabled_and_inactive(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
+                        enabled, inactive,
                     );
                 }
                 6 => {
+                    let inactive = self.dialog_control_inactive(bus, dialog_ptr, item_num);
                     self.fill_rect_clipped_to_dialog(
                         bus,
                         bounds,
                         (abs_top, abs_left, abs_bottom, abs_right),
                         false,
                     );
-                    self.draw_radio_with_enabled(
+                    self.draw_radio_with_enabled_and_inactive(
                         bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, enabled,
+                        inactive,
                     );
                 }
                 7 => {
@@ -4368,8 +5180,7 @@ impl super::TrapDispatcher {
                         let max = bus.read_word(ctrl_ptr + 22) as i16;
                         let hilite = bus.read_byte(ctrl_ptr + 17);
                         let title =
-                            String::from_utf8_lossy(&Self::control_title_bytes(bus, ctrl_ptr))
-                                .into_owned();
+                            decode_mac_roman_for_render(&Self::control_title_bytes(bus, ctrl_ptr));
                         match proc_id_ctrl {
                             0 => self.draw_button_with_enabled(
                                 bus,
@@ -4388,7 +5199,7 @@ impl super::TrapDispatcher {
                                     (abs_top, abs_left, abs_bottom, abs_right),
                                     false,
                                 );
-                                self.draw_checkbox_with_enabled(
+                                self.draw_checkbox_with_enabled_and_inactive(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -4397,6 +5208,7 @@ impl super::TrapDispatcher {
                                     &title,
                                     value != 0,
                                     enabled,
+                                    hilite == 255,
                                 )
                             }
                             2 => {
@@ -4406,7 +5218,7 @@ impl super::TrapDispatcher {
                                     (abs_top, abs_left, abs_bottom, abs_right),
                                     false,
                                 );
-                                self.draw_radio_with_enabled(
+                                self.draw_radio_with_enabled_and_inactive(
                                     bus,
                                     abs_top,
                                     abs_left,
@@ -4415,6 +5227,7 @@ impl super::TrapDispatcher {
                                     &title,
                                     value != 0,
                                     enabled,
+                                    hilite == 255,
                                 )
                             }
                             16 => self.draw_scroll_bar(
@@ -4422,14 +5235,29 @@ impl super::TrapDispatcher {
                                 hilite,
                             ),
                             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
+                                let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
-                                let item_title = self.popup_menu_item_title(bus, min, selected);
-                                self.draw_popup_control_with_state(
+                                let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                                let (draw_top, draw_left, draw_bottom, draw_right) = self
+                                    .popup_control_box_rect(
+                                        bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
+                                        max, proc_id,
+                                    );
+                                self.draw_popup_control_label(
                                     bus,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
-                                    abs_right,
+                                    draw_left,
+                                    &title,
+                                    enabled && hilite != 255,
+                                );
+                                self.draw_popup_control_with_state(
+                                    bus,
+                                    draw_top,
+                                    draw_left,
+                                    draw_bottom,
+                                    draw_right,
                                     &item_title.unwrap_or_default(),
                                     enabled && hilite != 255,
                                     hilite == 1,
@@ -4822,6 +5650,92 @@ impl super::TrapDispatcher {
         self.draw_popup_control_with_state(bus, top, left, bottom, right, title, true, false);
     }
 
+    pub(crate) fn popup_control_box_rect(
+        &self,
+        bus: &MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        menu_id: i16,
+        title_width: i16,
+        proc_id: i16,
+    ) -> (i16, i16, i16, i16) {
+        let (_, _, screen_width, _, _) = self.get_screen_params();
+        let box_top = top + 1;
+        let box_left = left + title_width.max(0);
+        let box_bottom = bottom - 2;
+        let fixed_width = ((proc_id - 1008) & 0x0001) != 0;
+        let box_right = if fixed_width {
+            right - 1
+        } else {
+            let text_width = self.popup_menu_max_item_width(bus, menu_id);
+            let auto_width = (text_width + 40).max(80);
+            (box_left + auto_width).min(right - 1)
+        };
+        (
+            box_top,
+            box_left.min(screen_width),
+            box_bottom,
+            box_right.min(screen_width),
+        )
+    }
+
+    fn popup_menu_max_item_width(&self, bus: &MacMemoryBus, menu_id: i16) -> i16 {
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let mut max_width = 0;
+        for item_no in 1..=255usize {
+            let Some(title) = self.popup_menu_item_title(bus, menu_id, item_no) else {
+                break;
+            };
+            max_width = max_width.max(Self::fb_measure_string(&title, font_id, font_size));
+        }
+        max_width
+    }
+
+    pub(crate) fn draw_popup_control_label(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        popup_left: i16,
+        title: &str,
+        enabled: bool,
+    ) {
+        if title.is_empty() || popup_left <= left + 4 {
+            return;
+        }
+
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let font_id = 0i16;
+        let font_size = 12i16;
+        let metrics = get_font_metrics(font_id, font_size);
+        let text_width = Self::fb_measure_string(title, font_id, font_size);
+        let text_right = popup_left - 6;
+        let text_x = (text_right - text_width).max(left);
+        let text_y = top + ((bottom - top) + metrics.ascent - metrics.descent) / 2;
+
+        Self::fb_draw_string(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            text_x,
+            text_y,
+            title,
+            font_id,
+            font_size,
+        );
+        if !enabled {
+            self.dim_rect(bus, top, left, bottom, popup_left);
+        }
+    }
+
     pub(crate) fn draw_popup_control_with_state(
         &self,
         bus: &mut MacMemoryBus,
@@ -4836,7 +5750,7 @@ impl super::TrapDispatcher {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
 
-        let font_id = 0i16; // Chicago
+        let font_id = 0i16;
         let font_size = 12i16;
 
         if !self.draw_theme_control_chrome(
@@ -4852,66 +5766,97 @@ impl super::TrapDispatcher {
             false,
         ) {
             // Standard popup menu button appearance.
-            // Macintosh Toolbox Essentials 1992, 5-26
-            let oval_w: i16 = 8;
-            let oval_h: i16 = 8;
-            let r = Rect {
+            // Macintosh Toolbox Essentials 1992, 5-26 to 5-27.
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
                 top,
                 left,
                 bottom,
-                right,
-            };
-
-            // Fill interior with white using round-rect spans
-            let fill_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
-            for y in top..bottom {
-                let idx = (y - top) as usize;
-                if idx < fill_spans.len() {
-                    let (sl, sr) = fill_spans[idx];
-                    Self::fb_hline(
+                right + 1,
+                false,
+            );
+            if enabled {
+                Self::fb_hline(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    top,
+                    left,
+                    right,
+                    true,
+                );
+                Self::fb_hline(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    bottom - 2,
+                    left,
+                    right,
+                    true,
+                );
+                for y in top..(bottom - 1) {
+                    Self::fb_set_pixel(
                         bus,
                         screen_base,
                         row_bytes,
                         pixel_size,
                         screen_width,
                         screen_height,
+                        left,
                         y,
-                        sl,
-                        sr,
-                        false,
+                        true,
+                    );
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        right - 1,
+                        y,
+                        true,
                     );
                 }
-            }
-
-            // 1-px round-rect border
-            self.fb_frame_round_rect(bus, top, left, bottom, right, oval_w, oval_h, 1);
-
-            // 1-px drop shadow (right edge and bottom edge, offset +1)
-            // Macintosh Toolbox Essentials 1992, 5-26
-            let shadow_r = Rect {
-                top: top + 2,
-                left: left + 2,
-                bottom: bottom + 1,
-                right: right + 1,
-            };
-            let shadow_spans = self.compute_rrect_spans(&shadow_r, oval_w, oval_h);
-            let inner_spans = self.compute_rrect_spans(&r, oval_w, oval_h);
-            for y in shadow_r.top..shadow_r.bottom {
-                let si = (y - shadow_r.top) as usize;
-                if si >= shadow_spans.len() {
-                    continue;
+                for y in (top + 3)..(bottom - 1) {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        right,
+                        y,
+                        true,
+                    );
                 }
-                let (sl, sr) = shadow_spans[si];
-                // Only draw shadow pixels outside the main rect fill area
-                let ii = (y - top) as usize;
-                let (_il, ir) = if y >= top && y < bottom && ii < inner_spans.len() {
-                    inner_spans[ii]
-                } else {
-                    (sr, sl) // no inner overlap, draw full shadow span
-                };
-                // Right shadow segment
-                if sr > ir {
-                    for x in ir.max(sl)..sr {
+                Self::fb_hline(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    bottom - 1,
+                    left + 3,
+                    right + 1,
+                    true,
+                );
+            } else {
+                for y in (top + 3)..(bottom - 2) {
+                    if (y - top) % 2 == 1 {
                         Self::fb_set_pixel(
                             bus,
                             screen_base,
@@ -4919,15 +5864,14 @@ impl super::TrapDispatcher {
                             pixel_size,
                             screen_width,
                             screen_height,
-                            x,
+                            right,
                             y,
                             true,
                         );
                     }
                 }
-                // Bottom shadow segment (below main rect)
-                if y >= bottom {
-                    for x in sl..sr {
+                for x in (left + 1)..=right {
+                    if (x - left) % 2 == 1 {
                         Self::fb_set_pixel(
                             bus,
                             screen_base,
@@ -4936,7 +5880,7 @@ impl super::TrapDispatcher {
                             screen_width,
                             screen_height,
                             x,
-                            y,
+                            bottom - 2,
                             true,
                         );
                     }
@@ -4945,32 +5889,53 @@ impl super::TrapDispatcher {
 
             // Downward-pointing triangle on right side (popup indicator)
             // Macintosh Toolbox Essentials 1992, 5-26
-            let mid_y = (top + bottom) / 2;
-            let tri_x = right - 10;
-            for row in 0..4i16 {
-                Self::fb_hline(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    mid_y - 2 + row,
-                    tri_x - 3 + row,
-                    tri_x + 3 - row,
-                    true,
-                );
+            let tri_x = right - 12;
+            if enabled {
+                for row in 0..6i16 {
+                    Self::fb_hline(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        top + 6 + row,
+                        tri_x - 5 + row,
+                        tri_x + 6 - row,
+                        true,
+                    );
+                }
+            } else {
+                for row in [0i16, 2, 4] {
+                    let start = tri_x - 4 + row;
+                    let end = tri_x + 5 - row;
+                    for x in start..end {
+                        if (x - start) % 2 == 0 {
+                            Self::fb_set_pixel(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                x,
+                                top + 7 + row,
+                                true,
+                            );
+                        }
+                    }
+                }
             }
         }
 
         // Selected item text inside the box
         // Macintosh Toolbox Essentials 1992, 5-26
-        if !title.is_empty() {
+        if enabled && !title.is_empty() {
             let metrics = get_font_metrics(font_id, font_size);
-            let text_x = left + 6;
+            let text_x = left + 15;
             let text_y =
-                top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
-            Self::fb_draw_string(
+                top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent - 1;
+            Self::fb_draw_string_styled(
                 bus,
                 screen_base,
                 row_bytes,
@@ -4982,6 +5947,7 @@ impl super::TrapDispatcher {
                 title,
                 font_id,
                 font_size,
+                0,
             );
         }
     }
@@ -5136,25 +6102,10 @@ impl super::TrapDispatcher {
         is_default: bool,
         enabled: bool,
     ) {
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
         if !self.draw_theme_push_button_chrome(
             bus, top, left, bottom, right, enabled, false, is_default,
         ) {
-            // White fill
-            Self::fb_fill_rect(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                top,
-                left,
-                bottom,
-                right,
-                false,
-            );
+            self.fill_classic_button_shape(bus, top, left, bottom, right);
             self.draw_classic_button_outline(bus, top, left, bottom, right);
 
             // Default button: rounded bold outline (3px thick)
@@ -5181,6 +6132,55 @@ impl super::TrapDispatcher {
         }
 
         self.draw_button_label(bus, top, left, bottom, right, title);
+    }
+
+    fn fill_classic_button_shape(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        if bottom - top < 8 || right - left < 8 {
+            let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+                self.get_screen_params();
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                false,
+            );
+            return;
+        }
+
+        // Classic push buttons are rounded controls inside the DITL display
+        // rectangle. Fill the same rounded shape the CDEF frames so pixels in
+        // the rectangular corner cutouts remain whatever the dialog port had
+        // underneath.
+        if bottom - top >= 24 {
+            self.fill_dialog_rect(bus, top, left + 4, top + 1, right - 4, false);
+            self.fill_dialog_rect(bus, top + 1, left + 2, top + 2, right - 2, false);
+            self.fill_dialog_rect(bus, top + 2, left + 1, top + 4, right - 1, false);
+            self.fill_dialog_rect(bus, top + 4, left, bottom - 4, right, false);
+            self.fill_dialog_rect(bus, bottom - 4, left + 1, bottom - 2, right - 1, false);
+            self.fill_dialog_rect(bus, bottom - 2, left + 2, bottom - 1, right - 2, false);
+            self.fill_dialog_rect(bus, bottom - 1, left + 4, bottom, right - 4, false);
+            return;
+        }
+
+        self.fill_dialog_rect(bus, top, left + 3, top + 1, right - 3, false);
+        self.fill_dialog_rect(bus, top + 1, left + 1, top + 3, right - 1, false);
+        self.fill_dialog_rect(bus, top + 3, left, bottom - 3, right, false);
+        self.fill_dialog_rect(bus, bottom - 3, left + 1, bottom - 1, right - 1, false);
+        self.fill_dialog_rect(bus, bottom - 1, left + 3, bottom, right - 3, false);
     }
 
     fn draw_button_label(
@@ -5232,6 +6232,26 @@ impl super::TrapDispatcher {
         // rectangle becomes the control's enclosing rectangle (IM:I I-405).
         // The classic System 7 control definition draws the push button as a
         // one-pixel rounded rectangle inside that enclosing rectangle.
+        if bottom - top >= 24 {
+            self.fill_dialog_rect(bus, top, left + 4, top + 1, right - 4, true);
+            self.fill_dialog_rect(bus, top + 1, left + 2, top + 2, left + 4, true);
+            self.fill_dialog_rect(bus, top + 1, right - 4, top + 2, right - 2, true);
+            self.fill_dialog_rect(bus, top + 2, left + 1, top + 3, left + 2, true);
+            self.fill_dialog_rect(bus, top + 2, right - 2, top + 3, right - 1, true);
+            self.fill_dialog_rect(bus, top + 3, left + 1, top + 4, left + 2, true);
+            self.fill_dialog_rect(bus, top + 3, right - 2, top + 4, right - 1, true);
+            self.fill_dialog_rect(bus, top + 4, left, bottom - 4, left + 1, true);
+            self.fill_dialog_rect(bus, top + 4, right - 1, bottom - 4, right, true);
+            self.fill_dialog_rect(bus, bottom - 4, left + 1, bottom - 3, left + 2, true);
+            self.fill_dialog_rect(bus, bottom - 4, right - 2, bottom - 3, right - 1, true);
+            self.fill_dialog_rect(bus, bottom - 3, left + 1, bottom - 2, left + 2, true);
+            self.fill_dialog_rect(bus, bottom - 3, right - 2, bottom - 2, right - 1, true);
+            self.fill_dialog_rect(bus, bottom - 2, left + 2, bottom - 1, left + 4, true);
+            self.fill_dialog_rect(bus, bottom - 2, right - 4, bottom - 1, right - 2, true);
+            self.fill_dialog_rect(bus, bottom - 1, left + 4, bottom, right - 4, true);
+            return;
+        }
+
         self.fill_dialog_rect(bus, top, left + 3, top + 1, right - 3, true);
         self.fill_dialog_rect(bus, top + 1, left + 1, top + 2, left + 3, true);
         self.fill_dialog_rect(bus, top + 1, right - 3, top + 2, right - 1, true);
@@ -5277,12 +6297,12 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         top: i16,
         left: i16,
-        _bottom: i16,
+        bottom: i16,
         _right: i16,
         title: &str,
         checked: bool,
     ) {
-        self.draw_checkbox_state(bus, top, left, _bottom, _right, title, checked, true);
+        self.draw_checkbox_state(bus, top, left, bottom, _right, title, checked, true, false);
     }
 
     fn draw_checkbox_with_enabled(
@@ -5290,17 +6310,36 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         top: i16,
         left: i16,
-        _bottom: i16,
+        bottom: i16,
         _right: i16,
         title: &str,
         checked: bool,
         enabled: bool,
     ) {
-        if enabled {
-            self.draw_checkbox(bus, top, left, _bottom, _right, title, checked);
+        self.draw_checkbox_with_enabled_and_inactive(
+            bus, top, left, bottom, _right, title, checked, enabled, false,
+        );
+    }
+
+    fn draw_checkbox_with_enabled_and_inactive(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        _right: i16,
+        title: &str,
+        checked: bool,
+        enabled: bool,
+        inactive: bool,
+    ) {
+        if enabled && !inactive {
+            self.draw_checkbox(bus, top, left, bottom, _right, title, checked);
             return;
         }
-        self.draw_checkbox_state(bus, top, left, _bottom, _right, title, checked, enabled);
+        self.draw_checkbox_state(
+            bus, top, left, bottom, _right, title, checked, enabled, inactive,
+        );
     }
 
     fn draw_checkbox_state(
@@ -5308,11 +6347,12 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         top: i16,
         left: i16,
-        _bottom: i16,
+        bottom: i16,
         _right: i16,
         title: &str,
         checked: bool,
         enabled: bool,
+        inactive: bool,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -5320,7 +6360,8 @@ impl super::TrapDispatcher {
         // Standard dialog checkbox/radio controls are drawn by the System
         // CDEF as a 12-pixel mark plus title inside the item rectangle
         // (MTE 1992 pp. 5-4..5-5; HIG 1992 pp. 209..212).
-        let box_top = top + Self::STANDARD_CONTROL_MARK_TOP_INSET;
+        let height = bottom - top;
+        let box_top = top + (height - box_size) / 2;
         let box_left = left + Self::STANDARD_CONTROL_MARK_LEFT_INSET;
         if !self.draw_theme_control_chrome(
             bus,
@@ -5329,7 +6370,7 @@ impl super::TrapDispatcher {
             box_left,
             box_top + box_size,
             box_left + box_size,
-            enabled,
+            enabled && !inactive,
             false,
             checked,
             false,
@@ -5357,7 +6398,7 @@ impl super::TrapDispatcher {
             );
             if checked {
                 // Draw X inside
-                for i in 2..box_size - 2 {
+                for i in 1..box_size - 1 {
                     Self::fb_set_pixel(
                         bus,
                         screen_base,
@@ -5390,19 +6431,22 @@ impl super::TrapDispatcher {
         let font_size = 12i16;
         let metrics = get_font_metrics(font_id, font_size);
         let text_x = box_left + box_size + Self::STANDARD_CONTROL_TITLE_GAP;
-        let text_y = top + metrics.ascent + Self::STANDARD_CONTROL_TITLE_BASELINE_OFFSET;
-        Self::fb_draw_string(
+        let text_y = top + (height + metrics.ascent - metrics.descent) / 2;
+        let label_left = box_left + box_size + 1;
+        let dim_disabled_title = !enabled && self.ui_theme_id() != UiThemeId::ClassicSystem7;
+        self.draw_standard_control_title_text(
             bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
+            top,
+            label_left,
+            bottom,
+            _right,
             text_x,
             text_y,
             title,
             font_id,
             font_size,
+            inactive,
+            dim_disabled_title,
         );
     }
 
@@ -5412,12 +6456,12 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         top: i16,
         left: i16,
-        _bottom: i16,
+        bottom: i16,
         _right: i16,
         title: &str,
         selected: bool,
     ) {
-        self.draw_radio_state(bus, top, left, _bottom, _right, title, selected, true);
+        self.draw_radio_state(bus, top, left, bottom, _right, title, selected, true, false);
     }
 
     fn draw_radio_with_enabled(
@@ -5425,17 +6469,36 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         top: i16,
         left: i16,
-        _bottom: i16,
+        bottom: i16,
         _right: i16,
         title: &str,
         selected: bool,
         enabled: bool,
     ) {
-        if enabled {
-            self.draw_radio(bus, top, left, _bottom, _right, title, selected);
+        self.draw_radio_with_enabled_and_inactive(
+            bus, top, left, bottom, _right, title, selected, enabled, false,
+        );
+    }
+
+    fn draw_radio_with_enabled_and_inactive(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        _right: i16,
+        title: &str,
+        selected: bool,
+        enabled: bool,
+        inactive: bool,
+    ) {
+        if enabled && !inactive {
+            self.draw_radio(bus, top, left, bottom, _right, title, selected);
             return;
         }
-        self.draw_radio_state(bus, top, left, _bottom, _right, title, selected, enabled);
+        self.draw_radio_state(
+            bus, top, left, bottom, _right, title, selected, enabled, inactive,
+        );
     }
 
     fn draw_radio_state(
@@ -5443,16 +6506,18 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         top: i16,
         left: i16,
-        _bottom: i16,
+        bottom: i16,
         _right: i16,
         title: &str,
         selected: bool,
         enabled: bool,
+        inactive: bool,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let mark_size = Self::STANDARD_CONTROL_MARK_SIZE;
-        let mark_top = top + Self::STANDARD_CONTROL_MARK_TOP_INSET;
+        let height = bottom - top;
+        let mark_top = top + (height - mark_size) / 2;
         let mark_left = left + Self::STANDARD_CONTROL_MARK_LEFT_INSET;
         if !self.draw_theme_control_chrome(
             bus,
@@ -5461,7 +6526,7 @@ impl super::TrapDispatcher {
             mark_left,
             mark_top + mark_size,
             mark_left + mark_size,
-            enabled,
+            enabled && !inactive,
             false,
             selected,
             false,
@@ -5513,7 +6578,67 @@ impl super::TrapDispatcher {
         let font_size = 12i16;
         let metrics = get_font_metrics(font_id, font_size);
         let text_x = mark_left + mark_size + Self::STANDARD_CONTROL_TITLE_GAP;
-        let text_y = top + metrics.ascent + Self::STANDARD_CONTROL_TITLE_BASELINE_OFFSET;
+        let text_y = top + (height + metrics.ascent - metrics.descent) / 2;
+        let label_left = mark_left + mark_size + 1;
+        let dim_disabled_title = !enabled && self.ui_theme_id() != UiThemeId::ClassicSystem7;
+        self.draw_standard_control_title_text(
+            bus,
+            top,
+            label_left,
+            bottom,
+            _right,
+            text_x,
+            text_y,
+            title,
+            font_id,
+            font_size,
+            inactive,
+            dim_disabled_title,
+        );
+    }
+
+    fn draw_standard_control_title_text(
+        &self,
+        bus: &mut MacMemoryBus,
+        label_top: i16,
+        label_left: i16,
+        label_bottom: i16,
+        label_right: i16,
+        text_x: i16,
+        text_y: i16,
+        title: &str,
+        font_id: i16,
+        font_size: i16,
+        inactive: bool,
+        dim_disabled_title: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if inactive && pixel_size == 8 {
+            // Standard DITL controls are backed by ControlRecords. When a
+            // game calls HiliteControl(255), their titles follow inactive
+            // Control Manager rendering; itemDisable alone stays visually
+            // active in classic dialogs.
+            let [r, g, b] = Self::INACTIVE_STANDARD_CONTROL_TITLE_RGB;
+            let gray_index = super::pict::closest_clut_index(r, g, b, &self.device_clut);
+            Self::fb_draw_string_styled_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                text_x,
+                text_y,
+                title,
+                font_id,
+                font_size,
+                0,
+                gray_index,
+            );
+            return;
+        }
+
         Self::fb_draw_string(
             bus,
             screen_base,
@@ -5527,6 +6652,9 @@ impl super::TrapDispatcher {
             font_id,
             font_size,
         );
+        if inactive || dim_disabled_title {
+            self.dim_rect(bus, label_top, label_left, label_bottom, label_right);
+        }
     }
 
     fn draw_control_mask_12(
@@ -5578,7 +6706,9 @@ impl super::TrapDispatcher {
                     if let Some(idx) = next.to_digit(10) {
                         if (idx as usize) < self.param_text.len() {
                             chars.next();
-                            out.push_str(&String::from_utf8_lossy(&self.param_text[idx as usize]));
+                            out.push_str(&decode_mac_roman_for_render(
+                                &self.param_text[idx as usize],
+                            ));
                             continue;
                         }
                     }
@@ -6206,6 +7336,9 @@ impl super::TrapDispatcher {
             && !self
                 .dialog_item_popup_menus
                 .contains_key(&(tracking.dialog_ptr, item_no))
+            && !self
+                .dialog_popup_candidate_items
+                .contains(&(tracking.dialog_ptr, item_no))
     }
 
     fn dialog_plain_user_item_hit_test(
@@ -6716,6 +7849,12 @@ impl super::TrapDispatcher {
             })
     }
 
+    fn dialog_control_inactive(&self, bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> bool {
+        self.dialog_control_handle_for_item(dialog_ptr, item_no)
+            .map(|handle| bus.read_long(handle))
+            .is_some_and(|ctrl_ptr| ctrl_ptr != 0 && bus.read_byte(ctrl_ptr + 17) == 255)
+    }
+
     fn begin_dialog_popup_tracking(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -6733,8 +7872,9 @@ impl super::TrapDispatcher {
         if !Self::is_popup_menu_proc_id(proc_id) {
             return false;
         }
-        let menu_id = bus.read_word(ctrl_ptr + 20) as i16;
-        let Some(menu_idx) = self.menus.iter().position(|menu| menu.id == menu_id) else {
+        let menu_id =
+            self.popup_control_menu_id(bus, ctrl_ptr, bus.read_word(ctrl_ptr + 20) as i16);
+        let Some(menu_idx) = self.menus.iter().rposition(|menu| menu.id == menu_id) else {
             return false;
         };
 
@@ -6852,6 +7992,19 @@ impl super::TrapDispatcher {
                 )
             };
             self.flush_dialog_edit_item_texts(bus, dialog_ptr, &items, edit_item, &edit_text);
+        }
+        if let Some((bounds, game_managed)) = self
+            .dialog_tracking
+            .as_ref()
+            .map(|tracking| (tracking.bounds, tracking.game_managed))
+        {
+            if !game_managed {
+                let rendered = self.save_dialog_pixels(bus, bounds);
+                if let Some(tracking) = self.dialog_tracking.as_mut() {
+                    tracking.rendered_pixels = rendered;
+                    tracking.rendered_pixels_final = true;
+                }
+            }
         }
 
         let Some(saved) = self.dialog_tracking.take() else {
@@ -7619,7 +8772,7 @@ impl super::TrapDispatcher {
                                             // caret mapping remains the documented HLE
                                             // compromise in the TEClick trap.
                                             self.activate_dialog_edit_item(
-                                                bus, dialog_ptr, &items, hit,
+                                                bus, cpu, dialog_ptr, &items, hit,
                                             );
                                         }
                                         if dialog_out_ptr != 0 {
@@ -7659,11 +8812,11 @@ impl super::TrapDispatcher {
                                 if edit_item > 0 {
                                     // MTE 1992 p. 6-139 / IM:I I-417:
                                     // DialogSelect calls TEIdle for null events when an
-                                    // editText item is present. Systemless TEIdle is a
-                                    // no-op for caret blinking but preserves TERec state,
-                                    // so no guest-visible state changes here.
+                                    // editText item is present, letting TextEdit advance
+                                    // the insertion-caret blink without changing text or
+                                    // selection fields.
                                     let text_handle = bus.read_long(dialog_ptr + 160);
-                                    self.textedit_idle(bus, text_handle);
+                                    self.textedit_idle(cpu, bus, text_handle);
                                 }
                             }
                             1 => {
@@ -7803,6 +8956,12 @@ impl super::TrapDispatcher {
                         false,
                     );
                     self.dialog_items.insert(dialog_ptr, items);
+                    // MTE 1992 p. 6-142: DrawDialog calls
+                    // application-defined item draw procs for userItem
+                    // records. Queue them after the HLE redraw so the
+                    // runner trampoline executes guest drawing before the
+                    // caller resumes.
+                    self.queue_modeless_dialog_draw_procs_intersecting(bus, dialog_ptr, None);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -8091,6 +9250,15 @@ impl super::TrapDispatcher {
 
                 let base_type = item_type & 0x7F;
                 let previous_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+                let previous_item = self
+                    .dialog_items
+                    .get(&dialog_ptr)
+                    .and_then(|items| {
+                        (item_no > 0)
+                            .then(|| items.get((item_no - 1) as usize))
+                            .flatten()
+                    })
+                    .cloned();
                 if trace_dialog_items_enabled() {
                     eprintln!(
                         "[DIALOG-ITEM] SetDItem pc=${:08X} sp=${:08X} rawbytes={:02X?} dialog=${:08X} item={} type={} proc=${:08X} rect=({},{},{},{})",
@@ -8146,6 +9314,38 @@ impl super::TrapDispatcher {
                                 .insert((dialog_ptr, item_no), pending.rect);
                         }
                         self.pending_dialog_popup_menu = None;
+                    }
+                }
+
+                if let Some(previous_item) = previous_item {
+                    let key = (dialog_ptr, item_no);
+                    let previous_base_type = previous_item.item_type & 0x7F;
+                    let previous_enabled_user_item =
+                        previous_base_type == 0 && (previous_item.item_type & 0x80) == 0;
+                    let current_enabled_user_item = base_type == 0 && (item_type & 0x80) == 0;
+                    let old_width = previous_item.rect.3 - previous_item.rect.1;
+                    let old_height = previous_item.rect.2 - previous_item.rect.0;
+                    let new_width = box_right - box_left;
+                    let new_height = box_bottom - box_top;
+                    let narrowed_to_popup_indicator = previous_enabled_user_item
+                        && current_enabled_user_item
+                        && item_handle == 0
+                        && old_width >= 40
+                        && new_width > 0
+                        && new_width <= 24
+                        && old_height > 0
+                        && new_height > 0
+                        && (old_height - new_height).abs() <= 4;
+                    if narrowed_to_popup_indicator {
+                        self.dialog_popup_original_rects
+                            .entry(key)
+                            .or_insert(previous_item.rect);
+                        self.dialog_popup_candidate_items.insert(key);
+                    } else if !current_enabled_user_item {
+                        self.dialog_popup_candidate_items.remove(&key);
+                        if !self.dialog_item_popup_menus.contains_key(&key) {
+                            self.dialog_popup_original_rects.remove(&key);
+                        }
                     }
                 }
 
@@ -8724,7 +9924,7 @@ impl super::TrapDispatcher {
                                                 // but the active editField/TERecord mirror is
                                                 // still guest-visible Dialog Manager state.
                                                 self.activate_dialog_edit_item(
-                                                    bus, dlg_ptr, &items, edit_item,
+                                                    bus, cpu, dlg_ptr, &items, edit_item,
                                                 );
                                                 self.flush_dialog_edit_item_texts(
                                                     bus, dlg_ptr, &items, edit_item, &edit_text,
@@ -8760,10 +9960,16 @@ impl super::TrapDispatcher {
                                             // UserItem with popup menu: return item number.
                                             // Dialog stays on screen — the app calls
                                             // PopUpMenuSelect to show the popup dropdown.
-                                            // Macintosh Toolbox Essentials 1992, 5-26
+                                            // Macintosh Toolbox Essentials 1992, 5-26.
+                                            // Original Marathon-style compact popup candidates
+                                            // use the same app-owned tracking path after
+                                            // InsertMenu/GetDItem/SetDItem narrows the DITL rect.
                                             0 if self
                                                 .dialog_item_popup_menus
-                                                .contains_key(&(dialog_ptr, hit)) =>
+                                                .contains_key(&(dialog_ptr, hit))
+                                                || self
+                                                    .dialog_popup_candidate_items
+                                                    .contains(&(dialog_ptr, hit)) =>
                                             {
                                                 let (dlg_ptr, edit_item, edit_text, items) = {
                                                     let tracking =
@@ -8802,11 +10008,20 @@ impl super::TrapDispatcher {
                                                 },
                                             ) && self.mouse_button =>
                                             {
+                                                let active_rect = self
+                                                    .dialog_tracking
+                                                    .as_ref()
+                                                    .and_then(|tracking| {
+                                                        self.dialog_popup_original_rects
+                                                            .get(&(tracking.dialog_ptr, hit))
+                                                            .copied()
+                                                    })
+                                                    .unwrap_or(item.rect);
                                                 if let Some(t) = self.dialog_tracking.as_mut() {
                                                     t.active_user_item =
                                                         Some(DialogUserItemTrackingState {
                                                             item_no: hit,
-                                                            rect: item.rect,
+                                                            rect: active_rect,
                                                         });
                                                 }
                                             }
@@ -8847,6 +10062,8 @@ impl super::TrapDispatcher {
                                 let key_code = ((e.message >> 8) & 0xFF) as u8;
                                 let command_period =
                                     char_code == b'.' && (e.modifiers & 0x0100) != 0;
+                                let command_select_all = char_code.eq_ignore_ascii_case(&b'a')
+                                    && (e.modifiers & 0x0100) != 0;
                                 match char_code {
                                     // Return or Enter: trigger default button
                                     0x0D | 0x03 => {
@@ -8953,8 +10170,120 @@ impl super::TrapDispatcher {
                                         }
                                     }
                                     // Backspace/Delete or printable ASCII.
+                                    _ if command_select_all => {
+                                        let mut select_trace = None;
+                                        let mut modified_key_to_clear = None;
+                                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                            let text_before = tracking.edit_text.clone();
+                                            if tracking.edit_item > 0 {
+                                                let text_len = tracking.edit_text.len();
+                                                tracking.edit_text_modified = false;
+                                                Self::set_tracking_active_edit_selection(
+                                                    tracking, 0, text_len,
+                                                );
+                                                Self::sync_tracking_active_edit_item(tracking);
+
+                                                let edit_item = tracking.edit_item;
+                                                let item_type = tracking
+                                                    .items
+                                                    .get((edit_item - 1) as usize)
+                                                    .map(|item| item.item_type);
+                                                let enabled_edit_text = item_type
+                                                    .map(|ty| (ty & 0x7F) == 16 && (ty & 0x80) == 0)
+                                                    .unwrap_or(false);
+                                                let text_after = tracking.edit_text.clone();
+                                                select_trace = Some((
+                                                    edit_item,
+                                                    item_type,
+                                                    text_before,
+                                                    text_after,
+                                                    enabled_edit_text,
+                                                ));
+                                                modified_key_to_clear =
+                                                    Some((tracking.dialog_ptr, edit_item));
+                                            }
+                                        }
+                                        if let Some(key) = modified_key_to_clear {
+                                            self.dialog_edit_text_modified_items.remove(&key);
+                                        }
+                                        if let Some((
+                                            edit_item,
+                                            item_type,
+                                            text_before,
+                                            text_after,
+                                            enabled_edit_text,
+                                        )) = select_trace
+                                        {
+                                            self.refresh_dialog_tracking_snapshot(bus);
+                                            let outcome = if enabled_edit_text {
+                                                "enabled_edittext_select_all"
+                                            } else {
+                                                "edittext_select_all"
+                                            };
+                                            if enabled_edit_text {
+                                                let (dlg_ptr, active_edit_item, edit_text, items) = {
+                                                    let tracking =
+                                                        self.dialog_tracking.as_mut().unwrap();
+                                                    Self::sync_tracking_active_edit_item(tracking);
+                                                    (
+                                                        tracking.dialog_ptr,
+                                                        tracking.edit_item,
+                                                        tracking.edit_text.clone(),
+                                                        tracking.items.clone(),
+                                                    )
+                                                };
+                                                self.flush_dialog_edit_item_texts(
+                                                    bus,
+                                                    dlg_ptr,
+                                                    &items,
+                                                    active_edit_item,
+                                                    &edit_text,
+                                                );
+                                                let saved = self.dialog_tracking.take().unwrap();
+                                                let saved_dialog_ptr = saved.dialog_ptr;
+                                                self.persist_visible_dialog_snapshot(bus, &saved);
+                                                self.dialog_saved_pixels
+                                                    .insert(saved_dialog_ptr, saved.saved_pixels);
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(
+                                                        item_hit_ptr,
+                                                        active_edit_item as u16,
+                                                    );
+                                                }
+                                                cpu.write_reg(Register::A7, stack_ptr + 8);
+                                                self.record_modal_dialog_text_input_trace(
+                                                    "key_down",
+                                                    dialog_ptr,
+                                                    bounds,
+                                                    edit_item,
+                                                    item_type,
+                                                    key_code,
+                                                    char_code,
+                                                    &text_before,
+                                                    &text_after,
+                                                    "returned",
+                                                    outcome,
+                                                );
+                                            } else {
+                                                self.record_modal_dialog_text_input_trace(
+                                                    "key_down",
+                                                    dialog_ptr,
+                                                    bounds,
+                                                    edit_item,
+                                                    item_type,
+                                                    key_code,
+                                                    char_code,
+                                                    &text_before,
+                                                    &text_after,
+                                                    "pending",
+                                                    outcome,
+                                                );
+                                            }
+                                        }
+                                    }
                                     0x08 | 0x20..=0x7E => {
                                         let mut text_trace = None;
+                                        let mut modified_key_to_set = None;
                                         if let Some(tracking) = self.dialog_tracking.as_mut() {
                                             let text_before = tracking.edit_text.clone();
                                             if tracking.edit_item > 0 {
@@ -8974,7 +10303,13 @@ impl super::TrapDispatcher {
                                                     }
                                                     tracking.edit_text.push(char_code as char);
                                                 }
+                                                let cursor = tracking.edit_text.len();
+                                                Self::set_tracking_active_edit_selection(
+                                                    tracking, cursor, cursor,
+                                                );
                                                 Self::sync_tracking_active_edit_item(tracking);
+                                                modified_key_to_set =
+                                                    Some((tracking.dialog_ptr, tracking.edit_item));
 
                                                 let edit_item = tracking.edit_item;
                                                 let item_type = tracking
@@ -8993,6 +10328,9 @@ impl super::TrapDispatcher {
                                                     enabled_edit_text,
                                                 ));
                                             }
+                                        }
+                                        if let Some(key) = modified_key_to_set {
+                                            self.dialog_edit_text_modified_items.insert(key);
                                         }
                                         if let Some((
                                             edit_item,
@@ -9133,6 +10471,10 @@ impl super::TrapDispatcher {
                             .get(&dialog_ptr)
                             .copied()
                             .unwrap_or(2);
+                        let edit_text_modified = edit_item > 0
+                            && self
+                                .dialog_edit_text_modified_items
+                                .contains(&(dialog_ptr, edit_item));
 
                         // If in-bounds items are all userItems, the game
                         // manages drawing itself; offscreen placeholders do
@@ -9207,6 +10549,39 @@ impl super::TrapDispatcher {
                         // controls in dialogs.  We find the checked item (mark=0x12)
                         // in each menu and draw a standard popup button for it.
                         // Inside Macintosh Volume I, I-405 (userItem draw responsibilities)
+                        let implicit_popup_candidate_count = items
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, item)| {
+                                let item_no = (*i + 1) as i16;
+                                (item.item_type & 0x7F) == 0
+                                    && !self
+                                        .dialog_item_popup_menus
+                                        .contains_key(&(dialog_ptr, item_no))
+                                    && self
+                                        .dialog_popup_candidate_items
+                                        .contains(&(dialog_ptr, item_no))
+                            })
+                            .count();
+                        let mut implicit_popup_menu_ids: Vec<i16> = self
+                            .menus
+                            .iter()
+                            .filter(|menu| {
+                                menu.in_menu_bar
+                                    && !menu.visible_in_menu_bar
+                                    && menu.items.iter().any(|item| item.mark == 0x12)
+                            })
+                            .map(|menu| menu.id)
+                            .collect();
+                        if implicit_popup_menu_ids.len() < implicit_popup_candidate_count {
+                            implicit_popup_menu_ids = self
+                                .menus
+                                .iter()
+                                .filter(|menu| menu.items.iter().any(|item| item.mark == 0x12))
+                                .map(|menu| menu.id)
+                                .collect();
+                        }
+                        let mut implicit_popup_menu_index = 0usize;
                         let popup_draws: Vec<DialogPopupDraw> = items
                             .iter()
                             .enumerate()
@@ -9215,8 +10590,29 @@ impl super::TrapDispatcher {
                                 if (item.item_type & 0x7F) != 0 {
                                     return None;
                                 }
-                                let menu_id =
-                                    *self.dialog_item_popup_menus.get(&(dialog_ptr, item_no))?;
+                                let key = (dialog_ptr, item_no);
+                                let (menu_id, original_rect) = if let Some(&menu_id) =
+                                    self.dialog_item_popup_menus.get(&key)
+                                {
+                                    let rect = self
+                                        .dialog_popup_original_rects
+                                        .get(&key)
+                                        .copied()
+                                        .unwrap_or(item.rect);
+                                    (menu_id, rect)
+                                } else if self.dialog_popup_candidate_items.contains(&key) {
+                                    let menu_id =
+                                        *implicit_popup_menu_ids.get(implicit_popup_menu_index)?;
+                                    implicit_popup_menu_index += 1;
+                                    let rect = self
+                                        .dialog_popup_original_rects
+                                        .get(&key)
+                                        .copied()
+                                        .unwrap_or(item.rect);
+                                    (menu_id, rect)
+                                } else {
+                                    return None;
+                                };
                                 let checked_text = self
                                     .menus
                                     .iter()
@@ -9229,11 +10625,7 @@ impl super::TrapDispatcher {
                                     })
                                     .unwrap_or_default();
                                 // Use the original DITL rect (before SetDItem narrowed it)
-                                let (it_t, it_l, it_b, it_r) = self
-                                    .dialog_popup_original_rects
-                                    .get(&(dialog_ptr, item_no))
-                                    .copied()
-                                    .unwrap_or(item.rect);
+                                let (it_t, it_l, it_b, it_r) = original_rect;
                                 Some(DialogPopupDraw {
                                     rect: (
                                         bounds.0 + it_t,
@@ -9289,7 +10681,7 @@ impl super::TrapDispatcher {
                             flash_remaining: 0,
                             flash_delay: 0,
                             flash_item: 0,
-                            edit_text_modified: false,
+                            edit_text_modified,
                             draw_proc_queue,
                             draw_procs_done: !has_draw_procs,
                             rendered_pixels_final: !has_draw_procs,
@@ -11814,6 +13206,7 @@ impl super::TrapDispatcher {
             //   teactivate_sets_active_flag
             //   teactivate_pops_four_bytes
             //   teactivate_preserves_selection
+            //   teactivate_and_tedeactivate_repaint_empty_insertion_caret
             // TEActivate ($A9D8): Sets TERec.active flag per IM:I I-385
             (true, 0x1D8) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -11824,6 +13217,9 @@ impl super::TrapDispatcher {
                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                 if te_ptr != 0 {
                     bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
+                    bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+                    bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
+                    self.draw_te_contents(cpu, bus, te_handle);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -11839,6 +13235,7 @@ impl super::TrapDispatcher {
             //   tedeactivate_clears_active_flag
             //   tedeactivate_pops_four_bytes
             //   tedeactivate_preserves_selection
+            //   teactivate_and_tedeactivate_repaint_empty_insertion_caret
             // TEDeactivate ($A9D9): Clears TERec.active flag per IM:I I-385
             (true, 0x1D9) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -11849,6 +13246,7 @@ impl super::TrapDispatcher {
                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                 if te_ptr != 0 {
                     bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 0);
+                    self.draw_te_contents(cpu, bus, te_handle);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -11876,22 +13274,12 @@ impl super::TrapDispatcher {
             // if the specified edit record is inactive (such as when
             // the window is inactive), TEIdle has no effect."
             //
-            // HLE compromise: Systemless doesn't model TextEdit caret
-            // blinking. Per IM:I I-374 a real TEIdle would: (a) read
-            // TickCount ($016A) and compare against the TE record's
-            // caretTime field, (b) when the interval elapses, toggle
-            // the caret's visibility flag, (c) XOR-paint the caret
-            // bar at the current selStart position. The first two
-            // steps need TE record fields (caretTime, caretState)
-            // that the current TERec layout doesn't track; the third
-            // needs the per-line pixel-position-of-byte-offset
-            // machinery that TEClick also lacks. So apps that call
-            // TEIdle on every null event get a no-op — the caret in
-            // any TE field stays in whatever state TEActivate /
-            // TEDeactivate left it in (typically a static caret at
-            // selStart). For the scripted event model
-            // where there are no null events between scripted
-            // actions, the missing blink is invisible.
+            // HLE model: TextEdit's TERec layout includes the private
+            // caretTime and caretState fields before just/teLength. Systemless
+            // treats caretTime as the last toggle tick and caretState == 0 as
+            // visible. On an active insertion point, TEIdle waits the
+            // documented initial 32-tick interval, toggles caretState, and
+            // redraws the edit record. Non-insertion selections do not blink.
             //
             // Crucial no-mutation contract (witnessed by both
             // engines): TEIdle MUST NOT mutate TERec.active,
@@ -11899,9 +13287,7 @@ impl super::TrapDispatcher {
             // other selection / text fields. Selection updates are
             // the exclusive responsibility of TESetSelect /
             // TEClick / TEKey / TEDelete; activation toggles are
-            // handled by TEActivate / TEDeactivate. The HLE achieves
-            // this trivially by popping the argument and returning
-            // without inspecting the TERec.
+            // handled by TEActivate / TEDeactivate.
             //
             // NIL hTE is a defensive no-op.
             //
@@ -11912,12 +13298,13 @@ impl super::TrapDispatcher {
             //
             // Regression coverage:
             //   dialog::tests::teidle_consumes_tehandle_argument
+            //   dialog::tests::teidle_toggles_visible_insertion_caret_after_blink_interval
             //   dialog::tests::teidle_preserves_active_flag_and_selection_offsets
             //   dialog::tests::teidle_repeated_calls_balance_stack_and_preserve_terec_state
             (true, 0x1DA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let te_handle = bus.read_long(sp);
-                self.textedit_idle(bus, te_handle);
+                self.textedit_idle(cpu, bus, te_handle);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -12247,7 +13634,7 @@ impl super::TrapDispatcher {
                     (0, 0, 0, 0)
                 };
                 let title = if title_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                    decode_mac_roman_for_render(&bus.read_pstring(title_ptr))
                 } else {
                     String::new()
                 };
@@ -12629,7 +14016,7 @@ impl super::TrapDispatcher {
                 if text_str_ptr != 0 {
                     let bytes = bus.read_pstring(text_str_ptr);
                     let len = bytes.len();
-                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    let text = decode_mac_roman_for_render(&bytes);
 
                     if item_handle != 0 {
                         let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
@@ -12814,7 +14201,7 @@ impl super::TrapDispatcher {
                             (0, 0, 0, 0)
                         };
                         let title = if title_ptr != 0 {
-                            String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                            decode_mac_roman_for_render(&bus.read_pstring(title_ptr))
                         } else {
                             String::new()
                         };
@@ -13041,6 +14428,27 @@ mod tests {
         for y in top..bottom {
             for x in left..right {
                 if screen_pixel_is_set(bus, base, row_bytes, x, y) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn count_pixel_index(
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        pixel_index: u8,
+    ) -> u32 {
+        let mut count = 0;
+        for y in top..bottom {
+            for x in left..right {
+                if bus.read_byte(base + y as u32 * row_bytes + x as u32) == pixel_index {
                     count += 1;
                 }
             }
@@ -20363,6 +21771,145 @@ mod tests {
         assert_eq!(bus.read_word(item_hit_ptr), 1);
     }
 
+    #[test]
+    fn dialog_select_null_event_blinks_active_edit_text_insertion_caret() {
+        // MTE 1992 p. 6-139 and IM:I I-417: DialogSelect mouse-down in an
+        // enabled editText item displays the insertion point, and later null
+        // events call TEIdle so the insertion point blinks.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = bus.alloc(16);
+        let dialog_out_ptr = bus.alloc(4);
+        let item_hit_ptr = bus.alloc(2);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(16);
+        let text_item_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 0);
+        let text_h = make_te_with_text(&mut disp, &mut bus, b"");
+        let te_ptr = bus.read_long(text_h);
+        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+
+        for i in 0..(row_bytes * 80) {
+            bus.write_byte(screen_base + i, 0);
+        }
+
+        disp.front_window = dialog_ptr;
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 160);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_long(dialog_ptr + 160, text_h);
+        bus.write_word(dialog_ptr + 164, 0);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, text_item_handle);
+        bus.write_word(ditl_ptr + 6, 20);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 38);
+        bus.write_word(ditl_ptr + 12, 120);
+        bus.write_byte(ditl_ptr + 14, 16);
+        bus.write_byte(ditl_ptr + 15, 0);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16,
+                rect: (20, 20, 38, 120),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let dispatch_dialog_select_event = |disp: &mut TrapDispatcher,
+                                            cpu: &mut MockCpu,
+                                            bus: &mut MacMemoryBus,
+                                            what: u16,
+                                            tick: u32| {
+            disp.tick_count = tick;
+            bus.write_long(crate::memory::globals::addr::TICKS, tick);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(event_ptr, what);
+            bus.write_long(event_ptr + 2, 0);
+            bus.write_long(event_ptr + 6, 0);
+            bus.write_word(event_ptr + 10, 25);
+            bus.write_word(event_ptr + 12, 25);
+            bus.write_word(event_ptr + 14, 0);
+            bus.write_long(dialog_out_ptr, 0xDEAD_BEEF);
+            bus.write_word(item_hit_ptr, 0xCAFE);
+            bus.write_long(TEST_SP, item_hit_ptr);
+            bus.write_long(TEST_SP + 4, dialog_out_ptr);
+            bus.write_long(TEST_SP + 8, event_ptr);
+            disp.dispatch_dialog(true, 0x180, cpu, bus)
+                .unwrap()
+                .unwrap();
+        };
+
+        dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 1, 100);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0xFFFF);
+        assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET), 1);
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET),
+            100
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            0
+        );
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "DialogSelect editText mouse-down should display the insertion caret"
+        );
+
+        dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 0, 131);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(bus.read_long(dialog_out_ptr), 0xDEAD_BEEF);
+        assert_eq!(bus.read_word(item_hit_ptr), 0xCAFE);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            0
+        );
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "DialogSelect null event before 32 ticks should keep the caret visible"
+        );
+
+        dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 0, 132);
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET),
+            132
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            1
+        );
+        assert!(
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "DialogSelect null event at the 32-tick boundary should hide the caret"
+        );
+
+        dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 0, 164);
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET),
+            164
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            0
+        );
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "the next DialogSelect null-event blink interval should show the caret again"
+        );
+    }
+
     // ---- DrawDialog ($A981) ----
 
     #[test]
@@ -20425,6 +21972,126 @@ mod tests {
         } else {
             assert_eq!(bus.read_byte(probe_addr) & probe_bit, 0);
         }
+    }
+
+    #[test]
+    fn draw_dialog_repaints_document_proc_title_chrome() {
+        // DrawDialog is also valid for modeless documentProc dialogs. It must
+        // redraw the WDEF title bar from the WindowRecord title instead of
+        // falling back to modal-box border chrome (IM:I I-299/I-417).
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+
+        let dialog_ptr = bus.alloc(170);
+        bus.write_word(dialog_ptr + 6, 0);
+        bus.write_word(dialog_ptr + 8, (-40i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-80i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 80);
+        bus.write_word(dialog_ptr + 22, 160);
+        bus.write_byte(dialog_ptr + 112, 0);
+        let title_ptr = bus.alloc(16);
+        bus.write_pstring(title_ptr, b"Modeless");
+        let title_handle = bus.alloc(4);
+        bus.write_long(title_handle, title_ptr);
+        bus.write_long(dialog_ptr + 134, title_handle);
+        disp.window_proc_ids.insert(dialog_ptr, 0);
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 85, 24),
+            "documentProc DrawDialog should redraw active title-bar stripes"
+        );
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 79, 21),
+            "documentProc DrawDialog should redraw the title-bar border"
+        );
+    }
+
+    #[test]
+    fn draw_dialog_radio_items_use_control_value_state() {
+        // SetCtlValue stores value 1 for a selected radio control (IM:I
+        // I-317/I-328). DrawDialog must honor the dialog control value table
+        // for radio items, just as it does for checkboxes.
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 120, 220);
+        let dialog_ptr = 0x2000;
+        let items = vec![DialogItem {
+            item_type: 6,
+            rect: (20, 20, 40, 160),
+            text: "Selected".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+        let (mut disp, _cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        disp.dialog_control_values.insert((dialog_ptr, 1), 1);
+
+        disp.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, dialog_ptr);
+
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 67, 69),
+            "selected radio item should draw the central dot"
+        );
+    }
+
+    #[test]
+    fn draw_dialog_queues_user_item_draw_proc_for_known_dialog() {
+        // MTE 1992 p. 6-142: DrawDialog calls application-defined item
+        // draw procs whose userItem display rectangles are in the dialog.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 80);
+        bus.write_word(dialog_ptr + 22, 120);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0,
+                    rect: (8, 8, 24, 48),
+                    proc_ptr: 0x500000,
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 0,
+                    rect: (100, 8, 120, 48),
+                    proc_ptr: 0x600000,
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (40, 8, 60, 48),
+                    text: "OK".to_string(),
+                    ..Default::default()
+                },
+            ],
+        );
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            disp.modeless_dialog_draw_proc_queue
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(dialog_ptr, 0x500000, 1)]
+        );
     }
 
     #[test]
@@ -20500,12 +22167,12 @@ mod tests {
         themed.draw_popup_control(&mut themed_bus, 20, 20, 40, 120, "");
 
         assert!(
-            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 20, 20),
-            "classic popup round rect should leave its outer corner as background"
+            screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 120, 39),
+            "classic popup CDEF should draw its one-pixel offset shadow"
         );
         assert!(
-            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 20, 20),
-            "systemless-default popup provider should own the dialog popup corner"
+            !screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 120, 39),
+            "systemless-default popup provider should not draw the classic offset shadow"
         );
     }
 
@@ -20704,7 +22371,12 @@ mod tests {
             ),
             (
                 bounds.1 + items[2].rect.1 + 2,
-                bounds.0 + items[2].rect.0 + TrapDispatcher::STANDARD_CONTROL_MARK_TOP_INSET,
+                bounds.0
+                    + items[2].rect.0
+                    + (items[2].rect.2
+                        - items[2].rect.0
+                        - TrapDispatcher::STANDARD_CONTROL_MARK_SIZE)
+                        / 2,
             ),
         ];
         for (x, y) in probes {
@@ -20715,6 +22387,216 @@ mod tests {
             assert!(
                 screen_pixel_is_set(&themed_bus, screen_base, row_bytes, x, y),
                 "systemless-default provider should receive disabled DITL control state at ({x},{y})"
+            );
+        }
+    }
+
+    #[test]
+    fn draw_dialog_classic_keeps_disabled_checkbox_and_radio_titles_undimmed() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 190, 230);
+        let items = vec![
+            DialogItem {
+                item_type: 5,
+                rect: (20, 20, 40, 150),
+                text: "Sound".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 0x80 | 5,
+                rect: (52, 20, 72, 150),
+                text: "Sound".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 6,
+                rect: (84, 20, 104, 150),
+                text: "Music".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 0x80 | 6,
+                rect: (116, 20, 136, 150),
+                text: "Music".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
+
+        let (mut dispatcher, _cpu, mut bus) = setup();
+        dispatcher.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        dispatcher.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, 0x2000);
+
+        let label_left = bounds.1
+            + items[0].rect.1
+            + TrapDispatcher::STANDARD_CONTROL_MARK_LEFT_INSET
+            + TrapDispatcher::STANDARD_CONTROL_MARK_SIZE
+            + TrapDispatcher::STANDARD_CONTROL_TITLE_GAP;
+        let enabled_checkbox = count_set_pixels(
+            &bus,
+            screen_base,
+            row_bytes,
+            bounds.0 + items[0].rect.0,
+            label_left,
+            bounds.0 + items[0].rect.2,
+            bounds.1 + items[0].rect.3,
+        );
+        let disabled_checkbox = count_set_pixels(
+            &bus,
+            screen_base,
+            row_bytes,
+            bounds.0 + items[1].rect.0,
+            label_left,
+            bounds.0 + items[1].rect.2,
+            bounds.1 + items[1].rect.3,
+        );
+        let enabled_radio = count_set_pixels(
+            &bus,
+            screen_base,
+            row_bytes,
+            bounds.0 + items[2].rect.0,
+            label_left,
+            bounds.0 + items[2].rect.2,
+            bounds.1 + items[2].rect.3,
+        );
+        let disabled_radio = count_set_pixels(
+            &bus,
+            screen_base,
+            row_bytes,
+            bounds.0 + items[3].rect.0,
+            label_left,
+            bounds.0 + items[3].rect.2,
+            bounds.1 + items[3].rect.3,
+        );
+
+        assert!(
+            enabled_checkbox > 0,
+            "enabled checkbox title should be visible"
+        );
+        assert_eq!(
+            enabled_checkbox, disabled_checkbox,
+            "classic itemDisable checkbox title must not be visually dimmed"
+        );
+        assert!(enabled_radio > 0, "enabled radio title should be visible");
+        assert_eq!(
+            enabled_radio, disabled_radio,
+            "classic itemDisable radio title must not be visually dimmed"
+        );
+    }
+
+    #[test]
+    fn draw_dialog_standard_control_hilite_255_titles_use_gray_device_index() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 160u32;
+        let bounds = (20, 20, 120, 220);
+        let dialog_ptr = 0x2400u32;
+        let items = vec![
+            DialogItem {
+                item_type: 5,
+                rect: (20, 20, 40, 150),
+                text: "Sound".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 6,
+                rect: (52, 20, 72, 150),
+                text: "Music".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
+
+        let (mut dispatcher, _cpu, mut bus) = setup();
+        dispatcher.set_screen_mode_for_test(screen_base, row_bytes, 160, 140, 8);
+        dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        dispatcher.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        dispatcher.device_clut[42] = [0xA1A1, 0xA1A1, 0xA1A1];
+        dispatcher.device_clut[255] = [0, 0, 0];
+        for offset in 0..(row_bytes * 140) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+
+        for (item_no, proc_id, item) in [(1i16, 1i16, &items[0]), (2, 2, &items[1])] {
+            let ctrl_ptr = bus.alloc(296);
+            let ctrl_handle = bus.alloc(4);
+            bus.write_long(ctrl_handle, ctrl_ptr);
+            dispatcher.initialize_control_record(
+                &mut bus,
+                ctrl_ptr,
+                dialog_ptr,
+                item.rect,
+                item.text.as_bytes(),
+                true,
+                0,
+                0,
+                1,
+                proc_id,
+                0,
+            );
+            bus.write_byte(ctrl_ptr + 17, 255);
+            dispatcher
+                .dialog_control_handles
+                .insert(ctrl_handle, (dialog_ptr, item_no));
+            dispatcher
+                .dialog_control_values
+                .insert((dialog_ptr, item_no), 0);
+        }
+
+        dispatcher.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, dialog_ptr);
+
+        for (label, item) in [("checkbox", &items[0]), ("radio", &items[1])] {
+            let label_left = bounds.1
+                + item.rect.1
+                + TrapDispatcher::STANDARD_CONTROL_MARK_LEFT_INSET
+                + TrapDispatcher::STANDARD_CONTROL_MARK_SIZE
+                + TrapDispatcher::STANDARD_CONTROL_TITLE_GAP;
+            let top = bounds.0 + item.rect.0;
+            let bottom = bounds.0 + item.rect.2;
+            let right = bounds.1 + item.rect.3;
+            let gray = count_pixel_index(
+                &bus,
+                screen_base,
+                row_bytes,
+                top,
+                label_left,
+                bottom,
+                right,
+                42,
+            );
+            let black = count_pixel_index(
+                &bus,
+                screen_base,
+                row_bytes,
+                top,
+                label_left,
+                bottom,
+                right,
+                255,
+            );
+            assert!(
+                gray > 12,
+                "inactive standard DITL {label} title should draw with the device gray index"
+            );
+            assert_eq!(
+                black, 0,
+                "inactive standard DITL {label} title must not leave black glyph pixels"
             );
         }
     }
@@ -22304,6 +24186,9 @@ mod tests {
             .insert((dialog_ptr, 1), (10, 20, 30, 130));
         disp.dialog_popup_original_rects
             .insert((other_dialog_ptr, 1), (50, 60, 70, 180));
+        disp.dialog_popup_candidate_items.insert((dialog_ptr, 1));
+        disp.dialog_popup_candidate_items
+            .insert((other_dialog_ptr, 1));
         disp.dialog_cancel_items.insert(dialog_ptr, 2);
         disp.dialog_cancel_items.insert(other_dialog_ptr, 3);
         disp.pending_dialog_popup_menu = Some(PendingDialogPopupMenu {
@@ -22342,6 +24227,10 @@ mod tests {
         assert!(disp
             .dialog_popup_original_rects
             .contains_key(&(other_dialog_ptr, 1)));
+        assert!(!disp.dialog_popup_candidate_items.contains(&(dialog_ptr, 1)));
+        assert!(disp
+            .dialog_popup_candidate_items
+            .contains(&(other_dialog_ptr, 1)));
         assert!(!disp.dialog_cancel_items.contains_key(&dialog_ptr));
         assert!(disp.dialog_cancel_items.contains_key(&other_dialog_ptr));
         assert!(disp.pending_dialog_popup_menu.is_none());
@@ -22940,6 +24829,53 @@ mod tests {
         assert!(disp.pending_dialog_popup_menu.is_none());
     }
 
+    #[test]
+    fn set_ditem_narrowing_user_item_records_popup_candidate_without_proc() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let set_box_ptr = bus.alloc(8);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (10, 20, 30, 150),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        bus.write_word(set_box_ptr, 10);
+        bus.write_word(set_box_ptr + 2, 20);
+        bus.write_word(set_box_ptr + 4, 30);
+        bus.write_word(set_box_ptr + 6, 35);
+        bus.write_long(TEST_SP, set_box_ptr);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 0);
+        bus.write_word(TEST_SP + 10, 1);
+        bus.write_long(TEST_SP + 12, dialog_ptr);
+        disp.dispatch_dialog(true, 0x18E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(!disp.dialog_item_popup_menus.contains_key(&(dialog_ptr, 1)));
+        assert_eq!(
+            disp.dialog_popup_original_rects.get(&(dialog_ptr, 1)),
+            Some(&(10, 20, 30, 150))
+        );
+        assert!(disp.dialog_popup_candidate_items.contains(&(dialog_ptr, 1)));
+        assert_eq!(
+            disp.dialog_items
+                .get(&dialog_ptr)
+                .and_then(|items| items.first())
+                .map(|item| item.rect),
+            Some((10, 20, 30, 35))
+        );
+    }
+
     // ---- SetDItem ($A98E) ----
 
     #[test]
@@ -23405,6 +25341,66 @@ mod tests {
     }
 
     #[test]
+    fn initialize_dialog_item_handles_materializes_icon_and_picture_handles() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(34);
+        let icon_ptr = disp.install_test_resource(&mut bus, *b"ICON", 421, &[0xFF; 128]);
+        let pict_ptr = disp.install_test_resource(&mut bus, *b"PICT", 422, &[0x11; 32]);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 1);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 8);
+        bus.write_word(ditl_ptr + 8, 8);
+        bus.write_word(ditl_ptr + 10, 40);
+        bus.write_word(ditl_ptr + 12, 40);
+        bus.write_byte(ditl_ptr + 14, 32);
+        bus.write_byte(ditl_ptr + 15, 2);
+        bus.write_word(ditl_ptr + 16, 421);
+        bus.write_long(ditl_ptr + 18, 0);
+        bus.write_word(ditl_ptr + 22, 8);
+        bus.write_word(ditl_ptr + 24, 48);
+        bus.write_word(ditl_ptr + 26, 40);
+        bus.write_word(ditl_ptr + 28, 112);
+        bus.write_byte(ditl_ptr + 30, 64);
+        bus.write_byte(ditl_ptr + 31, 2);
+        bus.write_word(ditl_ptr + 32, 422);
+
+        let items = vec![
+            DialogItem {
+                item_type: 32,
+                rect: (8, 8, 40, 40),
+                text: String::new(),
+                resource_id: 421,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 64,
+                rect: (8, 48, 40, 112),
+                text: String::new(),
+                resource_id: 422,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        let icon_handle = bus.read_long(ditl_ptr + 2);
+        let pict_handle = bus.read_long(ditl_ptr + 18);
+        assert_ne!(icon_handle, 0);
+        assert_ne!(pict_handle, 0);
+        assert_eq!(bus.read_long(icon_handle), icon_ptr);
+        assert_eq!(bus.read_long(pict_handle), pict_ptr);
+    }
+
+    #[test]
     fn initialize_dialog_item_handles_clears_user_item_placeholder_proc_ptr() {
         let (mut disp, _cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
@@ -23435,6 +25431,54 @@ mod tests {
         disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
 
         assert_eq!(bus.read_long(ditl_ptr + 2), 0);
+    }
+
+    #[test]
+    fn initialize_dialog_item_handles_creates_standard_control_handle() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(22);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 120);
+        bus.write_byte(ditl_ptr + 14, 5);
+        bus.write_byte(ditl_ptr + 15, 5);
+        bus.write_bytes(ditl_ptr + 16, b"Sound");
+
+        let items = vec![DialogItem {
+            item_type: 5,
+            rect: (10, 20, 30, 120),
+            text: "Sound".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        let control_handle = bus.read_long(ditl_ptr + 2);
+        let control_ptr = bus.read_long(control_handle);
+        assert_ne!(control_handle, 0);
+        assert_ne!(control_ptr, 0);
+        assert_eq!(bus.read_long(dialog_ptr + 140), control_handle);
+        assert_eq!(bus.read_long(control_ptr + 4), dialog_ptr);
+        assert_eq!(bus.read_word(control_ptr + 8) as i16, 10);
+        assert_eq!(bus.read_word(control_ptr + 10) as i16, 20);
+        assert_eq!(bus.read_byte(control_ptr + 17), 0);
+        assert_eq!(
+            disp.dialog_control_handles.get(&control_handle),
+            Some(&(dialog_ptr, 1))
+        );
+        assert_eq!(disp.dialog_control_values.get(&(dialog_ptr, 1)), Some(&0));
+        assert_eq!(disp.control_proc_ids.get(&control_ptr), Some(&1));
     }
 
     #[test]
@@ -23495,6 +25539,305 @@ mod tests {
             Some(&(dialog_ptr, 1))
         );
         assert_eq!(disp.dialog_control_values.get(&(dialog_ptr, 1)), Some(&2));
+    }
+
+    #[test]
+    fn popup_resctrl_initializes_contrl_data_private_menu_record() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(18);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 140);
+        bus.write_byte(ditl_ptr + 14, 7);
+        bus.write_byte(ditl_ptr + 15, 2);
+        bus.write_word(ditl_ptr + 16, 128);
+
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 110, 1, -1, 0, 4000, 1009] {
+            cntl.extend_from_slice(&(word as u16).to_be_bytes());
+        }
+        cntl.extend_from_slice(&0u32.to_be_bytes());
+        cntl.push(0);
+        disp.install_test_resource(&mut bus, *b"CNTL", 128, &cntl);
+
+        let items = vec![DialogItem {
+            item_type: 7,
+            rect: (10, 20, 30, 140),
+            text: String::new(),
+            resource_id: 128,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        let ctrl_handle = bus.read_long(ditl_ptr + 2);
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        let private_handle = bus.read_long(ctrl_ptr + 28);
+        let private_ptr = bus.read_long(private_handle);
+        let menu_handle = bus.read_long(private_ptr);
+        let menu_ptr = bus.read_long(menu_handle);
+
+        assert_ne!(private_handle, 0);
+        assert_ne!(private_ptr, 0);
+        assert_ne!(menu_handle, 0);
+        assert_eq!(bus.read_word(private_ptr + 4) as i16, 4000);
+        assert_eq!(bus.read_word(menu_ptr) as i16, 4000);
+        assert_eq!(disp.popup_control_menu_id(&bus, ctrl_ptr, -1), 4000);
+        assert!(disp
+            .menus
+            .iter()
+            .any(|menu| menu.id == 4000 && menu.handle == menu_handle));
+    }
+
+    #[test]
+    fn append_ditl_overlay_preserves_existing_handles_and_initializes_resctrl() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let old_ditl_ptr = bus.alloc(18);
+        let preserved_handle = 0x00A1_B2C3;
+
+        bus.write_long(items_handle, old_ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(old_ditl_ptr, 0);
+        bus.write_long(old_ditl_ptr + 2, preserved_handle);
+        bus.write_word(old_ditl_ptr + 6, 10);
+        bus.write_word(old_ditl_ptr + 8, 20);
+        bus.write_word(old_ditl_ptr + 10, 30);
+        bus.write_word(old_ditl_ptr + 12, 60);
+        bus.write_byte(old_ditl_ptr + 14, 4);
+        bus.write_byte(old_ditl_ptr + 15, 2);
+        bus.write_bytes(old_ditl_ptr + 16, b"OK");
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20, 30, 60),
+                text: "OK".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 110, 3, -1, 1, 5, 1008] {
+            cntl.extend_from_slice(&(word as u16).to_be_bytes());
+        }
+        cntl.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+        cntl.push(4);
+        cntl.extend_from_slice(b"Pane");
+        disp.install_test_resource(&mut bus, *b"CNTL", 131, &cntl);
+
+        let append_handle = bus.alloc(4);
+        let append_ditl_ptr = bus.alloc(18);
+        bus.write_long(append_handle, append_ditl_ptr);
+        bus.write_word(append_ditl_ptr, 0);
+        bus.write_long(append_ditl_ptr + 2, 0);
+        bus.write_word(append_ditl_ptr + 6, 40);
+        bus.write_word(append_ditl_ptr + 8, 50);
+        bus.write_word(append_ditl_ptr + 10, 60);
+        bus.write_word(append_ditl_ptr + 12, 170);
+        bus.write_byte(append_ditl_ptr + 14, 7);
+        bus.write_byte(append_ditl_ptr + 15, 2);
+        bus.write_word(append_ditl_ptr + 16, 131);
+
+        let count = disp.append_ditl_to_dialog(&mut bus, dialog_ptr, append_handle, 0);
+
+        assert_eq!(count, 2);
+        let new_ditl_ptr = bus.read_long(items_handle);
+        assert_ne!(new_ditl_ptr, old_ditl_ptr);
+        assert_eq!(bus.read_word(new_ditl_ptr), 1);
+        assert_eq!(
+            bus.read_long(new_ditl_ptr + 2),
+            preserved_handle,
+            "AppendDITL must not recreate existing item handles"
+        );
+        let ctrl_handle = bus.read_long(new_ditl_ptr + 18);
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        assert_ne!(ctrl_handle, 0);
+        assert_ne!(ctrl_ptr, 0);
+        assert_eq!(bus.read_long(dialog_ptr + 140), ctrl_handle);
+        assert_eq!(bus.read_word(ctrl_ptr + 8) as i16, 40);
+        assert_eq!(bus.read_word(ctrl_ptr + 10) as i16, 50);
+        assert_eq!(bus.read_word(ctrl_ptr + 12) as i16, 60);
+        assert_eq!(bus.read_word(ctrl_ptr + 14) as i16, 170);
+        assert_eq!(
+            disp.dialog_control_handles.get(&ctrl_handle),
+            Some(&(dialog_ptr, 2))
+        );
+        assert_eq!(disp.dialog_control_values.get(&(dialog_ptr, 2)), Some(&3));
+    }
+
+    #[test]
+    fn shorten_ditl_erases_removed_retained_item_rects_without_wiping_header_pixels() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((400 * 300) as u32);
+        for i in 0..400u32 * 300 {
+            bus.write_byte(screen_base + i, 0x00);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 400, 400, 300, 8);
+
+        let dialog_ptr = bus.alloc(200);
+        bus.write_word(dialog_ptr + 6, 0);
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 120);
+        bus.write_word(dialog_ptr + 22, 200);
+        let bounds = TrapDispatcher::dialog_screen_bounds(&bus, dialog_ptr);
+
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(38);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 1);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 10);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 80);
+        bus.write_byte(ditl_ptr + 14, 8);
+        bus.write_byte(ditl_ptr + 15, 2);
+        bus.write_bytes(ditl_ptr + 16, b"OK");
+        bus.write_long(ditl_ptr + 20, 0);
+        bus.write_word(ditl_ptr + 24, 40);
+        bus.write_word(ditl_ptr + 26, 40);
+        bus.write_word(ditl_ptr + 28, 60);
+        bus.write_word(ditl_ptr + 30, 160);
+        bus.write_byte(ditl_ptr + 32, 8);
+        bus.write_byte(ditl_ptr + 33, 3);
+        bus.write_bytes(ditl_ptr + 34, b"Old");
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 8,
+                    rect: (10, 10, 30, 80),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 8,
+                    rect: (40, 40, 60, 160),
+                    text: "Old".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        disp.fill_rect_clipped_to_dialog(&mut bus, bounds, (106, 106, 114, 170), true);
+        disp.fill_rect_clipped_to_dialog(&mut bus, bounds, (140, 140, 160, 260), true);
+        let pixels = disp.save_dialog_pixels(&bus, bounds);
+        disp.dialog_visible_snapshots
+            .insert(dialog_ptr, PersistentDialogSnapshot { bounds, pixels });
+
+        let count = disp.shorten_ditl_in_dialog(&mut bus, dialog_ptr, 1);
+
+        assert_eq!(count, 1);
+        assert_eq!(bus.read_word(ditl_ptr), 0);
+        assert_eq!(bus.read_byte(screen_base + 110 * 400 + 120), 0xFF);
+        assert_eq!(bus.read_byte(screen_base + 150 * 400 + 150), 0x00);
+        let retained = disp.dialog_visible_snapshots.get(&dialog_ptr).unwrap();
+        assert!(
+            retained.pixels == disp.save_dialog_pixels(&bus, bounds),
+            "ShortenDITL retained snapshot must match the erased framebuffer"
+        );
+    }
+
+    #[test]
+    fn dialog_item_handle_addr_skips_zero_len_resctrl_resource_id() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(36);
+
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 1);
+
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 30);
+        bus.write_word(ditl_ptr + 12, 140);
+        bus.write_byte(ditl_ptr + 14, 7);
+        bus.write_byte(ditl_ptr + 15, 0);
+        bus.write_word(ditl_ptr + 16, 128);
+
+        bus.write_long(ditl_ptr + 18, 0);
+        bus.write_word(ditl_ptr + 22, 40);
+        bus.write_word(ditl_ptr + 24, 20);
+        bus.write_word(ditl_ptr + 26, 52);
+        bus.write_word(ditl_ptr + 28, 140);
+        bus.write_byte(ditl_ptr + 30, 8);
+        bus.write_byte(ditl_ptr + 31, 3);
+        bus.write_bytes(ditl_ptr + 32, b"abc");
+        bus.write_byte(ditl_ptr + 35, 0);
+
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 110, 2, -1, 4, 1300, 1009] {
+            cntl.extend_from_slice(&(word as u16).to_be_bytes());
+        }
+        cntl.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+        cntl.push(4);
+        cntl.extend_from_slice(b"Team");
+        disp.install_test_resource(&mut bus, *b"CNTL", 128, &cntl);
+
+        let items = vec![
+            DialogItem {
+                item_type: 7,
+                rect: (10, 20, 30, 140),
+                text: String::new(),
+                resource_id: 128,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 8,
+                rect: (40, 20, 52, 140),
+                text: "abc".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        assert_eq!(
+            bus.read_word(ditl_ptr + 16),
+            128,
+            "resCtrl resource ID must not be overwritten by the next item handle"
+        );
+        assert_ne!(bus.read_long(ditl_ptr + 2), 0);
+        assert_ne!(bus.read_long(ditl_ptr + 18), 0);
+        assert_eq!(
+            TrapDispatcher::dialog_item_handle(&bus, dialog_ptr, 2),
+            bus.read_long(ditl_ptr + 18)
+        );
     }
 
     #[test]
@@ -23723,6 +26066,127 @@ mod tests {
     }
 
     #[test]
+    fn modal_dialog_retained_edit_text_appends_across_reentry_and_command_a_selects() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(320 * 240);
+        for offset in 0..320u32 * 240 {
+            bus.write_byte(screen_base + offset, 0xFF);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 320, 320, 240, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        let item_hit_addr = 0x300000u32;
+        let bounds = (40, 40, 130, 280);
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = bounds;
+        disp.window_proc_id = 2;
+        disp.window_title.clear();
+        disp.window_list = vec![dialog_ptr];
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_word(dialog_ptr + 164, 0);
+        bus.write_word(dialog_ptr + 168, 0);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 16,
+                rect: (24, 24, 42, 190),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        fn enter_modal(
+            disp: &mut TrapDispatcher,
+            cpu: &mut MockCpu,
+            bus: &mut MacMemoryBus,
+            item_hit_addr: u32,
+        ) {
+            bus.write_word(item_hit_addr, 0xCAFE);
+            bus.write_long(TEST_SP, item_hit_addr);
+            bus.write_long(TEST_SP + 4, 0);
+            cpu.write_reg(Register::A7, TEST_SP);
+            disp.dispatch_dialog(true, 0x191, cpu, bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.dialog_tracking.is_some());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        }
+
+        fn key_down(
+            disp: &mut TrapDispatcher,
+            cpu: &mut MockCpu,
+            bus: &mut MacMemoryBus,
+            item_hit_addr: u32,
+            key_code: u8,
+            char_code: u8,
+            modifiers: u16,
+        ) {
+            disp.event_queue
+                .push_back(crate::trap::dispatch::QueuedEvent {
+                    what: 3,
+                    message: (u32::from(key_code) << 8) | u32::from(char_code),
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers,
+                });
+            disp.dispatch_dialog(true, 0x191, cpu, bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.dialog_tracking.is_none());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+            assert_eq!(bus.read_word(item_hit_addr), 1);
+        }
+
+        for (key_code, char_code) in [(0x02, b'd'), (0x20, b'u'), (0x02, b'd')] {
+            enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
+            key_down(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                item_hit_addr,
+                key_code,
+                char_code,
+                0,
+            );
+        }
+
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        assert_eq!(item.text, "dud");
+        assert_eq!((item.sel_start, item.sel_end), (3, 3));
+        assert!(disp
+            .dialog_edit_text_modified_items
+            .contains(&(dialog_ptr, 1)));
+
+        enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
+        key_down(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            item_hit_addr,
+            0x00,
+            b'a',
+            0x0100,
+        );
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        assert_eq!(item.text, "dud");
+        assert_eq!((item.sel_start, item.sel_end), (0, 3));
+        assert!(!disp
+            .dialog_edit_text_modified_items
+            .contains(&(dialog_ptr, 1)));
+
+        enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
+        key_down(&mut disp, &mut cpu, &mut bus, item_hit_addr, 0x33, 0x08, 0);
+        let item = &disp.dialog_items[&dialog_ptr][0];
+        assert_eq!(item.text, "");
+        assert_eq!((item.sel_start, item.sel_end), (0, 0));
+    }
+
+    #[test]
     fn modal_dialog_popup_resctrl_tracks_selection_and_returns_item() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc((800 * 600) as u32);
@@ -23740,6 +26204,7 @@ mod tests {
         bus.write_word(dialog_ptr + 18, 0);
         bus.write_word(dialog_ptr + 20, 180);
         bus.write_word(dialog_ptr + 22, 220);
+        let dialog_bounds = (100, 100, 280, 320);
 
         let ctrl_ptr = bus.alloc(296);
         let ctrl_handle = bus.alloc(4);
@@ -23785,6 +26250,7 @@ mod tests {
             handle: 0,
             in_menu_bar: false,
             hierarchical: false,
+            visible_in_menu_bar: false,
         });
 
         let item_hit_addr = 0x300000u32;
@@ -23792,7 +26258,7 @@ mod tests {
         cpu.write_reg(Register::A7, TEST_SP);
         disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
             dialog_ptr,
-            bounds: (100, 100, 280, 320),
+            bounds: dialog_bounds,
             title: String::new(),
             proc_id: 2,
             items: vec![DialogItem {
@@ -23847,6 +26313,10 @@ mod tests {
             .and_then(|tracking| tracking.active_popup.as_ref())
             .is_some());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        let stale_open_popup_pixels = disp.save_dialog_pixels(&bus, dialog_bounds);
+        let tracking = disp.dialog_tracking.as_mut().unwrap();
+        tracking.rendered_pixels = stale_open_popup_pixels.clone();
+        tracking.rendered_pixels_final = true;
 
         disp.mouse_pos = (148, 125);
         disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
@@ -23878,6 +26348,17 @@ mod tests {
         assert_eq!(bus.read_word(item_hit_addr), 1);
         assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
         assert_eq!(disp.dialog_control_values.get(&(dialog_ptr, 1)), Some(&2));
+
+        let retained = disp.dialog_visible_snapshots.get(&dialog_ptr).unwrap();
+        let current_pixels = disp.save_dialog_pixels(&bus, dialog_bounds);
+        assert!(
+            retained.pixels == current_pixels,
+            "retained snapshot must match the closed popup framebuffer"
+        );
+        assert!(
+            retained.pixels != stale_open_popup_pixels,
+            "retained snapshot kept stale open-popup pixels"
+        );
     }
 
     #[test]
@@ -24490,6 +26971,77 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
         assert!(disp.event_queue.iter().all(|event| event.what != 2));
+    }
+
+    #[test]
+    fn modal_dialog_popup_candidate_user_item_returns_on_mouse_down_in_original_rect() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 420),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 0,
+                rect: (20, 90, 40, 110),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 2,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+        disp.dialog_popup_original_rects
+            .insert((dialog_ptr, 1), (20, 30, 40, 150));
+        disp.dialog_popup_candidate_items.insert((dialog_ptr, 1));
+        disp.mouse_button = true;
+        disp.mouse_pos = (130, 260);
+        disp.event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 130,
+                where_h: 260,
+                modifiers: 0,
+            });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+        assert_eq!(
+            disp.dialog_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.active_user_item.as_ref())
+                .map(|active| active.item_no),
+            None,
+            "popup-candidate userItems must return on mouse-down so the app can run PopUpMenuSelect"
+        );
     }
 
     #[test]
@@ -25247,7 +27799,7 @@ mod tests {
     #[test]
     fn teupdate_systemless_theme_routes_active_caret_through_provider() {
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-        let classic_te_handle = make_te_with_text(&mut classic, &mut classic_bus, b"HELLO");
+        let classic_te_handle = make_te_with_text(&mut classic, &mut classic_bus, b"");
         let classic_te_ptr = classic_bus.read_long(classic_te_handle);
         classic_bus.write_word(classic_te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
         classic_bus.write_word(classic_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
@@ -25266,7 +27818,7 @@ mod tests {
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let themed_te_handle = make_te_with_text(&mut themed, &mut themed_bus, b"HELLO");
+        let themed_te_handle = make_te_with_text(&mut themed, &mut themed_bus, b"");
         let themed_te_ptr = themed_bus.read_long(themed_te_handle);
         themed_bus.write_word(themed_te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
         themed_bus.write_word(themed_te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
@@ -25283,12 +27835,61 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         assert!(
-            !screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 0, 0),
-            "classic TEUpdate should remain text-only in this HLE path"
+            screen_pixel_is_set(&classic_bus, screen_base, row_bytes, 1, 0),
+            "classic TEUpdate should draw a one-pixel caret for an active empty insertion point"
         );
         assert!(
             screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 0, 0),
             "systemless-default TEUpdate should draw provider-owned caret chrome"
+        );
+    }
+
+    #[test]
+    fn teactivate_and_tedeactivate_repaint_empty_insertion_caret() {
+        // IM:I I-385 and Text 1993 p. 2-80: TEActivate displays the caret
+        // when the active selection is an insertion point; TEDeactivate
+        // removes it without changing the selection offsets.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"");
+        let te_ptr = bus.read_long(te_handle);
+        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        for i in 0..(row_bytes * 80) {
+            bus.write_byte(screen_base + i, 0);
+        }
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D8, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET), 1);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            0
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 0);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "TEActivate should paint the visible insertion caret"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D9, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET), 0);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            0
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 0);
+        assert!(
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "TEDeactivate should erase the insertion caret"
         );
     }
 
@@ -26020,6 +28621,98 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    }
+
+    #[test]
+    fn teidle_toggles_visible_insertion_caret_after_blink_interval() {
+        // IM:I I-374 and Text 1993 p. 2-84: TEIdle blinks an active
+        // insertion caret, but only after the minimum blink interval
+        // initially set to 32 ticks.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"");
+        let te_ptr = bus.read_long(te_handle);
+        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        for i in 0..(row_bytes * 80) {
+            bus.write_byte(screen_base + i, 0);
+        }
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
+
+        disp.tick_count = 100;
+        bus.write_long(crate::memory::globals::addr::TICKS, 100);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1D8, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "TEActivate should show the insertion caret before TEIdle"
+        );
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET),
+            100
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            0
+        );
+
+        disp.tick_count = 131;
+        bus.write_long(crate::memory::globals::addr::TICKS, 131);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "TEIdle before 32 ticks should leave the caret visible"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            0
+        );
+
+        disp.tick_count = 132;
+        bus.write_long(crate::memory::globals::addr::TICKS, 132);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert!(
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "TEIdle at the 32-tick boundary should hide the caret"
+        );
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET),
+            132
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            1
+        );
+
+        disp.tick_count = 164;
+        bus.write_long(crate::memory::globals::addr::TICKS, 164);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            "the next elapsed interval should show the caret again"
+        );
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET),
+            164
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET),
+            0
+        );
     }
 
     #[test]

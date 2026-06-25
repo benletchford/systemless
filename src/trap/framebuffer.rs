@@ -1,6 +1,6 @@
 //! Framebuffer drawing methods for menu bar and window chrome rendering.
 
-use std::sync::OnceLock;
+use std::{collections::HashSet, sync::OnceLock};
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
@@ -1168,7 +1168,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn fb_draw_glyph_with_style(
+    fn fb_set_styled_text_pixel(
         bus: &mut MacMemoryBus,
         screen_base: u32,
         row_bytes: u32,
@@ -1177,29 +1177,105 @@ impl super::TrapDispatcher {
         screen_height: i16,
         x: i16,
         y: i16,
+        pixel_index_override: Option<u8>,
+        black: bool,
+    ) {
+        if let Some(pixel_index) = pixel_index_override {
+            Self::fb_set_pixel_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                pixel_index,
+            );
+        } else {
+            Self::fb_set_pixel(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                black,
+            );
+        }
+    }
+
+    fn fb_styled_glyph_base_pixels(
+        x: i16,
+        y: i16,
         glyph: &Glyph,
         data: &[u8],
         synthetic_italic: Option<(i16, i16)>,
         style: u8,
-        pixel_index_override: Option<u8>,
-        black: bool,
-    ) {
-        Self::fb_draw_glyph_bitmap_with_slant(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            x,
-            y,
-            glyph,
-            data,
-            synthetic_italic,
-            style,
-            pixel_index_override,
-            black,
-        );
+    ) -> HashSet<(i16, i16)> {
+        let gx = x + glyph.origin_x as i16;
+        let gy = y + glyph.origin_y as i16;
+        let gw = glyph.width as usize;
+        let gh = glyph.height as usize;
+        let metrics = synthetic_italic
+            .map(|(font_id, font_size)| (font_id, font_size, get_font_metrics(font_id, font_size)));
+        let mut pixels = HashSet::new();
+
+        for row in 0..gh {
+            for col in 0..gw {
+                let byte_idx = glyph.data_offset + row * gw + col;
+                if byte_idx >= data.len() || data[byte_idx] < 128 {
+                    continue;
+                }
+
+                let py = gy + row as i16;
+                let slant = metrics
+                    .as_ref()
+                    .map(|(font_id, font_size, metrics)| {
+                        get_italic_slant(*font_id, *font_size, metrics, y, py)
+                    })
+                    .unwrap_or(0);
+                let start = col as i16;
+                let (dst_start, dst_end) = (start, start + 1);
+
+                for dst_col in dst_start..dst_end {
+                    let px = gx + dst_col + slant;
+                    pixels.insert((px, py));
+                    if (style & TEXT_STYLE_BOLD) != 0 {
+                        pixels.insert((px + 1, py));
+                    }
+                }
+            }
+        }
+
+        pixels
+    }
+
+    fn fb_styled_glyph_advance(glyph: &Glyph, style: u8) -> i16 {
+        let mut advance = glyph.advance as i16;
+        if (style & TEXT_STYLE_BOLD) != 0 {
+            // Menu item styles follow the classic Style bitset; the
+            // System 7 MDEF renders bold item names with the synthetic
+            // one-pixel strike and matching one-pixel pen advance while
+            // CalcMenuSize keeps plain guest metrics. MTE 1992 pp. 3-133
+            // to 3-134.
+            advance += 1;
+        }
+        if (style & TEXT_STYLE_OUTLINE) != 0 {
+            advance += 1;
+        }
+        if (style & TEXT_STYLE_SHADOW) != 0 {
+            advance += 2;
+        }
+        if (style & TEXT_STYLE_CONDENSE) != 0 && advance >= 6 {
+            advance -= 1;
+        }
+        if (style & TEXT_STYLE_EXTEND) != 0 {
+            advance += 1;
+        }
+        advance.max(1)
     }
 
     fn fb_draw_char_styled(
@@ -1236,49 +1312,80 @@ impl super::TrapDispatcher {
             return 6;
         };
 
-        let mut draw_at = |dx: i16, dy: i16| {
-            Self::fb_draw_glyph_with_style(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                x + dx,
-                y + dy,
-                glyph,
-                data,
-                synthetic_italic,
-                style,
-                pixel_index_override,
-                black,
-            );
+        let glyph_y = if (style & TEXT_STYLE_SHADOW) != 0 {
+            y - 1
+        } else {
+            y
         };
+        let base_pixels =
+            Self::fb_styled_glyph_base_pixels(x, glyph_y, glyph, data, synthetic_italic, style);
 
-        if (style & TEXT_STYLE_SHADOW) != 0 {
-            draw_at(1, 1);
-        }
-        if (style & TEXT_STYLE_OUTLINE) != 0 {
-            draw_at(-1, 0);
-            draw_at(1, 0);
-            draw_at(0, -1);
-            draw_at(0, 1);
-        }
-        draw_at(0, 0);
-        if (style & TEXT_STYLE_BOLD) != 0 {
-            draw_at(1, 0);
+        if (style & (TEXT_STYLE_OUTLINE | TEXT_STYLE_SHADOW)) == 0 {
+            for (px, py) in base_pixels.iter().copied() {
+                Self::fb_set_styled_text_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    px,
+                    py,
+                    pixel_index_override,
+                    black,
+                );
+            }
+            return Self::fb_styled_glyph_advance(glyph, style);
         }
 
-        let mut advance = glyph.advance as i16;
-        if (style & TEXT_STYLE_BOLD) != 0 {
-            // Menu item styles follow the classic Style bitset; the
-            // System 7 MDEF renders bold item names with the synthetic
-            // one-pixel strike and matching one-pixel pen advance while
-            // CalcMenuSize keeps plain guest metrics. MTE 1992 pp. 3-133
-            // to 3-134.
-            advance += 1;
+        // QuickDraw outlines/shadows text by smearing a 1-bit glyph mask,
+        // then XORing the original glyph out of the result. That produces
+        // hollow outline and shadow faces instead of drawing offset filled
+        // glyph copies.
+        let smear_max = if (style & TEXT_STYLE_SHADOW) != 0 && (style & TEXT_STYLE_OUTLINE) != 0 {
+            3
+        } else if (style & TEXT_STYLE_SHADOW) != 0 {
+            2
+        } else {
+            1
+        };
+        let min_x = base_pixels.iter().map(|(px, _)| *px).min().unwrap_or(x) - 1;
+        let max_x = base_pixels.iter().map(|(px, _)| *px).max().unwrap_or(x) + smear_max;
+        let min_y = base_pixels.iter().map(|(_, py)| *py).min().unwrap_or(y) - 1;
+        let max_y = base_pixels.iter().map(|(_, py)| *py).max().unwrap_or(y) + smear_max;
+
+        for py in min_y..=max_y {
+            for px in min_x..=max_x {
+                if base_pixels.contains(&(px, py)) {
+                    continue;
+                }
+                let mut smeared = false;
+                'smear: for dy in -1..=smear_max {
+                    for dx in -1..=smear_max {
+                        if base_pixels.contains(&(px - dx, py - dy)) {
+                            smeared = true;
+                            break 'smear;
+                        }
+                    }
+                }
+                if smeared {
+                    Self::fb_set_styled_text_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        px,
+                        py,
+                        pixel_index_override,
+                        black,
+                    );
+                }
+            }
         }
-        advance
+
+        Self::fb_styled_glyph_advance(glyph, style)
     }
 
     /// Draw a string to the framebuffer, return total width
@@ -1309,6 +1416,91 @@ impl super::TrapDispatcher {
                 ch,
                 font_id,
                 font_size,
+            );
+        }
+        cx - x
+    }
+
+    fn fb_draw_char_clipped(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        ch: char,
+        font_id: i16,
+        font_size: i16,
+        clip: (i16, i16, i16, i16),
+    ) -> i16 {
+        let Some((glyph, data)) = get_glyph(font_id, font_size, ch) else {
+            return 6;
+        };
+        let gx = x + glyph.origin_x as i16;
+        let gy = y + glyph.origin_y as i16;
+        let gw = glyph.width as usize;
+        let gh = glyph.height as usize;
+        let (clip_top, clip_left, clip_bottom, clip_right) = clip;
+        for row in 0..gh {
+            let py = gy + row as i16;
+            if py < clip_top || py >= clip_bottom {
+                continue;
+            }
+            for col in 0..gw {
+                let px = gx + col as i16;
+                if px < clip_left || px >= clip_right {
+                    continue;
+                }
+                let byte_idx = glyph.data_offset + row * gw + col;
+                if byte_idx < data.len() && data[byte_idx] >= 128 {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        px,
+                        py,
+                        true,
+                    );
+                }
+            }
+        }
+        glyph.advance as i16
+    }
+
+    fn fb_draw_string_clipped(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        s: &str,
+        font_id: i16,
+        font_size: i16,
+        clip: (i16, i16, i16, i16),
+    ) -> i16 {
+        let mut cx = x;
+        for ch in s.chars() {
+            cx += Self::fb_draw_char_clipped(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                cx,
+                y,
+                ch,
+                font_id,
+                font_size,
+                clip,
             );
         }
         cx - x
@@ -1583,11 +1775,12 @@ impl super::TrapDispatcher {
         let text_height = metrics.ascent + metrics.descent;
         let text_y = (menu_bar_height - text_height) / 2 + metrics.ascent;
 
-        // Draw menu titles from the current menu list only (menus become
-        // current after InsertMenu). IM:I I-352 / I-354.
+        // Draw visible menu titles from the current menu list. InsertMenu
+        // with beforeID=-1 installs a submenu/popup in the current menu
+        // list without adding a menu-bar title. MTE 1992, p. 3-121.
         let mut x: i16 = 18;
         for menu in &self.menus {
-            if !menu.in_menu_bar || menu.hierarchical {
+            if !menu.visible_in_menu_bar {
                 continue;
             }
             let title = &menu.title;
@@ -1606,7 +1799,30 @@ impl super::TrapDispatcher {
                 false,
             );
             let title_index = Self::menu_title_pixel_index(bus, menu.id, pixel_size);
-            let width = if let Some(pixel_index) = title_index {
+            let classic_plain_dimmed_title = self.ui_theme_id() == UiThemeId::ClassicSystem7
+                && title_index.is_none()
+                && !menu.enabled;
+            let width = if classic_plain_dimmed_title {
+                // MTE 1992 p. 3-131: DisableItem(menu, 0) disables the
+                // whole menu title. On a plain classic screen dump, the
+                // standard MDEF's dimmed title treatment resolves to the
+                // menu-bar background, matching the System 7.5.3 oracle while
+                // preserving title spacing and hit regions.
+                title_width
+            } else if Self::is_apple_mark_title(title) {
+                Self::fb_draw_classic_apple_mark_title(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    text_y,
+                    title_index,
+                );
+                title_width
+            } else if let Some(pixel_index) = title_index {
                 Self::fb_draw_string_styled_index(
                     bus,
                     screen_base,
@@ -1641,7 +1857,83 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn fb_draw_menu_bar_rounded_corners(
+    fn is_apple_mark_title(title: &str) -> bool {
+        let mut chars = title.chars();
+        matches!(chars.next(), Some('\u{14}' | '\u{F8FF}')) && chars.next().is_none()
+    }
+
+    fn fb_draw_classic_apple_mark_title(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        baseline_y: i16,
+        pixel_index_override: Option<u8>,
+    ) {
+        // System 7's standard menu-bar appleMark title is MDEF-owned chrome,
+        // not the raw Chicago $14 glyph. The mask below is the 11x14 title
+        // bitmap captured from the BasiliskII/System 7.5.3 oracle; it is drawn
+        // one pixel left of the title origin and with the same baseline as
+        // Chicago 12 menu titles.
+        const MASK: [&str; 14] = [
+            ".......##..",
+            "......##...",
+            "......#....",
+            "..###..###.",
+            ".##########",
+            "...........",
+            "...........",
+            "...........",
+            "...........",
+            "###########",
+            ".##########",
+            ".##########",
+            "..########.",
+            "...##..##..",
+        ];
+
+        let left = x - 1;
+        let top = baseline_y - 12;
+        for (dy, row) in MASK.iter().enumerate() {
+            for (dx, byte) in row.as_bytes().iter().enumerate() {
+                if *byte != b'#' {
+                    continue;
+                }
+                let dst_x = left + dx as i16;
+                let dst_y = top + dy as i16;
+                if let Some(pixel_index) = pixel_index_override {
+                    Self::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        dst_x,
+                        dst_y,
+                        pixel_index,
+                    );
+                } else {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        dst_x,
+                        dst_y,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) fn fb_draw_menu_bar_rounded_corners(
         bus: &mut MacMemoryBus,
         screen_base: u32,
         row_bytes: u32,
@@ -1877,19 +2169,26 @@ impl super::TrapDispatcher {
             false,
         );
 
-        // Draw title bar border: top and bottom (separator) lines
-        Self::fb_hline(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            tb_top,
-            tb_left,
-            tb_right,
-            true,
-        );
+        let is_movable_modal = self.window_proc_id == 5;
+        let has_go_away = active && matches!(self.window_proc_id, 0 | 4) && self.go_away_flag;
+
+        // Draw title bar border. Classic document WDEFs leave the top edge
+        // open; System 7.5.3 paints only side edges, bottom separator, and
+        // active pinstripes. movableDBoxProc keeps the full title-frame top.
+        if is_movable_modal {
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                tb_top,
+                tb_left,
+                tb_right,
+                true,
+            );
+        }
         Self::fb_hline(
             bus,
             screen_base,
@@ -1951,8 +2250,6 @@ impl super::TrapDispatcher {
             (tb_right, tb_right) // No clear area
         };
 
-        let is_movable_modal = self.window_proc_id == 5;
-        let has_go_away = active && matches!(self.window_proc_id, 0 | 4) && self.go_away_flag;
         let _close_box_width = if has_go_away { 15i16 } else { 0 };
 
         if is_movable_modal {
@@ -2062,7 +2359,10 @@ impl super::TrapDispatcher {
             //
             // System 7.5.3 reserves only 6 px of clear-area on each side of
             // the title text for stripes (the 16-px `title_clear_left/right`
-            // margin is for text-glyph hit-testing, not for stripes).
+            // margin is for text-glyph hit-testing, not for stripes). The
+            // active document WDEF paints pinstripe rows at title-bar offsets
+            // 1, 3, and 5; this row placement is calibrated against the
+            // BasiliskII System 7.5.3 oracle.
             // Inside Macintosh Volume V, V-188 figure 5-3.
             if active {
                 let stripe_left_edge = tb_left + 2;
@@ -2079,8 +2379,8 @@ impl super::TrapDispatcher {
                     (stripe_right_end, stripe_right_end) // no gap
                 };
 
-                for y in (tb_top + 4)..=(tb_bottom - 3) {
-                    if (y - tb_top) % 2 == 0 {
+                for y in (tb_top + 1)..=(tb_bottom - 4) {
+                    if (y - tb_top) % 2 == 1 {
                         // Draw stripe segments, skipping close box and title text gaps
                         // Segment 1: left edge to close box (or title text if no close box)
                         let seg1_end = if has_go_away {
@@ -2141,7 +2441,7 @@ impl super::TrapDispatcher {
             // over a plain title bar.
             if !self.window_title.is_empty() {
                 let text_x = title_clear_left + 8;
-                Self::fb_draw_string(
+                Self::fb_draw_string_clipped(
                     bus,
                     screen_base,
                     row_bytes,
@@ -2149,10 +2449,11 @@ impl super::TrapDispatcher {
                     screen_width,
                     screen_height,
                     text_x,
-                    text_y,
+                    text_y - 5,
                     &self.window_title,
                     font_id,
                     font_size,
+                    (tb_top, tb_left, tb_bottom - 2, tb_right),
                 );
             }
         }
@@ -2197,7 +2498,7 @@ impl super::TrapDispatcher {
         );
 
         // Shadow effect
-        for y in (tb_top + 1)..=(wind_bottom + 1) {
+        for y in tb_top..=(wind_bottom + 1) {
             Self::fb_set_pixel(
                 bus,
                 screen_base,
@@ -3242,6 +3543,7 @@ mod redraw_chrome_tests {
             handle: 0,
             in_menu_bar: true,
             hierarchical: false,
+            visible_in_menu_bar: true,
         });
         // Skip blit_window_to_screen by leaving front_window=0 — the
         // test specifically targets draw_menu_bar_to_fb, not the window
@@ -3296,6 +3598,7 @@ mod redraw_chrome_tests {
             handle: 0,
             in_menu_bar: true,
             hierarchical: false,
+            visible_in_menu_bar: true,
         });
         disp.front_window = 0;
         disp.fullscreen_locked = false;
@@ -3353,6 +3656,7 @@ mod redraw_chrome_tests {
             handle: 0,
             in_menu_bar: true,
             hierarchical: false,
+            visible_in_menu_bar: true,
         });
         disp.front_window = 0;
         disp.fullscreen_locked = false;

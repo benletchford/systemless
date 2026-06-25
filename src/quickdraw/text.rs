@@ -64,6 +64,14 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
         }
         return get_macroman_glyph(font_id, size, 0x12);
     }
+    if ch == '\u{14}' || ch == '\u{F8FF}' {
+        if let Some(hit) =
+            override_symbol_glyph(font_id, size, override_format::APPLE_SYMBOL_GLYPH_INDEX)
+        {
+            return Some(hit);
+        }
+        return get_macroman_glyph(font_id, size, 0x14);
+    }
 
     None
 }

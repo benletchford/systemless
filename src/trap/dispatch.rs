@@ -39,6 +39,7 @@ static TRACE_PC_TARGET: OnceLock<Option<u32>> = OnceLock::new();
 static TRACE_NATIVE_TRAPS: OnceLock<bool> = OnceLock::new();
 static GUI_CAPTURE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 static GUI_CAPTURE_LIMIT: OnceLock<Option<u64>> = OnceLock::new();
+static GUI_CAPTURE_LABEL: OnceLock<Option<String>> = OnceLock::new();
 static GUI_CAPTURE_FRAME: AtomicU64 = AtomicU64::new(0);
 
 /// File-backed sink for `SYSTEMLESS_TRACE_TRAP_PCS=<filepath>`. When set,
@@ -197,6 +198,19 @@ fn gui_capture_limit() -> Option<u64> {
             .ok()
             .and_then(|value| value.parse().ok())
     })
+}
+
+fn gui_capture_label() -> Option<&'static str> {
+    GUI_CAPTURE_LABEL
+        .get_or_init(|| {
+            let label = std::env::var("SYSTEMLESS_GUI_CAPTURE_LABEL").ok()?;
+            if label.is_empty() {
+                None
+            } else {
+                Some(label)
+            }
+        })
+        .as_deref()
 }
 
 fn sanitize_gui_capture_label(label: &str) -> String {
@@ -1415,6 +1429,10 @@ pub struct TrapDispatcher {
     /// controls, snapshotted pixels). On re-entry we skip draw_dialog to
     /// preserve game-drawn custom content (e.g. PICT titles, group boxes).
     pub(crate) dialog_modal_entered: std::collections::HashSet<u32>,
+    /// Editable dialog items whose initial all-selected text state has already
+    /// been replaced by typed input. Keyed by (dialog_ptr, 1-based item number)
+    /// so ModalDialog re-entry keeps appending instead of replacing again.
+    pub(crate) dialog_edit_text_modified_items: HashSet<(u32, i16)>,
     /// Visible dialogs whose initial NewDialog/GetNewDialog draw was deferred
     /// because one or more in-bounds userItem draw procs had not yet been
     /// installed. If such a dialog is disposed before DrawDialog/ModalDialog
@@ -1461,6 +1479,10 @@ pub struct TrapDispatcher {
     /// Original DITL rects for popup userItems, saved before SetDItem narrows them.
     /// Key: (dialog_ptr, 1-based item_no), Value: (top, left, bottom, right)
     pub(crate) dialog_popup_original_rects: HashMap<(u32, i16), (i16, i16, i16, i16)>,
+    /// Popup-like userItems detected by geometry narrowing rather than a draw
+    /// ProcPtr install. Some apps query a full-width userItem, shrink it to a
+    /// small arrow hit rect with SetDItem, and draw the menu title separately.
+    pub(crate) dialog_popup_candidate_items: HashSet<(u32, i16)>,
     /// Desk scrap contents: list of (type_code, data) entries.
     /// Each entry stores a 4-byte ResType and the raw data bytes.
     /// Inside Macintosh Volume I, I-453
@@ -1604,6 +1626,11 @@ impl TrapDispatcher {
         let Some(dir) = gui_capture_dir() else {
             return;
         };
+        if let Some(required_label) = gui_capture_label() {
+            if !label.contains(required_label) {
+                return;
+            }
+        }
         let (_, _, width, height, _) = self.screen_mode;
         if width == 0 || height == 0 {
             return;
@@ -2411,6 +2438,7 @@ impl TrapDispatcher {
             dialog_saved_pixels: HashMap::new(),
             dialog_visible_snapshots: HashMap::new(),
             dialog_modal_entered: std::collections::HashSet::new(),
+            dialog_edit_text_modified_items: HashSet::new(),
             dialog_initial_draw_deferred: HashSet::new(),
             modeless_dialog_draw_proc_queue: VecDeque::new(),
             active_modeless_dialog_draw_proc: None,
@@ -2424,6 +2452,7 @@ impl TrapDispatcher {
             pending_dialog_popup_menu: None,
             dialog_item_popup_menus: HashMap::new(),
             dialog_popup_original_rects: HashMap::new(),
+            dialog_popup_candidate_items: HashSet::new(),
             scrap_entries: Vec::new(),
             scrap_count: 0,
             scrap_in_memory: true,

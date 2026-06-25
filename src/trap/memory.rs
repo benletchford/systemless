@@ -3049,16 +3049,17 @@ impl super::TrapDispatcher {
             // Selector-dispatch trap (e.g. $0402 AppendDITL, $0403 CountDITL,
             // $0404 ShortenDITL).
             //
-            // Systemless HLE currently implements the common CountDITL selector
-            // ($0403): it returns the dialog's current item count through the
-            // Pascal function result slot. The MPW C call frame observed in
-            // the strict fixture places the 4-byte result slot at SP+0..3,
-            // the selector word at SP+4..5, and the DialogPtr argument at
-            // SP+6..9. The remaining selectors stay as no-op stubs for now.
+            // Systemless HLE implements the Dialog Manager selectors that
+            // System 7 exposes through this trap. MPW glue observed in the
+            // Marathon 2 preferences path places the return address at SP+0,
+            // selector word at SP+4, and selector-specific arguments after it
+            // (for AppendDITL: method at SP+6, DITL handle at SP+8, DialogPtr
+            // at SP+12). The trap itself does not consume the caller frame.
             //
             // Contract coverage:
             //   src/trap/memory.rs::tests::commtoolboxdispatch_countditl_returns_dialog_item_count_and_preserves_stack_pointer
             //   src/trap/memory.rs::tests::commtoolboxdispatch_countditl_preserves_non_d0_registers
+            //   src/trap/memory.rs::tests::commtoolboxdispatch_appendditl_overlay_appends_items_and_preserves_stack_pointer
             (false, 0x8B) => {
                 fn count_dialog_items(bus: &MacMemoryBus, dialog_ptr: u32) -> u16 {
                     if dialog_ptr == 0 {
@@ -3079,37 +3080,67 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let selector_stack = bus.read_word(sp + 4);
                 let selector_d0 = cpu.read_reg(Register::D0) as u16;
-                let dialog_ptr = if selector_stack == 0x0403 {
-                    bus.read_long(sp + 6)
-                } else if selector_d0 == 0x0403 {
-                    bus.read_long(sp + 6)
-                } else {
-                    cpu.write_reg(Register::D0, 0);
-                    return Some(Ok(()));
-                };
 
-                let mut resolved_ptr = dialog_ptr;
-                let mut count = count_dialog_items(bus, resolved_ptr);
-                if count == 0 {
-                    count = self
-                        .dialog_items
-                        .get(&resolved_ptr)
-                        .map(|items| items.len() as u16)
-                        .unwrap_or(0);
-                }
-                if count == 0 && self.front_window != 0 && self.front_window != resolved_ptr {
-                    resolved_ptr = self.front_window;
-                    count = count_dialog_items(bus, resolved_ptr);
-                    if count == 0 {
-                        count = self
-                            .dialog_items
-                            .get(&resolved_ptr)
-                            .map(|items| items.len() as u16)
-                            .unwrap_or(0);
+                match (selector_stack, selector_d0) {
+                    (0x0402, _) => {
+                        let method = bus.read_word(sp + 6) as i16;
+                        let ditl_handle = bus.read_long(sp + 8);
+                        let dialog_ptr = bus.read_long(sp + 12);
+                        let count =
+                            self.append_ditl_to_dialog(bus, dialog_ptr, ditl_handle, method);
+                        cpu.write_reg(Register::D0, count as u32);
+                    }
+                    (_, 0x0402) => {
+                        let method = bus.read_word(sp) as i16;
+                        let ditl_handle = bus.read_long(sp + 2);
+                        let dialog_ptr = bus.read_long(sp + 6);
+                        let count =
+                            self.append_ditl_to_dialog(bus, dialog_ptr, ditl_handle, method);
+                        cpu.write_reg(Register::D0, count as u32);
+                    }
+                    (0x0403, _) | (_, 0x0403) => {
+                        let dialog_ptr = bus.read_long(sp + 6);
+                        let mut resolved_ptr = dialog_ptr;
+                        let mut count = count_dialog_items(bus, resolved_ptr);
+                        if count == 0 {
+                            count = self
+                                .dialog_items
+                                .get(&resolved_ptr)
+                                .map(|items| items.len() as u16)
+                                .unwrap_or(0);
+                        }
+                        if count == 0 && self.front_window != 0 && self.front_window != resolved_ptr
+                        {
+                            resolved_ptr = self.front_window;
+                            count = count_dialog_items(bus, resolved_ptr);
+                            if count == 0 {
+                                count = self
+                                    .dialog_items
+                                    .get(&resolved_ptr)
+                                    .map(|items| items.len() as u16)
+                                    .unwrap_or(0);
+                            }
+                        }
+
+                        cpu.write_reg(Register::D0, count as u32);
+                    }
+                    (0x0404, _) => {
+                        let number_items = bus.read_word(sp + 6);
+                        let dialog_ptr = bus.read_long(sp + 8);
+                        let count = self.shorten_ditl_in_dialog(bus, dialog_ptr, number_items);
+                        cpu.write_reg(Register::D0, count as u32);
+                    }
+                    (_, 0x0404) => {
+                        let number_items = bus.read_word(sp);
+                        let dialog_ptr = bus.read_long(sp + 2);
+                        let count = self.shorten_ditl_in_dialog(bus, dialog_ptr, number_items);
+                        cpu.write_reg(Register::D0, count as u32);
+                    }
+                    _ => {
+                        cpu.write_reg(Register::D0, 0);
                     }
                 }
 
-                cpu.write_reg(Register::D0, count as u32);
                 Ok(())
             }
 
@@ -7207,6 +7238,99 @@ mod tests {
             cpu.read_reg(Register::D0),
             3,
             "CountDITL should report the three dialog items we installed"
+        );
+    }
+
+    #[test]
+    fn commtoolboxdispatch_appendditl_overlay_appends_items_and_preserves_stack_pointer() {
+        // Inside Macintosh Volume VI (1991), Appendix C table C-3 (p. C-4):
+        // selector $0402 dispatches AppendDITL through _CommToolboxDispatch.
+        // Marathon 2's preferences glue uses selector at SP+4, overlay method
+        // at SP+6, DITL handle at SP+8, and DialogPtr at SP+12.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.current_trap_word = 0xA08B;
+
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let old_ditl_ptr = bus.alloc(18);
+        let preserved_handle = 0x00AB_CDEF;
+        bus.write_long(items_handle, old_ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(old_ditl_ptr, 0);
+        bus.write_long(old_ditl_ptr + 2, preserved_handle);
+        bus.write_word(old_ditl_ptr + 6, 10);
+        bus.write_word(old_ditl_ptr + 8, 20);
+        bus.write_word(old_ditl_ptr + 10, 30);
+        bus.write_word(old_ditl_ptr + 12, 60);
+        bus.write_byte(old_ditl_ptr + 14, 4);
+        bus.write_byte(old_ditl_ptr + 15, 2);
+        bus.write_bytes(old_ditl_ptr + 16, b"OK");
+        dispatcher.dialog_items.insert(
+            dialog_ptr,
+            vec![crate::trap::dispatch::DialogItem {
+                item_type: 4,
+                rect: (10, 20, 30, 60),
+                text: "OK".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let append_handle = bus.alloc(4);
+        let append_ditl_ptr = bus.alloc(20);
+        bus.write_long(append_handle, append_ditl_ptr);
+        bus.write_word(append_ditl_ptr, 0);
+        bus.write_long(append_ditl_ptr + 2, 0);
+        bus.write_word(append_ditl_ptr + 6, 40);
+        bus.write_word(append_ditl_ptr + 8, 50);
+        bus.write_word(append_ditl_ptr + 10, 55);
+        bus.write_word(append_ditl_ptr + 12, 110);
+        bus.write_byte(append_ditl_ptr + 14, 8);
+        bus.write_byte(append_ditl_ptr + 15, 4);
+        bus.write_bytes(append_ditl_ptr + 16, b"Pane");
+
+        let sp_before = cpu.read_reg(Register::A7);
+        bus.write_long(sp_before, 0x1357_2468);
+        bus.write_word(sp_before + 4, 0x0402);
+        bus.write_word(sp_before + 6, 0); // overlayDITL
+        bus.write_long(sp_before + 8, append_handle);
+        bus.write_long(sp_before + 12, dialog_ptr);
+        bus.write_word(sp_before + 16, 0xBEEF);
+
+        let result = dispatcher.dispatch_memory(false, 0x8B, &mut cpu, &mut bus);
+        assert!(result.is_some(), "AppendDITL should be handled");
+        assert!(result.unwrap().is_ok(), "AppendDITL should return cleanly");
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp_before,
+            "AppendDITL must preserve the caller stack pointer"
+        );
+        assert_eq!(bus.read_word(sp_before + 4), 0x0402);
+        assert_eq!(bus.read_word(sp_before + 16), 0xBEEF);
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            2,
+            "AppendDITL should mirror the new dialog item count in D0"
+        );
+
+        let new_ditl_ptr = bus.read_long(items_handle);
+        assert_ne!(new_ditl_ptr, old_ditl_ptr);
+        assert_eq!(bus.read_word(new_ditl_ptr), 1);
+        assert_eq!(
+            bus.read_long(new_ditl_ptr + 2),
+            preserved_handle,
+            "AppendDITL must preserve existing item handles in the copied DITL"
+        );
+        let appended_handle = bus.read_long(new_ditl_ptr + 18);
+        assert_ne!(
+            appended_handle, 0,
+            "AppendDITL should initialize text storage for appended statText items"
+        );
+        assert_eq!(
+            dispatcher.dialog_items.get(&dialog_ptr).unwrap()[1].text,
+            "Pane"
         );
     }
 
