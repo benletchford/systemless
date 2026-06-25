@@ -15053,10 +15053,15 @@ impl super::TrapDispatcher {
     }
 
     fn has_depth_mode_id(depth: u16, which_flags: u16, flags: u16) -> u16 {
-        // HasDepth's flags bit 0 is the color-device constraint. When the
-        // caller explicitly asks for a non-color mode, only 1 bpp qualifies.
+        // HasDepth's flags bit 0 is the color-device constraint. Classic
+        // color hardware can also advertise indexed grayscale monitor modes
+        // such as 4-bit "16 grays" and 8-bit "256 grays"; Glider PRO checks
+        // those modes before showing its color-depth dialog.
         if which_flags & 1 != 0 && flags & 1 == 0 {
-            return if depth == 1 { depth } else { 0 };
+            return match depth {
+                1 | 2 | 4 | 8 => depth,
+                _ => 0,
+            };
         }
 
         if Self::supported_depth_from_mode(depth).is_some() {
@@ -31371,6 +31376,43 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(TEST_SP + 10), 32);
+    }
+
+    #[test]
+    fn has_depth_d0_path_indexed_grayscale_modes_return_nonzero() {
+        // Glider PRO probes for indexed grayscale monitor modes before its
+        // startup depth dialog. BasiliskII reports 16-gray and 256-gray modes
+        // as available on the same color-capable main device.
+        for depth in [4, 8] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let gdh = d.ensure_main_gdevice(&mut bus);
+            cpu.write_reg(Register::D0, 0x0A14);
+            bus.write_word(TEST_SP, 0); // flags: gdDevType clear (grayscale)
+            bus.write_word(TEST_SP + 2, 1); // whichFlags: gdDevType matters
+            bus.write_word(TEST_SP + 4, depth);
+            bus.write_long(TEST_SP + 6, gdh);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+            assert_eq!(bus.read_word(TEST_SP + 10), depth);
+        }
+    }
+
+    #[test]
+    fn has_depth_stack_selector_indexed_grayscale_modes_return_nonzero() {
+        for depth in [4, 8] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let gdh = d.ensure_main_gdevice(&mut bus);
+            bus.write_word(TEST_SP, 0x0A14); // selector
+            bus.write_word(TEST_SP + 2, 0); // flags: gdDevType clear
+            bus.write_word(TEST_SP + 4, 1); // whichFlags: gdDevType matters
+            bus.write_word(TEST_SP + 6, depth);
+            bus.write_long(TEST_SP + 8, gdh);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+            assert_eq!(bus.read_word(TEST_SP + 12), depth);
+        }
     }
 
     #[test]
