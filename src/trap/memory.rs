@@ -1786,13 +1786,16 @@ impl super::TrapDispatcher {
             // Device Manager control call. Register-based: A0 = param block ptr.
             // FUNCTION PBControl (paramBlock: ParmBlkPtr; async: BOOLEAN): OSErr;
             // Inside Macintosh: Devices 1994, p. 1-16
-            // _Control ($A004): Handles cscSetMode (csCode=2) by returning page/base address through the csParam VDPgInfoPtr and cscSetEntries (csCode=3) via VDSetEntryRecord; returns noErr
+            // _Control ($A004): Handles cscSetMode (csCode=2) by returning
+            // page/base address through the inline csParam VDPgInfo record
+            // and cscSetEntries (csCode=3) via VDSetEntryRecord; returns noErr.
             (false, 0x04) => {
                 let pb = cpu.read_reg(Register::A0);
                 if pb != 0 {
                     let cs_code = bus.read_word(pb + 26) as i16;
                     // cscSetMode (csCode=2): switch mode/page and return base address.
-                    // CntrlParam.csParam stores a VDPgInfoPtr for this call.
+                    // Low-level PBControl stores the VDPgInfo record inline in
+                    // CntrlParam.csParam, whose documented layout is short[11].
                     // VDPgInfo layout:
                     //   csMode [word] @ +0
                     //   csData [long] @ +2
@@ -1801,22 +1804,10 @@ impl super::TrapDispatcher {
                     // Designing Cards and Drivers 3rd Ed 1992, p. 219, 235
                     // Devices 1994, p. 2-128, 6-68
                     if cs_code == 2 {
-                        let vdpg_info = bus.read_long(pb + 28);
-                        let cs_mode = if vdpg_info != 0 {
-                            bus.read_word(vdpg_info) as i16
-                        } else {
-                            0
-                        };
-                        let cs_data = if vdpg_info != 0 {
-                            bus.read_long(vdpg_info + 2)
-                        } else {
-                            0
-                        };
-                        let cs_page = if vdpg_info != 0 {
-                            bus.read_word(vdpg_info + 6) as i16
-                        } else {
-                            0
-                        };
+                        let vdpg_info = pb + 28;
+                        let cs_mode = bus.read_word(vdpg_info) as i16;
+                        let cs_data = bus.read_long(vdpg_info + 2);
+                        let cs_page = bus.read_word(vdpg_info + 6) as i16;
                         let mut screen_base = self.screen_mode.0;
                         if screen_base == 0 {
                             let gdh = self.ensure_main_gdevice(bus);
@@ -1848,10 +1839,22 @@ impl super::TrapDispatcher {
                             );
                         }
 
-                        if vdpg_info != 0 {
+                        let vdpg_end = vdpg_info.saturating_add(12);
+                        let frame_sp = cpu.read_reg(Register::A7);
+                        let frame_a6 = cpu.read_reg(Register::A6);
+                        let fits_current_stack_frame = !(frame_sp <= vdpg_info
+                            && vdpg_info < frame_a6)
+                            || vdpg_end <= frame_a6;
+
+                        if fits_current_stack_frame {
                             // Single-screen HLE currently exposes page 0.
                             bus.write_word(vdpg_info + 6, 0); // csPage
                             bus.write_long(vdpg_info + 8, screen_base); // csBaseAddr
+                        } else if trace_video_driver_enabled() {
+                            eprintln!(
+                                "[VIDEO] cscSetMode output skipped: inline VDPgInfo ${:08X}..${:08X} exceeds stack frame ${:08X}..${:08X}",
+                                vdpg_info, vdpg_end, frame_sp, frame_a6
+                            );
                         }
                     }
 
@@ -8864,14 +8867,16 @@ mod tests {
     }
 
     #[test]
-    fn test_control_set_mode_uses_vdpginfo_pointer() {
+    fn test_control_set_mode_uses_inline_vdpginfo() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = 0x300000u32;
-        let vdpg_info = 0x310000u32;
 
         dispatcher.screen_mode.0 = 0x01F80000;
         bus.write_word(pb + 26, 2); // csCode = cscSetMode
-        bus.write_long(pb + 28, vdpg_info); // csParam = VDPgInfoPtr
+        bus.write_word(pb + 28, 1); // csParam.csMode
+        bus.write_long(pb + 30, 0x12345678); // csParam.csData
+        bus.write_word(pb + 34, 0xFFFF); // csParam.csPage
+        bus.write_long(pb + 36, 0xDEADBEEF); // csParam.csBaseAddr
 
         cpu.write_reg(Register::A0, pb);
         let result = dispatcher.dispatch_memory(false, 0x04, &mut cpu, &mut bus);
@@ -8879,19 +8884,80 @@ mod tests {
         assert!(result.unwrap().is_ok(), "PBControl should succeed");
 
         assert_eq!(
-            bus.read_word(vdpg_info + 6),
+            bus.read_word(pb + 34),
             0,
-            "SetMode should return page 0 through the pointed VDPgInfo"
-        );
-        assert_eq!(
-            bus.read_long(vdpg_info + 8),
-            0x01F80000,
-            "SetMode should return the framebuffer base through the pointed VDPgInfo"
+            "SetMode should return page 0 through inline csParam VDPgInfo"
         );
         assert_eq!(
             bus.read_long(pb + 36),
+            0x01F80000,
+            "SetMode should return the framebuffer base through inline csParam VDPgInfo"
+        );
+    }
+
+    #[test]
+    fn test_control_set_mode_does_not_dereference_csparam_as_pointer() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let pointer_shaped_csparam = 0x310000u32;
+
+        dispatcher.screen_mode.0 = 0x01F80000;
+        bus.write_word(pb + 26, 2); // csCode = cscSetMode
+        bus.write_long(pb + 28, pointer_shaped_csparam);
+        bus.write_word(pb + 34, 0xFFFF);
+        bus.write_long(pb + 36, 0xDEADBEEF);
+        bus.write_word(pointer_shaped_csparam + 6, 0x7777);
+        bus.write_long(pointer_shaped_csparam + 8, 0xCAFEBABE);
+
+        cpu.write_reg(Register::A0, pb);
+        let result = dispatcher.dispatch_memory(false, 0x04, &mut cpu, &mut bus);
+        assert!(result.is_some(), "PBControl should be handled");
+        assert!(result.unwrap().is_ok(), "PBControl should succeed");
+
+        assert_eq!(
+            bus.read_word(pointer_shaped_csparam + 6),
+            0x7777,
+            "SetMode should not treat csParam's first longword as a VDPgInfo pointer"
+        );
+        assert_eq!(
+            bus.read_long(pointer_shaped_csparam + 8),
+            0xCAFEBABE,
+            "SetMode should not write through a pointer-shaped inline csParam value"
+        );
+        assert_eq!(
+            bus.read_word(pb + 34),
             0,
-            "SetMode should not scribble past the param block by treating VDPgInfo as inline"
+            "SetMode should still update inline csPage"
+        );
+        assert_eq!(
+            bus.read_long(pb + 36),
+            0x01F80000,
+            "SetMode should still update inline csBaseAddr"
+        );
+    }
+
+    #[test]
+    fn test_control_set_mode_does_not_write_past_short_stack_frame() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let frame_a6 = pb + 32;
+
+        dispatcher.screen_mode.0 = 0x01F80000;
+        bus.write_word(pb + 26, 2); // csCode = cscSetMode
+        bus.write_word(pb + 28, 1); // csParam.csMode only
+        bus.write_long(frame_a6 + 4, 0x00ABCDEF); // saved return address
+
+        cpu.write_reg(Register::A0, pb);
+        cpu.write_reg(Register::A7, pb);
+        cpu.write_reg(Register::A6, frame_a6);
+        let result = dispatcher.dispatch_memory(false, 0x04, &mut cpu, &mut bus);
+        assert!(result.is_some(), "PBControl should be handled");
+        assert!(result.unwrap().is_ok(), "PBControl should succeed");
+
+        assert_eq!(
+            bus.read_long(frame_a6 + 4),
+            0x00ABCDEF,
+            "SetMode should not write csBaseAddr past a short stack parameter block"
         );
     }
 

@@ -3156,27 +3156,39 @@ impl super::TrapDispatcher {
                 if dst_is_port && port != 0 {
                     // Clip to visRgn (GrafPort offset 24)
                     vis_rgn_handle = bus.read_long(port + 24);
-                    if let Some((vt, vl, vb, vr)) = Self::region_bbox(bus, vis_rgn_handle) {
-                        clip_t = clip_t.max(vt);
-                        clip_l = clip_l.max(vl);
-                        clip_b = clip_b.min(vb);
-                        clip_r = clip_r.min(vr);
+                    if !Self::clip_rect_to_region_bbox(
+                        bus,
+                        vis_rgn_handle,
+                        &mut clip_t,
+                        &mut clip_l,
+                        &mut clip_b,
+                        &mut clip_r,
+                    ) {
+                        return Some(Ok(()));
                     }
                     // Clip to clipRgn (GrafPort offset 28)
                     clip_rgn_handle = bus.read_long(port + 28);
-                    if let Some((ct, cl, cb, cr)) = Self::region_bbox(bus, clip_rgn_handle) {
-                        clip_t = clip_t.max(ct);
-                        clip_l = clip_l.max(cl);
-                        clip_b = clip_b.min(cb);
-                        clip_r = clip_r.min(cr);
+                    if !Self::clip_rect_to_region_bbox(
+                        bus,
+                        clip_rgn_handle,
+                        &mut clip_t,
+                        &mut clip_l,
+                        &mut clip_b,
+                        &mut clip_r,
+                    ) {
+                        return Some(Ok(()));
                     }
                 }
 
-                if let Some((mt, ml, mb, mr)) = Self::region_bbox(bus, mask_rgn) {
-                    clip_t = clip_t.max(mt);
-                    clip_l = clip_l.max(ml);
-                    clip_b = clip_b.min(mb);
-                    clip_r = clip_r.min(mr);
+                if !Self::clip_rect_to_region_bbox(
+                    bus,
+                    mask_rgn,
+                    &mut clip_t,
+                    &mut clip_l,
+                    &mut clip_b,
+                    &mut clip_r,
+                ) {
+                    return Some(Ok(()));
                 }
 
                 // Also clip against destination bitmap bounds
@@ -3442,6 +3454,9 @@ impl super::TrapDispatcher {
                     && dst_inside_bounds
                     && src_info.base != dst_info.base
                     && pixel_size_ok
+                    && !Self::region_is_complex(bus, vis_rgn_handle)
+                    && !Self::region_is_complex(bus, clip_rgn_handle)
+                    && !Self::region_is_complex(bus, mask_rgn)
                     && trace_copybits_hud_probe().is_none()
                     && dump_copybits_src_path().is_none()
                     && !trace_copybits_all_enabled()
@@ -9031,7 +9046,7 @@ impl super::TrapDispatcher {
 
                 if rgn_handle != 0 && bmap_ptr != 0 {
                     let info = self.resolve_copy_bitmap(bus, bmap_ptr);
-                    let mut wrote_region = false;
+                    let wrote_region;
                     if info.pixel_size == 1 && info.bounds_bottom > info.bounds_top {
                         let mut data_words = Vec::new();
                         let mut previous_row = Vec::new();
@@ -13512,11 +13527,15 @@ impl super::TrapDispatcher {
                 let mut clip_b = dst_bottom.min(dst_info.bounds_bottom);
                 let mut clip_r = dst_right.min(dst_info.bounds_right);
 
-                if let Some((mt, ml, mb, mr)) = Self::region_bbox(bus, mask_rgn) {
-                    clip_t = clip_t.max(mt);
-                    clip_l = clip_l.max(ml);
-                    clip_b = clip_b.min(mb);
-                    clip_r = clip_r.min(mr);
+                if !Self::clip_rect_to_region_bbox(
+                    bus,
+                    mask_rgn,
+                    &mut clip_t,
+                    &mut clip_l,
+                    &mut clip_b,
+                    &mut clip_r,
+                ) {
+                    return Some(Ok(()));
                 }
 
                 if clip_b <= clip_t || clip_r <= clip_l {
@@ -17647,26 +17666,38 @@ impl super::TrapDispatcher {
         };
         if dst_is_port && port != 0 {
             vis_rgn_handle = bus.read_long(port + 24);
-            if let Some((vt, vl, vb, vr)) = Self::region_bbox(bus, vis_rgn_handle) {
-                clip_t = clip_t.max(vt);
-                clip_l = clip_l.max(vl);
-                clip_b = clip_b.min(vb);
-                clip_r = clip_r.min(vr);
+            if !Self::clip_rect_to_region_bbox(
+                bus,
+                vis_rgn_handle,
+                &mut clip_t,
+                &mut clip_l,
+                &mut clip_b,
+                &mut clip_r,
+            ) {
+                return Ok(());
             }
             clip_rgn_handle = bus.read_long(port + 28);
-            if let Some((ct, cl, cb, cr)) = Self::region_bbox(bus, clip_rgn_handle) {
-                clip_t = clip_t.max(ct);
-                clip_l = clip_l.max(cl);
-                clip_b = clip_b.min(cb);
-                clip_r = clip_r.min(cr);
+            if !Self::clip_rect_to_region_bbox(
+                bus,
+                clip_rgn_handle,
+                &mut clip_t,
+                &mut clip_l,
+                &mut clip_b,
+                &mut clip_r,
+            ) {
+                return Ok(());
             }
         }
 
-        if let Some((mt, ml, mb, mr)) = Self::region_bbox(bus, mask_rgn) {
-            clip_t = clip_t.max(mt);
-            clip_l = clip_l.max(ml);
-            clip_b = clip_b.min(mb);
-            clip_r = clip_r.min(mr);
+        if !Self::clip_rect_to_region_bbox(
+            bus,
+            mask_rgn,
+            &mut clip_t,
+            &mut clip_l,
+            &mut clip_b,
+            &mut clip_r,
+        ) {
+            return Ok(());
         }
 
         clip_t = clip_t.max(dst_info.bounds_top);
@@ -18247,6 +18278,27 @@ impl super::TrapDispatcher {
         let bottom = bus.read_word(rgn_ptr + 6) as i16;
         let right = bus.read_word(rgn_ptr + 8) as i16;
         (bottom > top && right > left).then_some((top, left, bottom, right))
+    }
+
+    fn clip_rect_to_region_bbox(
+        bus: &MacMemoryBus,
+        rgn_handle: u32,
+        clip_t: &mut i16,
+        clip_l: &mut i16,
+        clip_b: &mut i16,
+        clip_r: &mut i16,
+    ) -> bool {
+        if rgn_handle == 0 {
+            return true;
+        }
+        let Some((top, left, bottom, right)) = Self::region_bbox(bus, rgn_handle) else {
+            return false;
+        };
+        *clip_t = (*clip_t).max(top);
+        *clip_l = (*clip_l).max(left);
+        *clip_b = (*clip_b).min(bottom);
+        *clip_r = (*clip_r).min(right);
+        *clip_b > *clip_t && *clip_r > *clip_l
     }
 
     pub(super) fn region_is_complex(bus: &MacMemoryBus, rgn_handle: u32) -> bool {
@@ -28247,6 +28299,70 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 22);
+    }
+
+    #[test]
+    fn copy_bits_empty_mask_region_blocks_identity_blit() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        let src_rect = 0x303000u32;
+        let dst_rect = 0x303010u32;
+
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 4, 1, 0);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 4, 1, 0);
+        bus.write_bytes(src_base, &[1, 2, 3, 4]);
+        bus.write_bytes(dst_base, &[9, 9, 9, 9]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 4);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 4);
+
+        let mask_rgn = bus.alloc(4);
+        assert!(TrapDispatcher::write_region(&mut bus, mask_rgn, None, &[]));
+
+        bus.write_long(TEST_SP, mask_rgn);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 4), vec![9, 9, 9, 9]);
+    }
+
+    #[test]
+    fn copy_bits_nonzero_mask_without_region_record_blocks_identity_blit() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        let src_rect = 0x303000u32;
+        let dst_rect = 0x303010u32;
+
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 4, 1, 0);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 4, 1, 0);
+        bus.write_bytes(src_base, &[1, 2, 3, 4]);
+        bus.write_bytes(dst_base, &[9, 9, 9, 9]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 4);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 4);
+
+        let mask_rgn = 0x0038_0000u32;
+        assert_eq!(bus.read_long(mask_rgn), 0);
+
+        bus.write_long(TEST_SP, mask_rgn);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 4), vec![9, 9, 9, 9]);
     }
 
     #[test]
