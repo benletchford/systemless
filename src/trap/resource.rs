@@ -2765,9 +2765,15 @@ impl super::TrapDispatcher {
                         );
                         cpu.write_reg(Register::D0, 0);
                     }
-                    // gestaltQuickdrawVersion ('qd  ') -> 32-bit QD (0x0200)
+                    // gestaltQuickdrawVersion ('qd  ') -> System 7
+                    // 32-bit Color QuickDraw v1.3 (0x0230).
+                    // IM:Operating System Utilities 1994, pp. 1-22 and
+                    // 1-24 define gestalt32BitQD13 = $230; IM:Imaging
+                    // With QuickDraw 1994, p. 4-18 says System 7 Color
+                    // QuickDraw reports that value. Blade requires at
+                    // least 32-Bit QuickDraw v1.2 during startup.
                     b"qd  " => {
-                        cpu.write_reg(Register::A0, 0x0200);
+                        cpu.write_reg(Register::A0, 0x0230);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltQuickdrawFeatures ('qdrw') -> hasColor | hasDeepGWorlds
@@ -10450,6 +10456,18 @@ mod tests {
             cpu.read_reg(Register::A0) & ((1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7)),
             0x9B
         );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_quickdraw_version_reports_system7_32bit_qd13() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"qd  "));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 0x0230);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
