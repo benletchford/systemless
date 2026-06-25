@@ -36,6 +36,7 @@ impl super::TrapDispatcher {
     const WINDOW_REFCON_OFFSET: u32 = 152;
     const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
     const LOWMEM_WMGR_PORT: u32 = 0x09DE;
+    const LOWMEM_GRAY_RGN: u32 = 0x09EE;
     const WDEF_WDRAW_MSG: i16 = 0;
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
@@ -501,15 +502,48 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn desktop_gray_region_rect(&self, bus: &MacMemoryBus) -> (i16, i16, i16, i16) {
+        let (_, _, width, height, _) = self.screen_mode;
+        let screen_w = width.min(i16::MAX as u16) as i16;
+        let screen_h = height.min(i16::MAX as u16) as i16;
+        let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        let top = if mbar_h > 0 && mbar_h < screen_h {
+            mbar_h
+        } else {
+            0
+        };
+        (top, 0, screen_h, screen_w)
+    }
+
+    fn ensure_gray_region(&self, bus: &mut MacMemoryBus) -> u32 {
+        // InitWindows creates GrayRgn as the desktop region: the active
+        // screen area minus the menu bar. GetGrayRgn is a Universal Headers
+        // macro that reads this handle directly from low memory at $09EE.
+        // Inside Macintosh Volume I, p. I-282; Volume V, p. V-121;
+        // Macintosh Toolbox Essentials 1992, pp. 4-113..4-114.
+        let rect = self.desktop_gray_region_rect(bus);
+        let handle = bus.read_long(Self::LOWMEM_GRAY_RGN);
+        if handle != 0 && bus.read_long(handle) != 0 {
+            Self::write_region_handle_rect(bus, handle, Some(rect));
+            return handle;
+        }
+
+        let handle = Self::alloc_rect_region_handle(bus, Some(rect));
+        bus.write_long(Self::LOWMEM_GRAY_RGN, handle);
+        handle
+    }
+
     pub(crate) fn ensure_window_manager_port(&mut self, bus: &mut MacMemoryBus) -> u32 {
         if self.window_manager_port != 0 {
             bus.write_long(Self::LOWMEM_WMGR_PORT, self.window_manager_port);
+            let _ = self.ensure_gray_region(bus);
             return self.window_manager_port;
         }
 
         let lowmem_port = bus.read_long(Self::LOWMEM_WMGR_PORT);
         if lowmem_port != 0 {
             self.window_manager_port = lowmem_port;
+            let _ = self.ensure_gray_region(bus);
             return lowmem_port;
         }
 
@@ -564,6 +598,7 @@ impl super::TrapDispatcher {
 
         self.window_manager_port = port_ptr;
         bus.write_long(Self::LOWMEM_WMGR_PORT, port_ptr);
+        let _ = self.ensure_gray_region(bus);
         port_ptr
     }
 
@@ -1735,12 +1770,13 @@ impl super::TrapDispatcher {
             // PROCEDURE InitWindows;
             // Inside Macintosh Volume I (1985), p. I-281:
             // initializes the Window Manager and creates the Window Manager
-            // port, retrievable via GetWMgrPort.
+            // port, retrievable via GetWMgrPort; the assembly-language note
+            // on p. I-282 says it initializes GrayRgn to the desktop region.
             //
             // Systemless keeps most InitWindows side effects as no-ops, but it
-            // now ensures a stable Window Manager port pointer exists and is
-            // published through low-memory WMgrPort ($09DE) for callers using
-            // GetWMgrPort.
+            // now ensures stable WMgrPort ($09DE) and GrayRgn ($09EE)
+            // low-memory globals exist for callers using GetWMgrPort or the
+            // GetGrayRgn macro.
             (true, 0x112) => {
                 let _ = self.ensure_window_manager_port(bus);
                 Ok(())
@@ -4023,6 +4059,31 @@ mod tests {
         assert!(result.unwrap().is_ok());
         // SP unchanged (no stack parameters)
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    #[test]
+    fn initwindows_initializes_lowmem_grayrgn_to_desktop_region() {
+        // Macintosh Toolbox Essentials 1992, pp. 4-113..4-114:
+        // GetGrayRgn returns the current desktop region from low-memory
+        // GrayRgn, and Universal Headers define it at $09EE.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let result = dispatch(&mut disp, 0x112, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        let gray_rgn = bus.read_long(0x09EE);
+        assert_ne!(gray_rgn, 0, "InitWindows should publish GrayRgn");
+        let gray_ptr = bus.read_long(gray_rgn);
+        assert_ne!(gray_ptr, 0, "GrayRgn should be a valid region handle");
+        assert_eq!(bus.read_word(gray_ptr), 10);
+
+        let (_, _, width, height, _) = disp.screen_mode;
+        assert_eq!(
+            super::super::TrapDispatcher::region_handle_rect(&bus, gray_rgn),
+            Some((20, 0, height as i16, width as i16))
+        );
     }
 
     #[test]
