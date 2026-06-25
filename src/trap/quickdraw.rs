@@ -15066,8 +15066,13 @@ impl super::TrapDispatcher {
     }
 
     fn palette_dispatch_selector(d0: u32) -> u16 {
-        if d0 <= 0xFFFF {
-            return d0 as u16;
+        let low_word = (d0 & 0xFFFF) as u16;
+
+        // MPW's THREEWORDINLINE emits MOVE.W #selector,D0, which preserves
+        // D0's high word. Prefer the documented public selector in the low
+        // word before trying the alternate packed-long form.
+        if Self::is_public_palette_dispatch_selector(low_word) || d0 <= 0xFFFF {
+            return low_word;
         }
 
         // IM:VI Table C-3 lists _PaletteDispatch selectors as packed words:
@@ -15076,6 +15081,13 @@ impl super::TrapDispatcher {
         // callers place the same two fields in a longword D0 value, such as
         // $000A0013. Normalize both encodings to the documented table value.
         (((d0 >> 8) & 0xFF00) | (d0 & 0x00FF)) as u16
+    }
+
+    fn is_public_palette_dispatch_selector(selector: u16) -> bool {
+        matches!(
+            selector,
+            0x0002 | 0x0003 | 0x0015 | 0x0417 | 0x0616 | 0x0A13 | 0x0A14 | 0x1219
+        )
     }
 
     fn record_gdevice_depth_mode(
@@ -31309,6 +31321,24 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(TEST_SP + 10), 4);
+    }
+
+    #[test]
+    fn has_depth_accepts_move_word_selector_with_stale_d0_high_word() {
+        // MOVE.W #$0A14,D0 updates only D0's low word on 68k. The public
+        // _PaletteDispatch selector must therefore be recognized even when
+        // the high word still contains data from a previous computation.
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        cpu.write_reg(Register::D0, 0x0029_0A14);
+        bus.write_word(TEST_SP, 1); // flags (color)
+        bus.write_word(TEST_SP + 2, 1); // whichFlags: color flag matters
+        bus.write_word(TEST_SP + 4, 8); // depth
+        bus.write_long(TEST_SP + 6, gdh); // gd
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 8);
     }
 
     #[test]
