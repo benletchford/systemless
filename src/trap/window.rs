@@ -1318,6 +1318,70 @@ impl super::TrapDispatcher {
         self.activate_palette_for_window(bus, the_window);
     }
 
+    fn activate_created_front_window(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        old_front: u32,
+    ) {
+        if window_ptr == 0 || window_ptr == old_front {
+            return;
+        }
+        if old_front != 0 {
+            bus.write_byte(old_front + Self::WINDOW_HILITED_OFFSET, 0x00);
+            self.event_queue.push_back(QueuedEvent {
+                what: 8,
+                message: old_front,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+        }
+        self.front_window = window_ptr;
+        self.sync_cached_front_window_render_state(bus);
+        bus.write_byte(window_ptr + Self::WINDOW_HILITED_OFFSET, 0xFF);
+        self.event_queue.push_back(QueuedEvent {
+            what: 8,
+            message: window_ptr,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 1,
+        });
+        self.activate_palette_for_window(bus, window_ptr);
+    }
+
+    fn activate_frontmost_created_window_if_needed(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        visible: bool,
+        behind: u32,
+        old_front: u32,
+    ) {
+        if visible && behind == 0xFFFF_FFFF {
+            // Inside Macintosh Volume I, I-299: NewWindow with behind=-1
+            // highlights the created window and generates activate events.
+            self.activate_created_front_window(bus, window_ptr, old_front);
+        }
+    }
+
+    fn activate_shown_front_window(&mut self, bus: &mut MacMemoryBus, the_window: u32) {
+        if the_window == 0 {
+            return;
+        }
+        self.front_window = the_window;
+        self.sync_cached_front_window_render_state(bus);
+        bus.write_byte(the_window + Self::WINDOW_HILITED_OFFSET, 0xFF);
+        self.event_queue.push_back(QueuedEvent {
+            what: 8,
+            message: the_window,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 1,
+        });
+        self.activate_palette_for_window(bus, the_window);
+    }
+
     /// Apply the Pascal `behind` parameter from NewWindow / NewCWindow /
     /// GetNewWindow / GetNewCWindow to reposition `window_ptr` in
     /// `window_list` per IM:I I-299:
@@ -1915,6 +1979,7 @@ impl super::TrapDispatcher {
                 // Use init_cgraf_window for proper CGrafPort setup with PixMap.
                 // This ensures CopyBits correctly identifies the 8bpp pixel depth
                 // via the portVersion=0xC000 flag and the PixMap structure.
+                let old_front = self.front_window;
                 self.init_cgraf_window(
                     bus,
                     cpu,
@@ -1938,6 +2003,9 @@ impl super::TrapDispatcher {
                 // I-299 (factored into apply_behind_parameter).
                 let behind = bus.read_long(sp + 6);
                 self.apply_behind_parameter(bus, window_ptr, behind);
+                self.activate_frontmost_created_window_if_needed(
+                    bus, window_ptr, visible, behind, old_front,
+                );
 
                 let param_size = 26u32;
                 bus.write_long(sp + param_size, window_ptr);
@@ -1994,6 +2062,7 @@ impl super::TrapDispatcher {
                 // NewCWindow uses. On a real color Mac, GetNewWindow
                 // returns a CWindow with a CGrafPort matching the screen
                 // depth — Inside Macintosh V, V-122 (Window Color Tables).
+                let old_front = self.front_window;
                 self.init_cgraf_window(
                     bus,
                     cpu,
@@ -2028,6 +2097,9 @@ impl super::TrapDispatcher {
                 // SP+8: windowID(2). Honor `behind` post-init.
                 let behind = bus.read_long(sp);
                 self.apply_behind_parameter(bus, window_ptr, behind);
+                self.activate_frontmost_created_window_if_needed(
+                    bus, window_ptr, visible, behind, old_front,
+                );
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
@@ -2079,6 +2151,7 @@ impl super::TrapDispatcher {
                     bus.alloc(256)
                 };
                 let screen_base: u32 = bus.read_long(0x0824);
+                let old_front = self.front_window;
                 self.init_cgraf_window(
                     bus,
                     cpu,
@@ -2100,6 +2173,9 @@ impl super::TrapDispatcher {
                 // since NewCWindow has identical signature).
                 let behind = bus.read_long(sp + 6);
                 self.apply_behind_parameter(bus, window_ptr, behind);
+                self.activate_frontmost_created_window_if_needed(
+                    bus, window_ptr, visible, behind, old_front,
+                );
 
                 let param_size = 26;
                 bus.write_long(sp + param_size, window_ptr);
@@ -2150,6 +2226,7 @@ impl super::TrapDispatcher {
                     bus.alloc(256)
                 };
                 let screen_base: u32 = bus.read_long(0x0824);
+                let old_front = self.front_window;
                 self.init_cgraf_window(
                     bus,
                     cpu,
@@ -2180,6 +2257,9 @@ impl super::TrapDispatcher {
                 // Same `behind` stack slot as GetNewWindow.
                 let behind = bus.read_long(sp);
                 self.apply_behind_parameter(bus, window_ptr, behind);
+                self.activate_frontmost_created_window_if_needed(
+                    bus, window_ptr, visible, behind, old_front,
+                );
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
@@ -2291,12 +2371,19 @@ impl super::TrapDispatcher {
                 let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
+                    let was_front = self.front_window == the_window;
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
                     self.set_window_vis_from_content(bus, the_window, true);
                     if !was_visible {
                         self.save_window_under_pixels(bus, the_window);
                     }
                     if !was_visible {
+                        if was_front {
+                            // Inside Macintosh Volume I, I-285: ShowWindow
+                            // of an invisible frontmost window highlights it
+                            // and generates an activate event.
+                            self.activate_shown_front_window(bus, the_window);
+                        }
                         if let Some(content_rect) = self.window_content_global_rect(bus, the_window)
                         {
                             Self::write_region_handle_rect(
@@ -4875,6 +4962,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn get_new_cwindow_frontmost_visible_queues_activate_events() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_wind_resource(
+            &mut disp,
+            &mut bus,
+            128,
+            (0, 0, 600, 800),
+            2,
+            true,
+            false,
+            0,
+            b"CWin",
+        );
+        let existing = 0x200040u32;
+        disp.window_list = vec![existing];
+        disp.front_window = existing;
+        bus.write_byte(
+            existing + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+            0xFF,
+        );
+        bus.write_byte(
+            existing + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..10u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_word(sp + 8, 128); // windowID
+        bus.write_long(sp, 0xFFFF_FFFF); // behind = -1/frontmost
+
+        let result = dispatch(&mut disp, 0x246, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let new_sp = cpu.read_reg(Register::A7);
+        let window_ptr = bus.read_long(new_sp);
+
+        assert_eq!(
+            disp.window_list.first().copied(),
+            Some(window_ptr),
+            "GetNewCWindow(behind=-1) must keep the new visible window frontmost"
+        );
+        assert_eq!(disp.front_window, window_ptr);
+        assert_eq!(
+            bus.read_byte(existing + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0x00,
+            "the previous front window should be unhilited"
+        );
+        assert_eq!(
+            bus.read_byte(window_ptr + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0xFF,
+            "the created front window should be hilited"
+        );
+
+        let activate_events: Vec<_> = disp
+            .event_queue
+            .iter()
+            .filter(|event| event.what == 8)
+            .collect();
+        assert_eq!(activate_events.len(), 2);
+        assert_eq!(activate_events[0].message, existing);
+        assert_eq!(activate_events[0].modifiers & 1, 0);
+        assert_eq!(activate_events[1].message, window_ptr);
+        assert_eq!(activate_events[1].modifiers & 1, 1);
+    }
+
     // ---------------------------------------------------------------
     // 3. GetNewWindow (0x1BD) -- 10 bytes params, result at SP+10
     // ---------------------------------------------------------------
@@ -5597,6 +5752,59 @@ mod tests {
             disp.window_update_rect(&bus, window),
             Some((100, 200, 300, 500)),
             "ShowWindow should invalidate the revealed content in global coordinates"
+        );
+    }
+
+    #[test]
+    fn showwindow_hidden_frontmost_window_queues_activate_event() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            100,
+            200,
+            300,
+            500,
+            "",
+            2,
+            false,
+            false,
+            false,
+            0,
+        );
+        disp.event_queue.clear();
+        bus.write_byte(
+            window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0x00,
+        );
+        assert_eq!(disp.front_window, window);
+        assert_eq!(
+            bus.read_byte(window + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET),
+            0x00
+        );
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window);
+        let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_byte(window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0xFF,
+            "ShowWindow should hilite an invisible frontmost window"
+        );
+        assert!(
+            disp.event_queue.iter().any(|event| event.what == 8
+                && event.message == window
+                && (event.modifiers & 1) == 1),
+            "ShowWindow must queue an activate event for an invisible frontmost window"
         );
     }
 
