@@ -80,6 +80,7 @@ static TRACE_QD_COLORS: OnceLock<bool> = OnceLock::new();
 static TRACE_TITLE_DIAG: OnceLock<bool> = OnceLock::new();
 static TRACE_GDEVICE_TRAPS: OnceLock<bool> = OnceLock::new();
 static TRACE_FONT_TRAPS: OnceLock<bool> = OnceLock::new();
+static TRACE_REGION_OPS: OnceLock<bool> = OnceLock::new();
 
 fn trace_menu_redraw_enabled() -> bool {
     *TRACE_MENU_REDRAW.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_REDRAWS").is_some())
@@ -166,6 +167,10 @@ fn trace_gdevice_traps_enabled() -> bool {
 
 fn trace_font_traps_enabled() -> bool {
     *TRACE_FONT_TRAPS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_FONT_TRAPS").is_some())
+}
+
+fn trace_region_ops_enabled() -> bool {
+    *TRACE_REGION_OPS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_REGION_OPS").is_some())
 }
 
 // Hot-path tracer helpers (CopyBits/DrawPicture/EraseRect/CTab seed fire
@@ -9040,6 +9045,7 @@ impl super::TrapDispatcher {
 
                 if rgn_handle != 0 && bmap_ptr != 0 {
                     let info = self.resolve_copy_bitmap(bus, bmap_ptr);
+                    let mut wrote_region = false;
                     if info.pixel_size == 1 && info.bounds_bottom > info.bounds_top {
                         let mut data_words = Vec::new();
                         let mut previous_row = Vec::new();
@@ -9115,8 +9121,32 @@ impl super::TrapDispatcher {
                             bus.write_word(result_ptr, 0);
                             return Some(Ok(()));
                         }
+                        wrote_region = true;
                     } else {
                         Self::write_region(bus, rgn_handle, None, &[]);
+                        wrote_region = true;
+                    }
+                    if trace_region_ops_enabled() {
+                        let bbox = Self::region_bbox(bus, rgn_handle);
+                        let size = Self::region_ptr_and_size(bus, rgn_handle)
+                            .map(|(_, size)| size)
+                            .unwrap_or(0);
+                        eprintln!(
+                            "[REGION] tick={} BitMapToRegion bmap=${:08X} rgn=${:08X} base=${:08X} rowBytes={} bounds=({},{}..{},{}) pixelSize={} wrote={} bbox={:?} size={}",
+                            self.tick_count,
+                            bmap_ptr,
+                            rgn_handle,
+                            info.base,
+                            info.row_bytes,
+                            info.bounds_top,
+                            info.bounds_left,
+                            info.bounds_bottom,
+                            info.bounds_right,
+                            info.pixel_size,
+                            wrote_region,
+                            bbox,
+                            size
+                        );
                     }
                 }
                 // Return noErr
@@ -9453,6 +9483,19 @@ impl super::TrapDispatcher {
                         src_b,
                         RegionBooleanOp::Intersection,
                     );
+                    if trace_region_ops_enabled() {
+                        eprintln!(
+                            "[REGION] tick={} SectRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
+                            self.tick_count,
+                            src_a,
+                            Self::region_bbox(bus, src_a),
+                            src_b,
+                            Self::region_bbox(bus, src_b),
+                            dst_handle,
+                            Self::region_bbox(bus, dst_handle),
+                            Self::region_ptr_and_size(bus, dst_handle).map(|(_, size)| size).unwrap_or(0)
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -9475,6 +9518,19 @@ impl super::TrapDispatcher {
                         src_b,
                         RegionBooleanOp::Union,
                     );
+                    if trace_region_ops_enabled() {
+                        eprintln!(
+                            "[REGION] tick={} UnionRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
+                            self.tick_count,
+                            src_a,
+                            Self::region_bbox(bus, src_a),
+                            src_b,
+                            Self::region_bbox(bus, src_b),
+                            dst_handle,
+                            Self::region_bbox(bus, dst_handle),
+                            Self::region_ptr_and_size(bus, dst_handle).map(|(_, size)| size).unwrap_or(0)
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -9497,6 +9553,19 @@ impl super::TrapDispatcher {
                         src_b,
                         RegionBooleanOp::Difference,
                     );
+                    if trace_region_ops_enabled() {
+                        eprintln!(
+                            "[REGION] tick={} DiffRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
+                            self.tick_count,
+                            src_a,
+                            Self::region_bbox(bus, src_a),
+                            src_b,
+                            Self::region_bbox(bus, src_b),
+                            dst_handle,
+                            Self::region_bbox(bus, dst_handle),
+                            Self::region_ptr_and_size(bus, dst_handle).map(|(_, size)| size).unwrap_or(0)
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -9519,6 +9588,19 @@ impl super::TrapDispatcher {
                         src_b,
                         RegionBooleanOp::Xor,
                     );
+                    if trace_region_ops_enabled() {
+                        eprintln!(
+                            "[REGION] tick={} XorRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
+                            self.tick_count,
+                            src_a,
+                            Self::region_bbox(bus, src_a),
+                            src_b,
+                            Self::region_bbox(bus, src_b),
+                            dst_handle,
+                            Self::region_bbox(bus, dst_handle),
+                            Self::region_ptr_and_size(bus, dst_handle).map(|(_, size)| size).unwrap_or(0)
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -9532,6 +9614,18 @@ impl super::TrapDispatcher {
                 let pt_v = bus.read_word(sp + 4) as i16;
                 let pt_h = bus.read_word(sp + 6) as i16;
                 let in_rgn = Self::region_contains_point(bus, rgn_handle, pt_v, pt_h);
+                if trace_region_ops_enabled() {
+                    eprintln!(
+                        "[REGION] tick={} PtInRgn pt=({}, {}) rgn=${:08X} bbox={:?} size={} -> {}",
+                        self.tick_count,
+                        pt_v,
+                        pt_h,
+                        rgn_handle,
+                        Self::region_bbox(bus, rgn_handle),
+                        Self::region_ptr_and_size(bus, rgn_handle).map(|(_, size)| size).unwrap_or(0),
+                        in_rgn
+                    );
+                }
                 bus.write_word(sp + 8, if in_rgn { 0x0100 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
@@ -9559,6 +9653,20 @@ impl super::TrapDispatcher {
                 let rgn_handle = bus.read_long(sp);
                 let rect_ptr = bus.read_long(sp + 4);
                 let in_rgn = Self::rect_in_rgn(bus, rgn_handle, rect_ptr);
+                if trace_region_ops_enabled() {
+                    eprintln!(
+                        "[REGION] tick={} RectInRgn rect=({},{}..{},{}) rgn=${:08X} bbox={:?} size={} -> {}",
+                        self.tick_count,
+                        bus.read_word(rect_ptr) as i16,
+                        bus.read_word(rect_ptr + 2) as i16,
+                        bus.read_word(rect_ptr + 4) as i16,
+                        bus.read_word(rect_ptr + 6) as i16,
+                        rgn_handle,
+                        Self::region_bbox(bus, rgn_handle),
+                        Self::region_ptr_and_size(bus, rgn_handle).map(|(_, size)| size).unwrap_or(0),
+                        in_rgn
+                    );
+                }
                 bus.write_word(sp + 8, if in_rgn { 0x0100 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
