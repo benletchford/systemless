@@ -8678,6 +8678,7 @@ mod tests {
             flash_remaining: 0,
             flash_delay: 0,
             flash_result: 0,
+            submenu: None,
         });
         classic.draw_menu_dropdown(&mut classic_bus, 0, rect);
 
@@ -8714,6 +8715,7 @@ mod tests {
             flash_remaining: 0,
             flash_delay: 0,
             flash_result: 0,
+            submenu: None,
         });
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 

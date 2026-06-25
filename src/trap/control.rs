@@ -4561,6 +4561,7 @@ mod tests {
             handle: 0,
             in_menu_bar: false,
             visible_in_menu_bar: false,
+            hierarchical: false,
         });
 
         disp.mouse_button = true;
@@ -4763,6 +4764,7 @@ mod tests {
             handle: 0,
             in_menu_bar: false,
             visible_in_menu_bar: false,
+            hierarchical: false,
         });
 
         disp.mouse_button = true;

@@ -109,6 +109,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"sysv"
             | b"sysa"
             | b"evnt"
+            | b"edtn"
             | b"ppc "
             | b"cput"
             | b"proc"
@@ -126,12 +127,14 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"fs  "
             | b"fold"
             | b"rsrc"
+            | b"scr#"
             | b"qtim"
             | b"drag"
             | b"os  "
             | b"powr"
             | b"appr"
             | b"addr"
+            | b"hdwr"
             | b"sdev"
             | b"stdf"
             | b"help"
@@ -2719,6 +2722,17 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A0, 0x0001);
                         cpu.write_reg(Register::D0, 0);
                     }
+                    // gestaltEditionMgrAttr ('edtn') -> Edition Manager attrs.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-16 / p. 1-24: bit 0 is
+                    // gestaltEditionMgrPresent, bit 1 is
+                    // gestaltEditionMgrTranslationAware. Systemless does not
+                    // implement Edition Manager services, so report the
+                    // selector as known but absent.
+                    b"edtn" => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, 0);
+                    }
                     // gestaltPPCToolboxAttr ('ppc ') -> PPC Toolbox present.
                     // Inside Macintosh: Interapplication Communication 1993,
                     // p. 11-80 defines gestaltPPCToolboxAttr='ppc ' and
@@ -2844,6 +2858,15 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A0, 1);
                         cpu.write_reg(Register::D0, 0);
                     }
+                    // gestaltScriptCount ('scr#') -> number of active script systems.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-12 defines the selector and p. 1-30 defines the
+                    // response as the number of currently active script
+                    // systems. Systemless exposes the Roman script system.
+                    b"scr#" => {
+                        cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(Register::D0, 0);
+                    }
                     // gestaltQuickTime ('qtim') -> QuickTime version.
                     // Inside Macintosh: QuickTime 1993, p. 2-29. The
                     // response field (A0) is the QuickTime version
@@ -2931,6 +2954,19 @@ impl super::TrapDispatcher {
                     // "needs 32-bit addressing" alert if bit 0 is clear.
                     b"addr" => {
                         cpu.write_reg(Register::A0, 0b111);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltHardwareAttr ('hdwr') -> low-level hardware attrs.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-31: bits include gestaltHasVIA1(0),
+                    // gestaltHasVIA2(1), gestaltHasASC(3), gestaltHasSCC(4),
+                    // and gestaltHasSCSI(7). Report a desktop color 68k
+                    // hardware set consistent with the Quadra-class profile.
+                    b"hdwr" => {
+                        cpu.write_reg(
+                            Register::A0,
+                            (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7),
+                        );
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltSoundDeviceAttr ('sdev') -> not present.
@@ -10388,6 +10424,32 @@ mod tests {
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::A0), 1);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_common_classic_environment_selectors_do_not_error() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"edtn"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"scr#"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 1);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"hdwr"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            cpu.read_reg(Register::A0) & ((1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7)),
+            0x9B
+        );
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
