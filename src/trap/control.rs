@@ -763,48 +763,9 @@ impl super::TrapDispatcher {
         match proc_id {
             0 => {
                 // pushButProc — push button
-                if self.draw_theme_push_button_chrome(
-                    bus,
-                    abs_top,
-                    abs_left,
-                    abs_bottom,
-                    abs_right,
-                    hilite != 255,
-                    hilite == 1,
-                    false,
-                ) {
-                    self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, &title);
-                    if hilite == 255 {
-                        self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
-                    }
-                } else {
-                    // Standard CDEF uses FrameRoundRect with oval 10x10
-                    // Macintosh Revealed Volume One, p. 412
-                    let oval: i16 = 10;
-
-                    // Erase first so a re-draw (e.g. from SetCTitle) overwrites the old title
-                    // instead of overlapping the new one. Checkbox / radio CDEFs already do this.
-                    self.draw_round_rect(cpu, bus, &r, oval, oval, ShapeOp::Erase);
-                    self.draw_round_rect(cpu, bus, &r, oval, oval, ShapeOp::Frame);
-
-                    // Center title text
-                    self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, &title);
-
-                    if hilite == 1 {
-                        // Pressed: invert the interior
-                        let inv = Rect {
-                            top: r_top + 1,
-                            left: r_left + 1,
-                            bottom: r_bottom - 1,
-                            right: r_right - 1,
-                        };
-                        let inv_oval = (oval - 2).max(0);
-                        self.draw_round_rect(cpu, bus, &inv, inv_oval, inv_oval, ShapeOp::Invert);
-                    } else if hilite == 255 {
-                        // Inactive: dim by clearing every other pixel to white
-                        self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
-                    }
-                }
+                self.draw_push_button_control(
+                    cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                );
             }
             1 => {
                 // checkBoxProc — checkbox
@@ -983,6 +944,13 @@ impl super::TrapDispatcher {
                         proc_id, ctrl_ptr
                     );
                 }
+                // IM:I I-328..I-331 defines custom controls as CDEF-backed
+                // drawCntl/testCntl implementations selected by procID. Systemless
+                // cannot execute arbitrary guest CDEFs here, so preserve the
+                // ControlRecord title and rectangle as a generic button fallback.
+                self.draw_push_button_control(
+                    cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                );
             }
         }
 
@@ -990,6 +958,62 @@ impl super::TrapDispatcher {
         self.pn_size = saved_pn_size;
         self.pn_mode = saved_pn_mode;
         self.pn_pat = saved_pn_pat;
+    }
+
+    fn draw_push_button_control<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        abs_top: i16,
+        abs_left: i16,
+        abs_bottom: i16,
+        abs_right: i16,
+        hilite: u8,
+        title: &str,
+    ) {
+        if self.draw_theme_push_button_chrome(
+            bus,
+            abs_top,
+            abs_left,
+            abs_bottom,
+            abs_right,
+            hilite != 255,
+            hilite == 1,
+            false,
+        ) {
+            self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+            if hilite == 255 {
+                self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
+            }
+            return;
+        }
+
+        // Standard CDEF uses FrameRoundRect with oval 10x10.
+        // Macintosh Revealed Volume One, p. 412.
+        let oval: i16 = 10;
+
+        // Erase first so a re-draw (e.g. from SetCTitle) overwrites the old title
+        // instead of overlapping the new one. Checkbox / radio CDEFs already do this.
+        self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Erase);
+        self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Frame);
+
+        self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+
+        if hilite == 1 {
+            // Pressed: invert the interior.
+            let inv = Rect {
+                top: r.top + 1,
+                left: r.left + 1,
+                bottom: r.bottom - 1,
+                right: r.right - 1,
+            };
+            let inv_oval = (oval - 2).max(0);
+            self.draw_round_rect(cpu, bus, &inv, inv_oval, inv_oval, ShapeOp::Invert);
+        } else if hilite == 255 {
+            // Inactive: dim by clearing every other pixel to white.
+            self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
+        }
     }
 
     /// Draw centered text for a push button control using fb_draw_string.
@@ -5303,6 +5327,69 @@ mod tests {
             .unwrap();
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn draw1control_unknown_cdef_falls_back_to_button_title_chrome() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = 0x300000u32;
+        let window = 0x181000u32;
+        disp.set_current_port_for_test(window);
+        let base = bus.read_long(window + 2);
+        let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+
+        let (blank_handle, blank_ptr) =
+            alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 140));
+        let (titled_handle, titled_ptr) =
+            alloc_button_control(&mut disp, &mut bus, window, (60, 20, 80, 140));
+        for ptr in [blank_ptr, titled_ptr] {
+            disp.control_proc_ids.insert(ptr, 3216);
+        }
+        bus.write_byte(titled_ptr + 40, 4);
+        bus.write_bytes(titled_ptr + 41, b"PLAY");
+
+        for handle in [blank_handle, titled_handle] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, handle);
+            disp.dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        }
+
+        let blank_chrome = count_set_pixels(&bus, base, row_bytes, 20, 20, 40, 140);
+        assert!(
+            blank_chrome > 0,
+            "unknown CDEF fallback should draw visible control chrome"
+        );
+
+        let mut title_differences = 0;
+        for dy in 0..20 {
+            for dx in 0..120 {
+                let blank_pixel = screen_pixel_is_set(&bus, base, row_bytes, 20 + dx, 20 + dy);
+                let titled_pixel = screen_pixel_is_set(&bus, base, row_bytes, 20 + dx, 60 + dy);
+                if blank_pixel != titled_pixel {
+                    title_differences += 1;
+                }
+            }
+        }
+        assert!(
+            title_differences > 8,
+            "unknown CDEF fallback should draw the ControlRecord title"
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 65);
+        bus.write_word(sp + 2, 30);
+        bus.write_long(sp + 4, titled_handle);
+        bus.write_word(sp + 8, 0xDEAD);
+        disp.dispatch_control(true, 0x166, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(sp + 8), 10);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
     }
 
     #[test]
