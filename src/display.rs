@@ -9,6 +9,14 @@ const BLACK_ARGB: u32 = 0xFF000000;
 const WHITE_ARGB: u32 = 0xFFFFFFFF;
 const BLACK_RGBA_WORD: u32 = u32::from_le_bytes([0x00, 0x00, 0x00, 0xFF]);
 const WHITE_RGBA_WORD: u32 = u32::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF]);
+const COMPACT_MAC_VIEWPORT_WIDTH: usize = 512;
+const COMPACT_MAC_VIEWPORT_HEIGHT: usize = 342;
+const COMPACT_MAC_VIEWPORT_SIDE_PAD: usize = 1;
+const LETTERBOX_SAMPLE_STRIDE: usize = 8;
+const LETTERBOX_FLOOD_TOLERANCE: u8 = 4;
+const LETTERBOX_MIN_FLOOD_RATIO_NUM: usize = 3;
+const LETTERBOX_MIN_FLOOD_RATIO_DEN: usize = 4;
+const LETTERBOX_EDGE_TRIM_LIMIT: usize = 32;
 
 pub type RgbaPalette = [u32; 256];
 const UNUSED_RGBA_PALETTE: RgbaPalette = [0; 256];
@@ -129,6 +137,247 @@ pub fn render_screen_with_rgba_palette_into(
         render_8bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels);
     } else {
         render_1bpp_rgba_rows(fb, row_bytes, w, h, pixels);
+    }
+    normalize_centered_compact_mac_viewport_margins_rgba(pixels, w as usize, h as usize);
+}
+
+fn normalize_centered_compact_mac_viewport_margins_rgba(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+) -> bool {
+    if width <= COMPACT_MAC_VIEWPORT_WIDTH + COMPACT_MAC_VIEWPORT_SIDE_PAD * 2
+        || height <= COMPACT_MAC_VIEWPORT_HEIGHT
+        || pixels.len() < width.saturating_mul(height).saturating_mul(4)
+    {
+        return false;
+    }
+
+    // The original compact Macintosh display was 512x342 pixels (Inside
+    // Macintosh Volume III, hardware video chapter). Some early color titles
+    // keep that logical viewport centered inside larger later-Mac screens.
+    let content_left =
+        ((width - COMPACT_MAC_VIEWPORT_WIDTH) / 2).saturating_sub(COMPACT_MAC_VIEWPORT_SIDE_PAD);
+    let content_top = (height - COMPACT_MAC_VIEWPORT_HEIGHT) / 2;
+    let content_right =
+        (content_left + COMPACT_MAC_VIEWPORT_WIDTH + COMPACT_MAC_VIEWPORT_SIDE_PAD * 2).min(width);
+    let content_bottom = (content_top + COMPACT_MAC_VIEWPORT_HEIGHT).min(height);
+
+    if content_left == 0 || content_top == 0 || content_right >= width || content_bottom >= height {
+        return false;
+    }
+
+    let Some(flood) = first_nonblack_outside_sample(
+        pixels,
+        width,
+        height,
+        content_left,
+        content_top,
+        content_right,
+        content_bottom,
+    ) else {
+        return false;
+    };
+
+    let mut outside_samples = 0usize;
+    let mut outside_flood_samples = 0usize;
+    let mut inside_samples = 0usize;
+    let mut inside_non_flood_samples = 0usize;
+
+    for y in (0..height).step_by(LETTERBOX_SAMPLE_STRIDE) {
+        for x in (0..width).step_by(LETTERBOX_SAMPLE_STRIDE) {
+            let rgb = rgba_pixel_rgb(pixels, width, x, y);
+            let inside =
+                x >= content_left && x < content_right && y >= content_top && y < content_bottom;
+            if inside {
+                inside_samples += 1;
+                if !rgb_near(rgb, flood, LETTERBOX_FLOOD_TOLERANCE) {
+                    inside_non_flood_samples += 1;
+                }
+            } else {
+                outside_samples += 1;
+                if rgb_near(rgb, flood, LETTERBOX_FLOOD_TOLERANCE) {
+                    outside_flood_samples += 1;
+                }
+            }
+        }
+    }
+
+    if outside_samples == 0
+        || outside_flood_samples * LETTERBOX_MIN_FLOOD_RATIO_DEN
+            < outside_samples * LETTERBOX_MIN_FLOOD_RATIO_NUM
+    {
+        return false;
+    }
+    if inside_samples == 0 || inside_non_flood_samples < inside_samples / 4 {
+        return false;
+    }
+
+    let (content_left, content_top, content_right, content_bottom) = trim_flood_edges_rgba(
+        pixels,
+        width,
+        flood,
+        content_left,
+        content_top,
+        content_right,
+        content_bottom,
+    );
+
+    black_outside_rect_rgba(
+        pixels,
+        width,
+        height,
+        content_left,
+        content_top,
+        content_right,
+        content_bottom,
+    );
+    true
+}
+
+fn trim_flood_edges_rgba(
+    pixels: &[u8],
+    width: usize,
+    flood: [u8; 3],
+    mut left: usize,
+    mut top: usize,
+    mut right: usize,
+    mut bottom: usize,
+) -> (usize, usize, usize, usize) {
+    let min_width = COMPACT_MAC_VIEWPORT_WIDTH.saturating_sub(LETTERBOX_EDGE_TRIM_LIMIT);
+    let min_height = COMPACT_MAC_VIEWPORT_HEIGHT.saturating_sub(LETTERBOX_EDGE_TRIM_LIMIT);
+    let max_top = top.saturating_add(LETTERBOX_EDGE_TRIM_LIMIT).min(bottom);
+    while top < max_top
+        && bottom.saturating_sub(top) > min_height
+        && row_or_column_is_mostly_flood(pixels, width, flood, left, top, right, top + 1)
+    {
+        top += 1;
+    }
+
+    let min_bottom = bottom.saturating_sub(LETTERBOX_EDGE_TRIM_LIMIT).max(top);
+    while bottom > min_bottom
+        && bottom.saturating_sub(top) > min_height
+        && row_or_column_is_mostly_flood(pixels, width, flood, left, bottom - 1, right, bottom)
+    {
+        bottom -= 1;
+    }
+
+    let max_left = left.saturating_add(LETTERBOX_EDGE_TRIM_LIMIT).min(right);
+    while left < max_left
+        && right.saturating_sub(left) > min_width
+        && row_or_column_is_mostly_flood(pixels, width, flood, left, top, left + 1, bottom)
+    {
+        left += 1;
+    }
+
+    let min_right = right.saturating_sub(LETTERBOX_EDGE_TRIM_LIMIT).max(left);
+    while right > min_right
+        && right.saturating_sub(left) > min_width
+        && row_or_column_is_mostly_flood(pixels, width, flood, right - 1, top, right, bottom)
+    {
+        right -= 1;
+    }
+
+    (left, top, right, bottom)
+}
+
+fn row_or_column_is_mostly_flood(
+    pixels: &[u8],
+    width: usize,
+    flood: [u8; 3],
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+) -> bool {
+    let mut total = 0usize;
+    let mut matches = 0usize;
+    for y in (top..bottom).step_by(LETTERBOX_SAMPLE_STRIDE) {
+        for x in (left..right).step_by(LETTERBOX_SAMPLE_STRIDE) {
+            total += 1;
+            if rgb_near(
+                rgba_pixel_rgb(pixels, width, x, y),
+                flood,
+                LETTERBOX_FLOOD_TOLERANCE,
+            ) {
+                matches += 1;
+            }
+        }
+    }
+    total > 0 && matches * 8 >= total * 7
+}
+
+fn first_nonblack_outside_sample(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    content_left: usize,
+    content_top: usize,
+    content_right: usize,
+    content_bottom: usize,
+) -> Option<[u8; 3]> {
+    let probes = [
+        (0, 0),
+        (width / 2, 0),
+        (0, height / 2),
+        (width.saturating_sub(1), height / 2),
+        (width / 2, height.saturating_sub(1)),
+    ];
+    for (x, y) in probes {
+        let inside =
+            x >= content_left && x < content_right && y >= content_top && y < content_bottom;
+        if inside {
+            continue;
+        }
+        let rgb = rgba_pixel_rgb(pixels, width, x, y);
+        if !rgb_is_near_black(rgb) {
+            return Some(rgb);
+        }
+    }
+    None
+}
+
+#[inline]
+fn rgba_pixel_rgb(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 3] {
+    let idx = (y * width + x) * 4;
+    [pixels[idx], pixels[idx + 1], pixels[idx + 2]]
+}
+
+#[inline]
+fn rgb_is_near_black(rgb: [u8; 3]) -> bool {
+    rgb[0] <= 8 && rgb[1] <= 8 && rgb[2] <= 8
+}
+
+#[inline]
+fn rgb_near(a: [u8; 3], b: [u8; 3], tolerance: u8) -> bool {
+    a[0].abs_diff(b[0]) <= tolerance
+        && a[1].abs_diff(b[1]) <= tolerance
+        && a[2].abs_diff(b[2]) <= tolerance
+}
+
+fn black_outside_rect_rgba(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+) {
+    for y in 0..height {
+        let row = y * width * 4;
+        if y < top || y >= bottom {
+            for px in pixels[row..row + width * 4].chunks_exact_mut(4) {
+                px.copy_from_slice(&[0, 0, 0, 0xFF]);
+            }
+            continue;
+        }
+        for px in pixels[row..row + left * 4].chunks_exact_mut(4) {
+            px.copy_from_slice(&[0, 0, 0, 0xFF]);
+        }
+        for px in pixels[row + right * 4..row + width * 4].chunks_exact_mut(4) {
+            px.copy_from_slice(&[0, 0, 0, 0xFF]);
+        }
     }
 }
 
@@ -591,7 +840,8 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 #[cfg(test)]
 mod tests {
     use super::{
-        clut_component_to_u8, clut_to_argb, render_cursor, render_cursor_argb, render_screen_into,
+        clut_component_to_u8, clut_to_argb, normalize_centered_compact_mac_viewport_margins_rgba,
+        render_cursor, render_cursor_argb, render_screen_into,
         render_screen_with_rgba_palette_into, rgba_palette_from_clut, screen_pixel_rgb,
         CursorImage,
     };
@@ -663,6 +913,80 @@ mod tests {
         render_screen_with_rgba_palette_into(&bus, (base, 4, 3, 1, 8), &palette, &mut precomputed);
 
         assert_eq!(precomputed, direct);
+    }
+
+    #[test]
+    fn compact_viewport_normalizer_blacks_uniform_outer_flood() {
+        let width = 800usize;
+        let height = 600usize;
+        let mut pixels = vec![0u8; width * height * 4];
+        for px in pixels.chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 106, 37, 0xFF]);
+        }
+        let left = 143usize;
+        let top = 129usize;
+        let right = 657usize;
+        let bottom = 471usize;
+        for y in top + 9..bottom {
+            for x in left..right {
+                let idx = (y * width + x) * 4;
+                pixels[idx..idx + 4].copy_from_slice(&[
+                    (x & 0xFF) as u8,
+                    245,
+                    (y & 0xFF) as u8,
+                    0xFF,
+                ]);
+            }
+        }
+
+        assert!(normalize_centered_compact_mac_viewport_margins_rgba(
+            &mut pixels,
+            width,
+            height
+        ));
+
+        assert_eq!(&pixels[0..4], &[0, 0, 0, 0xFF]);
+        let trimmed_top_idx = ((top + 1) * width + 400) * 4;
+        assert_eq!(
+            &pixels[trimmed_top_idx..trimmed_top_idx + 4],
+            &[0, 0, 0, 0xFF]
+        );
+        let inside_idx = (300 * width + 400) * 4;
+        assert_eq!(
+            &pixels[inside_idx..inside_idx + 4],
+            &[(400 & 0xFF) as u8, 245, (300 & 0xFF) as u8, 0xFF]
+        );
+        let lower_margin_idx = (500 * width + 400) * 4;
+        assert_eq!(
+            &pixels[lower_margin_idx..lower_margin_idx + 4],
+            &[0, 0, 0, 0xFF]
+        );
+    }
+
+    #[test]
+    fn compact_viewport_normalizer_preserves_detailed_outer_pixels() {
+        let width = 800usize;
+        let height = 600usize;
+        let mut pixels = vec![0u8; width * height * 4];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 4;
+                pixels[idx..idx + 4].copy_from_slice(&[
+                    (x & 0xFF) as u8,
+                    (y & 0xFF) as u8,
+                    ((x + y) & 0xFF) as u8,
+                    0xFF,
+                ]);
+            }
+        }
+        let before = pixels.clone();
+
+        assert!(!normalize_centered_compact_mac_viewport_margins_rgba(
+            &mut pixels,
+            width,
+            height
+        ));
+        assert_eq!(pixels, before);
     }
 
     #[test]
