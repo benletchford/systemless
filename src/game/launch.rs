@@ -862,11 +862,9 @@ fn maybe_select_executable(
 
     // SYSTEMLESS_LOAD_EXECUTABLE: case-sensitive substring match against the
     // archive entry name. When the env var is set and a candidate matches
-    // it wins outright over the size/APPL heuristic — needed for archives
-    // that contain multiple bootable executables (e.g. Prince of
-    // Destruction ships both "MARS™ Player" and a larger "MARS™ Master
-    // (sw)" authoring variant; the heuristic picks the larger Master,
-    // but the user-facing runtime is Player).
+    // it wins outright over the size/APPL heuristic, which is needed for
+    // archives that contain multiple bootable executables and where size
+    // alone cannot distinguish the user-facing runtime from tooling.
     let override_match = executable_name_override()
         .map(|needle| name.contains(needle.as_str()))
         .unwrap_or(false);
@@ -1024,21 +1022,21 @@ mod tests {
 
         maybe_select_executable(
             &mut selected,
-            "Marathon/Marathon Manual",
+            "Sample App/Sample Manual",
             &manual_rsrc,
             true,
             0,
         );
         maybe_select_executable(
             &mut selected,
-            "Marathon/Marathon v1.2",
+            "Sample App/Sample Runtime",
             &app_rsrc,
             true,
             322_352,
         );
 
         let selected = selected.expect("expected an executable candidate");
-        assert_eq!(selected.name, "Marathon/Marathon v1.2");
+        assert_eq!(selected.name, "Sample App/Sample Runtime");
     }
 
     #[test]
@@ -1118,7 +1116,7 @@ mod tests {
         file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
         file.extend_from_slice(&stream);
 
-        let expanded = expand_squz_payload_file("ABCBook.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+        let expanded = expand_squz_payload_file("Activity.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
             .unwrap()
             .unwrap();
 
@@ -1144,7 +1142,7 @@ mod tests {
         file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
         file.extend_from_slice(&stream);
 
-        let expanded = expand_squz_payload_file("PR Scrapbook", &file, *b"SQUZ", *b"BrSq", 0)
+        let expanded = expand_squz_payload_file("Document Scrapbook", &file, *b"SQUZ", *b"BrSq", 0)
             .unwrap()
             .unwrap();
 
@@ -1174,7 +1172,7 @@ mod tests {
         file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
         file.extend_from_slice(&stream);
 
-        let expanded = expand_squz_payload_file("ABCBook.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+        let expanded = expand_squz_payload_file("Activity.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
             .unwrap()
             .unwrap();
 

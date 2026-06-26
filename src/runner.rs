@@ -5770,8 +5770,8 @@ mod tests {
         let interrupted_sp = 0x007F_FFC0;
         let callback_addr = runner.bus.alloc(4);
 
-        // Playroom's callback epilogue has this shape: pop one long argument
-        // by copying the return address over it, then RTS.
+        // Some Pascal callback epilogues pop one long argument by copying the
+        // return address over it, then RTS.
         runner.bus.write_word(callback_addr, 0x2E9F); // MOVE.L (SP)+,(SP)
         runner.bus.write_word(callback_addr + 2, 0x4E75); // RTS
         runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
