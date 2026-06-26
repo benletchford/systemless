@@ -35,6 +35,13 @@ pub struct ScreenCopyBitsRect {
     pub dst_right: i16,
 }
 
+fn screen_copybits_rect_is_valid(rect: ScreenCopyBitsRect) -> bool {
+    rect.src_right > rect.src_left
+        && rect.src_bottom > rect.src_top
+        && rect.dst_right > rect.dst_left
+        && rect.dst_bottom > rect.dst_top
+}
+
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
 // to toggle these at runtime cannot — values are read ONCE at first call.
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -3466,6 +3473,40 @@ impl TrapDispatcher {
         self.cursor_visible
     }
 
+    /// Explicit screen-space transform for frontends that need to map host
+    /// mouse coordinates back into a fullscreen game's source playfield.
+    ///
+    /// This is derived only from a sizeable CopyBits call into the screen
+    /// framebuffer, not from rendered pixels. It is active while a game is in
+    /// fullscreen mode and has hidden the Mac cursor, which is the common
+    /// contract for software-cursor playfields such as first-person or
+    /// crosshair-driven games. Visible Mac cursor UI, including menu bars and
+    /// title screens, keeps normal screen coordinates.
+    pub fn fullscreen_input_transform(&self) -> Option<ScreenCopyBitsRect> {
+        if !self.fullscreen_locked || self.cursor_visible {
+            return None;
+        }
+        let rect = self.last_screen_copybits_rect?;
+        if !screen_copybits_rect_is_valid(rect) || !self.screen_copybits_rect_maps_input(rect) {
+            return None;
+        }
+        Some(rect)
+    }
+
+    fn screen_copybits_rect_maps_input(&self, rect: ScreenCopyBitsRect) -> bool {
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        let screen_width = screen_width.min(i16::MAX as u16) as i16;
+        let screen_height = screen_height.min(i16::MAX as u16) as i16;
+        !(rect.src_top == rect.dst_top
+            && rect.src_left == rect.dst_left
+            && rect.src_bottom == rect.dst_bottom
+            && rect.src_right == rect.dst_right
+            && rect.dst_top <= 0
+            && rect.dst_left <= 0
+            && rect.dst_bottom >= screen_height
+            && rect.dst_right >= screen_width)
+    }
+
     /// Current cursor bitmap + mask + hotspot, as installed by
     /// SetCursor / InitCursor. Returns `(data[32], mask[32],
     /// hotSpot.v, hotSpot.h)`. `None` when no cursor has been
@@ -4571,6 +4612,80 @@ mod tests {
             saved_hilite: 0,
             stack_ptr: 0,
         });
+    }
+
+    fn centered_playfield_rect() -> ScreenCopyBitsRect {
+        ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 400,
+            src_right: 640,
+            dst_top: 100,
+            dst_left: 80,
+            dst_bottom: 500,
+            dst_right: 720,
+        }
+    }
+
+    #[test]
+    fn fullscreen_input_transform_requires_fullscreen_and_hidden_cursor() {
+        let mut disp = TrapDispatcher::new();
+        disp.screen_mode = (0, 1000, 800, 600, 8);
+        disp.last_screen_copybits_rect = Some(centered_playfield_rect());
+
+        disp.fullscreen_locked = false;
+        disp.cursor_visible = false;
+        assert_eq!(disp.fullscreen_input_transform(), None);
+
+        disp.fullscreen_locked = true;
+        disp.cursor_visible = true;
+        assert_eq!(disp.fullscreen_input_transform(), None);
+
+        disp.cursor_visible = false;
+        assert_eq!(
+            disp.fullscreen_input_transform(),
+            Some(centered_playfield_rect())
+        );
+    }
+
+    #[test]
+    fn fullscreen_input_transform_rejects_identity_fullscreen_blit() {
+        let mut disp = TrapDispatcher::new();
+        disp.screen_mode = (0, 1000, 800, 600, 8);
+        disp.fullscreen_locked = true;
+        disp.cursor_visible = false;
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 600,
+            src_right: 800,
+            dst_top: 0,
+            dst_left: 0,
+            dst_bottom: 600,
+            dst_right: 800,
+        });
+
+        assert_eq!(disp.fullscreen_input_transform(), None);
+    }
+
+    #[test]
+    fn fullscreen_input_transform_rejects_invalid_copybits_rect() {
+        let mut disp = TrapDispatcher::new();
+        disp.screen_mode = (0, 1000, 800, 600, 8);
+        disp.fullscreen_locked = true;
+        disp.cursor_visible = false;
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 0,
+            src_right: 640,
+            dst_top: 100,
+            dst_left: 80,
+            dst_bottom: 500,
+            dst_right: 720,
+        });
+
+        assert_eq!(disp.fullscreen_input_transform(), None);
     }
 
     #[test]
