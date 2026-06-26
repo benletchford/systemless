@@ -21,6 +21,7 @@ const CURRENT_PROCESS_PSN_LOW: u32 = 2;
 const BOOT_VOLUME_ALLOCATION_BLOCKS: u16 = 16_384;
 const BOOT_VOLUME_ALLOCATION_BLOCK_SIZE: u32 = 4 * 1024;
 const BOOT_VOLUME_FREE_BLOCKS: u16 = 16_384;
+const QUICKTIME_NUM_VERSION_6_0_FINAL: u32 = 0x0600_8000;
 
 fn trace_menu_pict_enabled() -> bool {
     *TRACE_MENU_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_PICT").is_some())
@@ -2707,19 +2708,13 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltQuickTime ('qtim') -> QuickTime version.
-                    // Inside Macintosh: QuickTime 1993, p. 2-29. The
+                    // Inside Macintosh: QuickTime 1993, p. 2-33. The
                     // response field (A0) is the QuickTime version
-                    // packed as 0xMMMMNNRR where MMMM=major, NN=minor,
-                    // RR=bug-fix. Report 0x06_00_00_00 (QuickTime 6.0
-                    // — the latest classic-Mac release) so games that
-                    // gate themselves on a present-and-recent QT
-                    // (Souls in the System, Marathon Infinity) can
-                    // proceed past their "requires QuickTime" alert
-                    // and exercise the actual Movie Toolbox surface.
-                    // Returning gestaltUndefSelectorErr previously
-                    // halted those titles before any usable frame.
+                    // formatted like the numeric version part of a 'vers'
+                    // resource; Inside Macintosh Volume VI, 9-23 defines
+                    // the release byte as 0x80 for a final release.
                     b"qtim" => {
-                        cpu.write_reg(Register::A0, 0x0600_0000);
+                        cpu.write_reg(Register::A0, QUICKTIME_NUM_VERSION_6_0_FINAL);
                         cpu.write_reg(Register::D0, 0); // noErr
                     }
                     // gestaltDragMgrAttr ('drag') -> Drag Manager attrs.
@@ -6517,6 +6512,7 @@ impl super::TrapDispatcher {
 mod tests {
     use super::super::dispatch::{LoadedResources, ResourceFileMap};
     use super::super::test_helpers::{setup, TEST_SP};
+    use super::QUICKTIME_NUM_VERSION_6_0_FINAL;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
     use crate::memory::MemoryBus;
@@ -10231,6 +10227,20 @@ mod tests {
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::A0), 0x0000_0007);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_quicktime_reports_final_numversion() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"qtim"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), QUICKTIME_NUM_VERSION_6_0_FINAL);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!((cpu.read_reg(Register::A0) >> 8) & 0xFF, 0x80);
     }
 
     #[test]
