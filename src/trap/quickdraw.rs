@@ -6425,13 +6425,13 @@ impl super::TrapDispatcher {
             // MPW Quickdraw.h: EXTERN_API(void) MakeITable(CTabHandle, ITabHandle, short)
             //                    ONEWORDINLINE(0xAA39).
             // Stack: SP+0:res(2), SP+2:iTabH(4), SP+6:cTabH(4). Pop 10.
-            // Systemless HLE is a documented no-op stub; BII System 7.5.3
-            // ROM Color Manager actually builds the inverse table. The
-            // engines-agree subset is the pop-10 calling convention,
-            // proven by aa39_makeitable_strict.
             (true, 0x239) => {
                 let sp = cpu.read_reg(Register::A7);
+                let res = bus.read_word(sp);
+                let itab_handle = bus.read_long(sp + 2);
+                let ctab_handle = bus.read_long(sp + 6);
                 cpu.write_reg(Register::A7, sp + 10);
+                self.make_inverse_table(bus, ctab_handle, itab_handle, res);
                 Ok(())
             }
 
@@ -6705,7 +6705,7 @@ impl super::TrapDispatcher {
                     0x0001 => {
                         let pmh = bus.read_long(sp);
                         let locked = self.lock_gworld_pixels(pmh);
-                        bus.write_word(sp + 4, u16::from(locked));
+                        bus.write_word(sp + 4, if locked { 0x0100 } else { 0x0000 });
                         cpu.write_reg(Register::A7, sp + 4);
                     }
                     // UnlockPixels ($00040002)
@@ -7187,7 +7187,7 @@ impl super::TrapDispatcher {
                     0x0013 => {
                         let port = bus.read_long(sp);
                         let done = port != 0;
-                        bus.write_word(sp + 4, u16::from(done));
+                        bus.write_word(sp + 4, if done { 0x0100 } else { 0x0000 });
                         cpu.write_reg(Register::D0, u32::from(done));
                         cpu.write_reg(Register::A7, sp + 4);
                     }
@@ -7212,7 +7212,7 @@ impl super::TrapDispatcher {
                         } else {
                             false
                         };
-                        bus.write_word(sp + 4, u16::from(requires_32bit));
+                        bus.write_word(sp + 4, if requires_32bit { 0x0100 } else { 0x0000 });
                         cpu.write_reg(Register::A7, sp + 4);
                     }
                     // GetGWorldPixMap ($00040017)
@@ -7316,8 +7316,8 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume VI, 17-13
             //
             // Stack: SP+0 pm PixMapHandle (4 bytes), SP+4 result
-            // BOOLEAN (2 bytes pre-pushed by caller). Pop 4; result
-            // at post-pop A7 = pre-call SP+4.
+            // Boolean byte in a word-aligned caller slot. Pop 4;
+            // result at post-pop A7 = pre-call SP+4.
             //
             // HLE compromise: Systemless doesn't model purgeable
             // pixmaps — every PixMap allocated via NewGWorld
@@ -7328,12 +7328,12 @@ impl super::TrapDispatcher {
             // LockPixels(pm) then UpdateGWorld(...)` always take
             // the LockPixels-succeeded branch and proceed to
             // CopyBits-from-GWorld correctly.
-            // LockPixels ($AB04): Pops 4 bytes (PixMapHandle) + writes TRUE to 2-byte BOOLEAN result slot per IM:VI 17-13 + Imaging With QuickDraw 6-44 FUNCTION sig. HLE has no purgeable-pixmap axis (every PixMap lives until DisposeGWorld) so always returns TRUE — apps' LockPixels-failure recovery path (UpdateGWorld) never fires but is also unreachable since pixmaps don't get purged.
+            // LockPixels ($AB04): Pops 4 bytes (PixMapHandle) + writes TRUE to the Boolean result byte per IM:VI 17-13 + Imaging With QuickDraw 6-44 FUNCTION sig. HLE has no purgeable-pixmap axis (every PixMap lives until DisposeGWorld) so always returns TRUE; apps' LockPixels-failure recovery path (UpdateGWorld) never fires but is also unreachable since pixmaps don't get purged.
             (true, 0x304) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pmh = bus.read_long(sp);
                 let locked = self.lock_gworld_pixels(pmh);
-                bus.write_word(sp + 4, u16::from(locked));
+                bus.write_word(sp + 4, if locked { 0x0100 } else { 0x0000 });
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -14709,6 +14709,155 @@ impl super::TrapDispatcher {
         } else {
             self.ensure_main_gdevice(bus)
         }
+    }
+
+    fn normalized_itable_resolution(bus: &MacMemoryBus, gdh: u32, requested_res: u16) -> u16 {
+        let device_res = if requested_res == 0 && gdh != 0 {
+            let gd = bus.read_long(gdh);
+            if gd != 0 {
+                bus.read_word(gd + 10)
+            } else {
+                0
+            }
+        } else {
+            requested_res
+        };
+
+        if (3..=5).contains(&device_res) {
+            device_res
+        } else {
+            4
+        }
+    }
+
+    fn inverse_table_byte_count(res: u16) -> usize {
+        1usize << (usize::from(res) * 3)
+    }
+
+    fn build_inverse_table_bytes(clut: &[[u16; 3]; 256], res: u16) -> Vec<u8> {
+        if res == 4 && Self::uses_canonical_system_8bpp_clut(clut) {
+            return Self::standard_mac_8bpp_itable().to_vec();
+        }
+
+        let entries = Self::inverse_table_byte_count(res);
+        let mut table = vec![0u8; entries];
+        let res_bits = u32::from(res);
+        let mask = (1u32 << res_bits) - 1;
+        let shift = 16u32 - res_bits;
+        let centre = 1u32 << (15u32 - res_bits);
+
+        for cell in 0u32..entries as u32 {
+            let qb = cell & mask;
+            let qg = (cell >> res_bits) & mask;
+            let qr = (cell >> (res_bits * 2)) & mask;
+            let cr = ((qr << shift) | centre) as i64;
+            let cg = ((qg << shift) | centre) as i64;
+            let cb = ((qb << shift) | centre) as i64;
+            let mut best_idx = 0u8;
+            let mut best_dist = i64::MAX;
+            for (idx, entry) in clut.iter().enumerate() {
+                let dr = cr - i64::from(entry[0]);
+                let dg = cg - i64::from(entry[1]);
+                let db = cb - i64::from(entry[2]);
+                let dist = dr * dr + dg * dg + db * db;
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = idx as u8;
+                }
+            }
+            table[cell as usize] = best_idx;
+        }
+
+        table
+    }
+
+    fn usable_itable_handle(bus: &mut MacMemoryBus, handle: u32) -> u32 {
+        if handle == 0 || bus.get_alloc_size(handle).is_none() {
+            return 0;
+        }
+
+        let ptr = bus.read_long(handle);
+        if ptr != 0 {
+            if bus.get_alloc_size(ptr).is_some() {
+                return handle;
+            }
+            return 0;
+        }
+
+        let ptr = bus.alloc(0);
+        bus.write_long(handle, ptr);
+        handle
+    }
+
+    fn ensure_gdevice_itable_handle(bus: &mut MacMemoryBus, gdh: u32) -> u32 {
+        if gdh == 0 {
+            return 0;
+        }
+        let gd = bus.read_long(gdh);
+        if gd == 0 {
+            return 0;
+        }
+
+        let existing = bus.read_long(gd + 6);
+        if Self::usable_itable_handle(bus, existing) != 0 {
+            return existing;
+        }
+
+        let ptr = bus.alloc(0);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, ptr);
+        bus.write_long(gd + 6, handle);
+        handle
+    }
+
+    fn make_inverse_table(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ctab_handle: u32,
+        itab_handle: u32,
+        requested_res: u16,
+    ) {
+        let mut current_gdh = 0;
+        let target_handle = if itab_handle != 0 {
+            Self::usable_itable_handle(bus, itab_handle)
+        } else {
+            current_gdh = self.active_gdevice_or_main(bus);
+            Self::ensure_gdevice_itable_handle(bus, current_gdh)
+        };
+        if target_handle == 0 {
+            return;
+        }
+
+        let explicit_ctab = Self::color_table_ptr(bus, ctab_handle) != 0;
+        if !explicit_ctab || requested_res == 0 {
+            current_gdh = self.active_gdevice_or_main(bus);
+        }
+
+        let effective_ctab_handle = if explicit_ctab {
+            ctab_handle
+        } else {
+            Self::gdevice_ctab_handle(bus, current_gdh)
+        };
+        let clut = self.read_ctab_handle_clut(bus, effective_ctab_handle);
+        let seed = Self::ctab_seed(bus, effective_ctab_handle).unwrap_or(0);
+        let res = Self::normalized_itable_resolution(bus, current_gdh, requested_res);
+        let table = Self::build_inverse_table_bytes(&clut, res);
+        let record_size = 6 + table.len() as u32;
+
+        let mut ptr = bus.read_long(target_handle);
+        if ptr == 0 {
+            ptr = bus.alloc(record_size);
+            bus.write_long(target_handle, ptr);
+        } else {
+            ptr = self.resize_handle_allocation(bus, target_handle, record_size);
+        }
+        if ptr == 0 {
+            return;
+        }
+
+        bus.write_long(ptr, seed);
+        bus.write_word(ptr + 4, res);
+        bus.write_bytes(ptr + 6, &table);
     }
 
     fn extend_recording_bbox(
@@ -27247,6 +27396,83 @@ mod tests {
     }
 
     #[test]
+    fn makeitable_nil_arguments_builds_current_gdevice_itable() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x0CC8, gdh); // TheGDevice
+        let gd = bus.read_long(gdh);
+        assert_eq!(bus.read_long(gd + 6), 0);
+
+        bus.write_word(TEST_SP, 0); // res=0 => gdResPref
+        bus.write_long(TEST_SP + 2, 0); // NIL iTabH
+        bus.write_long(TEST_SP + 6, 0); // NIL cTabH
+
+        let result = d.dispatch_quickdraw(true, 0x239, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+
+        let itab_handle = bus.read_long(gd + 6);
+        assert_ne!(itab_handle, 0);
+        let itab_ptr = bus.read_long(itab_handle);
+        assert_ne!(itab_ptr, 0);
+        assert_eq!(bus.get_alloc_size(itab_ptr), Some(6 + 4096));
+        assert_eq!(bus.read_long(itab_ptr), 8);
+        assert_eq!(bus.read_word(itab_ptr + 4), 4);
+
+        let standard = TrapDispatcher::standard_mac_8bpp_itable();
+        assert_eq!(
+            bus.read_bytes(itab_ptr + 6, standard.len()),
+            standard.to_vec()
+        );
+    }
+
+    #[test]
+    fn makeitable_fills_explicit_itable_handle_without_attaching_to_gdevice() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x0CC8, gdh); // TheGDevice
+        let gd = bus.read_long(gdh);
+
+        let ctab_ptr = bus.alloc(8 + 2 * 8);
+        bus.write_long(ctab_ptr, 0x1234_5678);
+        bus.write_word(ctab_ptr + 4, 0);
+        bus.write_word(ctab_ptr + 6, 1);
+        bus.write_word(ctab_ptr + 8, 0);
+        bus.write_word(ctab_ptr + 10, 0xFFFF);
+        bus.write_word(ctab_ptr + 12, 0xFFFF);
+        bus.write_word(ctab_ptr + 14, 0xFFFF);
+        bus.write_word(ctab_ptr + 16, 1);
+        bus.write_word(ctab_ptr + 18, 0);
+        bus.write_word(ctab_ptr + 20, 0);
+        bus.write_word(ctab_ptr + 22, 0);
+        let ctab_handle = bus.alloc(4);
+        bus.write_long(ctab_handle, ctab_ptr);
+
+        let stale_itab_ptr = bus.alloc(1);
+        let itab_handle = bus.alloc(4);
+        bus.write_long(itab_handle, stale_itab_ptr);
+
+        bus.write_word(TEST_SP, 3);
+        bus.write_long(TEST_SP + 2, itab_handle);
+        bus.write_long(TEST_SP + 6, ctab_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x239, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_long(gd + 6), 0);
+
+        let itab_ptr = bus.read_long(itab_handle);
+        assert_ne!(itab_ptr, 0);
+        assert_eq!(bus.get_alloc_size(itab_ptr), Some(6 + 512));
+        assert_eq!(bus.read_long(itab_ptr), 0x1234_5678);
+        assert_eq!(bus.read_word(itab_ptr + 4), 3);
+        assert!(bus
+            .read_bytes(itab_ptr + 6, 512)
+            .iter()
+            .any(|&byte| byte != 0));
+    }
+
+    #[test]
     fn index2color_realcolor_pascal_call_preserves_stack_across_five_calls() {
         // IM:V 1986 p. V-141 (Color Manager — Color Manager Routines —
         // Color Conversion):
@@ -33537,7 +33763,8 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(cpu.read_reg(Register::D0), 1);
-        assert_eq!(bus.read_word(TEST_SP + 4), 1);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
 
         cpu.write_reg(Register::A7, TEST_SP);
         cpu.write_reg(Register::D0, 0x0004_0013);
@@ -33547,7 +33774,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(bus.read_word(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
     }
 
     #[test]
@@ -33565,7 +33792,7 @@ mod tests {
         bus.write_long(TEST_SP, port);
         let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
         assert_eq!(cpu.read_reg(Register::D0), 1);
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -33573,7 +33800,7 @@ mod tests {
         bus.write_long(TEST_SP, port);
         let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
         assert_eq!(cpu.read_reg(Register::D0), 1);
 
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
@@ -33585,7 +33812,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(bus.read_word(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
     }
 
     #[test]
@@ -33608,7 +33835,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(cpu.read_reg(Register::D0), 1);
-        assert_eq!(bus.read_word(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
     }
 
     #[test]
@@ -33654,7 +33881,8 @@ mod tests {
         bus.write_long(TEST_SP, 0x300000); // pm_handle
         let result = d.dispatch_quickdraw(true, 0x304, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 4), 1); // TRUE
+        assert_eq!(bus.read_byte(TEST_SP + 4), 1); // TRUE
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
     }
 
     #[test]
@@ -33667,7 +33895,26 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x304, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(bus.read_word(TEST_SP + 4), 1);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
+    }
+
+    #[test]
+    fn qde_lockpixels_writes_pascal_boolean_byte_result_slot() {
+        // MPW callers reserve the LockPixels Boolean result with CLR.B
+        // -(SP), then test the byte at post-call A7. TRUE must therefore
+        // occupy the first byte of the word-aligned result slot.
+        let (mut d, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0004_0001);
+        bus.write_word(TEST_SP + 4, 0xFFFF);
+        bus.write_long(TEST_SP, 0x300000);
+
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 1);
+        assert_eq!(bus.read_word(TEST_SP + 4), 0x0100);
     }
 
     #[test]
