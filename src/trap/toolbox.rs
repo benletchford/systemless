@@ -550,6 +550,57 @@ impl super::TrapDispatcher {
         })
     }
 
+    fn standard_file_auto_selection(
+        &mut self,
+        bus: &MacMemoryBus,
+        num_types: i16,
+        type_list_ptr: u32,
+    ) -> Option<StandardFileSelection> {
+        // Inside Macintosh: Files (1992), p. 3-50: Standard File first
+        // filters the display list by numTypes/typeList. The headless HLE
+        // only auto-selects when a caller supplied a positive type list; the
+        // all-files and no-files cases keep the existing cancel behavior.
+        if num_types <= 0 || type_list_ptr == 0 {
+            return None;
+        }
+
+        let count = (num_types as usize).min(64);
+        let mut file_types = Vec::with_capacity(count);
+        for index in 0..count {
+            file_types.push(bus.read_long(type_list_ptr + (index as u32 * 4)));
+        }
+
+        let default_dir_id = self.default_dir_id;
+        let entries = self.list_vfs_catalog_entries(default_dir_id);
+        for entry in entries {
+            if entry.is_directory {
+                continue;
+            }
+            let Some(metadata) = self.vfs_file_metadata(&entry.path) else {
+                continue;
+            };
+            if !file_types.contains(&metadata.file_type) {
+                continue;
+            }
+
+            let vref = Self::boot_volume_ref_num();
+            let wd_ref = self
+                .open_working_directory(vref, metadata.parent_dir_id, 0)
+                .unwrap_or(vref);
+            let mut name = encode_mac_roman_lossy(Self::vfs_basename(&entry.path));
+            name.truncate(63);
+            return Some(StandardFileSelection {
+                name,
+                vref,
+                wd_ref,
+                dir_id: metadata.parent_dir_id,
+                file_type: metadata.file_type,
+                finder_flags: metadata.finder_flags,
+            });
+        }
+        None
+    }
+
     fn build_alias_record(&mut self, bus: &MacMemoryBus, target_ptr: u32) -> Vec<u8> {
         let vref = bus.read_word(target_ptr) as i16;
         let dir_id = bus.read_long(target_ptr + 2);
@@ -7626,88 +7677,94 @@ impl super::TrapDispatcher {
             (true, 0x1EA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
-                let (arg_bytes, reply_offset, default_name_offset, modern_reply, accepts_file) =
-                    match selector {
-                        // PROCEDURE SFPutFile(where: Point; prompt: Str255;
-                        //                     origName: Str255;
-                        //                     dlgHook: ProcPtr;
-                        //                     VAR reply: SFReply);
-                        // IM:Files 3-52 / IM:I I-519..I-522. Reply ptr is
-                        // last Pascal arg → at SP+2 above the selector.
-                        0x0001 => (20u32, 2u32, Some(10u32), false, true),
-                        // PROCEDURE SFGetFile(where: Point; prompt: Str255;
-                        //                     fileFilter: ProcPtr;
-                        //                     numTypes: Integer;
-                        //                     typeList: SFTypeList;
-                        //                     dlgHook: ProcPtr;
-                        //                     VAR reply: SFReply);
-                        // IM:Files 3-52..3-53 / IM:I I-523..I-526.
-                        0x0002 => (26u32, 2u32, None, false, false),
-                        // PROCEDURE SFPPutFile(...; VAR reply: SFReply;
-                        //                       dlgID: Integer;
-                        //                       filterProc: ProcPtr);
-                        // IM:I I-522..I-523. filterProc(4) + dlgID(2) sit
-                        // ABOVE reply ptr on the stack → reply at SP+8.
-                        0x0003 => (26u32, 8u32, Some(16u32), false, true),
-                        // PROCEDURE SFPGetFile(...; VAR reply: SFReply;
-                        //                       dlgID: Integer;
-                        //                       filterProc: ProcPtr);
-                        // IM:I I-526..I-527.
-                        0x0004 => (32u32, 8u32, None, false, false),
-                        // PROCEDURE StandardPutFile(prompt: Str255;
-                        //                           defaultName: Str255;
-                        //                           VAR reply:
-                        //                             StandardFileReply);
-                        // IM:Files 3-45.
-                        0x0005 => (12u32, 2u32, Some(6u32), true, true),
-                        // PROCEDURE StandardGetFile(fileFilter: ProcPtr;
-                        //                           numTypes: Integer;
-                        //                           typeList: SFTypeList;
-                        //                           VAR reply:
-                        //                             StandardFileReply);
-                        // IM:Files 3-50.
-                        0x0006 => (14u32, 2u32, None, true, false),
-                        // PROCEDURE CustomPutFile(prompt: Str255;
-                        //                          defaultName: Str255;
-                        //                          VAR reply:
-                        //                            StandardFileReply;
-                        //                          dlgID: Integer;
-                        //                          where: Point;
-                        //                          dlgHook: ProcPtr;
-                        //                          filterProc: ProcPtr;
-                        //                          activeList: Ptr;
-                        //                          activateProc: ProcPtr;
-                        //                          yourDataPtr: UNIV Ptr);
-                        // IM:Files 3-46 / IM:VI 26-21. yourData(4) +
-                        // activate(4) + activeList(4) + filter(4) +
-                        // dlgHook(4) + where(4) + dlgID(2) = 26 bytes
-                        // ABOVE reply → reply at SP+28.
-                        0x0007 => (38u32, 28u32, Some(32u32), true, true),
-                        // PROCEDURE CustomGetFile(fileFilter: ProcPtr;
-                        //                          numTypes: Integer;
-                        //                          typeList: SFTypeList;
-                        //                          VAR reply:
-                        //                            StandardFileReply;
-                        //                          dlgID: Integer;
-                        //                          where: Point;
-                        //                          dlgHook: ProcPtr;
-                        //                          filterProc: ProcPtr;
-                        //                          activeList: Ptr;
-                        //                          activateProc: ProcPtr;
-                        //                          yourDataPtr: UNIV Ptr);
-                        // IM:Files 3-51 / IM:VI 26-22.
-                        0x0008 => (40u32, 28u32, None, true, false),
-                        _ => {
-                            // No other selectors documented in IM:Files
-                            // 3-45..3-54 or IM:I I-518..I-527. Pop just
-                            // the selector word defensively so a future
-                            // System addition doesn't corrupt the caller
-                            // stack.
-                            cpu.write_reg(Register::A7, sp + 2);
-                            cpu.write_reg(Register::D0, 0);
-                            return Some(Ok(()));
-                        }
-                    };
+                let (
+                    arg_bytes,
+                    reply_offset,
+                    default_name_offset,
+                    modern_reply,
+                    accepts_file,
+                    get_filter_offsets,
+                ) = match selector {
+                    // PROCEDURE SFPutFile(where: Point; prompt: Str255;
+                    //                     origName: Str255;
+                    //                     dlgHook: ProcPtr;
+                    //                     VAR reply: SFReply);
+                    // IM:Files 3-52 / IM:I I-519..I-522. Reply ptr is
+                    // last Pascal arg → at SP+2 above the selector.
+                    0x0001 => (20u32, 2u32, Some(10u32), false, true, None),
+                    // PROCEDURE SFGetFile(where: Point; prompt: Str255;
+                    //                     fileFilter: ProcPtr;
+                    //                     numTypes: Integer;
+                    //                     typeList: SFTypeList;
+                    //                     dlgHook: ProcPtr;
+                    //                     VAR reply: SFReply);
+                    // IM:Files 3-52..3-53 / IM:I I-523..I-526.
+                    0x0002 => (26u32, 2u32, None, false, false, Some((14u32, 10u32))),
+                    // PROCEDURE SFPPutFile(...; VAR reply: SFReply;
+                    //                       dlgID: Integer;
+                    //                       filterProc: ProcPtr);
+                    // IM:I I-522..I-523. filterProc(4) + dlgID(2) sit
+                    // ABOVE reply ptr on the stack → reply at SP+8.
+                    0x0003 => (26u32, 8u32, Some(16u32), false, true, None),
+                    // PROCEDURE SFPGetFile(...; VAR reply: SFReply;
+                    //                       dlgID: Integer;
+                    //                       filterProc: ProcPtr);
+                    // IM:I I-526..I-527.
+                    0x0004 => (32u32, 8u32, None, false, false, Some((20u32, 16u32))),
+                    // PROCEDURE StandardPutFile(prompt: Str255;
+                    //                           defaultName: Str255;
+                    //                           VAR reply:
+                    //                             StandardFileReply);
+                    // IM:Files 3-45.
+                    0x0005 => (12u32, 2u32, Some(6u32), true, true, None),
+                    // PROCEDURE StandardGetFile(fileFilter: ProcPtr;
+                    //                           numTypes: Integer;
+                    //                           typeList: SFTypeList;
+                    //                           VAR reply:
+                    //                             StandardFileReply);
+                    // IM:Files 3-50.
+                    0x0006 => (14u32, 2u32, None, true, false, Some((10u32, 6u32))),
+                    // PROCEDURE CustomPutFile(prompt: Str255;
+                    //                          defaultName: Str255;
+                    //                          VAR reply:
+                    //                            StandardFileReply;
+                    //                          dlgID: Integer;
+                    //                          where: Point;
+                    //                          dlgHook: ProcPtr;
+                    //                          filterProc: ProcPtr;
+                    //                          activeList: Ptr;
+                    //                          activateProc: ProcPtr;
+                    //                          yourDataPtr: UNIV Ptr);
+                    // IM:Files 3-46 / IM:VI 26-21. yourData(4) +
+                    // activate(4) + activeList(4) + filter(4) +
+                    // dlgHook(4) + where(4) + dlgID(2) = 26 bytes
+                    // ABOVE reply → reply at SP+28.
+                    0x0007 => (38u32, 28u32, Some(32u32), true, true, None),
+                    // PROCEDURE CustomGetFile(fileFilter: ProcPtr;
+                    //                          numTypes: Integer;
+                    //                          typeList: SFTypeList;
+                    //                          VAR reply:
+                    //                            StandardFileReply;
+                    //                          dlgID: Integer;
+                    //                          where: Point;
+                    //                          dlgHook: ProcPtr;
+                    //                          filterProc: ProcPtr;
+                    //                          activeList: Ptr;
+                    //                          activateProc: ProcPtr;
+                    //                          yourDataPtr: UNIV Ptr);
+                    // IM:Files 3-51 / IM:VI 26-22.
+                    0x0008 => (40u32, 28u32, None, true, false, Some((36u32, 32u32))),
+                    _ => {
+                        // No other selectors documented in IM:Files
+                        // 3-45..3-54 or IM:I I-518..I-527. Pop just
+                        // the selector word defensively so a future
+                        // System addition doesn't corrupt the caller
+                        // stack.
+                        cpu.write_reg(Register::A7, sp + 2);
+                        cpu.write_reg(Register::D0, 0);
+                        return Some(Ok(()));
+                    }
+                };
                 let pop_total = 2 + arg_bytes;
                 let reply_ptr = bus.read_long(sp + reply_offset);
                 if accepts_file {
@@ -7722,7 +7779,13 @@ impl super::TrapDispatcher {
                     } else {
                         standard_file_put_reply_old(bus, reply_ptr, self.app_wd_refnum, &name);
                     }
-                } else if let Some(selection) = self.standard_file_env_selection() {
+                } else if let Some(selection) = self.standard_file_env_selection().or_else(|| {
+                    get_filter_offsets.and_then(|(num_types_offset, type_list_offset)| {
+                        let num_types = bus.read_word(sp + num_types_offset) as i16;
+                        let type_list_ptr = bus.read_long(sp + type_list_offset);
+                        self.standard_file_auto_selection(bus, num_types, type_list_ptr)
+                    })
+                }) {
                     // StandardGetFile returns sfGood, sfType, and an FSSpec
                     // for the selected file; SFGetFile's old SFReply uses a
                     // working-directory refnum in vRefNum.
@@ -18379,6 +18442,79 @@ mod tests {
             b"Tom Fighter Paris".to_vec()
         );
         assert_eq!(bus.read_word(reply_ptr + 78), 0x4000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — StandardGetFile selector $0006.
+    // IM:Files 1992 p. 3-50 and IM:VI 26-22: a positive numTypes/typeList
+    // filters the Open dialog's display list by Finder file type.
+    #[test]
+    fn standard_get_file_auto_selects_matching_current_directory_type() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x320500u32;
+        let type_list_ptr = 0x320600u32;
+        let app_dir = disp.ensure_vfs_directory("Data Folder");
+        disp.default_dir_id = app_dir;
+        disp.vfs
+            .insert("Data Folder/Selected".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("Data Folder/Selected", *b"DATA", *b"TEST", 0x4000);
+        disp.vfs
+            .insert("Other Folder/Selected".to_string(), vec![4, 5, 6]);
+        disp.set_vfs_entry_metadata("Other Folder/Selected", *b"DATA", *b"TEST", 0x8000);
+        bus.write_long(type_list_ptr, u32::from_be_bytes(*b"DATA"));
+        bus.write_word(sp, 0x0006); // StandardGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, type_list_ptr); // typeList
+        bus.write_word(sp + 10, 1); // numTypes
+        bus.write_long(sp + 12, 0); // fileFilter
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"DATA"));
+        assert_eq!(
+            bus.read_word(reply_ptr + 6),
+            crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+        );
+        assert_eq!(bus.read_long(reply_ptr + 8), app_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 12), b"Selected".to_vec());
+        assert_eq!(bus.read_word(reply_ptr + 78), 0x4000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — StandardGetFile selector $0006.
+    // IM:VI 26-22: numTypes = 0 filters out all files.
+    #[test]
+    fn standard_get_file_zero_types_still_cancels() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x320700u32;
+        let type_list_ptr = 0x320800u32;
+        let app_dir = disp.ensure_vfs_directory("Data Folder");
+        disp.default_dir_id = app_dir;
+        disp.vfs
+            .insert("Data Folder/Selected".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("Data Folder/Selected", *b"Flux", *b"Geek", 0);
+        bus.write_byte(reply_ptr, 0xFF);
+        bus.write_long(type_list_ptr, u32::from_be_bytes(*b"Flux"));
+        bus.write_word(sp, 0x0006); // StandardGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, type_list_ptr); // typeList
+        bus.write_word(sp + 10, 0); // numTypes
+        bus.write_long(sp + 12, 0); // fileFilter
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_byte(reply_ptr), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
