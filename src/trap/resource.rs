@@ -22,6 +22,10 @@ const BOOT_VOLUME_ALLOCATION_BLOCKS: u16 = 16_384;
 const BOOT_VOLUME_ALLOCATION_BLOCK_SIZE: u32 = 4 * 1024;
 const BOOT_VOLUME_FREE_BLOCKS: u16 = 16_384;
 const QUICKTIME_NUM_VERSION_6_0_FINAL: u32 = 0x0600_8000;
+const NO_ERR: u32 = 0;
+const MEM_FULL_ERR: u32 = (-108i32) as u32;
+const NIL_HANDLE_ERR: u32 = (-109i32) as u32;
+const MEM_WZ_ERR: u32 = (-111i32) as u32;
 
 fn trace_menu_pict_enabled() -> bool {
     *TRACE_MENU_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_PICT").is_some())
@@ -45,6 +49,35 @@ fn trace_loadseg_enabled() -> bool {
 
 fn temporary_memory_free_estimate(bus: &MacMemoryBus) -> u32 {
     (bus.ram_size() / 2).clamp(8 * 1024 * 1024, 64 * 1024 * 1024)
+}
+
+fn write_temp_memory_result_code(bus: &mut MacMemoryBus, result_code_ptr: u32, result: u32) {
+    if result_code_ptr != 0 {
+        bus.write_word(result_code_ptr, result as u16);
+    }
+}
+
+fn scribble_temporary_allocation(bus: &mut MacMemoryBus, address: u32, size: u32) {
+    for offset in 0..size {
+        bus.write_byte(address.wrapping_add(offset), 0xA5);
+    }
+}
+
+fn temporary_memory_handle_status(bus: &MacMemoryBus, handle: u32) -> u32 {
+    if handle == 0 {
+        return NIL_HANDLE_ERR;
+    }
+    if bus.get_alloc_size(handle).is_none() {
+        return MEM_WZ_ERR;
+    }
+    let ptr = bus.read_long(handle);
+    if ptr == 0 {
+        return NIL_HANDLE_ERR;
+    }
+    if bus.get_alloc_size(ptr).is_none() {
+        return MEM_WZ_ERR;
+    }
+    NO_ERR
 }
 
 fn format_ostype(res_type: [u8; 4]) -> String {
@@ -4702,6 +4735,10 @@ impl super::TrapDispatcher {
             // FUNCTION TempMaxMem(VAR grow: Size): Size;
             // FUNCTION TempTopMem: Ptr;
             // FUNCTION TempFreeMem: LongInt;
+            // FUNCTION TempNewHandle(logicalSize: Size; VAR resultCode: OSErr): Handle;
+            // PROCEDURE TempHLock(h: Handle; VAR resultCode: OSErr);
+            // PROCEDURE TempHUnlock(h: Handle; VAR resultCode: OSErr);
+            // PROCEDURE TempDisposeHandle(h: Handle; VAR resultCode: OSErr);
             // Inside Macintosh Volume VI, 28-38 and 28-45.
             // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
             // Processes 1994, 2-21 to 2-24.
@@ -4716,7 +4753,9 @@ impl super::TrapDispatcher {
             // MPW Universal Interfaces 3.4 MacMemory.a emits the 68k
             // temporary-memory macros as `move.w #selector,-(sp); _OSDispatch`.
             // OSDispatch ($A88F): selectors $0015 TempMaxMem, $0016
-            // TempTopMem, $0018 TempFreeMem (IM VI Temporary Memory table);
+            // TempTopMem, $0018 TempFreeMem, $001D TempNewHandle,
+            // $001E TempHLock, $001F TempHUnlock, and $0020
+            // TempDisposeHandle (IM VI Temporary Memory table);
             // selectors $0037..$003D are Process Manager routines
             // (Processes 1994 p. 2-31).
             (true, 0x08F) => {
@@ -4724,7 +4763,7 @@ impl super::TrapDispatcher {
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp) = match stack_sel {
-                    0x0015 | 0x0016 | 0x0018 | 0x0037..=0x003D => {
+                    0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0037..=0x003D => {
                         // Pop the selector word pushed by MOVE.W #sel,-(SP).
                         cpu.write_reg(Register::A7, sp_entry + 2);
                         (stack_sel, sp_entry + 2)
@@ -4741,7 +4780,9 @@ impl super::TrapDispatcher {
                         if grow_ptr != 0 {
                             bus.write_long(grow_ptr, 0);
                         }
-                        cpu.write_reg(Register::D0, temporary_memory_free_estimate(bus));
+                        let free = temporary_memory_free_estimate(bus);
+                        bus.write_long(sp + 4, free);
+                        cpu.write_reg(Register::D0, free);
                         cpu.write_reg(Register::A7, sp + 4);
                         Ok(())
                     }
@@ -4751,14 +4792,13 @@ impl super::TrapDispatcher {
                         // FUNCTION TempTopMem: Ptr;
                         // Inside Macintosh Volume VI, 28-37 and 28-45.
                         let mem_top = bus.read_long(crate::memory::globals::addr::MEM_TOP);
-                        cpu.write_reg(
-                            Register::D0,
-                            if mem_top != 0 {
-                                mem_top
-                            } else {
-                                bus.ram_size()
-                            },
-                        );
+                        let result = if mem_top != 0 {
+                            mem_top
+                        } else {
+                            bus.ram_size()
+                        };
+                        bus.write_long(sp, result);
+                        cpu.write_reg(Register::D0, result);
                         Ok(())
                     }
                     0x0018 => {
@@ -4766,7 +4806,90 @@ impl super::TrapDispatcher {
                         // Returns the total amount of free temporary memory.
                         // FUNCTION TempFreeMem: LongInt;
                         // Inside Macintosh Volume VI, 28-38 and 28-45.
-                        cpu.write_reg(Register::D0, temporary_memory_free_estimate(bus));
+                        let free = temporary_memory_free_estimate(bus);
+                        bus.write_long(sp, free);
+                        cpu.write_reg(Register::D0, free);
+                        Ok(())
+                    }
+                    0x001D => {
+                        // TempNewHandle (0xA88F selector $001D)
+                        // Allocates a relocatable block of temporary memory.
+                        // FUNCTION TempNewHandle(logicalSize: Size; VAR resultCode: OSErr): Handle;
+                        // Inside Macintosh Volume VI, 28-36..28-39; Memory 1992, 2-78.
+                        let result_code_ptr = bus.read_long(sp);
+                        let logical_size = bus.read_long(sp + 4);
+                        let ptr = bus.alloc(logical_size);
+                        let (handle, result_code) = if ptr == 0 && logical_size > 0 {
+                            (0, MEM_FULL_ERR)
+                        } else {
+                            scribble_temporary_allocation(bus, ptr, logical_size);
+                            let handle = bus.alloc(4);
+                            if handle == 0 {
+                                if ptr != 0 {
+                                    bus.free(ptr);
+                                }
+                                (0, MEM_FULL_ERR)
+                            } else {
+                                bus.write_long(handle, ptr);
+                                self.ptr_to_handle.insert(ptr, handle);
+                                (handle, NO_ERR)
+                            }
+                        };
+                        write_temp_memory_result_code(bus, result_code_ptr, result_code);
+                        bus.write_long(sp + 8, handle);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, handle);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
+                    0x001E | 0x001F => {
+                        // TempHLock / TempHUnlock (0xA88F selectors $001E / $001F)
+                        // Locks or unlocks a relocatable temporary-memory block.
+                        // PROCEDURE TempHLock(h: Handle; VAR resultCode: OSErr);
+                        // PROCEDURE TempHUnlock(h: Handle; VAR resultCode: OSErr);
+                        // Inside Macintosh Volume VI, 28-37..28-39 and 28-45.
+                        let result_code_ptr = bus.read_long(sp);
+                        let handle = bus.read_long(sp + 4);
+                        let result_code = temporary_memory_handle_status(bus, handle);
+                        if result_code == NO_ERR {
+                            let bits = self.handle_state_bits.entry(handle).or_insert(0);
+                            if selector == 0x001E {
+                                *bits |= 0x80;
+                            } else {
+                                *bits &= !0x80;
+                                if *bits == 0 {
+                                    self.handle_state_bits.remove(&handle);
+                                }
+                            }
+                        }
+                        write_temp_memory_result_code(bus, result_code_ptr, result_code);
+                        cpu.write_reg(Register::D0, result_code);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
+                    0x0020 => {
+                        // TempDisposeHandle (0xA88F selector $0020)
+                        // Releases a relocatable temporary-memory block.
+                        // PROCEDURE TempDisposeHandle(h: Handle; VAR resultCode: OSErr);
+                        // Inside Macintosh Volume VI, 28-37..28-39 and 28-45.
+                        let result_code_ptr = bus.read_long(sp);
+                        let handle = bus.read_long(sp + 4);
+                        let result_code = if handle != 0
+                            && bus.get_alloc_size(handle).is_some()
+                            && !self.loaded_handles.contains_key(&handle)
+                        {
+                            let ptr = bus.read_long(handle);
+                            self.ptr_to_handle.remove(&ptr);
+                            bus.free(ptr);
+                            bus.free(handle);
+                            self.handle_state_bits.remove(&handle);
+                            NO_ERR
+                        } else {
+                            MEM_WZ_ERR
+                        };
+                        write_temp_memory_result_code(bus, result_code_ptr, result_code);
+                        cpu.write_reg(Register::D0, result_code);
+                        cpu.write_reg(Register::A7, sp + 8);
                         Ok(())
                     }
                     0x0037 => {
@@ -12807,6 +12930,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         bus.write_word(TEST_SP, 0x0018);
+        bus.write_long(TEST_SP + 2, 0xDEAD_BEEF);
         cpu.write_reg(Register::D0, 0x0001);
 
         call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
@@ -12820,6 +12944,11 @@ mod tests {
             cpu.read_reg(Register::D0) >= 8 * 1024 * 1024,
             "TempFreeMem should report usable temporary memory in D0"
         );
+        assert_eq!(
+            bus.read_long(TEST_SP + 2),
+            cpu.read_reg(Register::D0),
+            "TempFreeMem must write the Pascal function result slot"
+        );
     }
 
     #[test]
@@ -12830,6 +12959,7 @@ mod tests {
         bus.write_long(grow_ptr, 0xDEAD_BEEF);
         bus.write_word(TEST_SP, 0x0015);
         bus.write_long(TEST_SP + 2, grow_ptr);
+        bus.write_long(TEST_SP + 6, 0xDEAD_BEEF);
         cpu.write_reg(Register::D0, 0x0001);
 
         call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
@@ -12848,6 +12978,11 @@ mod tests {
             cpu.read_reg(Register::D0) >= 8 * 1024 * 1024,
             "TempMaxMem should report usable temporary memory in D0"
         );
+        assert_eq!(
+            bus.read_long(TEST_SP + 6),
+            cpu.read_reg(Register::D0),
+            "TempMaxMem must write the Pascal function result slot"
+        );
     }
 
     #[test]
@@ -12856,6 +12991,7 @@ mod tests {
 
         bus.write_long(crate::memory::globals::addr::MEM_TOP, 0x03F0_0000);
         bus.write_word(TEST_SP, 0x0016);
+        bus.write_long(TEST_SP + 2, 0xDEAD_BEEF);
         cpu.write_reg(Register::D0, 0x0001);
 
         call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
@@ -12869,6 +13005,130 @@ mod tests {
             cpu.read_reg(Register::D0),
             0x03F0_0000,
             "TempTopMem should return the top of addressable RAM in D0"
+        );
+        assert_eq!(
+            bus.read_long(TEST_SP + 2),
+            0x03F0_0000,
+            "TempTopMem must write the Pascal function result slot"
+        );
+    }
+
+    #[test]
+    fn osdispatch_tempnewhandle_selector_001d_allocates_and_writes_result_code() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let err_ptr = 0x2A0100u32;
+        bus.write_word(err_ptr, 0x7777);
+        bus.write_word(TEST_SP, 0x001D);
+        bus.write_long(TEST_SP + 2, err_ptr);
+        bus.write_long(TEST_SP + 6, 64);
+        bus.write_long(TEST_SP + 10, 0xDEAD_BEEF);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 10);
+        let ptr = bus.read_long(handle);
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 10,
+            "TempNewHandle should pop selector and two arguments"
+        );
+        assert_ne!(handle, 0, "TempNewHandle should return a handle");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            handle,
+            "TempNewHandle should mirror the handle in D0 for inline callers"
+        );
+        assert_eq!(
+            bus.read_word(err_ptr),
+            0,
+            "TempNewHandle should write noErr to resultCode"
+        );
+        assert_eq!(bus.get_alloc_size(ptr), Some(64));
+        assert_eq!(disp.ptr_to_handle.get(&ptr).copied(), Some(handle));
+    }
+
+    #[test]
+    fn osdispatch_temphlock_unlock_and_dispose_selectors_manage_temp_handle_state() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let data_ptr = bus.alloc(32);
+        let handle = bus.alloc(4);
+        let err_ptr = 0x2A0200u32;
+        bus.write_long(handle, data_ptr);
+
+        bus.write_word(err_ptr, 0x7777);
+        bus.write_word(TEST_SP, 0x001E);
+        bus.write_long(TEST_SP + 2, err_ptr);
+        bus.write_long(TEST_SP + 6, handle);
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(err_ptr), 0, "TempHLock resultCode");
+        assert_eq!(
+            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x80,
+            0x80,
+            "TempHLock should set the lock bit"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(err_ptr, 0x7777);
+        bus.write_word(TEST_SP, 0x001F);
+        bus.write_long(TEST_SP + 2, err_ptr);
+        bus.write_long(TEST_SP + 6, handle);
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(err_ptr), 0, "TempHUnlock resultCode");
+        assert_eq!(
+            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x80,
+            0,
+            "TempHUnlock should clear the lock bit"
+        );
+
+        disp.handle_state_bits.insert(handle, 0xC0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(err_ptr, 0x7777);
+        bus.write_word(TEST_SP, 0x0020);
+        bus.write_long(TEST_SP + 2, err_ptr);
+        bus.write_long(TEST_SP + 6, handle);
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(err_ptr), 0, "TempDisposeHandle resultCode");
+        assert_eq!(
+            bus.get_alloc_size(data_ptr),
+            None,
+            "TempDisposeHandle should release the data block"
+        );
+        assert_eq!(
+            bus.get_alloc_size(handle),
+            None,
+            "TempDisposeHandle should release the master pointer"
+        );
+        assert!(
+            !disp.handle_state_bits.contains_key(&handle),
+            "TempDisposeHandle should clear tracked state bits"
+        );
+    }
+
+    #[test]
+    fn osdispatch_temphlock_selector_001e_reports_nil_handle_error() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let err_ptr = 0x2A0300u32;
+        bus.write_word(err_ptr, 0x7777);
+        bus.write_word(TEST_SP, 0x001E);
+        bus.write_long(TEST_SP + 2, err_ptr);
+        bus.write_long(TEST_SP + 6, 0);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(
+            bus.read_word(err_ptr) as i16,
+            -109,
+            "TempHLock should report nilHandleErr for a NIL handle"
         );
     }
 
