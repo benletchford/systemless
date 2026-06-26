@@ -2989,8 +2989,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // FSRead ($A002) - with position tracking
-            // FSRead ($A002): Reads from VFS data fork via refnum
+            // PBRead ($A002)
+            // Reads bytes from an open file, including PBRead newline mode.
+            // FUNCTION PBRead (paramBlock: ParmBlkPtr; async: Boolean): OSErr;
+            // Files 1992, 2-121 to 2-122
             (false, 0x02) => {
                 let pb = cpu.read_reg(Register::A0);
                 let ref_num = bus.read_word(pb + 24);
@@ -2999,7 +3001,7 @@ impl super::TrapDispatcher {
                 let pos_mode = bus.read_word(pb + 44);
                 let pos_offset = bus.read_long(pb + 46) as i32;
                 eprintln!(
-                    "[TRAP] FSRead ref={} buf=${:08X} count={} posMode={} posOff={}",
+                    "[TRAP] PBRead ref={} buf=${:08X} count={} posMode={} posOff={}",
                     ref_num, buffer, request_count, pos_mode, pos_offset
                 );
 
@@ -3018,7 +3020,19 @@ impl super::TrapDispatcher {
                         };
                         let start = start.min(file_len);
                         let avail = file_len - start;
-                        let bytes_read = request_count.min(avail);
+                        let max_read = request_count.min(avail);
+                        let newline_mode = (pos_mode & 0x0080) != 0;
+                        let newline_char = (pos_mode >> 8) as u8;
+                        let newline_offset = if newline_mode {
+                            file_buf[start..start + max_read]
+                                .iter()
+                                .position(|&byte| byte == newline_char)
+                        } else {
+                            None
+                        };
+                        let bytes_read =
+                            newline_offset.map(|offset| offset + 1).unwrap_or(max_read);
+                        let stopped_at_newline = newline_offset.is_some();
 
                         bus.write_bytes(buffer, &file_buf[start..start + bytes_read]);
 
@@ -3026,9 +3040,9 @@ impl super::TrapDispatcher {
                         bus.write_long(pb + 40, bytes_read as u32);
                         bus.write_long(pb + 46, (start + bytes_read) as u32);
 
-                        if bytes_read < request_count {
+                        if !stopped_at_newline && bytes_read < request_count {
                             eprintln!(
-                                "[TRAP] FSRead -> eofErr (read {} of {} from pos {})",
+                                "[TRAP] PBRead -> eofErr (read {} of {} from pos {})",
                                 bytes_read, request_count, start
                             );
                             bus.write_word(pb + 16, (-39i16) as u16); // eofErr
@@ -3038,7 +3052,7 @@ impl super::TrapDispatcher {
                             cpu.write_reg(Register::D0, 0);
                         }
                     } else {
-                        eprintln!("[TRAP] FSRead -> fnfErr (file not in VFS)");
+                        eprintln!("[TRAP] PBRead -> fnfErr (file not in VFS)");
                         bus.write_word(pb + 16, (-43i16) as u16); // fnfErr
                         bus.write_long(pb + 40, 0);
                         cpu.write_reg(Register::D0, (-43i32) as u32);
@@ -3048,7 +3062,7 @@ impl super::TrapDispatcher {
                     bus.write_long(pb + 40, 0);
                     cpu.write_reg(Register::D0, 0);
                 } else {
-                    eprintln!("[TRAP] FSRead -> rfNumErr (refnum {} not open)", ref_num);
+                    eprintln!("[TRAP] PBRead -> rfNumErr (refnum {} not open)", ref_num);
                     bus.write_word(pb + 16, (-51i16) as u16); // rfNumErr
                     bus.write_long(pb + 40, 0);
                     cpu.write_reg(Register::D0, (-51i32) as u32);
@@ -11053,6 +11067,101 @@ mod tests {
         assert_eq!(bus.read_long(pb + 46), 2);
         assert_eq!(*disp.file_positions.get(&100).unwrap(), 2);
         assert_eq!(bus.read_byte(read_buf), 0xCC);
+    }
+
+    #[test]
+    fn pb_read_newline_mode_returns_delimiter_and_preserves_following_data() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("Lines".to_string(), b"first\rsecond\r".to_vec());
+        disp.open_files.insert(100, "Lines".to_string());
+        disp.file_positions.insert(100, 0);
+
+        let pb = 0x300000u32;
+        let read_buf = 0x310000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, read_buf);
+        bus.write_long(pb + 36, 32);
+        bus.write_word(pb + 44, 0x0D80); // Return-delimited newline mode, fsAtMark.
+        bus.write_long(pb + 46, 0);
+
+        call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 40), 6);
+        assert_eq!(bus.read_long(pb + 46), 6);
+        assert_eq!(bus.read_bytes(read_buf, 6), b"first\r".to_vec());
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 6);
+
+        bus.write_long(pb + 32, read_buf + 16);
+        bus.write_long(pb + 36, 32);
+
+        call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 40), 7);
+        assert_eq!(bus.read_long(pb + 46), 13);
+        assert_eq!(bus.read_bytes(read_buf + 16, 7), b"second\r".to_vec());
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 13);
+    }
+
+    #[test]
+    fn pb_read_newline_mode_returns_eof_without_delimiter() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Tail".to_string(), b"tail".to_vec());
+        disp.open_files.insert(100, "Tail".to_string());
+        disp.file_positions.insert(100, 0);
+
+        let pb = 0x300000u32;
+        let read_buf = 0x310000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, read_buf);
+        bus.write_long(pb + 36, 16);
+        bus.write_word(pb + 44, 0x0D80); // Return-delimited newline mode, fsAtMark.
+        bus.write_long(pb + 46, 0);
+
+        call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(bus.read_word(pb + 16) as i16, -39);
+        assert_eq!(bus.read_long(pb + 40), 4);
+        assert_eq!(bus.read_long(pb + 46), 4);
+        assert_eq!(bus.read_bytes(read_buf, 4), b"tail".to_vec());
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 4);
+    }
+
+    #[test]
+    fn pb_read_uses_low_position_bits_when_flags_are_set() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("ReadMe".to_string(), vec![10, 20, 30, 40, 50]);
+        disp.open_files.insert(100, "ReadMe".to_string());
+        disp.file_positions.insert(100, 0);
+
+        let pb = 0x300000u32;
+        let read_buf = 0x310000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, read_buf);
+        bus.write_long(pb + 36, 2);
+        bus.write_word(pb + 44, 0x0051); // cache + rdVerify flags, fsFromStart.
+        bus.write_long(pb + 46, 2);
+
+        call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 40), 2);
+        assert_eq!(bus.read_long(pb + 46), 4);
+        assert_eq!(bus.read_bytes(read_buf, 2), vec![30, 40]);
+        assert_eq!(*disp.file_positions.get(&100).unwrap(), 4);
     }
 
     // ================================================================
