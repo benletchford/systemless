@@ -502,6 +502,10 @@ fn expand_squz_payload_file(
             decode_broderbund_squz_0304_stream(&data[stream_start..stream_end], uncompressed_len)
                 .map_err(|err| format!("SQUZ {name}: {err}"))?
         }
+        [0x03, 0x05] => {
+            decode_broderbund_squz_0305_stream(&data[stream_start..stream_end], uncompressed_len)
+                .map_err(|err| format!("SQUZ {name}: {err}"))?
+        }
         _ => {
             if target_type == *b"APPL" {
                 return Err(format!(
@@ -611,6 +615,26 @@ fn decode_broderbund_squz_0304_stream(
         |first, second| {
             let copy_pos = (((first & 0x0F) as usize) << 8) | second as usize;
             let copy_len = ((first >> 4) as usize) + 3;
+            (copy_pos, copy_len)
+        },
+    )
+}
+
+fn decode_broderbund_squz_0305_stream(
+    stream: &[u8],
+    expected_len: usize,
+) -> Result<Vec<u8>, String> {
+    const WINDOW_SIZE: usize = 2048;
+    const LOOKAHEAD_SIZE: usize = 34;
+
+    decode_broderbund_squz_lzss_stream(
+        stream,
+        expected_len,
+        WINDOW_SIZE,
+        LOOKAHEAD_SIZE,
+        |first, second| {
+            let copy_pos = (((first & 0x07) as usize) << 8) | second as usize;
+            let copy_len = ((first >> 3) as usize) + 3;
             (copy_pos, copy_len)
         },
     )
@@ -1028,6 +1052,17 @@ mod tests {
     }
 
     #[test]
+    fn broderbund_squz_0305_uses_2k_window_and_5_bit_lengths() {
+        let stream = [
+            0xFF, b'A', b'B', b'C', b'D', b'E', b'F', b'G', b'H', 0x00, 0x2F, 0xDE, 0x2F, 0xDE,
+            0x2F, 0xDE,
+        ];
+
+        let decoded = decode_broderbund_squz_0305_stream(&stream, 26).unwrap();
+        assert_eq!(decoded, b"ABCDEFGHABCDEFGHABCDEFGHAB");
+    }
+
+    #[test]
     fn broderbund_squz_0303_uses_8k_window_and_13_bit_offsets() {
         let stream = [
             0x4E, 0x1F, 0xF5, 0x02, 0x00, 0x01, 0x1F, 0xFA, 0x7F, 0xF3, 0x01,
@@ -1058,6 +1093,38 @@ mod tests {
         assert!(expanded.data.is_empty());
         assert_eq!(expanded.rsrc, rsrc);
         assert_eq!(expanded.file_type, *b"PLR1");
+        assert_eq!(expanded.creator, *b"PLRM");
+        assert_eq!(expanded.finder_flags, 0x0500);
+        assert!(ResourceFork::parse(&expanded.rsrc).is_some());
+    }
+
+    #[test]
+    fn broderbund_squz_0305_resource_payload_becomes_resource_fork() {
+        let rsrc = make_single_resource_fork_bytes(*b"TEST", 128, b"payload");
+        let mut stream = Vec::new();
+        for chunk in rsrc.chunks(8) {
+            stream.push(((1u16 << chunk.len()) - 1) as u8);
+            stream.extend_from_slice(chunk);
+        }
+
+        let mut file = Vec::new();
+        file.extend_from_slice(&(rsrc.len() as u32).to_be_bytes());
+        file.extend_from_slice(b"PLR2");
+        file.extend_from_slice(b"PLRM");
+        file.extend_from_slice(&0x0500u16.to_be_bytes());
+        file.extend_from_slice(&[0; 42]);
+        file.extend_from_slice(b"KG\x03\x05");
+        file.extend_from_slice(&(rsrc.len() as u32).to_be_bytes());
+        file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
+        file.extend_from_slice(&stream);
+
+        let expanded = expand_squz_payload_file("ABCBook.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+            .unwrap()
+            .unwrap();
+
+        assert!(expanded.data.is_empty());
+        assert_eq!(expanded.rsrc, rsrc);
+        assert_eq!(expanded.file_type, *b"PLR2");
         assert_eq!(expanded.creator, *b"PLRM");
         assert_eq!(expanded.finder_flags, 0x0500);
         assert!(ResourceFork::parse(&expanded.rsrc).is_some());
