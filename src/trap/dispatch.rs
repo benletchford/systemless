@@ -4114,6 +4114,42 @@ impl TrapDispatcher {
         self.register_resource_file(refnum, ResourceFileMap::default());
     }
 
+    /// Load resources from a fork and merge missing entries into an already
+    /// registered resource file without replacing its existing map.
+    pub(crate) fn merge_resources_into_existing_file(
+        &mut self,
+        fork: &ResourceFork,
+        bus: &mut MacMemoryBus,
+        refnum: u16,
+    ) -> usize {
+        let incoming = self.allocate_resource_fork(fork, bus);
+        let count = incoming.loaded.len();
+        let resources = self.resources.get_or_insert_with(|| LoadedResources {
+            files: HashMap::new(),
+            names: HashMap::new(),
+            search_order: vec![refnum],
+            current_file: refnum,
+        });
+        if !resources.search_order.contains(&refnum) {
+            resources.search_order.push(refnum);
+        }
+
+        let target = resources.files.entry(refnum).or_default();
+        for (key, ptr) in incoming.loaded {
+            target.loaded.entry(key).or_insert(ptr);
+        }
+        for (key, value) in incoming.named {
+            target.named.entry(key).or_insert(value);
+        }
+        for (key, name) in incoming.names_by_id {
+            target.names_by_id.entry(key).or_insert(name);
+        }
+        for (key, attrs) in incoming.attrs {
+            target.attrs.entry(key).or_insert(attrs);
+        }
+        count
+    }
+
     /// Load resources from a resource fork and merge them into the existing resource map.
     /// Used when the app opens additional resource files (e.g. Sounds, Images).
     pub fn merge_resources_from_fork(
@@ -4551,6 +4587,47 @@ mod tests {
     use crate::trap::menu::MenuTrackingState;
     use std::collections::VecDeque;
 
+    fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
+        let data_offset = 16u32;
+        let data_length = (4 + data.len()) as u32;
+        let map_offset = data_offset + data_length;
+        let type_list_offset = 30u16;
+        let ref_list_offset = 10u16;
+        let name_list_offset = 40u16;
+        let map_length = 52u32;
+
+        let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+        header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+        header[8..12].copy_from_slice(&data_length.to_be_bytes());
+        header[12..16].copy_from_slice(&map_length.to_be_bytes());
+        bytes[0..16].copy_from_slice(&header);
+
+        let data_start = data_offset as usize;
+        bytes[data_start..data_start + 4].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes[data_start + 4..data_start + 4 + data.len()].copy_from_slice(data);
+
+        let map_start = map_offset as usize;
+        bytes[map_start..map_start + 16].copy_from_slice(&header);
+        bytes[map_start + 24..map_start + 26].copy_from_slice(&type_list_offset.to_be_bytes());
+        bytes[map_start + 26..map_start + 28].copy_from_slice(&name_list_offset.to_be_bytes());
+
+        let type_list_start = map_start + type_list_offset as usize;
+        bytes[type_list_start..type_list_start + 2].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 2..type_list_start + 6].copy_from_slice(&res_type);
+        bytes[type_list_start + 6..type_list_start + 8].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 8..type_list_start + 10]
+            .copy_from_slice(&ref_list_offset.to_be_bytes());
+
+        let ref_list_start = map_start + type_list_offset as usize + ref_list_offset as usize;
+        bytes[ref_list_start..ref_list_start + 2].copy_from_slice(&(res_id as u16).to_be_bytes());
+        bytes[ref_list_start + 2..ref_list_start + 4].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+
+        bytes
+    }
+
     fn install_menu_tracking(disp: &mut TrapDispatcher) {
         disp.menu_tracking = Some(MenuTrackingState {
             active_menu: 0,
@@ -4744,6 +4821,34 @@ mod tests {
             disp.find_vfs_rsrc_file_in_directory(pref_dir_id, "Settings.rsrc"),
             None
         );
+    }
+
+    #[test]
+    fn merge_resources_into_existing_file_adds_missing_entries_without_replacing() {
+        let app_rsrc = make_single_resource_fork_bytes(*b"TEST", 1, b"app");
+        let companion_rsrc = make_single_resource_fork_bytes(*b"TEST", 2, b"side");
+        let duplicate_rsrc = make_single_resource_fork_bytes(*b"TEST", 1, b"other");
+        let app_fork = ResourceFork::parse(&app_rsrc).unwrap();
+        let companion_fork = ResourceFork::parse(&companion_rsrc).unwrap();
+        let duplicate_fork = ResourceFork::parse(&duplicate_rsrc).unwrap();
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let mut disp = TrapDispatcher::new();
+
+        disp.load_resources(&app_fork, &mut bus);
+        assert_eq!(
+            disp.merge_resources_into_existing_file(&companion_fork, &mut bus, 0),
+            1
+        );
+        assert_eq!(
+            disp.merge_resources_into_existing_file(&duplicate_fork, &mut bus, 0),
+            1
+        );
+
+        let (_, app_ptr) = disp.find_resource_any(*b"TEST", 1).unwrap();
+        let (_, companion_ptr) = disp.find_resource_any(*b"TEST", 2).unwrap();
+        assert_eq!(bus.read_bytes(app_ptr, 3), b"app");
+        assert_eq!(bus.read_bytes(companion_ptr, 4), b"side");
+        assert_eq!(disp.count_resources(*b"TEST", true), 2);
     }
 
     // Lock the `is_tracking_refire` contract — returns true exactly when

@@ -1120,6 +1120,11 @@ impl FixtureRunner {
         app
     }
 
+    pub(crate) fn merge_resources_into_application(&mut self, fork: &ResourceFork) -> usize {
+        self.dispatcher
+            .merge_resources_into_existing_file(fork, &mut self.bus, 0)
+    }
+
     fn alloc_handle_with_bytes(&mut self, bytes: &[u8]) -> u32 {
         let data_ptr = if bytes.is_empty() {
             0

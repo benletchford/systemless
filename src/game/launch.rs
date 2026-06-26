@@ -194,14 +194,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
-    runner
-        .dispatcher_mut()
-        .set_launched_app_path(&executable.name);
-
-    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
-    runner
-        .load_app(&fork)
-        .ok_or_else(|| "Failed to load app".to_string())
+    load_selected_executable(runner, &executable)
 }
 
 fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
@@ -274,14 +267,7 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
-    runner
-        .dispatcher_mut()
-        .set_launched_app_path(&executable.name);
-
-    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
-    runner
-        .load_app(&fork)
-        .ok_or_else(|| "Failed to load app".to_string())
+    load_selected_executable(runner, &executable)
 }
 
 fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
@@ -315,7 +301,14 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
             *b"????",
             0,
         );
-        maybe_select_executable(&mut executable_entry, &name, &rsrc, is_appl, data_len);
+        maybe_select_executable(
+            &mut executable_entry,
+            &name,
+            &rsrc,
+            is_appl,
+            data_len,
+            *b"????",
+        );
     }
 
     log_vfs(runner);
@@ -324,14 +317,7 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
-    runner
-        .dispatcher_mut()
-        .set_launched_app_path(&executable.name);
-
-    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
-    runner
-        .load_app(&fork)
-        .ok_or_else(|| "Failed to load app".to_string())
+    load_selected_executable(runner, &executable)
 }
 
 fn insert_forks_into_vfs(
@@ -836,8 +822,119 @@ fn insert_payload_into_vfs(
             file.creator,
             file.finder_flags,
         );
-        maybe_select_executable(executable_entry, &file.name, &rsrc, is_appl, data_len);
+        maybe_select_executable(
+            executable_entry,
+            &file.name,
+            &rsrc,
+            is_appl,
+            data_len,
+            file.creator,
+        );
     }
+}
+
+fn load_selected_executable(
+    runner: &mut FixtureRunner,
+    executable: &ExecutableCandidate,
+) -> Result<LoadedApp, String> {
+    runner
+        .dispatcher_mut()
+        .set_launched_app_path(&executable.name);
+
+    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
+    let app = runner
+        .load_app(&fork)
+        .ok_or_else(|| "Failed to load app".to_string())?;
+    merge_launch_resource_companions(runner, executable)?;
+    Ok(app)
+}
+
+fn merge_launch_resource_companions(
+    runner: &mut FixtureRunner,
+    executable: &ExecutableCandidate,
+) -> Result<(), String> {
+    let companion_keys = launch_resource_companion_keys(runner.dispatcher(), executable);
+    for key in companion_keys {
+        let rsrc = runner
+            .dispatcher()
+            .vfs_rsrc
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let fork = ResourceFork::parse(&rsrc)
+            .ok_or_else(|| format!("Failed to parse launch resource companion {key}"))?;
+        let count = runner.merge_resources_into_application(&fork);
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Merged launch resource companion \"{}\" into application resource map ({} resources)",
+                key, count
+            );
+        }
+    }
+    Ok(())
+}
+
+fn launch_resource_companion_keys(
+    dispatcher: &crate::trap::TrapDispatcher,
+    executable: &ExecutableCandidate,
+) -> Vec<String> {
+    let executable_path =
+        crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&executable.name);
+    let executable_dir = crate::trap::dispatch::TrapDispatcher::vfs_parent_path(&executable_path);
+    let executable_base = executable_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(executable_path.as_str());
+    let executable_base_lower = executable_base.to_ascii_lowercase();
+
+    let mut keys: Vec<String> = dispatcher
+        .vfs_rsrc
+        .keys()
+        .filter_map(|key| {
+            let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(key);
+            let dir = crate::trap::dispatch::TrapDispatcher::vfs_parent_path(&normalized);
+            if dir != executable_dir {
+                return None;
+            }
+
+            let base = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+            let base_lower = base.to_ascii_lowercase();
+            let companion_stem = base_lower.strip_suffix(" (r)")?;
+            if companion_stem != executable_base_lower {
+                return None;
+            }
+
+            if dispatcher
+                .vfs
+                .get(&normalized)
+                .is_some_and(|data| !data.is_empty())
+            {
+                return None;
+            }
+
+            let rsrc = dispatcher.vfs_rsrc.get(key)?;
+            if ResourceFork::parse(rsrc).is_none() {
+                return None;
+            }
+
+            let creator = dispatcher
+                .vfs_metadata
+                .get(&normalized)
+                .map(|metadata| metadata.creator.to_be_bytes())
+                .unwrap_or(*b"????");
+            if !creator_matches(executable.creator, creator) {
+                return None;
+            }
+
+            Some(key.clone())
+        })
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+fn creator_matches(executable: [u8; 4], companion: [u8; 4]) -> bool {
+    executable == companion || executable == *b"????" || companion == *b"????"
 }
 
 fn maybe_select_executable(
@@ -846,6 +943,7 @@ fn maybe_select_executable(
     rsrc: &[u8],
     is_appl: bool,
     data_len: usize,
+    creator: [u8; 4],
 ) {
     if rsrc.is_empty() {
         return;
@@ -879,6 +977,7 @@ fn maybe_select_executable(
         is_appl,
         has_data_fork: data_len > 0,
         score: data_len.max(rsrc.len()),
+        creator,
     };
 
     let take = if override_match && !prev_override_match {
@@ -910,6 +1009,7 @@ struct ExecutableCandidate {
     is_appl: bool,
     has_data_fork: bool,
     score: usize,
+    creator: [u8; 4],
 }
 
 impl ExecutableCandidate {
@@ -1026,6 +1126,7 @@ mod tests {
             &manual_rsrc,
             true,
             0,
+            *b"????",
         );
         maybe_select_executable(
             &mut selected,
@@ -1033,10 +1134,135 @@ mod tests {
             &app_rsrc,
             true,
             322_352,
+            *b"????",
         );
 
         let selected = selected.expect("expected an executable candidate");
         assert_eq!(selected.name, "Sample App/Sample Runtime");
+    }
+
+    #[test]
+    fn launch_resource_companion_matches_same_folder_suffix_and_creator() {
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let companion_rsrc = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
+        let other_rsrc = make_single_resource_fork_bytes(*b"STR ", 128, b"string");
+        let mut runner = new_runner();
+
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/Runtime",
+            vec![1, 2, 3],
+            app_rsrc.clone(),
+            *b"APPL",
+            *b"ABCD",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/runtime (r)",
+            Vec::new(),
+            companion_rsrc,
+            *b"HeHe",
+            *b"ABCD",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/runtime (i)",
+            Vec::new(),
+            other_rsrc.clone(),
+            *b"pref",
+            *b"ABCD",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Other/Runtime (r)",
+            Vec::new(),
+            other_rsrc.clone(),
+            *b"HeHe",
+            *b"ABCD",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/Runtime Mismatch (r)",
+            Vec::new(),
+            other_rsrc,
+            *b"HeHe",
+            *b"WXYZ",
+            0,
+        );
+
+        let executable = ExecutableCandidate {
+            name: "Folder/Runtime".to_string(),
+            rsrc: app_rsrc,
+            is_appl: true,
+            has_data_fork: true,
+            score: 128,
+            creator: *b"ABCD",
+        };
+
+        assert_eq!(
+            launch_resource_companion_keys(runner.dispatcher(), &executable),
+            vec!["Folder/runtime (r)".to_string()]
+        );
+    }
+
+    #[test]
+    fn launch_resource_companion_requires_empty_data_fork() {
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let companion_rsrc = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
+        let mut runner = new_runner();
+
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/Runtime (r)",
+            vec![1],
+            companion_rsrc,
+            *b"HeHe",
+            *b"ABCD",
+            0,
+        );
+
+        let executable = ExecutableCandidate {
+            name: "Folder/Runtime".to_string(),
+            rsrc: app_rsrc,
+            is_appl: true,
+            has_data_fork: true,
+            score: 128,
+            creator: *b"ABCD",
+        };
+
+        assert!(launch_resource_companion_keys(runner.dispatcher(), &executable).is_empty());
+    }
+
+    #[test]
+    fn launch_resource_companion_rejects_exact_name_creator_mismatch() {
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let companion_rsrc = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
+        let mut runner = new_runner();
+
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/Runtime (r)",
+            Vec::new(),
+            companion_rsrc,
+            *b"HeHe",
+            *b"WXYZ",
+            0,
+        );
+
+        let executable = ExecutableCandidate {
+            name: "Folder/Runtime".to_string(),
+            rsrc: app_rsrc,
+            is_appl: true,
+            has_data_fork: true,
+            score: 128,
+            creator: *b"ABCD",
+        };
+
+        assert!(launch_resource_companion_keys(runner.dispatcher(), &executable).is_empty());
     }
 
     #[test]
