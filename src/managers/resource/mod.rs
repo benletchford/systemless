@@ -1,5 +1,6 @@
 //! Resource fork parsing
 
+mod ajcp;
 mod compressed;
 mod parser;
 

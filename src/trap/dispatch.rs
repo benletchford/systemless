@@ -583,37 +583,6 @@ pub struct VblTask {
     pub slot: Option<i16>,
 }
 
-/// In-flight `'ajcp'` decompressor call. Built by the resource
-/// manager when `_GetResource`-family traps return a handle whose
-/// data starts with `'ajcp'` magic; consumed by the trampoline trap
-/// when POD's `$5BB2 Decompress(handle)` (or `$3F90 init` during
-/// the bootstrap call) `RTS`es back. POD's gameplay path bypasses
-/// its own wrappers (`$5CD4`/`$5D1A`/`$5D58`/`$5D98`), so the HLE
-/// invokes `$5BB2` directly to keep `'ajcp'` resources decompressed
-/// in place.
-#[derive(Clone, Debug)]
-pub(crate) struct AjcpCallState {
-    /// PC the M68k would have continued at after the original
-    /// `_GetResource`-family trap returned.
-    pub return_pc: u32,
-    /// SP the trampoline expects to see after the called function
-    /// `RTS`es. Used to detect whether POD used `RTS` (caller cleans
-    /// up args) or `RTD #N` (callee cleans up).
-    pub expected_sp_after_rts: u32,
-    /// Phase of the multi-step bootstrap. `Init` → just invoked
-    /// `$3F90`; the trampoline flips `ajcp_decompressor_ready` and
-    /// resumes without further work. `Decompress` → invoked `$5BB2`
-    /// directly; the trampoline pops POD's residual handle slot if
-    /// `$5BB2` used `RTS`-and-caller-cleans-up.
-    pub phase: AjcpCallPhase,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AjcpCallPhase {
-    Init,
-    Decompress,
-}
-
 pub(crate) const LOADSEG_GETRESOURCE_SENTINEL: u16 = 0x51F0;
 
 /// In-flight Segment Loader native GetResource call.
@@ -861,13 +830,6 @@ pub struct TrapDispatcher {
     /// (right masks, left masks, bit masks) per IM:IV IV-25..IV-26.
     /// `None` until the first `_GetMaskTable` call.
     pub(crate) mask_table_addr: Option<u32>,
-    /// State stashed across an `'ajcp'` decompressor call. See
-    /// `AjcpCallState` doc.
-    pub(crate) ajcp_call_state: Option<AjcpCallState>,
-    /// Address of the lazily-allocated 8-byte trampoline used for
-    /// `'ajcp'` decompressor returns. Holds
-    /// `30 3C AC AC A8 16` (`MOVE.W #$ACAC, D0; _Pack8`).
-    pub(crate) ajcp_trampoline_addr: Option<u32>,
     /// State stashed while `_LoadSeg` is routing `GetResource('CODE', seg)`
     /// through a native guest hook.
     pub(crate) loadseg_getresource_state: Option<LoadSegGetResourceState>,
@@ -893,17 +855,6 @@ pub struct TrapDispatcher {
     /// to call a callable userFunction immediately. Holds
     /// `48E7 F0F0 207C xxxx xxxx 4EB9 xxxx xxxx 4CDF 0F0F 7000 4E75`.
     pub(crate) defer_user_fn_trampoline: u32,
-    /// Whether POD's M68k decompressor state has been initialised
-    /// (`$3F90 → $4888` populated `A5+$1928` / `A5+$211E`). The HLE
-    /// triggers init lazily on the first `'ajcp'` resource the
-    /// resource manager sees by injecting a `$3F90`-only call;
-    /// once `true`, subsequent `'ajcp'` resources get a `$5BB2`
-    /// injection that decompresses in place.
-    pub(crate) ajcp_decompressor_ready: bool,
-    /// Set of handle addresses we've already decompressed via
-    /// injection so we don't redundantly `JSR $5BB2` if POD reads
-    /// the same handle a second time.
-    pub(crate) ajcp_decompressed_resources: std::collections::HashSet<(u16, [u8; 4], i16)>,
     /// Ports that have already been queried through QDDone. BasiliskII
     /// reports TRUE for each query against a live port, so this state is
     /// currently unused by the HLE path.
@@ -2233,8 +2184,6 @@ impl TrapDispatcher {
             ae_call_state: None,
             ae_trampoline_addr: None,
             mask_table_addr: None,
-            ajcp_call_state: None,
-            ajcp_trampoline_addr: None,
             loadseg_getresource_state: None,
             loadseg_getresource_trampoline_addr: None,
             preserve_auto_pop_pc_once: false,
@@ -2242,8 +2191,6 @@ impl TrapDispatcher {
             list_def_trampoline: 0,
             window_def_trampoline: 0,
             defer_user_fn_trampoline: 0,
-            ajcp_decompressor_ready: false,
-            ajcp_decompressed_resources: std::collections::HashSet::new(),
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
@@ -3904,13 +3851,8 @@ impl TrapDispatcher {
                 return Some((refnum, id, ptr));
             }
             // Resource Manager name lookups are case-insensitive per
-            // IM:I I-119. POD MARS Master ships its World-map PICT
-            // named "World" but its gameplay code calls
-            // GetNamedResource('PICT', "world") — without this fallback
-            // POD's gameplay loop fails at the `world` lookup, fires
-            // ParamText("world") + ExitToShell, and the in-game tile
-            // map / character / world map / location list panels never
-            // get composed into the MARS-window offscreen.
+            // IM:I I-119. Keep the fallback generic: resource names
+            // can differ by case between authoring tools and callers.
             let needle_lower = name.to_lowercase();
             for ((rt, n), (id, ptr)) in &file.named {
                 if *rt == res_type && n.to_lowercase() == needle_lower {

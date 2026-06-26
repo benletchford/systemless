@@ -221,6 +221,27 @@ impl ResourceFork {
                         raw_res_data.to_vec()
                     }
                 };
+                let res_data = match super::ajcp::decompress_if_needed(&res_data) {
+                    Ok(Some(decompressed)) => {
+                        tracing::debug!(
+                            "    ID {}: ajcp decompressed {} -> {} bytes",
+                            id,
+                            res_data.len(),
+                            decompressed.len()
+                        );
+                        decompressed
+                    }
+                    Ok(None) => res_data,
+                    Err(err) => {
+                        tracing::warn!(
+                            "    ID {}: failed to decompress ajcp resource ({} bytes): {:?}",
+                            id,
+                            res_data.len(),
+                            err
+                        );
+                        res_data
+                    }
+                };
 
                 tracing::trace!("    ID {}: {} bytes, attrs=0x{:02X}", id, res_len, attrs);
 

@@ -59,35 +59,6 @@ fn format_ostype(res_type: [u8; 4]) -> String {
         .collect()
 }
 
-/// Magic at the front of POD MARS Master's compressed resource bytes.
-/// `'ajcp'` = `0x616A6370`. POD's CODE 1 holds an LZ77+Huffman decoder
-/// at `$5BB2` that, run on a handle whose data starts with this magic,
-/// replaces the bytes in place with the decompressed form. POD's
-/// wrappers (`$5CD4`/`$5D1A`/`$5D58`/`$5D98`) gate trap-loaded
-/// resources on this magic before invoking `$5BB2`. Application code
-/// that loads via the bare trap bypasses those wrappers — for POD
-/// that means scenario `'ctab'`/`'PICT'`/`'cicn'` resources stay
-/// compressed in our HLE and SetEntries / DrawPicture render with
-/// garbage palettes unless Systemless injects the decompressor call.
-const AJCP_MAGIC: u32 = 0x616A6370;
-
-/// Offset within POD's CODE 1 of `Decompress(handle)`.
-const AJCP_DECOMPRESS_OFFSET: u32 = 0x5BB2;
-
-/// Offset within POD's CODE 1 of `init_decompressor()`. POD's wrappers
-/// call this lazily; we replicate the call with a one-shot bootstrap
-/// injection on the first `'ajcp'` resource we see.
-const AJCP_INIT_OFFSET: u32 = 0x3F90;
-
-/// Sentinel value used by the `'ajcp'` decompressor trampoline. After
-/// the called function `RTS`es, the trampoline runs
-/// `MOVE.W #$ACAC, D0; _Pack8`, which traps into Pack8 dispatch.
-pub(crate) const AJCP_TRAMPOLINE_SENTINEL: u16 = 0xACAC;
-
-/// A5-relative offset of POD's primary Huffman tree. Probed to detect
-/// whether `$3F90` has populated the trees.
-const AJCP_PRIMARY_TREE_OFFSET: i32 = 0x1928;
-
 /// `gestaltUndefSelectorErr` (-5551). Returned by `Gestalt` /
 /// `ReplaceGestalt` when the selector code is not recognised.
 /// Inside Macintosh: Operating System Utilities 1994, 1-32 / 1-35.
@@ -544,12 +515,8 @@ impl super::TrapDispatcher {
             // Apply environment-driven byte patches now that this segment's
             // code is in RAM. Format:
             //   SYSTEMLESS_PATCH_BYTES="0xADDR=HEXBYTES,0xADDR2=BYTES2"
-            // Used to short-circuit shareware-validation entry points that we
-            // don't have the keys for. POD MARS Master's "I'm evaluating" /
-            // "Register now" buttons share a click-validation function at
-            // $00258440 that wants a 16-char Name+Reg key combo we can't
-            // compute; patching the entry to `MOVEQ #1,D0 ; UNLK A6 ; RTS`
-            // (704E5E4E75) lets the click flow through to gameplay.
+            // This is a diagnostics/test harness hook: callers provide both
+            // the absolute address and replacement bytes explicitly.
             if let Ok(spec) = std::env::var("SYSTEMLESS_PATCH_BYTES") {
                 for chunk in spec.split(',') {
                     let chunk = chunk.trim();
@@ -598,139 +565,6 @@ impl super::TrapDispatcher {
             eprintln!("ERROR: LoadSeg unknown segment {}", seg_num);
             Err(Error::Halted)
         }
-    }
-
-    fn handle_data_starts_with_ajcp(&self, bus: &MacMemoryBus, handle: u32) -> bool {
-        if handle == 0 {
-            return false;
-        }
-        let master_ptr = bus.read_long(handle);
-        if master_ptr == 0 {
-            return false;
-        }
-        bus.read_long(master_ptr) == AJCP_MAGIC
-    }
-
-    fn ajcp_huffman_trees_populated<C: CpuOps>(&self, bus: &MacMemoryBus, cpu: &C) -> bool {
-        let a5 = cpu.read_reg(Register::A5);
-        if a5 == 0 {
-            return false;
-        }
-        let probe = a5.wrapping_add(AJCP_PRIMARY_TREE_OFFSET as u32);
-        bus.read_long(probe) != 0
-    }
-
-    fn ajcp_function_addrs(&self, _bus: &MacMemoryBus) -> Option<(u32, u32)> {
-        let seg1_addr = *self.segment_map.get(&1)?;
-        // The doc-quoted offsets (`$3F90`, `$5BB2`, …) are measured
-        // from segment-start *including* the 4-byte CODE-segment
-        // header. Adding `header_size` made `$3F90` jump to garbage
-        // and hung POD's M68k loop in an earlier experiment;
-        // omitting the offset puts the call into the addresses the
-        // reverse-engineered POD wrapper offsets refer to.
-        let init_addr = seg1_addr.wrapping_add(AJCP_INIT_OFFSET);
-        let bb2_addr = seg1_addr.wrapping_add(AJCP_DECOMPRESS_OFFSET);
-        Some((init_addr, bb2_addr))
-    }
-
-    fn allocate_ajcp_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
-        if let Some(addr) = self.ajcp_trampoline_addr {
-            return addr;
-        }
-        let addr = bus.alloc(8);
-        bus.write_word(addr, 0x303C); // MOVE.W #imm, D0
-        bus.write_word(addr + 2, AJCP_TRAMPOLINE_SENTINEL);
-        bus.write_word(addr + 4, 0xA816); // _Pack8
-        self.ajcp_trampoline_addr = Some(addr);
-        addr
-    }
-
-    /// On the first `'ajcp'` resource the manager sees, invoke
-    /// `$3F90` (no args) so POD's Huffman trees get built. The
-    /// triggering handle is left compressed for this trap return;
-    /// if POD's wrapper path also runs for it, the wrapper's own
-    /// `$5BB2` will handle the decompression. After init, subsequent
-    /// `'ajcp'` resources get a direct `$5BB2(handle)` injection.
-    pub(crate) fn maybe_inject_ajcp_decompress<C: CpuOps>(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        cpu: &mut C,
-        handle: u32,
-    ) -> bool {
-        if !self.handle_data_starts_with_ajcp(bus, handle) {
-            return false;
-        }
-        if self.ajcp_call_state.is_some() {
-            return false;
-        }
-        let resource_identity = self.resource_record_for_handle(handle);
-        if resource_identity
-            .is_some_and(|identity| self.ajcp_decompressed_resources.contains(&identity))
-        {
-            return false;
-        }
-        let Some((init_addr, bb2_addr)) = self.ajcp_function_addrs(bus) else {
-            return false;
-        };
-
-        let phase = if self.ajcp_decompressor_ready || self.ajcp_huffman_trees_populated(bus, cpu) {
-            self.ajcp_decompressor_ready = true;
-            super::dispatch::AjcpCallPhase::Decompress
-        } else {
-            super::dispatch::AjcpCallPhase::Init
-        };
-
-        let trampoline = self.allocate_ajcp_trampoline(bus);
-        let return_pc = cpu.read_reg(Register::PC);
-        let sp_before = cpu.read_reg(Register::A7);
-
-        let (entry_pc, expected_sp_after_rts) = match phase {
-            super::dispatch::AjcpCallPhase::Init => {
-                // `$3F90()` — no args. Push only the trampoline as
-                // the return PC for `$3F90 RTS`.
-                let new_sp = sp_before.wrapping_sub(4);
-                bus.write_long(new_sp, trampoline);
-                cpu.write_reg(Register::A7, new_sp);
-                // After `RTS` SP is back at sp_before.
-                (init_addr, sp_before)
-            }
-            super::dispatch::AjcpCallPhase::Decompress => {
-                // `$5BB2(handle)` — Pascal procedure, one 4-byte arg.
-                let new_sp = sp_before.wrapping_sub(8);
-                bus.write_long(new_sp, trampoline);
-                bus.write_long(new_sp + 4, handle);
-                cpu.write_reg(Register::A7, new_sp);
-                // After `RTS` SP at sp_before - 4 (handle still on
-                // stack); after `RTD #4` SP at sp_before.
-                (bb2_addr, sp_before.wrapping_sub(4))
-            }
-        };
-        cpu.write_reg(Register::PC, entry_pc);
-
-        self.ajcp_call_state = Some(super::dispatch::AjcpCallState {
-            return_pc,
-            expected_sp_after_rts,
-            phase,
-        });
-
-        if matches!(phase, super::dispatch::AjcpCallPhase::Decompress) {
-            if let Some(identity) = resource_identity {
-                self.ajcp_decompressed_resources.insert(identity);
-            }
-        }
-
-        eprintln!(
-            "[AJCP] {} handle=${:08X} → JSR ${:08X} (trampoline=${:08X}, return_pc=${:08X})",
-            match phase {
-                super::dispatch::AjcpCallPhase::Init => "init",
-                super::dispatch::AjcpCallPhase::Decompress => "decompress",
-            },
-            handle,
-            entry_pc,
-            trampoline,
-            return_pc,
-        );
-        true
     }
 
     fn should_trace_extended_resource_activity(&self) -> bool {
@@ -1155,7 +989,6 @@ impl super::TrapDispatcher {
                     bus.write_word(0x0A60, 0); // ResErr = noErr
                     bus.write_long(sp + 6, handle);
                     cpu.write_reg(Register::A7, sp + 6);
-                    self.maybe_inject_ajcp_decompress(bus, cpu, handle);
                     return Some(Ok(()));
                 }
 
@@ -1174,7 +1007,6 @@ impl super::TrapDispatcher {
                         bus.write_word(0x0A60, 0); // ResErr = noErr
                         bus.write_long(sp + 6, handle);
                         cpu.write_reg(Register::A7, sp + 6);
-                        self.maybe_inject_ajcp_decompress(bus, cpu, handle);
                         return Some(Ok(()));
                     }
                 }
@@ -1288,7 +1120,6 @@ impl super::TrapDispatcher {
                     bus.write_word(0x0A60, 0); // ResErr = noErr
                     bus.write_long(sp + 6, handle);
                     cpu.write_reg(Register::A7, sp + 6);
-                    self.maybe_inject_ajcp_decompress(bus, cpu, handle);
                 } else {
                     cpu.write_reg(Register::A0, 0);
                     cpu.write_reg(Register::D0, -192i32 as u32);
@@ -1753,7 +1584,6 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 8);
                     cpu.write_reg(Register::D0, 0);
                     bus.write_word(0x0A60, 0); // ResErr = noErr
-                    self.maybe_inject_ajcp_decompress(bus, cpu, h);
                 } else {
                     eprintln!("[TRAP] Get1NamedResource -> NULL (not found)");
                     bus.write_long(sp + 8, 0);

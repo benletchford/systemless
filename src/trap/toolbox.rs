@@ -3437,54 +3437,6 @@ impl super::TrapDispatcher {
                 let d0 = cpu.read_reg(Register::D0);
                 let selector = (d0 & 0xFFFF) as u16;
 
-                // `'ajcp'` decompressor trampoline. Either `$3F90`
-                // (init) or `$5BB2` (decompress) returned to a tiny
-                // `MOVE.W #$ACAC, D0; _Pack8` stub. Pop POD's residual
-                // stack arg if `$5BB2` used `RTS`-and-caller-cleans-up,
-                // mark the decompressor ready (init phase), and
-                // resume the original `_GetResource`-family caller.
-                if selector == super::resource::AJCP_TRAMPOLINE_SENTINEL {
-                    let state = self
-                        .ajcp_call_state
-                        .take()
-                        .expect("AJCP trampoline fired without a saved AjcpCallState");
-                    let cur_sp = sp;
-                    let expected_rts = state.expected_sp_after_rts;
-                    let cleaned_sp = if cur_sp == expected_rts {
-                        // `RTS` convention — pop residual arg if any.
-                        match state.phase {
-                            super::dispatch::AjcpCallPhase::Init => cur_sp,
-                            super::dispatch::AjcpCallPhase::Decompress => cur_sp.wrapping_add(4),
-                        }
-                    } else if cur_sp == expected_rts.wrapping_add(4)
-                        && matches!(state.phase, super::dispatch::AjcpCallPhase::Decompress)
-                    {
-                        // `RTD #4` convention — handle already popped.
-                        cur_sp
-                    } else {
-                        eprintln!(
-                            "[AJCP] trampoline SP unexpected: phase={:?} got ${:08X} \
-                             expected ${:08X} (RTS) or ${:08X} (RTD #4); continuing \
-                             without adjustment",
-                            state.phase,
-                            cur_sp,
-                            expected_rts,
-                            expected_rts.wrapping_add(4),
-                        );
-                        cur_sp
-                    };
-                    if matches!(state.phase, super::dispatch::AjcpCallPhase::Init) {
-                        self.ajcp_decompressor_ready = true;
-                        eprintln!(
-                            "[AJCP] init complete; decompressor warm — \
-                             enabling auto-decompress for subsequent 'ajcp' resources"
-                        );
-                    }
-                    cpu.write_reg(Register::A7, cleaned_sp);
-                    cpu.write_reg(Register::PC, state.return_pc);
-                    return Some(Ok(()));
-                }
-
                 if selector == super::dispatch::LOADSEG_GETRESOURCE_SENTINEL {
                     return Some(self.resume_loadseg_after_getresource(bus, cpu));
                 }
@@ -4556,7 +4508,7 @@ impl super::TrapDispatcher {
             // Aliasing them onto the full-chain implementation silently
             // over-counts in multi-file scenarios — the regression flagged
             // by the previous Ralph iteration. Keep them separate.
-            // GetIndResource ($A99D): Walks the full resource search chain by type, returns Nth resource handle (1-based) per IM:I I-116; maybe_inject_ajcp_decompress runs for POD's compressed resources
+            // GetIndResource ($A99D): Walks the full resource search chain by type, returns Nth resource handle (1-based) per IM:I I-116
             (true, 0x19D) => self.handle_get_ind_resource(bus, cpu, false),
 
             // Get1IndResource ($A80E): Returns Nth resource of theType in the CURRENT resource file only (assembly name _Get1IxResource) per IM:IV-15
@@ -4697,7 +4649,6 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, 0);
                     bus.write_long(sp + 8, handle);
                     cpu.write_reg(Register::A7, sp + 8);
-                    self.maybe_inject_ajcp_decompress(bus, cpu, handle);
                 } else {
                     eprintln!("[TRAP] GetNamedResource -> NULL (not found)");
                     bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound
@@ -10933,7 +10884,6 @@ impl super::TrapDispatcher {
                 bus.write_word(0x0A60, 0); // ResErr = noErr per IM:I I-118
                 bus.write_long(sp + 6, handle);
                 cpu.write_reg(Register::A7, sp + 6);
-                self.maybe_inject_ajcp_decompress(bus, cpu, handle);
                 return Ok(());
             }
         }
