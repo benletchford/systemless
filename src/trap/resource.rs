@@ -4699,6 +4699,8 @@ impl super::TrapDispatcher {
 
             // OSDispatch (0xA88F)
             // Dispatches Temporary Memory and Process Manager selectors.
+            // FUNCTION TempMaxMem(VAR grow: Size): Size;
+            // FUNCTION TempTopMem: Ptr;
             // FUNCTION TempFreeMem: LongInt;
             // Inside Macintosh Volume VI, 28-38 and 28-45.
             // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
@@ -4711,15 +4713,18 @@ impl super::TrapDispatcher {
             // pre-existing direct-asm callers instead pre-load D0 before
             // the trap -- if the top-of-stack word isn't a recognised
             // selector, fall back to D0 for compatibility.
-            // OSDispatch ($A88F): selector $0018 TempFreeMem (IM VI
-            // Temporary Memory table); selectors $0037..$003D are Process
-            // Manager routines (Processes 1994 p. 2-31).
+            // MPW Universal Interfaces 3.4 MacMemory.a emits the 68k
+            // temporary-memory macros as `move.w #selector,-(sp); _OSDispatch`.
+            // OSDispatch ($A88F): selectors $0015 TempMaxMem, $0016
+            // TempTopMem, $0018 TempFreeMem (IM VI Temporary Memory table);
+            // selectors $0037..$003D are Process Manager routines
+            // (Processes 1994 p. 2-31).
             (true, 0x08F) => {
                 let sp_entry = cpu.read_reg(Register::A7);
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp) = match stack_sel {
-                    0x0018 | 0x0037..=0x003D => {
+                    0x0015 | 0x0016 | 0x0018 | 0x0037..=0x003D => {
                         // Pop the selector word pushed by MOVE.W #sel,-(SP).
                         cpu.write_reg(Register::A7, sp_entry + 2);
                         (stack_sel, sp_entry + 2)
@@ -4727,6 +4732,35 @@ impl super::TrapDispatcher {
                     _ => (d0_sel, sp_entry),
                 };
                 match selector {
+                    0x0015 => {
+                        // TempMaxMem (0xA88F selector $0015)
+                        // Returns the largest contiguous temporary-memory block.
+                        // FUNCTION TempMaxMem(VAR grow: Size): Size;
+                        // Inside Macintosh Volume VI, 28-36..28-39; Memory 1992, 2-79..2-80.
+                        let grow_ptr = bus.read_long(sp);
+                        if grow_ptr != 0 {
+                            bus.write_long(grow_ptr, 0);
+                        }
+                        cpu.write_reg(Register::D0, temporary_memory_free_estimate(bus));
+                        cpu.write_reg(Register::A7, sp + 4);
+                        Ok(())
+                    }
+                    0x0016 => {
+                        // TempTopMem (0xA88F selector $0016)
+                        // Returns a pointer to the top of addressable RAM.
+                        // FUNCTION TempTopMem: Ptr;
+                        // Inside Macintosh Volume VI, 28-37 and 28-45.
+                        let mem_top = bus.read_long(crate::memory::globals::addr::MEM_TOP);
+                        cpu.write_reg(
+                            Register::D0,
+                            if mem_top != 0 {
+                                mem_top
+                            } else {
+                                bus.ram_size()
+                            },
+                        );
+                        Ok(())
+                    }
                     0x0018 => {
                         // TempFreeMem (0xA88F selector $0018)
                         // Returns the total amount of free temporary memory.
@@ -12785,6 +12819,56 @@ mod tests {
         assert!(
             cpu.read_reg(Register::D0) >= 8 * 1024 * 1024,
             "TempFreeMem should report usable temporary memory in D0"
+        );
+    }
+
+    #[test]
+    fn osdispatch_tempmaxmem_selector_0015_clears_grow_and_returns_max_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let grow_ptr = 0x2A0000u32;
+        bus.write_long(grow_ptr, 0xDEAD_BEEF);
+        bus.write_word(TEST_SP, 0x0015);
+        bus.write_long(TEST_SP + 2, grow_ptr);
+        cpu.write_reg(Register::D0, 0x0001);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 6,
+            "OSDispatch should pop the selector word and grow pointer"
+        );
+        assert_eq!(
+            bus.read_long(grow_ptr),
+            0,
+            "TempMaxMem must write 0 to the grow parameter"
+        );
+        assert!(
+            cpu.read_reg(Register::D0) >= 8 * 1024 * 1024,
+            "TempMaxMem should report usable temporary memory in D0"
+        );
+    }
+
+    #[test]
+    fn osdispatch_temptopmem_selector_0016_returns_memtop_pointer() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_long(crate::memory::globals::addr::MEM_TOP, 0x03F0_0000);
+        bus.write_word(TEST_SP, 0x0016);
+        cpu.write_reg(Register::D0, 0x0001);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 2,
+            "OSDispatch should pop the selector word"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0x03F0_0000,
+            "TempTopMem should return the top of addressable RAM in D0"
         );
     }
 
