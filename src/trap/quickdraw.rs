@@ -61,6 +61,7 @@ const PM_TOLERANT: i16 = 0x0002;
 const PM_EXPLICIT: i16 = 0x0008;
 const PM_ALL_UPDATES: i16 = -0x2000;
 const DM_SET_DISPLAY_MODE_REJECT_ERR: i16 = -330;
+const SEEDFILL_MAX_PIXELS: usize = 4 * 1024 * 1024;
 
 // OnceLock-cache the tracer env-var lookups. CopyBits/DrawPicture/SetEntries
 // fire these helpers thousands of times per session; caching collapses those
@@ -14489,13 +14490,10 @@ impl super::TrapDispatcher {
             //   sp+16..19 srcPtr     (first pushed → deepest)
             // 20-byte total pop, no result slot (PROCEDURE).
             //
-            // BII-vs-Systemless divergence: BII System 7.5.3 ROM walks the src
-            // bit image from the (seedH, seedV) origin and writes the
-            // paint-bucket-style fill into dst per IM:IV IV-22.  Systemless
-            // HLE is a no-op stub for the same reason as CalcMask above.
-            // The strict bake witnesses only the engines-agree 20-byte
-            // pop discipline (single-call + 5-call composition with varying
-            // seedH/seedV pairs).
+            // Systemless implements the default 1-bit paint-bucket mask:
+            // contiguous pixels equal to the source seed bit are written as
+            // 1s in dst, with all other bits in the requested rectangle
+            // cleared. The call is raw-bitmap based, not port clipped.
             //
             // Runtime proof:
             //   a838_a839_calcmask_seedfill_strict
@@ -14503,8 +14501,21 @@ impl super::TrapDispatcher {
             // Contract coverage:
             //   src/trap/quickdraw.rs::tests::seedfill_consumes_20_byte_argument_frame
             //   src/trap/quickdraw.rs::tests::seedfill_five_call_composition_pops_one_hundred_bytes_total
+            //   src/trap/quickdraw.rs::tests::seedfill_writes_contiguous_matching_region_mask
+            //   src/trap/quickdraw.rs::tests::seedfill_seed_outside_rect_clears_destination_mask
             (true, 0x039) => {
                 let sp = cpu.read_reg(Register::A7);
+                let seed_v = bus.read_word(sp) as i16;
+                let seed_h = bus.read_word(sp + 2) as i16;
+                let words = bus.read_word(sp + 4) as i16;
+                let height = bus.read_word(sp + 6) as i16;
+                let dst_row = bus.read_word(sp + 8) as i16;
+                let src_row = bus.read_word(sp + 10) as i16;
+                let dst_ptr = bus.read_long(sp + 12);
+                let src_ptr = bus.read_long(sp + 16);
+                Self::seed_fill_1bpp_mask(
+                    bus, src_ptr, dst_ptr, src_row, dst_row, height, words, seed_h, seed_v,
+                );
                 cpu.write_reg(Register::A7, sp + 20);
                 Ok(())
             }
@@ -18455,6 +18466,131 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn seed_fill_1bpp_mask(
+        bus: &mut MacMemoryBus,
+        src_ptr: u32,
+        dst_ptr: u32,
+        src_row: i16,
+        dst_row: i16,
+        height: i16,
+        words: i16,
+        seed_h: i16,
+        seed_v: i16,
+    ) -> bool {
+        if src_ptr == 0 || dst_ptr == 0 || src_row <= 0 || dst_row <= 0 || height <= 0 || words <= 0
+        {
+            return false;
+        }
+
+        let width = (words as usize).saturating_mul(16);
+        let width_bytes = (words as usize).saturating_mul(2);
+        let height = height as usize;
+        let src_row = src_row as usize;
+        let dst_row = dst_row as usize;
+        if width == 0 || width_bytes == 0 || src_row < width_bytes || dst_row < width_bytes {
+            return false;
+        }
+        let Some(pixel_count) = width.checked_mul(height) else {
+            return false;
+        };
+        if pixel_count > SEEDFILL_MAX_PIXELS {
+            return false;
+        }
+        let Some(src_len) = Self::raw_1bpp_image_len(src_row, height, width_bytes) else {
+            return false;
+        };
+        let Some(dst_len) = Self::raw_1bpp_image_len(dst_row, height, width_bytes) else {
+            return false;
+        };
+        if !Self::guest_range_in_ram(bus, src_ptr, src_len)
+            || !Self::guest_range_in_ram(bus, dst_ptr, dst_len)
+        {
+            return false;
+        }
+
+        let mut source = Vec::with_capacity(pixel_count);
+        for y in 0..height {
+            for x in 0..width {
+                source.push(Self::raw_1bpp_bit(bus, src_ptr, src_row, y, x));
+            }
+        }
+
+        for y in 0..height {
+            let row_addr = dst_ptr + (y * dst_row) as u32;
+            for byte in 0..width_bytes {
+                bus.write_byte(row_addr + byte as u32, 0);
+            }
+        }
+
+        if seed_h < 0 || seed_v < 0 || seed_h as usize >= width || seed_v as usize >= height {
+            return true;
+        }
+
+        let seed_x = seed_h as usize;
+        let seed_y = seed_v as usize;
+        let seed_value = source[seed_y * width + seed_x];
+        let mut seen = vec![false; pixel_count];
+        let mut stack = vec![(seed_x, seed_y)];
+
+        while let Some((x, y)) = stack.pop() {
+            let index = y * width + x;
+            if seen[index] {
+                continue;
+            }
+            seen[index] = true;
+            if source[index] != seed_value {
+                continue;
+            }
+            Self::set_raw_1bpp_bit(bus, dst_ptr, dst_row, y, x, true);
+
+            if x > 0 {
+                stack.push((x - 1, y));
+            }
+            if x + 1 < width {
+                stack.push((x + 1, y));
+            }
+            if y > 0 {
+                stack.push((x, y - 1));
+            }
+            if y + 1 < height {
+                stack.push((x, y + 1));
+            }
+        }
+
+        true
+    }
+
+    fn raw_1bpp_image_len(row_bytes: usize, height: usize, width_bytes: usize) -> Option<u32> {
+        if height == 0 {
+            return Some(0);
+        }
+        let len = height
+            .checked_sub(1)?
+            .checked_mul(row_bytes)?
+            .checked_add(width_bytes)?;
+        u32::try_from(len).ok()
+    }
+
+    fn raw_1bpp_bit(bus: &MacMemoryBus, base: u32, row_bytes: usize, y: usize, x: usize) -> bool {
+        let addr = base + (y * row_bytes + x / 8) as u32;
+        let bit = 7 - (x % 8);
+        (bus.read_byte(addr) & (1u8 << bit)) != 0
+    }
+
+    fn set_raw_1bpp_bit(
+        bus: &mut MacMemoryBus,
+        base: u32,
+        row_bytes: usize,
+        y: usize,
+        x: usize,
+        value: bool,
+    ) {
+        let addr = base + (y * row_bytes + x / 8) as u32;
+        let mask = 1u8 << (7 - (x % 8));
+        let byte = bus.read_byte(addr);
+        bus.write_byte(addr, if value { byte | mask } else { byte & !mask });
+    }
+
     fn region_ptr_and_size(bus: &MacMemoryBus, rgn_handle: u32) -> Option<(u32, u32)> {
         if rgn_handle == 0 {
             return None;
@@ -21587,6 +21723,85 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x039, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 20);
+    }
+
+    #[test]
+    fn seedfill_writes_contiguous_matching_region_mask() {
+        // Imaging With QuickDraw (1994), pp. 3-109..3-110:
+        // SeedFill writes a 1-bit mask for the contiguous pixels reachable
+        // from the seed point within the requested raw bit-image rectangle.
+        let (mut d, mut cpu, mut bus) = setup();
+        let src = bus.alloc(10);
+        let dst = bus.alloc(10);
+        let source_rows = [
+            [0xFF, 0xFF],
+            [0x87, 0xFF],
+            [0x87, 0xFF],
+            [0x87, 0xFF],
+            [0xFF, 0xFF],
+        ];
+        for (row, bytes) in source_rows.iter().enumerate() {
+            bus.write_byte(src + row as u32 * 2, bytes[0]);
+            bus.write_byte(src + row as u32 * 2 + 1, bytes[1]);
+            bus.write_byte(dst + row as u32 * 2, 0xAA);
+            bus.write_byte(dst + row as u32 * 2 + 1, 0x55);
+        }
+
+        bus.write_word(TEST_SP, 2); // seedV
+        bus.write_word(TEST_SP + 2, 2); // seedH
+        bus.write_word(TEST_SP + 4, 1); // words = 16 pixels
+        bus.write_word(TEST_SP + 6, 5); // height
+        bus.write_word(TEST_SP + 8, 2); // dstRow
+        bus.write_word(TEST_SP + 10, 2); // srcRow
+        bus.write_long(TEST_SP + 12, dst);
+        bus.write_long(TEST_SP + 16, src);
+
+        let result = d.dispatch_quickdraw(true, 0x039, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 20);
+
+        let expected_rows = [
+            [0x00, 0x00],
+            [0x78, 0x00],
+            [0x78, 0x00],
+            [0x78, 0x00],
+            [0x00, 0x00],
+        ];
+        for (row, expected) in expected_rows.iter().enumerate() {
+            assert_eq!(
+                [
+                    bus.read_byte(dst + row as u32 * 2),
+                    bus.read_byte(dst + row as u32 * 2 + 1)
+                ],
+                *expected,
+                "destination mask row {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn seedfill_seed_outside_rect_clears_destination_mask() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let src = bus.alloc(4);
+        let dst = bus.alloc(4);
+        for i in 0..4u32 {
+            bus.write_byte(src + i, 0);
+            bus.write_byte(dst + i, 0xFF);
+        }
+
+        bus.write_word(TEST_SP, 0); // seedV
+        bus.write_word(TEST_SP + 2, 99); // seedH outside the 16-pixel rectangle
+        bus.write_word(TEST_SP + 4, 1); // words
+        bus.write_word(TEST_SP + 6, 2); // height
+        bus.write_word(TEST_SP + 8, 2); // dstRow
+        bus.write_word(TEST_SP + 10, 2); // srcRow
+        bus.write_long(TEST_SP + 12, dst);
+        bus.write_long(TEST_SP + 16, src);
+
+        let result = d.dispatch_quickdraw(true, 0x039, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 20);
+        assert_eq!(bus.read_bytes(dst, 4), vec![0, 0, 0, 0]);
     }
 
     #[test]
