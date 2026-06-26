@@ -18,6 +18,9 @@ static TRACE_LOADSEG: OnceLock<bool> = OnceLock::new();
 
 const CURRENT_PROCESS_PSN_HIGH: u32 = 0;
 const CURRENT_PROCESS_PSN_LOW: u32 = 2;
+const BOOT_VOLUME_ALLOCATION_BLOCKS: u16 = 16_384;
+const BOOT_VOLUME_ALLOCATION_BLOCK_SIZE: u32 = 4 * 1024;
+const BOOT_VOLUME_FREE_BLOCKS: u16 = 16_384;
 
 fn trace_menu_pict_enabled() -> bool {
     *TRACE_MENU_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_PICT").is_some())
@@ -3319,7 +3322,7 @@ impl super::TrapDispatcher {
             //                                    histogram bucket $207 pins
             //                                    trap-word dispatch via
             //                                    poisoned-ioResult indicator)
-            // PBGetVInfo ($A007): Returns hardcoded volume info, fake allocation block sizes
+            // PBGetVInfo ($A007): Returns boot volume info and nontrivial free-space figures
             // PBHGetVInfo ($A207): HFS variant aliased onto $A007; BasiliskII-proven via pbh_get_vinfo
             (false, 0x07) => {
                 let pb = cpu.read_reg(Register::A0);
@@ -3334,12 +3337,17 @@ impl super::TrapDispatcher {
                 bus.write_word(pb + 40, 100); // ioVNmFls (files on volume)
                 bus.write_word(pb + 42, 0); // ioVBitMap
                 bus.write_word(pb + 44, 0); // ioAllocPtr
-                bus.write_word(pb + 46, 1024); // ioVNmAlBlks
-                bus.write_long(pb + 48, 512); // ioVAlBlkSiz
-                bus.write_long(pb + 52, 512 * 1024); // ioVClpSiz
+
+                // Files 1992, 2-46 and 2-144: callers multiply the unsigned
+                // ioVFrBlk block count by ioVAlBlkSiz to determine free bytes.
+                // Report a modest 64 MB boot volume so installers and demos
+                // that require scratch space do not reject the system disk.
+                bus.write_word(pb + 46, BOOT_VOLUME_ALLOCATION_BLOCKS); // ioVNmAlBlks
+                bus.write_long(pb + 48, BOOT_VOLUME_ALLOCATION_BLOCK_SIZE); // ioVAlBlkSiz
+                bus.write_long(pb + 52, BOOT_VOLUME_ALLOCATION_BLOCK_SIZE); // ioVClpSiz
                 bus.write_word(pb + 56, 0); // ioAlBlSt
                 bus.write_long(pb + 58, 0); // ioVNxtCNID
-                bus.write_word(pb + 62, 512); // ioVFrBlk (free blocks)
+                bus.write_word(pb + 62, BOOT_VOLUME_FREE_BLOCKS); // ioVFrBlk
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -10911,7 +10919,26 @@ mod tests {
             "ioVRefNum"
         );
         assert_eq!(bus.read_word(pb + 40), 100, "ioVNmFls");
-        assert_eq!(bus.read_long(pb + 48), 512, "ioVAlBlkSiz");
+        assert_eq!(
+            bus.read_word(pb + 46),
+            super::BOOT_VOLUME_ALLOCATION_BLOCKS,
+            "ioVNmAlBlks"
+        );
+        assert_eq!(
+            bus.read_long(pb + 48),
+            super::BOOT_VOLUME_ALLOCATION_BLOCK_SIZE,
+            "ioVAlBlkSiz"
+        );
+        assert_eq!(
+            bus.read_word(pb + 62),
+            super::BOOT_VOLUME_FREE_BLOCKS,
+            "ioVFrBlk"
+        );
+        let free_bytes = u32::from(bus.read_word(pb + 62)) * bus.read_long(pb + 48);
+        assert!(
+            free_bytes >= 8 * 1024 * 1024,
+            "PBGetVInfo should report enough free space for launch-time scratch checks"
+        );
         // Volume name
         let len = bus.read_byte(name_buf) as usize;
         assert_eq!(len, 11);

@@ -8488,7 +8488,7 @@ impl super::TrapDispatcher {
             // Selector-based dispatcher for Alias Manager routines.
             // Selector in D0.
             // Inside Macintosh Volume VI, 9-17; Files 1992, 4-15
-            // AliasDispatch ($A823): Selector 0 = FindFolder (preferences-only stub returning Mac VFS dirID); other selectors return paramErr
+            // AliasDispatch ($A823): Selector 0 = FindFolder; other selectors return paramErr.
             (true, 0x023) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
@@ -8497,7 +8497,7 @@ impl super::TrapDispatcher {
                     // FUNCTION FindFolder(vRefNum: INTEGER; folderType: OSType;
                     //   createFolder: BOOLEAN; VAR foundVRefNum: INTEGER;
                     //   VAR foundDirID: LONGINT): OSErr;
-                    // Inside Macintosh Volume VI, 9-28
+                    // Inside Macintosh Volume VI, 9-42 to 9-44
                     // Stack (rightmost on top):
                     //   SP+0:  foundDirID_ptr(4)  SP+4:  foundVRefNum_ptr(4)
                     //   SP+8:  createFolder(2)    SP+10: folderType(4)
@@ -8516,10 +8516,14 @@ impl super::TrapDispatcher {
                             v_ref_num, type_str, folder_type
                         );
 
-                        let found_dir_id = if folder_type == u32::from_be_bytes(*b"pref") {
-                            self.ensure_vfs_directory("System Folder/Preferences")
-                        } else {
-                            2
+                        let found_dir_id = match folder_type {
+                            t if t == u32::from_be_bytes(*b"pref") => {
+                                self.ensure_vfs_directory("System Folder/Preferences")
+                            }
+                            t if t == u32::from_be_bytes(*b"temp") => {
+                                self.ensure_vfs_directory("Temporary Items")
+                            }
+                            _ => 2,
                         };
 
                         bus.write_word(vref_ptr, (-1i16) as u16);
@@ -18950,6 +18954,40 @@ mod tests {
         assert_eq!(
             disp.directory_path_for_id(found_dir_id),
             Some("System Folder/Preferences")
+        );
+    }
+
+    // AliasDispatch ($A823) / selector $0000 FindFolder
+    // IM:VI 1991 pp. 9-42..9-44: kTemporaryFolderType ('temp') locates the
+    // root-level Temporary Items folder and returns its vRefNum/dirID.
+    #[test]
+    fn aliasdispatch_findfolder_temporary_type_returns_temporary_items_dir() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let found_dir_id_ptr = 0x340200u32;
+        let found_vref_ptr = 0x340300u32;
+
+        cpu.write_reg(Register::D0, 0x0000); // FindFolder selector
+        bus.write_long(sp, found_dir_id_ptr);
+        bus.write_long(sp + 4, found_vref_ptr);
+        bus.write_word(sp + 8, 1); // createFolder = TRUE
+        bus.write_long(sp + 10, u32::from_be_bytes(*b"temp"));
+        bus.write_word(sp + 14, 0x8000); // kOnSystemDisk
+        bus.write_word(sp + 16, 0xBEEF); // result slot
+
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 16), 0); // noErr
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_word(found_vref_ptr), (-1i16) as u16);
+
+        let found_dir_id = bus.read_long(found_dir_id_ptr);
+        assert_ne!(found_dir_id, 0);
+        assert_eq!(
+            disp.directory_path_for_id(found_dir_id),
+            Some("Temporary Items")
         );
     }
 

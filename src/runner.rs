@@ -1222,17 +1222,20 @@ impl FixtureRunner {
         self.bus.write_byte(addr::SD_VOLUME, 1);
 
         // Memory Manager zone globals
-        // Inside Macintosh Volume II, II-19
-        // The heap starts at 0x200000 (set in bus.rs). ApplLimit is set
-        // to allow the heap to grow up to the stack minus a safety margin.
-        // BufPtr sits between ApplLimit and the stack for sound/disk buffers.
+        // Inside Macintosh Volume II, II-19 and II-29..II-30.
+        // The heap starts at 0x200000 (set in bus.rs). HeapEnd begins at
+        // the initial application-zone extent; ApplLimit is the ceiling the
+        // Memory Manager can grow toward, and BufPtr sits above that limit
+        // for sound/disk buffers.
         let heap_start: u32 = 0x200000;
+        let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
+        let initial_heap_end = heap_start + zone_header_size;
         let stack_base = app.initial_sp;
         let appl_limit = stack_base - 0x2000; // 8KB stack safety margin
         let buf_ptr = appl_limit; // Buffer area at the limit
         self.bus.write_long(addr::SYS_ZONE, heap_start);
         self.bus.write_long(addr::APP_L_ZONE, heap_start);
-        self.bus.write_long(addr::HEAP_END, appl_limit);
+        self.bus.write_long(addr::HEAP_END, initial_heap_end);
         self.bus.write_long(addr::APPL_LIMIT, appl_limit);
         self.bus.write_long(addr::BUF_PTR, buf_ptr);
         self.bus.write_long(addr::THE_ZONE, heap_start);
@@ -1284,7 +1287,6 @@ impl FixtureRunner {
         // Apps and the Memory Manager read the zone header to determine
         // available memory. zcbFree (offset +12) must reflect free bytes.
         // Reserve heap space so alloc() doesn't overwrite the zone header.
-        let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
         self.bus.reserve_heap(zone_header_size);
         let zone_size = appl_limit - heap_start;
         let free_bytes = zone_size - zone_header_size;
@@ -4937,6 +4939,39 @@ mod tests {
             runner.bus.read_long(stack_seed_start),
             0xA5A5_A5A5,
             "top-of-stack window must not be zeroed"
+        );
+    }
+
+    #[test]
+    fn init_app_leaves_application_heap_room_below_appllimit() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+        };
+
+        runner.init_app(&app);
+
+        let heap_end = runner.bus.read_long(addr::HEAP_END);
+        let appl_limit = runner.bus.read_long(addr::APPL_LIMIT);
+        assert_eq!(
+            heap_end,
+            0x0020_0000 + APP_ZONE_HEADER_SIZE,
+            "HeapEnd should expose the initial application-zone extent"
+        );
+        assert!(
+            appl_limit.saturating_sub(heap_end) >= 2300 * 1024,
+            "direct low-memory startup checks should see growable heap room below ApplLimit"
         );
     }
 
