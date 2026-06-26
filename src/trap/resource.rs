@@ -4022,12 +4022,20 @@ impl super::TrapDispatcher {
                 };
 
                 // Compute new key by replacing the basename of old_key.
-                // Preserve any directory prefix so a rename of
-                // "Pref/MyFile" -> "Renamed" lands as "Pref/Renamed".
+                // PBHRename cannot move a file to another directory
+                // (Inside Macintosh: Files, 1992, p. 2-199), so even if a
+                // caller passes a colon pathname in ioMisc, only its final
+                // name participates in the rename.
                 let normalized_new = super::TrapDispatcher::normalize_vfs_path(&new_name);
+                let new_leaf = super::TrapDispatcher::vfs_basename(&normalized_new);
+                if new_leaf.is_empty() {
+                    bus.write_word(pb + 16, (-50i16) as u16); // paramErr
+                    cpu.write_reg(Register::D0, (-50i32) as u32);
+                    return Some(Ok(()));
+                }
                 let new_key = match old_key.rsplit_once('/') {
-                    Some((parent, _)) => format!("{parent}/{normalized_new}"),
-                    None => normalized_new.clone(),
+                    Some((parent, _)) => format!("{parent}/{new_leaf}"),
+                    None => new_leaf.to_string(),
                 };
 
                 if new_key == old_key {
@@ -12582,6 +12590,70 @@ mod tests {
             "old key must be gone"
         );
         assert_eq!(disp.vfs.get("NewName.dat"), Some(&vec![0xAA, 0xBBu8]));
+    }
+
+    #[test]
+    fn pbhrename_path_new_name_stays_in_source_directory() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let dir_id = disp.ensure_vfs_directory("App Folder");
+        disp.vfs
+            .insert("App Folder/Prefs File__TEMP".to_string(), vec![0xAA, 0xBB]);
+        disp.vfs_rsrc
+            .insert("App Folder/Prefs File__TEMP".to_string(), vec![0xCC]);
+
+        let pb = 0x271400u32;
+        let old_name_addr = pb + 0x100;
+        let new_name_addr = pb + 0x200;
+        write_pstring(&mut bus, old_name_addr, b":App Folder:Prefs File__TEMP");
+        write_pstring(&mut bus, new_name_addr, b":App Folder:Prefs File");
+
+        for i in 0u32..64 {
+            bus.write_byte(pb + i, 0);
+        }
+        bus.write_word(pb + 16, 0x7777);
+        bus.write_long(pb + 18, old_name_addr);
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 28, new_name_addr);
+        bus.write_long(pb + 48, dir_id);
+
+        cpu.write_reg(Register::A0, pb);
+        call_trap_word(&mut disp, 0xA20B, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert!(!disp.vfs.contains_key("App Folder/Prefs File__TEMP"));
+        assert_eq!(
+            disp.vfs.get("App Folder/Prefs File"),
+            Some(&vec![0xAA, 0xBB])
+        );
+        assert_eq!(
+            disp.vfs_rsrc.get("App Folder/Prefs File"),
+            Some(&vec![0xCC])
+        );
+        assert!(
+            !disp.vfs.contains_key("App Folder/App Folder/Prefs File"),
+            "PBHRename must rename within the original directory, not append a pathname under it"
+        );
+
+        let open_pb = 0x271800u32;
+        setup_param_block(&mut bus, &mut cpu, open_pb, b"Prefs File");
+        bus.write_word(
+            open_pb + 22,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+        );
+        bus.write_long(open_pb + 48, dir_id);
+        cpu.write_reg(Register::D0, 26);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(open_pb + 16) as i16, 0);
+        let refnum = bus.read_word(open_pb + 24);
+        assert_eq!(
+            disp.open_files.get(&refnum),
+            Some(&"App Folder/Prefs File".to_string())
+        );
     }
 
     #[test]
