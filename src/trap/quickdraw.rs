@@ -8,7 +8,9 @@ use crate::machine_profile::ORACLE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
-use crate::trap::dispatch::{CachedCopyBitmapInfo, PortDrawState, RecentColorTableFetch};
+use crate::trap::dispatch::{
+    CachedCopyBitmapInfo, PortDrawState, RecentColorTableFetch, ScreenCopyBitsRect,
+};
 use crate::Result;
 use std::sync::OnceLock;
 
@@ -3073,6 +3075,10 @@ impl super::TrapDispatcher {
 
                 if dst_info.base == self.screen_mode.0 {
                     self.copybits_screen_count += 1;
+                    self.note_screen_copybits_rect(
+                        src_top, src_left, src_bottom, src_right, dst_top, dst_left, dst_bottom,
+                        dst_right,
+                    );
                 }
 
                 if trace_menu_redraw_enabled()
@@ -18276,6 +18282,44 @@ impl super::TrapDispatcher {
         }
 
         Ok(())
+    }
+
+    fn note_screen_copybits_rect(
+        &mut self,
+        src_top: i16,
+        src_left: i16,
+        src_bottom: i16,
+        src_right: i16,
+        dst_top: i16,
+        dst_left: i16,
+        dst_bottom: i16,
+        dst_right: i16,
+    ) {
+        let src_width = src_right.saturating_sub(src_left);
+        let src_height = src_bottom.saturating_sub(src_top);
+        let dst_width = dst_right.saturating_sub(dst_left);
+        let dst_height = dst_bottom.saturating_sub(dst_top);
+        if src_width <= 0 || src_height <= 0 || dst_width <= 0 || dst_height <= 0 {
+            return;
+        }
+
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        let min_width = (screen_width as i16 / 2).max(1);
+        let min_height = (screen_height as i16 / 2).max(1);
+        if dst_width < min_width || dst_height < min_height {
+            return;
+        }
+
+        self.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            dst_top,
+            dst_left,
+            dst_bottom,
+            dst_right,
+        });
     }
 
     pub(super) fn resolve_copy_bitmap(&self, bus: &MacMemoryBus, bits_ptr: u32) -> CopyBitmapInfo {

@@ -1,7 +1,9 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::cpu::{M68kCpu, Register, StepResult};
-use crate::loader::{Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp};
+use crate::loader::{
+    ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
+};
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::TrapDispatcher;
@@ -19,6 +21,7 @@ static TRACE_SOUND_RUNNER: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
 
 const APP_ZONE_HEADER_SIZE: u32 = 64;
+const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 
 fn trace_dialog_filter_enabled() -> bool {
     *TRACE_DIALOG_FILTER
@@ -491,6 +494,10 @@ pub struct FixtureRunner {
     /// Override for the application's startup time in Mac-epoch seconds.
     /// Used by scripted frontends to keep guest-visible time deterministic.
     app_start_time: Option<u32>,
+    /// Optional Finder-style application partition size override in bytes.
+    /// Scripted frontends use this to model a user raising the preferred
+    /// memory size before launch without mutating the application's resources.
+    application_partition_size: Option<u32>,
     /// Per-opcode histogram for M68K instructions. Indexed by the
     /// full 16-bit opcode word (`cpu.core.ir` after step). Always
     /// allocated (512 KB); populated only when
@@ -560,6 +567,7 @@ impl FixtureRunner {
             dialog_filter_event: 0,
             dialog_filter_last_null_event_tick: None,
             app_start_time: None,
+            application_partition_size: None,
             opcode_histogram: Box::new([0u64; 65536]),
             pc_histogram: HashMap::new(),
         }
@@ -820,6 +828,10 @@ impl FixtureRunner {
         self.app_start_time = Some(secs);
     }
 
+    pub fn set_application_partition_size(&mut self, bytes: Option<u32>) {
+        self.application_partition_size = bytes.filter(|&bytes| bytes >= 128 * 1024);
+    }
+
     /// Getter for the pinned Mac epoch seconds. Returns `None` when no
     /// pin has been applied — without a pin, `init_app` falls back to
     /// `current_mac_epoch_seconds()` (host wall-clock), which leaks
@@ -827,6 +839,10 @@ impl FixtureRunner {
     /// reproducibility.
     pub fn app_start_time(&self) -> Option<u32> {
         self.app_start_time
+    }
+
+    pub fn application_partition_size(&self) -> Option<u32> {
+        self.application_partition_size
     }
 
     pub fn enable_oracle_recording(
@@ -1231,7 +1247,27 @@ impl FixtureRunner {
         let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
         let initial_heap_end = heap_start + zone_header_size;
         let stack_base = app.initial_sp;
-        let appl_limit = stack_base - 0x2000; // 8KB stack safety margin
+        let default_appl_limit = stack_base - APP_STACK_SAFETY_MARGIN;
+        let requested_partition_size = self.application_partition_size.or_else(|| {
+            app.size_resource
+                .and_then(|size| size.preferred_partition_size())
+        });
+        let appl_limit = requested_partition_size
+            .and_then(|partition_size| {
+                // Processes 1994, pp. 1-3 and 2-18: the Process Manager
+                // allocates the application partition from the app's 'SIZE'
+                // resource preferred size when available. A scripted override
+                // represents the same Finder-style preferred-memory setting
+                // applied to a temporary launch. Systemless keeps the physical
+                // stack at the top of guest RAM, but narrows the observable
+                // heap limit so FreeMem/MaxMem/process info see the same
+                // partition pressure.
+                partition_size
+                    .checked_sub(APP_STACK_SAFETY_MARGIN)
+                    .and_then(|heap_span| heap_start.checked_add(heap_span))
+            })
+            .filter(|&limit| limit > initial_heap_end && limit < default_appl_limit)
+            .unwrap_or(default_appl_limit);
         let buf_ptr = appl_limit; // Buffer area at the limit
         self.bus.write_long(addr::SYS_ZONE, heap_start);
         self.bus.write_long(addr::APP_L_ZONE, heap_start);
@@ -4501,6 +4537,10 @@ fn load_app_generic<M: MemoryBus>(
         current_load_ptr = (user_addr + size + 4 + 3) & !3;
     }
 
+    let size_resource = fork
+        .get(*b"SIZE", -1)
+        .and_then(|res| ApplicationSizeResource::parse(&res.data));
+
     // Stack at top of RAM
     let stack_top = bus.ram_size() - 16;
 
@@ -4510,6 +4550,7 @@ fn load_app_generic<M: MemoryBus>(
         jump_table,
         segment_bases,
         initial_sp: stack_top,
+        size_resource,
     })
 }
 
@@ -4517,7 +4558,7 @@ fn load_app_generic<M: MemoryBus>(
 mod tests {
     use super::*;
     use crate::audio::AudioBackend;
-    use crate::loader::{Code0Header, LoadedApp};
+    use crate::loader::{ApplicationSizeResource, Code0Header, LoadedApp};
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
         SndChannel, SndCommand, OUTPUT_RATE,
@@ -4668,6 +4709,30 @@ mod tests {
             runner.bus.read_bytes(bgas_ptr, bgas.len()),
             bgas,
             "init_app must not overwrite resources loaded before zone setup"
+        );
+    }
+
+    #[test]
+    fn load_app_records_application_size_resource_id_minus_one() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let size = [
+            0x00, 0x80, // mode32BitCompatible
+            0x00, 0x30, 0x00, 0x00, // preferred partition
+            0x00, 0x20, 0x00, 0x00, // minimum partition
+        ];
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert_eq!(
+            app.size_resource,
+            Some(ApplicationSizeResource {
+                flags: 0x0080,
+                preferred_size: 0x0030_0000,
+                minimum_size: 0x0020_0000,
+            })
         );
     }
 
@@ -4930,6 +4995,7 @@ mod tests {
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
             initial_sp: 0x007F_FFC0,
+            size_resource: None,
         };
 
         runner.init_app(&app);
@@ -4958,6 +5024,7 @@ mod tests {
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
             initial_sp: 0x007F_FFC0,
+            size_resource: None,
         };
 
         runner.init_app(&app);
@@ -4972,6 +5039,114 @@ mod tests {
         assert!(
             appl_limit.saturating_sub(heap_end) >= 2300 * 1024,
             "direct low-memory startup checks should see growable heap room below ApplLimit"
+        );
+    }
+
+    #[test]
+    fn init_app_honors_size_resource_preferred_partition_for_heap_reporting() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let preferred_partition = 3 * 1024 * 1024;
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+            size_resource: Some(ApplicationSizeResource {
+                flags: 0x0080,
+                preferred_size: preferred_partition,
+                minimum_size: 2 * 1024 * 1024,
+            }),
+        };
+
+        runner.init_app(&app);
+
+        let expected_limit = 0x0020_0000 + preferred_partition - APP_STACK_SAFETY_MARGIN;
+        let expected_free = expected_limit - (0x0020_0000 + APP_ZONE_HEADER_SIZE);
+        assert_eq!(runner.bus.read_long(addr::APPL_LIMIT), expected_limit);
+        assert_eq!(runner.bus.read_long(addr::BUF_PTR), expected_limit);
+        assert_eq!(runner.bus.read_long(0x0020_0000), expected_limit);
+        assert_eq!(runner.bus.read_long(0x0020_0000 + 12), expected_free);
+        assert_eq!(
+            crate::memory::app_heap_free_bytes(runner.bus()),
+            expected_free
+        );
+        assert!(
+            expected_free < crate::memory::APP_HEAP_COMPAT_FREE_FLOOR,
+            "explicit SIZE partitions must bypass the compatibility floor"
+        );
+    }
+
+    #[test]
+    fn init_app_application_partition_override_takes_precedence_over_size_resource() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let size_partition = 3 * 1024 * 1024;
+        let override_partition = 4 * 1024 * 1024;
+        runner.set_application_partition_size(Some(override_partition));
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+            size_resource: Some(ApplicationSizeResource {
+                flags: 0x0080,
+                preferred_size: size_partition,
+                minimum_size: 2 * 1024 * 1024,
+            }),
+        };
+
+        runner.init_app(&app);
+
+        let expected_limit = 0x0020_0000 + override_partition - APP_STACK_SAFETY_MARGIN;
+        assert_eq!(runner.bus.read_long(addr::APPL_LIMIT), expected_limit);
+        assert_eq!(
+            crate::memory::app_heap_free_bytes(runner.bus()),
+            expected_limit - (0x0020_0000 + APP_ZONE_HEADER_SIZE)
+        );
+    }
+
+    #[test]
+    fn init_app_ignores_too_small_application_partition_override() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_application_partition_size(Some(64 * 1024));
+        assert_eq!(runner.application_partition_size(), None);
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.bus.read_long(addr::APPL_LIMIT),
+            app.initial_sp - APP_STACK_SAFETY_MARGIN,
+            "invalid tiny overrides must fall back to the default launch limit"
         );
     }
 
@@ -4994,6 +5169,7 @@ mod tests {
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
             initial_sp: 0x007F_FFC0,
+            size_resource: None,
         };
 
         runner.init_app(&app);
@@ -5039,6 +5215,7 @@ mod tests {
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
             initial_sp: 0x007F_FFC0,
+            size_resource: None,
         };
 
         runner.init_app(&app);
@@ -5085,6 +5262,7 @@ mod tests {
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
             initial_sp: 0x007F_FFC0,
+            size_resource: None,
         };
 
         runner.init_app(&app);
@@ -5112,6 +5290,7 @@ mod tests {
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
             initial_sp: 0x007F_FFC0,
+            size_resource: None,
         };
 
         runner.init_app(&app);

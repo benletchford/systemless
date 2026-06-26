@@ -37,16 +37,11 @@ fn trace_vbl_enabled() -> bool {
     *TRACE_VBL.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_VBL").is_some())
 }
 
-/// Estimate free application heap from ApplLimit + HeapEnd low-mem globals,
-/// clamped to [24MB, 64MB]. The 24MB floor satisfies games that sanity-check
-/// for free memory before proceeding at higher screen resolutions; the 64MB
-/// cap protects legacy callers that store FreeMem in a signed LONG.
+/// Estimate free application heap from ApplLimit + HeapEnd low-mem globals.
+/// See `crate::memory::app_heap_free_bytes` for the partition-aware
+/// compatibility-floor rule shared with Process Manager reporting.
 fn free_heap_estimate(bus: &MacMemoryBus) -> u32 {
-    use crate::memory::globals::addr;
-    let heap_end = bus.read_long(addr::HEAP_END);
-    let appl_limit = bus.read_long(addr::APPL_LIMIT);
-    let avail = appl_limit.saturating_sub(heap_end);
-    avail.clamp(24 * 1024 * 1024, 64 * 1024 * 1024)
+    crate::memory::app_heap_free_bytes(bus)
 }
 
 fn init_zone_header(
@@ -929,9 +924,9 @@ impl super::TrapDispatcher {
             // fragmentation OR purgeable resource blocks (every
             // allocation is permanent until explicitly freed),
             // so "total" and "contiguous" both collapse to the
-            // free_heap_estimate value (ApplLimit - HeapEnd
-            // clamped to [24MB, 64MB] — same helper used by
-            // FreeMem / MaxMem / CompactMem). Apps that probe
+            // free_heap_estimate value (ApplLimit - HeapEnd,
+            // with the same compatibility floor/partition rule
+            // used by FreeMem / MaxMem / CompactMem). Apps that probe
             // PurgeSpace before a large allocation to gate "do
             // I have enough room?" see the same 24MB-floor
             // answer those companion traps return — consistent
@@ -943,7 +938,7 @@ impl super::TrapDispatcher {
             // checks. The free_heap_estimate floor at 24MB
             // satisfies all known minimum-RAM gates while still
             // reading real low-mem state.
-            // PurgeSpace ($A062): Per IM:IV IV-14 returns total free space (after purging purgeable blocks) in A0 and largest contiguous free block in D0; Systemless doesn't model fragmentation or purgeable blocks so both registers get the free_heap_estimate value (ApplLimit - HeapEnd clamped to [24MB, 64MB] — same helper used by FreeMem / MaxMem / CompactMem). Replaces a prior hardcoded 4MB constant that was below modern minimum-RAM gates.
+            // PurgeSpace ($A062): Per IM:IV IV-14 returns total free space (after purging purgeable blocks) in A0 and largest contiguous free block in D0; Systemless doesn't model fragmentation or purgeable blocks so both registers get the free_heap_estimate value (same helper used by FreeMem / MaxMem / CompactMem). Replaces a prior hardcoded 4MB constant that was below modern minimum-RAM gates.
             (false, 0x62) => {
                 let free = free_heap_estimate(bus);
                 cpu.write_reg(Register::A0, free); // total purgeable
@@ -1122,11 +1117,9 @@ impl super::TrapDispatcher {
             // largest-block / compactable space in the current
             // heap. All three share `free_heap_estimate(bus)`
             // which reads the ApplLimit + HeapEnd low-mem
-            // globals, computes ApplLimit - HeapEnd, and clamps
-            // to [24MB, 64MB] (24MB floor satisfies games that
-            // sanity-check free memory before booting at higher
-            // resolutions; 64MB cap protects legacy callers that
-            // store the result in a signed LONG).
+            // globals. Unconstrained launches keep the historical
+            // 24MB compatibility floor; explicit app partitions
+            // report the actual partition span.
             //
             // HLE compromise: Systemless does NOT model heap
             // fragmentation — the "free", "max contiguous", and
@@ -1147,7 +1140,7 @@ impl super::TrapDispatcher {
             // FreeMem ($A01C) — return total free memory in D0
             // FUNCTION FreeMem: LongInt;
             // Inside Macintosh Volume II, II-39
-            // FreeMem ($A01C): Per IM:II II-39 returns total free memory in current heap; Systemless returns ApplLimit - HeapEnd clamped to [24MB, 64MB] via free_heap_estimate (Systemless doesn't model fragmentation so FreeMem == MaxMem == CompactMem). The 24MB floor satisfies legacy 16/24 MB minimum-RAM checks; the 64MB cap protects callers that store the result in a signed LONG.
+            // FreeMem ($A01C): Per IM:II II-39 returns total free memory in current heap; Systemless returns free_heap_estimate (Systemless doesn't model fragmentation so FreeMem == MaxMem == CompactMem). The 24MB floor applies only to unconstrained launches; explicit app partitions report their actual free span.
             (false, 0x1C) => {
                 cpu.write_reg(Register::D0, free_heap_estimate(bus));
                 Ok(())
@@ -1171,7 +1164,7 @@ impl super::TrapDispatcher {
             // return the largest block actually obtained in D0
             // FUNCTION CompactMem(cbNeeded: Size): Size;
             // Inside Macintosh Volume II, II-40
-            // CompactMem ($A04C): Per IM:II II-40 takes cbNeeded in D0 and returns the largest free block (after compacting purgeable resources) in D0; Systemless doesn't model heap compaction so the cbNeeded input is IGNORED — returns the free_heap_estimate clamped to [24MB, 64MB], which is always > any sane cbNeeded that an app would pass.
+            // CompactMem ($A04C): Per IM:II II-40 takes cbNeeded in D0 and returns the largest free block (after compacting purgeable resources) in D0; Systemless doesn't model heap compaction so the cbNeeded input is IGNORED and returns free_heap_estimate.
             (false, 0x4C) => {
                 cpu.write_reg(Register::D0, free_heap_estimate(bus));
                 Ok(())
@@ -3626,14 +3619,14 @@ impl super::TrapDispatcher {
             // address space, so "max contiguous" == "total free"
             // == free_heap_estimate value. Routes through the
             // same helper used by FreeMem / MaxMem / CompactMem /
-            // PurgeSpace (reads ApplLimit - HeapEnd, clamps to
-            // [24MB, 64MB]). Replaces a prior hardcoded 2MB
+            // PurgeSpace (reads ApplLimit - HeapEnd with the shared
+            // compatibility-floor/partition rule). Replaces a prior hardcoded 2MB
             // constant which was BELOW modern minimum-block-size
             // gates — apps that probe MaxBlock to verify "do I
             // have a 4MB+ contiguous block for a sound buffer or
             // GWorld pixmap?" would have failed at the 2MB
             // constant; the 24MB floor passes those gates.
-            // MaxBlock ($A061): Per IM:Memory 1992 2-47 returns max contiguous free space (after hypothetical compaction). Systemless doesn't model fragmentation so MaxBlock == FreeMem == MaxMem == CompactMem == PurgeSpace via the shared free_heap_estimate helper (ApplLimit - HeapEnd clamped to [24MB, 64MB]). Replaces a prior hardcoded 2MB constant that was below modern 4MB+ contiguous-block gates (sound buffer, GWorld pixmap allocations).
+            // MaxBlock ($A061): Per IM:Memory 1992 2-47 returns max contiguous free space (after hypothetical compaction). Systemless doesn't model fragmentation so MaxBlock == FreeMem == MaxMem == CompactMem == PurgeSpace via the shared free_heap_estimate helper. Replaces a prior hardcoded 2MB constant that was below modern 4MB+ contiguous-block gates (sound buffer, GWorld pixmap allocations).
             (false, 0x61) => {
                 cpu.write_reg(Register::D0, free_heap_estimate(bus));
                 Ok(())
@@ -8470,6 +8463,51 @@ mod tests {
             cpu.read_reg(Register::D0),
             24 * 1024 * 1024,
             "FreeMem should return 24MB clamp floor in D0"
+        );
+    }
+
+    #[test]
+    fn free_mem_honors_explicit_application_partition_below_compat_floor() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let heap_end = 0x0020_0000 + 64;
+        let appl_limit = 0x0050_0000;
+        bus.write_long(crate::memory::globals::addr::MEM_TOP, 32 * 1024 * 1024);
+        bus.write_long(crate::memory::globals::addr::HEAP_END, heap_end);
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, appl_limit);
+
+        let result = dispatcher.dispatch_memory(false, 0x1C, &mut cpu, &mut bus);
+
+        assert!(result.is_some(), "FreeMem should be handled");
+        assert!(result.unwrap().is_ok(), "FreeMem should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            appl_limit - heap_end,
+            "FreeMem must report the actual small partition instead of the compatibility floor"
+        );
+    }
+
+    #[test]
+    fn free_mem_uses_zone_zcbfree_after_maxapplzone_extends_heapend() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let app_zone = 0x0020_0000;
+        let appl_limit = 0x0220_0000;
+        let zcb_free = 0x01FF_DFC0;
+        bus.write_long(crate::memory::globals::addr::MEM_TOP, 64 * 1024 * 1024);
+        bus.write_long(crate::memory::globals::addr::APP_L_ZONE, app_zone);
+        bus.write_long(crate::memory::globals::addr::THE_ZONE, app_zone);
+        bus.write_long(crate::memory::globals::addr::HEAP_END, appl_limit);
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, appl_limit);
+        bus.write_long(app_zone, appl_limit); // bkLim
+        bus.write_long(app_zone + 12, zcb_free); // zcbFree
+
+        let result = dispatcher.dispatch_memory(false, 0x1C, &mut cpu, &mut bus);
+
+        assert!(result.is_some(), "FreeMem should be handled");
+        assert!(result.unwrap().is_ok(), "FreeMem should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            zcb_free,
+            "FreeMem must read the zone header's free-byte count after MaxApplZone"
         );
     }
 

@@ -23,6 +23,18 @@ use std::path::PathBuf;
 pub(crate) const BOOT_VOLUME_NAME: &str = "MacintoshHD";
 pub(crate) const BOOT_VOLUME_REF_NUM: i16 = -1;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenCopyBitsRect {
+    pub src_top: i16,
+    pub src_left: i16,
+    pub src_bottom: i16,
+    pub src_right: i16,
+    pub dst_top: i16,
+    pub dst_left: i16,
+    pub dst_bottom: i16,
+    pub dst_right: i16,
+}
+
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
 // to toggle these at runtime cannot — values are read ONCE at first call.
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1237,6 +1249,8 @@ pub struct TrapDispatcher {
     pub inline_skipped: Box<[u64; 4096]>,
     /// Number of copybits_screen events emitted (screen-affecting draws).
     pub copybits_screen_count: u64,
+    /// Most recent sizeable CopyBits blit into the screen framebuffer.
+    pub last_screen_copybits_rect: Option<ScreenCopyBitsRect>,
     /// Count of all screen-affecting oracle events captured so far.
     pub screen_event_count: u64,
     /// `screen_event_count` values where the recorded event was specifically
@@ -2333,6 +2347,7 @@ impl TrapDispatcher {
             trap_time_ns: Box::new([0u64; 4096]),
             inline_skipped: Box::new([0u64; 4096]),
             copybits_screen_count: 0,
+            last_screen_copybits_rect: None,
             screen_event_count: 0,
             copybits_screen_secs: Vec::new(),
             oracle_recorder: None,
@@ -2567,12 +2582,32 @@ impl TrapDispatcher {
         self.segment_map = segments;
     }
 
-    pub(crate) fn normalize_vfs_path(name: &str) -> String {
-        let path = name.strip_prefix("Unix:").unwrap_or(name).replace(':', "/");
+    fn normalize_vfs_path_components(path: &str) -> String {
         path.split('/')
             .filter(|part| !part.is_empty() && *part != ".")
             .collect::<Vec<_>>()
             .join("/")
+    }
+
+    pub(crate) fn is_unix_tmp_path(name: &str) -> bool {
+        let path = name.strip_prefix("Unix:").unwrap_or(name);
+        path == "/tmp" || path.starts_with("/tmp/")
+    }
+
+    pub(crate) fn normalize_vfs_path(name: &str) -> String {
+        let path = name.strip_prefix("Unix:").unwrap_or(name);
+        if Self::is_unix_tmp_path(path) {
+            let tail = path.strip_prefix("/tmp").unwrap_or("");
+            let tail = Self::normalize_vfs_path_components(&tail.replace(':', "/"));
+            return if tail.is_empty() {
+                "Temporary Items".to_string()
+            } else {
+                format!("Temporary Items/{tail}")
+            };
+        }
+
+        let path = path.replace(':', "/");
+        Self::normalize_vfs_path_components(&path)
     }
 
     pub(crate) fn boot_volume_name() -> &'static str {

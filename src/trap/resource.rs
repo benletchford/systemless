@@ -4192,6 +4192,10 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, (-50i32) as u32);
                     return Some(Ok(()));
                 }
+                let vfs_key = self
+                    .vfs_key_for_fsspec(v_ref, dir_id, &filename)
+                    .unwrap_or_else(|| super::TrapDispatcher::normalize_vfs_path(&filename));
+
                 // Per IM Files 1992, 2-89, PBCreate returns dupFNErr when the
                 // file already exists. Some shareware/demo titles ship a
                 // marker file (e.g. Meteor Storm's "MS UserKey") inside their
@@ -4204,7 +4208,13 @@ impl super::TrapDispatcher {
                 // these titles bootable without breaking apps that *do*
                 // handle dupFNErr, truncate-on-exists: clear both forks of
                 // the existing entry and report noErr.
-                if let Some(existing) = self.find_vfs_file(&filename) {
+                let existing = self
+                    .vfs
+                    .keys()
+                    .chain(self.vfs_rsrc.keys())
+                    .find(|key| key.eq_ignore_ascii_case(&vfs_key))
+                    .cloned();
+                if let Some(existing) = existing {
                     // Preserve any existing resource-fork content — some
                     // shareware titles ship a key file with registration
                     // resources baked into the resource fork (the data
@@ -4235,8 +4245,7 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                let normalized = super::TrapDispatcher::normalize_vfs_path(&filename);
-                self.vfs.insert(normalized.clone(), Vec::new());
+                self.vfs.insert(vfs_key.clone(), Vec::new());
                 // Real Mac files always have both forks. PBCreate must seed
                 // an empty resource fork too, otherwise a subsequent
                 // PBOpenRF on the new file (e.g. Mars Rising's installer
@@ -4244,10 +4253,10 @@ impl super::TrapDispatcher {
                 // PBOpenRF that file's resource fork) returns fnfErr and
                 // the installer halts via _ExitToShell.
                 // Files 1992, 1-58 (each file has data + resource fork)
-                self.vfs_rsrc.insert(normalized.clone(), Vec::new());
-                self.touch_vfs_entry(&normalized);
+                self.vfs_rsrc.insert(vfs_key.clone(), Vec::new());
+                self.touch_vfs_entry(&vfs_key);
                 if let Some(ref dir) = self.output_dir {
-                    let host_path = dir.join(&normalized);
+                    let host_path = dir.join(&vfs_key);
                     if let Some(parent) = host_path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
@@ -4399,8 +4408,13 @@ impl super::TrapDispatcher {
                 let pb = cpu.read_reg(Register::A0);
                 let name_ptr = bus.read_long(pb + 18);
                 let filename = Self::read_pb_filename(bus, name_ptr);
+                let vref = bus.read_word(pb + 22) as i16;
+                let dir_id = bus.read_long(pb + 48);
                 eprintln!("[TRAP] PBSetFInfo(\"{}\")", filename);
-                if let Some(vfs_name) = self.find_vfs_file(&filename) {
+                if let Some(vfs_name) = self
+                    .find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
+                    .or_else(|| self.find_vfs_file(&filename))
+                {
                     let file_type = bus.read_long(pb + 32);
                     let creator = bus.read_long(pb + 36);
                     let finder_flags = bus.read_word(pb + 40);
@@ -4834,9 +4848,17 @@ impl super::TrapDispatcher {
                         bus.write_long(info_ptr + 16, app_type);
                         bus.write_long(info_ptr + 20, app_creator);
                         bus.write_long(info_ptr + 24, 0); // processMode
-                        bus.write_long(info_ptr + 28, 0x0010_0000); // processLocation
-                        bus.write_long(info_ptr + 32, bus.ram_size()); // processSize
-                        bus.write_long(info_ptr + 36, bus.ram_size() / 2); // processFreeMem
+                        let app_zone = bus.read_long(crate::memory::globals::addr::APP_L_ZONE);
+                        let appl_limit = bus.read_long(crate::memory::globals::addr::APPL_LIMIT);
+                        let process_location = if app_zone != 0 { app_zone } else { 0x0010_0000 };
+                        let process_free_mem = if app_zone != 0 && appl_limit > app_zone {
+                            crate::memory::app_heap_free_bytes(bus)
+                        } else {
+                            bus.ram_size() / 2
+                        };
+                        bus.write_long(info_ptr + 28, process_location); // processLocation
+                        bus.write_long(info_ptr + 32, crate::memory::app_partition_size_bytes(bus)); // processSize
+                        bus.write_long(info_ptr + 36, process_free_mem); // processFreeMem
                         bus.write_long(info_ptr + 40, 0); // processLauncher.highLongOfPSN
                         bus.write_long(info_ptr + 44, 0); // processLauncher.lowLongOfPSN
                         bus.write_long(info_ptr + 48, 0); // processLaunchDate
@@ -4943,6 +4965,16 @@ impl super::TrapDispatcher {
                             // a known directory. IM:Files 1992 p. 2-34 notes that
                             // FSMakeFSSpec can return File Manager errors other than
                             // noErr/fnfErr and clears the FSSpec in that case.
+                            if trace_fsspec_enabled() {
+                                eprintln!(
+                                    "[FSSPEC] FSMakeFSSpec dirNFErr request_vRefNum={} resolved_vRefNum={} request_dirID={} resolved_dirID={} name='{}'",
+                                    requested_v_ref_num,
+                                    resolved_v_ref_num,
+                                    dir_id,
+                                    effective_dir_id,
+                                    requested_name
+                                );
+                            }
                             bus.write_word(spec_ptr, 0);
                             bus.write_long(spec_ptr + 2, 0);
                             bus.write_byte(spec_ptr + 6, 0);
@@ -6515,6 +6547,9 @@ impl super::TrapDispatcher {
         let normalized = super::TrapDispatcher::normalize_vfs_path(filename);
         if normalized.is_empty() {
             return None;
+        }
+        if super::TrapDispatcher::is_unix_tmp_path(filename) {
+            self.ensure_vfs_directory("Temporary Items");
         }
 
         // IM:Files 1992 pp. 2-28 and 2-34: File Manager pathname input can
@@ -9924,6 +9959,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fsmakefsspec_maps_unix_tmp_path_to_temporary_items_parent() {
+        // Some ports pass POSIX temp pathnames through FSMakeFSSpec. Treat
+        // /tmp as the standard temporary folder rather than a missing HFS
+        // directory named "tmp".
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let spec_ptr = 0x300000u32;
+        let name_ptr = 0x300100u32;
+        write_pstring(&mut bus, name_ptr, b"/tmp/lcache00.tmp");
+
+        let sp = TEST_SP;
+        bus.write_long(sp, spec_ptr);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_long(sp + 8, 0);
+        bus.write_word(sp + 12, 0);
+        cpu.write_reg(Register::D0, 1);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 14);
+        assert_eq!(bus.read_word(new_sp) as i16, -43);
+        assert_eq!(
+            bus.read_word(spec_ptr),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16
+        );
+        let temp_dir_id = disp
+            .directory_id_for_vfs_path("Temporary Items")
+            .expect("temp folder should be present");
+        assert_eq!(bus.read_long(spec_ptr + 2), temp_dir_id);
+        assert_eq!(
+            crate::trap::types::read_fsspec_name(&bus, spec_ptr),
+            "lcache00.tmp"
+        );
+    }
+
     // ================================================================
     // 13b. HighLevelFSDispatch (0x252) selector 2 — FSpOpenDF
     // ================================================================
@@ -11144,6 +11216,50 @@ mod tests {
              on the new file returns noErr"
         );
         assert_eq!(disp.vfs_rsrc.get("Installer Temp").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn pbh_create_setfinfo_then_open_honors_parent_dir_id() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let temp_dir_id = disp.ensure_vfs_directory("Temporary Items");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"lcache00.tmp");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 48, temp_dir_id);
+
+        call(&mut disp, false, 0x08, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert!(disp.vfs.contains_key("Temporary Items/lcache00.tmp"));
+        assert!(!disp.vfs.contains_key("lcache00.tmp"));
+
+        bus.write_long(pb + 32, u32::from_be_bytes(*b"TEXT"));
+        bus.write_long(pb + 36, u32::from_be_bytes(*b"ttxt"));
+        bus.write_word(pb + 40, 0x0400);
+        call(&mut disp, false, 0x0D, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        let metadata = disp
+            .vfs_file_metadata("Temporary Items/lcache00.tmp")
+            .expect("temp file metadata");
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"TEXT"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"ttxt"));
+        assert_eq!(metadata.finder_flags, 0x0400);
+
+        cpu.write_reg(Register::D0, 26);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        let refnum = bus.read_word(pb + 24);
+        assert!(refnum >= 100);
+        assert_eq!(
+            disp.open_files.get(&refnum),
+            Some(&"Temporary Items/lcache00.tmp".to_string())
+        );
     }
 
     #[test]
@@ -12817,6 +12933,42 @@ mod tests {
             "processName should be populated"
         );
         assert_ne!(bus.read_word(app_spec_ptr), 0, "processAppSpec.vRefNum");
+    }
+
+    #[test]
+    fn osdispatch_getprocessinformation_reports_initialized_partition_and_free_heap() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let info_ptr = 0x2A0D00u32;
+        let psn_ptr = 0x2A0E00u32;
+        let app_zone = 0x0020_0000u32;
+        let heap_end = app_zone + 64;
+        let appl_limit = 0x0050_0000u32;
+        bus.write_long(crate::memory::globals::addr::MEM_TOP, 32 * 1024 * 1024);
+        bus.write_long(crate::memory::globals::addr::APP_L_ZONE, app_zone);
+        bus.write_long(crate::memory::globals::addr::HEAP_END, heap_end);
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, appl_limit);
+        bus.write_long(psn_ptr, 0);
+        bus.write_long(psn_ptr + 4, 2);
+        bus.write_word(info_ptr, 60);
+        bus.write_word(TEST_SP, 0x003A);
+        bus.write_long(TEST_SP + 2, info_ptr);
+        bus.write_long(TEST_SP + 6, psn_ptr);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(TEST_SP + 10), 0, "noErr");
+        assert_eq!(bus.read_long(info_ptr + 28), app_zone, "processLocation");
+        assert_eq!(
+            bus.read_long(info_ptr + 32),
+            appl_limit - app_zone,
+            "processSize"
+        );
+        assert_eq!(
+            bus.read_long(info_ptr + 36),
+            appl_limit - heap_end,
+            "processFreeMem"
+        );
     }
 
     #[test]

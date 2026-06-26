@@ -4,6 +4,38 @@
 
 use std::collections::HashMap;
 
+/// Application `'SIZE'` resource data used by the Process Manager to
+/// choose the app's launch partition. The standard application resource
+/// is ID -1 and stores a 16-bit mode flag word followed by preferred
+/// and minimum partition sizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplicationSizeResource {
+    pub flags: u16,
+    pub preferred_size: u32,
+    pub minimum_size: u32,
+}
+
+impl ApplicationSizeResource {
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < 10 {
+            return None;
+        }
+        Some(Self {
+            flags: u16::from_be_bytes([data[0], data[1]]),
+            preferred_size: u32::from_be_bytes([data[2], data[3], data[4], data[5]]),
+            minimum_size: u32::from_be_bytes([data[6], data[7], data[8], data[9]]),
+        })
+    }
+
+    pub fn preferred_partition_size(self) -> Option<u32> {
+        if self.preferred_size >= self.minimum_size && self.preferred_size >= 128 * 1024 {
+            Some(self.preferred_size)
+        } else {
+            None
+        }
+    }
+}
+
 /// CODE 0 resource header — 16 bytes parsed from the start of every
 /// 68k application's `CODE` resource ID 0. Defines the A5-world layout
 /// (above + below sizes) and where the jump table lives within it.
@@ -140,7 +172,30 @@ impl CodeSegmentHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::CodeSegmentHeader;
+    use super::{ApplicationSizeResource, CodeSegmentHeader};
+
+    #[test]
+    fn parses_application_size_resource_flags_and_partition_sizes() {
+        let bytes = [0x51, 0x80, 0x00, 0x30, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00];
+        let size = ApplicationSizeResource::parse(&bytes).expect("SIZE resource should parse");
+
+        assert_eq!(size.flags, 0x5180);
+        assert_eq!(size.preferred_size, 0x0030_0000);
+        assert_eq!(size.minimum_size, 0x0020_0000);
+        assert_eq!(size.preferred_partition_size(), Some(0x0030_0000));
+    }
+
+    #[test]
+    fn rejects_truncated_or_inverted_application_size_resources() {
+        assert!(ApplicationSizeResource::parse(&[0; 9]).is_none());
+
+        let inverted = ApplicationSizeResource {
+            flags: 0,
+            preferred_size: 0x0010_0000,
+            minimum_size: 0x0020_0000,
+        };
+        assert_eq!(inverted.preferred_partition_size(), None);
+    }
 
     #[test]
     fn parses_think_far_header_entry_index_and_count_flags() {
@@ -204,6 +259,8 @@ pub struct LoadedApp {
     /// Initial stack pointer (top of below-A5 region) the runner
     /// seeds A7 with before the first instruction.
     pub initial_sp: u32,
+    /// Parsed application `'SIZE'` resource ID -1, when present.
+    pub size_resource: Option<ApplicationSizeResource>,
 }
 
 impl LoadedApp {
