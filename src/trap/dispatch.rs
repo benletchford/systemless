@@ -2979,13 +2979,30 @@ impl TrapDispatcher {
             if let Some(found) = subdir_match {
                 return Some(found);
             }
+
+            // Some archives flatten companion folders while the app still
+            // asks for a partial pathname such as ":Resources:Settings".
+            // Keep that compatibility fallback scoped to the explicitly
+            // requested parent directory; do not degrade to a volume-wide
+            // basename search when a concrete parent dirID was supplied.
+            let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+            if basename != normalized {
+                let sibling = if dir_path.is_empty() {
+                    basename.to_string()
+                } else {
+                    format!("{dir_path}/{basename}")
+                };
+                if let Some(found) = Self::find_case_insensitive_key(self.vfs.keys(), &sibling) {
+                    return Some(found);
+                }
+            }
         }
         if normalized.contains('/') {
             if let Some(found) = Self::find_case_insensitive_key(self.vfs.keys(), &normalized) {
                 return Some(found);
             }
         }
-        self.find_vfs_file(&normalized)
+        None
     }
 
     pub(crate) fn find_vfs_rsrc_file_in_directory(
@@ -3011,7 +3028,21 @@ impl TrapDispatcher {
                 return Some(found);
             }
         }
-        self.find_vfs_rsrc_file(&normalized)
+        if let Some(dir_path) = self.directory_path_for_id(dir_id) {
+            let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+            if basename != normalized {
+                let sibling = if dir_path.is_empty() {
+                    basename.to_string()
+                } else {
+                    format!("{dir_path}/{basename}")
+                };
+                if let Some(found) = Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &sibling)
+                {
+                    return Some(found);
+                }
+            }
+        }
+        None
     }
 
     pub(crate) fn find_vfs_directory_in_directory(
@@ -4510,30 +4541,58 @@ mod tests {
     #[test]
     fn find_vfs_file_in_directory_falls_back_from_colon_path_to_basename() {
         let mut disp = TrapDispatcher::new();
-        disp.vfs.insert(
-            "Color Disk 1/Color Playroom/PR Settings".to_string(),
-            vec![1, 2, 3],
-        );
-        let dir_id = disp.ensure_vfs_directory("Color Disk 1/Color Playroom");
+        disp.vfs
+            .insert("Disk/App Folder/Settings".to_string(), vec![1, 2, 3]);
+        let dir_id = disp.ensure_vfs_directory("Disk/App Folder");
 
         assert_eq!(
-            disp.find_vfs_file_in_directory(dir_id, ":PR Resources:PR Settings"),
-            Some("Color Disk 1/Color Playroom/PR Settings".to_string())
+            disp.find_vfs_file_in_directory(dir_id, ":Resources:Settings"),
+            Some("Disk/App Folder/Settings".to_string())
+        );
+    }
+
+    #[test]
+    fn find_vfs_file_in_directory_does_not_escape_explicit_parent_for_basename() {
+        // Files 1992, 2-29: the poor man's search path is used only when
+        // dirID is 0; an explicit parent dirID must not fall through to an
+        // unrelated file with the same basename elsewhere on the volume.
+        let mut disp = TrapDispatcher::new();
+        disp.vfs
+            .insert("App/Shared Preferences".to_string(), vec![1, 2, 3]);
+        let pref_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+
+        assert_eq!(
+            disp.find_vfs_file_in_directory(pref_dir_id, "Shared Preferences"),
+            None
         );
     }
 
     #[test]
     fn find_vfs_rsrc_file_in_directory_falls_back_from_colon_path_to_basename() {
         let mut disp = TrapDispatcher::new();
-        disp.vfs_rsrc.insert(
-            "Color Disk 1/Color Playroom/AllSounds2.rsrc".to_string(),
-            vec![1, 2, 3],
-        );
-        let dir_id = disp.ensure_vfs_directory("Color Disk 1/Color Playroom");
+        disp.vfs_rsrc
+            .insert("Disk/App Folder/Companion.rsrc".to_string(), vec![1, 2, 3]);
+        let dir_id = disp.ensure_vfs_directory("Disk/App Folder");
 
         assert_eq!(
-            disp.find_vfs_rsrc_file_in_directory(dir_id, ":PR Resources:AllSounds2.rsrc"),
-            Some("Color Disk 1/Color Playroom/AllSounds2.rsrc".to_string())
+            disp.find_vfs_rsrc_file_in_directory(dir_id, ":Resources:Companion.rsrc"),
+            Some("Disk/App Folder/Companion.rsrc".to_string())
+        );
+    }
+
+    #[test]
+    fn find_vfs_rsrc_file_in_directory_does_not_escape_explicit_parent_for_basename() {
+        // Same explicit-parent rule as data forks: a concrete dirID bounds
+        // the lookup, so a resource fork with the same basename elsewhere
+        // must not satisfy the request.
+        let mut disp = TrapDispatcher::new();
+        disp.vfs_rsrc
+            .insert("App/Settings.rsrc".to_string(), vec![1, 2, 3]);
+        let pref_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+
+        assert_eq!(
+            disp.find_vfs_rsrc_file_in_directory(pref_dir_id, "Settings.rsrc"),
+            None
         );
     }
 

@@ -4917,75 +4917,79 @@ impl super::TrapDispatcher {
                         let (resolved_v_ref_num, effective_dir_id) =
                             self.resolve_volume_and_directory(requested_v_ref_num, dir_id);
 
-                        let filename = if name_ptr != 0 {
+                        let requested_name = if name_ptr != 0 {
                             let bytes = bus.read_pstring(name_ptr);
-                            let n = bytes.len().min(63);
-                            bus.write_byte(spec_ptr + 6, n as u8);
-                            bus.write_bytes(spec_ptr + 7, &bytes[..n]);
-                            decode_mac_roman(&bytes[..n])
+                            decode_mac_roman(&bytes)
                         } else {
-                            bus.write_byte(spec_ptr + 6, 0);
                             String::new()
                         };
 
-                        bus.write_word(spec_ptr, resolved_v_ref_num as u16);
-                        bus.write_long(spec_ptr + 2, effective_dir_id);
-
-                        // dirNFErr when the resolved dirID is not a known directory.
-                        // IM:Files 8920: "FSMakeFSSpec can return a number of other File
-                        // Manager error codes." BasiliskII returns -120 (dirNFErr) for
-                        // phantom dirIDs even though IM:Files 8930 lists only fnfErr as
-                        // the documented not-found code. BasiliskII is ground truth.
-                        // IM:Files 1992, lines 8918..8965
-                        if !filename.is_empty()
-                            && effective_dir_id > 1
-                            && self.directory_entry_for_id(effective_dir_id).is_none()
+                        let (spec_v_ref_num, spec_dir_id, spec_name, target_key) = if requested_name
+                            .is_empty()
                         {
+                            (
+                                resolved_v_ref_num,
+                                effective_dir_id,
+                                String::new(),
+                                self.directory_path_for_id(effective_dir_id)
+                                    .map(str::to_string),
+                            )
+                        } else if let Some((target_vref, parent_dir_id, basename, key)) = self
+                            .fsspec_parts_for_hfs_path(requested_v_ref_num, dir_id, &requested_name)
+                        {
+                            (target_vref, parent_dir_id, basename, Some(key))
+                        } else {
+                            // dirNFErr when the resolved dirID or pathname parent is not
+                            // a known directory. IM:Files 1992 p. 2-34 notes that
+                            // FSMakeFSSpec can return File Manager errors other than
+                            // noErr/fnfErr and clears the FSSpec in that case.
+                            bus.write_word(spec_ptr, 0);
+                            bus.write_long(spec_ptr + 2, 0);
+                            bus.write_byte(spec_ptr + 6, 0);
                             bus.write_word(sp + 14, (-120i16) as u16); // dirNFErr
                             cpu.write_reg(Register::A7, sp + 14);
                             return Some(Ok(()));
-                        }
+                        };
 
-                        // FSMakeFSSpec returns fnfErr if file/directory doesn't exist.
-                        // The spec is still valid and can be used for FSpCreate.
-                        // Files 1992, 2-166
-                        let exists = if filename.is_empty() {
-                            self.directory_entry_for_id(effective_dir_id).is_some()
+                        bus.write_word(spec_ptr, spec_v_ref_num as u16);
+                        bus.write_long(spec_ptr + 2, spec_dir_id);
+                        let spec_name_bytes = encode_mac_roman_lossy(&spec_name);
+                        let n = spec_name_bytes.len().min(63);
+                        bus.write_byte(spec_ptr + 6, n as u8);
+                        bus.write_bytes(spec_ptr + 7, &spec_name_bytes[..n]);
+
+                        // FSMakeFSSpec returns fnfErr if the target doesn't exist while
+                        // still filling a valid FSSpec. Files 1992, 2-34 to 2-35.
+                        let exists = if requested_name.is_empty() {
+                            self.directory_entry_for_id(spec_dir_id).is_some()
+                        } else if let Some(ref key) = target_key {
+                            self.vfs.keys().any(|path| path.eq_ignore_ascii_case(key))
+                                || self
+                                    .vfs_rsrc
+                                    .keys()
+                                    .any(|path| path.eq_ignore_ascii_case(key))
+                                || self
+                                    .vfs_directories
+                                    .keys()
+                                    .any(|path| path.eq_ignore_ascii_case(key))
                         } else {
-                            self.find_vfs_file_for_hfs_lookup(
-                                requested_v_ref_num,
-                                dir_id,
-                                &filename,
-                            )
-                            .is_some()
-                                || self
-                                    .find_vfs_rsrc_file_for_hfs_lookup(
-                                        requested_v_ref_num,
-                                        dir_id,
-                                        &filename,
-                                    )
-                                    .is_some()
-                                || self
-                                    .find_vfs_directory_for_hfs_lookup(
-                                        requested_v_ref_num,
-                                        dir_id,
-                                        &filename,
-                                    )
-                                    .is_some()
+                            false
                         };
                         eprintln!(
-                            "[FSSPEC] FSMakeFSSpec request_vRefNum={} resolved_vRefNum={} request_dirID={} resolved_dirID={} name='{}' exists={}",
+                            "[FSSPEC] FSMakeFSSpec request_vRefNum={} resolved_vRefNum={} request_dirID={} resolved_dirID={} name='{}' specDirID={} specName='{}' exists={}",
                             requested_v_ref_num,
                             resolved_v_ref_num,
                             dir_id,
                             effective_dir_id,
-                            filename,
+                            requested_name,
+                            spec_dir_id,
+                            spec_name,
                             exists
                         );
-                        if trace_fsspec_enabled() && filename.is_empty() {
+                        if trace_fsspec_enabled() && requested_name.is_empty() {
                             eprintln!(
                                 "[FSSPEC] FSMakeFSSpec created directory spec for dirID={}",
-                                effective_dir_id
+                                spec_dir_id
                             );
                         }
                         if exists {
@@ -5184,9 +5188,9 @@ impl super::TrapDispatcher {
                             false
                         };
 
+                        let host_vfs_key = self.vfs_key_for_fsspec(vref, dir_id, &filename);
                         let found_on_host = if let Some(ref dir) = self.output_dir {
-                            let host_path = self
-                                .vfs_key_for_fsspec(vref, dir_id, &filename)
+                            let host_path = host_vfs_key
                                 .map(|key| dir.join(key))
                                 .unwrap_or_else(|| dir.join(&filename));
                             std::fs::remove_file(&host_path).is_ok()
@@ -6470,20 +6474,75 @@ impl super::TrapDispatcher {
         None
     }
 
+    fn directory_id_for_vfs_path(&mut self, path: &str) -> Option<u32> {
+        self.ensure_vfs_catalog();
+        let normalized = super::TrapDispatcher::normalize_vfs_path(path);
+        if normalized.is_empty() {
+            return Some(2);
+        }
+
+        let mut sorted_keys: Vec<&String> = self.vfs_directories.keys().collect();
+        sorted_keys.sort_unstable();
+        sorted_keys
+            .into_iter()
+            .find(|key| key.eq_ignore_ascii_case(&normalized))
+            .and_then(|key| self.vfs_directories.get(key).map(|dir| dir.dir_id))
+    }
+
+    fn fsspec_parts_for_hfs_path(
+        &mut self,
+        vref: i16,
+        dir_id: u32,
+        filename: &str,
+    ) -> Option<(i16, u32, String, String)> {
+        let target_key = self.vfs_key_for_fsspec(vref, dir_id, filename)?;
+        let parent_path = super::TrapDispatcher::vfs_parent_path(&target_key);
+        let parent_dir_id = self.directory_id_for_vfs_path(parent_path)?;
+        Some((
+            self.resolve_volume_ref_num(vref),
+            parent_dir_id,
+            super::TrapDispatcher::vfs_basename(&target_key).to_string(),
+            target_key,
+        ))
+    }
+
     pub(crate) fn vfs_key_for_fsspec(
-        &self,
+        &mut self,
         vref: i16,
         dir_id: u32,
         filename: &str,
     ) -> Option<String> {
+        let normalized = super::TrapDispatcher::normalize_vfs_path(filename);
+        if normalized.is_empty() {
+            return None;
+        }
+
+        // IM:Files 1992 pp. 2-28 and 2-34: File Manager pathname input can
+        // be full or partial, but an FSSpec itself stores only vRefNum,
+        // parent dirID, and the final name. If a multi-component pathname's
+        // parent already exists from the volume root, prefer that canonical
+        // VFS parent; otherwise resolve the pathname relative to vRefNum/dirID.
+        let normalized = normalized
+            .strip_prefix(&format!("{}/", super::TrapDispatcher::boot_volume_name()))
+            .unwrap_or(&normalized)
+            .to_string();
+        if normalized.contains('/') {
+            let absolute_parent = super::TrapDispatcher::vfs_parent_path(&normalized);
+            if self.directory_id_for_vfs_path(absolute_parent).is_some() {
+                return Some(normalized);
+            }
+        }
+
         let resolved_dir_id = self.resolve_directory_id(vref, dir_id);
         let dir_path = self.directory_path_for_id(resolved_dir_id)?;
-        let normalized = super::TrapDispatcher::normalize_vfs_path(filename);
-        Some(if dir_path.is_empty() {
+        let candidate = if dir_path.is_empty() {
             normalized
         } else {
             format!("{dir_path}/{normalized}")
-        })
+        };
+        let candidate_parent = super::TrapDispatcher::vfs_parent_path(&candidate);
+        self.directory_id_for_vfs_path(candidate_parent)?;
+        Some(candidate)
     }
 
     /// Find a file in VFS by name, trying exact match then basename match.
@@ -9776,6 +9835,95 @@ mod tests {
         assert_eq!(bus.read_word(new_sp), 0); // noErr — directory exists
     }
 
+    #[test]
+    fn fsmakefsspec_decomposes_partial_pathname_to_parent_dir_and_basename() {
+        // Files 1992, 2-28 and 2-34: callers may pass full or partial
+        // pathnames to FSMakeFSSpec, but the resulting FSSpec stores the
+        // parent directory ID and final object name, not the whole pathname.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pref_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+        disp.vfs.insert(
+            "System Folder/Preferences/Existing Prefs".to_string(),
+            vec![1, 2, 3],
+        );
+        disp.vfs.insert("App/App".to_string(), vec![]);
+        disp.set_launched_app_path("App/App");
+
+        let spec_ptr = 0x300000u32;
+        let name_ptr = 0x300100u32;
+        write_pstring(
+            &mut bus,
+            name_ptr,
+            b":System Folder:Preferences:Existing Prefs",
+        );
+
+        let sp = TEST_SP;
+        bus.write_long(sp, spec_ptr);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_long(sp + 8, 0);
+        bus.write_word(sp + 12, 0);
+        cpu.write_reg(Register::D0, 1);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 14);
+        assert_eq!(bus.read_word(new_sp) as i16, 0);
+        assert_eq!(
+            bus.read_word(spec_ptr),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16
+        );
+        assert_eq!(bus.read_long(spec_ptr + 2), pref_dir_id);
+        assert_eq!(
+            crate::trap::types::read_fsspec_name(&bus, spec_ptr),
+            "Existing Prefs"
+        );
+    }
+
+    #[test]
+    fn fsmakefsspec_pathname_missing_target_does_not_match_same_basename_elsewhere() {
+        // Files 1992, 2-34 to 2-35: if the parent directory exists but the
+        // target object does not, FSMakeFSSpec still fills a valid FSSpec
+        // and returns fnfErr. A pathname must not degrade to a basename-only
+        // search in another directory.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pref_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+        disp.vfs.insert("App/App".to_string(), vec![]);
+        disp.vfs
+            .insert("App/Shared Preferences".to_string(), vec![0x42]);
+        disp.set_launched_app_path("App/App");
+
+        let spec_ptr = 0x300000u32;
+        let name_ptr = 0x300100u32;
+        write_pstring(
+            &mut bus,
+            name_ptr,
+            b":System Folder:Preferences:Shared Preferences",
+        );
+
+        let sp = TEST_SP;
+        bus.write_long(sp, spec_ptr);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_long(sp + 8, 0);
+        bus.write_word(sp + 12, 0);
+        cpu.write_reg(Register::D0, 1);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 14);
+        assert_eq!(bus.read_word(new_sp) as i16, -43);
+        assert_eq!(
+            bus.read_word(spec_ptr),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16
+        );
+        assert_eq!(bus.read_long(spec_ptr + 2), pref_dir_id);
+        assert_eq!(
+            crate::trap::types::read_fsspec_name(&bus, spec_ptr),
+            "Shared Preferences"
+        );
+    }
+
     // ================================================================
     // 13b. HighLevelFSDispatch (0x252) selector 2 — FSpOpenDF
     // ================================================================
@@ -12471,6 +12619,33 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0) as i32, -37);
         assert_eq!(bus.read_word(pb + 16) as i16, -37);
+        assert_eq!(bus.read_word(pb + 24), 0);
+    }
+
+    #[test]
+    fn fsdispatch_pbhopendf_explicit_parent_does_not_open_same_basename_elsewhere() {
+        // Files 1992, 2-29: poor man's search path applies only when the
+        // directory ID field is 0. With an explicit parent dirID, PBHOpenDF
+        // must fail instead of opening an unrelated basename elsewhere.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("App/App".to_string(), vec![]);
+        disp.vfs
+            .insert("App/Shared Preferences".to_string(), vec![0x42]);
+        let pref_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Shared Preferences");
+        bus.write_word(pb + 16, 0x7777);
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 24, 0x1234);
+        bus.write_long(pb + 48, pref_dir_id);
+        cpu.write_reg(Register::D0, 26);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -43);
+        assert_eq!(bus.read_word(pb + 16) as i16, -43);
         assert_eq!(bus.read_word(pb + 24), 0);
     }
 
