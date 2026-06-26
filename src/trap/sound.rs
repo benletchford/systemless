@@ -24,6 +24,7 @@ const GUEST_SND_CHANNEL_QUEUE_OFFSET: u32 = 36;
 const SQUARE_WAVE_SYNTH_ID: i16 = 1;
 const WAVE_TABLE_SYNTH_ID: i16 = 3;
 const SAMPLED_SYNTH_ID: i16 = 5;
+const SOUND_MANAGER_3_SYNTH_VERSION: u32 = 0x0003_0000;
 
 use std::sync::OnceLock;
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
@@ -197,10 +198,11 @@ impl super::TrapDispatcher {
             // ============================================================
             //
             // Two legacy Sound Manager traps below — $A802 SndAddModifier
-            // and $A806 SndControl — collapse to narrow noErr/badChannel
-            // compatibility stubs in Systemless because the obsolete
-            // modifier/control facilities are not modelled. SysBeep is handled
-            // separately and emits a short synthesized alert sample.
+            // and $A806 SndControl — stay intentionally narrow in Systemless
+            // because the obsolete modifier/control facilities are not
+            // modelled. SndControl still reports documented query outputs for
+            // built-in synth ids. SysBeep is handled separately and emits a
+            // short synthesized alert sample.
             //
             // Per-trap HLE rationale:
             //
@@ -221,14 +223,15 @@ impl super::TrapDispatcher {
             //   Gestalt function or are no longer supported. The
             //   SndControl function is documented here for
             //   completeness only." Systemless reports a Sound Manager
-            //   3.x NumVersion via SndSoundManagerVersion ($0C) so
-            //   apps gated on the version check skip SndControl entirely.
+            //   3.x NumVersion via SndSoundManagerVersion ($0C) and
+            //   answers the documented SndControl query commands that
+            //   older callers can still issue.
             //
             // Per-trap status table:
             //   $A802 SndAddModifier — Stub: FUNCTION returning OSErr,
             //                          writes 0 (noErr).
-            //   $A806 SndControl     — Stub: FUNCTION returning OSErr,
-            //                          writes 0 (noErr).
+            //   $A806 SndControl     — Partial: FUNCTION returning OSErr,
+            //                          writes 0 (noErr) and fills query outputs.
             //
             // SoundDispatch sub-routine SCStatus / SMStatus introspection
             // ($0010 SndChannelStatus / $0014 SndManagerStatus) are
@@ -906,7 +909,8 @@ impl super::TrapDispatcher {
             //     sampled) by rewriting param1 to 1; otherwise 0.
             //   - totalLoadCmd/loadCmd: obsolete in 3.x, normalize
             //     the documented load-factor output word to 0.
-            //   - versionCmd: obsolete; normalize param1/param2 to 0.
+            //   - versionCmd: report a Sound Manager 3.x synthesizer
+            //     version for the documented built-in synth ids.
             //
             // Unknown commands still succeed as noErr and preserve the
             // caller's record contents, which keeps the HLE tolerant of
@@ -916,6 +920,7 @@ impl super::TrapDispatcher {
             // Regression coverage:
             //   sound::tests::sndcontrol_consumes_cmdptr_and_id_and_returns_noerr
             //   sound::tests::sndcontrol_availablecmd_zero_init_known_synth_sets_param1_true
+            //   sound::tests::sndcontrol_versioncmd_sampled_synth_reports_sound_manager_3_version
             // SndControl ($A806): Pops 6-byte Pascal frame (cmd Ptr + id INTEGER) per IM:Sound 1994 2-134..2-135; writes noErr at SP+6 and normalizes the documented control-query outputs for availableCmd/versionCmd/totalLoadCmd/loadCmd.
             (true, 0x006) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -923,9 +928,18 @@ impl super::TrapDispatcher {
                 let synth_id = bus.read_word(sp + 4);
                 if cmd_ptr != 0 {
                     let mut cmd = self.read_snd_command(bus, cmd_ptr);
+                    if trace_sound_enabled() {
+                        eprintln!(
+                            "[SOUND] SndControl id={} cmd={} param1={} param2=${:08X}",
+                            synth_id, cmd.cmd, cmd.param1, cmd.param2
+                        );
+                    }
+                    let supported_synth = matches!(
+                        synth_id as i16,
+                        SQUARE_WAVE_SYNTH_ID | WAVE_TABLE_SYNTH_ID | SAMPLED_SYNTH_ID
+                    );
                     match cmd.cmd {
                         sound::cmd::AVAILABLE => {
-                            let supported_synth = matches!(synth_id, 1 | 3 | 5);
                             cmd.param1 = if supported_synth && cmd.param2 == 0 {
                                 1
                             } else {
@@ -934,7 +948,11 @@ impl super::TrapDispatcher {
                         }
                         sound::cmd::VERSION => {
                             cmd.param1 = 0;
-                            cmd.param2 = 0;
+                            cmd.param2 = if supported_synth {
+                                SOUND_MANAGER_3_SYNTH_VERSION
+                            } else {
+                                0
+                            };
                         }
                         sound::cmd::TOTAL_LOAD | sound::cmd::LOAD => {
                             cmd.param1 = 0;
@@ -2539,6 +2557,7 @@ mod tests {
     use super::{
         decode_double_buffer_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
         extended80_to_f64, parse_aiff_samples, synth_sys_beep_samples, GUEST_SND_CHANNEL_SIZE,
+        SAMPLED_SYNTH_ID, SOUND_MANAGER_3_SYNTH_VERSION,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
@@ -3355,6 +3374,33 @@ mod tests {
         assert_eq!(bus.read_word(cmd_ptr), cmd::AVAILABLE);
         assert_eq!(bus.read_word(cmd_ptr + 2), 1);
         assert_eq!(bus.read_long(cmd_ptr + 4), 0);
+    }
+
+    #[test]
+    fn sndcontrol_versioncmd_sampled_synth_reports_sound_manager_3_version() {
+        // IM:VI 22-40..22-41: versionCmd sent through SndControl
+        // returns the synthesizer version in param2 as major.highword
+        // and minor.lowword; Systemless advertises a Sound Manager 3.x
+        // sampled-synth surface.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let cmd_ptr = 0x230720;
+        bus.write_word(cmd_ptr, cmd::VERSION);
+        bus.write_word(cmd_ptr + 2, 0x7FFF);
+        bus.write_long(cmd_ptr + 4, 0);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, cmd_ptr);
+        bus.write_word(sp + 4, SAMPLED_SYNTH_ID as u16);
+        bus.write_word(sp + 6, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x006, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(bus.read_word(sp + 6), 0);
+        assert_eq!(bus.read_word(cmd_ptr), cmd::VERSION);
+        assert_eq!(bus.read_word(cmd_ptr + 2), 0);
+        assert_eq!(bus.read_long(cmd_ptr + 4), SOUND_MANAGER_3_SYNTH_VERSION);
     }
 
     #[test]
