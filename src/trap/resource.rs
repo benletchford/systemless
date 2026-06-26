@@ -143,6 +143,9 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"fpu "
             | b"mmu "
             | b"snd "
+            | b"ttsc"
+            | b"te  "
+            | b"teat"
             | b"tmgr"
             | b"dplv"
             | b"dply"
@@ -2413,7 +2416,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Operating System Utilities 1994,
             // 1-31..1-35.
             //
-            // Gestalt ($A0AD): documented selectors including vers/sysv/evnt/cput/proc/mach/qd/qdrw/ram/fpu/mmu/snd/tmgr/alis/fs/fold/qtim/drag/os/powr/appr/addr/sdev/stdf/help/vm; guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
+            // Gestalt ($A0AD): documented selectors including vers/sysv/evnt/cput/proc/mach/qd/qdrw/ram/fpu/mmu/snd/ttsc/te/tmgr/alis/fs/fold/qtim/drag/os/powr/appr/addr/sdev/stdf/help/vm; guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
             (false, 0xAD) => {
                 let selector = cpu.read_reg(Register::D0);
                 let sel = selector.to_be_bytes();
@@ -2697,6 +2700,36 @@ impl super::TrapDispatcher {
                     // those capability bits are missing.
                     b"snd " => {
                         cpu.write_reg(Register::A0, 0x1CFB);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltSpeechAttr ('ttsc') -> Speech Manager absent.
+                    // Sound 1994, 1-11..1-12 defines bit 0 as
+                    // gestaltSpeechMgrPresent and says callers test it
+                    // before using speech services. Systemless does not
+                    // implement Speech Manager traps, so report the selector
+                    // as known with no capability bits rather than leaving a
+                    // stale A0 after gestaltUndefSelectorErr.
+                    b"ttsc" => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltTextEditVersion ('te  ') -> TextEdit 5.
+                    // Text 1993, 2-22 lists gestaltTE5 as the System 7.0
+                    // value; p. 2-97 says TE5-or-greater gates the inline
+                    // input-era TextEdit features. Systemless implements the
+                    // corresponding TextEdit feature-flag path through
+                    // TEDispatch, so expose the System 7 version gate.
+                    b"te  " => {
+                        cpu.write_reg(Register::A0, 5);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltTEAttr ('teat') -> TextEdit attributes.
+                    // Operating System Utilities 1994, 1-30 defines bit 0 as
+                    // gestaltTEHasGetHiliteRgn. Systemless does not implement
+                    // TEGetHiliteRgn, so keep the selector known but return no
+                    // advertised attribute bits.
+                    b"teat" => {
+                        cpu.write_reg(Register::A0, 0);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltTimeMgrVersion ('tmgr') -> revised Timer Manager
@@ -10701,6 +10734,36 @@ mod tests {
 
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
 
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_speech_manager_absent_without_error() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"ttsc"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_textedit_selectors_are_known_classic_system7_values() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"te  "));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 5);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"teat"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
