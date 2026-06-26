@@ -26,6 +26,10 @@ const NO_ERR: u32 = 0;
 const MEM_FULL_ERR: u32 = (-108i32) as u32;
 const NIL_HANDLE_ERR: u32 = (-109i32) as u32;
 const MEM_WZ_ERR: u32 = (-111i32) as u32;
+const RES_NOT_FOUND_ERR: i16 = -192;
+const NO_OUTSTANDING_HLE_ERR: i16 = -608;
+const CONNECTION_INVALID_ERR: i16 = -609;
+const NO_PORT_ERR: i16 = -903;
 
 fn trace_menu_pict_enabled() -> bool {
     *TRACE_MENU_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_PICT").is_some())
@@ -55,6 +59,17 @@ fn write_temp_memory_result_code(bus: &mut MacMemoryBus, result_code_ptr: u32, r
     if result_code_ptr != 0 {
         bus.write_word(result_code_ptr, result as u16);
     }
+}
+
+fn write_osdispatch_oseerr_result<C: CpuOps>(
+    cpu: &mut C,
+    bus: &mut MacMemoryBus,
+    result_slot: u32,
+    err: i16,
+) {
+    bus.write_word(result_slot, err as u16);
+    cpu.write_reg(Register::D0, err as i32 as u32);
+    cpu.write_reg(Register::A7, result_slot);
 }
 
 fn scribble_temporary_allocation(bus: &mut MacMemoryBus, address: u32, size: u32) {
@@ -4740,6 +4755,17 @@ impl super::TrapDispatcher {
             // PROCEDURE TempHUnlock(h: Handle; VAR resultCode: OSErr);
             // PROCEDURE TempDisposeHandle(h: Handle; VAR resultCode: OSErr);
             // Inside Macintosh Volume VI, 28-38 and 28-45.
+            // FUNCTION AcceptHighLevelEvent(VAR sender: TargetID; VAR msgRefcon:
+            //   LongInt; msgBuff: Ptr; VAR msgLen: LongInt): OSErr;
+            // FUNCTION PostHighLevelEvent(theEvent: EventRecord; receiverID: Ptr;
+            //   msgRefcon: LongInt; msgBuff: Ptr; msgLen: LongInt;
+            //   postingOptions: LongInt): OSErr;
+            // FUNCTION GetProcessSerialNumberFromPortName(portName: PPCPortRec;
+            //   VAR PSN: ProcessSerialNumber): OSErr;
+            // Inside Macintosh Volume VI, 5-29..5-32.
+            // FUNCTION LaunchDeskAccessory(pFileSpec: FSSpecPtr;
+            //   pDAName: StringPtr): OSErr;
+            // Inside Macintosh Volume VI, 29-22..29-23.
             // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
             // Processes 1994, 2-21 to 2-24.
             //
@@ -4756,14 +4782,15 @@ impl super::TrapDispatcher {
             // TempTopMem, $0018 TempFreeMem, $001D TempNewHandle,
             // $001E TempHLock, $001F TempHUnlock, and $0020
             // TempDisposeHandle (IM VI Temporary Memory table);
-            // selectors $0037..$003D are Process Manager routines
-            // (Processes 1994 p. 2-31).
+            // selectors $0033..$0036 are high-level event / desk accessory
+            // routines (IM VI pp. 5-29..5-32 and 29-23); selectors
+            // $0037..$003D are Process Manager routines (Processes 1994 p. 2-31).
             (true, 0x08F) => {
                 let sp_entry = cpu.read_reg(Register::A7);
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp) = match stack_sel {
-                    0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0037..=0x003D => {
+                    0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D => {
                         // Pop the selector word pushed by MOVE.W #sel,-(SP).
                         cpu.write_reg(Register::A7, sp_entry + 2);
                         (stack_sel, sp_entry + 2)
@@ -4890,6 +4917,43 @@ impl super::TrapDispatcher {
                         write_temp_memory_result_code(bus, result_code_ptr, result_code);
                         cpu.write_reg(Register::D0, result_code);
                         cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
+                    0x0033 => {
+                        // AcceptHighLevelEvent (0xA88F selector $0033)
+                        // Returns additional data for the outstanding high-level event.
+                        // FUNCTION AcceptHighLevelEvent(VAR sender: TargetID;
+                        //   VAR msgRefcon: LongInt; msgBuff: Ptr; VAR msgLen: LongInt): OSErr;
+                        // Inside Macintosh Volume VI, 5-29 and Macintosh Toolbox Essentials 1992, 2-90.
+                        write_osdispatch_oseerr_result(cpu, bus, sp + 16, NO_OUTSTANDING_HLE_ERR);
+                        Ok(())
+                    }
+                    0x0034 => {
+                        // PostHighLevelEvent (0xA88F selector $0034)
+                        // Sends a high-level event to another application.
+                        // FUNCTION PostHighLevelEvent(theEvent: EventRecord; receiverID: Ptr;
+                        //   msgRefcon: LongInt; msgBuff: Ptr; msgLen: LongInt;
+                        //   postingOptions: LongInt): OSErr;
+                        // Inside Macintosh Volume VI, 5-30 and Macintosh Toolbox Essentials 1992, 2-101.
+                        write_osdispatch_oseerr_result(cpu, bus, sp + 24, CONNECTION_INVALID_ERR);
+                        Ok(())
+                    }
+                    0x0035 => {
+                        // GetProcessSerialNumberFromPortName (0xA88F selector $0035)
+                        // Maps a local PPC port name to a process serial number.
+                        // FUNCTION GetProcessSerialNumberFromPortName(portName: PPCPortRec;
+                        //   VAR PSN: ProcessSerialNumber): OSErr;
+                        // Inside Macintosh Volume VI, 5-32 and Macintosh Toolbox Essentials 1992, 2-106.
+                        write_osdispatch_oseerr_result(cpu, bus, sp + 8, NO_PORT_ERR);
+                        Ok(())
+                    }
+                    0x0036 => {
+                        // LaunchDeskAccessory (0xA88F selector $0036)
+                        // Launches a desk accessory from a resource file.
+                        // FUNCTION LaunchDeskAccessory(pFileSpec: FSSpecPtr;
+                        //   pDAName: StringPtr): OSErr;
+                        // Inside Macintosh Volume VI, 29-22..29-23; Processes 1994, 2-30.
+                        write_osdispatch_oseerr_result(cpu, bus, sp + 8, RES_NOT_FOUND_ERR);
                         Ok(())
                     }
                     0x0037 => {
@@ -13130,6 +13194,108 @@ mod tests {
             -109,
             "TempHLock should report nilHandleErr for a NIL handle"
         );
+    }
+
+    #[test]
+    fn osdispatch_accepthighlevelevent_selector_0033_empty_queue_returns_nooutstandinghle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let sender_ptr = 0x2A0400u32;
+        let msg_refcon_ptr = 0x2A0500u32;
+        let msg_buff_ptr = 0x2A0600u32;
+        let msg_len_ptr = 0x2A0700u32;
+        bus.write_long(sender_ptr, 0xAAAA_AAAA);
+        bus.write_long(msg_refcon_ptr, 0xBBBB_BBBB);
+        bus.write_long(msg_len_ptr, 128);
+        bus.write_word(TEST_SP, 0x0033);
+        bus.write_long(TEST_SP + 2, msg_len_ptr);
+        bus.write_long(TEST_SP + 6, msg_buff_ptr);
+        bus.write_long(TEST_SP + 10, msg_refcon_ptr);
+        bus.write_long(TEST_SP + 14, sender_ptr);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(TEST_SP + 18) as i16, -608, "noOutstandingHLE");
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 18);
+        assert_eq!(
+            bus.read_long(sender_ptr),
+            0xAAAA_AAAA,
+            "sender should be untouched when no high-level event is outstanding"
+        );
+        assert_eq!(bus.read_long(msg_refcon_ptr), 0xBBBB_BBBB);
+        assert_eq!(bus.read_long(msg_len_ptr), 128);
+        assert_eq!(bus.read_byte(msg_buff_ptr), 0);
+    }
+
+    #[test]
+    fn osdispatch_posthighlevelevent_selector_0034_without_delivery_returns_connectioninvalid() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let event_ptr = 0x2A0800u32;
+        let receiver_ptr = 0x2A0900u32;
+        let msg_buff_ptr = 0x2A0A00u32;
+        bus.write_word(event_ptr, 23);
+        bus.write_long(event_ptr + 2, 0x7465_7374);
+        bus.write_word(TEST_SP, 0x0034);
+        bus.write_long(TEST_SP + 2, 0x0000_8000); // receiverIDisPSN
+        bus.write_long(TEST_SP + 6, 4);
+        bus.write_long(TEST_SP + 10, msg_buff_ptr);
+        bus.write_long(TEST_SP + 14, 0x1234_5678);
+        bus.write_long(TEST_SP + 18, receiver_ptr);
+        bus.write_long(TEST_SP + 22, event_ptr);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            bus.read_word(TEST_SP + 26) as i16,
+            -609,
+            "connectionInvalid"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 26);
+        assert!(
+            disp.event_queue.is_empty(),
+            "PostHighLevelEvent should not enqueue an event it cannot later deliver"
+        );
+    }
+
+    #[test]
+    fn osdispatch_getprocessserialnumberfromportname_selector_0035_returns_noporterr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let port_name_ptr = 0x2A0B00u32;
+        let psn_ptr = 0x2A0C00u32;
+        bus.write_long(psn_ptr, 0xAAAA_AAAA);
+        bus.write_long(psn_ptr + 4, 0xBBBB_BBBB);
+        bus.write_word(TEST_SP, 0x0035);
+        bus.write_long(TEST_SP + 2, psn_ptr);
+        bus.write_long(TEST_SP + 6, port_name_ptr);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, -903, "noPortErr");
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(
+            bus.read_long(psn_ptr),
+            0xAAAA_AAAA,
+            "PSN should be untouched when the port name is unknown"
+        );
+        assert_eq!(bus.read_long(psn_ptr + 4), 0xBBBB_BBBB);
+    }
+
+    #[test]
+    fn osdispatch_launchdeskaccessory_selector_0036_returns_resnotfound() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let fsspec_ptr = 0x2A0D00u32;
+        let da_name_ptr = 0x2A0E00u32;
+        bus.write_word(TEST_SP, 0x0036);
+        bus.write_long(TEST_SP + 2, da_name_ptr);
+        bus.write_long(TEST_SP + 6, fsspec_ptr);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, -192, "resNotFound");
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
     }
 
     #[test]
