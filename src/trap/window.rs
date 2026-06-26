@@ -9,6 +9,9 @@ use std::sync::OnceLock;
 static TRACE_INVAL: OnceLock<bool> = OnceLock::new();
 static TRACE_DRAGWINDOW: OnceLock<bool> = OnceLock::new();
 
+type WindowRect = (i16, i16, i16, i16);
+type HiddenWindowLocalRegions = (WindowRect, Option<WindowRect>);
+
 fn trace_inval_enabled() -> bool {
     *TRACE_INVAL.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some())
 }
@@ -736,6 +739,69 @@ impl super::TrapDispatcher {
             rect.2.wrapping_sub(bounds_top),
             rect.3.wrapping_sub(bounds_left),
         )
+    }
+
+    pub(super) fn hidden_window_local_regions_for_origin_change(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> Option<HiddenWindowLocalRegions> {
+        if window_ptr == 0
+            || self.window_visible(bus, window_ptr)
+            || !self.window_list.contains(&window_ptr)
+        {
+            return None;
+        }
+
+        let content_local = self.window_content_rect(bus, window_ptr)?;
+        let update_local = self
+            .window_update_rect(bus, window_ptr)
+            .map(|rect| self.global_rect_to_window_local(bus, window_ptr, rect));
+        Some((content_local, update_local))
+    }
+
+    pub(super) fn sync_hidden_window_regions_after_origin_change(
+        &self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        local_regions: Option<HiddenWindowLocalRegions>,
+    ) {
+        let Some((content_local, update_local)) = local_regions else {
+            return;
+        };
+        if window_ptr == 0
+            || self.window_visible(bus, window_ptr)
+            || !self.window_list.contains(&window_ptr)
+        {
+            return;
+        }
+
+        // WindowRecord strucRgn, contRgn, and updateRgn are global
+        // coordinates (Inside Macintosh Volume I, p. I-278). If a hidden
+        // window's port origin changes before ShowWindow, preserve the
+        // caller's local content/update boxes and re-express them in the new
+        // global coordinate system. Visible windows keep normal SetOrigin
+        // scrolling semantics.
+        let global_content = self.window_local_rect_to_global(bus, window_ptr, content_local);
+        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET),
+            Some(global_content),
+        );
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
+            Some(global_structure),
+        );
+
+        let update_global =
+            update_local.map(|rect| self.window_local_rect_to_global(bus, window_ptr, rect));
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(window_ptr + Self::WINDOW_UPDATE_RGN_OFFSET),
+            update_global,
+        );
     }
 
     fn window_structure_global_rect_for_content(
@@ -4197,6 +4263,82 @@ mod tests {
             read_window_region_rect(&bus, window_addr, 28),
             (-32767, -32767, 32767, 32767),
             "SetOrigin must not collapse a window's clipRgn"
+        );
+    }
+
+    #[test]
+    fn hidden_window_setorigin_rebases_global_regions_before_showwindow() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            46,
+            42,
+            388,
+            554,
+            "",
+            3,
+            false,
+            false,
+            false,
+            0,
+        );
+
+        disp.move_window_to_global(&mut bus, window_addr, 0, 0, false);
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, (-139i16) as u16);
+        bus.write_word(sp + 2, (-143i16) as u16);
+        let result = disp.dispatch_quickdraw(true, 0x078, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+            ),
+            (139, 143, 481, 655),
+            "hidden SetOrigin should re-express the existing local content rect in global coords"
+        );
+
+        let show_sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, show_sp);
+        bus.write_long(show_sp, window_addr);
+        let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 342, 512),
+            "ShowWindow should restore a full local visRgn after shifted hidden setup"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET
+            ),
+            (139, 143, 481, 655),
+            "ShowWindow should queue the centered global update region"
+        );
+
+        let begin_sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, begin_sp);
+        bus.write_long(begin_sp, window_addr);
+        let result = dispatch(&mut disp, 0x122, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 342, 512),
+            "BeginUpdate should convert the centered update region back to the full local room"
         );
     }
 
