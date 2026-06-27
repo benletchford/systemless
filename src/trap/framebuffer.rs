@@ -2267,15 +2267,27 @@ impl super::TrapDispatcher {
         let front_left = bus.read_word(front_port + 18) as i16;
         let front_bottom = bus.read_word(front_port + 20) as i16;
         let front_right = bus.read_word(front_port + 22) as i16;
-        if front_top > 0
-            || front_left > 0
-            || front_bottom < screen_h as i16
-            || front_right < screen_w as i16
-        {
+        let port_rect_covers_screen = front_top <= 0
+            && front_left <= 0
+            && front_bottom >= screen_h as i16
+            && front_right >= screen_w as i16;
+        let (wt, wl, wb, wr) = self.window_bounds;
+        let window_bounds_cover_screen =
+            wt <= 0 && wl <= 0 && wb >= screen_h as i16 && wr >= screen_w as i16;
+        if !port_rect_covers_screen && !window_bounds_cover_screen {
             if trace {
                 eprintln!(
-                    "[BLIT-CPORT] skip: front bounds ({},{},{},{}) do not cover {}x{}",
-                    front_top, front_left, front_bottom, front_right, screen_w, screen_h
+                    "[BLIT-CPORT] skip: front portRect ({},{},{},{}) and window bounds ({},{},{},{}) do not cover {}x{}",
+                    front_top,
+                    front_left,
+                    front_bottom,
+                    front_right,
+                    wt,
+                    wl,
+                    wb,
+                    wr,
+                    screen_w,
+                    screen_h
                 );
             }
             return;
@@ -4645,6 +4657,43 @@ mod redraw_chrome_tests {
             bus.read_byte(screen_base + 90 * 800 + 79),
             0xAA,
             "manual CPort presentation must not top-left blit or overrun the centered scene"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blits_large_manual_cport_when_fullscreen_port_rect_origin_is_shifted() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (0, 0, 600, 800);
+
+        // SetOrigin and related port operations can shift the local
+        // portRect while the Window Manager bounds still cover the screen.
+        bus.write_word(PORT_PTR + 16, (-85i16) as u16);
+        bus.write_word(PORT_PTR + 18, (-144i16) as u16);
+        bus.write_word(PORT_PTR + 20, 515);
+        bus.write_word(PORT_PTR + 22, 656);
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        bus.write_byte(manual_base, 0x44);
+        bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
+
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 90 * 800 + 80),
+            0x44,
+            "shifted portRect must not hide a full-screen tracked window from the manual CPort presentation bridge"
         );
     }
 
