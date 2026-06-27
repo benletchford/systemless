@@ -1932,40 +1932,7 @@ impl super::TrapDispatcher {
     }
 
     fn close_movie_file_refnum(&mut self, bus: &mut MacMemoryBus, refnum: u16) -> i16 {
-        let mut closed_resource_file = false;
-
-        if let Some(resources) = self.resources.as_mut() {
-            if resources.files.contains_key(&refnum) && refnum != 0 {
-                if let Some(file) = resources.files.get_mut(&refnum) {
-                    for attr in file.attrs.values_mut() {
-                        *attr &= !(super::TrapDispatcher::RES_CHANGED_ATTR as u8);
-                    }
-                    file.map_attrs &= !super::TrapDispatcher::RES_MAP_CHANGED_ATTR;
-                }
-                if resources.current_file == refnum {
-                    resources.current_file = resources
-                        .search_order
-                        .iter()
-                        .rev()
-                        .find(|&&candidate| {
-                            candidate != refnum && resources.files.contains_key(&candidate)
-                        })
-                        .copied()
-                        .unwrap_or(0);
-                }
-                resources
-                    .search_order
-                    .retain(|&candidate| candidate != refnum);
-                resources.files.remove(&refnum);
-                resources.names.remove(&refnum);
-                closed_resource_file = true;
-            }
-        }
-
-        if closed_resource_file {
-            self.resource_handle_files.retain(|_, &mut r| r != refnum);
-            bus.write_word(0x0A5A, self.current_resource_refnum());
-        }
+        let closed_resource_file = self.close_resource_file_refnum(bus, refnum);
 
         let closed_data_fork = self.open_files.remove(&refnum).is_some();
         if closed_data_fork {
@@ -3189,7 +3156,37 @@ impl super::TrapDispatcher {
                     // resource on every open and exhaust the heap before
                     // the title even renders.
                     if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
+                        if wants_write {
+                            self.write_refnums.insert(existing);
+                        }
                         if !wants_write && self.write_refnums.contains(&existing) {
+                            let existing_read_only =
+                                self.resources.as_ref().and_then(|resources| {
+                                    let mut refnums: Vec<u16> = resources
+                                        .names
+                                        .iter()
+                                        .filter_map(|(&refnum, resource_name)| {
+                                            (resource_name == &vfs_key
+                                                && !self.write_refnums.contains(&refnum))
+                                            .then_some(refnum)
+                                        })
+                                        .collect();
+                                    refnums.sort_unstable();
+                                    refnums.into_iter().next()
+                                });
+                            if let Some(read_refnum) = existing_read_only {
+                                if super::dispatch::trace_resfile_enabled() {
+                                    eprintln!(
+                                        "[TRAP] OpenRFPerm: \"{}\" already read-open as refnum {}, dedup",
+                                        name, read_refnum
+                                    );
+                                }
+                                bus.write_word(sp + 8, read_refnum);
+                                cpu.write_reg(Register::D0, read_refnum as u32);
+                                bus.write_word(0x0A60, 0); // ResErr = noErr
+                                cpu.write_reg(Register::A7, sp + 8);
+                                return Some(Ok(()));
+                            }
                             if super::dispatch::trace_resfile_enabled() {
                                 eprintln!(
                                     "[TRAP] OpenRFPerm: \"{}\" write-opened refnum {}, forcing new read-only access path",
@@ -3259,47 +3256,10 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                let file_exists = self
-                    .resources
-                    .as_ref()
-                    .is_some_and(|r| r.files.contains_key(&refnum));
-
-                if file_exists && refnum != 0 {
-                    // Clear resChanged flags (UpdateResFile contract).
-                    //
-                    // Reset current_file BEFORE removing the file. When
-                    // closing the current file, fall back to the MOST
-                    // RECENTLY OPENED remaining file (Inside Macintosh
-                    // I-125), not blindly to 0 — otherwise the resource
-                    // search order collapses to only refnum 0.
-                    if let Some(resources) = self.resources.as_mut() {
-                        if let Some(file) = resources.files.get_mut(&refnum) {
-                            for attr in file.attrs.values_mut() {
-                                *attr &= !(super::TrapDispatcher::RES_CHANGED_ATTR as u8);
-                            }
-                            file.map_attrs &= !super::TrapDispatcher::RES_MAP_CHANGED_ATTR;
-                        }
-                        if resources.current_file == refnum {
-                            // Pick the most-recently-opened remaining file
-                            // (last in search_order excluding the refnum
-                            // we're about to remove). Fall back to 0 if
-                            // only the application fork remains.
-                            let new_current = resources
-                                .search_order
-                                .iter()
-                                .rev()
-                                .find(|&&r| r != refnum && resources.files.contains_key(&r))
-                                .copied()
-                                .unwrap_or(0);
-                            resources.current_file = new_current;
-                        }
-                        // Remove the file from search order and files map
-                        resources.search_order.retain(|&r| r != refnum);
-                        resources.files.remove(&refnum);
-                        resources.names.remove(&refnum);
-                    }
-                    // Remove loaded_handles and resource_handle_files for this file
-                    self.resource_handle_files.retain(|_, &mut r| r != refnum);
+                if refnum != 0 && self.close_resource_file_refnum(bus, refnum) {
+                    self.open_files.remove(&refnum);
+                    self.file_positions.remove(&refnum);
+                    self.write_refnums.remove(&refnum);
                     bus.write_word(0x0A60, 0); // noErr
                 } else if refnum == 0 {
                     // Closing system resource file: close all others first
@@ -4870,6 +4830,7 @@ impl super::TrapDispatcher {
                     .is_some_and(|r| r.files.contains_key(&refnum));
 
                 if file_exists {
+                    let _ = self.flush_resource_file_refnum(bus, refnum);
                     // Clear resChanged on all resources in this file
                     if let Some(resources) = self.resources.as_mut() {
                         if let Some(file) = resources.files.get_mut(&refnum) {
@@ -4933,7 +4894,8 @@ impl super::TrapDispatcher {
             // path returns existing refnum without switching current.
             (true, 0x01A) => {
                 let sp = cpu.read_reg(Register::A7);
-                let _perm = bus.read_byte(sp) as i8 as i16;
+                let perm = signed_byte_from_stack_word(bus.read_word(sp));
+                let wants_write = perm == 2 || perm == 3;
                 let name_ptr = bus.read_long(sp + 2);
                 let _dir_id = bus.read_long(sp + 6);
                 let _v_ref = bus.read_word(sp + 10) as i16;
@@ -4947,6 +4909,9 @@ impl super::TrapDispatcher {
                 }
                 if let Some(vfs_key) = self.find_vfs_rsrc_file(&name) {
                     if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
+                        if wants_write {
+                            self.write_refnums.insert(existing);
+                        }
                         if super::dispatch::trace_resfile_enabled() {
                             eprintln!(
                                 "[TRAP] HOpenResFile: \"{}\" already open as refnum {}, dedup",
@@ -4958,7 +4923,7 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 12);
                         return Some(Ok(()));
                     }
-                    let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, false);
+                    let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                     bus.write_word(sp + 12, refnum);
                     bus.write_word(0x0A60, 0); // ResErr = noErr
                 } else {
@@ -9232,6 +9197,52 @@ impl super::TrapDispatcher {
                         record_movie_error(self, err);
                         Ok(())
                     }
+                    0x00F3 => {
+                        // GetMoviePreferredRate ($AAAA selector $00F3)
+                        // Returns a movie's preferred playback rate.
+                        // MPW Universal Headers Movies.h:
+                        //   THREEWORDINLINE(0x303C, 0x00F3, 0xAAAA)
+                        // pascal Fixed GetMoviePreferredRate(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-130 to 2-131.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let rate = self
+                            .movie_states
+                            .get(&movie)
+                            .map(|state| state.preferred_rate)
+                            .unwrap_or(0);
+                        let err = if self.movie_states.contains_key(&movie) {
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_long(sp + 4, rate as u32);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x00F4 => {
+                        // SetMoviePreferredRate ($AAAA selector $00F4)
+                        // Sets a movie's preferred playback rate.
+                        // MPW Universal Headers Movies.h:
+                        //   THREEWORDINLINE(0x303C, 0x00F4, 0xAAAA)
+                        // pascal void SetMoviePreferredRate(Movie theMovie, Fixed rate);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-130 to 2-131.
+                        let sp = cpu.read_reg(Register::A7);
+                        let rate = bus.read_long(sp) as i32;
+                        let movie = bus.read_long(sp + 4);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.preferred_rate = rate;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
                     0x002E => {
                         // GetMovieVolume ($AAAA selector $002E)
                         // Returns a movie's current 8.8 fixed-point volume.
@@ -9260,6 +9271,52 @@ impl super::TrapDispatcher {
                         // Sets a movie's current 8.8 fixed-point volume.
                         // pascal void SetMovieVolume(Movie theMovie, short volume);
                         // Inside Macintosh: QuickTime 1993, p. 2-182.
+                        let sp = cpu.read_reg(Register::A7);
+                        let volume = bus.read_word(sp) as i16;
+                        let movie = bus.read_long(sp + 2);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.volume = volume;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 6);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x00F5 => {
+                        // GetMoviePreferredVolume ($AAAA selector $00F5)
+                        // Returns a movie's preferred 8.8 fixed-point volume.
+                        // MPW Universal Headers Movies.h:
+                        //   THREEWORDINLINE(0x303C, 0x00F5, 0xAAAA)
+                        // pascal short GetMoviePreferredVolume(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-132 to 2-133.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let volume = self
+                            .movie_states
+                            .get(&movie)
+                            .map(|state| state.volume)
+                            .unwrap_or(0);
+                        let err = if self.movie_states.contains_key(&movie) {
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_word(sp + 4, volume as u16);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x00F6 => {
+                        // SetMoviePreferredVolume ($AAAA selector $00F6)
+                        // Sets a movie's preferred 8.8 fixed-point volume.
+                        // MPW Universal Headers Movies.h:
+                        //   THREEWORDINLINE(0x303C, 0x00F6, 0xAAAA)
+                        // pascal void SetMoviePreferredVolume(Movie theMovie, short volume);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-132 to 2-133.
                         let sp = cpu.read_reg(Register::A7);
                         let volume = bus.read_word(sp) as i16;
                         let movie = bus.read_long(sp + 2);
@@ -15053,6 +15110,65 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
     }
 
+    #[test]
+    fn open_rf_perm_read_after_write_reuses_existing_read_only_refnum() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let name_ptr = 0x200240u32;
+
+        disp.vfs_rsrc.insert("Shapes".to_string(), vec![]);
+
+        bus.write_word(sp, 0);
+        bus.write_byte(sp, 3); // fsRdWrPerm
+        bus.write_word(sp + 2, 0);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_word(sp + 8, 0xBEEF);
+        bus.write_pstring(name_ptr, b"Shapes");
+        let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        let write_ref = bus.read_word(sp + 8);
+        assert!(disp.write_refnums.contains(&write_ref));
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // fsRdPerm
+        bus.write_word(sp + 2, 0);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_word(sp + 8, 0xBEEF);
+        bus.write_pstring(name_ptr, b"Shapes");
+        let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        let read_ref = bus.read_word(sp + 8);
+        assert_ne!(read_ref, write_ref);
+        assert!(!disp.write_refnums.contains(&read_ref));
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // fsRdPerm
+        bus.write_word(sp + 2, 0);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_word(sp + 8, 0xBEEF);
+        bus.write_pstring(name_ptr, b"Shapes");
+        let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 8), read_ref);
+        assert_eq!(cpu.read_reg(Register::D0), read_ref as u32);
+        assert_eq!(bus.read_word(0x0A60), 0);
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .unwrap()
+                .names
+                .values()
+                .filter(|name| name.as_str() == "Shapes")
+                .count(),
+            2,
+            "one write and one read-only access path should be enough"
+        );
+    }
+
     // OpenRFPerm should mirror the current refnum in D0 for both the first
     // open and the already-open reuse path.
     #[test]
@@ -15499,6 +15615,57 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+    }
+
+    #[test]
+    fn closeresfile_releases_loaded_resource_memory_and_handles() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let refnum = 2;
+        let data_ptr = bus.alloc(8);
+        bus.write_bytes(data_ptr, &[0xAB; 8]);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, data_ptr);
+
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([
+                (0, crate::trap::dispatch::ResourceFileMap::default()),
+                (
+                    refnum,
+                    crate::trap::dispatch::ResourceFileMap {
+                        loaded: std::collections::HashMap::from([((*b"PICT", 23002), data_ptr)]),
+                        named: std::collections::HashMap::new(),
+                        names_by_id: std::collections::HashMap::new(),
+                        attrs: std::collections::HashMap::new(),
+                        map_attrs: 0,
+                    },
+                ),
+            ]),
+            names: std::collections::HashMap::from([(refnum, "BladeData".to_string())]),
+            search_order: vec![0, refnum],
+            current_file: refnum,
+        });
+        disp.loaded_handles
+            .insert(handle, (data_ptr, *b"PICT", 23002));
+        disp.resource_handle_files.insert(handle, refnum);
+        disp.ptr_to_handle.insert(data_ptr, handle);
+        bus.write_word(0x0A5A, refnum);
+
+        let sp = TEST_SP;
+        bus.write_word(sp, refnum);
+
+        let result = disp.dispatch_toolbox(true, 0x19A, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(disp.current_resource_refnum(), 0);
+        assert_eq!(bus.get_alloc_size(data_ptr), None);
+        assert_eq!(bus.get_alloc_size(handle), None);
+        assert!(!disp.loaded_handles.contains_key(&handle));
+        assert!(!disp.resource_handle_files.contains_key(&handle));
+        assert_eq!(disp.ptr_to_handle.get(&data_ptr), None);
+        assert!(!disp.resources.as_ref().unwrap().files.contains_key(&refnum));
+        assert_eq!(bus.read_word(0x0A60), 0);
     }
 
     #[test]
@@ -21203,6 +21370,31 @@ mod tests {
         assert_ne!(bus.read_long(sp + 4), 0xDEAD_BEEF);
 
         cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00F4); // SetMoviePreferredRate
+        bus.write_long(sp, 0x0002_0000);
+        bus.write_long(sp + 4, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SetMoviePreferredRate should be handled");
+        assert!(
+            result.unwrap().is_ok(),
+            "SetMoviePreferredRate should return"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00F3); // GetMoviePreferredRate
+        bus.write_long(sp, movie);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetMoviePreferredRate should be handled");
+        assert!(
+            result.unwrap().is_ok(),
+            "GetMoviePreferredRate should return"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_long(sp + 4), 0x0002_0000);
+
+        cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x002F); // SetMovieVolume
         bus.write_word(sp, 0x0100);
         bus.write_long(sp + 2, movie);
@@ -21210,6 +21402,37 @@ mod tests {
         assert!(result.is_some(), "SetMovieVolume should be handled");
         assert!(result.unwrap().is_ok(), "SetMovieVolume should return");
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00F6); // SetMoviePreferredVolume
+        bus.write_word(sp, 0x0080);
+        bus.write_long(sp + 2, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(
+            result.is_some(),
+            "SetMoviePreferredVolume should be handled"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "SetMoviePreferredVolume should return"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x00F5); // GetMoviePreferredVolume
+        bus.write_long(sp, movie);
+        bus.write_word(sp + 4, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(
+            result.is_some(),
+            "GetMoviePreferredVolume should be handled"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "GetMoviePreferredVolume should return"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0x0080);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0006); // PrerollMovie
@@ -21284,6 +21507,22 @@ mod tests {
             disp.resource_file_name(refnum).map(str::to_owned),
             Some("AmoebArena/Movies/C&G".to_string())
         );
+        let data_ptr = bus.alloc(8);
+        bus.write_bytes(data_ptr, &[0xC0; 8]);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, data_ptr);
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&refnum)
+            .unwrap()
+            .loaded
+            .insert((*b"PICT", 23002), data_ptr);
+        disp.loaded_handles
+            .insert(handle, (data_ptr, *b"PICT", 23002));
+        disp.resource_handle_files.insert(handle, refnum);
+        disp.ptr_to_handle.insert(data_ptr, handle);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x00D5); // CloseMovieFile
@@ -21297,6 +21536,11 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert!(!disp.open_files.contains_key(&refnum));
         assert!(disp.resource_file_name(refnum).is_none());
+        assert_eq!(bus.get_alloc_size(data_ptr), None);
+        assert_eq!(bus.get_alloc_size(handle), None);
+        assert!(!disp.loaded_handles.contains_key(&handle));
+        assert!(!disp.resource_handle_files.contains_key(&handle));
+        assert_eq!(disp.ptr_to_handle.get(&data_ptr), None);
     }
 
     // Unhandled trap returns None

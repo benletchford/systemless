@@ -64,6 +64,8 @@ fn trace_buffer_enabled() -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 static TRACE_PC_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
 #[cfg(not(target_arch = "wasm32"))]
+static TRACE_PC_RANGE_TICKS: OnceLock<Option<(Option<u32>, Option<u32>)>> = OnceLock::new();
+#[cfg(not(target_arch = "wasm32"))]
 fn trace_pc_range() -> Option<(u32, u32)> {
     *TRACE_PC_RANGE.get_or_init(|| {
         let value = std::env::var("SYSTEMLESS_TRACE_PC_RANGE").ok()?;
@@ -75,16 +77,40 @@ fn trace_pc_range() -> Option<(u32, u32)> {
     })
 }
 
-fn trace_pc_range_contains(pc: u32) -> bool {
+#[cfg(not(target_arch = "wasm32"))]
+fn trace_pc_range_ticks() -> Option<(Option<u32>, Option<u32>)> {
+    *TRACE_PC_RANGE_TICKS.get_or_init(|| {
+        let min = std::env::var("SYSTEMLESS_TRACE_PC_RANGE_TICK_MIN")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok());
+        let max = std::env::var("SYSTEMLESS_TRACE_PC_RANGE_TICK_MAX")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok());
+        (min.is_some() || max.is_some()).then_some((min, max))
+    })
+}
+
+fn trace_pc_range_contains(pc: u32, tick: u32) -> bool {
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = pc;
+        let _ = (pc, tick);
         return false;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    trace_pc_range()
-        .map(|(start, end)| pc >= start && pc <= end)
-        .unwrap_or(false)
+    {
+        let in_range = trace_pc_range()
+            .map(|(start, end)| pc >= start && pc <= end)
+            .unwrap_or(false);
+        if !in_range {
+            return false;
+        }
+        trace_pc_range_ticks()
+            .map(|(min, max)| {
+                min.map(|min| tick >= min).unwrap_or(true)
+                    && max.map(|max| tick <= max).unwrap_or(true)
+            })
+            .unwrap_or(true)
+    }
 }
 
 // Gate the most-prominent startup/load chatter behind an env var.
@@ -2050,7 +2076,7 @@ impl FixtureRunner {
                 crate::memory::bus::set_current_pc(pc);
             }
 
-            let trace_pc_range_hit = trace_pc_range_contains(pc);
+            let trace_pc_range_hit = trace_pc_range_contains(pc, self.dispatcher.tick_count);
             if trace_pc_range_hit {
                 let sp = self.cpu.read_reg(Register::A7);
                 let a6 = self.cpu.read_reg(Register::A6);

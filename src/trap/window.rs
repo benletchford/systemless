@@ -1880,7 +1880,9 @@ impl super::TrapDispatcher {
         // Inside Macintosh Volume I, I-276: titleHandle is a StringHandle.
         Self::set_title_handle(bus, window_ptr, wind_title.as_bytes());
 
-        // Set as current port and front window
+        // Window creation initializes the port as the current drawing target.
+        // Individual NewWindow/NewCWindow callers restore the previous port
+        // for the System 7.5.3 hidden/backmost cases that preserve it.
         self.set_current_port_state(bus, cpu, window_ptr, Some(gd_handle));
 
         // If the previous front window was a document-style window (procID 0/4),
@@ -2042,16 +2044,30 @@ impl super::TrapDispatcher {
                 };
                 let (screen_base, _, scr_w, scr_h, _) = self.screen_mode;
 
+                let behind = bus.read_long(sp + 6);
+
                 eprintln!(
-                    "[WINDOW] NewWindow: window=${:08X} procID={} title=\"{}\" bounds=({},{},{},{}) screen={}x{}",
-                    window_ptr, proc_id, title, bounds_top, bounds_left, bounds_bottom, bounds_right,
-                    scr_w, scr_h,
+                    "[WINDOW] NewWindow: window=${:08X} procID={} visible={} behind=${:08X} title=\"{}\" bounds=({},{},{},{}) screen={}x{}",
+                    window_ptr,
+                    proc_id,
+                    visible,
+                    behind,
+                    title,
+                    bounds_top,
+                    bounds_left,
+                    bounds_bottom,
+                    bounds_right,
+                    scr_w,
+                    scr_h,
                 );
 
-                // Use init_cgraf_window for proper CGrafPort setup with PixMap.
-                // This ensures CopyBits correctly identifies the 8bpp pixel depth
-                // via the portVersion=0xC000 flag and the PixMap structure.
+                // Keep NewWindow backed by the same CGrafPort setup the
+                // color play corpus already relies on; the System 7.5.3
+                // behavior needed here is current-port preservation for
+                // hidden/backmost creations.
                 let old_front = self.front_window;
+                let old_current_port = self.current_port;
+                let old_current_gdevice = self.current_gdevice;
                 self.init_cgraf_window(
                     bus,
                     cpu,
@@ -2068,16 +2084,21 @@ impl super::TrapDispatcher {
                     go_away,
                     ref_con,
                 );
-                self.port_draw_states
-                    .insert(window_ptr, PortDrawState::default());
 
                 // Honor the Pascal `behind` parameter at SP+6 per IM:I
                 // I-299 (factored into apply_behind_parameter).
-                let behind = bus.read_long(sp + 6);
                 self.apply_behind_parameter(bus, window_ptr, behind);
                 self.activate_frontmost_created_window_if_needed(
                     bus, window_ptr, visible, behind, old_front,
                 );
+                if !visible || behind == 0 {
+                    self.set_current_port_state(
+                        bus,
+                        cpu,
+                        old_current_port,
+                        Some(old_current_gdevice),
+                    );
+                }
 
                 let param_size = 26u32;
                 bus.write_long(sp + param_size, window_ptr);
@@ -2212,8 +2233,8 @@ impl super::TrapDispatcher {
                 };
 
                 eprintln!(
-                    "[WINDOW] NewCWindow: bounds=({},{},{},{}) procID={} title=\"{}\"",
-                    wind_top, wind_left, wind_bottom, wind_right, wind_proc_id, wind_title
+                    "[WINDOW] NewCWindow: bounds=({},{},{},{}) procID={} visible={} title=\"{}\"",
+                    wind_top, wind_left, wind_bottom, wind_right, wind_proc_id, visible, wind_title
                 );
 
                 // Honor wStorage same as NewWindow above.
@@ -2224,6 +2245,8 @@ impl super::TrapDispatcher {
                 };
                 let screen_base: u32 = bus.read_long(0x0824);
                 let old_front = self.front_window;
+                let old_current_port = self.current_port;
+                let old_current_gdevice = self.current_gdevice;
                 self.init_cgraf_window(
                     bus,
                     cpu,
@@ -2248,6 +2271,14 @@ impl super::TrapDispatcher {
                 self.activate_frontmost_created_window_if_needed(
                     bus, window_ptr, visible, behind, old_front,
                 );
+                if !visible || behind == 0 {
+                    self.set_current_port_state(
+                        bus,
+                        cpu,
+                        old_current_port,
+                        Some(old_current_gdevice),
+                    );
+                }
 
                 let param_size = 26;
                 bus.write_long(sp + param_size, window_ptr);
@@ -4308,6 +4339,8 @@ mod tests {
         );
 
         disp.move_window_to_global(&mut bus, window_addr, 0, 0, false);
+        let current_gdevice = disp.current_gdevice;
+        disp.set_current_port_state(&mut bus, &mut cpu, window_addr, Some(current_gdevice));
 
         let sp = TEST_SP - 4;
         cpu.write_reg(Register::A7, sp);
@@ -4704,6 +4737,106 @@ mod tests {
         assert_eq!(
             visible_byte, 0x00,
             "NewWindow(visible=false) must mark window invisible per IM:I I-299"
+        );
+    }
+
+    #[test]
+    fn hidden_new_window_preserves_current_port() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let bounds_rect_ptr: u32 = 0x300000;
+        bus.write_word(bounds_rect_ptr, 40);
+        bus.write_word(bounds_rect_ptr + 2, 0);
+        bus.write_word(bounds_rect_ptr + 4, 342);
+        bus.write_word(bounds_rect_ptr + 6, 512);
+
+        let create_window = |disp: &mut super::super::TrapDispatcher,
+                             cpu: &mut super::super::test_helpers::MockCpu,
+                             bus: &mut crate::memory::MacMemoryBus,
+                             visible: bool| {
+            let sp = TEST_SP - 26;
+            cpu.write_reg(Register::A7, sp);
+            for i in 0..30u32 {
+                bus.write_byte(sp + i, 0);
+            }
+            bus.write_long(sp + 18, bounds_rect_ptr);
+            bus.write_byte(sp + 12, if visible { 1 } else { 0 });
+            bus.write_long(sp + 6, 0xFFFF_FFFF);
+
+            let result = dispatch(disp, 0x113, cpu, bus);
+            assert!(result.is_some(), "NewWindow should be handled");
+            assert!(result.unwrap().is_ok(), "NewWindow should return");
+            bus.read_long(cpu.read_reg(Register::A7))
+        };
+
+        let base = create_window(&mut disp, &mut cpu, &mut bus, true);
+        assert_eq!(disp.current_port, base);
+
+        let hidden = create_window(&mut disp, &mut cpu, &mut bus, false);
+        assert_ne!(hidden, 0);
+        assert_eq!(
+            disp.current_port, base,
+            "hidden NewWindow must preserve the caller's current port"
+        );
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            base,
+            "hidden NewWindow must preserve low-memory thePort"
+        );
+        let qd_globals = bus.read_long(cpu.read_reg(Register::A5));
+        assert_eq!(
+            bus.read_long(qd_globals),
+            base,
+            "hidden NewWindow must preserve qd.thePort"
+        );
+    }
+
+    #[test]
+    fn backmost_visible_new_window_preserves_current_port() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let bounds_rect_ptr: u32 = 0x300000;
+        bus.write_word(bounds_rect_ptr, 40);
+        bus.write_word(bounds_rect_ptr + 2, 0);
+        bus.write_word(bounds_rect_ptr + 4, 342);
+        bus.write_word(bounds_rect_ptr + 6, 512);
+
+        let create_window = |disp: &mut super::super::TrapDispatcher,
+                             cpu: &mut super::super::test_helpers::MockCpu,
+                             bus: &mut crate::memory::MacMemoryBus,
+                             behind: u32| {
+            let sp = TEST_SP - 26;
+            cpu.write_reg(Register::A7, sp);
+            for i in 0..30u32 {
+                bus.write_byte(sp + i, 0);
+            }
+            bus.write_long(sp + 18, bounds_rect_ptr);
+            bus.write_byte(sp + 12, 1);
+            bus.write_long(sp + 6, behind);
+
+            let result = dispatch(disp, 0x113, cpu, bus);
+            assert!(result.is_some(), "NewWindow should be handled");
+            assert!(result.unwrap().is_ok(), "NewWindow should return");
+            bus.read_long(cpu.read_reg(Register::A7))
+        };
+
+        let base = create_window(&mut disp, &mut cpu, &mut bus, 0xFFFF_FFFF);
+        assert_eq!(disp.current_port, base);
+
+        let back = create_window(&mut disp, &mut cpu, &mut bus, 0);
+        assert_ne!(back, 0);
+        assert_eq!(
+            disp.current_port, base,
+            "visible NewWindow with behind=NIL must preserve the caller's current port"
+        );
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            base,
+            "backmost NewWindow must preserve low-memory thePort"
+        );
+        let qd_globals = bus.read_long(cpu.read_reg(Register::A5));
+        assert_eq!(
+            bus.read_long(qd_globals),
+            base,
+            "backmost NewWindow must preserve qd.thePort"
         );
     }
 

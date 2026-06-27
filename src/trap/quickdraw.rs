@@ -695,7 +695,12 @@ impl super::TrapDispatcher {
                 let port = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 if trace_dialog_ports_enabled() {
-                    eprintln!("[DIALOG-PORT] SetPort port=${:08X}", port);
+                    eprintln!(
+                        "[DIALOG-PORT] SetPort pc=${:08X} tick={} port=${:08X}",
+                        cpu.read_reg(Register::PC).wrapping_sub(2),
+                        self.tick_count,
+                        port
+                    );
                 }
                 if port != 0 && !self.port_allows_draw_state_memory_sync(bus, port) {
                     if trace_dialog_ports_enabled() {

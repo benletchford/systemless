@@ -21,6 +21,8 @@ const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
 // load + branch on the hot path).
 #[cfg(not(target_arch = "wasm32"))]
 static FB_WRITE_TRACE_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+#[cfg(not(target_arch = "wasm32"))]
+static ALLOC_TRACE_MIN: OnceLock<Option<u32>> = OnceLock::new();
 
 #[cfg(target_arch = "wasm32")]
 #[inline]
@@ -43,6 +45,45 @@ fn fb_write_trace_range() -> Option<(u32, u32)> {
                 Some((start, end))
             })
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn alloc_trace_min() -> Option<u32> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn alloc_trace_min() -> Option<u32> {
+    *ALLOC_TRACE_MIN.get_or_init(|| {
+        std::env::var("SYSTEMLESS_TRACE_ALLOC_MIN")
+            .ok()
+            .and_then(|value| {
+                let value = value.trim();
+                let parsed = if let Some(hex) = value
+                    .strip_prefix("0x")
+                    .or_else(|| value.strip_prefix("0X"))
+                {
+                    u32::from_str_radix(hex, 16).ok()
+                } else {
+                    value.parse().ok()
+                }?;
+                Some(parsed)
+            })
+    })
+}
+
+#[inline]
+fn trace_alloc_event(event: &str, addr: u32, size: u32, bucket: u32) {
+    if let Some(min) = alloc_trace_min() {
+        if size >= min || bucket >= min {
+            eprintln!(
+                "[ALLOC] {} addr=${:08X} size={} bucket={}",
+                event, addr, size, bucket
+            );
+        }
+    }
 }
 
 /// `true` when SYSTEMLESS_TRACE_FB_WRITE_RANGE is set; the runner uses this
@@ -128,12 +169,31 @@ fn fb_write_disasm_enabled() -> bool {
 // (one atomic load + None branch on the hot path).
 #[cfg(not(target_arch = "wasm32"))]
 static MEM_READ_TRACE_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+#[cfg(not(target_arch = "wasm32"))]
+static MEM_WRITE_TRACE_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
 
 #[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn mem_read_trace_range() -> Option<(u32, u32)> {
     *MEM_READ_TRACE_RANGE.get_or_init(|| {
         std::env::var("SYSTEMLESS_TRACE_MEM_READ_RANGE")
+            .ok()
+            .and_then(|s| {
+                let mut parts = s.split(':');
+                let start_str = parts.next()?.trim_start_matches("0x");
+                let end_str = parts.next()?.trim_start_matches("0x");
+                let start = u32::from_str_radix(start_str, 16).ok()?;
+                let end = u32::from_str_radix(end_str, 16).ok()?;
+                Some((start, end))
+            })
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn mem_write_trace_range() -> Option<(u32, u32)> {
+    *MEM_WRITE_TRACE_RANGE.get_or_init(|| {
+        std::env::var("SYSTEMLESS_TRACE_MEM_WRITE_RANGE")
             .ok()
             .and_then(|s| {
                 let mut parts = s.split(':');
@@ -168,6 +228,28 @@ fn maybe_log_mem_read(address: u32, width: u8, value: u32) {
             let pc = CURRENT_PC.with(|p| *p.borrow());
             eprintln!(
                 "[MEM-READ] PC=${:08X} addr=${:08X} width={} value=${:0width$X}",
+                pc,
+                address,
+                width,
+                value,
+                width = (width as usize) * 2
+            );
+        }
+    }
+}
+
+#[inline]
+fn maybe_log_mem_write(address: u32, width: u8, value: u32) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (address, width, value);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((start, end)) = mem_write_trace_range() {
+        if address >= start && address <= end {
+            let pc = CURRENT_PC.with(|p| *p.borrow());
+            eprintln!(
+                "[MEM-WRITE] PC=${:08X} addr=${:08X} width={} value=${:0width$X}",
                 pc,
                 address,
                 width,
@@ -579,6 +661,15 @@ impl MacMemoryBus {
         ((size + 3) & !3).max(4)
     }
 
+    fn can_reuse_bucket_for_request(bucket: u32, requested: u32) -> bool {
+        let max_bucket = if requested <= 1024 {
+            4096
+        } else {
+            requested.saturating_mul(2).saturating_add(4096)
+        };
+        bucket <= max_bucket
+    }
+
     fn legacy_sound_base_address(ram_size: usize, screen_base: u32, screen_bytes: u32) -> u32 {
         let ram_size = ram_size as u32;
         let preferred = screen_base.saturating_add(screen_bytes);
@@ -761,6 +852,7 @@ impl MacMemoryBus {
             .and_then(|blocks| blocks.pop());
         if let Some(addr) = exact {
             self.alloc_sizes.insert(addr, size);
+            trace_alloc_event("reuse-exact", addr, size, aligned);
             return addr;
         }
 
@@ -774,7 +866,9 @@ impl MacMemoryBus {
         let best = self
             .free_blocks
             .iter()
-            .filter(|(&k, v)| k > aligned && !v.is_empty())
+            .filter(|(&k, v)| {
+                k > aligned && !v.is_empty() && Self::can_reuse_bucket_for_request(k, aligned)
+            })
             .map(|(&k, _)| k)
             .min();
         if let Some(bucket) = best {
@@ -788,6 +882,7 @@ impl MacMemoryBus {
                 // size. The full bucket capacity is recovered on free.
                 self.alloc_sizes.insert(addr, size);
                 self.alloc_bucket_sizes.insert(addr, bucket);
+                trace_alloc_event("reuse-best", addr, size, bucket);
                 return addr;
             }
         }
@@ -806,6 +901,7 @@ impl MacMemoryBus {
 
         self.heap_ptr = new_ptr;
         self.alloc_sizes.insert(ptr, size);
+        trace_alloc_event("bump", ptr, size, aligned);
         ptr
     }
 
@@ -841,6 +937,7 @@ impl MacMemoryBus {
                 .remove(&addr)
                 .unwrap_or_else(|| Self::allocation_bucket_size(size));
             self.free_blocks.entry(bucket).or_default().push(addr);
+            trace_alloc_event("free", addr, size, bucket);
         }
     }
 
@@ -949,6 +1046,8 @@ impl MemoryBus for MacMemoryBus {
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        maybe_log_mem_write(address, 1, value as u32);
+
         // Optional release-mode FB-write tracer. Cheap when unset (one
         // atomic load + None branch).
         maybe_log_fb_write(address, value);
@@ -1106,6 +1205,8 @@ impl MemoryBus for MacMemoryBus {
     /// needs per-byte dispatch through `write_byte`.
     #[inline]
     fn write_word(&mut self, address: u32, value: u16) {
+        maybe_log_mem_write(address, 2, value as u32);
+
         // Fast path: watchpoint disarmed + tracer disabled + write fully in-bounds.
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
@@ -1124,6 +1225,8 @@ impl MemoryBus for MacMemoryBus {
     /// Same fast-path optimisation as `write_word`.
     #[inline]
     fn write_long(&mut self, address: u32, value: u32) {
+        maybe_log_mem_write(address, 4, value);
+
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
         #[cfg(not(debug_assertions))]
@@ -1289,6 +1392,27 @@ mod tests {
         assert_eq!(
             reused, zero,
             "the minimum bucket for a freed zero-size allocation should be reusable"
+        );
+    }
+
+    #[test]
+    fn tiny_allocations_do_not_consume_large_free_blocks() {
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+
+        let large = bus.alloc(175_414);
+        assert_ne!(large, 0);
+        bus.free(large);
+
+        let tiny = bus.alloc(4);
+        assert_ne!(
+            tiny, large,
+            "tiny allocations should not consume large resource-sized free blocks"
+        );
+
+        let large_again = bus.alloc(175_414);
+        assert_eq!(
+            large_again, large,
+            "the original large block should remain available for a matching request"
         );
     }
 

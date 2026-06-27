@@ -1612,6 +1612,21 @@ impl TrapDispatcher {
         self.menus.iter().map(|m| m.title.as_str())
     }
 
+    /// Frontmost WindowPtr tracked by the Window Manager, or NIL.
+    pub fn front_window(&self) -> u32 {
+        self.front_window
+    }
+
+    /// Cached global bounds of the front window content rect.
+    pub fn window_bounds(&self) -> (i16, i16, i16, i16) {
+        self.window_bounds
+    }
+
+    /// Number of windows currently tracked by the Window Manager list.
+    pub fn window_count(&self) -> usize {
+        self.window_list.len()
+    }
+
     pub(crate) fn capture_gui_frame(&self, bus: &MacMemoryBus, label: &str) {
         let Some(dir) = gui_capture_dir() else {
             return;
