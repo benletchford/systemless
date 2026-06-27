@@ -8660,8 +8660,23 @@ impl super::TrapDispatcher {
                 }
                 match selector {
                     1 => {
+                        // EnterMovies ($AAAA selector $0001)
+                        // Initializes Movie Toolbox private state for the current application.
+                        // pascal OSErr EnterMovies(void);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-82 to 2-83.
                         let sp = cpu.read_reg(Register::A7);
                         bus.write_word(sp, 0);
+                        record_movie_error(self, 0);
+                        return_noerr(cpu)
+                    }
+                    2 => {
+                        // ExitMovies ($AAAA selector $0002)
+                        // Releases Movie Toolbox private state for the current application.
+                        // pascal void ExitMovies(void);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-83 to 2-84.
+                        self.movie_states.clear();
+                        self.movie_error = 0;
+                        self.movie_sticky_error = 0;
                         return_noerr(cpu)
                     }
                     0x0192 => {
@@ -8860,6 +8875,29 @@ impl super::TrapDispatcher {
                         }
                         bus.write_word(sp + 20, 0);
                         cpu.write_reg(Register::A7, sp + 20);
+                        cpu.write_reg(Register::D0, 0);
+                        record_movie_error(self, 0);
+                        Ok(())
+                    }
+                    0x0187 => {
+                        // NewMovie ($AAAA selector $0187)
+                        // Creates an empty in-memory Movie and returns its handle.
+                        // pascal Movie NewMovie(long flags);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-92 to 2-93.
+                        let sp = cpu.read_reg(Register::A7);
+                        let flags = bus.read_long(sp);
+                        let movie = bus.alloc(16);
+                        bus.write_long(movie, u32::from_be_bytes(*b"MooV"));
+                        bus.write_long(movie + 4, flags);
+                        bus.write_long(movie + 8, self.current_port);
+                        bus.write_long(movie + 12, self.current_gdevice);
+                        let mut state = MovieState::new(0, -1, flags as u16, (0, 0, 120, 160), 1);
+                        state.gworld_port = self.current_port;
+                        state.gworld_gdh = self.current_gdevice;
+                        state.active = false;
+                        self.movie_states.insert(movie, state);
+                        bus.write_long(sp + 4, movie);
+                        cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, 0);
                         record_movie_error(self, 0);
                         Ok(())
@@ -9251,6 +9289,24 @@ impl super::TrapDispatcher {
                             QUICKTIME_INVALID_MOVIE
                         };
                         bus.write_word(sp + 4, if status.unwrap_or(true) { 0xFFFF } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x001F => {
+                        // UpdateMovie ($AAAA selector $001F)
+                        // Marks a movie for redrawing after an invalidated update area.
+                        // pascal OSErr UpdateMovie(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-126 to 2-127.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let err = if self.movie_states.contains_key(&movie) {
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_word(sp + 4, err as u16);
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, err as u32);
                         record_movie_error(self, err);
@@ -20705,6 +20761,111 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp);
         assert_eq!(bus.read_word(sp), 0);
         assert_eq!(bus.read_word(sp + 2), 0xBEEF);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_exit_movies_clears_movie_state_and_preserves_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0187); // NewMovie
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, 0);
+        let create = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(create.is_some(), "NewMovie should be handled");
+        assert!(create.unwrap().is_ok(), "NewMovie should return");
+        let movie = bus.read_long(sp + 4);
+        assert!(disp.movie_states.contains_key(&movie));
+        disp.movie_error = -2010;
+        disp.movie_sticky_error = -2010;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0002); // ExitMovies
+        bus.write_word(sp, 0xCAFE);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "ExitMovies should be handled");
+        assert!(result.unwrap().is_ok(), "ExitMovies should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(sp), 0xCAFE);
+        assert!(disp.movie_states.is_empty());
+        assert_eq!(disp.movie_error, 0);
+        assert_eq!(disp.movie_sticky_error, 0);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_new_movie_returns_empty_movie_with_current_gworld() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_port = 0x0033_0000;
+        disp.current_gdevice = 0x0044_0000;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0187); // NewMovie
+        bus.write_long(sp, 0x0000_0001);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "NewMovie should be handled");
+        assert!(result.unwrap().is_ok(), "NewMovie should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        let movie = bus.read_long(sp + 4);
+        assert_ne!(movie, 0);
+        assert_eq!(bus.read_long(movie), u32::from_be_bytes(*b"MooV"));
+        assert_eq!(bus.read_long(movie + 4), 0x0000_0001);
+        assert_eq!(bus.read_long(movie + 8), 0x0033_0000);
+        assert_eq!(bus.read_long(movie + 12), 0x0044_0000);
+        let state = disp
+            .movie_states
+            .get(&movie)
+            .expect("NewMovie should register MovieState");
+        assert_eq!(state.box_rect, (0, 0, 120, 160));
+        assert_eq!(state.gworld_port, 0x0033_0000);
+        assert_eq!(state.gworld_gdh, 0x0044_0000);
+        assert!(!state.active);
+        assert_eq!(state.duration, 1);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_update_movie_pops_and_reports_validity() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0187); // NewMovie
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, 0);
+        let create = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(create.is_some(), "NewMovie should be handled");
+        assert!(create.unwrap().is_ok(), "NewMovie should return");
+        let movie = bus.read_long(sp + 4);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x001F); // UpdateMovie
+        bus.write_long(sp, movie);
+        bus.write_word(sp + 4, 0xBEEF);
+        let valid = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(valid.is_some(), "UpdateMovie should be handled");
+        assert!(valid.unwrap().is_ok(), "UpdateMovie should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(disp.movie_error, 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x001F); // UpdateMovie
+        bus.write_long(sp, 0x00FF_EE00);
+        bus.write_word(sp + 4, 0xBEEF);
+        let invalid = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(invalid.is_some(), "UpdateMovie should be handled");
+        assert!(invalid.unwrap().is_ok(), "UpdateMovie should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), (-2010i16) as u32);
+        assert_eq!(bus.read_word(sp + 4), (-2010i16) as u16);
+        assert_eq!(disp.movie_error, -2010);
+        assert_eq!(disp.movie_sticky_error, -2010);
     }
 
     #[test]
