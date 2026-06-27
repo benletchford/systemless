@@ -557,21 +557,28 @@ impl super::TrapDispatcher {
         type_list_ptr: u32,
     ) -> Option<StandardFileSelection> {
         // Inside Macintosh: Files (1992), p. 3-50: Standard File first
-        // filters the display list by numTypes/typeList. The headless HLE
-        // only auto-selects when a caller supplied a positive type list; the
-        // all-files and no-files cases keep the existing cancel behavior.
-        if num_types <= 0 || type_list_ptr == 0 {
+        // filters the display list by numTypes/typeList; numTypes = -1 lets
+        // all file types pass, while 0 displays no files. The headless HLE
+        // auto-selects the first positive type-list hit, or the only current
+        // directory file in all-types mode.
+        if num_types == 0 || num_types < -1 || (num_types > 0 && type_list_ptr == 0) {
             return None;
         }
 
-        let count = (num_types as usize).min(64);
-        let mut file_types = Vec::with_capacity(count);
-        for index in 0..count {
-            file_types.push(bus.read_long(type_list_ptr + (index as u32 * 4)));
-        }
+        let file_types = if num_types > 0 {
+            let count = (num_types as usize).min(64);
+            let mut file_types = Vec::with_capacity(count);
+            for index in 0..count {
+                file_types.push(bus.read_long(type_list_ptr + (index as u32 * 4)));
+            }
+            Some(file_types)
+        } else {
+            None
+        };
 
         let default_dir_id = self.default_dir_id;
         let entries = self.list_vfs_catalog_entries(default_dir_id);
+        let mut all_types_match: Option<StandardFileSelection> = None;
         for entry in entries {
             if entry.is_directory {
                 continue;
@@ -579,26 +586,38 @@ impl super::TrapDispatcher {
             let Some(metadata) = self.vfs_file_metadata(&entry.path) else {
                 continue;
             };
-            if !file_types.contains(&metadata.file_type) {
+            if let Some(file_types) = &file_types {
+                if !file_types.contains(&metadata.file_type) {
+                    continue;
+                }
+            } else if all_types_match.is_some() {
+                return None;
+            }
+
+            let selection = {
+                let vref = Self::boot_volume_ref_num();
+                let wd_ref = self
+                    .open_working_directory(vref, metadata.parent_dir_id, 0)
+                    .unwrap_or(vref);
+                let mut name = encode_mac_roman_lossy(Self::vfs_basename(&entry.path));
+                name.truncate(63);
+                StandardFileSelection {
+                    name,
+                    vref,
+                    wd_ref,
+                    dir_id: metadata.parent_dir_id,
+                    file_type: metadata.file_type,
+                    finder_flags: metadata.finder_flags,
+                }
+            };
+            if file_types.is_none() {
+                all_types_match = Some(selection);
                 continue;
             }
 
-            let vref = Self::boot_volume_ref_num();
-            let wd_ref = self
-                .open_working_directory(vref, metadata.parent_dir_id, 0)
-                .unwrap_or(vref);
-            let mut name = encode_mac_roman_lossy(Self::vfs_basename(&entry.path));
-            name.truncate(63);
-            return Some(StandardFileSelection {
-                name,
-                vref,
-                wd_ref,
-                dir_id: metadata.parent_dir_id,
-                file_type: metadata.file_type,
-                finder_flags: metadata.finder_flags,
-            });
+            return Some(selection);
         }
-        None
+        all_types_match
     }
 
     fn build_alias_record(&mut self, bus: &MacMemoryBus, target_ptr: u32) -> Vec<u8> {
@@ -18540,6 +18559,78 @@ mod tests {
         assert_eq!(bus.read_long(reply_ptr + 8), app_dir);
         assert_eq!(bus.read_pstring(reply_ptr + 12), b"Selected".to_vec());
         assert_eq!(bus.read_word(reply_ptr + 78), 0x4000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — StandardGetFile selector $0006.
+    // IM:Files 1992 p. 3-50: numTypes = -1 lets all file types pass.
+    #[test]
+    fn standard_get_file_minus_one_types_auto_selects_single_current_directory_file() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x320900u32;
+        let app_dir = disp.ensure_vfs_directory("Data Folder");
+        disp.default_dir_id = app_dir;
+        disp.vfs
+            .insert("Data Folder/Only Choice".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("Data Folder/Only Choice", *b"Flux", *b"Geek", 0x2000);
+        disp.vfs
+            .insert("Other Folder/Only Choice".to_string(), vec![4, 5, 6]);
+        disp.set_vfs_entry_metadata("Other Folder/Only Choice", *b"DATA", *b"TEST", 0);
+        bus.write_word(sp, 0x0006); // StandardGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, 0); // typeList is ignored for numTypes = -1
+        bus.write_word(sp + 10, (-1i16) as u16); // numTypes = all file types
+        bus.write_long(sp + 12, 0); // fileFilter
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"Flux"));
+        assert_eq!(
+            bus.read_word(reply_ptr + 6),
+            crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+        );
+        assert_eq!(bus.read_long(reply_ptr + 8), app_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 12), b"Only Choice".to_vec());
+        assert_eq!(bus.read_word(reply_ptr + 78), 0x2000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — StandardGetFile selector $0006.
+    // Without real UI, all-types mode stays canceled when more than one
+    // current-directory file would be displayed.
+    #[test]
+    fn standard_get_file_minus_one_types_cancels_ambiguous_current_directory_files() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x320A00u32;
+        let app_dir = disp.ensure_vfs_directory("Data Folder");
+        disp.default_dir_id = app_dir;
+        disp.vfs
+            .insert("Data Folder/First".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("Data Folder/First", *b"Flux", *b"Geek", 0);
+        disp.vfs
+            .insert("Data Folder/Second".to_string(), vec![4, 5, 6]);
+        disp.set_vfs_entry_metadata("Data Folder/Second", *b"DATA", *b"TEST", 0);
+        bus.write_byte(reply_ptr, 0xFF);
+        bus.write_word(sp, 0x0006); // StandardGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, 0); // typeList
+        bus.write_word(sp + 10, (-1i16) as u16); // numTypes = all file types
+        bus.write_long(sp + 12, 0); // fileFilter
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_byte(reply_ptr), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
