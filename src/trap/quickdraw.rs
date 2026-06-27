@@ -15944,7 +15944,7 @@ impl super::TrapDispatcher {
         clut
     }
 
-    fn uses_canonical_system_8bpp_clut(clut: &[[u16; 3]; 256]) -> bool {
+    pub(super) fn uses_canonical_system_8bpp_clut(clut: &[[u16; 3]; 256]) -> bool {
         clut[0] == [0xFFFF, 0xFFFF, 0xFFFF]
             && clut[1] == [0xFFFF, 0xFFFF, 0xCCCC]
             && clut[16] == [0xFFFF, 0x9999, 0x3333]
@@ -16375,7 +16375,7 @@ impl super::TrapDispatcher {
         true
     }
 
-    fn gdevice_ctab_handle(bus: &MacMemoryBus, gdh: u32) -> u32 {
+    pub(super) fn gdevice_ctab_handle(bus: &MacMemoryBus, gdh: u32) -> u32 {
         let pm_handle = Self::gdevice_pixmap_handle(bus, gdh);
         if pm_handle == 0 {
             return 0;
@@ -19786,7 +19786,7 @@ impl super::TrapDispatcher {
         best_index
     }
 
-    fn build_palette_translation(
+    pub(super) fn build_palette_translation(
         &self,
         bus: &MacMemoryBus,
         src_clut: &[[u16; 3]; 256],

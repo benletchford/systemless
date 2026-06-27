@@ -1490,6 +1490,7 @@ impl super::TrapDispatcher {
         self.saved_vis_regions.remove(&window_ptr);
         self.window_proc_ids.remove(&window_ptr);
         self.window_aux_records.remove(&window_ptr);
+        self.window_original_pixmaps.remove(&window_ptr);
         self.window_saved_under_pixels.remove(&window_ptr);
         self.clear_queued_update_events(window_ptr);
         if self
@@ -1785,6 +1786,8 @@ impl super::TrapDispatcher {
         bus.write_long(pixmap + 42, gd_ctab_handle); // pmTable
         let pixmap_handle = bus.alloc(4);
         bus.write_long(pixmap_handle, pixmap);
+        self.window_original_pixmaps
+            .insert(window_ptr, pixmap_handle);
 
         bus.write_word(window_ptr, 0); // device
         bus.write_long(window_ptr + 2, pixmap_handle); // portPixMap

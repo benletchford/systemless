@@ -2014,7 +2014,8 @@ impl super::TrapDispatcher {
         // Inside Macintosh Volume V, V-47
         let port = self.front_window;
         let port_version = bus.read_word(port + 6);
-        let port_base = if (port_version & 0xC000) == 0xC000 {
+        let is_cgraf_port = (port_version & 0xC000) == 0xC000;
+        let (port_base, port_pixmap_ptr, port_pixmap_handle) = if is_cgraf_port {
             // CGrafPort: portPixMap handle at offset 2
             let pm_handle = bus.read_long(port + 2);
             if pm_handle == 0 {
@@ -2033,11 +2034,32 @@ impl super::TrapDispatcher {
                 }
                 return;
             }
-            bus.read_long(pm_ptr) & 0x3FFFFFFF // mask off flags
+            (bus.read_long(pm_ptr) & 0x3FFFFFFF, pm_ptr, pm_handle) // mask off flags
         } else {
             // GrafPort: portBits.baseAddr at offset 2
-            bus.read_long(port + 2)
+            (bus.read_long(port + 2), 0, 0)
         };
+
+        // SetPortPix deliberately replaces a CGrafPort's portPixMap so
+        // applications can draw or calculate in a buffer other than the
+        // window/screen, then CopyBits it explicitly. If a tracked Window
+        // Manager color window has been swapped to such a scratch PixMap,
+        // do not synthesize an automatic whole-port presentation blit.
+        // IM:V V-76; Imaging With QuickDraw 1994, 4-86..4-87.
+        if is_cgraf_port
+            && self
+                .window_original_pixmaps
+                .get(&port)
+                .is_some_and(|&original| original != port_pixmap_handle)
+        {
+            if trace {
+                eprintln!(
+                    "[BLIT] skip: CGrafPort portPixMap swapped original=${:08X} current=${:08X}",
+                    self.window_original_pixmaps[&port], port_pixmap_handle
+                );
+            }
+            return;
+        }
 
         // If the window already draws directly to the screen, no blit needed
         if port_base == screen_base || port_base == 0 {
@@ -2052,10 +2074,8 @@ impl super::TrapDispatcher {
         }
 
         // Read the port's rowBytes (from pixMap for CGrafPort, portBits for GrafPort)
-        let port_rb = if (port_version & 0xC000) == 0xC000 {
-            let pm_handle = bus.read_long(port + 2);
-            let pm_ptr = bus.read_long(pm_handle);
-            (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32
+        let port_rb = if is_cgraf_port {
+            (bus.read_word(port_pixmap_ptr + 4) & 0x3FFF) as u32
         } else {
             (bus.read_word(port + 6) & 0x3FFF) as u32
         };
@@ -2063,12 +2083,15 @@ impl super::TrapDispatcher {
         // Read source port pixel size. For CGrafPort, PixMap.pixelSize
         // lives at offset +32 of the PixMap struct. Basic GrafPort is
         // implicitly 1bpp.
-        let port_pixel_size: u32 = if (port_version & 0xC000) == 0xC000 {
-            let pm_handle = bus.read_long(port + 2);
-            let pm_ptr = bus.read_long(pm_handle);
-            bus.read_word(pm_ptr + 32) as u32
+        let port_pixel_size: u32 = if is_cgraf_port {
+            bus.read_word(port_pixmap_ptr + 32) as u32
         } else {
             1
+        };
+        let port_ctab_handle = if is_cgraf_port {
+            bus.read_long(port_pixmap_ptr + 42)
+        } else {
+            0
         };
 
         // Read window content bounds (portRect in GrafPort at offset +16)
@@ -2129,12 +2152,46 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let row_count = h.min((screen_h as u32).saturating_sub(dst_y));
+        let col_count = w.min((screen_w as u32).saturating_sub(dst_x));
+
+        // Color QuickDraw treats PixMap pixels through their pmTable. When
+        // HLE composites a front-window offscreen CGrafPort to the screen,
+        // mirror the CopyBits indexed-color translation rule instead of raw
+        // copying mismatched 8bpp indices. IM:V V-91, V-95, V-136.
+        if is_cgraf_port && port_pixel_size == 8 && pixel_size == 8 {
+            let screen_ctab_handle = Self::gdevice_ctab_handle(bus, self.main_gdevice_handle);
+            let src_ctab_seed = Self::ctab_seed(bus, port_ctab_handle);
+            let dst_ctab_seed = Self::ctab_seed(bus, screen_ctab_handle);
+            let src_clut = self.read_port_clut(bus, port_ctab_handle);
+            let dst_clut = self.read_port_clut(bus, screen_ctab_handle);
+            let hardware_palette_active = self.device_clut != self.color_manager_clut;
+            let skip_canonical_to_screen = Self::uses_canonical_system_8bpp_clut(&src_clut);
+            if port_ctab_handle != screen_ctab_handle
+                && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
+                && src_ctab_seed != dst_ctab_seed
+                && !skip_canonical_to_screen
+                && !hardware_palette_active
+            {
+                let translation =
+                    self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle);
+                for row in 0..row_count {
+                    let src_addr = port_base + (src_y_offset + row) * port_rb + src_x_offset;
+                    let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
+                    for col in 0..col_count {
+                        let src_idx = bus.read_byte(src_addr + col);
+                        bus.write_byte(dst_addr + col, translation[src_idx as usize]);
+                    }
+                }
+                return;
+            }
+        }
+
         // block_move per row.
-        for row in 0..h.min(screen_h as u32 - dst_y) {
+        for row in 0..row_count {
             let src_addr = port_base + (src_y_offset + row) * port_rb + src_x_offset;
             let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
-            let copy_w = w.min(screen_w as u32 - dst_x);
-            bus.block_move(src_addr, dst_addr, copy_w);
+            bus.block_move(src_addr, dst_addr, col_count);
         }
     }
 
@@ -3390,6 +3447,67 @@ mod redraw_chrome_tests {
         bus.write_word(repurposed_entry + 6, 0xCCCC);
     }
 
+    fn make_ctab_handle(
+        bus: &mut crate::memory::MacMemoryBus,
+        clut: &[[u16; 3]; 256],
+        seed: u32,
+    ) -> u32 {
+        let ctab = bus.alloc(8 + 256 * 8);
+        bus.write_long(ctab, seed);
+        bus.write_word(ctab + 4, 0x8000);
+        bus.write_word(ctab + 6, 255);
+        for index in 0u32..256 {
+            let entry = ctab + 8 + index * 8;
+            let [r, g, b] = clut[index as usize];
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, r);
+            bus.write_word(entry + 4, g);
+            bus.write_word(entry + 6, b);
+        }
+        let handle = bus.alloc(4);
+        bus.write_long(handle, ctab);
+        handle
+    }
+
+    fn install_8bpp_cgrafport(
+        bus: &mut crate::memory::MacMemoryBus,
+        base: u32,
+        row_bytes: u16,
+        width: u16,
+        height: u16,
+        ctab_handle: u32,
+    ) -> u32 {
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap, base);
+        bus.write_word(pixmap + 4, row_bytes | 0x8000);
+        bus.write_word(pixmap + 6, 0);
+        bus.write_word(pixmap + 8, 0);
+        bus.write_word(pixmap + 10, height);
+        bus.write_word(pixmap + 12, width);
+        bus.write_word(pixmap + 14, 0);
+        bus.write_word(pixmap + 16, 0);
+        bus.write_long(pixmap + 18, 0);
+        bus.write_long(pixmap + 22, 0x0048_0000);
+        bus.write_long(pixmap + 26, 0x0048_0000);
+        bus.write_word(pixmap + 30, 0);
+        bus.write_word(pixmap + 32, 8);
+        bus.write_word(pixmap + 34, 1);
+        bus.write_word(pixmap + 36, 8);
+        bus.write_long(pixmap + 38, 0);
+        bus.write_long(pixmap + 42, ctab_handle);
+        bus.write_long(pixmap + 46, 0);
+
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(PORT_PTR + 2, pixmap_handle);
+        bus.write_word(PORT_PTR + 6, 0xC000);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, height);
+        bus.write_word(PORT_PTR + 22, width);
+        pixmap_handle
+    }
+
     /// When the menu bar is visible (MBarHeight > 0), the per-frame visRgn
     /// auto-expansion in `redraw_chrome` MUST NOT fire for a documentProc
     /// window whose visRgn.top is below the menu bar.
@@ -4126,6 +4244,95 @@ mod redraw_chrome_tests {
             bus.read_byte(row30_x97),
             0,
             "1bpp src bit=0 must still use the active ColorTable's white index"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blit_8bpp_to_8bpp_translates_port_ctab_to_screen() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let mut src_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let dst_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        src_clut[42] = dst_clut[7];
+        let src_ctab_handle = make_ctab_handle(&mut bus, &src_clut, 0x1234_5678);
+
+        let offscreen_base = bus.alloc(64 * 64);
+        install_8bpp_cgrafport(&mut bus, offscreen_base, 64, 64, 64, src_ctab_handle);
+
+        bus.write_byte(offscreen_base + 5 * 64 + 10, 42);
+        bus.write_byte(offscreen_base + 5 * 64 + 11, 8);
+        bus.write_byte(screen_base + 5 * 64 + 10, 0xAA);
+        bus.write_byte(screen_base + 5 * 64 + 11, 0xAA);
+
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 64, 64);
+        disp.window_proc_id = 1;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 5 * 64 + 10),
+            7,
+            "8bpp window blit must translate source CTab index 42 to the screen index for its RGB"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 5 * 64 + 11),
+            8,
+            "same-RGB entries should remain stable through the translation table"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blit_skips_tracked_window_swapped_to_scratch_pixmap() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let ctab_handle = make_ctab_handle(&mut bus, &clut, 8);
+        let original_base = bus.alloc(64 * 64);
+        let original_pixmap =
+            install_8bpp_cgrafport(&mut bus, original_base, 64, 64, 64, ctab_handle);
+        disp.window_original_pixmaps
+            .insert(PORT_PTR, original_pixmap);
+
+        let scratch_base = bus.alloc(64 * 64);
+        install_8bpp_cgrafport(&mut bus, scratch_base, 64, 64, 64, ctab_handle);
+
+        bus.write_byte(screen_base + 8 * 64 + 8, 0xAA);
+        bus.write_byte(scratch_base + 8 * 64 + 8, 0x22);
+        disp.front_window = PORT_PTR;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 8 * 64 + 8),
+            0xAA,
+            "SetPortPix scratch buffers must not be auto-presented as window contents"
+        );
+
+        bus.write_long(PORT_PTR + 2, original_pixmap);
+        bus.write_byte(original_base + 8 * 64 + 8, 0x11);
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 8 * 64 + 8),
+            0x11,
+            "the original tracked window backing PixMap should still be presented"
         );
     }
 }

@@ -1084,6 +1084,11 @@ pub struct TrapDispatcher {
     /// mutates that record in place instead of allocating the first one on
     /// demand.
     pub(crate) window_aux_records: HashMap<u32, u32>,
+    /// Original PixMapHandle installed when Systemless creates a CGrafPort
+    /// window. If guest code later replaces portPixMap with SetPortPix, that
+    /// handle describes scratch/offscreen pixels rather than the Window
+    /// Manager-owned backing store.
+    pub(crate) window_original_pixmaps: HashMap<u32, u32>,
     /// Saved framebuffer pixels under transient/non-document windows.
     /// Used to emulate Window Manager save-under behavior for dialog-like
     /// windows created through the Window Manager rather than Dialog Manager.
@@ -2280,6 +2285,7 @@ impl TrapDispatcher {
             window_proc_id: 0,
             window_proc_ids: HashMap::new(),
             window_aux_records: HashMap::new(),
+            window_original_pixmaps: HashMap::new(),
             window_saved_under_pixels: HashMap::new(),
             control_aux_records: HashMap::new(),
             control_aux_head: 0,
