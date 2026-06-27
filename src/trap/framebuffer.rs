@@ -2274,24 +2274,15 @@ impl super::TrapDispatcher {
         let (wt, wl, wb, wr) = self.window_bounds;
         let window_bounds_cover_screen =
             wt <= 0 && wl <= 0 && wb >= screen_h as i16 && wr >= screen_w as i16;
-        if !port_rect_covers_screen && !window_bounds_cover_screen {
-            if trace {
-                eprintln!(
-                    "[BLIT-CPORT] skip: front portRect ({},{},{},{}) and window bounds ({},{},{},{}) do not cover {}x{}",
-                    front_top,
-                    front_left,
-                    front_bottom,
-                    front_right,
-                    wt,
-                    wl,
-                    wb,
-                    wr,
-                    screen_w,
-                    screen_h
-                );
-            }
-            return;
-        }
+        let front_covers_presentation = port_rect_covers_screen || window_bounds_cover_screen;
+        let dark_screen_allows_presentation = !front_covers_presentation
+            && self.screen_is_dark_for_manual_cport(
+                bus,
+                screen_base,
+                screen_rb,
+                screen_w,
+                screen_h,
+            );
 
         #[derive(Clone, Copy)]
         struct Candidate {
@@ -2392,6 +2383,24 @@ impl super::TrapDispatcher {
             }
             return;
         };
+        if !front_covers_presentation && !dark_screen_allows_presentation {
+            if trace {
+                eprintln!(
+                    "[BLIT-CPORT] skip: front portRect ({},{},{},{}) and window bounds ({},{},{},{}) do not cover {}x{}, screen is not dark enough for fallback presentation",
+                    front_top,
+                    front_left,
+                    front_bottom,
+                    front_right,
+                    wt,
+                    wl,
+                    wb,
+                    wr,
+                    screen_w,
+                    screen_h
+                );
+            }
+            return;
+        }
         let dst_x = (screen_w_u32 - candidate.width) / 2;
         let dst_y = (screen_h_u32 - candidate.height) / 2;
         let row_count = candidate.height.min(screen_h_u32.saturating_sub(dst_y));
@@ -2439,6 +2448,37 @@ impl super::TrapDispatcher {
             let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
             bus.block_move(src_addr, dst_addr, col_count);
         }
+    }
+
+    fn screen_is_dark_for_manual_cport(
+        &self,
+        bus: &MacMemoryBus,
+        screen_base: u32,
+        screen_rb: u32,
+        screen_w: u16,
+        screen_h: u16,
+    ) -> bool {
+        if screen_w == 0 || screen_h == 0 || self.copybits_screen_count != 0 {
+            return false;
+        }
+        let max_component = 0x1111;
+        let sample_step_x = (u32::from(screen_w) / 16).max(1);
+        let sample_step_y = (u32::from(screen_h) / 12).max(1);
+        let mut y = sample_step_y / 2;
+        while y < u32::from(screen_h) {
+            let row = screen_base + y * screen_rb;
+            let mut x = sample_step_x / 2;
+            while x < u32::from(screen_w) {
+                let idx = bus.read_byte(row + x) as usize;
+                let rgb = self.device_clut[idx];
+                if rgb[0] > max_component || rgb[1] > max_component || rgb[2] > max_component {
+                    return false;
+                }
+                x += sample_step_x;
+            }
+            y += sample_step_y;
+        }
+        true
     }
 
     /// Draw window chrome (title bar, close box, border) into the framebuffer
@@ -4694,6 +4734,84 @@ mod redraw_chrome_tests {
             bus.read_byte(screen_base + 90 * 800 + 80),
             0x44,
             "shifted portRect must not hide a full-screen tracked window from the manual CPort presentation bridge"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blits_large_manual_cport_when_small_front_window_leaves_dark_screen() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[255] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0xFF);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (185, 226, 415, 574);
+
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 230);
+        bus.write_word(PORT_PTR + 22, 348);
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        let dst = screen_base + 90 * 800 + 80;
+        bus.write_byte(manual_base, 0x44);
+        bus.write_byte(dst, 0xFF);
+
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(dst),
+            0x44,
+            "a blank screen-backed front window can still reveal a large app-managed scene buffer"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_does_not_blit_large_manual_cport_over_nonblank_small_front_window() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut[255] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0xFF);
+        bus.write_byte(screen_base + 25 * 800 + 25, 1);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (185, 226, 415, 574);
+
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 230);
+        bus.write_word(PORT_PTR + 22, 348);
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        let dst = screen_base + 90 * 800 + 80;
+        bus.write_byte(manual_base, 0x44);
+        bus.write_byte(dst, 0xAA);
+
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(dst),
+            0xAA,
+            "manual scene fallback must not overpaint an already visible small window"
         );
     }
 
