@@ -1482,6 +1482,9 @@ impl super::TrapDispatcher {
             .into_iter()
             .find(|&w| self.window_visible(bus, w))
             .unwrap_or_else(|| self.window_list.first().copied().unwrap_or(0));
+        if self.front_window != window_ptr {
+            self.sync_cached_front_window_render_state(bus);
+        }
     }
 
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
@@ -5104,6 +5107,39 @@ mod tests {
             disp.window_list,
             vec![existing, window_ptr],
             "GetNewCWindow(behind=existing) must insert immediately behind it"
+        );
+    }
+
+    #[test]
+    fn apply_behind_parameter_refreshes_cached_front_window_state() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let front = bus.alloc(200);
+        let back = bus.alloc(200);
+
+        for &(window, rect) in &[(front, (10, 20, 110, 220)), (back, (0, 0, 600, 800))] {
+            bus.write_byte(
+                window + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+                0xFF,
+            );
+            bus.write_word(window + 8, 0);
+            bus.write_word(window + 10, 0);
+            bus.write_word(window + 16, rect.0 as u16);
+            bus.write_word(window + 18, rect.1 as u16);
+            bus.write_word(window + 20, rect.2 as u16);
+            bus.write_word(window + 22, rect.3 as u16);
+        }
+
+        disp.window_list = vec![front, back];
+        disp.front_window = back;
+        disp.window_bounds = (0, 0, 600, 800);
+
+        disp.apply_behind_parameter(&mut bus, back, 0);
+
+        assert_eq!(disp.front_window, front);
+        assert_eq!(
+            disp.window_bounds,
+            (10, 20, 110, 220),
+            "cached front-window geometry must follow the visible front after behind=NIL reorders"
         );
     }
 

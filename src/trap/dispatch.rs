@@ -1297,6 +1297,8 @@ pub struct TrapDispatcher {
     /// Non-GWorld CGrafPorts opened via OpenCPort/InitCPort, tracked so
     /// sync_canonical_offscreen_ctabs_to_clut can reach their pixmaps.
     pub(crate) cport_ports: HashSet<u32>,
+    /// Non-window CGrafPort selected for HLE fallback presentation.
+    pub(crate) manual_cport_presented_port: u32,
     /// Polygon recording state. When `Some`, LineTo/MoveTo calls append
     /// vertices. Set by OpenPoly, consumed by ClosePoly.
     pub(crate) recording_polygon: Option<PolygonRecording>,
@@ -2372,6 +2374,7 @@ impl TrapDispatcher {
             disposed_gworld_portbits: HashMap::new(),
             gworld_pixel_states: HashMap::new(),
             cport_ports: HashSet::new(),
+            manual_cport_presented_port: 0,
             recording_polygon: None,
             recording_region: None,
             screen_mode: {

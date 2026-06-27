@@ -17150,6 +17150,9 @@ impl super::TrapDispatcher {
         }
         bus.free(port);
         self.cport_ports.remove(&port);
+        if self.manual_cport_presented_port == port {
+            self.manual_cport_presented_port = 0;
+        }
         self.port_draw_states.remove(&port);
     }
 

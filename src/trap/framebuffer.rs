@@ -2195,6 +2195,240 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Present a large app-managed CGrafPort when CopyBits did not present it.
+    ///
+    /// This is an HLE compatibility bridge, not a QuickDraw rule: real apps
+    /// are responsible for copying offscreen ports to the screen. Some games
+    /// keep a full-scene PixMap behind an OpenCPort/InitCPort and update it
+    /// directly while their front window remains screen-backed. Without a
+    /// Window Manager or video driver layer to observe that buffer, screenshots
+    /// stay black even though the scene exists in guest memory.
+    pub(crate) fn blit_large_manual_cport_to_screen(&mut self, bus: &mut MacMemoryBus) {
+        let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = self.screen_mode;
+        let screen_w_u32 = u32::from(screen_w);
+        let screen_h_u32 = u32::from(screen_h);
+        let trace = std::env::var_os("SYSTEMLESS_TRACE_BLIT_WINDOW").is_some();
+        let latched_port = self.manual_cport_presented_port;
+
+        if self.front_window == 0
+            || pixel_size != 8
+            || screen_w == 0
+            || screen_h == 0
+            || (self.copybits_screen_count != 0 && latched_port == 0)
+        {
+            if trace {
+                eprintln!(
+                    "[BLIT-CPORT] skip: front=${:08X} pixel_size={} screen={}x{} copybits={} latched=${:08X}",
+                    self.front_window,
+                    pixel_size,
+                    screen_w,
+                    screen_h,
+                    self.copybits_screen_count,
+                    latched_port
+                );
+            }
+            return;
+        }
+        if !self.window_visible(bus, self.front_window) {
+            if trace {
+                eprintln!(
+                    "[BLIT-CPORT] skip: front=${:08X} is not visible",
+                    self.front_window
+                );
+            }
+            return;
+        }
+
+        let front_port = self.front_window;
+        let front_is_cgraf = (bus.read_word(front_port + 6) & 0xC000) == 0xC000;
+        let front_base = if front_is_cgraf {
+            let pm_handle = bus.read_long(front_port + 2);
+            let pm_ptr = (pm_handle != 0)
+                .then(|| bus.read_long(pm_handle))
+                .unwrap_or(0);
+            if pm_ptr == 0 {
+                return;
+            }
+            bus.read_long(pm_ptr) & 0x3FFF_FFFF
+        } else {
+            bus.read_long(front_port + 2)
+        };
+        if front_base != screen_base {
+            if trace {
+                eprintln!(
+                    "[BLIT-CPORT] skip: front base ${:08X} != screen ${:08X}",
+                    front_base, screen_base
+                );
+            }
+            return;
+        }
+
+        let front_top = bus.read_word(front_port + 16) as i16;
+        let front_left = bus.read_word(front_port + 18) as i16;
+        let front_bottom = bus.read_word(front_port + 20) as i16;
+        let front_right = bus.read_word(front_port + 22) as i16;
+        if front_top > 0
+            || front_left > 0
+            || front_bottom < screen_h as i16
+            || front_right < screen_w as i16
+        {
+            if trace {
+                eprintln!(
+                    "[BLIT-CPORT] skip: front bounds ({},{},{},{}) do not cover {}x{}",
+                    front_top, front_left, front_bottom, front_right, screen_w, screen_h
+                );
+            }
+            return;
+        }
+
+        #[derive(Clone, Copy)]
+        struct Candidate {
+            port: u32,
+            base: u32,
+            row_bytes: u32,
+            width: u32,
+            height: u32,
+            ctab_handle: u32,
+        }
+
+        let screen_area = u64::from(screen_w_u32) * u64::from(screen_h_u32);
+        let min_area = (screen_area / 8).max(1);
+        let mut best: Option<Candidate> = None;
+        let mut considered_ports = 0u32;
+        let mut rejected_shape = 0u32;
+        let mut rejected_area = 0u32;
+        for &port in &self.cport_ports {
+            if port == front_port
+                || self.window_list.contains(&port)
+                || self.gworld_devices.contains_key(&port)
+                || (self.copybits_screen_count != 0 && latched_port != 0 && port != latched_port)
+            {
+                continue;
+            }
+            considered_ports += 1;
+            if (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+                rejected_shape += 1;
+                continue;
+            }
+            let pm_handle = bus.read_long(port + 2);
+            if pm_handle == 0 {
+                rejected_shape += 1;
+                continue;
+            }
+            let pm_ptr = bus.read_long(pm_handle);
+            if pm_ptr == 0 {
+                rejected_shape += 1;
+                continue;
+            }
+
+            // CGrafPort/PixMap layout follows Imaging With QuickDraw
+            // 1994, pp. 4-64..4-65: portPixMap is a PixMapHandle, with
+            // baseAddr, rowBytes, bounds, pixelSize, and pmTable here.
+            let base = bus.read_long(pm_ptr) & 0x3FFF_FFFF;
+            let row_bytes = (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32;
+            let top = bus.read_word(pm_ptr + 6) as i16;
+            let left = bus.read_word(pm_ptr + 8) as i16;
+            let bottom = bus.read_word(pm_ptr + 10) as i16;
+            let right = bus.read_word(pm_ptr + 12) as i16;
+            let width = (right - left).max(0) as u32;
+            let height = (bottom - top).max(0) as u32;
+            let port_pixel_size = bus.read_word(pm_ptr + 32) as u32;
+            if base == 0
+                || base == screen_base
+                || port_pixel_size != 8
+                || width == 0
+                || height == 0
+                || width > screen_w_u32
+                || height > screen_h_u32
+                || row_bytes < width
+            {
+                rejected_shape += 1;
+                continue;
+            }
+            let area = u64::from(width) * u64::from(height);
+            if area < min_area {
+                rejected_area += 1;
+                continue;
+            }
+
+            let candidate = Candidate {
+                port,
+                base,
+                row_bytes,
+                width,
+                height,
+                ctab_handle: bus.read_long(pm_ptr + 42),
+            };
+            if best
+                .map(|current| area > u64::from(current.width) * u64::from(current.height))
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
+            }
+        }
+
+        let Some(candidate) = best else {
+            if trace {
+                eprintln!(
+                    "[BLIT-CPORT] skip: no candidate (tracked={}, considered={}, shape_rejects={}, area_rejects={}, min_area={})",
+                    self.cport_ports.len(),
+                    considered_ports,
+                    rejected_shape,
+                    rejected_area,
+                    min_area
+                );
+            }
+            return;
+        };
+        let dst_x = (screen_w_u32 - candidate.width) / 2;
+        let dst_y = (screen_h_u32 - candidate.height) / 2;
+        let row_count = candidate.height.min(screen_h_u32.saturating_sub(dst_y));
+        let col_count = candidate.width.min(screen_w_u32.saturating_sub(dst_x));
+        if row_count == 0 || col_count == 0 {
+            return;
+        }
+        self.manual_cport_presented_port = candidate.port;
+
+        if trace {
+            eprintln!(
+                "[BLIT-CPORT] presenting port=${:08X} base=${:08X} {}x{} at {},{}",
+                candidate.port, candidate.base, col_count, row_count, dst_x, dst_y
+            );
+        }
+
+        let screen_ctab_handle = Self::gdevice_ctab_handle(bus, self.main_gdevice_handle);
+        let src_ctab_seed = Self::ctab_seed(bus, candidate.ctab_handle);
+        let dst_ctab_seed = Self::ctab_seed(bus, screen_ctab_handle);
+        let src_clut = self.read_port_clut(bus, candidate.ctab_handle);
+        let dst_clut = self.read_port_clut(bus, screen_ctab_handle);
+        let hardware_palette_active = self.device_clut != self.color_manager_clut;
+        let skip_canonical_to_screen = Self::uses_canonical_system_8bpp_clut(&src_clut);
+        if candidate.ctab_handle != screen_ctab_handle
+            && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
+            && src_ctab_seed != dst_ctab_seed
+            && !skip_canonical_to_screen
+            && !hardware_palette_active
+        {
+            let translation =
+                self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle);
+            for row in 0..row_count {
+                let src_addr = candidate.base + row * candidate.row_bytes;
+                let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
+                for col in 0..col_count {
+                    let src_idx = bus.read_byte(src_addr + col);
+                    bus.write_byte(dst_addr + col, translation[src_idx as usize]);
+                }
+            }
+            return;
+        }
+
+        for row in 0..row_count {
+            let src_addr = candidate.base + row * candidate.row_bytes;
+            let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
+            bus.block_move(src_addr, dst_addr, col_count);
+        }
+    }
+
     /// Draw window chrome (title bar, close box, border) into the framebuffer
     /// WIND bounds are the CONTENT RECT; title bar is drawn ABOVE it.
     pub(crate) fn draw_window_chrome(&self, bus: &mut MacMemoryBus, active: bool) {
@@ -3091,6 +3325,7 @@ impl super::TrapDispatcher {
             .unwrap_or(false);
         if !pending_dialog_snapshot {
             self.blit_window_to_screen(bus);
+            self.blit_large_manual_cport_to_screen(bus);
         }
 
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
@@ -3393,6 +3628,7 @@ mod redraw_chrome_tests {
     const PORT_PTR: u32 = 0x181000;
     const VIS_RGN: u32 = 0x182000;
     const CLIP_RGN: u32 = 0x182200;
+    const WINDOW_VISIBLE_OFFSET: u32 = 110;
 
     #[test]
     fn fb_fill_pattern_rect_tiles_standard_gray_pattern() {
@@ -3505,6 +3741,40 @@ mod redraw_chrome_tests {
         bus.write_word(PORT_PTR + 18, 0);
         bus.write_word(PORT_PTR + 20, height);
         bus.write_word(PORT_PTR + 22, width);
+        pixmap_handle
+    }
+
+    fn install_8bpp_cgrafport_at(
+        bus: &mut crate::memory::MacMemoryBus,
+        port: u32,
+        base: u32,
+        row_bytes: u16,
+        width: u16,
+        height: u16,
+        ctab_handle: u32,
+    ) -> u32 {
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap, base);
+        bus.write_word(pixmap + 4, row_bytes | 0x8000);
+        bus.write_word(pixmap + 6, 0);
+        bus.write_word(pixmap + 8, 0);
+        bus.write_word(pixmap + 10, height);
+        bus.write_word(pixmap + 12, width);
+        bus.write_long(pixmap + 22, 0x0048_0000);
+        bus.write_long(pixmap + 26, 0x0048_0000);
+        bus.write_word(pixmap + 32, 8);
+        bus.write_word(pixmap + 34, 1);
+        bus.write_word(pixmap + 36, 8);
+        bus.write_long(pixmap + 42, ctab_handle);
+
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_word(port + 16, 0);
+        bus.write_word(port + 18, 0);
+        bus.write_word(port + 20, height);
+        bus.write_word(port + 22, width);
         pixmap_handle
     }
 
@@ -4333,6 +4603,112 @@ mod redraw_chrome_tests {
             bus.read_byte(screen_base + 8 * 64 + 8),
             0x11,
             "the original tracked window backing PixMap should still be presented"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blits_large_manual_cport_centered_when_front_window_is_screen_backed() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        bus.write_byte(manual_base, 0x44);
+        bus.write_byte(manual_base + 419 * 640 + 639, 0x55);
+        bus.write_byte(screen_base + 90 * 800 + 79, 0xAA);
+        bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
+        bus.write_byte(screen_base + 509 * 800 + 719, 0xAA);
+
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 90 * 800 + 80),
+            0x44,
+            "640x420 manual scene should be centered at x=80,y=90 on an 800x600 screen"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 509 * 800 + 719),
+            0x55,
+            "bottom-right source pixel should land at the centered destination edge"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 90 * 800 + 79),
+            0xAA,
+            "manual CPort presentation must not top-left blit or overrun the centered scene"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_does_not_blit_manual_cport_after_screen_copybits() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.copybits_screen_count = 1;
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        bus.write_byte(manual_base, 0x44);
+        bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
+
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 90 * 800 + 80),
+            0xAA,
+            "apps already presenting through CopyBits should not be overwritten by the fallback"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_continues_latched_manual_cport_after_later_screen_copybits() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        let dst = screen_base + 90 * 800 + 80;
+        bus.write_byte(manual_base, 0x44);
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+        assert_eq!(bus.read_byte(dst), 0x44);
+
+        disp.copybits_screen_count = 1;
+        bus.write_byte(dst, 0xAA);
+        bus.write_byte(manual_base, 0x66);
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(dst),
+            0x66,
+            "a manual CPort selected before a later CopyBits should keep presenting"
         );
     }
 }
