@@ -42,6 +42,15 @@ fn screen_copybits_rect_is_valid(rect: ScreenCopyBitsRect) -> bool {
         && rect.dst_bottom > rect.dst_top
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RecentFileRead {
+    pub(crate) ref_num: u16,
+    pub(crate) filename: String,
+    pub(crate) buffer: u32,
+    pub(crate) start: usize,
+    pub(crate) bytes_read: usize,
+}
+
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
 // to toggle these at runtime cannot — values are read ONCE at first call.
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -965,6 +974,8 @@ pub struct TrapDispatcher {
     pub(crate) write_refnums: std::collections::HashSet<u16>,
     /// File position table: refnum -> current byte offset
     pub(crate) file_positions: HashMap<u16, usize>,
+    /// Most recent successful PBRead/FSRead from a data fork.
+    pub(crate) recent_file_read: Option<RecentFileRead>,
     /// Set of VFS keys whose `ioFlAttrib` lock bit is set.
     /// Maintained by SetFilLock/HSetFLock ($A041/$A241) and
     /// RstFilLock/HRstFLock ($A042/$A242); read by
@@ -2241,6 +2252,7 @@ impl TrapDispatcher {
             synthetic_drivers: HashMap::new(),
             write_refnums: HashSet::new(),
             file_positions: HashMap::new(),
+            recent_file_read: None,
             locked_files: HashSet::new(),
             next_refnum: 100,
             mmu_mode: 1,                      // true32b — 32-bit addressing by default
@@ -3713,6 +3725,117 @@ impl TrapDispatcher {
             .map(|name| name.as_str())
     }
 
+    pub(crate) fn close_resource_file_refnum(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        refnum: u16,
+    ) -> bool {
+        if refnum == 0 {
+            return false;
+        }
+
+        let _ = self.flush_resource_file_refnum(bus, refnum);
+
+        let mut file_ptrs: HashSet<u32> = HashSet::new();
+        let mut externally_referenced_ptrs: HashSet<u32> = HashSet::new();
+        let mut closed_name: Option<String> = None;
+        let mut closed = false;
+
+        if let Some(resources) = self.resources.as_mut() {
+            if !resources.files.contains_key(&refnum) {
+                return false;
+            }
+
+            if let Some(file) = resources.files.get_mut(&refnum) {
+                for attr in file.attrs.values_mut() {
+                    *attr &= !(Self::RES_CHANGED_ATTR as u8);
+                }
+                file.map_attrs &= !Self::RES_MAP_CHANGED_ATTR;
+                file_ptrs.extend(file.loaded.values().copied().filter(|ptr| *ptr != 0));
+            }
+
+            externally_referenced_ptrs.extend(
+                resources
+                    .files
+                    .iter()
+                    .filter(|(other_refnum, _)| **other_refnum != refnum)
+                    .flat_map(|(_, file)| file.loaded.values().copied())
+                    .filter(|ptr| *ptr != 0),
+            );
+
+            if resources.current_file == refnum {
+                resources.current_file = resources
+                    .search_order
+                    .iter()
+                    .rev()
+                    .find(|&&candidate| {
+                        candidate != refnum && resources.files.contains_key(&candidate)
+                    })
+                    .copied()
+                    .unwrap_or(0);
+            }
+
+            resources
+                .search_order
+                .retain(|&candidate| candidate != refnum);
+            resources.files.remove(&refnum);
+            closed_name = resources.names.remove(&refnum);
+            closed = true;
+        }
+
+        if !closed {
+            return false;
+        }
+
+        let mut freed_ptrs = 0usize;
+        for ptr in file_ptrs {
+            self.ptr_to_handle.remove(&ptr);
+            if !externally_referenced_ptrs.contains(&ptr) {
+                bus.free(ptr);
+                freed_ptrs += 1;
+            }
+        }
+
+        let file_handles: Vec<u32> = self
+            .resource_handle_files
+            .iter()
+            .filter_map(|(&handle, &handle_refnum)| (handle_refnum == refnum).then_some(handle))
+            .collect();
+        for handle in &file_handles {
+            bus.write_long(*handle, 0);
+            bus.free(*handle);
+            self.loaded_handles.remove(handle);
+            self.resource_handle_files.remove(handle);
+            self.detached_handle_files.remove(handle);
+            self.detached_handles.remove(handle);
+            self.handle_state_bits.remove(handle);
+        }
+
+        let detached_handles: Vec<u32> = self
+            .detached_handle_files
+            .iter()
+            .filter_map(|(&handle, &handle_refnum)| (handle_refnum == refnum).then_some(handle))
+            .collect();
+        for handle in detached_handles {
+            self.detached_handle_files.remove(&handle);
+        }
+
+        self.write_refnums.remove(&refnum);
+        bus.write_word(0x0A5A, self.current_resource_refnum());
+
+        if trace_resfile_enabled() {
+            eprintln!(
+                "[RSRC] close resource refnum={} name={:?} freed_ptrs={} freed_handles={}",
+                refnum,
+                closed_name,
+                freed_ptrs,
+                file_handles.len()
+            );
+        }
+
+        true
+    }
+
     /// Reverse of `resource_file_name`: returns the refnum a file with
     /// the given name was opened under, if any. Used by OpenRFPerm to
     /// dedupe repeated opens of the same resource fork — without this,
@@ -3729,21 +3852,6 @@ impl TrapDispatcher {
         })
     }
 
-    pub(crate) fn find_resource_current(
-        &self,
-        res_type: [u8; 4],
-        res_id: i16,
-    ) -> Option<(u16, u32)> {
-        let res_type = Self::normalize_ostype(res_type);
-        let resources = self.resources.as_ref()?;
-        let refnum = self.current_resource_refnum();
-        resources
-            .files
-            .get(&refnum)
-            .and_then(|file| file.loaded.get(&(res_type, res_id)).copied())
-            .map(|ptr| (refnum, ptr))
-    }
-
     pub(crate) fn find_resource_any(&self, res_type: [u8; 4], res_id: i16) -> Option<(u16, u32)> {
         let res_type = Self::normalize_ostype(res_type);
         let resources = self.resources.as_ref()?;
@@ -3752,6 +3860,7 @@ impl TrapDispatcher {
                 .files
                 .get(&refnum)
                 .and_then(|file| file.loaded.get(&(res_type, res_id)))
+                .filter(|ptr| **ptr != 0)
             {
                 return Some((refnum, ptr));
             }

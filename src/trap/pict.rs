@@ -134,6 +134,17 @@ fn align_pict_pos(pos: u32) -> u32 {
     }
 }
 
+fn skip_reserved_v1_opcode(bus: &MacMemoryBus, opcode: u16, pos: u32) -> Option<u32> {
+    match opcode {
+        0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => Some(pos + 8),
+        0x3D..=0x3F | 0x4D..=0x4F | 0x5D..=0x5F | 0x7D..=0x7F | 0x8D..=0x8F => Some(pos),
+        0x65..=0x67 => Some(pos + 12),
+        0x6D..=0x6F => Some(pos + 4),
+        0x75..=0x77 | 0x85..=0x87 => Some(pos + u32::from(bus.read_word(pos))),
+        _ => None,
+    }
+}
+
 const REGION_HEADER_SIZE: u32 = 10;
 const REGION_STOP: i16 = i16::MAX;
 
@@ -1284,6 +1295,10 @@ pub fn draw_picture(
                         break;
                     }
                 } else {
+                    if let Some(new_pos) = skip_reserved_v1_opcode(bus, opcode, pos) {
+                        pos = new_pos;
+                        continue;
+                    }
                     eprintln!(
                         "[PICT] Unknown v1 opcode 0x{:02X} at offset {} - stopping",
                         opcode,
@@ -1429,6 +1444,341 @@ fn skip_pixdata(bus: &MacMemoryBus, mut pos: u32, pm: &PixMapInfo) -> u32 {
     }
 
     pos
+}
+
+fn read_pict_u16(bytes: &[u8], pos: usize) -> Option<u16> {
+    let hi = *bytes.get(pos)?;
+    let lo = *bytes.get(pos + 1)?;
+    Some(u16::from_be_bytes([hi, lo]))
+}
+
+fn read_pict_u32(bytes: &[u8], pos: usize) -> Option<u32> {
+    let b0 = *bytes.get(pos)?;
+    let b1 = *bytes.get(pos + 1)?;
+    let b2 = *bytes.get(pos + 2)?;
+    let b3 = *bytes.get(pos + 3)?;
+    Some(u32::from_be_bytes([b0, b1, b2, b3]))
+}
+
+fn pict_add(pos: usize, amount: usize, len: usize) -> Option<usize> {
+    let next = pos.checked_add(amount)?;
+    if next <= len {
+        Some(next)
+    } else {
+        None
+    }
+}
+
+fn pict_align_index(pos: usize, len: usize) -> Option<usize> {
+    pict_add(pos, usize::from(!pos.is_multiple_of(2)), len)
+}
+
+fn read_pixmap_bytes(bytes: &[u8], mut pos: usize) -> Option<(usize, PixMapInfo)> {
+    let row_bytes_raw = read_pict_u16(bytes, pos)?;
+    pos += 2;
+    let row_bytes = row_bytes_raw & 0x3FFF;
+    let bounds_top = read_pict_u16(bytes, pos)? as i16;
+    pos += 2;
+    let bounds_left = read_pict_u16(bytes, pos)? as i16;
+    pos += 2;
+    let bounds_bottom = read_pict_u16(bytes, pos)? as i16;
+    pos += 2;
+    let bounds_right = read_pict_u16(bytes, pos)? as i16;
+    pos += 2;
+    pos = pict_add(pos, 2, bytes.len())?; // version
+    let pack_type = read_pict_u16(bytes, pos)?;
+    pos += 2;
+    pos = pict_add(pos, 4 + 4 + 4 + 2, bytes.len())?; // packSize, hRes, vRes, pixelType
+    let pixel_size = read_pict_u16(bytes, pos)?;
+    pos += 2;
+    let cmp_count = read_pict_u16(bytes, pos)?;
+    pos += 2;
+    pos = pict_add(pos, 2 + 4 + 4 + 4, bytes.len())?; // cmpSize, planeBytes, pmTable, pmReserved
+
+    Some((
+        pos,
+        PixMapInfo {
+            row_bytes,
+            bounds_top,
+            bounds_left,
+            bounds_bottom,
+            bounds_right,
+            pixel_size,
+            cmp_count,
+            pack_type,
+        },
+    ))
+}
+
+fn skip_color_table_bytes(bytes: &[u8], pos: usize) -> Option<usize> {
+    let ct_size = usize::from(read_pict_u16(bytes, pos + 6)?);
+    pict_add(
+        pos,
+        8usize.checked_add((ct_size + 1).checked_mul(8)?)?,
+        bytes.len(),
+    )
+}
+
+fn skip_pixpat_bytes(bytes: &[u8], mut pos: usize) -> Option<usize> {
+    let pat_type = read_pict_u16(bytes, pos)?;
+    pos = pict_add(pos, 2 + 8, bytes.len())?;
+
+    if pat_type == 2 {
+        return pict_add(pos, 6, bytes.len());
+    }
+    if pat_type != 1 {
+        return Some(pos);
+    }
+
+    let (new_pos, pm) = read_pixmap_bytes(bytes, pos)?;
+    let new_pos = skip_color_table_bytes(bytes, new_pos)?;
+    skip_pixdata_bytes(bytes, new_pos, &pm)
+}
+
+fn skip_pixdata_bytes(bytes: &[u8], mut pos: usize, pm: &PixMapInfo) -> Option<usize> {
+    let height = usize::try_from((pm.bounds_bottom - pm.bounds_top).max(0)).ok()?;
+    let row_bytes = usize::from(pm.row_bytes);
+
+    if pm.pack_type == 1 || pm.row_bytes < 8 {
+        return pict_add(pos, row_bytes.checked_mul(height)?, bytes.len());
+    }
+
+    if pm.pack_type == 2 {
+        let data_bytes = if pm.pixel_size == 32 {
+            row_bytes.checked_mul(height)?.checked_mul(3)? / 4
+        } else {
+            row_bytes.checked_mul(height)?
+        };
+        return pict_add(pos, data_bytes, bytes.len());
+    }
+
+    for _ in 0..height {
+        let byte_count = if pm.row_bytes > 250 {
+            let count = usize::from(read_pict_u16(bytes, pos)?);
+            pos = pict_add(pos, 2, bytes.len())?;
+            count
+        } else {
+            let count = usize::from(*bytes.get(pos)?);
+            pos = pict_add(pos, 1, bytes.len())?;
+            count
+        };
+        pos = pict_add(pos, byte_count, bytes.len())?;
+    }
+
+    Some(pos)
+}
+
+fn skip_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
+    let row_bytes = usize::from(read_pict_u16(bytes, pos)? & 0x3FFF);
+    let bounds_top = read_pict_u16(bytes, pos + 2)? as i16;
+    let bounds_bottom = read_pict_u16(bytes, pos + 6)? as i16;
+    pos = pict_add(pos, 10 + 18, bytes.len())?;
+    if has_rgn {
+        let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
+        pos = pict_add(pos, rgn_size, bytes.len())?;
+    }
+    let height = usize::try_from((bounds_bottom - bounds_top).max(0)).ok()?;
+    pict_add(pos, row_bytes.checked_mul(height)?, bytes.len())
+}
+
+fn skip_pack_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
+    let row_bytes_raw = read_pict_u16(bytes, pos)?;
+    let is_pixmap = (row_bytes_raw & 0x8000) != 0;
+    let pm = if is_pixmap {
+        let (new_pos, pm) = read_pixmap_bytes(bytes, pos)?;
+        pos = skip_color_table_bytes(bytes, new_pos)?;
+        pm
+    } else {
+        let row_bytes = row_bytes_raw & 0x3FFF;
+        let bounds_top = read_pict_u16(bytes, pos + 2)? as i16;
+        let bounds_left = read_pict_u16(bytes, pos + 4)? as i16;
+        let bounds_bottom = read_pict_u16(bytes, pos + 6)? as i16;
+        let bounds_right = read_pict_u16(bytes, pos + 8)? as i16;
+        pos = pict_add(pos, 10, bytes.len())?;
+        PixMapInfo {
+            row_bytes,
+            bounds_top,
+            bounds_left,
+            bounds_bottom,
+            bounds_right,
+            pixel_size: 1,
+            cmp_count: 1,
+            pack_type: 0,
+        }
+    };
+
+    pos = pict_add(pos, 18, bytes.len())?;
+    if has_rgn {
+        let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
+        pos = pict_add(pos, rgn_size, bytes.len())?;
+    }
+    skip_pixdata_bytes(bytes, pos, &pm)
+}
+
+fn skip_direct_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
+    pos = pict_add(pos, 4, bytes.len())?; // baseAddr
+    let (new_pos, pm) = read_pixmap_bytes(bytes, pos)?;
+    pos = skip_color_table_bytes(bytes, new_pos)?;
+    pos = pict_add(pos, 18, bytes.len())?;
+    if has_rgn {
+        let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
+        pos = pict_add(pos, rgn_size, bytes.len())?;
+    }
+    skip_pixdata_bytes(bytes, pos, &pm)
+}
+
+fn skip_v1_reserved_bytes(bytes: &[u8], opcode: u16, pos: usize) -> Option<usize> {
+    match opcode {
+        0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => pict_add(pos, 8, bytes.len()),
+        0x3D..=0x3F | 0x4D..=0x4F | 0x5D..=0x5F | 0x7D..=0x7F | 0x8D..=0x8F => Some(pos),
+        0x65..=0x67 => pict_add(pos, 12, bytes.len()),
+        0x6D..=0x6F => pict_add(pos, 4, bytes.len()),
+        0x75..=0x77 | 0x85..=0x87 => {
+            let data_len = usize::from(read_pict_u16(bytes, pos)?);
+            pict_add(pos, data_len, bytes.len())
+        }
+        _ => None,
+    }
+}
+
+/// Return the byte length of a Picture record through EndOfPicture.
+///
+/// Color QuickDraw can ignore the 16-bit `picSize` field and read a picture
+/// until the end-of-picture opcode, which is required for large spooled PICT
+/// files. Inside Macintosh Volume V, V-92.
+pub(crate) fn picture_stream_len(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 10 {
+        return None;
+    }
+
+    let mut pos = 10usize;
+    let mut opcount = 0usize;
+    let mut is_v2 = false;
+
+    while pos < bytes.len() {
+        if opcount > 1_000_000 {
+            return None;
+        }
+        opcount += 1;
+
+        if is_v2 {
+            pos = pict_align_index(pos, bytes.len())?;
+        }
+
+        let opcode = if is_v2 {
+            let op = read_pict_u16(bytes, pos)?;
+            pos = pict_add(pos, 2, bytes.len())?;
+            op
+        } else {
+            let op = u16::from(*bytes.get(pos)?);
+            pos = pict_add(pos, 1, bytes.len())?;
+            op
+        };
+
+        pos = match opcode {
+            0x00
+            | 0x1C
+            | 0x1E
+            | 0x38..=0x3C
+            | 0x48..=0x4C
+            | 0x58..=0x5C
+            | 0x78..=0x7C
+            | 0x88..=0x8C => pos,
+            0x01 | 0x70..=0x74 | 0x80..=0x84 => {
+                let data_len = usize::from(read_pict_u16(bytes, pos)?);
+                pict_add(pos, data_len, bytes.len())?
+            }
+            0x02 | 0x09 | 0x0A | 0x10 => pict_add(pos, 8, bytes.len())?,
+            0x03 | 0x05 | 0x08 | 0x0D | 0x15 | 0x16 => pict_add(pos, 2, bytes.len())?,
+            0x04 => pict_add(pos, if is_v2 { 2 } else { 1 }, bytes.len())?,
+            0x06 | 0x07 | 0x0B | 0x0C | 0x0E | 0x0F | 0x21 | 0x68..=0x6C => {
+                pict_add(pos, 4, bytes.len())?
+            }
+            0x11 => {
+                let version = *bytes.get(pos)?;
+                let next = pict_add(pos, 1, bytes.len())?;
+                if version == 0x02 {
+                    pos = pict_add(next, 1, bytes.len())?;
+                    is_v2 = true;
+                    pos
+                } else {
+                    next
+                }
+            }
+            0x12..=0x14 => skip_pixpat_bytes(bytes, pos)?,
+            0x1A | 0x1B | 0x1D | 0x1F | 0x22 => pict_add(pos, 6, bytes.len())?,
+            0x20 | 0x30..=0x34 | 0x40..=0x44 | 0x50..=0x54 => pict_add(pos, 8, bytes.len())?,
+            0x23 | 0xA0 => pict_add(pos, 2, bytes.len())?,
+            0x28 => {
+                let len = usize::from(*bytes.get(pos + 4)?);
+                let mut next = pict_add(pos, 5usize.checked_add(len)?, bytes.len())?;
+                if is_v2 && !(1 + len).is_multiple_of(2) {
+                    next = pict_add(next, 1, bytes.len())?;
+                }
+                next
+            }
+            0x29 | 0x2A => {
+                let len = usize::from(*bytes.get(pos + 1)?);
+                let mut next = pict_add(pos, 2usize.checked_add(len)?, bytes.len())?;
+                if is_v2 && len.is_multiple_of(2) {
+                    next = pict_add(next, 1, bytes.len())?;
+                }
+                next
+            }
+            0x2B => {
+                let len = usize::from(*bytes.get(pos + 2)?);
+                let mut next = pict_add(pos, 3usize.checked_add(len)?, bytes.len())?;
+                if is_v2 && !(1 + len).is_multiple_of(2) {
+                    next = pict_add(next, 1, bytes.len())?;
+                }
+                next
+            }
+            0x2C | 0x2D | 0x2E | 0x24..=0x27 | 0x2F => {
+                let data_len = usize::from(read_pict_u16(bytes, pos)?);
+                let next = pict_add(pos, 2usize.checked_add(data_len)?, bytes.len())?;
+                pict_align_index(next, bytes.len())?
+            }
+            0x60..=0x64 => pict_add(pos, 12, bytes.len())?,
+            0x90 => skip_bits_rect_bytes(bytes, pos, false)?,
+            0x91 => skip_bits_rect_bytes(bytes, pos, true)?,
+            0x98 => skip_pack_bits_rect_bytes(bytes, pos, false)?,
+            0x99 => skip_pack_bits_rect_bytes(bytes, pos, true)?,
+            0x9A => skip_direct_bits_rect_bytes(bytes, pos, false)?,
+            0x9B => skip_direct_bits_rect_bytes(bytes, pos, true)?,
+            0xA1 => {
+                let data_len = usize::from(read_pict_u16(bytes, pos + 2)?);
+                let mut next = pict_add(pos, 4usize.checked_add(data_len)?, bytes.len())?;
+                if is_v2 && !data_len.is_multiple_of(2) {
+                    next = pict_add(next, 1, bytes.len())?;
+                }
+                next
+            }
+            0xFF => return Some(pos),
+            0x0C00 => pict_add(pos, 24, bytes.len())?,
+            0x02FF => pict_add(pos, 2, bytes.len())?,
+            _ if is_v2 => {
+                if (0x00A2..=0x00AF).contains(&opcode) {
+                    let data_len = usize::from(read_pict_u16(bytes, pos)?);
+                    let next = pict_add(pos, 2usize.checked_add(data_len)?, bytes.len())?;
+                    pict_align_index(next, bytes.len())?
+                } else if (0x00B0..=0x00CF).contains(&opcode) || (0x8000..=0x80FF).contains(&opcode)
+                {
+                    pos
+                } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
+                    let data_len = usize::try_from(read_pict_u32(bytes, pos)?).ok()?;
+                    let next = pict_add(pos, 4usize.checked_add(data_len)?, bytes.len())?;
+                    pict_align_index(next, bytes.len())?
+                } else if (0x0100..=0x7FFF).contains(&opcode) {
+                    pict_add(pos, usize::from(opcode >> 8).checked_mul(2)?, bytes.len())?
+                } else {
+                    return None;
+                }
+            }
+            _ => skip_v1_reserved_bytes(bytes, opcode, pos)?,
+        };
+    }
+
+    None
 }
 
 /// Read a ColorTable from PICT data.
@@ -5122,6 +5472,68 @@ mod tests {
         );
 
         assert!(ok, "v2 OpColor should be skipped, not stop the PICT stream");
+        assert_eq!(bus.read_byte(screen_base + 8 * row_bytes + 8), 255);
+    }
+
+    #[test]
+    fn pict_v1_reserved_shape_opcode_advances_to_following_opcode() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_w: u16 = 16;
+        let screen_h: u16 = 16;
+        let row_bytes = screen_w as u32;
+        bus.write_bytes(
+            screen_base,
+            &vec![0x42; (row_bytes * screen_h as u32) as usize],
+        );
+
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1; // versionOp
+        bus.write_byte(p, 0x01);
+        p += 1; // v1
+        bus.write_byte(p, 0x35);
+        p += 1; // reserved rect-family opcode: 8 bytes of data
+        bus.write_bytes(p, &[0xAA; 8]);
+        p += 8;
+        bus.write_byte(p, 0x34);
+        p += 1; // fillRect
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 16);
+        p += 2;
+        bus.write_word(p, 16);
+        p += 2;
+        bus.write_byte(p, 0xFF);
+        p += 1; // EndOfPicture
+
+        bus.write_word(pic, (p - pic) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 16);
+        bus.write_word(pic + 8, 16);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            16,
+            16,
+            (screen_base, row_bytes, screen_w, screen_h, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(
+            ok,
+            "v1 reserved shape opcodes should skip their data, not stop the PICT stream"
+        );
         assert_eq!(bus.read_byte(screen_base + 8 * row_bytes + 8), 255);
     }
 

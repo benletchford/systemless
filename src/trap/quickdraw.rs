@@ -3576,10 +3576,13 @@ impl super::TrapDispatcher {
                 let bg_index = dst_clut.as_ref().map(|clut| {
                     self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_bg_rgb)
                 });
-                let transparent_src_index = if mode_base == 36 {
-                    src_clut.map(|clut| {
-                        self.palette_index_for_rgb(bus, src_info.ctab_handle, clut, copy_bg_rgb)
-                    })
+                let transparent_src_indices = if mode_base == 36 {
+                    self.copy_bits_transparent_source_indices(
+                        bus,
+                        src_info.ctab_handle,
+                        src_clut,
+                        copy_bg_rgb,
+                    )
                 } else {
                     None
                 };
@@ -3730,13 +3733,16 @@ impl super::TrapDispatcher {
                                 let src_pixel = read_src_byte(bus, src_addr);
                                 if mode_base == 36 {
                                     let src_rgb = src_clut.unwrap()[src_pixel as usize];
-                                    if transparent_src_index == Some(src_pixel) {
+                                    if transparent_src_indices
+                                        .as_ref()
+                                        .map_or(false, |indices| indices[src_pixel as usize])
+                                    {
                                         if let Some(points) = copybits_hud_probe_points {
                                             if points.iter().any(|&(probe_x, probe_y)| {
                                                 dx == probe_x && dy == probe_y
                                             }) {
                                                 eprintln!(
-                                                    "[COPYBITS-HUD] tick={} dx={} dy={} mode={} src_idx={} src_rgb=({:04X},{:04X},{:04X}) transparent=true bg_rgb=({:04X},{:04X},{:04X}) transparent_src_idx={:?} srcBase=${:08X} dstBase=${:08X} srcCTab=${:08X} dstCTab=${:08X} srcSeed={:?} dstSeed={:?}",
+                                                    "[COPYBITS-HUD] tick={} dx={} dy={} mode={} src_idx={} src_rgb=({:04X},{:04X},{:04X}) transparent=true bg_rgb=({:04X},{:04X},{:04X}) srcBase=${:08X} dstBase=${:08X} srcCTab=${:08X} dstCTab=${:08X} srcSeed={:?} dstSeed={:?}",
                                                     self.tick_count,
                                                     dx,
                                                     dy,
@@ -3748,7 +3754,6 @@ impl super::TrapDispatcher {
                                                     copy_bg_rgb[0],
                                                     copy_bg_rgb[1],
                                                     copy_bg_rgb[2],
-                                                    transparent_src_index,
                                                     src_info.base,
                                                     dst_info.base,
                                                     src_info.ctab_handle,
@@ -7867,11 +7872,13 @@ impl super::TrapDispatcher {
                         }
                     }
 
+                    let streamed_pic_ptr = self.materialize_recent_spooled_picture(bus, pic_ptr);
+                    let draw_pic_ptr = streamed_pic_ptr.unwrap_or(pic_ptr);
                     let device_ct_seed =
                         Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus)).unwrap_or(0);
                     let (ok, pict_clut) = super::pict::draw_picture(
                         bus,
-                        pic_ptr,
+                        draw_pic_ptr,
                         adj_top,
                         adj_left,
                         adj_bottom,
@@ -7906,7 +7913,7 @@ impl super::TrapDispatcher {
                             self.seed_screen_palette_from_picture_clut(
                                 bus,
                                 pic_handle,
-                                pic_ptr,
+                                draw_pic_ptr,
                                 fetch_clut,
                                 Some(fetch.ct_id),
                             );
@@ -7946,7 +7953,7 @@ impl super::TrapDispatcher {
                                             .unwrap_or(0);
                                     let _ = super::pict::draw_picture(
                                         bus,
-                                        pic_ptr,
+                                        draw_pic_ptr,
                                         adj_top,
                                         adj_left,
                                         adj_bottom,
@@ -8000,7 +8007,7 @@ impl super::TrapDispatcher {
                                             .unwrap_or(0);
                                     let _ = super::pict::draw_picture(
                                         bus,
-                                        pic_ptr,
+                                        draw_pic_ptr,
                                         adj_top,
                                         adj_left,
                                         adj_bottom,
@@ -8051,7 +8058,7 @@ impl super::TrapDispatcher {
                                             .unwrap_or(0);
                                     let _ = super::pict::draw_picture(
                                         bus,
-                                        pic_ptr,
+                                        draw_pic_ptr,
                                         adj_top,
                                         adj_left,
                                         adj_bottom,
@@ -8082,6 +8089,10 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
+                    }
+
+                    if let Some(streamed_pic_ptr) = streamed_pic_ptr {
+                        bus.free(streamed_pic_ptr);
                     }
 
                     if trace_drawpicture_enabled() {
@@ -10142,9 +10153,10 @@ impl super::TrapDispatcher {
             // Pascal frame: SP+0..3 = dataPtr (Ptr), SP+4..5 = byteCount, pop 6.
             // Real-Mac semantic: reads picture-playback bytes during
             // DrawPicture — the inverse of StdPutPic. Systemless's DrawPicture
-            // parses the PICT directly from the resource bytes without going
-            // through the bottleneck, so direct trap calls are a no-op that
-            // pop the frame and return noErr in D0.
+            // parses resident PICT bytes directly and has a data-fork
+            // spooling fallback for the common "10-byte header was just
+            // read from file" path. Direct StdGetPic trap calls remain a
+            // no-op that pops the documented frame and returns noErr in D0.
             (true, 0x0EE) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 6);
@@ -17726,6 +17738,72 @@ impl super::TrapDispatcher {
         port + 2
     }
 
+    fn materialize_recent_spooled_picture(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        pic_ptr: u32,
+    ) -> Option<u32> {
+        let pic_size = usize::from(bus.read_word(pic_ptr));
+        if pic_size <= 10 {
+            return None;
+        }
+
+        let frame_top = bus.read_word(pic_ptr + 2) as i16;
+        let frame_left = bus.read_word(pic_ptr + 4) as i16;
+        let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
+        let frame_right = bus.read_word(pic_ptr + 8) as i16;
+        let frame_height = i32::from(frame_bottom) - i32::from(frame_top);
+        let frame_width = i32::from(frame_right) - i32::from(frame_left);
+        if frame_bottom <= frame_top
+            || frame_right <= frame_left
+            || frame_height > 8192
+            || frame_width > 8192
+        {
+            return None;
+        }
+
+        let recent = self.recent_file_read.clone()?;
+        if recent.buffer != pic_ptr || recent.bytes_read != 10 {
+            return None;
+        }
+
+        let file = self.vfs.get(&recent.filename)?;
+        // Large spooled PICT files are delimited by EndOfPicture, not by the
+        // 16-bit picSize field. QuickDraw intentionally reads until that
+        // opcode. Inside Macintosh Volume V, V-92.
+        let materialized_size =
+            super::pict::picture_stream_len(file.get(recent.start..)?).unwrap_or(pic_size);
+        let file_end = recent.start.checked_add(materialized_size)?;
+        if file_end > file.len() {
+            return None;
+        }
+        let loaded_header = bus.read_bytes(pic_ptr, 10);
+        if file.get(recent.start..recent.start + 10)? != loaded_header.as_slice() {
+            return None;
+        }
+
+        let materialized = bus.alloc(materialized_size as u32);
+        if materialized == 0 {
+            return None;
+        }
+        bus.write_bytes(materialized, &file[recent.start..file_end]);
+        self.file_positions.insert(recent.ref_num, file_end);
+        self.recent_file_read = Some(super::dispatch::RecentFileRead {
+            ref_num: recent.ref_num,
+            filename: recent.filename.clone(),
+            buffer: materialized,
+            start: recent.start,
+            bytes_read: materialized_size,
+        });
+        if trace_drawpicture_enabled() {
+            eprintln!(
+                "[DRAWPICTURE] materialized spooled PICT ref={} file=\"{}\" offset={} size={} temp=${:08X}",
+                recent.ref_num, recent.filename, recent.start, materialized_size, materialized
+            );
+        }
+        Some(materialized)
+    }
+
     fn sanitize_copy_bitmap_bounds(
         info: &mut CopyBitmapInfo,
         rect_top: i16,
@@ -18020,10 +18098,13 @@ impl super::TrapDispatcher {
         let bg_index = dst_clut
             .as_ref()
             .map(|clut| self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_bg_rgb));
-        let transparent_src_index = if mode_base == 36 {
-            src_clut.map(|clut| {
-                self.palette_index_for_rgb(bus, src_info.ctab_handle, clut, copy_bg_rgb)
-            })
+        let transparent_src_indices = if mode_base == 36 {
+            self.copy_bits_transparent_source_indices(
+                bus,
+                src_info.ctab_handle,
+                src_clut,
+                copy_bg_rgb,
+            )
         } else {
             None
         };
@@ -18172,10 +18253,12 @@ impl super::TrapDispatcher {
                         let src_addr = src_info.base + src_y_off * src_info.row_bytes + src_x_off;
                         let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
                         let src_pixel = read_src_byte(bus, src_addr);
-                        if mode_base == 36 {
-                            if transparent_src_index == Some(src_pixel) {
-                                continue;
-                            }
+                        if mode_base == 36
+                            && transparent_src_indices
+                                .as_ref()
+                                .map_or(false, |indices| indices[src_pixel as usize])
+                        {
+                            continue;
                         }
                         let Some(dst_pixel) = self.copy_bits_color_source_mode_pixel(
                             bus,
@@ -20454,6 +20537,29 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn copy_bits_transparent_source_indices(
+        &self,
+        bus: &MacMemoryBus,
+        ctab_handle: u32,
+        src_clut: Option<&[[u16; 3]; 256]>,
+        bg_rgb: [u16; 3],
+    ) -> Option<[bool; 256]> {
+        let clut = src_clut?;
+        let mut indices = [false; 256];
+        // IM: Imaging With QuickDraw 1994, p. 4-39: transparent mode
+        // preserves the destination when the source pixel equals the current
+        // background color.
+        let bg_index = self.palette_index_for_rgb(bus, ctab_handle, clut, bg_rgb);
+        indices[usize::from(bg_index)] = true;
+        // BasiliskII/System 7.5.3 evidence from Blade's indexed GWorld
+        // sprites shows source index 0 also acting as the matte hole even
+        // when its CLUT entry is black and the current background is white.
+        // Keep the documented background-color rule above and add the indexed
+        // PixMap matte convention here for 8bpp transparent CopyBits.
+        indices[0] = true;
+        Some(indices)
+    }
+
     /// Resolve the physical pixel target for SetCPixel/GetCPixel at (h,v).
     /// Returns the byte offset of the pixel together with the underlying
     /// pixmap layout. Returns None when the coordinate is outside the
@@ -20489,7 +20595,7 @@ impl super::TrapDispatcher {
                 bus.read_word(pm_ptr + 8) as i16,
                 bus.read_word(pm_ptr + 10) as i16,
                 bus.read_word(pm_ptr + 12) as i16,
-                bus.read_long(pm_ptr + 46),
+                bus.read_long(pm_ptr + 42),
             )
         } else {
             (
@@ -29275,6 +29381,61 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_bits_transparent_preserves_black_index_zero_matte() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        let src_ctab_handle = 0x303000u32;
+        let dst_ctab_handle = 0x304000u32;
+        let src_rect = 0x305000u32;
+        let dst_rect = 0x305010u32;
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[(0, 0x0000, 0x0000, 0x0000), (9, 0xFFFF, 0x0000, 0x0000)],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[
+                (7, 0x2222, 0x3333, 0x4444),
+                (42, 0xFFFF, 0x0000, 0x0000),
+                (255, 0x0000, 0x0000, 0x0000),
+            ],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 2, 1, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 2, 1, dst_ctab_handle);
+        bus.write_byte(src_base, 0);
+        bus.write_byte(src_base + 1, 9);
+        bus.write_byte(dst_base, 7);
+        bus.write_byte(dst_base + 1, 7);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+        d.bg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 36u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(dst_base),
+            7,
+            "black source index 0 should act as the transparent sprite matte"
+        );
+        assert_eq!(bus.read_byte(dst_base + 1), 42);
+    }
+
+    #[test]
     fn test_copy_bits_8bpp_overlap_uses_source_snapshot() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let pixmap = 0x300100u32;
@@ -35050,6 +35211,61 @@ mod tests {
     }
 
     #[test]
+    fn drawpicture_spools_remaining_picture_bytes_from_recent_file_header_read() {
+        // IM:V 1986 pp. V-93..V-95: large pictures may live in a data fork
+        // and be spooled by replacing getPicProc; DrawPicture requests the
+        // picture definition bytes after the 10-byte Picture header.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let screen_base = bus.read_long(port_ptr + 2);
+        bus.fill_zeros(screen_base, 64);
+
+        let file_picture = 0x362000u32;
+        write_v1_paintrect_picture(&mut bus, file_picture, (0, 0, 1, 1), (0, 0, 1, 1));
+        let pic_size = usize::from(bus.read_word(file_picture));
+        let mut picture_bytes = bus.read_bytes(file_picture, pic_size);
+        picture_bytes[1] = 12;
+        d.vfs.insert("StreamedPICT".to_string(), picture_bytes);
+        d.open_files.insert(100, "StreamedPICT".to_string());
+        d.file_positions.insert(100, 0);
+
+        let pb = 0x363000u32;
+        let pic_ptr = 0x364000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, pic_ptr);
+        bus.write_long(pb + 36, 10);
+        bus.write_word(pb + 44, 0);
+        bus.write_long(pb + 46, 0);
+        let read = d.dispatch_resource(false, 0x02, &mut cpu, &mut bus);
+        assert!(read.unwrap().is_ok());
+        assert_eq!(bus.read_long(pb + 40), 10);
+        assert_eq!(*d.file_positions.get(&100).unwrap(), 10);
+
+        let pic_handle = 0x364010u32;
+        let dst_rect = 0x364100u32;
+        bus.write_long(pic_handle, pic_ptr);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, pic_handle);
+
+        let draw = d.dispatch_quickdraw(true, 0x0F6, &mut cpu, &mut bus);
+        assert!(draw.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_byte(screen_base),
+            0x80,
+            "DrawPicture should render opcodes that were still only in the backing file"
+        );
+        assert_eq!(
+            *d.file_positions.get(&100).unwrap(),
+            pic_size,
+            "spooled DrawPicture should ignore a short picSize and advance through EndOfPicture"
+        );
+    }
+
+    #[test]
     fn test_draw_picture() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let dst_rect = 0x300000u32;
@@ -37714,6 +37930,54 @@ mod tests {
             assert!(result.unwrap().is_ok());
         }
         assert_eq!(cpu.read_reg(Register::A7), sp_pre);
+    }
+
+    #[test]
+    fn setcpixel_uses_pixmap_pmtable_not_pmreserved_for_cgrafport() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        let port_ptr = bus.read_long(globals_ptr);
+        let pixmap = 0x300100u32;
+        let pixmap_handle = 0x300200u32;
+        let base = 0x301000u32;
+        let ctab_handle = 0x302000u32;
+        let reserved_ctab_handle = 0x303000u32;
+        let color_ptr = 0x304000u32;
+        let rgb = [0x1234u16, 0x5678, 0x9ABC];
+
+        write_color_table(
+            &mut bus,
+            ctab_handle,
+            0x1111_1111,
+            &[(0, 0x0000, 0x0000, 0x0000), (77, rgb[0], rgb[1], rgb[2])],
+        );
+        write_color_table(
+            &mut bus,
+            reserved_ctab_handle,
+            0x2222_2222,
+            &[(0, 0x0000, 0x0000, 0x0000), (5, rgb[0], rgb[1], rgb[2])],
+        );
+        write_pixmap_8(&mut bus, pixmap, base, 2, 2, ctab_handle);
+        bus.write_long(pixmap + 46, reserved_ctab_handle);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port_ptr + 2, pixmap_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+        bus.write_word(color_ptr, rgb[0]);
+        bus.write_word(color_ptr + 2, rgb[1]);
+        bus.write_word(color_ptr + 4, rgb[2]);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, color_ptr);
+        bus.write_word(TEST_SP + 4, 1); // v
+        bus.write_word(TEST_SP + 6, 1); // h
+
+        let result = d.dispatch_quickdraw(true, 0x216, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(base + 3),
+            77,
+            "SetCPixel must use PixMap.pmTable at +42, not pmReserved at +46"
+        );
     }
 
     #[test]

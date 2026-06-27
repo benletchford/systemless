@@ -2530,6 +2530,16 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 if the_window != 0 {
+                    if self.dialog_items.contains_key(&the_window) {
+                        self.dialog_visible_snapshots.remove(&the_window);
+                        if self
+                            .retained_modal_dialog_click
+                            .as_ref()
+                            .is_some_and(|click| click.dialog_ptr == the_window)
+                        {
+                            self.retained_modal_dialog_click = None;
+                        }
+                    }
                     let was_visible = self.window_visible(bus, the_window);
                     if !was_visible {
                         bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0x00);
@@ -3886,7 +3896,9 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::super::dispatch::{LoadedResources, QueuedEvent, ResourceFileMap};
+    use super::super::dispatch::{
+        DialogItem, LoadedResources, PersistentDialogSnapshot, QueuedEvent, ResourceFileMap,
+    };
     use super::super::test_helpers::{setup, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::MemoryBus;
@@ -6175,6 +6187,55 @@ mod tests {
             bus.read_byte(probe),
             0xCC,
             "HideWindow should restore the pixels saved under non-document windows"
+        );
+    }
+
+    #[test]
+    fn hide_window_clears_visible_dialog_snapshot_before_chrome_redraw() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let dialog = bus.alloc(256);
+        bus.write_word(dialog + 8, (-100i16) as u16);
+        bus.write_word(dialog + 10, (-100i16) as u16);
+        bus.write_word(dialog + 20, 180);
+        bus.write_word(dialog + 22, 260);
+        bus.write_byte(
+            dialog + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+            0xFF,
+        );
+        disp.window_list = vec![dialog];
+        disp.front_window = dialog;
+        disp.current_port = dialog;
+        disp.dialog_items
+            .insert(dialog, vec![DialogItem::default()]);
+        disp.dialog_visible_snapshots.insert(
+            dialog,
+            PersistentDialogSnapshot {
+                bounds: (120, 120, 140, 180),
+                pixels: vec![0xEE; 20 * 60],
+            },
+        );
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, dialog);
+        let hidden = dispatch(&mut disp, 0x116, &mut cpu, &mut bus);
+        assert!(hidden.unwrap().is_ok());
+        assert!(
+            !disp.dialog_visible_snapshots.contains_key(&dialog),
+            "HideWindow must stop compositing retained visible dialog pixels"
+        );
+
+        let probe = screen_base + 125 * 800 + 125;
+        bus.write_byte(probe, 0x11);
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(
+            bus.read_byte(probe),
+            0x11,
+            "redraw_chrome must not repaint a hidden dialog snapshot"
         );
     }
 
