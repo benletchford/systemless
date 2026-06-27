@@ -18955,13 +18955,21 @@ impl super::TrapDispatcher {
         true
     }
 
+    fn region_band_height(top: i16, bottom: i16) -> usize {
+        (i32::from(bottom) - i32::from(top)).max(0) as usize
+    }
+
+    fn region_row_index(y: i16, top: i16) -> usize {
+        (i32::from(y) - i32::from(top)) as usize
+    }
+
     fn region_rows_for_band(
         bus: &MacMemoryBus,
         rgn_handle: u32,
         top: i16,
         bottom: i16,
     ) -> Vec<Vec<i16>> {
-        let height = (bottom - top).max(0) as usize;
+        let height = Self::region_band_height(top, bottom);
         let mut rows = vec![Vec::new(); height];
         if height == 0 {
             return rows;
@@ -18986,7 +18994,7 @@ impl super::TrapDispatcher {
 
         if rgn_size <= REGION_HEADER_SIZE {
             for y in overlap_top..overlap_bottom {
-                rows[(y - top) as usize] = vec![rgn_left, rgn_right];
+                rows[Self::region_row_index(y, top)] = vec![rgn_left, rgn_right];
             }
             return rows;
         }
@@ -18994,7 +19002,7 @@ impl super::TrapDispatcher {
         if let Some(cache) =
             Self::build_region_membership_cache(bus, rgn_handle, overlap_top, overlap_bottom)
         {
-            let start = (overlap_top - top) as usize;
+            let start = Self::region_row_index(overlap_top, top);
             for (offset, row) in cache.rows.into_iter().enumerate() {
                 rows[start + offset] = row;
             }
@@ -19124,13 +19132,14 @@ impl super::TrapDispatcher {
         top: i16,
         bottom: i16,
     ) -> Vec<Vec<i16>> {
-        let height = (bottom - top).max(0) as usize;
+        let height = Self::region_band_height(top, bottom);
         let mut rows = vec![Vec::new(); height];
         if height == 0 || segments.is_empty() {
             return rows;
         }
 
-        for y in top..bottom {
+        for y32 in i32::from(top)..i32::from(bottom) {
+            let y = y32 as i16;
             let scan_y = f64::from(y) + 0.5;
             let mut crossings = Vec::new();
             for &((v0, h0), (v1, h1)) in segments {
@@ -19161,7 +19170,7 @@ impl super::TrapDispatcher {
                     (left < right).then_some((left, right))
                 })
                 .collect::<Vec<_>>();
-            rows[(y - top) as usize] = Self::intervals_to_endpoints(intervals);
+            rows[Self::region_row_index(y, top)] = Self::intervals_to_endpoints(intervals);
         }
 
         rows
@@ -19175,12 +19184,12 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        let mut rows = vec![Vec::new(); (bottom - top) as usize];
+        let mut rows = vec![Vec::new(); Self::region_band_height(top, bottom)];
         for (&y, row) in recording.filled_rows.iter() {
             if y < top || y >= bottom {
                 continue;
             }
-            let index = (y - top) as usize;
+            let index = Self::region_row_index(y, top);
             rows[index] = Self::union_region_rows(&rows[index], row);
         }
 
@@ -19203,17 +19212,18 @@ impl super::TrapDispatcher {
             if row.is_empty() {
                 continue;
             }
-            let y = rows_top + row_index as i16;
+            let y = Self::clamp_region_coord(i32::from(rows_top) + row_index as i32);
+            let next_y = Self::clamp_region_coord(i32::from(y) + 1);
             let left = row[0];
             let right = *row.last().unwrap();
             bbox = Some(match bbox {
                 Some((top, current_left, bottom, current_right)) => (
                     top,
                     current_left.min(left),
-                    bottom.max(y + 1),
+                    bottom.max(next_y),
                     current_right.max(right),
                 ),
-                None => (y, left, y + 1, right),
+                None => (y, left, next_y, right),
             });
         }
 
@@ -19221,20 +19231,24 @@ impl super::TrapDispatcher {
             return Self::write_region(bus, rgn_handle, None, &[]);
         };
 
-        let first_row = &rows[(top - rows_top) as usize];
+        let first_row = &rows[Self::region_row_index(top, rows_top)];
         let rectangular = first_row.len() == 2
             && first_row[0] == left
             && first_row[1] == right
-            && (top..bottom).all(|y| rows[(y - rows_top) as usize] == *first_row);
+            && (i32::from(top)..i32::from(bottom)).all(|y32| {
+                let y = y32 as i16;
+                rows[Self::region_row_index(y, rows_top)] == *first_row
+            });
         if rectangular {
             return Self::write_region(bus, rgn_handle, Some((top, left, bottom, right)), &[]);
         }
 
         let mut data_words = Vec::new();
         let mut previous_row = Vec::new();
-        for y in top..=bottom {
+        for y32 in i32::from(top)..=i32::from(bottom) {
+            let y = y32 as i16;
             let current_row = if y < bottom {
-                rows[(y - rows_top) as usize].clone()
+                rows[Self::region_row_index(y, rows_top)].clone()
             } else {
                 Vec::new()
             };
@@ -19416,7 +19430,7 @@ impl super::TrapDispatcher {
         let source_top = i32::from(top);
         let source_bottom = i32::from(bottom);
         let radius = i32::from(dv).abs();
-        let mut rows = Vec::with_capacity((new_bottom - new_top) as usize);
+        let mut rows = Vec::with_capacity(Self::region_band_height(new_top, new_bottom));
 
         for y in i32::from(new_top)..i32::from(new_bottom) {
             if dv >= 0 {
@@ -19552,9 +19566,10 @@ impl super::TrapDispatcher {
         let mut next_change_y = bus.read_word(cursor) as i16;
         cursor += 2;
         let mut active = Vec::new();
-        let mut rows = Vec::with_capacity((bottom - top) as usize);
+        let mut rows = Vec::with_capacity(Self::region_band_height(top, bottom));
 
-        for y in top..bottom {
+        for y32 in i32::from(top)..i32::from(bottom) {
+            let y = y32 as i16;
             while next_change_y != REGION_STOP && next_change_y <= y {
                 let mut delta = Vec::new();
                 loop {
