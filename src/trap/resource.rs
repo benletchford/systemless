@@ -800,7 +800,7 @@ impl super::TrapDispatcher {
         None
     }
 
-    fn find_or_load_resource_any(
+    pub(crate) fn find_or_load_resource_any(
         &mut self,
         bus: &mut MacMemoryBus,
         res_type: [u8; 4],

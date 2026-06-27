@@ -11532,8 +11532,12 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let cursor_id = bus.read_word(sp) as i16;
 
-                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"CURS", cursor_id) {
-                    self.get_or_create_resource_handle(bus, *b"CURS", cursor_id, ptr)
+                let handle = if let Some((refnum, ptr)) =
+                    self.find_or_load_resource_any(bus, *b"CURS", cursor_id)
+                {
+                    self.get_or_create_resource_handle_in_file(
+                        bus, *b"CURS", cursor_id, ptr, refnum,
+                    )
                 } else if let Some(ptr) = self.synthesize_system_cursor(bus, cursor_id) {
                     // Built-in cursor synthesised + cached. Use the
                     // resource-handle helper so subsequent GetCursor
@@ -11574,8 +11578,10 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let pat_id = bus.read_word(sp) as i16;
 
-                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"PAT ", pat_id) {
-                    self.get_or_create_resource_handle(bus, *b"PAT ", pat_id, ptr)
+                let handle = if let Some((refnum, ptr)) =
+                    self.find_or_load_resource_any(bus, *b"PAT ", pat_id)
+                {
+                    self.get_or_create_resource_handle_in_file(bus, *b"PAT ", pat_id, ptr, refnum)
                 } else {
                     0
                 };
@@ -11617,8 +11623,11 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let icon_id = bus.read_word(sp) as i16;
 
-                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"ICON", icon_id) {
-                    let h = self.get_or_create_resource_handle(bus, *b"ICON", icon_id, ptr);
+                let handle = if let Some((refnum, ptr)) =
+                    self.find_or_load_resource_any(bus, *b"ICON", icon_id)
+                {
+                    let h = self
+                        .get_or_create_resource_handle_in_file(bus, *b"ICON", icon_id, ptr, refnum);
                     eprintln!(
                         "[TRAP] GetIcon({}) -> handle=${:08X} ptr=${:08X}",
                         icon_id, h, ptr
@@ -11644,8 +11653,11 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let pic_id = bus.read_word(sp) as i16;
 
-                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"PICT", pic_id) {
-                    let h = self.get_or_create_resource_handle(bus, *b"PICT", pic_id, ptr);
+                let handle = if let Some((refnum, ptr)) =
+                    self.find_or_load_resource_any(bus, *b"PICT", pic_id)
+                {
+                    let h = self
+                        .get_or_create_resource_handle_in_file(bus, *b"PICT", pic_id, ptr, refnum);
                     eprintln!(
                         "[TRAP] GetPicture({}) -> handle=${:08X} ptr=${:08X}",
                         pic_id, h, ptr
@@ -11669,8 +11681,12 @@ impl super::TrapDispatcher {
             (true, 0x1BA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let string_id = bus.read_word(sp) as i16;
-                let handle = if let Some((_, ptr)) = self.find_resource_any(*b"STR ", string_id) {
-                    self.get_or_create_resource_handle(bus, *b"STR ", string_id, ptr)
+                let handle = if let Some((refnum, ptr)) =
+                    self.find_or_load_resource_any(bus, *b"STR ", string_id)
+                {
+                    self.get_or_create_resource_handle_in_file(
+                        bus, *b"STR ", string_id, ptr, refnum,
+                    )
                 } else if let Some(ptr) = self.synthesize_system_str(bus, string_id) {
                     self.get_or_create_resource_handle(bus, *b"STR ", string_id, ptr)
                 } else {
@@ -31791,6 +31807,132 @@ mod tests {
 
         let handle = bus.read_long(TEST_SP + 2);
         assert_eq!(handle, 0); // NIL when no PICT resource loaded
+    }
+
+    #[test]
+    fn get_picture_reloads_released_resource_from_open_resource_file() {
+        fn make_resource_fork_bytes(resources: &[([u8; 4], i16, &[u8])]) -> Vec<u8> {
+            let mut type_groups: Vec<([u8; 4], Vec<(i16, &[u8], u32)>)> = Vec::new();
+            for (res_type, res_id, data) in resources {
+                let group_idx = type_groups
+                    .iter()
+                    .position(|(existing_type, _)| existing_type == res_type)
+                    .unwrap_or_else(|| {
+                        type_groups.push((*res_type, Vec::new()));
+                        type_groups.len() - 1
+                    });
+                type_groups[group_idx].1.push((*res_id, *data, 0));
+            }
+            type_groups.sort_by_key(|(res_type, _)| *res_type);
+            for (_, entries) in &mut type_groups {
+                entries.sort_by_key(|(res_id, _, _)| *res_id);
+            }
+
+            let data_offset = 16u32;
+            let mut data_section = Vec::new();
+            for (_, entries) in &mut type_groups {
+                for (_, data, data_pos) in entries {
+                    *data_pos = data_section.len() as u32;
+                    data_section.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                    data_section.extend_from_slice(data);
+                }
+            }
+
+            let map_offset = data_offset + data_section.len() as u32;
+            let type_list_offset = 30u16;
+            let type_count = type_groups.len();
+            let resource_count: usize = type_groups.iter().map(|(_, entries)| entries.len()).sum();
+            let ref_lists_offset = 2 + type_count * 8;
+            let name_list_offset =
+                type_list_offset as usize + ref_lists_offset + resource_count * 12;
+            let map_length = name_list_offset as u32;
+
+            let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+            let mut header = [0u8; 16];
+            header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+            header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+            header[8..12].copy_from_slice(&(data_section.len() as u32).to_be_bytes());
+            header[12..16].copy_from_slice(&map_length.to_be_bytes());
+            bytes[0..16].copy_from_slice(&header);
+            bytes[data_offset as usize..data_offset as usize + data_section.len()]
+                .copy_from_slice(&data_section);
+
+            let map_start = map_offset as usize;
+            bytes[map_start..map_start + 16].copy_from_slice(&header);
+            bytes[map_start + 24..map_start + 26].copy_from_slice(&type_list_offset.to_be_bytes());
+            bytes[map_start + 26..map_start + 28]
+                .copy_from_slice(&(name_list_offset as u16).to_be_bytes());
+            bytes[map_start + 28..map_start + 30]
+                .copy_from_slice(&((type_count as u16) - 1).to_be_bytes());
+
+            let type_list_start = map_start + type_list_offset as usize;
+            bytes[type_list_start..type_list_start + 2]
+                .copy_from_slice(&((type_count as u16) - 1).to_be_bytes());
+            let mut next_ref_list_offset = ref_lists_offset;
+            for (i, (res_type, entries)) in type_groups.iter().enumerate() {
+                let type_entry = type_list_start + 2 + i * 8;
+                bytes[type_entry..type_entry + 4].copy_from_slice(res_type);
+                bytes[type_entry + 4..type_entry + 6]
+                    .copy_from_slice(&((entries.len() as u16) - 1).to_be_bytes());
+                bytes[type_entry + 6..type_entry + 8]
+                    .copy_from_slice(&(next_ref_list_offset as u16).to_be_bytes());
+
+                let ref_list_start = type_list_start + next_ref_list_offset;
+                for (j, (res_id, _, data_pos)) in entries.iter().enumerate() {
+                    let ref_entry = ref_list_start + j * 12;
+                    bytes[ref_entry..ref_entry + 2]
+                        .copy_from_slice(&(*res_id as u16).to_be_bytes());
+                    bytes[ref_entry + 2..ref_entry + 4].copy_from_slice(&0xFFFFu16.to_be_bytes());
+                    bytes[ref_entry + 4] = 0;
+                    let data_offset_bytes = data_pos.to_be_bytes();
+                    bytes[ref_entry + 5..ref_entry + 8].copy_from_slice(&data_offset_bytes[1..4]);
+                }
+
+                next_ref_list_offset += entries.len() * 12;
+            }
+
+            bytes
+        }
+
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pict_data = b"\x00\x11Wordtris reloadable picture data";
+        let fork = make_resource_fork_bytes(&[(*b"PICT", 1127, &pict_data[..])]);
+        disp.vfs_rsrc.insert("Pictures".to_string(), fork);
+        disp.open_resource_file_from_vfs_key(&mut bus, "Pictures", false);
+
+        bus.write_word(TEST_SP, 1127);
+        let first = disp.dispatch_dialog(true, 0x1BC, &mut cpu, &mut bus);
+        assert!(first.unwrap().is_ok());
+        let first_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(first_handle, 0, "first GetPicture must find PICT 1127");
+        let first_ptr = bus.read_long(first_handle);
+        assert_eq!(bus.read_bytes(first_ptr, pict_data.len()), pict_data);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, first_handle);
+        let release = disp.dispatch_resource(true, 0x1A3, &mut cpu, &mut bus);
+        assert!(release.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(first_handle),
+            0,
+            "ReleaseResource should clear the old master pointer"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1127);
+        let second = disp.dispatch_dialog(true, 0x1BC, &mut cpu, &mut bus);
+        assert!(second.unwrap().is_ok());
+        let second_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(
+            second_handle, 0,
+            "GetPicture must reload a released PICT from the open resource file"
+        );
+        assert_ne!(
+            second_handle, first_handle,
+            "a released resource should be returned through a fresh handle"
+        );
+        let second_ptr = bus.read_long(second_handle);
+        assert_eq!(bus.read_bytes(second_ptr, pict_data.len()), pict_data);
     }
 
     // ---- GetString ($A9BA) ----
