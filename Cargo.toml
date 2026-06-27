@@ -1,6 +1,6 @@
 [package]
 name = "systemless"
-version = "0.1.64"
+version = "0.1.65"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "High-Level Emulation for classic Macintosh applications"
