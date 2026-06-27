@@ -66,15 +66,24 @@ jobs:
             )
           fi
 
+          crates_io_version=$(
+            { cargo search systemless --limit 1 2>/dev/null || true; } \
+              | sed -n 's/^systemless = "\([^"]*\)".*/\1/p' \
+              | head -1
+          )
+
           should_release=false
           if [ "$FORCE" = "true" ]; then
             should_release=true
           elif [ "$EVENT_NAME" = "push" ] && [ "$version" != "$previous_version" ]; then
             should_release=true
+          elif [ -n "$crates_io_version" ] && [ "$version" != "$crates_io_version" ]; then
+            should_release=true
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "crates_io_version=$crates_io_version" >> "$GITHUB_OUTPUT"
           echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
 
       - name: Dry-run package publish
