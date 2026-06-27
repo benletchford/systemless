@@ -405,7 +405,9 @@ impl Default for FixtureRunnerConfig {
 /// 4. After halt: [`halted_pc`](Self::halted_pc) /
 ///    [`halted_trap`](Self::halted_trap) /
 ///    [`halted_sp`](Self::halted_sp) / [`halted_d0`](Self::halted_d0)
-///    expose per-halt detail.
+///    expose per-halt detail, and
+///    [`halted_by_exit_to_shell`](Self::halted_by_exit_to_shell) classifies
+///    the common clean application-exit path.
 ///
 /// **Defaults:** kiosk mode (Mac menu bar suppressed regardless of the
 /// guest's `MBarHeight`); arrow keys NOT remapped to numpad. Override
@@ -573,9 +575,18 @@ impl FixtureRunner {
         }
     }
 
-    /// Returns true if the application has called ExitToShell.
+    /// Returns true once guest execution has stopped.
     pub fn is_halted(&self) -> bool {
         self.halted
+    }
+
+    /// Returns true when the halt was the documented clean application
+    /// termination path, `_ExitToShell` (`$A9F4`).
+    ///
+    /// This lets runners and tests distinguish apps that intentionally quit
+    /// from halts caused by faults, invalid PCs, or other fatal errors.
+    pub fn halted_by_exit_to_shell(&self) -> bool {
+        self.halted && self.halted_trap == Some(0xA9F4)
     }
 
     pub fn guest_tick(&self) -> u32 {
@@ -6951,6 +6962,42 @@ mod tests {
         assert_eq!(
             runner.dispatcher.trap_histogram[idx], 1,
             "the same path must also increment trap_histogram[$0175]"
+        );
+    }
+
+    #[test]
+    fn halted_by_exit_to_shell_classifies_clean_application_quit() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        runner.bus.write_word(base, 0xA9F4); // _ExitToShell
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let (_steps, running) = runner.run_steps(1, None);
+
+        assert!(!running, "ExitToShell should stop the runner");
+        assert!(runner.is_halted());
+        assert_eq!(runner.halted_trap(), Some(0xA9F4));
+        assert!(
+            runner.halted_by_exit_to_shell(),
+            "ExitToShell halt must be classified as a clean application exit"
+        );
+    }
+
+    #[test]
+    fn halted_by_exit_to_shell_rejects_invalid_pc_halts() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.cpu.write_reg(Register::PC, runner.bus.ram_size());
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let (_steps, running) = runner.run_steps(1, None);
+
+        assert!(!running, "invalid PC should stop the runner");
+        assert!(runner.is_halted());
+        assert_eq!(runner.halted_trap(), None);
+        assert!(
+            !runner.halted_by_exit_to_shell(),
+            "invalid-PC halts must not be reported as clean application exits"
         );
     }
 
