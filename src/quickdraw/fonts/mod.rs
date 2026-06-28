@@ -119,6 +119,13 @@ struct PackedFace {
     data: &'static [u8],
 }
 
+const HELVETICA_12_FALLBACK_METRICS: FontMetrics = FontMetrics {
+    ascent: 10,
+    descent: 3,
+    wid_max: 12,
+    leading: 1,
+};
+
 const PACKED_FACES: &[PackedFace] = &[
     PackedFace {
         font_id: FONT_CHICAGO,
@@ -173,6 +180,19 @@ const PACKED_FACES: &[PackedFace] = &[
         font_id: FONT_GENEVA,
         size: 10,
         metrics: baked::GENEVA_10_METRICS,
+        glyphs: &baked::GENEVA_10_GLYPHS,
+        data: baked::GENEVA_10_DATA,
+    },
+    PackedFace {
+        // Text 1993, pp. 1-61 and 3-65: font family 21 is Helvetica,
+        // and QuickDraw measurements come from the current font/size.
+        // Systemless cannot ship Apple's Helvetica NFNTs, so the baked
+        // fallback uses the narrower open DejaVu/Geneva 10 strike for
+        // Helvetica 12 instead of same-size Geneva. That keeps classic
+        // app-owned Helvetica dialog text from overflowing fixed rects.
+        font_id: FONT_HELVETICA,
+        size: 12,
+        metrics: HELVETICA_12_FALLBACK_METRICS,
         glyphs: &baked::GENEVA_10_GLYPHS,
         data: baked::GENEVA_10_DATA,
     },
@@ -533,6 +553,34 @@ mod tests {
     fn fallback_courier_to_monaco() {
         let face = get_font_face_or_default(FONT_COURIER, 12);
         assert_eq!(face.font_id, FONT_MONACO);
+    }
+
+    #[test]
+    fn baked_helvetica_12_fallback_is_narrower_than_geneva_12() {
+        let overrides = HashMap::new();
+        let helvetica = get_font_face_with_overrides(&overrides, FONT_HELVETICA, 12)
+            .expect("baked Helvetica 12 fallback should resolve directly");
+        let geneva = get_font_face_with_overrides(&overrides, FONT_GENEVA, 12)
+            .expect("baked Geneva 12 should resolve");
+        assert_eq!(helvetica.font_id, FONT_HELVETICA);
+        assert_eq!(helvetica.size, 12);
+        assert_eq!(
+            helvetica.metrics.ascent + helvetica.metrics.descent + helvetica.metrics.leading,
+            14
+        );
+
+        fn width(face: &FontFace, text: &str) -> u16 {
+            text.bytes()
+                .map(|byte| face.glyphs[(byte - b' ') as usize].advance as u16)
+                .sum()
+        }
+
+        let notice_line = "Please note that EV Override is not a free product.";
+        assert!(width(helvetica, notice_line) < width(geneva, notice_line));
+        assert!(
+            width(helvetica, "Register...") <= 56,
+            "fallback Helvetica 12 should fit classic 90px dialog buttons"
+        );
     }
 
     #[test]
