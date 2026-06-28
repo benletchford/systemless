@@ -1903,9 +1903,20 @@ fn unpack_bits_chunk16(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32
 }
 
 /// Decompress PackBits-encoded data for one scanline.
-fn unpack_bits(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32, Vec<u8>) {
+fn unpack_bits(bus: &MacMemoryBus, pos: u32, row_bytes: u16) -> (u32, Vec<u8>) {
+    unpack_bits_with_byte_count_row_bytes(bus, pos, row_bytes, row_bytes)
+}
+
+/// Decompress PackBits data when the decoded row length differs from the
+/// PixMap rowBytes value used to size the scanline byte count.
+fn unpack_bits_with_byte_count_row_bytes(
+    bus: &MacMemoryBus,
+    mut pos: u32,
+    decoded_row_bytes: u16,
+    byte_count_row_bytes: u16,
+) -> (u32, Vec<u8>) {
     // Read byte count for this scanline
-    let byte_count = if row_bytes > 250 {
+    let byte_count = if byte_count_row_bytes > 250 {
         let bc = bus.read_word(pos) as u32;
         pos += 2;
         bc
@@ -1916,9 +1927,9 @@ fn unpack_bits(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32, Vec<u8
     };
 
     let end_pos = pos + byte_count;
-    let mut result = Vec::with_capacity(row_bytes as usize);
+    let mut result = Vec::with_capacity(decoded_row_bytes as usize);
 
-    while pos < end_pos && result.len() < (row_bytes as usize) * 2 {
+    while pos < end_pos && result.len() < (decoded_row_bytes as usize) * 2 {
         let flag = bus.read_byte(pos) as i8;
         pos += 1;
 
@@ -4741,7 +4752,7 @@ fn parse_direct_bits_rect(
         } else if pm.pack_type == 3 && pm.pixel_size == 16 {
             unpack_bits_chunk16(bus, pos, unpacked_len)
         } else {
-            unpack_bits(bus, pos, unpacked_len)
+            unpack_bits_with_byte_count_row_bytes(bus, pos, unpacked_len, pm.row_bytes)
         };
         pos = new_pos;
 
@@ -5444,6 +5455,126 @@ mod tests {
             0b1000_0000,
             "indexed color PICT pixels drawn into 1bpp must resolve against the black/white destination, not the full 8bpp CLUT"
         );
+    }
+
+    #[test]
+    fn directbitsrect_packtype4_uses_pixmap_rowbytes_for_word_byte_counts() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_w: u16 = 80;
+        let screen_h: u16 = 2;
+        let row_bytes = u32::from(screen_w);
+        bus.write_bytes(
+            screen_base,
+            &vec![0xAA; (row_bytes * u32::from(screen_h)) as usize],
+        );
+
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1; // VersionOp
+        bus.write_byte(p, 0x02);
+        p += 1; // PICT v2
+        bus.write_byte(p, 0xFF);
+        p += 1; // v2 version padding
+        bus.write_byte(p, 0x00);
+        p += 1; // align first word opcode
+
+        bus.write_word(p, 0x009A);
+        p += 2; // DirectBitsRect
+        bus.write_long(p, 0x0000_00FF);
+        p += 4; // baseAddr
+        bus.write_word(p, 0x8000 | 320);
+        p += 2; // PixMap rowBytes: 80 pixels * 4 bytes
+        for value in [0i16, 0, 1, 80] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+        bus.write_word(p, 0);
+        p += 2; // version
+        bus.write_word(p, 4);
+        p += 2; // packType 4: component PackBits, red first
+        bus.write_long(p, 0);
+        p += 4; // packSize
+        bus.write_long(p, 0x0048_0000);
+        p += 4; // hRes
+        bus.write_long(p, 0x0048_0000);
+        p += 4; // vRes
+        bus.write_word(p, 16);
+        p += 2; // direct pixelType
+        bus.write_word(p, 32);
+        p += 2; // pixelSize
+        bus.write_word(p, 3);
+        p += 2; // cmpCount: RGB only
+        bus.write_word(p, 8);
+        p += 2; // cmpSize
+        bus.write_long(p, 0);
+        p += 4; // planeBytes
+        bus.write_long(p, 0);
+        p += 4; // pmTable
+        bus.write_long(p, 0);
+        p += 4; // pmReserved
+
+        for _ in 0..2 {
+            for value in [0i16, 0, 1, 80] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+        bus.write_word(p, 64);
+        p += 2; // mode used by recorded direct-pixel PICTs
+
+        // rowBytes is 320, so the scanline byte count is a word even though
+        // the decoded 24-bit RGB planes are only 240 bytes.
+        bus.write_word(p, 6);
+        p += 2;
+        for component in [0x12u8, 0x34, 0x56] {
+            bus.write_byte(p, 0xB1); // repeat 80 bytes
+            p += 1;
+            bus.write_byte(p, component);
+            p += 1;
+        }
+
+        bus.write_word(p, 0x0034);
+        p += 2; // fillRect; proves the stream is still synchronized
+        bus.write_word(p, 1);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 2);
+        p += 2;
+        bus.write_word(p, 80);
+        p += 2;
+        bus.write_word(p, 0x00FF);
+        p += 2; // EndOfPicture
+
+        bus.write_word(pic, (p - pic) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 2);
+        bus.write_word(pic + 8, 80);
+
+        let mut clut = [[0x8000u16, 0x8000, 0x8000]; 256];
+        clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        clut[42] = [0x1212, 0x3434, 0x5656];
+        clut[255] = [0x0000, 0x0000, 0x0000];
+
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            screen_h as i16,
+            screen_w as i16,
+            (screen_base, row_bytes, screen_w, screen_h, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok);
+        assert_eq!(bus.read_byte(screen_base), 42);
+        assert_eq!(bus.read_byte(screen_base + row_bytes), 255);
     }
 
     /// fillRect ($0x34) honors FillPat (0x0A) rather than PnPat (0x09) —

@@ -34,6 +34,23 @@ struct DialogCIconLayout {
     pixel_data_ptr: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TeResolvedStyle {
+    font: i16,
+    face: i16,
+    size: i16,
+    color: (u16, u16, u16),
+    line_height: i16,
+    ascent: i16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TeStyleRun {
+    start: usize,
+    style_index: usize,
+    style: TeResolvedStyle,
+}
+
 fn trace_dialog_procs_enabled() -> bool {
     *TRACE_DIALOG_PROCS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_PROCS").is_some())
 }
@@ -507,6 +524,7 @@ impl super::TrapDispatcher {
     const SCRAP_STYLE_FACE_OFFSET: u32 = 0x0A;
     const SCRAP_STYLE_SIZE_OFFSET: u32 = 0x0C;
     const SCRAP_STYLE_COLOR_OFFSET: u32 = 0x0E;
+    const SCRAP_STYLE_ELEMENT_SIZE: u32 = 0x14;
     const STYLE_SCRAP_REC_SIZE: u32 = 0x20;
 
     const TE_FEATURE_AUTO_SCROLL: u16 = 0;
@@ -1122,6 +1140,12 @@ impl super::TrapDispatcher {
         let on_break = clamped != 0
             && clamped == text_len
             && text_bytes.get(clamped - 1).copied() == Some(b'\r');
+        let styled_runs = if Self::te_is_styled_record(bus, te_ptr) {
+            self.te_style_runs(bus, te_handle, text_len)
+        } else {
+            Vec::new()
+        };
+        let uses_styled_runs = !styled_runs.is_empty() && Self::te_is_styled_record(bus, te_ptr);
         let (font, _, size, _, _, _) = self.te_primary_style(bus, te_handle);
         let rect_width = dest_rect.3.saturating_sub(dest_rect.1);
         // Per Inside Macintosh: Text 1993, lines 7320-7323:
@@ -1134,15 +1158,23 @@ impl super::TrapDispatcher {
                 let line_width = if on_break {
                     rect_width.saturating_sub(1)
                 } else {
-                    rect_width
-                        .saturating_sub(self.te_measure_text_width(
+                    let line_width = if uses_styled_runs {
+                        self.te_measure_text_width_styled(
+                            &styled_runs,
+                            &text_bytes,
+                            line_start,
+                            line_end,
+                        )
+                    } else {
+                        self.te_measure_text_width(
                             font,
                             Self::font_lookup_size(size),
                             &text_bytes,
                             line_start,
                             line_end,
-                        ))
-                        .saturating_sub(1)
+                        )
+                    };
+                    rect_width.saturating_sub(line_width).saturating_sub(1)
                 };
                 if just == 1 {
                     line_width / 2
@@ -1158,13 +1190,22 @@ impl super::TrapDispatcher {
             dest_rect
                 .1
                 .saturating_add(left_offset)
-                .saturating_add(self.te_measure_text_width(
-                    font,
-                    Self::font_lookup_size(size),
-                    &text_bytes,
-                    line_start,
-                    clamped,
-                ))
+                .saturating_add(if uses_styled_runs {
+                    self.te_measure_text_width_styled(
+                        &styled_runs,
+                        &text_bytes,
+                        line_start,
+                        clamped,
+                    )
+                } else {
+                    self.te_measure_text_width(
+                        font,
+                        Self::font_lookup_size(size),
+                        &text_bytes,
+                        line_start,
+                        clamped,
+                    )
+                })
         };
 
         let mut top = dest_rect.0;
@@ -1223,19 +1264,33 @@ impl super::TrapDispatcher {
         let line_end = starts.get(line_index + 1).copied().unwrap_or(text_len);
 
         let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
+        let styled_runs = if Self::te_is_styled_record(bus, te_ptr) {
+            self.te_style_runs(bus, te_handle, text_len)
+        } else {
+            Vec::new()
+        };
+        let uses_styled_runs = !styled_runs.is_empty() && Self::te_is_styled_record(bus, te_ptr);
         let (font, _, size, _, _, _) = self.te_primary_style(bus, te_handle);
         let rect_width = dest_rect.3.saturating_sub(dest_rect.1);
         let left_offset = match just {
             1 | -1 => {
-                let line_width = rect_width
-                    .saturating_sub(self.te_measure_text_width(
+                let measured_width = if uses_styled_runs {
+                    self.te_measure_text_width_styled(
+                        &styled_runs,
+                        &text_bytes,
+                        line_start,
+                        line_end,
+                    )
+                } else {
+                    self.te_measure_text_width(
                         font,
                         Self::font_lookup_size(size),
                         &text_bytes,
                         line_start,
                         line_end,
-                    ))
-                    .saturating_sub(1);
+                    )
+                };
+                let line_width = rect_width.saturating_sub(measured_width).saturating_sub(1);
                 if just == 1 {
                     line_width / 2
                 } else {
@@ -1251,7 +1306,12 @@ impl super::TrapDispatcher {
             if matches!(*byte, b'\r' | b'\n') {
                 return index.min(i16::MAX as usize) as i16;
             }
-            let advance = self.te_char_width(font, Self::font_lookup_size(size), *byte);
+            let advance = if uses_styled_runs {
+                let style = Self::te_style_at_offset(&styled_runs, index);
+                self.te_char_width(style.font, style.size, *byte)
+            } else {
+                self.te_char_width(font, Self::font_lookup_size(size), *byte)
+            };
             // Hit-test against the glyph midpoint so a click on the right
             // half of a character lands on the next offset, matching the
             // semantics described in Inside Macintosh Volume V, V-172.
@@ -1440,6 +1500,489 @@ impl super::TrapDispatcher {
             metrics.ascent + metrics.descent + metrics.leading,
             metrics.ascent,
         )
+    }
+
+    fn te_resolved_style_from_parts(
+        font: i16,
+        face: i16,
+        size: i16,
+        color: (u16, u16, u16),
+        line_height: i16,
+        ascent: i16,
+    ) -> TeResolvedStyle {
+        let resolved_size = Self::font_lookup_size(size);
+        let metrics = get_font_metrics(font, resolved_size);
+        let fallback_height = metrics.ascent + metrics.descent + metrics.leading;
+        TeResolvedStyle {
+            font,
+            face,
+            size: resolved_size,
+            color,
+            line_height: if line_height > 0 {
+                line_height
+            } else {
+                fallback_height
+            },
+            ascent: if ascent > 0 { ascent } else { metrics.ascent },
+        }
+    }
+
+    fn te_primary_resolved_style(&self, bus: &MacMemoryBus, te_handle: u32) -> TeResolvedStyle {
+        let (font, face, size, color, line_height, ascent) = self.te_primary_style(bus, te_handle);
+        Self::te_resolved_style_from_parts(font, face, size, color, line_height, ascent)
+    }
+
+    fn te_style_from_table_element(bus: &MacMemoryBus, style_ptr: u32) -> TeResolvedStyle {
+        Self::te_resolved_style_from_parts(
+            bus.read_word(style_ptr + Self::ST_ELEMENT_FONT_OFFSET) as i16,
+            bus.read_word(style_ptr + Self::ST_ELEMENT_FACE_OFFSET) as i16,
+            bus.read_word(style_ptr + Self::ST_ELEMENT_SIZE_OFFSET) as i16,
+            (
+                bus.read_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET),
+                bus.read_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2),
+                bus.read_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4),
+            ),
+            bus.read_word(style_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET) as i16,
+            bus.read_word(style_ptr + Self::ST_ELEMENT_ASCENT_OFFSET) as i16,
+        )
+    }
+
+    fn te_style_from_scrap_element(bus: &MacMemoryBus, scrap_style_ptr: u32) -> TeResolvedStyle {
+        Self::te_resolved_style_from_parts(
+            bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_FONT_OFFSET) as i16,
+            bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_FACE_OFFSET) as i16,
+            bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_SIZE_OFFSET) as i16,
+            (
+                bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_COLOR_OFFSET),
+                bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_COLOR_OFFSET + 2),
+                bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_COLOR_OFFSET + 4),
+            ),
+            bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_HEIGHT_OFFSET) as i16,
+            bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_ASCENT_OFFSET) as i16,
+        )
+    }
+
+    fn te_write_style_table_element(
+        bus: &mut MacMemoryBus,
+        style_ptr: u32,
+        style: TeResolvedStyle,
+    ) {
+        bus.write_word(style_ptr + Self::ST_ELEMENT_REFCOUNT_OFFSET, 1);
+        bus.write_word(
+            style_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
+            style.line_height as u16,
+        );
+        bus.write_word(
+            style_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
+            style.ascent as u16,
+        );
+        bus.write_word(style_ptr + Self::ST_ELEMENT_FONT_OFFSET, style.font as u16);
+        bus.write_word(style_ptr + Self::ST_ELEMENT_FACE_OFFSET, style.face as u16);
+        bus.write_word(style_ptr + Self::ST_ELEMENT_SIZE_OFFSET, style.size as u16);
+        bus.write_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET, style.color.0);
+        bus.write_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2, style.color.1);
+        bus.write_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4, style.color.2);
+    }
+
+    fn te_style_runs(
+        &self,
+        bus: &MacMemoryBus,
+        te_handle: u32,
+        text_len: usize,
+    ) -> Vec<TeStyleRun> {
+        let fallback = self.te_primary_resolved_style(bus, te_handle);
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if !Self::te_is_styled_record(bus, te_ptr) {
+            return vec![TeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: fallback,
+            }];
+        }
+
+        let style_handle = Self::te_style_handle(bus, te_handle);
+        let style_ptr = if style_handle != 0 {
+            bus.read_long(style_handle)
+        } else {
+            0
+        };
+        if style_ptr == 0 {
+            return vec![TeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: fallback,
+            }];
+        }
+
+        let style_table_handle = bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
+        let style_table_ptr = if style_table_handle != 0 {
+            bus.read_long(style_table_handle)
+        } else {
+            0
+        };
+        if style_table_ptr == 0 {
+            return vec![TeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: fallback,
+            }];
+        }
+
+        let n_runs = bus.read_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET) as usize;
+        let n_styles = bus.read_word(style_ptr + Self::TE_STYLE_N_STYLES_OFFSET) as usize;
+        let style_record_size = bus.get_alloc_size(style_ptr).unwrap_or(0);
+        let style_table_size = bus.get_alloc_size(style_table_ptr).unwrap_or(0);
+        let max_runs = style_record_size
+            .saturating_sub(Self::TE_STYLE_RUNS_OFFSET)
+            .checked_div(4)
+            .unwrap_or(0) as usize;
+        let max_styles = style_table_size
+            .checked_div(Self::ST_ELEMENT_SIZE)
+            .unwrap_or(0) as usize;
+        let run_count = n_runs.min(max_runs);
+        let style_count = n_styles.min(max_styles);
+        if run_count == 0 || style_count == 0 {
+            return vec![TeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: fallback,
+            }];
+        }
+
+        let mut runs = Vec::with_capacity(run_count);
+        for run_index in 0..run_count {
+            let run_ptr = style_ptr + Self::TE_STYLE_RUNS_OFFSET + (run_index as u32 * 4);
+            let style_index_word = bus.read_word(run_ptr + 2);
+            if style_index_word == 0xFFFF {
+                break;
+            }
+            let style_index = style_index_word as usize;
+            if style_index >= style_count {
+                continue;
+            }
+            let style_element_ptr = style_table_ptr + (style_index as u32 * Self::ST_ELEMENT_SIZE);
+            runs.push(TeStyleRun {
+                start: (bus.read_word(run_ptr) as usize).min(text_len),
+                style_index,
+                style: Self::te_style_from_table_element(bus, style_element_ptr),
+            });
+        }
+
+        if runs.is_empty() {
+            return vec![TeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: fallback,
+            }];
+        }
+
+        runs.sort_by_key(|run| run.start);
+        let mut folded: Vec<TeStyleRun> = Vec::with_capacity(runs.len() + 1);
+        for run in runs {
+            if let Some(last) = folded.last_mut() {
+                if last.start == run.start {
+                    *last = run;
+                    continue;
+                }
+                if last.style == run.style {
+                    continue;
+                }
+            }
+            folded.push(run);
+        }
+
+        if folded.first().is_none_or(|run| run.start != 0) {
+            folded.insert(
+                0,
+                TeStyleRun {
+                    start: 0,
+                    style_index: 0,
+                    style: fallback,
+                },
+            );
+        }
+        folded
+    }
+
+    fn te_style_at_offset(runs: &[TeStyleRun], offset: usize) -> TeResolvedStyle {
+        let mut style = runs
+            .first()
+            .map(|run| run.style)
+            .unwrap_or_else(|| Self::te_resolved_style_from_parts(0, 0, 0, (0, 0, 0), 0, 0));
+        for run in runs {
+            if run.start > offset {
+                break;
+            }
+            style = run.style;
+        }
+        style
+    }
+
+    fn te_measure_text_width_styled(
+        &self,
+        runs: &[TeStyleRun],
+        text_bytes: &[u8],
+        start: usize,
+        end: usize,
+    ) -> i16 {
+        let start = start.min(text_bytes.len());
+        let end = end.min(text_bytes.len());
+        let mut width = 0i16;
+        for (offset, &byte) in text_bytes[start..end].iter().enumerate() {
+            let style = Self::te_style_at_offset(runs, start + offset);
+            width = width.saturating_add(self.te_char_width(style.font, style.size, byte));
+        }
+        width
+    }
+
+    fn te_next_break_styled(
+        &self,
+        runs: &[TeStyleRun],
+        text_bytes: &[u8],
+        offset: usize,
+        max_width: i16,
+    ) -> usize {
+        let len = text_bytes.len();
+        if offset >= len {
+            return len;
+        }
+
+        let mut width = 0i16;
+        let mut index = offset;
+        while width <= max_width && index < len && !matches!(text_bytes[index], b'\r' | b'\n') {
+            let style = Self::te_style_at_offset(runs, index);
+            width =
+                width.saturating_add(self.te_char_width(style.font, style.size, text_bytes[index]));
+            index += 1;
+        }
+
+        let mut next = if width > max_width {
+            let max_index = index.saturating_sub(1);
+            if text_bytes[max_index] == b' ' {
+                let mut scan = index;
+                while scan < len && text_bytes[scan] == b' ' {
+                    scan += 1;
+                }
+                scan
+            } else {
+                let mut scan = max_index;
+                while scan > offset && !Self::te_word_break_byte(text_bytes[scan - 1]) {
+                    scan -= 1;
+                }
+                if scan == offset {
+                    max_index
+                } else {
+                    scan
+                }
+            }
+        } else if index == len {
+            len
+        } else {
+            index + 1
+        };
+
+        if next == offset && offset < len {
+            next += 1;
+        }
+        next
+    }
+
+    fn te_wrap_lines_styled(
+        &self,
+        runs: &[TeStyleRun],
+        text_bytes: &[u8],
+        box_width: i16,
+    ) -> Vec<(usize, usize)> {
+        let mut lines = Vec::new();
+        let mut line_start = 0usize;
+        while line_start < text_bytes.len() {
+            let next = self.te_next_break_styled(runs, text_bytes, line_start, box_width);
+            lines.push((line_start, next.min(text_bytes.len())));
+            line_start = next;
+        }
+        lines
+    }
+
+    fn te_line_metrics_for_range(runs: &[TeStyleRun], start: usize, end: usize) -> (i16, i16) {
+        if runs.is_empty() {
+            return (0, 0);
+        }
+
+        let mut line_height = 0i16;
+        let mut ascent = 0i16;
+        if start >= end {
+            let style = Self::te_style_at_offset(runs, start);
+            return (style.line_height, style.ascent);
+        }
+
+        for offset in start..end {
+            let style = Self::te_style_at_offset(runs, offset);
+            line_height = line_height.max(style.line_height);
+            ascent = ascent.max(style.ascent);
+        }
+        (line_height.max(1), ascent.max(0))
+    }
+
+    fn te_update_styled_run_sentinel(bus: &mut MacMemoryBus, te_handle: u32, text_len: usize) {
+        let style_handle = Self::te_style_handle(bus, te_handle);
+        if style_handle == 0 {
+            return;
+        }
+        let style_ptr = bus.read_long(style_handle);
+        if style_ptr == 0 {
+            return;
+        }
+        let n_runs = bus.read_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET) as usize;
+        let needed = Self::TE_STYLE_RUNS_OFFSET + ((n_runs as u32 + 1) * 4);
+        let style_ptr = Self::ensure_handle_capacity(bus, style_handle, needed);
+        if style_ptr == 0 {
+            return;
+        }
+        let sentinel = style_ptr + Self::TE_STYLE_RUNS_OFFSET + (n_runs as u32 * 4);
+        bus.write_word(
+            sentinel,
+            text_len.saturating_add(1).min(u16::MAX as usize) as u16,
+        );
+        bus.write_word(sentinel + 2, 0xFFFF);
+    }
+
+    fn te_apply_style_scrap_to_range(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        style_scrap: u32,
+        range_start: usize,
+        range_len: usize,
+    ) -> bool {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if !Self::te_is_styled_record(bus, te_ptr) || style_scrap == 0 || range_len == 0 {
+            return false;
+        }
+
+        let text_len = Self::te_text_length(bus, te_handle);
+        let range_start = range_start.min(text_len);
+        let range_end = range_start.saturating_add(range_len).min(text_len);
+        if range_start >= range_end {
+            return false;
+        }
+
+        let scrap_ptr = bus.read_long(style_scrap);
+        if scrap_ptr == 0 {
+            return false;
+        }
+        let scrap_size = bus.get_alloc_size(scrap_ptr).unwrap_or(0);
+        if scrap_size < Self::SCRAP_STYLE_TAB_OFFSET {
+            return false;
+        }
+        let style_count = (bus.read_word(scrap_ptr + Self::SCRAP_N_STYLES_OFFSET) as usize).min(
+            scrap_size
+                .saturating_sub(Self::SCRAP_STYLE_TAB_OFFSET)
+                .checked_div(Self::SCRAP_STYLE_ELEMENT_SIZE)
+                .unwrap_or(0) as usize,
+        );
+        if style_count == 0 {
+            return false;
+        }
+
+        let existing_runs = self.te_style_runs(bus, te_handle, text_len);
+        let mut candidates: Vec<(usize, u8, TeResolvedStyle)> =
+            Vec::with_capacity(existing_runs.len() + style_count + 2);
+        for run in &existing_runs {
+            if run.start < range_start || run.start > range_end {
+                candidates.push((run.start.min(text_len), 0, run.style));
+            }
+        }
+
+        for style_index in 0..style_count {
+            let scrap_style_ptr = scrap_ptr
+                + Self::SCRAP_STYLE_TAB_OFFSET
+                + (style_index as u32 * Self::SCRAP_STYLE_ELEMENT_SIZE);
+            let local_start =
+                bus.read_long(scrap_style_ptr + Self::SCRAP_STYLE_START_CHAR_OFFSET) as usize;
+            let run_start = range_start.saturating_add(local_start.min(range_end - range_start));
+            candidates.push((
+                run_start,
+                1,
+                Self::te_style_from_scrap_element(bus, scrap_style_ptr),
+            ));
+        }
+
+        if range_end < text_len {
+            candidates.push((
+                range_end,
+                2,
+                Self::te_style_at_offset(&existing_runs, range_end),
+            ));
+        }
+        if !candidates.iter().any(|(start, _, _)| *start == 0) {
+            candidates.push((0, 0, Self::te_style_at_offset(&existing_runs, 0)));
+        }
+
+        candidates.sort_by_key(|(start, order, _)| (*start, *order));
+        let mut merged: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(candidates.len());
+        for (start, _, style) in candidates {
+            let start = start.min(text_len);
+            if let Some((last_start, last_style)) = merged.last_mut() {
+                if *last_start == start {
+                    *last_style = style;
+                    continue;
+                }
+                if *last_style == style {
+                    continue;
+                }
+            }
+            merged.push((start, style));
+        }
+
+        if merged.is_empty() {
+            merged.push((0, self.te_primary_resolved_style(bus, te_handle)));
+        }
+        if merged[0].0 != 0 {
+            merged.insert(0, (0, Self::te_style_at_offset(&existing_runs, 0)));
+        }
+
+        let run_count = merged.len().min(u16::MAX as usize);
+        let style_handle = Self::te_style_handle(bus, te_handle);
+        if style_handle == 0 {
+            return false;
+        }
+        let style_ptr = Self::ensure_handle_capacity(
+            bus,
+            style_handle,
+            Self::TE_STYLE_RUNS_OFFSET + ((run_count as u32 + 1) * 4),
+        );
+        if style_ptr == 0 {
+            return false;
+        }
+
+        let mut style_table_handle = bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
+        if style_table_handle == 0 {
+            style_table_handle = Self::allocate_handle_with_data(bus, 0);
+            bus.write_long(
+                style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET,
+                style_table_handle,
+            );
+        }
+        let style_table_ptr = Self::ensure_handle_capacity(
+            bus,
+            style_table_handle,
+            (run_count as u32) * Self::ST_ELEMENT_SIZE,
+        );
+        if style_table_ptr == 0 {
+            return false;
+        }
+
+        bus.write_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET, run_count as u16);
+        bus.write_word(style_ptr + Self::TE_STYLE_N_STYLES_OFFSET, run_count as u16);
+        for (index, (start, style)) in merged.iter().take(run_count).enumerate() {
+            let style_element_ptr = style_table_ptr + (index as u32 * Self::ST_ELEMENT_SIZE);
+            Self::te_write_style_table_element(bus, style_element_ptr, *style);
+            let run_ptr = style_ptr + Self::TE_STYLE_RUNS_OFFSET + (index as u32 * 4);
+            bus.write_word(run_ptr, (*start).min(u16::MAX as usize) as u16);
+            bus.write_word(run_ptr + 2, index.min(u16::MAX as usize) as u16);
+        }
+        Self::te_update_styled_run_sentinel(bus, te_handle, text_len);
+        true
     }
 
     #[allow(dead_code)]
@@ -1748,6 +2291,7 @@ impl super::TrapDispatcher {
         (start as u16, end as u16)
     }
 
+    #[allow(dead_code)]
     fn te_reset_styled_metadata(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2004,8 +2548,17 @@ impl super::TrapDispatcher {
         let text_len = text_bytes.len();
         let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
         let (font, _, size, _, line_height, font_ascent) = self.te_primary_style(bus, te_handle);
+        let styled = Self::te_is_styled_record(bus, te_ptr);
+        let style_runs = if styled {
+            self.te_style_runs(bus, te_handle, text_len)
+        } else {
+            Vec::new()
+        };
+        let uses_styled_runs = styled && !style_runs.is_empty();
         let lines = if text_bytes.is_empty() {
             Vec::new()
+        } else if uses_styled_runs {
+            self.te_wrap_lines_styled(&style_runs, &text_bytes, (dest_rect.3 - dest_rect.1).max(0))
         } else {
             self.te_wrap_lines(font, size, &text_bytes, (dest_rect.3 - dest_rect.1).max(0))
         };
@@ -2014,7 +2567,6 @@ impl super::TrapDispatcher {
         if te_ptr == 0 {
             return;
         }
-        let styled = Self::te_is_styled_record(bus, te_ptr);
 
         bus.write_word(
             te_ptr + Self::TE_N_LINES_OFFSET,
@@ -2060,6 +2612,16 @@ impl super::TrapDispatcher {
                         );
                         if lh_ptr != 0 {
                             for index in 0..=line_count {
+                                let (line_height, font_ascent) = if uses_styled_runs
+                                    && index < lines.len()
+                                {
+                                    let (start, end) = lines[index];
+                                    Self::te_line_metrics_for_range(&style_runs, start, end)
+                                } else if uses_styled_runs {
+                                    Self::te_line_metrics_for_range(&style_runs, text_len, text_len)
+                                } else {
+                                    (line_height, font_ascent)
+                                };
                                 let element = lh_ptr + (index as u32 * Self::LH_ELEMENT_SIZE);
                                 bus.write_word(
                                     element + Self::LH_ELEMENT_HEIGHT_OFFSET,
@@ -2076,7 +2638,9 @@ impl super::TrapDispatcher {
             }
         }
 
-        self.te_reset_styled_metadata(bus, te_handle, text_len);
+        if styled {
+            Self::te_update_styled_run_sentinel(bus, te_handle, text_len);
+        }
     }
 
     fn te_line_origin_x(just: i16, box_left: i16, box_right: i16, line_width: i16) -> i16 {
@@ -2146,6 +2710,12 @@ impl super::TrapDispatcher {
         }
         let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
         let (font, face, size, color, _, _) = self.te_primary_style(bus, te_handle);
+        let styled_runs = if Self::te_is_styled_record(bus, te_ptr) {
+            self.te_style_runs(bus, te_handle, text_bytes.len())
+        } else {
+            Vec::new()
+        };
+        let uses_styled_runs = !styled_runs.is_empty() && Self::te_is_styled_record(bus, te_ptr);
         let old_font = self.tx_font;
         let old_face = self.tx_face;
         let old_size = self.tx_size;
@@ -2308,6 +2878,8 @@ impl super::TrapDispatcher {
         );
         let lines = if text_bytes.is_empty() {
             vec![(0usize, 0usize)]
+        } else if uses_styled_runs {
+            self.te_wrap_lines_styled(&styled_runs, &text_bytes, box_width)
         } else {
             self.te_wrap_lines(font, size, &text_bytes, box_width)
         };
@@ -2333,12 +2905,22 @@ impl super::TrapDispatcher {
             {
                 trimmed_end -= 1;
             }
-            let line_width =
-                self.te_measure_text_width(font, size, &text_bytes, *start, trimmed_end);
+            let line_width = if uses_styled_runs {
+                self.te_measure_text_width_styled(&styled_runs, &text_bytes, *start, trimmed_end)
+            } else {
+                self.te_measure_text_width(font, size, &text_bytes, *start, trimmed_end)
+            };
             let x = Self::te_line_origin_x(just, dest_rect.1, dest_rect.3, line_width);
             visual_lines.push((*start, *end, top, line_bottom, x));
             self.pn_loc = (top.saturating_add(line_ascent), x);
-            for &byte in &text_bytes[*start..trimmed_end] {
+            for (offset, &byte) in text_bytes[*start..trimmed_end].iter().enumerate() {
+                if uses_styled_runs {
+                    let style = Self::te_style_at_offset(&styled_runs, *start + offset);
+                    self.tx_font = style.font;
+                    self.tx_face = style.face;
+                    self.tx_size = style.size;
+                    self.fg_color = style.color;
+                }
                 self.draw_char(cpu, bus, byte as char);
             }
             top = line_bottom;
@@ -2364,13 +2946,22 @@ impl super::TrapDispatcher {
                     .or_else(|| visual_lines.last())
                 {
                     let caret_offset = selection_start.min(line_end).max(line_start);
-                    let measured_width = self.te_measure_text_width(
-                        font,
-                        size,
-                        &text_bytes,
-                        line_start,
-                        caret_offset,
-                    );
+                    let measured_width = if uses_styled_runs {
+                        self.te_measure_text_width_styled(
+                            &styled_runs,
+                            &text_bytes,
+                            line_start,
+                            caret_offset,
+                        )
+                    } else {
+                        self.te_measure_text_width(
+                            font,
+                            size,
+                            &text_bytes,
+                            line_start,
+                            caret_offset,
+                        )
+                    };
                     let mut caret_x = line_x + measured_width;
                     if caret_offset > line_start {
                         caret_x = caret_x.saturating_sub(1);
@@ -2408,10 +2999,28 @@ impl super::TrapDispatcher {
                 if start >= end {
                     continue;
                 }
-                let mut selection_left =
-                    line_x + self.te_measure_text_width(font, size, &text_bytes, line_start, start);
-                let selection_right =
-                    line_x + self.te_measure_text_width(font, size, &text_bytes, line_start, end);
+                let mut selection_left = line_x
+                    + if uses_styled_runs {
+                        self.te_measure_text_width_styled(
+                            &styled_runs,
+                            &text_bytes,
+                            line_start,
+                            start,
+                        )
+                    } else {
+                        self.te_measure_text_width(font, size, &text_bytes, line_start, start)
+                    };
+                let selection_right = line_x
+                    + if uses_styled_runs {
+                        self.te_measure_text_width_styled(
+                            &styled_runs,
+                            &text_bytes,
+                            line_start,
+                            end,
+                        )
+                    } else {
+                        self.te_measure_text_width(font, size, &text_bytes, line_start, end)
+                    };
                 if start == line_start && matches!(just, 0 | -2) {
                     // BasiliskII/System 7.5.3 `a9d3_teupdate_selection_visual`
                     // shows a selection beginning at a left-justified visual
@@ -12356,6 +12965,24 @@ impl super::TrapDispatcher {
                         let text_ptr = bus.read_long(sp + 14);
                         if text_ptr != 0 && length != 0 {
                             let text = bus.read_bytes(text_ptr, length);
+                            let insert_start = {
+                                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                                let text_len = Self::te_text_length(bus, te_handle);
+                                if te_ptr != 0 {
+                                    let mut sel_start =
+                                        bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                                    let mut sel_end =
+                                        bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                                    sel_start = sel_start.min(text_len);
+                                    sel_end = sel_end.min(text_len);
+                                    if sel_end < sel_start {
+                                        std::mem::swap(&mut sel_start, &mut sel_end);
+                                    }
+                                    sel_start
+                                } else {
+                                    0
+                                }
+                            };
                             let preview_len = text.len().min(64);
                             if trace_textedit_enabled() {
                                 eprintln!(
@@ -12368,6 +12995,15 @@ impl super::TrapDispatcher {
                                 );
                             }
                             self.te_insert_text(bus, te_handle, &text);
+                            if self.te_apply_style_scrap_to_range(
+                                bus,
+                                te_handle,
+                                style_scrap,
+                                insert_start,
+                                text.len(),
+                            ) {
+                                self.te_recalculate_layout(bus, te_handle);
+                            }
                             self.draw_te_contents(cpu, bus, te_handle);
                         }
                         cpu.write_reg(Register::A7, sp + 18);
@@ -12712,52 +13348,26 @@ impl super::TrapDispatcher {
                         //     newStyles: StScrpHandle; redraw: BOOLEAN; hTE: TEHandle);
                         // Inside Macintosh Volume VI, 15-35 to 15-36
                         let te_handle = bus.read_long(sp + 2);
+                        // Pascal BOOLEAN in high byte (MPW C convention).
+                        let redraw = bus.read_byte(sp + 6) != 0;
                         let new_styles = bus.read_long(sp + 8);
-                        let style_handle = Self::te_style_handle(bus, te_handle);
-                        if style_handle != 0 && new_styles != 0 {
-                            let style_ptr = bus.read_long(style_handle);
-                            let style_table_handle =
-                                bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
-                            let style_table_ptr = if style_table_handle != 0 {
-                                bus.read_long(style_table_handle)
-                            } else {
-                                0
-                            };
-                            let scrap_ptr = bus.read_long(new_styles);
-                            if style_table_ptr != 0 && scrap_ptr != 0 {
-                                let base = scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET;
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
-                                    bus.read_word(base + Self::SCRAP_STYLE_HEIGHT_OFFSET),
-                                );
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
-                                    bus.read_word(base + Self::SCRAP_STYLE_ASCENT_OFFSET),
-                                );
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
-                                    bus.read_word(base + Self::SCRAP_STYLE_FONT_OFFSET),
-                                );
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
-                                    bus.read_word(base + Self::SCRAP_STYLE_FACE_OFFSET),
-                                );
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
-                                    bus.read_word(base + Self::SCRAP_STYLE_SIZE_OFFSET),
-                                );
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
-                                    bus.read_word(base + Self::SCRAP_STYLE_COLOR_OFFSET),
-                                );
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2,
-                                    bus.read_word(base + Self::SCRAP_STYLE_COLOR_OFFSET + 2),
-                                );
-                                bus.write_word(
-                                    style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4,
-                                    bus.read_word(base + Self::SCRAP_STYLE_COLOR_OFFSET + 4),
-                                );
+                        let range_end = bus.read_long(sp + 12) as usize;
+                        let range_start = bus.read_long(sp + 16) as usize;
+                        let (range_start, range_end) = if range_end < range_start {
+                            (range_end, range_start)
+                        } else {
+                            (range_start, range_end)
+                        };
+                        if self.te_apply_style_scrap_to_range(
+                            bus,
+                            te_handle,
+                            new_styles,
+                            range_start,
+                            range_end.saturating_sub(range_start),
+                        ) {
+                            self.te_recalculate_layout(bus, te_handle);
+                            if redraw {
+                                self.draw_te_contents(cpu, bus, te_handle);
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 20);
@@ -14903,6 +15513,43 @@ mod tests {
             }
         }
         sum
+    }
+
+    fn make_style_scrap(
+        bus: &mut MacMemoryBus,
+        styles: &[(u32, i16, i16, i16, i16, i16, (u16, u16, u16))],
+    ) -> u32 {
+        let handle = TrapDispatcher::allocate_handle_with_data(
+            bus,
+            TrapDispatcher::SCRAP_STYLE_TAB_OFFSET
+                + (styles.len() as u32 * TrapDispatcher::SCRAP_STYLE_ELEMENT_SIZE),
+        );
+        let ptr = bus.read_long(handle);
+        bus.write_word(
+            ptr + TrapDispatcher::SCRAP_N_STYLES_OFFSET,
+            styles.len() as u16,
+        );
+        for (index, (start, height, ascent, font, face, size, color)) in styles.iter().enumerate() {
+            let base = ptr
+                + TrapDispatcher::SCRAP_STYLE_TAB_OFFSET
+                + (index as u32 * TrapDispatcher::SCRAP_STYLE_ELEMENT_SIZE);
+            bus.write_long(base + TrapDispatcher::SCRAP_STYLE_START_CHAR_OFFSET, *start);
+            bus.write_word(
+                base + TrapDispatcher::SCRAP_STYLE_HEIGHT_OFFSET,
+                *height as u16,
+            );
+            bus.write_word(
+                base + TrapDispatcher::SCRAP_STYLE_ASCENT_OFFSET,
+                *ascent as u16,
+            );
+            bus.write_word(base + TrapDispatcher::SCRAP_STYLE_FONT_OFFSET, *font as u16);
+            bus.write_word(base + TrapDispatcher::SCRAP_STYLE_FACE_OFFSET, *face as u16);
+            bus.write_word(base + TrapDispatcher::SCRAP_STYLE_SIZE_OFFSET, *size as u16);
+            bus.write_word(base + TrapDispatcher::SCRAP_STYLE_COLOR_OFFSET, color.0);
+            bus.write_word(base + TrapDispatcher::SCRAP_STYLE_COLOR_OFFSET + 2, color.1);
+            bus.write_word(base + TrapDispatcher::SCRAP_STYLE_COLOR_OFFSET + 4, color.2);
+        }
+        handle
     }
 
     // ---- InitDialogs ($A97B) ----
@@ -30247,6 +30894,122 @@ mod tests {
             0xCAFEBABE,
             "TEStyleNew must not write past the 4-byte function-result slot"
         );
+    }
+
+    #[test]
+    fn testyleinsert_applies_style_scrap_runs_and_line_metrics() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.tx_font = 0;
+        disp.tx_face = 0;
+        disp.tx_size = 12;
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 80, 200), (0, 0, 80, 200));
+
+        let text = b"small\rLARGE";
+        let text_ptr = bus.alloc(text.len() as u32);
+        bus.write_bytes(text_ptr, text);
+        let style_scrap = make_style_scrap(
+            &mut bus,
+            &[
+                (0, 10, 8, 0, 1, 9, (0, 0, 0)),
+                (6, 14, 11, 0, 0, 12, (0x1111, 0x2222, 0x3333)),
+            ],
+        );
+
+        bus.write_word(TEST_SP, 0x0007);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, style_scrap);
+        bus.write_long(TEST_SP + 10, text.len() as u32);
+        bus.write_long(TEST_SP + 14, text_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 18,
+            "TEStyleInsert must consume selector + hTE + hST + length + text pointer"
+        );
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET) as usize,
+            text.len()
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_N_LINES_OFFSET),
+            2,
+            "explicit CR should produce two TextEdit lines"
+        );
+
+        let style_handle = bus.read_long(te_ptr + TrapDispatcher::TE_TX_FONT_OFFSET);
+        let style_ptr = bus.read_long(style_handle);
+        assert_eq!(
+            bus.read_word(style_ptr + TrapDispatcher::TE_STYLE_N_RUNS_OFFSET),
+            2
+        );
+        assert_eq!(
+            bus.read_word(style_ptr + TrapDispatcher::TE_STYLE_N_STYLES_OFFSET),
+            2
+        );
+        assert_eq!(
+            bus.read_word(style_ptr + TrapDispatcher::TE_STYLE_RUNS_OFFSET),
+            0
+        );
+        assert_eq!(
+            bus.read_word(style_ptr + TrapDispatcher::TE_STYLE_RUNS_OFFSET + 4),
+            6
+        );
+
+        let style_table = bus.read_long(style_ptr + TrapDispatcher::TE_STYLE_STYLE_TABLE_OFFSET);
+        let style_table_ptr = bus.read_long(style_table);
+        assert_eq!(
+            bus.read_word(style_table_ptr + TrapDispatcher::ST_ELEMENT_FACE_OFFSET),
+            1,
+            "first style run should preserve the bold face from the style scrap"
+        );
+        assert_eq!(
+            bus.read_word(style_table_ptr + TrapDispatcher::ST_ELEMENT_SIZE_OFFSET),
+            9,
+            "first style run should preserve the smaller body size"
+        );
+        let second_style = style_table_ptr + TrapDispatcher::ST_ELEMENT_SIZE;
+        assert_eq!(
+            bus.read_word(second_style + TrapDispatcher::ST_ELEMENT_SIZE_OFFSET),
+            12
+        );
+        assert_eq!(
+            (
+                bus.read_word(second_style + TrapDispatcher::ST_ELEMENT_COLOR_OFFSET),
+                bus.read_word(second_style + TrapDispatcher::ST_ELEMENT_COLOR_OFFSET + 2),
+                bus.read_word(second_style + TrapDispatcher::ST_ELEMENT_COLOR_OFFSET + 4),
+            ),
+            (0x1111, 0x2222, 0x3333)
+        );
+
+        let lh_table = bus.read_long(style_ptr + TrapDispatcher::TE_STYLE_LH_TABLE_OFFSET);
+        let lh_ptr = bus.read_long(lh_table);
+        assert_eq!(
+            bus.read_word(lh_ptr + TrapDispatcher::LH_ELEMENT_HEIGHT_OFFSET),
+            10,
+            "first TextEdit line should use first style's line height"
+        );
+        assert_eq!(
+            bus.read_word(
+                lh_ptr + TrapDispatcher::LH_ELEMENT_SIZE + TrapDispatcher::LH_ELEMENT_HEIGHT_OFFSET
+            ),
+            14,
+            "second TextEdit line should use second style's line height"
+        );
+
+        let runs = disp.te_style_runs(&bus, te_handle, text.len());
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].start, 0);
+        assert_eq!(runs[0].style_index, 0);
+        assert_eq!(runs[0].style.size, 9);
+        assert_eq!(runs[1].start, 6);
+        assert_eq!(runs[1].style_index, 1);
+        assert_eq!(runs[1].style.size, 12);
     }
 
     // Inside Macintosh: Text (1993), p. 2-92: TEAutoView takes
