@@ -45,9 +45,9 @@ const RENDER_HEADROOM_MARGIN: std::time::Duration = std::time::Duration::from_mi
 /// Foreground GUI work is checked against the host deadline only between
 /// batches. Keep each slice well below a realtime VBL so heavy startup loads
 /// can still present intermediate drawing and service Sound Manager callbacks.
-const CPU_BATCH_INSTRUCTIONS: usize = 25_000;
+const CPU_BATCH_INSTRUCTIONS: usize = 10_000;
 const SOUND_CALLBACK_SLICE_INSTRUCTIONS: usize = CPU_BATCH_INSTRUCTIONS;
-const SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME: usize = SOUND_CALLBACK_SLICE_INSTRUCTIONS;
+const SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME: usize = 25_000;
 const AUDIO_CALLBACK_CHUNK_SAMPLES: usize = 32;
 const DEFAULT_GUI_ARROWS_AS_NUMPAD: bool = false;
 
@@ -1390,14 +1390,13 @@ mod tests {
         )
         .expect("first reserved sound slice should run");
 
-        assert_eq!(first_steps, SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME);
+        assert_eq!(first_steps, SOUND_CALLBACK_SLICE_INSTRUCTIONS);
         assert_eq!(
-            reserved_sound_steps,
-            SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME
+            reserved_sound_steps, SOUND_CALLBACK_SLICE_INSTRUCTIONS
         );
         assert!(
             runner.has_pending_sound_work(),
-            "spinning callback should remain pending after the capped reserved slice"
+            "spinning callback should remain pending after one reserved sound slice"
         );
 
         let second_steps = service_pending_sound_work(
@@ -1408,12 +1407,44 @@ mod tests {
             &mut reserved_sound_steps,
         );
 
+        assert_eq!(second_steps, Some(SOUND_CALLBACK_SLICE_INSTRUCTIONS));
+        assert!(runner.has_pending_sound_work());
+        assert!(!runner.is_halted());
+
+        let final_partial_steps = service_pending_sound_work(
+            &mut runner,
+            spent_deadline,
+            0,
+            SOUND_CALLBACK_SLICE_INSTRUCTIONS * 2 + first_steps,
+            &mut reserved_sound_steps,
+        );
+
         assert_eq!(
-            second_steps, None,
-            "same-frame reserved sound work should stop at the cap so the GUI event loop can process input"
+            final_partial_steps,
+            Some(
+                SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME
+                    - SOUND_CALLBACK_SLICE_INSTRUCTIONS * 2
+            )
         );
         assert!(runner.has_pending_sound_work());
         assert!(!runner.is_halted());
+
+        let exhausted_steps = service_pending_sound_work(
+            &mut runner,
+            spent_deadline,
+            0,
+            SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME + first_steps,
+            &mut reserved_sound_steps,
+        );
+
+        assert_eq!(
+            exhausted_steps, None,
+            "same-frame reserved sound work should stop at the cap so the GUI event loop can process input"
+        );
+        assert_eq!(
+            reserved_sound_steps,
+            SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME
+        );
     }
 
     #[test]
@@ -1805,8 +1836,8 @@ mod tests {
                 / systemless::runner::DEFAULT_VBL_HZ) as usize;
 
         assert!(
-            CPU_BATCH_INSTRUCTIONS <= realtime_instructions_per_tick / 8,
-            "GUI batches should yield several times per realtime VBL during heavy drawing; batch={} vbl_budget={}",
+            CPU_BATCH_INSTRUCTIONS <= realtime_instructions_per_tick / 32,
+            "GUI batches should yield frequently during heavy drawing and slow HLE startup paths; batch={} vbl_budget={}",
             CPU_BATCH_INSTRUCTIONS,
             realtime_instructions_per_tick
         );
