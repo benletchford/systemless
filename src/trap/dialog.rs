@@ -3062,14 +3062,15 @@ impl super::TrapDispatcher {
         position: u16,
     ) -> (i16, i16, i16, i16) {
         match position {
-            // alertPositionMainScreen: upper third of screen
-            // Macintosh Toolbox Essentials 1992, p. 4-126
+            // alertPositionMainScreen / ParentWindow / ParentWindowScreen:
+            // MTE 1992 p. 4-126 defines alert position as about one-fifth
+            // of the unused screen/window space above the new window.
             0x300A | 0x700A | 0xB00A => {
                 let (_, _, screen_w, screen_h, _) = self.get_screen_params();
                 let dialog_w = bounds.3 - bounds.1;
                 let dialog_h = bounds.2 - bounds.0;
                 let new_left = (screen_w - dialog_w) / 2;
-                let new_top = (screen_h - dialog_h) / 3;
+                let new_top = (screen_h - dialog_h) / 5;
                 bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
             }
             // centerMainScreen / centerParentWindow: true vertical center
@@ -8600,8 +8601,9 @@ impl super::TrapDispatcher {
 
                 if let Some(dlog_data) = dlog_ptr {
                     let dlog_len = bus.get_alloc_size(dlog_data).unwrap_or(0);
-                    let (mut bounds, proc_id, visible, items_id, title, position) =
+                    let (raw_bounds, proc_id, visible, items_id, title, position) =
                         Self::parse_dlog(bus, dlog_data, dlog_len);
+                    let mut bounds = raw_bounds;
 
                     // Look up DITL resource
                     let ditl_info = self
@@ -8626,36 +8628,16 @@ impl super::TrapDispatcher {
                     let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
                     let items = Self::parse_ditl(bus, ditl_data, ditl_len);
 
-                    // Apply positioning constant.
-                    // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
-                    // references/executor/src/dial/dialCreate.cpp, dialog_compute_rect()
-                    match position {
-                        // alertPositionMainScreen: upper third of screen
-                        // Macintosh Toolbox Essentials 1992, p. 4-126
-                        0x300A | 0x700A | 0xB00A => {
-                            let (_, _, screen_w, screen_h, _) = self.get_screen_params();
-                            let dialog_w = bounds.3 - bounds.1;
-                            let dialog_h = bounds.2 - bounds.0;
-                            let new_left = (screen_w - dialog_w) / 2;
-                            let new_top = (screen_h - dialog_h) / 3;
-                            bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
-                        }
-                        // centerMainScreen / centerParentWindow: true vertical center
-                        // Macintosh Toolbox Essentials 1992, p. 4-126
-                        0x280A | 0x680A | 0xA80A | 0x380A => {
-                            let (_, _, screen_w, screen_h, _) = self.get_screen_params();
-                            let dialog_w = bounds.3 - bounds.1;
-                            let dialog_h = bounds.2 - bounds.0;
-                            let new_left = (screen_w - dialog_w) / 2;
-                            let new_top = (screen_h - dialog_h) / 2;
-                            bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
-                        }
-                        _ => {} // noAutoCenter (0x0000) or unknown: use raw bounds
-                    }
+                    // Apply System 7 DLOG positioning constants.
+                    // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126.
+                    bounds = self.positioned_dialog_bounds(bounds, position);
 
                     eprintln!(
-                        "[TRAP] GetNewDialog({}) bounds=({},{},{},{}) procID={} items={} title=\"{}\"",
+                        "[TRAP] GetNewDialog({}) bounds=({},{},{},{}) raw_bounds=({},{},{},{}) position=${:04X} len={} procID={} items={} title=\"{}\"",
                         dialog_id, bounds.0, bounds.1, bounds.2, bounds.3,
+                        raw_bounds.0, raw_bounds.1, raw_bounds.2, raw_bounds.3,
+                        position,
+                        dlog_len,
                         proc_id, items.len(), title
                     );
                     for (i, item) in items.iter().enumerate() {
@@ -15942,6 +15924,33 @@ mod tests {
         let dlg_ptr = bus.read_long(TEST_SP + 10);
         assert_ne!(dlg_ptr, 0);
         assert_eq!(disp.window_bounds, (250, 300, 350, 500));
+    }
+
+    #[test]
+    fn get_new_dialog_uses_system7_alert_position_near_top() {
+        // MTE 1992 p. 4-126: alert position leaves about one-fifth of
+        // the unused vertical screen space above the new window. EVO's
+        // startup registration DLOG has these dimensions; a one-third
+        // placement draws it visibly too low compared with BasiliskII.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let dlog = build_test_dlog((40, 40, 310, 530), 1513, 0x300A);
+        let ditl = build_test_ditl_item(4, (241, 291, 261, 381), b"Not Yet");
+        disp.install_test_resource(&mut bus, *b"DLOG", 1512, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1513, &ditl);
+        bus.write_long(TEST_SP, 0); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1512); // dialogID
+
+        let result = disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let dlg_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dlg_ptr, 0);
+        assert_eq!(disp.window_bounds, (66, 155, 336, 645));
     }
 
     #[test]
