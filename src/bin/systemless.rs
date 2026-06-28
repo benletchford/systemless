@@ -269,6 +269,17 @@ impl App {
         target.clamp(MIN_RENDER_HEADROOM, MAX_RENDER_HEADROOM)
     }
 
+    fn next_frame_target(
+        now: std::time::Instant,
+        scheduled: std::time::Instant,
+    ) -> (std::time::Instant, bool) {
+        if now.saturating_duration_since(scheduled) >= FRAME_DURATION {
+            (now + FRAME_DURATION, true)
+        } else {
+            (scheduled + FRAME_DURATION, false)
+        }
+    }
+
     fn step_frame(&mut self) {
         let Some(runner) = self.runner.as_ref() else {
             return;
@@ -688,15 +699,14 @@ impl ApplicationHandler for App {
             return;
         }
 
-        // Schedule next frame
-        let next_target = if now.duration_since(next) > FRAME_DURATION * 3 {
-            // Fell far behind — snap to now
+        // Schedule the next host frame. If startup/resource loading makes us
+        // miss a full presentation interval, drop the missed host frame instead
+        // of running immediate catch-up frames that bunch audio and graphics.
+        let (next_target, dropped_missed_frame) = Self::next_frame_target(now, next);
+        if dropped_missed_frame {
             self.next_cpu_budget_time = Some(now);
             self.cpu_instruction_credit = 0.0;
-            now + FRAME_DURATION
-        } else {
-            next + FRAME_DURATION
-        };
+        }
         self.next_frame_time = Some(next_target);
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_target));
 
@@ -1756,6 +1766,36 @@ mod tests {
             App::next_render_headroom(std::time::Duration::from_micros(20_000)),
             MAX_RENDER_HEADROOM
         );
+    }
+
+    #[test]
+    fn frame_scheduler_preserves_cadence_when_on_time_or_slightly_late() {
+        let scheduled = std::time::Instant::now();
+        let half_frame = std::time::Duration::from_secs_f64(FRAME_DURATION.as_secs_f64() / 2.0);
+
+        let (on_time_target, on_time_dropped) = App::next_frame_target(scheduled, scheduled);
+        assert_eq!(on_time_target, scheduled + FRAME_DURATION);
+        assert!(!on_time_dropped);
+
+        let (late_target, late_dropped) = App::next_frame_target(scheduled + half_frame, scheduled);
+        assert_eq!(late_target, scheduled + FRAME_DURATION);
+        assert!(!late_dropped);
+    }
+
+    #[test]
+    fn frame_scheduler_drops_missed_host_frame_instead_of_catchup_burst() {
+        let scheduled = std::time::Instant::now();
+
+        let full_frame_late = scheduled + FRAME_DURATION;
+        let (full_frame_target, full_frame_dropped) =
+            App::next_frame_target(full_frame_late, scheduled);
+        assert_eq!(full_frame_target, full_frame_late + FRAME_DURATION);
+        assert!(full_frame_dropped);
+
+        let several_frames_late = scheduled + FRAME_DURATION * 4;
+        let (late_target, late_dropped) = App::next_frame_target(several_frames_late, scheduled);
+        assert_eq!(late_target, several_frames_late + FRAME_DURATION);
+        assert!(late_dropped);
     }
 
     #[test]
