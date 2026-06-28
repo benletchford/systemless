@@ -285,6 +285,51 @@ fn tracking_refire_should_freeze_ticks(opcode: u16) -> bool {
         || trap_no_autopop == 0xA80B // PopUpMenuSelect / MenuKey tracking
         || trap_no_autopop == 0xA968 // TrackControl
 }
+
+fn canonical_trap_number(opcode: u16) -> (bool, u16) {
+    let is_tool = (opcode & 0x0800) != 0;
+    let trap_num = if is_tool {
+        opcode & 0x03FF
+    } else {
+        opcode & 0x00FF
+    };
+    (is_tool, trap_num)
+}
+
+fn hle_trap_extra_tick_cost(opcode: u16) -> i32 {
+    let (is_tool, trap_num) = canonical_trap_number(opcode);
+    match (is_tool, trap_num) {
+        // Event/time polling rates vary with host speed; charging these
+        // creates false game-time drift instead of modelling ROM work.
+        (true, 0x0170) // GetNextEvent
+        | (true, 0x0060) // WaitNextEvent
+        | (true, 0x0171) // EventAvail
+        | (true, 0x0175) // TickCount
+        | (true, 0x0062) // Button
+        | (false, 0x0031) // GetOSEvent
+        | (_, 0x003B) => 0, // Delay already advances requested ticks explicitly
+
+        // SANE Pack4/Pack5 calls can be hot inner-loop arithmetic in games.
+        // Treat them as guest computation, not manager work that should yield.
+        (true, 0x006C) | (true, 0x006E) | (true, 0x01EB) | (true, 0x01EC) => 0,
+
+        // QuickDraw blits and PICT draws do substantial HLE-side pixel work.
+        (true, 0x00EC) | (true, 0x00F6) => 96,
+
+        // Resource loads move and parse data that real ROM/file-system code
+        // would not complete in one 68k instruction.
+        (true, 0x01A0) | (true, 0x01A1) | (true, 0x01A2) | (true, 0x01BC) => 96,
+
+        // Resource metadata/release calls are cheaper than loads but still
+        // non-trivial manager work.
+        (true, 0x019D..=0x01CF) => 24,
+
+        // Other Toolbox/OS HLE traps should cost more than a single guest
+        // opcode without making simple math/geometry helpers dominate timing.
+        (true, _) => 4,
+        (false, _) => 2,
+    }
+}
 // Cap how many ticks the fast-forward will advance in one shot,
 // to protect against pathological target values (e.g. overflowed
 // unsigned register values being misinterpreted as huge-future
@@ -2039,17 +2084,7 @@ impl FixtureRunner {
             // Tick advancement: deduct 1 instruction; when the budget hits
             // zero, advance $016A and refill from instructions_per_tick.
             if !sound_work_only {
-                self.tick_budget -= 1;
-                while self.tick_budget <= 0 && self.frozen_ticks.is_none() {
-                    if let Some(cap) = tick_cap {
-                        if self.bus.read_long(0x016A) >= cap {
-                            tick_cap_reached = true;
-                            break;
-                        }
-                    }
-                    self.advance_guest_tick();
-                    self.tick_budget += self.instructions_per_tick as i32;
-                }
+                tick_cap_reached = self.charge_tick_budget(1, tick_cap);
                 if tick_cap_reached {
                     break;
                 }
@@ -2301,17 +2336,7 @@ impl FixtureRunner {
                             const BATCH: u32 = 64;
                             let mut budget = BATCH - 1;
                             while budget > 0 && count < max_steps && !tick_cap_reached {
-                                self.tick_budget -= 1;
-                                while self.tick_budget <= 0 && self.frozen_ticks.is_none() {
-                                    if let Some(cap) = tick_cap {
-                                        if self.bus.read_long(0x016A) >= cap {
-                                            tick_cap_reached = true;
-                                            break;
-                                        }
-                                    }
-                                    self.advance_guest_tick();
-                                    self.tick_budget += self.instructions_per_tick as i32;
-                                }
+                                tick_cap_reached = self.charge_tick_budget(1, tick_cap);
                                 if tick_cap_reached {
                                     break;
                                 }
@@ -2415,6 +2440,12 @@ impl FixtureRunner {
                         .dispatch(opcode, &mut self.cpu, &mut self.bus)
                     {
                         Ok(()) => {
+                            let extra_tick_cost = hle_trap_extra_tick_cost(opcode);
+                            if extra_tick_cost > 0
+                                && self.charge_tick_budget(extra_tick_cost, tick_cap)
+                            {
+                                tick_cap_reached = true;
+                            }
                             // The m68k CPU already advanced PC past the A-line
                             // instruction during fetch (read_imm_16 does pc += 2).
                             //
@@ -2643,6 +2674,29 @@ impl FixtureRunner {
     /// accessors after this call returns.
     pub fn run_steps(&mut self, max_steps: usize, tick_override: Option<u32>) -> (usize, bool) {
         self.run_steps_internal(max_steps, tick_override, 0, false, false)
+    }
+
+    fn charge_tick_budget(&mut self, units: i32, tick_cap: Option<u32>) -> bool {
+        if units <= 0 {
+            return false;
+        }
+
+        self.tick_budget -= units;
+        while self.tick_budget <= 0 && self.frozen_ticks.is_none() {
+            if let Some(cap) = tick_cap {
+                if self.bus.read_long(0x016A) >= cap {
+                    return true;
+                }
+            }
+            self.advance_guest_tick();
+            self.tick_budget += self.instructions_per_tick as i32;
+            if let Some(cap) = tick_cap {
+                if self.bus.read_long(0x016A) >= cap {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn advance_guest_tick(&mut self) -> u32 {
@@ -6276,6 +6330,98 @@ mod tests {
         assert!(running);
         assert_eq!(steps, 7);
         assert_eq!(runner.bus.read_long(0x016A), 2);
+    }
+
+    #[test]
+    fn non_idle_hle_trap_cost_advances_tick_budget() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let rect = 0x0020_0000u32;
+
+        runner.bus.write_word(base, 0xA8A8); // _OffsetRect
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_word(sp, 1); // dv
+        runner.bus.write_word(sp + 2, 2); // dh
+        runner.bus.write_long(sp + 4, rect);
+        runner.bus.write_word(rect, 10);
+        runner.bus.write_word(rect + 2, 20);
+        runner.bus.write_word(rect + 4, 30);
+        runner.bus.write_word(rect + 6, 40);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0;
+        runner.set_instructions_per_tick(5);
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(
+            runner.guest_tick(),
+            1,
+            "non-idle HLE traps should consume tick budget beyond the base instruction"
+        );
+        assert_eq!(runner.bus.read_word(rect), 11);
+        assert_eq!(runner.bus.read_word(rect + 2), 22);
+    }
+
+    #[test]
+    fn idle_hle_traps_do_not_apply_extra_tick_cost() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+
+        runner.bus.write_word(base, 0xA975); // _TickCount
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 42);
+        runner.dispatcher.tick_count = 42;
+        runner.set_instructions_per_tick(5);
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(
+            runner.guest_tick(),
+            42,
+            "polling traps should not add synthetic HLE manager cost"
+        );
+        assert_eq!(runner.tick_budget, 4);
+    }
+
+    #[test]
+    fn hle_trap_cost_stops_gui_slice_at_tick_cap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let rect = 0x0020_0000u32;
+
+        runner.bus.write_word(base, 0xA8A8); // _OffsetRect
+        runner.bus.write_word(base + 2, 0x4E71); // NOP that must wait for the next GUI slice
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_word(sp, 1);
+        runner.bus.write_word(sp + 2, 2);
+        runner.bus.write_long(sp + 4, rect);
+        runner.bus.write_word(rect, 10);
+        runner.bus.write_word(rect + 2, 20);
+        runner.bus.write_word(rect + 4, 30);
+        runner.bus.write_word(rect + 6, 40);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0;
+        runner.set_instructions_per_tick(5);
+
+        let (steps, running) = runner.run_gui_slice_with_audio(8, 1, 0);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(runner.guest_tick(), 1);
+        assert_eq!(
+            runner.cpu.read_reg(Register::PC),
+            base + 2,
+            "the next guest instruction should be deferred once HLE cost reaches the GUI tick cap"
+        );
     }
 
     /// Regression gate for the `tick_count`-sync invariant.
