@@ -2793,22 +2793,17 @@ impl super::TrapDispatcher {
             // block (CmdLine pre-System-7 or LaunchPB post-System-7).
             // No stack args (register-based OS trap pattern).
             //
-            // HLE compromise: Systemless does not model inter-application
-            // chaining — the application heap is the only heap, no
-            // separate child-process address space, no Process Manager
-            // PSN tracking. If launchContinue is clear, we halt the
-            // guest just like ExitToShell ($A9F4) so apps that
-            // defensively call LaunchApplication expecting the current
-            // process to terminate get correct semantics (Halted error
-            // propagates out of dispatch and the systemless runner
-            // exits cleanly). If launchContinue is set, we keep the
-            // current app running after the bookkeeping step because the
-            // caller explicitly asked to continue. The launched app
-            // still never starts because there is no Process Manager to
-            // spawn it. On launch failure, LaunchApplication returns 0
-            // in the launchProcessSN / launchPreferredSize /
-            // launchMinimumSize / launchAvailableSize fields so callers
-            // do not observe stale output values.
+            // HLE compromise: Systemless has one foreground application
+            // image, not a full Process Manager with background process
+            // scheduling. Foreground launches of existing VFS applications
+            // are queued for the runner to load into a fresh application
+            // heap; launchContinue launches begin when the caller next
+            // yields through the Event Manager, matching Processes 1994
+            // p. 2-15. launchDontSwitch remains a bookkeeping-only path.
+            // On launch failure, LaunchApplication returns 0 in the
+            // launchProcessSN / launchPreferredSize / launchMinimumSize /
+            // launchAvailableSize fields so callers do not observe stale
+            // output values.
             //
             // Trap-name fixed during the trap-name verification audit
             // pattern — was previously labeled
@@ -2820,15 +2815,19 @@ impl super::TrapDispatcher {
             // Regression coverage:
             //   toolbox::tests::launchapplication_launchcontinue_clear_records_target_app_path_and_halts
             //   toolbox::tests::launchapplication_launchcontinue_set_records_target_app_path_and_returns
-            // LaunchApplication ($A9F2): Per IM:VI Table C-1 line 57551 the canonical System 7+ name is LaunchApplication; legacy IM:II II-60 name was "Launch" (same trap word). Register-based: A0 points to LaunchPB record (System 7+) or legacy CmdLine record (pre-System-7); no stack args. Systemless does not model inter-application chaining, so the trap halts emulation when launchContinue is clear. When an extended LaunchPB supplies launchAppSpec, record the target path first as best-effort bookkeeping; if launchContinue is set, return to the caller so cooperative launch-after-continue code keeps running.
+            //   toolbox::tests::launchapplication_existing_foreground_target_queues_runner_launch
+            // LaunchApplication ($A9F2): Per IM:VI Table C-1 line 57551 the canonical System 7+ name is LaunchApplication; legacy IM:II II-60 name was "Launch" (same trap word). Register-based: A0 points to LaunchPB record (System 7+) or legacy CmdLine record (pre-System-7); no stack args. Existing foreground launch targets are queued for runner-level app switching; missing targets preserve the historical halt/return behavior according to launchContinue.
             (true, 0x1F2) => {
                 let launch_params = cpu.read_reg(Register::A0);
-                let launch_continue = if launch_params != 0 {
-                    (bus.read_word(launch_params + 14) & 0x4000) != 0
+                let launch_flags = if launch_params != 0 {
+                    bus.read_word(launch_params + 14)
                 } else {
-                    false
+                    0
                 };
+                let launch_continue = (launch_flags & 0x4000) != 0;
+                let launch_dont_switch = (launch_flags & 0x0200) != 0;
                 let mut launch_result = 0u32;
+                let mut launch_target: Option<String> = None;
                 if launch_params != 0 {
                     let app_spec_ptr = bus.read_long(launch_params + 16);
                     if app_spec_ptr != 0 {
@@ -2840,7 +2839,11 @@ impl super::TrapDispatcher {
                                 .vfs_key_for_fsspec(vref, dir_id, &filename)
                                 .unwrap_or(filename);
                             self.set_launched_app_path(&app_path);
-                            if self.find_vfs_file(&app_path).is_none() {
+                            let target_exists = self.find_vfs_file(&app_path).is_some()
+                                || self.find_vfs_rsrc_file(&app_path).is_some();
+                            if target_exists {
+                                launch_target = Some(app_path);
+                            } else {
                                 launch_result = (-43i32) as u32; // fnfErr
                             }
                         }
@@ -2856,7 +2859,14 @@ impl super::TrapDispatcher {
                     }
                 }
                 cpu.write_reg(Register::D0, launch_result);
-                if launch_continue {
+                let queued_foreground_launch =
+                    launch_result == 0 && launch_target.is_some() && !launch_dont_switch;
+                if queued_foreground_launch {
+                    if let Some(app_path) = launch_target.as_deref() {
+                        self.queue_pending_launch_application(app_path, launch_continue);
+                    }
+                }
+                if launch_continue || queued_foreground_launch {
                     return Some(Ok(()));
                 }
                 Err(Error::Halted)
@@ -14424,6 +14434,58 @@ mod tests {
         );
         assert_eq!(disp.default_dir_id, target_dir_id);
         assert_ne!(disp.app_wd_refnum, 0);
+    }
+
+    #[test]
+    fn launchapplication_existing_foreground_target_queues_runner_launch() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_before = cpu.read_reg(Register::A7);
+        let launch_pb = bus.alloc(64);
+        let app_spec = bus.alloc(32);
+        let target_dir_id = disp.ensure_vfs_directory("LaunchTargets");
+        disp.vfs
+            .insert("LaunchTargets/Register Helper".to_string(), Vec::new());
+
+        cpu.write_reg(Register::A0, launch_pb);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+
+        for offset in 0..64u32 {
+            bus.write_byte(launch_pb + offset, 0);
+        }
+        bus.write_word(launch_pb + 6, 0x4C43); // extendedBlock
+        bus.write_long(launch_pb + 8, 32); // extendedBlockLen
+        bus.write_word(launch_pb + 12, 0);
+        bus.write_word(launch_pb + 14, 0x4000); // launchContinue
+        bus.write_long(launch_pb + 16, app_spec);
+
+        for offset in 0..32u32 {
+            bus.write_byte(app_spec + offset, 0);
+        }
+        bus.write_word(app_spec, 0);
+        bus.write_long(app_spec + 2, target_dir_id);
+        write_pascal_string(&mut bus, app_spec + 6, "Register Helper");
+
+        let result = disp.dispatch_toolbox(true, 0x1F2, &mut cpu, &mut bus);
+        assert!(result.is_some(), "LaunchApplication should be handled");
+        assert!(
+            result.unwrap().is_ok(),
+            "LaunchApplication should return while queued foreground app waits for Event Manager yield"
+        );
+        assert_eq!(cpu.read_reg(Register::A0), launch_pb);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(
+            disp.launched_app_path.as_deref(),
+            Some("LaunchTargets/Register Helper")
+        );
+        assert!(
+            disp.take_pending_launch_application(false).is_none(),
+            "launchContinue target should not start until an Event Manager yield"
+        );
+        assert_eq!(
+            disp.take_pending_launch_application(true).as_deref(),
+            Some("LaunchTargets/Register Helper")
+        );
     }
 
     #[test]

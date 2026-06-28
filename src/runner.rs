@@ -330,6 +330,16 @@ fn hle_trap_extra_tick_cost(opcode: u16) -> i32 {
         (false, _) => 2,
     }
 }
+
+fn event_manager_yield_trap(opcode: u16) -> bool {
+    matches!(
+        canonical_trap_number(opcode),
+        (true, 0x0170) // GetNextEvent
+            | (true, 0x0060) // WaitNextEvent
+            | (true, 0x0171) // EventAvail
+    )
+}
+
 // Cap how many ticks the fast-forward will advance in one shot,
 // to protect against pathological target values (e.g. overflowed
 // unsigned register values being misinterpreted as huge-future
@@ -1200,6 +1210,144 @@ impl FixtureRunner {
         }
 
         app
+    }
+
+    fn clear_startup_framebuffer(&mut self) {
+        if self.menu_bar_visible() {
+            let (scrn_base, row_bytes, screen_width, screen_height, pixel_size) =
+                self.dispatcher.screen_mode;
+            TrapDispatcher::fb_fill_pattern_rect(
+                &mut self.bus,
+                scrn_base,
+                row_bytes,
+                pixel_size,
+                screen_width as i16,
+                screen_height as i16,
+                0,
+                0,
+                screen_height as i16,
+                screen_width as i16,
+                [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+            );
+            return;
+        }
+
+        let (scrn_base, row_bytes, _, scrn_height, _) = self.dispatcher.screen_mode;
+        for i in 0..(row_bytes * scrn_height as u32) {
+            self.bus.write_byte(scrn_base + i, 0xFF);
+        }
+    }
+
+    fn switch_to_launched_application(
+        &mut self,
+        app_path: &str,
+    ) -> std::result::Result<(), String> {
+        use crate::memory::globals::addr;
+
+        let normalized = TrapDispatcher::normalize_vfs_path(app_path);
+        let rsrc_key = self
+            .dispatcher
+            .find_vfs_rsrc_file(&normalized)
+            .ok_or_else(|| format!("no resource fork for launched application {normalized:?}"))?;
+        let rsrc_bytes = self
+            .dispatcher
+            .vfs_rsrc
+            .get(&rsrc_key)
+            .cloned()
+            .ok_or_else(|| format!("resource fork {rsrc_key:?} disappeared before launch"))?;
+        let fork = ResourceFork::parse(&rsrc_bytes)
+            .ok_or_else(|| format!("failed to parse launched application {normalized:?}"))?;
+
+        let ram_size = self.bus.ram_size() as usize;
+        let config = FixtureRunnerConfig {
+            max_instructions: self.config.max_instructions,
+            load_address: self.config.load_address,
+            arrows_as_numpad: self.config.arrows_as_numpad,
+            ui_theme: self.config.ui_theme,
+            theme_metrics_mode: self.config.theme_metrics_mode,
+        };
+        let menu_bar_visible = self.menu_bar_visible();
+        let instructions_per_tick = self.instructions_per_tick;
+        let wait_sleep_cap_in_headless = self.wait_sleep_cap_in_headless;
+        let app_start_time = self.app_start_time;
+        let application_partition_size = self.application_partition_size;
+        let total_instructions = self.total_instructions;
+        let launch_tick = self.guest_tick();
+        let launch_time = self.bus.read_long(addr::TIME);
+        let mouse_pos = self.dispatcher.mouse_pos;
+        let mouse_button = self.dispatcher.mouse_button;
+        let output_dir = self.dispatcher.output_dir.clone();
+        let vfs = self.dispatcher.vfs.clone();
+        let vfs_rsrc = self.dispatcher.vfs_rsrc.clone();
+        let vfs_metadata = self.dispatcher.vfs_metadata.clone();
+        let vfs_directories = self.dispatcher.vfs_directories.clone();
+        let vfs_directory_paths = self.dispatcher.vfs_directory_paths.clone();
+        let locked_files = self.dispatcher.locked_files.clone();
+        let next_vfs_dir_id = self.dispatcher.next_vfs_dir_id;
+        let next_vfs_file_id = self.dispatcher.next_vfs_file_id;
+        let next_vfs_timestamp = self.dispatcher.next_vfs_timestamp;
+        let next_working_dir_refnum = self.dispatcher.next_working_dir_refnum;
+
+        let mut replacement = FixtureRunner::new(ram_size, config);
+        replacement.set_menu_bar_visible(menu_bar_visible);
+        replacement.instructions_per_tick = instructions_per_tick;
+        replacement.tick_budget = instructions_per_tick as i32;
+        replacement.wait_sleep_cap_in_headless = wait_sleep_cap_in_headless;
+        replacement.app_start_time = app_start_time;
+        replacement.application_partition_size = application_partition_size;
+        replacement.total_instructions = total_instructions;
+
+        replacement.dispatcher.output_dir = output_dir;
+        replacement.dispatcher.vfs = vfs;
+        replacement.dispatcher.vfs_rsrc = vfs_rsrc;
+        replacement.dispatcher.vfs_metadata = vfs_metadata;
+        replacement.dispatcher.vfs_directories = vfs_directories;
+        replacement.dispatcher.vfs_directory_paths = vfs_directory_paths;
+        replacement.dispatcher.locked_files = locked_files;
+        replacement.dispatcher.next_vfs_dir_id = next_vfs_dir_id;
+        replacement.dispatcher.next_vfs_file_id = next_vfs_file_id;
+        replacement.dispatcher.next_vfs_timestamp = next_vfs_timestamp;
+        replacement.dispatcher.next_working_dir_refnum = next_working_dir_refnum;
+        replacement.dispatcher.set_launched_app_path(&normalized);
+
+        let app = replacement
+            .load_app(&fork)
+            .ok_or_else(|| format!("failed to load launched application {normalized:?}"))?;
+        replacement.init_app(&app);
+        replacement.bus.write_long(addr::TICKS, launch_tick);
+        replacement.bus.write_long(addr::TIME, launch_time);
+        replacement.dispatcher.tick_count = launch_tick;
+        replacement.dispatcher.mouse_pos = mouse_pos;
+        replacement.dispatcher.mouse_button = mouse_button;
+        replacement
+            .bus
+            .write_byte(addr::MB_STATE, if mouse_button { 0x00 } else { 0x80 });
+        replacement.clear_startup_framebuffer();
+
+        replacement.audio = self.audio.take();
+        replacement.audio_buffer = std::mem::take(&mut self.audio_buffer);
+
+        eprintln!("[LAUNCH] Switched foreground application to {normalized}");
+        *self = replacement;
+        Ok(())
+    }
+
+    fn service_pending_launch_application(&mut self, event_yield_reached: bool) -> bool {
+        let Some(path) = self
+            .dispatcher
+            .take_pending_launch_application(event_yield_reached)
+        else {
+            return false;
+        };
+
+        if let Err(err) = self.switch_to_launched_application(&path) {
+            eprintln!("[LAUNCH] Failed to switch to queued application {path:?}: {err}");
+            self.halted = true;
+            self.halted_pc = Some(self.cpu.read_reg(Register::PC));
+            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
+            self.halted_d0 = Some((-43i32) as u32);
+        }
+        true
     }
 
     pub(crate) fn merge_resources_into_application(&mut self, fork: &ResourceFork) -> usize {
@@ -2387,6 +2535,12 @@ impl FixtureRunner {
                             self.dispatcher.trap_histogram[idx].saturating_add(1);
                         self.dispatcher.inline_skipped[idx] =
                             self.dispatcher.inline_skipped[idx].saturating_add(1);
+                        if self.service_pending_launch_application(true) {
+                            if self.halted {
+                                return (count, false);
+                            }
+                            continue;
+                        }
                         continue;
                     }
 
@@ -2548,6 +2702,14 @@ impl FixtureRunner {
                             // Service any pending Delay ticks immediately after
                             // the trap dispatch, before the next instruction.
                             self.service_delay_ticks(tick_cap);
+                            if self.service_pending_launch_application(event_manager_yield_trap(
+                                opcode,
+                            )) {
+                                if self.halted {
+                                    return (count, false);
+                                }
+                                continue;
+                            }
                         }
                         Err(Error::Halted) => {
                             // Surface the auto-pop caller PC if the
@@ -4829,6 +4991,89 @@ mod tests {
                 preferred_size: 0x0030_0000,
                 minimum_size: 0x0020_0000,
             })
+        );
+    }
+
+    #[test]
+    fn event_yield_services_pending_launch_application_from_vfs() {
+        use crate::memory::globals::addr;
+
+        let current_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let helper_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let current_fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &current_code0)]);
+        let helper_fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &helper_code0)]);
+        let current_fork =
+            ResourceFork::parse(&current_fork_bytes).expect("parse current app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        runner
+            .dispatcher
+            .vfs
+            .insert("Apps/Main App".to_string(), Vec::new());
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Apps/Main App".to_string(), current_fork_bytes);
+        runner
+            .dispatcher
+            .vfs
+            .insert("Apps/Register Helper".to_string(), Vec::new());
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Apps/Register Helper".to_string(), helper_fork_bytes);
+        runner.dispatcher.ensure_vfs_catalog();
+        runner.dispatcher.set_launched_app_path("Apps/Main App");
+
+        let app = runner.load_app(&current_fork).expect("load current app");
+        runner.init_app(&app);
+        runner.bus.write_long(addr::TICKS, 1234);
+        runner.dispatcher.tick_count = 1234;
+        runner
+            .dispatcher
+            .queue_pending_launch_application("Apps/Register Helper", true);
+
+        assert!(
+            !runner.service_pending_launch_application(false),
+            "launchContinue target must wait for an Event Manager yield"
+        );
+        let switched = runner.service_pending_launch_application(true);
+
+        assert!(
+            switched,
+            "event yield should service the queued helper launch"
+        );
+        assert!(
+            !runner.is_halted(),
+            "queued helper launch should not halt the runner"
+        );
+        assert_eq!(
+            runner.dispatcher.launched_app_path.as_deref(),
+            Some("Apps/Register Helper")
+        );
+        assert_eq!(
+            runner.bus.read_long(addr::TICKS),
+            1234,
+            "Process Manager launch must preserve system TickCount"
+        );
+        let cur_ap_len = runner.bus.read_byte(addr::CUR_APNAME) as usize;
+        let cur_ap_name = String::from_utf8(
+            (0..cur_ap_len)
+                .map(|i| runner.bus.read_byte(addr::CUR_APNAME + 1 + i as u32))
+                .collect(),
+        )
+        .expect("CurApName is ASCII");
+        assert_eq!(cur_ap_name, "Register Helper");
+        assert!(
+            runner.dispatcher.vfs.contains_key("Apps/Main App"),
+            "archive VFS entries must survive the foreground app switch"
+        );
+        assert!(
+            runner
+                .dispatcher
+                .vfs_rsrc
+                .contains_key("Apps/Register Helper"),
+            "launched app resource fork must remain available after the switch"
         );
     }
 

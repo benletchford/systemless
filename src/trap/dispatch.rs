@@ -743,6 +743,12 @@ pub(crate) struct WorkingDirectory {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct PendingLaunchApplication {
+    pub path: String,
+    pub after_event_yield: bool,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct VfsCatalogEntry {
     pub path: String,
     pub name: String,
@@ -1038,6 +1044,10 @@ pub struct TrapDispatcher {
     pub(crate) next_working_dir_refnum: i16,
     /// Normalized VFS path of the launched application, if known.
     pub(crate) launched_app_path: Option<String>,
+    /// Foreground application launch queued by LaunchApplication. When
+    /// `after_event_yield` is set, the runner starts it after the current
+    /// app next yields through WaitNextEvent/EventAvail/GetNextEvent.
+    pub(crate) pending_launch_app: Option<PendingLaunchApplication>,
     /// Current default directory.
     pub(crate) default_dir_id: u32,
     /// Working directory reference number for the application's folder.
@@ -2313,6 +2323,7 @@ impl TrapDispatcher {
             next_vfs_timestamp: 1,
             next_working_dir_refnum: 32,
             launched_app_path: None,
+            pending_launch_app: None,
             default_dir_id: 2,
             app_wd_refnum: BOOT_VOLUME_REF_NUM,
             output_dir: None,
@@ -2852,6 +2863,29 @@ impl TrapDispatcher {
             }
         }
         self.launched_app_path = Some(normalized);
+    }
+
+    pub(crate) fn queue_pending_launch_application(&mut self, name: &str, after_event_yield: bool) {
+        let normalized = Self::normalize_vfs_path(name);
+        self.pending_launch_app = Some(PendingLaunchApplication {
+            path: normalized,
+            after_event_yield,
+        });
+    }
+
+    pub(crate) fn take_pending_launch_application(
+        &mut self,
+        event_yield_reached: bool,
+    ) -> Option<String> {
+        let ready = self
+            .pending_launch_app
+            .as_ref()
+            .is_some_and(|pending| !pending.after_event_yield || event_yield_reached);
+        if ready {
+            self.pending_launch_app.take().map(|pending| pending.path)
+        } else {
+            None
+        }
     }
 
     pub(crate) fn touch_vfs_entry(&mut self, name: &str) {
