@@ -872,11 +872,10 @@ impl super::TrapDispatcher {
         if top >= bottom || left >= right {
             return;
         }
+        let width = right - left;
         for y in top..bottom {
             let row_addr = screen_base + y * row_bytes;
-            for x in left..right {
-                bus.write_byte(row_addr + x, pixel_index);
-            }
+            bus.fill_bytes(row_addr + left, width, pixel_index);
         }
     }
 
@@ -907,11 +906,10 @@ impl super::TrapDispatcher {
             } else {
                 Self::logical_white_pixel_index(bus)
             };
+            let width = right - left;
             for y in top..bottom {
                 let row_addr = screen_base + y * row_bytes;
-                for x in left..right {
-                    bus.write_byte(row_addr + x, fill);
-                }
+                bus.fill_bytes(row_addr + left, width, fill);
             }
             return;
         }
