@@ -1692,11 +1692,13 @@ impl super::TrapDispatcher {
                 } else if let Some((ptr, res_type, res_id)) =
                     self.loaded_handles.get(&handle).copied()
                 {
-                    let type_str = String::from_utf8_lossy(&res_type);
-                    eprintln!(
-                        "[TRAP] LoadResource handle=${:08X} '{}' {} ptr=${:08X}",
-                        handle, type_str, res_id, ptr
-                    );
+                    if super::dispatch::trace_resfile_enabled() {
+                        let type_str = String::from_utf8_lossy(&res_type);
+                        eprintln!(
+                            "[TRAP] LoadResource handle=${:08X} '{}' {} ptr=${:08X}",
+                            handle, type_str, res_id, ptr
+                        );
+                    }
                     // Successful reload must canonicalize the master
                     // pointer again even if the caller had emptied or
                     // scribbled over it first.
@@ -1722,11 +1724,13 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
                 if let Some((ptr, res_type, res_id)) = self.loaded_handles.get(&handle).copied() {
-                    let type_str = String::from_utf8_lossy(&res_type);
-                    eprintln!(
-                        "[TRAP] ReleaseResource handle=${:08X} '{}' {} ptr=${:08X}",
-                        handle, type_str, res_id, ptr
-                    );
+                    if super::dispatch::trace_resfile_enabled() {
+                        let type_str = String::from_utf8_lossy(&res_type);
+                        eprintln!(
+                            "[TRAP] ReleaseResource handle=${:08X} '{}' {} ptr=${:08X}",
+                            handle, type_str, res_id, ptr
+                        );
+                    }
                     let attrs = self.resource_attributes_for_handle(handle).unwrap_or(0);
                     if (attrs & Self::RES_CHANGED_ATTR) == 0 {
                         let resource_record = self.resource_record_for_handle(handle);
