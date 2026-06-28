@@ -1262,7 +1262,9 @@ impl super::TrapDispatcher {
             // PROCEDURE LocalToGlobal(VAR pt: Point);
             // Inside Macintosh Volume I, I-192
             // Reference: Executor src/quickdraw/qPoint.cpp C_LocalToGlobal
-            // LocalToGlobal ($A870): Subtracts bounds.topLeft; handles both GrafPort and CGrafPort
+            // LocalToGlobal ($A870): Adds the current port's global offset
+            // (`portRect.topLeft - portBits.bounds.topLeft`); handles both
+            // GrafPort and CGrafPort.
             (true, 0x070) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pt_ptr = bus.read_long(sp);
@@ -1271,14 +1273,15 @@ impl super::TrapDispatcher {
                 let global_ptr = bus.read_long(a5);
                 let port = bus.read_long(global_ptr);
                 let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, port);
+                let (port_rect_top, port_rect_left) = self.port_rect_top_left(bus, port);
+                let global_top = port_rect_top.wrapping_sub(bounds_top);
+                let global_left = port_rect_left.wrapping_sub(bounds_left);
                 let v = bus.read_word(pt_ptr) as i16;
                 let h = bus.read_word(pt_ptr + 2) as i16;
-                // wrapping_sub matches 68k Mac OS behaviour (signed
-                // 16-bit wrap-around) and avoids the debug-build
-                // overflow panic when a port's bounds.topLeft is
-                // outside the i16 range relative to the input point.
-                bus.write_word(pt_ptr, v.wrapping_sub(bounds_top) as u16);
-                bus.write_word(pt_ptr + 2, h.wrapping_sub(bounds_left) as u16);
+                // wrapping_add matches 68k QuickDraw's signed 16-bit
+                // wrap-around behaviour.
+                bus.write_word(pt_ptr, v.wrapping_add(global_top) as u16);
+                bus.write_word(pt_ptr + 2, h.wrapping_add(global_left) as u16);
                 Ok(())
             }
 
@@ -1287,7 +1290,9 @@ impl super::TrapDispatcher {
             // grafPort's local coordinate system.
             // PROCEDURE GlobalToLocal(VAR pt: Point);
             // Inside Macintosh Volume I, I-193
-            // GlobalToLocal ($A871): Adds bounds.topLeft; handles both GrafPort and CGrafPort
+            // GlobalToLocal ($A871): Subtracts the current port's global
+            // offset (`portRect.topLeft - portBits.bounds.topLeft`); handles
+            // both GrafPort and CGrafPort.
             (true, 0x071) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pt_ptr = bus.read_long(sp);
@@ -1296,21 +1301,22 @@ impl super::TrapDispatcher {
                 let global_ptr = bus.read_long(a5);
                 let port = bus.read_long(global_ptr);
                 let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, port);
+                let (port_rect_top, port_rect_left) = self.port_rect_top_left(bus, port);
+                let global_top = port_rect_top.wrapping_sub(bounds_top);
+                let global_left = port_rect_left.wrapping_sub(bounds_left);
                 let v = bus.read_word(pt_ptr) as i16;
                 let h = bus.read_word(pt_ptr + 2) as i16;
-                // wrapping_add matches 68k QuickDraw's signed 16-bit
-                // wrap-around behaviour, avoiding debug-build panics
-                // when a port's bounds.topLeft + the input point
-                // would overflow i16 range. (Real Mac OS just wraps.)
-                let new_v = v.wrapping_add(bounds_top);
-                let new_h = h.wrapping_add(bounds_left);
+                // wrapping_sub matches 68k QuickDraw's signed 16-bit
+                // wrap-around behaviour.
+                let new_v = v.wrapping_sub(global_top);
+                let new_h = h.wrapping_sub(global_left);
                 bus.write_word(pt_ptr, new_v as u16);
                 bus.write_word(pt_ptr + 2, new_h as u16);
                 if std::env::var_os("SYSTEMLESS_TRACE_GLOBAL_TO_LOCAL").is_some() {
                     let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                     eprintln!(
-                        "[GTOL] pc=${:08X} port=${:08X} bounds_tl=({},{}) global=({},{}) -> local=({},{})",
-                        trap_pc, port, bounds_top, bounds_left, v, h, new_v, new_h
+                        "[GTOL] pc=${:08X} port=${:08X} bounds_tl=({},{}) port_rect_tl=({},{}) global_offset=({},{}) global=({},{}) -> local=({},{})",
+                        trap_pc, port, bounds_top, bounds_left, port_rect_top, port_rect_left, global_top, global_left, v, h, new_v, new_h
                     );
                 }
                 Ok(())
@@ -21237,6 +21243,16 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn port_rect_top_left(&self, bus: &MacMemoryBus, port: u32) -> (i16, i16) {
+        if port == 0 {
+            return (0, 0);
+        }
+        (
+            bus.read_word(port + 16) as i16,
+            bus.read_word(port + 18) as i16,
+        )
+    }
+
     fn promote_compiled_crsr_resource(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -23271,6 +23287,51 @@ mod tests {
         );
         assert_eq!(d.current_port, new_port);
         assert_ne!(d.current_gdevice, 0);
+    }
+
+    #[test]
+    fn local_global_transforms_use_port_global_offset() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        let pt_ptr = 0x200000u32;
+
+        // A window at global (top=80,left=120) with local portRect origin
+        // still at (0,0) has portBits.bounds topLeft=(-80,-120).
+        bus.write_word(port + 8, (-80i16) as u16);
+        bus.write_word(port + 10, (-120i16) as u16);
+        bus.write_word(port + 16, 0);
+        bus.write_word(port + 18, 0);
+
+        bus.write_word(pt_ptr, 10);
+        bus.write_word(pt_ptr + 2, 20);
+        bus.write_long(TEST_SP, pt_ptr);
+        let result = d.dispatch_quickdraw(true, 0x070, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            (
+                bus.read_word(pt_ptr) as i16,
+                bus.read_word(pt_ptr + 2) as i16
+            ),
+            (90, 140),
+            "LocalToGlobal should add the window's global top-left"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(pt_ptr, 90);
+        bus.write_word(pt_ptr + 2, 140);
+        bus.write_long(TEST_SP, pt_ptr);
+        let result = d.dispatch_quickdraw(true, 0x071, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            (
+                bus.read_word(pt_ptr) as i16,
+                bus.read_word(pt_ptr + 2) as i16
+            ),
+            (10, 20),
+            "GlobalToLocal should subtract the window's global top-left"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
     }
 
     #[test]

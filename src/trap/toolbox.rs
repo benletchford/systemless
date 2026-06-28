@@ -2151,10 +2151,14 @@ impl super::TrapDispatcher {
                 let global_ptr = bus.read_long(a5);
                 let port = bus.read_long(global_ptr);
                 let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, port);
+                let (port_rect_top, port_rect_left) = self.port_rect_top_left(bus, port);
+                let global_top = port_rect_top.wrapping_sub(bounds_top);
+                let global_left = port_rect_left.wrapping_sub(bounds_left);
 
-                // GlobalToLocal: local = global + bounds.topLeft
-                let local_v = self.mouse_pos.0 + bounds_top;
-                let local_h = self.mouse_pos.1 + bounds_left;
+                // Same conversion as GlobalToLocal: local = global - the
+                // current port's global offset.
+                let local_v = self.mouse_pos.0.wrapping_sub(global_top);
+                let local_h = self.mouse_pos.1.wrapping_sub(global_left);
                 if self.debug_get_mouse_last_local != (local_v, local_h) {
                     self.debug_get_mouse_local_change_count =
                         self.debug_get_mouse_local_change_count.saturating_add(1);
@@ -12511,6 +12515,37 @@ mod tests {
         // Point: v at pt_ptr, h at pt_ptr+2
         assert_eq!(bus.read_word(pt_ptr), 50);
         assert_eq!(bus.read_word(pt_ptr + 2), 100);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn get_mouse_returns_current_port_local_coordinates() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = TEST_SP;
+        let port = 0x181000u32;
+        let pt_ptr = 0x200000u32;
+        bus.write_long(sp, pt_ptr);
+
+        // Same geometry as a window/dialog at global (80,120) whose local
+        // coordinate system still starts at (0,0).
+        bus.write_word(port + 8, (-80i16) as u16);
+        bus.write_word(port + 10, (-120i16) as u16);
+        bus.write_word(port + 16, 0);
+        bus.write_word(port + 18, 0);
+        disp.mouse_pos = (95, 145);
+
+        let result = disp.dispatch_toolbox(true, 0x172, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            (
+                bus.read_word(pt_ptr) as i16,
+                bus.read_word(pt_ptr + 2) as i16
+            ),
+            (15, 25),
+            "GetMouse should report the mouse in current-port local coordinates"
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
