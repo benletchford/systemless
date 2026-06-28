@@ -638,6 +638,13 @@ impl super::TrapDispatcher {
                 .is_some_and(|resources| resources.files.len() > 1)
     }
 
+    fn add_resource_materialization_tick_cost(&mut self, bus: &MacMemoryBus, ptr: u32) {
+        let Some(byte_len) = bus.get_alloc_size(ptr) else {
+            return;
+        };
+        self.add_hle_tick_cost(Self::resource_load_tick_cost(byte_len));
+    }
+
     fn resource_trace_chain(&self) -> String {
         self.resource_search_order()
             .into_iter()
@@ -678,6 +685,7 @@ impl super::TrapDispatcher {
                     // working after the refill.
                     if self.res_load && bus.read_long(handle) == 0 {
                         bus.write_long(handle, existing_ptr);
+                        self.add_resource_materialization_tick_cost(bus, existing_ptr);
                     }
                     if existing_ptr != 0 {
                         self.ptr_to_handle.insert(existing_ptr, handle);
@@ -699,6 +707,7 @@ impl super::TrapDispatcher {
         self.remember_resource_handle_index(handle, key.0, key.1, key.2);
         if self.res_load && ptr != 0 {
             self.ptr_to_handle.insert(ptr, handle);
+            self.add_resource_materialization_tick_cost(bus, ptr);
         }
         handle
     }
@@ -1702,8 +1711,12 @@ impl super::TrapDispatcher {
                     // Successful reload must canonicalize the master
                     // pointer again even if the caller had emptied or
                     // scribbled over it first.
+                    let was_empty = bus.read_long(handle) == 0;
                     bus.write_long(handle, ptr);
                     self.restore_loaded_resource_handle(handle, ptr);
+                    if was_empty {
+                        self.add_resource_materialization_tick_cost(bus, ptr);
+                    }
                     bus.write_word(0x0A60, 0);
                 } else {
                     bus.write_word(0x0A60, 0);
@@ -7985,6 +7998,11 @@ mod tests {
             0,
             "master pointer should be nil while automatic loading is disabled"
         );
+        assert_eq!(
+            disp.take_hle_tick_cost(),
+            0,
+            "empty SetResLoad(FALSE) handles should not charge materialization work"
+        );
         assert_eq!(bus.read_word(0x0A60), 0);
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -7995,6 +8013,42 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(bus.read_long(handle), data_ptr);
         assert_eq!(bus.read_word(0x0A60), 0);
+        assert!(
+            disp.take_hle_tick_cost() > 0,
+            "LoadResource should charge for filling an empty resource handle"
+        );
+    }
+
+    #[test]
+    fn get_resource_autoload_records_hle_work_once() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        setup_resources(&mut disp, &mut bus, b"LOAD", 503, &[0x5A; 1024]);
+
+        bus.write_word(TEST_SP, 503u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"LOAD"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        assert_ne!(bus.read_long(handle), 0);
+        assert!(
+            disp.take_hle_tick_cost()
+                >= super::super::TrapDispatcher::resource_load_tick_cost(1024) as i32,
+            "first autoloaded GetResource should charge by resource size"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 503u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"LOAD"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            disp.take_hle_tick_cost(),
+            0,
+            "reusing an already-loaded resource handle should not charge another materialization"
+        );
     }
 
     #[test]

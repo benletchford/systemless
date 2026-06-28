@@ -2594,7 +2594,8 @@ impl FixtureRunner {
                         .dispatch(opcode, &mut self.cpu, &mut self.bus)
                     {
                         Ok(()) => {
-                            let extra_tick_cost = hle_trap_extra_tick_cost(opcode);
+                            let extra_tick_cost = hle_trap_extra_tick_cost(opcode)
+                                .saturating_add(self.dispatcher.take_hle_tick_cost());
                             if extra_tick_cost > 0
                                 && self.charge_tick_budget(extra_tick_cost, tick_cap)
                             {
@@ -2913,6 +2914,44 @@ impl FixtureRunner {
         new_tick
     }
 
+    fn deliver_pending_wait_next_event_if_available(&mut self) -> bool {
+        if self.dispatcher.event_queue.is_empty() {
+            return false;
+        }
+
+        let Some(pending) = self.dispatcher.pending_wait_next_event_return.take() else {
+            self.dispatcher.pending_wait_sleep_ticks = 0;
+            return true;
+        };
+
+        let (what, message, where_v, where_h, modifiers, has_event) = self
+            .dispatcher
+            .dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask);
+        if !has_event {
+            self.dispatcher.pending_wait_next_event_return = Some(pending);
+            return false;
+        }
+
+        self.dispatcher.write_event_record(
+            &mut self.bus,
+            pending.event_ptr,
+            what,
+            message,
+            where_v,
+            where_h,
+            modifiers,
+        );
+        self.bus.write_word(pending.result_ptr, 0xFFFF);
+        self.dispatcher.pending_wait_sleep_ticks = 0;
+        if crate::trap::dispatch::trace_input_enabled() {
+            eprintln!(
+                "[INPUT] WaitNextEvent sleep woke with queued event what={} message=${:08X}",
+                what, message
+            );
+        }
+        true
+    }
+
     fn service_wait_sleep_ticks(&mut self, tick_cap: Option<u32>) -> bool {
         if self.dispatcher.pending_wait_sleep_ticks == 0 || self.active_interrupt_callback.is_some()
         {
@@ -2921,47 +2960,64 @@ impl FixtureRunner {
 
         if self.frozen_ticks.is_some() {
             self.dispatcher.pending_wait_sleep_ticks = 0;
+            self.dispatcher.pending_wait_next_event_return = None;
             return false;
         }
 
         // On a real Mac, WaitNextEvent returns immediately when an event
         // is available, regardless of the requested sleep duration.
         // Macintosh Toolbox Essentials 1992, 2-22
-        if !self.dispatcher.event_queue.is_empty() {
-            self.dispatcher.pending_wait_sleep_ticks = 0;
+        if self.deliver_pending_wait_next_event_if_available() {
             return false;
         }
 
-        // If a modal dialog is visibly retained between ModalDialog calls,
-        // treat WaitNextEvent sleep as an app-yield hint rather than a
-        // wall-clock delay. Apps can return from ModalDialog, do modal control
-        // work from their filter proc, then re-enter the modal loop while the
-        // dialog remains frontmost.
+        // If a dialog is being handled by ModalDialog, or a ModalDialog-owned
+        // dialog is visibly retained between ModalDialog calls, treat
+        // WaitNextEvent sleep as an app-yield hint rather than a wall-clock
+        // delay. App-owned visible dialogs created with GetNewDialog can run
+        // their own WaitNextEvent loops before ever entering ModalDialog; those
+        // must still honor the requested sleep interval.
+        let retained_modal_dialog_snapshot = self
+            .dispatcher
+            .dialog_visible_snapshots
+            .keys()
+            .any(|dialog_ptr| self.dispatcher.dialog_modal_entered.contains(dialog_ptr));
+        let app_owned_visible_dialog_snapshot = self
+            .dispatcher
+            .dialog_visible_snapshots
+            .keys()
+            .any(|dialog_ptr| !self.dispatcher.dialog_modal_entered.contains(dialog_ptr));
         if tick_cap.is_some()
-            && (self.dispatcher.is_dialog_tracking()
-                || !self.dispatcher.dialog_visible_snapshots.is_empty())
+            && (self.dispatcher.is_dialog_tracking() || retained_modal_dialog_snapshot)
         {
             self.dispatcher.pending_wait_sleep_ticks = 0;
+            self.dispatcher.pending_wait_next_event_return = None;
             return false;
         }
 
-        // In GUI mode (tick_cap present), cap the effective sleep to 1 tick.
-        // The sleep parameter in WaitNextEvent is a hint to the OS about how
-        // long the app is willing to wait; on a real Mac the Process Manager
-        // may return sooner. Sleeping for the full duration (often 60 ticks =
-        // 1 second) starves the game loop of CPU time. Advancing 1 tick per
-        // WaitNextEvent call matches the behavior of a 60 Hz VBL-paced game.
+        // In GUI mode (tick_cap present), suspend foreground guest code until
+        // either the requested WaitNextEvent sleep expires or this host frame's
+        // tick cap is reached. The Process Manager makes the process eligible
+        // to run again only after an event arrives or the sleep time expires;
+        // if the time expires with no event pending, the app receives a null
+        // event. Inside Macintosh: Processes 1994, p. 2-8.
         if let Some(cap) = tick_cap {
-            self.dispatcher.pending_wait_sleep_ticks = 0;
-            if self.bus.read_long(0x016A) < cap {
+            while self.dispatcher.pending_wait_sleep_ticks > 0 && self.bus.read_long(0x016A) < cap {
+                self.dispatcher.pending_wait_sleep_ticks -= 1;
                 self.advance_guest_tick();
                 self.tick_budget = self.instructions_per_tick as i32;
+                if self.active_interrupt_callback.is_some() {
+                    break;
+                }
             }
-            // Yield to the host if we've reached the tick cap for this frame,
-            // otherwise let the game continue processing.
-            if self.bus.read_long(0x016A) >= cap {
+
+            // Yield to the host if the frame tick cap was reached while the
+            // process is still suspended; the next frame will continue draining
+            // the remaining sleep without delivering another null event early.
+            if self.dispatcher.pending_wait_sleep_ticks > 0 && self.bus.read_long(0x016A) >= cap {
                 return true;
             }
+            self.dispatcher.pending_wait_next_event_return = None;
             return false;
         }
 
@@ -2972,10 +3028,17 @@ impl FixtureRunner {
         // honor the cap as a per-WNE-call ceiling, mirroring GUI mode's
         // 1-tick cap. Used by scripted harnesses to prevent Systemless's tick rate
         // from rocketing ahead of Basilisk's during event-loop-heavy
-        // gameplay.
+        // gameplay. App-owned visible dialogs keep the real sleep even when a
+        // script sets the cap to zero; otherwise headless probes can run modal
+        // background work that Basilisk is still sleeping through.
         if let Some(cap) = self.wait_sleep_cap_in_headless {
-            let advance = self.dispatcher.pending_wait_sleep_ticks.min(cap);
+            let advance = if app_owned_visible_dialog_snapshot {
+                self.dispatcher.pending_wait_sleep_ticks
+            } else {
+                self.dispatcher.pending_wait_sleep_ticks.min(cap)
+            };
             self.dispatcher.pending_wait_sleep_ticks = 0;
+            self.dispatcher.pending_wait_next_event_return = None;
             for _ in 0..advance {
                 self.advance_guest_tick();
                 self.tick_budget = self.instructions_per_tick as i32;
@@ -2995,6 +3058,7 @@ impl FixtureRunner {
                 break;
             }
         }
+        self.dispatcher.pending_wait_next_event_return = None;
         false
     }
 
@@ -4821,7 +4885,10 @@ mod tests {
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
         SndChannel, SndCommand, OUTPUT_RATE,
     };
-    use crate::trap::dispatch::{DialogItem, DialogTrackingState, QueuedEvent, TimerTask, VblTask};
+    use crate::trap::dispatch::{
+        DialogItem, DialogTrackingState, PendingWaitNextEventReturn, QueuedEvent, TimerTask,
+        VblTask,
+    };
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
@@ -7729,11 +7796,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_wait_sleep_ticks_capped_to_one_in_gui_mode() {
-        // In GUI mode (tick_override=Some), WNE sleep is capped to 1 tick
-        // per call. The full sleep duration is a hint, not a requirement.
-        // This prevents long WNE sleeps (e.g. 60 ticks) from starving the
-        // game loop. Macintosh Toolbox Essentials 1992, 2-22
+    fn pending_wait_sleep_ticks_suspends_foreground_until_gui_tick_cap() {
+        // In GUI mode (tick_override=Some), WNE sleep advances VBL/timer time
+        // up to the current frame cap but keeps the foreground app suspended
+        // until the requested sleep expires. This prevents sleep=60 loops from
+        // receiving 60 null events per second. Inside Macintosh: Processes
+        // 1994, p. 2-8.
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let program_start = 0x0001_0000;
 
@@ -7743,12 +7811,169 @@ mod tests {
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 60;
 
-        let (steps, _running) = runner.run_steps(1, Some(10));
+        let (steps, running) = runner.run_steps(1, Some(10));
 
+        assert!(running);
+        assert_eq!(
+            steps, 0,
+            "foreground code should not resume while WNE sleep remains pending"
+        );
+        assert_eq!(runner.bus.read_long(0x016A), 10);
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 50);
+    }
+
+    #[test]
+    fn pending_wait_sleep_ticks_wakes_wait_next_event_with_queued_input() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+        let event_ptr = 0x0020_0000;
+        let result_ptr = 0x0020_0020;
+
+        runner.bus.write_word(program_start, 0x4E71);
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 0);
+        runner.bus.write_word(result_ptr, 0);
+        runner.dispatcher.sent_open_app_event = true;
+        runner
+            .dispatcher
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+        runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
+            event_ptr,
+            result_ptr,
+            event_mask: 0xFFFF,
+        });
+        runner.push_mouse_down(123, 456);
+
+        let (steps, running) = runner.run_steps(1, Some(10));
+
+        assert!(running);
         assert_eq!(steps, 1);
-        // Only 1 tick advanced (not the full 60).
-        assert_eq!(runner.bus.read_long(0x016A), 1);
-        // Remaining sleep cleared — game resumes immediately.
+        assert_eq!(
+            runner.bus.read_word(event_ptr),
+            1,
+            "queued mouseDown should replace the pending null EventRecord"
+        );
+        assert_eq!(runner.bus.read_word(event_ptr + 10), 123u16);
+        assert_eq!(runner.bus.read_word(event_ptr + 12), 456u16);
+        assert_eq!(
+            runner.bus.read_word(result_ptr),
+            0xFFFF,
+            "WaitNextEvent result slot should be rewritten to TRUE"
+        );
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+        assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+    }
+
+    #[test]
+    fn pending_wait_sleep_ticks_honors_app_owned_visible_dialog_snapshot_in_gui_mode() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+        let dialog_ptr = 0x0020_0000;
+
+        runner.bus.write_word(program_start, 0x4E71);
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            crate::trap::dispatch::PersistentDialogSnapshot {
+                bounds: (10, 10, 40, 40),
+                pixels: Vec::new(),
+            },
+        );
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+
+        let (steps, running) = runner.run_steps(1, Some(10));
+
+        assert!(running);
+        assert_eq!(
+            steps, 0,
+            "app-owned visible dialogs must not collapse WaitNextEvent sleep before ModalDialog"
+        );
+        assert_eq!(runner.bus.read_long(0x016A), 10);
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 50);
+    }
+
+    #[test]
+    fn pending_wait_sleep_ticks_honors_app_owned_visible_dialog_snapshot_in_headless_cap_zero() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+        let dialog_ptr = 0x0020_0000;
+
+        runner.bus.write_word(program_start, 0x4E71);
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 0);
+        runner.set_wait_sleep_cap_in_headless(Some(0));
+        runner.dispatcher.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            crate::trap::dispatch::PersistentDialogSnapshot {
+                bounds: (10, 10, 40, 40),
+                pixels: Vec::new(),
+            },
+        );
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert_eq!(
+            steps, 1,
+            "headless cap zero must not collapse app-owned dialog sleep"
+        );
+        assert_eq!(runner.bus.read_long(0x016A), 60);
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+    }
+
+    #[test]
+    fn pending_wait_sleep_ticks_collapses_retained_modaldialog_snapshot_in_gui_mode() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+        let dialog_ptr = 0x0020_0000;
+
+        runner.bus.write_word(program_start, 0x4E71);
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            crate::trap::dispatch::PersistentDialogSnapshot {
+                bounds: (10, 10, 40, 40),
+                pixels: Vec::new(),
+            },
+        );
+        runner.dispatcher.dialog_modal_entered.insert(dialog_ptr);
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+
+        let (steps, running) = runner.run_steps(1, Some(10));
+
+        assert!(running);
+        assert_eq!(
+            steps, 1,
+            "retained ModalDialog snapshots keep the existing app-yield path"
+        );
+        assert_eq!(runner.bus.read_long(0x016A), 0);
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+    }
+
+    #[test]
+    fn pending_wait_sleep_ticks_resumes_when_gui_sleep_expires_before_cap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+
+        runner.bus.write_word(program_start, 0x4E71);
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.pending_wait_sleep_ticks = 3;
+
+        let (steps, running) = runner.run_steps(1, Some(10));
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(runner.bus.read_long(0x016A), 3);
         assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
     }
 

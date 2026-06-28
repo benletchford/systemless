@@ -77,6 +77,10 @@ impl DstClip {
         Self { rect, regions }
     }
 
+    pub(crate) fn rect(&self) -> DstClipRect {
+        self.rect
+    }
+
     fn contains(&self, x: i32, y: i32) -> bool {
         let (top, left, bottom, right) = self.rect;
         if y < top || y >= bottom || x < left || x >= right {

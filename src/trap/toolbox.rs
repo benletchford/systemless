@@ -2047,6 +2047,14 @@ impl super::TrapDispatcher {
                     // Macintosh Toolbox Essentials 1992, p. 2-22
                     self.pending_wait_sleep_ticks =
                         self.pending_wait_sleep_ticks.saturating_add(sleep);
+                    self.pending_wait_next_event_return =
+                        Some(super::dispatch::PendingWaitNextEventReturn {
+                            event_ptr,
+                            result_ptr: sp + 14,
+                            event_mask,
+                        });
+                } else {
+                    self.pending_wait_next_event_return = None;
                 }
                 self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
                 if super::dispatch::trace_input_enabled() {
@@ -2215,36 +2223,33 @@ impl super::TrapDispatcher {
 
             // Button ($A974)
             // FUNCTION Button: BOOLEAN;
-            // Returns TRUE if the mouse button is currently down (hardware state).
-            // Unlike StillDown, this does NOT check the event queue — it always
-            // reflects the physical button regardless of pending events.
-            // The real ROM reads MBState ($0172) which is updated by the VBL
-            // interrupt handler. We mirror this: $0172 is set immediately on
-            // mouse-down but deferred by up to one tick on mouse-up, matching
-            // the latency of real VBL-driven state updates.
-            // Inside Macintosh Volume I, I-259
+            // Returns TRUE if the mouse button is down or a mouseDown is still
+            // pending in the OS event queue. MTE 1992 p. 2-109 describes
+            // Button as looking for a mouse-down event in the queue; polling
+            // code also observes the VBL-maintained MBState byte.
             // Reference: Executor src/toolevent.cpp C_Button
-            // Button ($A974): Returns TRUE if mouse button is currently down (hardware state only, IM Vol I, I-259)
+            // Button ($A974): Returns TRUE for queued mouseDown or pressed MBState per MTE 1992 p. 2-109
             (true, 0x174) => {
                 let sp = cpu.read_reg(Register::A7);
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 let mb_state = bus.read_byte(0x0172);
-                let mut pressed = mb_state == 0x00;
+                let queued_mouse_down = self.event_queue.iter().any(|event| event.what == 1);
+                let mut pressed = mb_state == 0x00 || queued_mouse_down;
                 // Diagnostic: force pressed=true at a specific PC via
                 // SYSTEMLESS_FORCE_BUTTON_TRUE_AT_PC=0xADDR.
                 if let Some(target) = force_button_true_at_pc() {
                     if trap_pc == target {
                         eprintln!(
-                            "[INPUT] Button @${:08X}: forcing TRUE (was {}, MBState=${:02X})",
-                            trap_pc, pressed, mb_state
+                            "[INPUT] Button @${:08X}: forcing TRUE (was {}, MBState=${:02X} queued_mouse_down={})",
+                            trap_pc, pressed, mb_state, queued_mouse_down
                         );
                         pressed = true;
                     }
                 }
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
-                        "[INPUT] Button -> {} (MBState=${:02X} mouse_button={})",
-                        pressed, mb_state, self.mouse_button
+                        "[INPUT] Button -> {} (MBState=${:02X} mouse_button={} queued_mouse_down={})",
+                        pressed, mb_state, self.mouse_button, queued_mouse_down
                     );
                 }
                 if pressed {
@@ -12613,6 +12618,28 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         assert_eq!(bus.read_word(sp), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
+    // Button ($A974) also reports a pending mouseDown in the event queue.
+    #[test]
+    fn test_button_reports_queued_mouse_down() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_word(sp, 0);
+        bus.write_byte(0x0172, 0x80); // physical state already released
+        disp.push_mouse_down(50, 100);
+        disp.push_mouse_up(50, 100);
+
+        let result = disp.dispatch_toolbox(true, 0x174, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_word(sp),
+            0xFFFF,
+            "Button should observe a queued mouseDown even after MBState released"
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp);
     }
 

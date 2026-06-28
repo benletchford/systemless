@@ -587,7 +587,18 @@ impl super::TrapDispatcher {
                 let masks = cpu.read_reg(Register::D0);
                 let event_mask = masks as u16;
                 let stop_mask = (masks >> 16) as u16;
+                let queue_len_before = self.event_queue.len();
                 let result = self.flush_events_with_masks(event_mask, stop_mask);
+                if trace_input_enabled() {
+                    eprintln!(
+                        "[INPUT] FlushEvents event_mask=${:04X} stop_mask=${:04X} -> result={} queue_len {}->{}",
+                        event_mask,
+                        stop_mask,
+                        result,
+                        queue_len_before,
+                        self.event_queue.len()
+                    );
+                }
                 cpu.write_reg(Register::D0, result);
                 Ok(())
             }

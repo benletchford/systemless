@@ -398,6 +398,13 @@ pub struct DialogPopupDraw {
     pub pressed: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingWaitNextEventReturn {
+    pub event_ptr: u32,
+    pub result_ptr: u32,
+    pub event_mask: u16,
+}
+
 /// State for ModalDialog mouse/key tracking across frames.
 /// Mirrors MenuTrackingState; follows the same re-fire pattern.
 /// Inside Macintosh Volume I, I-415
@@ -1269,6 +1276,13 @@ pub struct TrapDispatcher {
     /// applied by the runner before guest execution resumes.
     /// Macintosh Toolbox Essentials 1992, p. 2-22
     pub(crate) pending_wait_sleep_ticks: u32,
+    /// Return slots for a WaitNextEvent null result whose sleep has not yet
+    /// expired. If input arrives during that sleep, the runner rewrites the
+    /// EventRecord/result before foreground guest code resumes.
+    pub(crate) pending_wait_next_event_return: Option<PendingWaitNextEventReturn>,
+    /// Extra instruction-budget units reported by HLE traps that completed
+    /// sizeable manager work inside Rust rather than through guest 68k code.
+    pub(crate) pending_hle_tick_cost: i32,
     /// Remaining ticks for the Delay ($A03B) trap to consume.
     /// On a real Mac, Delay blocks the application for numTicks; in our HLE
     /// the runner drains these one-at-a-time via advance_guest_tick().
@@ -1636,6 +1650,55 @@ impl TrapDispatcher {
         )
     }
 
+    pub(crate) fn add_hle_tick_cost(&mut self, cost: u32) {
+        if cost == 0 {
+            return;
+        }
+        let cost = cost.min(i32::MAX as u32) as i32;
+        self.pending_hle_tick_cost = self.pending_hle_tick_cost.saturating_add(cost);
+    }
+
+    pub(crate) fn take_hle_tick_cost(&mut self) -> i32 {
+        let cost = self.pending_hle_tick_cost;
+        self.pending_hle_tick_cost = 0;
+        cost
+    }
+
+    pub(crate) fn resource_load_tick_cost(byte_len: u32) -> u32 {
+        if byte_len == 0 {
+            return 0;
+        }
+        64u32.saturating_add(byte_len.saturating_mul(16))
+    }
+
+    pub(crate) fn quickdraw_blit_tick_cost(
+        width: u32,
+        height: u32,
+        src_pixel_size: u32,
+        dst_pixel_size: u32,
+        transformed: bool,
+    ) -> u32 {
+        let pixels = width.saturating_mul(height);
+        if pixels == 0 {
+            return 0;
+        }
+        let mut per_pixel = if transformed { 3u32 } else { 1u32 };
+        if src_pixel_size != dst_pixel_size {
+            per_pixel = per_pixel.saturating_add(2);
+        }
+        256u32.saturating_add(pixels.saturating_mul(per_pixel))
+    }
+
+    pub(crate) fn draw_picture_tick_cost(width: u32, height: u32, picture_bytes: u32) -> u32 {
+        let pixels = width.saturating_mul(height);
+        if pixels == 0 && picture_bytes == 0 {
+            return 0;
+        }
+        256u32
+            .saturating_add(pixels.saturating_mul(3))
+            .saturating_add(picture_bytes / 4)
+    }
+
     /// Number of menus currently loaded (added via InsertMenu, NewMenu,
     /// GetNewMBar, etc.). Used by ctx.json snapshots so observers can see
     /// whether the menu bar was populated at capture time without
@@ -1659,6 +1722,17 @@ impl TrapDispatcher {
     /// Cached global bounds of the front window content rect.
     pub fn window_bounds(&self) -> (i16, i16, i16, i16) {
         self.window_bounds
+    }
+
+    /// Bounds of a retained visible dialog, if one is currently drawn.
+    pub fn visible_dialog_bounds(&self) -> Option<(i16, i16, i16, i16)> {
+        if let Some(snapshot) = self.dialog_visible_snapshots.get(&self.front_window) {
+            return Some(snapshot.bounds);
+        }
+        self.dialog_visible_snapshots
+            .values()
+            .next()
+            .map(|snapshot| snapshot.bounds)
     }
 
     /// Number of windows currently tracked by the Window Manager list.
@@ -2424,6 +2498,8 @@ impl TrapDispatcher {
             current_trap_word: 0,
             current_trap_caller: None,
             pending_wait_sleep_ticks: 0,
+            pending_wait_next_event_return: None,
+            pending_hle_tick_cost: 0,
             pending_delay_ticks: 0,
             cursor_data: Some(Self::default_arrow_cursor_image()),
             cursor_level: 0,
@@ -4896,6 +4972,32 @@ mod tests {
         bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
 
         bytes
+    }
+
+    #[test]
+    fn hle_tick_cost_accumulates_and_resets() {
+        let mut disp = TrapDispatcher::new();
+
+        disp.add_hle_tick_cost(123);
+        disp.add_hle_tick_cost(456);
+
+        assert_eq!(disp.take_hle_tick_cost(), 579);
+        assert_eq!(disp.take_hle_tick_cost(), 0);
+    }
+
+    #[test]
+    fn hle_work_cost_helpers_scale_with_resource_and_pixel_work() {
+        let small_resource = TrapDispatcher::resource_load_tick_cost(128);
+        let large_resource = TrapDispatcher::resource_load_tick_cost(4096);
+        let small_blit = TrapDispatcher::quickdraw_blit_tick_cost(16, 16, 8, 8, false);
+        let large_blit = TrapDispatcher::quickdraw_blit_tick_cost(320, 200, 8, 8, false);
+        let transformed_blit = TrapDispatcher::quickdraw_blit_tick_cost(320, 200, 8, 8, true);
+        let picture = TrapDispatcher::draw_picture_tick_cost(320, 200, 32_768);
+
+        assert!(large_resource > small_resource);
+        assert!(large_blit > small_blit);
+        assert!(transformed_blit > large_blit);
+        assert!(picture > large_blit);
     }
 
     fn install_menu_tracking(disp: &mut TrapDispatcher) {

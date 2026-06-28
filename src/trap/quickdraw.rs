@@ -3441,6 +3441,18 @@ impl super::TrapDispatcher {
                 let src_clut = src_clut.as_ref();
                 let dst_clut = dst_clut.as_ref();
                 let palette_translation = palette_translation.as_ref();
+                let transformed_blit = !no_scaling
+                    || palette_translation.is_some()
+                    || src_info.pixel_size != dst_info.pixel_size
+                    || mode_base != 0
+                    || !no_clipping;
+                self.add_hle_tick_cost(Self::quickdraw_blit_tick_cost(
+                    eff_width as u32,
+                    eff_height as u32,
+                    src_info.pixel_size,
+                    dst_info.pixel_size,
+                    transformed_blit,
+                ));
                 let (copy_fg_rgb, copy_bg_rgb) = self.copy_bits_port_draw_colors(bus, port);
 
                 // Identity-blit fast path: when nothing in the inner loop
@@ -7899,6 +7911,28 @@ impl super::TrapDispatcher {
 
                     let streamed_pic_ptr = self.materialize_recent_spooled_picture(bus, pic_ptr);
                     let draw_pic_ptr = streamed_pic_ptr.unwrap_or(pic_ptr);
+                    let picture_bytes = bus
+                        .get_alloc_size(draw_pic_ptr)
+                        .or_else(|| bus.get_alloc_size(pic_ptr))
+                        .unwrap_or(0);
+                    let mut cost_top = i32::from(adj_top).max(0);
+                    let mut cost_left = i32::from(adj_left).max(0);
+                    let mut cost_bottom = i32::from(adj_bottom).min(i32::from(port_h));
+                    let mut cost_right = i32::from(adj_right).min(i32::from(port_w));
+                    if let Some(dst_clip) = dst_clip.as_ref() {
+                        let (clip_top, clip_left, clip_bottom, clip_right) = dst_clip.rect();
+                        cost_top = cost_top.max(clip_top);
+                        cost_left = cost_left.max(clip_left);
+                        cost_bottom = cost_bottom.min(clip_bottom);
+                        cost_right = cost_right.min(clip_right);
+                    }
+                    let cost_width = cost_right.saturating_sub(cost_left);
+                    let cost_height = cost_bottom.saturating_sub(cost_top);
+                    self.add_hle_tick_cost(Self::draw_picture_tick_cost(
+                        cost_width as u32,
+                        cost_height as u32,
+                        picture_bytes,
+                    ));
                     let device_ct_seed =
                         Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus)).unwrap_or(0);
                     let (ok, pict_clut) = super::pict::draw_picture(
@@ -18172,6 +18206,20 @@ impl super::TrapDispatcher {
         let dst_w = i32::from(dst_right) - i32::from(dst_left);
         let dst_h = i32::from(dst_bottom) - i32::from(dst_top);
         let no_scaling = src_w == dst_w && src_h == dst_h && src_w > 0 && src_h > 0;
+        let transformed_blit = !no_scaling
+            || palette_translation.is_some()
+            || src_info.pixel_size != dst_info.pixel_size
+            || mode_base != 0
+            || vis_rgn_handle != 0
+            || clip_rgn_handle != 0
+            || mask_rgn != 0;
+        self.add_hle_tick_cost(Self::quickdraw_blit_tick_cost(
+            eff_width as u32,
+            eff_height as u32,
+            src_info.pixel_size,
+            dst_info.pixel_size,
+            transformed_blit,
+        ));
 
         let source_snapshot = if src_info.base == dst_info.base {
             let mut row_start = u32::MAX;
