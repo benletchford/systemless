@@ -712,9 +712,13 @@ impl super::TrapDispatcher {
                 false,
                 dialog_ptr,
             );
-            let pixels = self.save_dialog_pixels(bus, bounds);
-            self.dialog_visible_snapshots
-                .insert(dialog_ptr, PersistentDialogSnapshot { bounds, pixels });
+            if Self::dialog_is_game_managed(bounds, &items) {
+                self.dialog_visible_snapshots.remove(&dialog_ptr);
+            } else {
+                let pixels = self.save_dialog_pixels(bus, bounds);
+                self.dialog_visible_snapshots
+                    .insert(dialog_ptr, PersistentDialogSnapshot { bounds, pixels });
+            }
             self.dialog_items.insert(dialog_ptr, items);
         }
     }
@@ -5719,17 +5723,26 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         port: u32,
     ) {
+        if port == 0 {
+            return;
+        }
         let Some(bounds) = self
             .dialog_visible_snapshots
             .get(&port)
             .map(|snapshot| snapshot.bounds)
+            .or_else(|| {
+                if self.dialog_items.contains_key(&port) && self.window_visible(bus, port) {
+                    Some(Self::dialog_screen_bounds(bus, port))
+                } else {
+                    None
+                }
+            })
         else {
             return;
         };
         let pixels = self.save_dialog_pixels(bus, bounds);
-        if let Some(snapshot) = self.dialog_visible_snapshots.get_mut(&port) {
-            snapshot.pixels = pixels;
-        }
+        self.dialog_visible_snapshots
+            .insert(port, PersistentDialogSnapshot { bounds, pixels });
     }
 
     pub(crate) fn redraw_retained_modal_dialog_click(&self, bus: &mut MacMemoryBus) {
@@ -27075,6 +27088,58 @@ mod tests {
             bounds,
             &standard_items
         ));
+    }
+
+    #[test]
+    fn redraw_dialog_window_contents_does_not_snapshot_game_managed_shell() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let screen_base = bus.alloc(64 * 64);
+        for offset in 0..64u32 * 64 {
+            bus.write_byte(screen_base + offset, 0x11);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+
+        bus.write_long(dialog_ptr + 2, screen_base);
+        bus.write_word(dialog_ptr + 6, 64);
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 12, 20);
+        bus.write_word(dialog_ptr + 14, 20);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 20);
+        bus.write_word(dialog_ptr + 22, 20);
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        disp.window_proc_ids.insert(dialog_ptr, 2);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80,
+                rect: (2, 2, 10, 10),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds: (0, 0, 20, 20),
+                pixels: vec![0x44; 30 * 30],
+            },
+        );
+
+        disp.redraw_dialog_window_contents(&mut bus, dialog_ptr);
+
+        assert!(
+            !disp.dialog_visible_snapshots.contains_key(&dialog_ptr),
+            "ShowWindow redraw must not retain a stale shell for app-drawn all-userItem dialogs"
+        );
     }
 
     #[test]

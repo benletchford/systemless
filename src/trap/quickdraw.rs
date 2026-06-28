@@ -3505,6 +3505,9 @@ impl super::TrapDispatcher {
                         let src_row = bus.read_bytes(src_addr, row_byte_count as usize);
                         bus.write_bytes(dst_addr, &src_row);
                     }
+                    if dst_info.base == self.screen_mode.0 {
+                        self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                    }
                     return Some(Ok(()));
                 }
 
@@ -8143,6 +8146,10 @@ impl super::TrapDispatcher {
                                 );
                             }
                         }
+                    }
+
+                    if ok && port_base == self.screen_mode.0 {
+                        self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                     }
 
                     let _ = ok;
@@ -18398,6 +18405,10 @@ impl super::TrapDispatcher {
             }
         }
 
+        if dst_info.base == self.screen_mode.0 {
+            self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+        }
+
         Ok(())
     }
 
@@ -21451,7 +21462,9 @@ mod tests {
     use crate::cpu::{CpuOps, Register};
     use crate::display::CursorImage;
     use crate::memory::{MacMemoryBus, MemoryBus};
-    use crate::trap::dispatch::{LoadedResources, RecentColorTableFetch, ResourceFileMap};
+    use crate::trap::dispatch::{
+        DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap,
+    };
     use crate::trap::quickdraw::CopyBitmapInfo;
     use crate::trap::types::{Rect, ShapeOp};
     use crate::trap::TrapDispatcher;
@@ -29104,6 +29117,81 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 22);
+    }
+
+    #[test]
+    fn copy_bits_identity_screen_blit_refreshes_visible_dialog_snapshot() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let dialog_ptr = 0x181000u32;
+        let screen_base = bus.alloc(16 * 16);
+        let src_base = bus.alloc(16 * 16);
+        let dst_pixmap = bus.alloc(50);
+        let dst_pixmap_handle = bus.alloc(4);
+        let src_pixmap = bus.alloc(50);
+        let src_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+
+        d.screen_mode = (screen_base, 16, 16, 16, 8);
+        bus.write_long(0x0824, screen_base);
+        write_pixmap_8(&mut bus, dst_pixmap, screen_base, 16, 16, 0);
+        bus.write_long(dst_pixmap_handle, dst_pixmap);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
+        bus.write_long(dialog_ptr + 2, dst_pixmap_handle);
+        bus.write_word(dialog_ptr + 6, 0xC000);
+        write_rect(&mut bus, dialog_ptr + 16, 0, 0, 16, 16);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+
+        let vis_rgn = bus.alloc(10);
+        let vis_rgn_handle = bus.alloc(4);
+        make_rgn(&mut bus, vis_rgn, vis_rgn_handle, 0, 0, 16, 16);
+        bus.write_long(dialog_ptr + 24, vis_rgn_handle);
+        let clip_rgn = bus.alloc(10);
+        let clip_rgn_handle = bus.alloc(4);
+        make_rgn(&mut bus, clip_rgn, clip_rgn_handle, 0, 0, 16, 16);
+        bus.write_long(dialog_ptr + 28, clip_rgn_handle);
+
+        let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(global_ptr, dialog_ptr);
+        d.current_port = dialog_ptr;
+        d.front_window = dialog_ptr;
+        d.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80,
+                rect: (2, 2, 6, 6),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        for offset in 0..16u32 * 16 {
+            bus.write_byte(screen_base + offset, 0);
+            bus.write_byte(src_base + offset, 0x7A);
+        }
+        write_rect(&mut bus, src_rect, 0, 0, 4, 4);
+        write_rect(&mut bus, dst_rect, 2, 2, 6, 6);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base + 2 * 16 + 2), 0x7A);
+
+        bus.write_byte(screen_base + 2 * 16 + 2, 0);
+        d.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 2 * 16 + 2),
+            0x7A,
+            "identity CopyBits screen writes into a visible dialog must update the retained snapshot"
+        );
     }
 
     #[test]
