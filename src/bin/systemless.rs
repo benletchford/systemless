@@ -336,6 +336,7 @@ impl App {
         // Sound 1994, 2-72 and 2-146 to 2-148.
         let mut audio_mixed = 0usize;
         let mut total_steps = 0usize;
+        let mut foreground_steps = 0usize;
         let mut reserved_sound_steps = 0usize;
 
         loop {
@@ -362,6 +363,7 @@ impl App {
             let (steps, running) =
                 runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio);
             total_steps += steps;
+            foreground_steps += steps;
             audio_mixed += batch_audio;
             if batch_audio > 0 {
                 if let Some(steps) = service_pending_sound_work(
@@ -420,6 +422,12 @@ impl App {
         }
 
         self.total_instructions += total_steps as u64;
+        if foreground_steps > 0 && runner.guest_tick() == current_tick {
+            // Loading and animation code can draw substantial work before the
+            // next VBL tick. Present that progress instead of batching it into
+            // a later tick, which makes startup look choppy.
+            self.force_next_render = true;
+        }
 
         // Optional tick-lag instrumentation. Gate on
         // SYSTEMLESS_TRACE_TICK_LAG=1. Logs target/current tick counts and
@@ -1429,6 +1437,51 @@ mod tests {
             (732..=734).contains(&*queued.borrow()),
             "same-tick GUI/menu frames should still queue one host audio frame, got {} bytes",
             *queued.borrow()
+        );
+    }
+
+    #[test]
+    fn step_frame_forces_render_after_same_tick_foreground_progress() {
+        use systemless::cpu::Register;
+        use systemless::memory::MemoryBus;
+
+        let now = std::time::Instant::now();
+        let mut runner = FixtureRunner::new(
+            8 * 1024 * 1024,
+            systemless::runner::FixtureRunnerConfig::default(),
+        );
+        let pc = runner.bus_mut().alloc(64 * 1024);
+        for offset in (0..64 * 1024).step_by(2) {
+            runner.bus_mut().write_word(pc + offset, 0x4E71); // NOP
+        }
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
+        runner.bus_mut().write_long(0x016A, 0);
+        runner.set_instructions_per_tick(1_000_000);
+
+        let mut app = App::new(PathBuf::from("dummy"), false, Some(1.0), false);
+        app.runner = Some(runner);
+        app.start_time = Some(now - FRAME_DURATION);
+        app.next_frame_time = Some(now + FRAME_DURATION);
+        app.next_cpu_budget_time = Some(now);
+        app.last_presented_guest_tick = Some(0);
+        app.force_next_render = false;
+
+        app.step_frame();
+
+        let runner = app.runner.as_ref().unwrap();
+        assert!(
+            app.total_instructions > 0,
+            "test setup should execute foreground startup work"
+        );
+        assert_eq!(
+            runner.guest_tick(),
+            0,
+            "test setup should stay within the same VBL tick"
+        );
+        assert!(
+            app.should_render_frame(),
+            "same-tick foreground drawing progress should force a present"
         );
     }
 
