@@ -1866,6 +1866,7 @@ impl super::TrapDispatcher {
                     );
                 }
                 self.draw_char(cpu, bus, ch);
+                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 Ok(())
             }
 
@@ -1902,6 +1903,7 @@ impl super::TrapDispatcher {
                     );
                 }
                 self.draw_string(cpu, bus, str_ptr);
+                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 Ok(())
             }
 
@@ -1944,6 +1946,7 @@ impl super::TrapDispatcher {
                     let ch = bus.read_byte(start + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
+                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 Ok(())
             }
 
@@ -2007,6 +2010,7 @@ impl super::TrapDispatcher {
                     self.draw_char(cpu, bus, ch);
                 }
                 self.tx_size = saved_tx_size;
+                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 Ok(())
             }
 
@@ -3506,7 +3510,10 @@ impl super::TrapDispatcher {
                         bus.write_bytes(dst_addr, &src_row);
                     }
                     if dst_info.base == self.screen_mode.0 {
-                        self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                        self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+                            bus,
+                            self.current_port,
+                        );
                     }
                     return Some(Ok(()));
                 }
@@ -4052,7 +4059,10 @@ impl super::TrapDispatcher {
                     }
                 }
                 if dst_info.base == self.screen_mode.0 {
-                    self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                    self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+                        bus,
+                        self.current_port,
+                    );
                 }
                 Ok(())
             }
@@ -5415,7 +5425,7 @@ impl super::TrapDispatcher {
 
                 if base_addr == self.screen_mode.0 && self.debug_scroll_rect_last_changed_bytes > 0
                 {
-                    self.refresh_visible_dialog_snapshot_for_port(bus, the_port);
+                    self.refresh_visible_dialog_snapshot_after_bulk_port_draw(bus, the_port);
                 }
 
                 Ok(())
@@ -8149,7 +8159,10 @@ impl super::TrapDispatcher {
                     }
 
                     if ok && port_base == self.screen_mode.0 {
-                        self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                        self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+                            bus,
+                            self.current_port,
+                        );
                     }
 
                     let _ = ok;
@@ -18406,7 +18419,7 @@ impl super::TrapDispatcher {
         }
 
         if dst_info.base == self.screen_mode.0 {
-            self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+            self.refresh_visible_dialog_snapshot_after_bulk_port_draw(bus, self.current_port);
         }
 
         Ok(())

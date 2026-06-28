@@ -4246,6 +4246,11 @@ impl super::TrapDispatcher {
                 false,
                 dlg_ptr,
             );
+            if !Self::dialog_is_game_managed(bounds, &items) {
+                let pixels = self.save_dialog_pixels(bus, bounds);
+                self.dialog_visible_snapshots
+                    .insert(dlg_ptr, PersistentDialogSnapshot { bounds, pixels });
+            }
             for item in &items {
                 if Self::dialog_item_intersects_bounds(bounds, item) {
                     self.validate_window_rect(bus, dlg_ptr, item.rect);
@@ -5743,6 +5748,42 @@ impl super::TrapDispatcher {
         let pixels = self.save_dialog_pixels(bus, bounds);
         self.dialog_visible_snapshots
             .insert(port, PersistentDialogSnapshot { bounds, pixels });
+    }
+
+    pub(crate) fn refresh_visible_dialog_snapshot_after_bulk_port_draw(
+        &mut self,
+        bus: &MacMemoryBus,
+        port: u32,
+    ) {
+        if port == 0 {
+            return;
+        }
+        let game_managed_visible = self
+            .dialog_items
+            .get(&port)
+            .filter(|_| self.window_visible(bus, port))
+            .is_some_and(|items| {
+                let bounds = Self::dialog_screen_bounds(bus, port);
+                Self::dialog_is_game_managed(bounds, items)
+            });
+        if game_managed_visible {
+            self.refresh_visible_dialog_snapshot_for_port(bus, port);
+            return;
+        }
+        if !self.dialog_visible_snapshots.contains_key(&port) {
+            return;
+        }
+        let modal_tracking_matches = self
+            .dialog_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.dialog_ptr == port);
+        let app_draw_proc_matches = self.active_modeless_dialog_draw_proc == Some(port);
+        if self.dialog_modal_entered.contains(&port)
+            || modal_tracking_matches
+            || app_draw_proc_matches
+        {
+            self.refresh_visible_dialog_snapshot_for_port(bus, port);
+        }
     }
 
     pub(crate) fn redraw_retained_modal_dialog_click(&self, bus: &mut MacMemoryBus) {
@@ -10871,20 +10912,22 @@ impl super::TrapDispatcher {
                             is_reentry && preserved_visible_snapshot.is_some();
                         let preserved_saved_pixels =
                             self.dialog_saved_pixels.get(&dialog_ptr).cloned();
-                        let preserve_user_items = preserved_saved_pixels.is_some();
+                        let restored_visible_snapshot = preserved_visible_snapshot.is_some();
                         let saved_pixels = preserved_saved_pixels
                             .unwrap_or_else(|| self.save_dialog_pixels(bus, bounds));
                         if let Some(snapshot) = preserved_visible_snapshot {
                             self.restore_dialog_pixels(bus, snapshot.bounds, &snapshot.pixels);
-                        } else if !game_managed && !is_reentry {
+                        }
+                        if !game_managed && !is_reentry {
                             // First entry: draw the dialog chrome and controls.
                             // Before draw_dialog fills the dialog area white, save the
-                            // pixel content of every userItem rect. Games (e.g. Marathon)
-                            // often draw custom controls (popup buttons, sliders) into
-                            // userItem rects via QuickDraw before calling ModalDialog.
-                            // draw_dialog's white fill would erase that content; we
-                            // capture it here and restore it afterwards so the snapshot
-                            // (rendered_pixels) reflects the combined state.
+                            // pixel content of every userItem rect when those pixels
+                            // come from a visible-dialog snapshot. Games (e.g.
+                            // Marathon) often draw custom controls (popup buttons,
+                            // sliders) into userItem rects via QuickDraw before
+                            // calling ModalDialog. Saved-under background pixels are
+                            // only for dismissal restore and must not be treated as
+                            // application-owned userItem drawing.
                             // Inside Macintosh Volume I, I-405
                             self.dialog_initial_draw_deferred.remove(&dialog_ptr);
                             self.draw_dialog_preserving_user_items(
@@ -10898,7 +10941,7 @@ impl super::TrapDispatcher {
                                 edit_item,
                                 false,
                                 dialog_ptr,
-                                preserve_user_items,
+                                restored_visible_snapshot,
                                 true,
                                 true,
                             );
@@ -13169,6 +13212,7 @@ impl super::TrapDispatcher {
                         }
                     }
                 }
+                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 Ok(())
             }
 
@@ -16000,6 +16044,10 @@ mod tests {
         assert!(
             disp.dialog_saved_pixels.contains_key(&dlg_ptr),
             "visible dialogs save the covered pixels before drawing"
+        );
+        assert!(
+            disp.dialog_visible_snapshots.contains_key(&dlg_ptr),
+            "visible dialogs retain their clean initial shell for first ModalDialog entry"
         );
         assert!(!disp.dialog_initial_draw_deferred.contains(&dlg_ptr));
         assert!(
@@ -23300,6 +23348,161 @@ mod tests {
             "ModalDialog should paint a clean dialog background through untouched userItems"
         );
         assert!(disp.dialog_tracking.is_some());
+    }
+
+    #[test]
+    fn modal_dialog_first_entry_restores_visible_shell_before_user_item_preservation() {
+        // Visible GetNewDialog draws a clean shell before the first ModalDialog
+        // call. If later screen/chrome drawing leaves unrelated pixels in a
+        // userItem rect, ModalDialog must restore that clean shell before
+        // preserving application-owned userItem pixels. EVO's startup
+        // shareware notice exposes this when title/menu art leaks through its
+        // large userItem body.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_bytes(screen_base, &vec![0x77; 800 * 600]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let mut dlog = build_test_dlog((100, 100, 180, 260), 1711, 0);
+        dlog[10] = 1; // visible
+        let ditl = build_test_ditl_items(&[
+            (0, (8, 8, 30, 80), b"".as_slice()),
+            (4, (44, 20, 64, 90), b"OK".as_slice()),
+        ]);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1710, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1711, &ditl);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1710); // dialogID
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let dlg_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dlg_ptr, 0);
+        assert!(disp.dialog_visible_snapshots.contains_key(&dlg_ptr));
+
+        let probe_v = 120u32;
+        let probe_h = 120u32;
+        let probe_addr = screen_base + probe_v * 800 + probe_h;
+        assert_eq!(
+            bus.read_byte(probe_addr),
+            0,
+            "visible dialog creation should paint the userItem area as dialog background"
+        );
+
+        bus.write_byte(probe_addr, 0x55);
+        let item_hit_ptr = bus.alloc(2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, 0);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            bus.read_byte(probe_addr),
+            0,
+            "first ModalDialog entry should not preserve stale non-dialog pixels in userItems"
+        );
+        assert!(disp.dialog_tracking.is_some());
+        assert!(
+            !disp.dialog_visible_snapshots.contains_key(&dlg_ptr),
+            "first ModalDialog entry consumes the clean visible shell snapshot"
+        );
+    }
+
+    #[test]
+    fn premodal_visible_dialog_snapshot_ignores_bulk_screen_blits() {
+        // Background windows may bulk-blit menu/title art after a visible
+        // dialog is already on screen. Until ModalDialog or a userItem draw
+        // proc owns the dialog, those bulk blits are not dialog content and
+        // must not replace the retained visible-dialog snapshot.
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((64 * 64) as u32);
+        bus.write_bytes(screen_base, &vec![0x00; 64 * 64]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+
+        let dialog_ptr = 0x200000u32;
+        let bounds = (10, 10, 30, 30);
+        let snapshot_width = (bounds.3 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let snapshot_height =
+            (bounds.2 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        disp.front_window = dialog_ptr;
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: vec![0x11; snapshot_width * snapshot_height],
+            },
+        );
+
+        let probe = screen_base + 20 * 64 + 20;
+        bus.write_byte(probe, 0x77);
+        disp.refresh_visible_dialog_snapshot_after_bulk_port_draw(&bus, dialog_ptr);
+        bus.write_byte(probe, 0x00);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+        assert_eq!(
+            bus.read_byte(probe),
+            0x11,
+            "pre-modal bulk blits must not replace a visible dialog snapshot"
+        );
+
+        disp.dialog_modal_entered.insert(dialog_ptr);
+        bus.write_byte(probe, 0x88);
+        disp.refresh_visible_dialog_snapshot_after_bulk_port_draw(&bus, dialog_ptr);
+        bus.write_byte(probe, 0x00);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+        assert_eq!(
+            bus.read_byte(probe),
+            0x88,
+            "retained modal dialogs may refresh snapshots from later bulk drawing"
+        );
+
+        let game_dialog_ptr = 0x200100u32;
+        let game_bounds = (34, 10, 54, 30);
+        bus.write_word(game_dialog_ptr + 6, 0xC000);
+        let pixmap_handle = bus.alloc(4);
+        let pixmap_ptr = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap_ptr);
+        bus.write_long(pixmap_ptr, screen_base);
+        bus.write_word(pixmap_ptr + 4, 0x8000 | 64);
+        bus.write_word(pixmap_ptr + 6, (-(game_bounds.0)) as u16);
+        bus.write_word(pixmap_ptr + 8, (-(game_bounds.1)) as u16);
+        bus.write_word(pixmap_ptr + 32, 8);
+        bus.write_long(game_dialog_ptr + 2, pixmap_handle);
+        bus.write_word(game_dialog_ptr + 16, 0);
+        bus.write_word(game_dialog_ptr + 18, 0);
+        bus.write_word(game_dialog_ptr + 20, 20);
+        bus.write_word(game_dialog_ptr + 22, 20);
+        bus.write_byte(game_dialog_ptr + 110, 0xFF);
+        disp.dialog_items.insert(
+            game_dialog_ptr,
+            vec![DialogItem {
+                item_type: 0,
+                rect: (0, 0, 20, 20),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        disp.front_window = game_dialog_ptr;
+        bus.write_byte(screen_base + 40 * 64 + 20, 0x99);
+        disp.refresh_visible_dialog_snapshot_after_bulk_port_draw(&bus, game_dialog_ptr);
+        bus.write_byte(screen_base + 40 * 64 + 20, 0x00);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+        assert_eq!(
+            bus.read_byte(screen_base + 40 * 64 + 20),
+            0x99,
+            "game-managed dialogs should create snapshots from app-owned bulk drawing"
+        );
     }
 
     #[test]

@@ -1131,7 +1131,9 @@ impl super::TrapDispatcher {
         let touch_left = r.left.max(clip_left);
         let touch_bottom = r.bottom.min(clip_bottom);
         let touch_right = r.right.min(clip_right);
-        if pix_base == self.screen_mode.0 && touch_top < touch_bottom && touch_left < touch_right {
+        let touched_screen =
+            pix_base == self.screen_mode.0 && touch_top < touch_bottom && touch_left < touch_right;
+        if touched_screen {
             self.ensure_dialog_background_saved_for_screen_port(bus, port);
         }
 
@@ -1239,6 +1241,7 @@ impl super::TrapDispatcher {
                             let dy = (y - bounds_top) as u32;
                             bus.write_bytes(pix_base + dy * pix_row_bytes + dx, &row);
                         }
+                        self.refresh_visible_dialog_snapshot_for_port(bus, port);
                         return;
                     }
                 }
@@ -1466,6 +1469,9 @@ impl super::TrapDispatcher {
                     }
                 }
             }
+        }
+        if touched_screen {
+            self.refresh_visible_dialog_snapshot_for_port(bus, port);
         }
 
         if trace_menu_redraw_enabled() {
