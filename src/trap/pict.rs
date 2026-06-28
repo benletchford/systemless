@@ -86,7 +86,7 @@ impl DstClip {
     }
 }
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 static TRACE_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_PICT_PALETTE: OnceLock<bool> = OnceLock::new();
 static TRACE_PICT_SAMPLES: OnceLock<bool> = OnceLock::new();
@@ -94,6 +94,16 @@ static CLUT_MATCH_ITABLE: OnceLock<bool> = OnceLock::new();
 static CLUT_MATCH_LEGACY_GRAY: OnceLock<bool> = OnceLock::new();
 static CLUT_MATCH_DEVICE_ITABLE: OnceLock<bool> = OnceLock::new();
 static PICT_IDENTITY_REMAP: OnceLock<bool> = OnceLock::new();
+static SRC_TO_DST_TABLE_CACHE: OnceLock<Mutex<Vec<SrcToDstTableCacheEntry>>> = OnceLock::new();
+
+const SRC_TO_DST_TABLE_CACHE_LIMIT: usize = 16;
+
+#[derive(Clone)]
+struct SrcToDstTableCacheEntry {
+    src_clut: Vec<[u16; 3]>,
+    dst_clut: [[u16; 3]; 256],
+    table: [u8; 256],
+}
 
 fn trace_pict_enabled() -> bool {
     *TRACE_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_PICT").is_some())
@@ -3429,6 +3439,36 @@ pub(crate) fn closest_clut_index(r: u16, g: u16, b: u16, clut: &[[u16; 3]; 256])
 /// For each source palette entry, finds the closest match in the device CLUT.
 /// This is the core of CopyBits color translation for indexed pixmaps.
 fn build_src_to_dst_table(src_clut: &[[u16; 3]], device_clut: &[[u16; 3]; 256]) -> [u8; 256] {
+    let cache = SRC_TO_DST_TABLE_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut entries) = cache.lock() {
+        if let Some(pos) = entries.iter().position(|entry| {
+            entry.src_clut.as_slice() == src_clut && entry.dst_clut == *device_clut
+        }) {
+            let entry = entries.remove(pos);
+            let table = entry.table;
+            entries.push(entry);
+            return table;
+        }
+    }
+
+    let table = build_src_to_dst_table_uncached(src_clut, device_clut);
+    if let Ok(mut entries) = cache.lock() {
+        entries.push(SrcToDstTableCacheEntry {
+            src_clut: src_clut.to_vec(),
+            dst_clut: *device_clut,
+            table,
+        });
+        if entries.len() > SRC_TO_DST_TABLE_CACHE_LIMIT {
+            entries.remove(0);
+        }
+    }
+    table
+}
+
+fn build_src_to_dst_table_uncached(
+    src_clut: &[[u16; 3]],
+    device_clut: &[[u16; 3]; 256],
+) -> [u8; 256] {
     let mut table = [0u8; 256];
     if should_preserve_source_palette_indices(src_clut, device_clut) {
         for (i, slot) in table.iter_mut().enumerate() {
@@ -3492,6 +3532,21 @@ fn build_src_to_dst_table(src_clut: &[[u16; 3]], device_clut: &[[u16; 3]; 256]) 
         };
     }
     table
+}
+
+#[cfg(test)]
+fn clear_src_to_dst_table_cache_for_tests() {
+    if let Some(cache) = SRC_TO_DST_TABLE_CACHE.get() {
+        cache.lock().expect("src-to-dst cache lock").clear();
+    }
+}
+
+#[cfg(test)]
+fn src_to_dst_table_cache_len_for_tests() -> usize {
+    SRC_TO_DST_TABLE_CACHE
+        .get()
+        .and_then(|cache| cache.lock().ok().map(|entries| entries.len()))
+        .unwrap_or(0)
 }
 
 /// Build a 4-bit-per-channel inverse table (16 × 16 × 16 = 4096 cells)
@@ -4389,6 +4444,12 @@ fn build_pict_indexed_transfer_table(
     fg_idx: u8,
     bg_idx: u8,
 ) -> [PictIndexedTransfer; 256] {
+    if mode_base == 0 {
+        return std::array::from_fn(|source_index| {
+            PictIndexedTransfer::Write(src_to_dst[source_index])
+        });
+    }
+
     std::array::from_fn(|source_index| {
         let translated_pixel = src_to_dst[source_index];
         pict_indexed_source_mode_transfer(
@@ -4795,7 +4856,8 @@ fn parse_direct_bits_rect(
 mod tests {
     use super::{
         build_pict_indexed_transfer_table, build_src_to_dst_table,
-        closest_grayscale_luminance_index, draw_picture, PictIndexedTransfer,
+        clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
+        src_to_dst_table_cache_len_for_tests, PictIndexedTransfer,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
@@ -4856,6 +4918,66 @@ mod tests {
         let table = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(table[71], 71);
+    }
+
+    #[test]
+    fn src_to_dst_table_cache_reuses_identical_cluts() {
+        clear_src_to_dst_table_cache_for_tests();
+
+        let mut src = [[0u16; 3]; 256];
+        let mut dst = [[0u16; 3]; 256];
+        src[1] = [0x2222, 0x3333, 0x4444];
+        dst[7] = [0x2222, 0x3333, 0x4444];
+
+        let first = build_src_to_dst_table(&src, &dst);
+        assert_eq!(src_to_dst_table_cache_len_for_tests(), 1);
+        let second = build_src_to_dst_table(&src, &dst);
+
+        assert_eq!(second, first);
+        assert_eq!(
+            src_to_dst_table_cache_len_for_tests(),
+            1,
+            "identical PICT and destination CLUTs should reuse one cached transfer table"
+        );
+    }
+
+    #[test]
+    fn src_to_dst_table_cache_keys_on_destination_clut_contents() {
+        clear_src_to_dst_table_cache_for_tests();
+
+        let mut src = [[0u16; 3]; 256];
+        src[1] = [0x2222, 0x3333, 0x4444];
+        let mut first_dst = [[0u16; 3]; 256];
+        first_dst[7] = [0x2222, 0x3333, 0x4444];
+        let mut second_dst = first_dst;
+        second_dst[9] = [0x2222, 0x3333, 0x4444];
+        second_dst[7] = [0x1111, 0x1111, 0x1111];
+
+        let first = build_src_to_dst_table(&src, &first_dst);
+        let second = build_src_to_dst_table(&src, &second_dst);
+
+        assert_ne!(first[1], second[1]);
+        assert_eq!(
+            src_to_dst_table_cache_len_for_tests(),
+            2,
+            "same PICT CLUT drawn into a changed destination CLUT must not reuse stale mapping"
+        );
+    }
+
+    #[test]
+    fn src_copy_transfer_table_is_direct_write_mapping() {
+        let mut src_to_dst = [0u8; 256];
+        for (index, slot) in src_to_dst.iter_mut().enumerate() {
+            *slot = 255u8.saturating_sub(index as u8);
+        }
+        let src = [[0u16; 3]; 256];
+        let dst = [[0u16; 3]; 256];
+
+        let table = build_pict_indexed_transfer_table(0, &src, &src_to_dst, &dst, 1, 2);
+
+        assert_eq!(table[0], PictIndexedTransfer::Write(255));
+        assert_eq!(table[42], PictIndexedTransfer::Write(213));
+        assert_eq!(table[255], PictIndexedTransfer::Write(0));
     }
 
     #[test]
