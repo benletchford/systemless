@@ -2275,14 +2275,9 @@ impl super::TrapDispatcher {
         let window_bounds_cover_screen =
             wt <= 0 && wl <= 0 && wb >= screen_h as i16 && wr >= screen_w as i16;
         let front_covers_presentation = port_rect_covers_screen || window_bounds_cover_screen;
-        let dark_screen_allows_presentation = !front_covers_presentation
-            && self.screen_is_dark_for_manual_cport(
-                bus,
-                screen_base,
-                screen_rb,
-                screen_w,
-                screen_h,
-            );
+        let screen_is_dark =
+            self.screen_is_dark_for_manual_cport(bus, screen_base, screen_rb, screen_w, screen_h);
+        let dark_screen_allows_presentation = !front_covers_presentation && screen_is_dark;
 
         #[derive(Clone, Copy)]
         struct Candidate {
@@ -2383,6 +2378,33 @@ impl super::TrapDispatcher {
             }
             return;
         };
+        if latched_port != candidate.port {
+            let visible_samples = self.manual_cport_visible_sample_count(
+                bus,
+                candidate.base,
+                candidate.row_bytes,
+                candidate.width,
+                candidate.height,
+            );
+            if visible_samples < 8 {
+                if trace {
+                    eprintln!(
+                        "[BLIT-CPORT] skip: candidate port=${:08X} base=${:08X} {}x{} has too little sampled content ({})",
+                        candidate.port, candidate.base, candidate.width, candidate.height, visible_samples
+                    );
+                }
+                return;
+            }
+            if !screen_is_dark {
+                if trace {
+                    eprintln!(
+                        "[BLIT-CPORT] skip: candidate port=${:08X} base=${:08X} {}x{} cannot latch over visible screen content (samples={})",
+                        candidate.port, candidate.base, candidate.width, candidate.height, visible_samples
+                    );
+                }
+                return;
+            }
+        }
         if !front_covers_presentation && !dark_screen_allows_presentation {
             if trace {
                 eprintln!(
@@ -2448,6 +2470,57 @@ impl super::TrapDispatcher {
             let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
             bus.block_move(src_addr, dst_addr, col_count);
         }
+    }
+
+    fn manual_cport_visible_sample_count(
+        &self,
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        width: u32,
+        height: u32,
+    ) -> u32 {
+        if base == 0 || width == 0 || height == 0 || row_bytes < width {
+            return 0;
+        }
+        let visible = |idx: u8| {
+            let rgb = self.device_clut[idx as usize];
+            rgb[0] > 0x1111 || rgb[1] > 0x1111 || rgb[2] > 0x1111
+        };
+        let sample = |x: u32, y: u32| -> bool {
+            if x >= width || y >= height {
+                return false;
+            }
+            visible(bus.read_byte(base + y * row_bytes + x))
+        };
+
+        let mut visible_samples = 0u32;
+        for (x, y) in [
+            (0, 0),
+            (width - 1, 0),
+            (0, height - 1),
+            (width - 1, height - 1),
+            (width / 2, height / 2),
+        ] {
+            if sample(x, y) {
+                visible_samples += 1;
+            }
+        }
+
+        let step_x = (width / 32).max(1);
+        let step_y = (height / 24).max(1);
+        let mut y = step_y / 2;
+        while y < height {
+            let mut x = step_x / 2;
+            while x < width {
+                if sample(x, y) {
+                    visible_samples += 1;
+                }
+                x += step_x;
+            }
+            y += step_y;
+        }
+        visible_samples
     }
 
     fn screen_is_dark_for_manual_cport(
@@ -4664,6 +4737,9 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[0] = [0, 0, 0];
+        disp.device_clut[0xAA] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
@@ -4675,7 +4751,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
         disp.cport_ports.insert(manual_port);
 
-        bus.write_byte(manual_base, 0x44);
+        bus.fill_bytes(manual_base, 640 * 420, 0x44);
         bus.write_byte(manual_base + 419 * 640 + 639, 0x55);
         bus.write_byte(screen_base + 90 * 800 + 79, 0xAA);
         bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
@@ -4706,6 +4782,9 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[0] = [0, 0, 0];
+        disp.device_clut[0xAA] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
@@ -4725,7 +4804,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
         disp.cport_ports.insert(manual_port);
 
-        bus.write_byte(manual_base, 0x44);
+        bus.fill_bytes(manual_base, 640 * 420, 0x44);
         bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
 
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -4763,7 +4842,7 @@ mod redraw_chrome_tests {
         disp.cport_ports.insert(manual_port);
 
         let dst = screen_base + 90 * 800 + 80;
-        bus.write_byte(manual_base, 0x44);
+        bus.fill_bytes(manual_base, 640 * 420, 0x44);
         bus.write_byte(dst, 0xFF);
 
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -4816,11 +4895,95 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn redraw_chrome_does_not_latch_blank_manual_cport_over_nonblank_fullscreen() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut[255] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0x01);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (0, 0, 600, 800);
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(656 * 600);
+        bus.fill_bytes(manual_base, 656 * 600, 0xFF);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 656, 656, 600, 0);
+        disp.cport_ports.insert(manual_port);
+
+        let covered_probe = screen_base + 300 * 800 + 400;
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(covered_probe),
+            0x01,
+            "a blank manual CPort must not overpaint already-rendered fullscreen content"
+        );
+        assert_eq!(
+            disp.manual_cport_presented_port, 0,
+            "blank manual CPorts must not latch presentation privilege before real screen blits"
+        );
+
+        disp.copybits_screen_count = 1;
+        bus.write_byte(covered_probe, 0x02);
+        bus.write_byte(manual_base, 0x44);
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(covered_probe),
+            0x02,
+            "once screen CopyBits is active, an unlatched manual CPort must stay suppressed"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_does_not_latch_manual_cport_over_visible_fullscreen_content() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
+        bus.fill_bytes(screen_base, 800 * 600, 0x01);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (0, 0, 600, 800);
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(656 * 600);
+        bus.fill_bytes(manual_base, 656 * 600, 0x44);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 656, 656, 600, 0);
+        disp.cport_ports.insert(manual_port);
+
+        let covered_probe = screen_base + 300 * 800 + 400;
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(covered_probe),
+            0x01,
+            "an unlatched manual CPort must not overpaint visible fullscreen content"
+        );
+        assert_eq!(
+            disp.manual_cport_presented_port, 0,
+            "visible fullscreen content should prevent acquiring the manual CPort fallback latch"
+        );
+    }
+
+    #[test]
     fn redraw_chrome_does_not_blit_manual_cport_after_screen_copybits() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[0] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
@@ -4851,6 +5014,8 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[0] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
@@ -4863,7 +5028,7 @@ mod redraw_chrome_tests {
         disp.cport_ports.insert(manual_port);
 
         let dst = screen_base + 90 * 800 + 80;
-        bus.write_byte(manual_base, 0x44);
+        bus.fill_bytes(manual_base, 640 * 420, 0x44);
         disp.blit_large_manual_cport_to_screen(&mut bus);
         assert_eq!(bus.read_byte(dst), 0x44);
 
