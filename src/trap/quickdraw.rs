@@ -9,7 +9,8 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
 use crate::trap::dispatch::{
-    CachedCopyBitmapInfo, PortDrawState, RecentColorTableFetch, ScreenCopyBitsRect,
+    CachedCopyBitmapInfo, InverseTableCacheEntry, PortDrawState, RecentColorTableFetch,
+    ScreenCopyBitsRect, INVERSE_TABLE_CACHE_LIMIT,
 };
 use crate::Result;
 use std::sync::OnceLock;
@@ -14813,6 +14814,30 @@ impl super::TrapDispatcher {
         table
     }
 
+    fn cached_inverse_table_bytes(&mut self, clut: &[[u16; 3]; 256], res: u16) -> Vec<u8> {
+        if let Some(pos) = self
+            .inverse_table_cache
+            .iter()
+            .position(|entry| entry.res == res && entry.clut == *clut)
+        {
+            let entry = self.inverse_table_cache.remove(pos);
+            let bytes = entry.bytes.clone();
+            self.inverse_table_cache.push(entry);
+            return bytes;
+        }
+
+        let bytes = Self::build_inverse_table_bytes(clut, res);
+        self.inverse_table_cache.push(InverseTableCacheEntry {
+            res,
+            clut: *clut,
+            bytes: bytes.clone(),
+        });
+        if self.inverse_table_cache.len() > INVERSE_TABLE_CACHE_LIMIT {
+            self.inverse_table_cache.remove(0);
+        }
+        bytes
+    }
+
     fn usable_itable_handle(bus: &mut MacMemoryBus, handle: u32) -> u32 {
         if handle == 0 || bus.get_alloc_size(handle).is_none() {
             return 0;
@@ -14883,7 +14908,7 @@ impl super::TrapDispatcher {
         let clut = self.read_ctab_handle_clut(bus, effective_ctab_handle);
         let seed = Self::ctab_seed(bus, effective_ctab_handle).unwrap_or(0);
         let res = Self::normalized_itable_resolution(bus, current_gdh, requested_res);
-        let table = Self::build_inverse_table_bytes(&clut, res);
+        let table = self.cached_inverse_table_bytes(&clut, res);
         let record_size = 6 + table.len() as u32;
 
         let mut ptr = bus.read_long(target_handle);
@@ -27866,6 +27891,125 @@ mod tests {
             .read_bytes(itab_ptr + 6, 512)
             .iter()
             .any(|&byte| byte != 0));
+    }
+
+    #[test]
+    fn makeitable_reuses_cached_inverse_bytes_but_writes_target_seed() {
+        fn make_ctab(bus: &mut MacMemoryBus, seed: u32) -> u32 {
+            let ctab_ptr = bus.alloc(8 + 2 * 8);
+            bus.write_long(ctab_ptr, seed);
+            bus.write_word(ctab_ptr + 4, 0);
+            bus.write_word(ctab_ptr + 6, 1);
+            bus.write_word(ctab_ptr + 8, 0);
+            bus.write_word(ctab_ptr + 10, 0xFFFF);
+            bus.write_word(ctab_ptr + 12, 0xFFFF);
+            bus.write_word(ctab_ptr + 14, 0xFFFF);
+            bus.write_word(ctab_ptr + 16, 1);
+            bus.write_word(ctab_ptr + 18, 0x1111);
+            bus.write_word(ctab_ptr + 20, 0x2222);
+            bus.write_word(ctab_ptr + 22, 0x3333);
+            let ctab_handle = bus.alloc(4);
+            bus.write_long(ctab_handle, ctab_ptr);
+            ctab_handle
+        }
+
+        fn make_itab(bus: &mut MacMemoryBus) -> u32 {
+            let itab_ptr = bus.alloc(0);
+            let itab_handle = bus.alloc(4);
+            bus.write_long(itab_handle, itab_ptr);
+            itab_handle
+        }
+
+        let (mut d, mut cpu, mut bus) = setup();
+        let first_ctab = make_ctab(&mut bus, 0x1111_2222);
+        let second_ctab = make_ctab(&mut bus, 0x3333_4444);
+        let first_itab = make_itab(&mut bus);
+        let second_itab = make_itab(&mut bus);
+
+        bus.write_word(TEST_SP, 4);
+        bus.write_long(TEST_SP + 2, first_itab);
+        bus.write_long(TEST_SP + 6, first_ctab);
+        let first = d.dispatch_quickdraw(true, 0x239, &mut cpu, &mut bus);
+        assert!(first.unwrap().is_ok());
+        assert_eq!(d.inverse_table_cache.len(), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 4);
+        bus.write_long(TEST_SP + 2, second_itab);
+        bus.write_long(TEST_SP + 6, second_ctab);
+        let second = d.dispatch_quickdraw(true, 0x239, &mut cpu, &mut bus);
+        assert!(second.unwrap().is_ok());
+        assert_eq!(
+            d.inverse_table_cache.len(),
+            1,
+            "same CLUT bytes and resolution should reuse one cached inverse payload"
+        );
+
+        let first_ptr = bus.read_long(first_itab);
+        let second_ptr = bus.read_long(second_itab);
+        assert_eq!(bus.read_long(first_ptr), 0x1111_2222);
+        assert_eq!(
+            bus.read_long(second_ptr),
+            0x3333_4444,
+            "MakeITable must still copy the source CTab seed into each target ITab"
+        );
+        assert_eq!(
+            bus.read_bytes(first_ptr + 6, 4096),
+            bus.read_bytes(second_ptr + 6, 4096)
+        );
+    }
+
+    #[test]
+    fn makeitable_cache_key_uses_clut_contents_not_only_seed() {
+        fn make_ctab(bus: &mut MacMemoryBus, red: u16, green: u16, blue: u16) -> u32 {
+            let ctab_ptr = bus.alloc(8 + 2 * 8);
+            bus.write_long(ctab_ptr, 0x5555_6666);
+            bus.write_word(ctab_ptr + 4, 0);
+            bus.write_word(ctab_ptr + 6, 1);
+            bus.write_word(ctab_ptr + 8, 0);
+            bus.write_word(ctab_ptr + 10, 0xFFFF);
+            bus.write_word(ctab_ptr + 12, 0xFFFF);
+            bus.write_word(ctab_ptr + 14, 0xFFFF);
+            bus.write_word(ctab_ptr + 16, 1);
+            bus.write_word(ctab_ptr + 18, red);
+            bus.write_word(ctab_ptr + 20, green);
+            bus.write_word(ctab_ptr + 22, blue);
+            let ctab_handle = bus.alloc(4);
+            bus.write_long(ctab_handle, ctab_ptr);
+            ctab_handle
+        }
+
+        fn make_itab(bus: &mut MacMemoryBus) -> u32 {
+            let itab_ptr = bus.alloc(0);
+            let itab_handle = bus.alloc(4);
+            bus.write_long(itab_handle, itab_ptr);
+            itab_handle
+        }
+
+        let (mut d, mut cpu, mut bus) = setup();
+        let red_ctab = make_ctab(&mut bus, 0xFFFF, 0x0000, 0x0000);
+        let green_ctab = make_ctab(&mut bus, 0x0000, 0xFFFF, 0x0000);
+        let red_itab = make_itab(&mut bus);
+        let green_itab = make_itab(&mut bus);
+
+        bus.write_word(TEST_SP, 4);
+        bus.write_long(TEST_SP + 2, red_itab);
+        bus.write_long(TEST_SP + 6, red_ctab);
+        let red = d.dispatch_quickdraw(true, 0x239, &mut cpu, &mut bus);
+        assert!(red.unwrap().is_ok());
+        assert_eq!(d.inverse_table_cache.len(), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 4);
+        bus.write_long(TEST_SP + 2, green_itab);
+        bus.write_long(TEST_SP + 6, green_ctab);
+        let green = d.dispatch_quickdraw(true, 0x239, &mut cpu, &mut bus);
+        assert!(green.unwrap().is_ok());
+        assert_eq!(
+            d.inverse_table_cache.len(),
+            2,
+            "same ctSeed with different RGB entries must build a distinct inverse payload"
+        );
     }
 
     #[test]

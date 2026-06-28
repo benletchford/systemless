@@ -767,6 +767,20 @@ pub(crate) struct RegionRecording {
     pub bbox: Option<(i16, i16, i16, i16)>,
 }
 
+/// Small LRU cache for Color Manager inverse-table payloads.
+///
+/// `MakeITable` still writes each caller's ITab header and target handle, but
+/// identical CLUT/resolution pairs do not need to rerun the expensive
+/// RGB-nearest-match scan.
+pub(crate) const INVERSE_TABLE_CACHE_LIMIT: usize = 8;
+
+#[derive(Clone)]
+pub(crate) struct InverseTableCacheEntry {
+    pub res: u16,
+    pub clut: [[u16; 3]; 256],
+    pub bytes: Vec<u8>,
+}
+
 /// Trap dispatcher with resource fork access and emulator state.
 pub struct TrapDispatcher {
     /// Loaded resources by handle -> (ptr, type, id)
@@ -1333,6 +1347,10 @@ pub struct TrapDispatcher {
     /// mirroring the real Mac OS ITable which is derived from the Color Manager palette.
     /// Imaging With QuickDraw 1994, p. 4-82
     pub color_manager_clut: [[u16; 3]; 256],
+    /// Cached inverse-table payloads keyed by actual CLUT contents and
+    /// resolution. Used by MakeITable and bounded to avoid retaining arbitrary
+    /// game palettes indefinitely.
+    pub(crate) inverse_table_cache: Vec<InverseTableCacheEntry>,
     /// Per-entry protection bits for the device CLUT, set by ProtectEntry
     /// ($AA3D) and cleared by ProtectEntry(false). When `clut_protected[i]`
     /// is true, SetEntries refuses to overwrite `device_clut[i]`.
@@ -2426,6 +2444,7 @@ impl TrapDispatcher {
             },
             device_clut: Self::standard_mac_8bpp_clut(),
             color_manager_clut: Self::standard_mac_8bpp_clut(),
+            inverse_table_cache: Vec::new(),
             clut_protected: [false; 256],
             clut_reserved: [false; 256],
             seeded_picture_palette_until_tick: 0,
