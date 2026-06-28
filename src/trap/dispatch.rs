@@ -65,6 +65,7 @@ static TRACE_RESFILE: OnceLock<bool> = OnceLock::new();
 static TRACE_QUICKTIME: OnceLock<bool> = OnceLock::new();
 static TRACE_PC_TARGET: OnceLock<Option<u32>> = OnceLock::new();
 static TRACE_NATIVE_TRAPS: OnceLock<bool> = OnceLock::new();
+static TRACE_TRAP_SP: OnceLock<bool> = OnceLock::new();
 static GUI_CAPTURE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 static GUI_CAPTURE_LIMIT: OnceLock<Option<u64>> = OnceLock::new();
 static GUI_CAPTURE_LABEL: OnceLock<Option<String>> = OnceLock::new();
@@ -204,6 +205,10 @@ fn trace_sound_enabled() -> bool {
 
 fn trace_native_traps_enabled() -> bool {
     *TRACE_NATIVE_TRAPS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_NATIVE_TRAPS").is_some())
+}
+
+fn trace_trap_sp_enabled() -> bool {
+    *TRACE_TRAP_SP.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_TRAP_SP").is_some())
 }
 
 fn gui_capture_dir() -> Option<&'static PathBuf> {
@@ -4746,7 +4751,7 @@ impl TrapDispatcher {
             apply_os_trap_dispatcher_ccr(cpu);
         }
 
-        if result.is_ok() && std::env::var_os("SYSTEMLESS_TRACE_TRAP_SP").is_some() {
+        if result.is_ok() && trace_trap_sp_enabled() {
             let sp_after = cpu.read_reg(Register::A7);
             let delta = sp_after.wrapping_sub(sp_before) as i32;
             eprintln!(

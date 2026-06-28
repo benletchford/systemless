@@ -18,6 +18,7 @@ static TRACE_ENTROPY: OnceLock<bool> = OnceLock::new();
 static TRACE_TITLE_DIAG: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
 static TRACE_AE: OnceLock<bool> = OnceLock::new();
+static TRACE_GETKEYS_NONZERO: OnceLock<bool> = OnceLock::new();
 static FORCE_BUTTON_TRUE_AT_PC: OnceLock<Option<u32>> = OnceLock::new();
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -411,6 +412,11 @@ fn trace_sound_enabled() -> bool {
 
 fn trace_ae_enabled() -> bool {
     *TRACE_AE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_AE").is_some())
+}
+
+fn trace_getkeys_nonzero_enabled() -> bool {
+    *TRACE_GETKEYS_NONZERO
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_GETKEYS_NONZERO").is_some())
 }
 
 fn format_fourcc(v: u32) -> String {
@@ -5613,9 +5619,7 @@ impl super::TrapDispatcher {
                         self.tick_count, trap_pc, keys_ptr, self.key_map
                     );
                 }
-                if std::env::var_os("SYSTEMLESS_TRACE_GETKEYS_NONZERO").is_some()
-                    && self.key_map.iter().any(|&byte| byte != 0)
-                {
+                if trace_getkeys_nonzero_enabled() && self.key_map.iter().any(|&byte| byte != 0) {
                     eprintln!(
                         "[INPUT] GetKeys nonzero tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
                         self.tick_count, trap_pc, keys_ptr, self.key_map
