@@ -1490,6 +1490,13 @@ pub struct TrapDispatcher {
     /// Mouse click currently captured by a front modal dialog. This includes
     /// ModalDialog-retained clicks and app-owned modal button presses.
     pub(crate) retained_modal_dialog_click: Option<RetainedModalDialogClickState>,
+    /// One-shot recovery for the common ModalDialog button-return pattern.
+    /// Real applications normally call DisposDialog with the dialog pointer
+    /// immediately after a button item is returned. If HLE callback/stack
+    /// interleaving leaves the app passing a stale non-dialog pointer, this
+    /// lets the next DisposDialog target the front retained modal dialog
+    /// without translating arbitrary userItem ProcPtr arguments.
+    pub(crate) pending_modal_button_dispose_dialog: Option<u32>,
     /// Stack of saved window state for restoring front_window/bounds when
     /// dialogs are disposed. Each GetNewDialog pushes the current state;
     /// DisposDialog pops it. Tuple shape:
@@ -2570,6 +2577,7 @@ impl TrapDispatcher {
             modeless_dialog_draw_proc_queue: VecDeque::new(),
             active_modeless_dialog_draw_proc: None,
             retained_modal_dialog_click: None,
+            pending_modal_button_dispose_dialog: None,
             window_stack: Vec::new(),
             saved_vis_regions: HashMap::new(),
             list_states: HashMap::new(),

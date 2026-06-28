@@ -1391,9 +1391,7 @@ mod tests {
         .expect("first reserved sound slice should run");
 
         assert_eq!(first_steps, SOUND_CALLBACK_SLICE_INSTRUCTIONS);
-        assert_eq!(
-            reserved_sound_steps, SOUND_CALLBACK_SLICE_INSTRUCTIONS
-        );
+        assert_eq!(reserved_sound_steps, SOUND_CALLBACK_SLICE_INSTRUCTIONS);
         assert!(
             runner.has_pending_sound_work(),
             "spinning callback should remain pending after one reserved sound slice"

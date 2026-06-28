@@ -8607,6 +8607,9 @@ impl super::TrapDispatcher {
 
         self.dialog_visible_snapshots.remove(&dialog_ptr);
         self.dialog_modal_entered.remove(&dialog_ptr);
+        if self.pending_modal_button_dispose_dialog == Some(dialog_ptr) {
+            self.pending_modal_button_dispose_dialog = None;
+        }
         if self
             .retained_modal_dialog_click
             .as_ref()
@@ -8658,6 +8661,32 @@ impl super::TrapDispatcher {
                     self.queue_window_update_event(prev_window);
                 }
             }
+        }
+    }
+
+    fn resolve_dispos_dialog_ptr_after_modal_button_hit(
+        &mut self,
+        requested_dialog_ptr: u32,
+    ) -> u32 {
+        let Some(dialog_ptr) = self.pending_modal_button_dispose_dialog.take() else {
+            return requested_dialog_ptr;
+        };
+
+        if requested_dialog_ptr != 0
+            && requested_dialog_ptr != dialog_ptr
+            && !self.dialog_items.contains_key(&requested_dialog_ptr)
+            && !self.window_list.contains(&requested_dialog_ptr)
+            && self.front_window == dialog_ptr
+            && self.dialog_modal_entered.contains(&dialog_ptr)
+            && self.dialog_items.contains_key(&dialog_ptr)
+        {
+            eprintln!(
+                "[TRAP] DisposDialog(${:08X}) recovered front ModalDialog button target ${:08X}",
+                requested_dialog_ptr, dialog_ptr
+            );
+            dialog_ptr
+        } else {
+            requested_dialog_ptr
         }
     }
 
@@ -10014,7 +10043,8 @@ impl super::TrapDispatcher {
             (true, 0x183) => {
                 let sp = cpu.read_reg(Register::A7);
                 let requested_dialog_ptr = bus.read_long(sp);
-                let dialog_ptr = requested_dialog_ptr;
+                let dialog_ptr =
+                    self.resolve_dispos_dialog_ptr_after_modal_button_hit(requested_dialog_ptr);
                 eprintln!("[TRAP] DisposDialog(${:08X})", requested_dialog_ptr);
                 self.close_dialog_window(bus, cpu, dialog_ptr, true);
                 self.capture_gui_frame(bus, &format!("dispos_dialog_{:08X}", dialog_ptr));
@@ -10504,8 +10534,17 @@ impl super::TrapDispatcher {
                     if filter_proc != 0 {
                         let result_addr = self.dialog_filter_result_addr;
                         let tracking_dialog_ptr = tracking.dialog_ptr;
+                        let filter_result_word = if result_addr != 0 {
+                            bus.read_word(result_addr)
+                        } else {
+                            0
+                        };
                         let filter_returned_true = if result_addr != 0 {
-                            bus.read_word(result_addr) != 0
+                            // Stack-based Pascal BOOLEAN results are encoded
+                            // in bit 0 of the high-order byte, not as any
+                            // nonzero word. Inside Macintosh Volume I,
+                            // "Using Assembly Language", stack-based routines.
+                            (filter_result_word & 0x0100) != 0
                         } else {
                             false
                         };
@@ -10520,8 +10559,12 @@ impl super::TrapDispatcher {
                             .and_then(|t| t.last_filter_event.take());
                         if trace_dialog_filter_enabled() {
                             eprintln!(
-                                "[DIALOG-FILTER] result dialog=${:08X} returned_true={} item_hit={} item_hit_ptr=${:08X}",
-                                tracking_dialog_ptr, filter_returned_true, hit, item_hit_ptr
+                                "[DIALOG-FILTER] result dialog=${:08X} result_word=${:04X} returned_true={} item_hit={} item_hit_ptr=${:08X}",
+                                tracking_dialog_ptr,
+                                filter_result_word,
+                                filter_returned_true,
+                                hit,
+                                item_hit_ptr
                             );
                         }
 
@@ -10556,6 +10599,11 @@ impl super::TrapDispatcher {
                             }
                             self.dialog_saved_pixels
                                 .insert(saved_dialog_ptr, saved.saved_pixels);
+                            if hit > 0
+                                && item_type.is_some_and(|ty| (ty & 0x7F) == 4 && (ty & 0x80) == 0)
+                            {
+                                self.pending_modal_button_dispose_dialog = Some(saved_dialog_ptr);
+                            }
                             if handled_mouse_down {
                                 self.consume_dialog_mouse_up();
                             }
@@ -10677,6 +10725,7 @@ impl super::TrapDispatcher {
                             self.persist_visible_dialog_snapshot(bus, &saved);
                             self.dialog_saved_pixels
                                 .insert(saved_dialog_ptr, saved.saved_pixels);
+                            self.pending_modal_button_dispose_dialog = Some(saved_dialog_ptr);
 
                             // ModalDialog button clicks should consume the
                             // matching mouseUp before returning to the app.
@@ -24993,6 +25042,46 @@ mod tests {
     }
 
     #[test]
+    fn dispos_dialog_after_modal_button_hit_recovers_stale_proc_argument() {
+        // When ModalDialog has just returned an enabled push button, a
+        // following DisposeDialog is part of the standard modal teardown
+        // pattern. If the app hands back a stale ProcPtr-shaped value in that
+        // exact one-shot window, close the retained modal dialog rather than
+        // leaving the button-accepted dialog visible forever.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let prev_window = 0x181000u32;
+        let stale_proc_arg = 0x00016178u32;
+
+        seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
+        disp.window_list = vec![dialog_ptr, prev_window];
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = (110, 155, 380, 645);
+        disp.dialog_modal_entered.insert(dialog_ptr);
+        disp.pending_modal_button_dispose_dialog = Some(dialog_ptr);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                text: String::from("OK"),
+                ..DialogItem::default()
+            }],
+        );
+        disp.window_stack
+            .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
+
+        bus.write_long(TEST_SP, stale_proc_arg);
+        let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(disp.window_list, vec![prev_window]);
+        assert_eq!(disp.front_window, prev_window);
+        assert!(!disp.dialog_items.contains_key(&dialog_ptr));
+        assert!(disp.pending_modal_button_dispose_dialog.is_none());
+    }
+
+    #[test]
     fn dispose_dialog_disposes_allocated_storage_and_items() {
         // MTE 1992 p. 6-120: DisposeDialog calls CloseDialog, then releases
         // the copied item list and DialogRecord allocated for a NIL dStorage.
@@ -28841,6 +28930,73 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
         assert!(disp.dialog_tracking.is_none());
+    }
+
+    #[test]
+    fn modal_dialog_filter_low_byte_nonzero_result_is_false() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+        let result_addr = 0x300100u32;
+
+        bus.write_word(result_addr, 0x0001);
+        bus.write_word(item_hit_ptr, 0);
+        disp.dialog_filter_result_addr = result_addr;
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 4,
+                rect: (20, 30, 60, 110),
+                text: String::from("OK"),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0x149F0,
+            game_managed: false,
+            last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 130,
+                where_h: 240,
+                modifiers: 0,
+            }),
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+        disp.mouse_button = true;
+        disp.mouse_pos = (130, 240);
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(item_hit_ptr), 0);
+        assert!(disp
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_button.as_ref())
+            .is_some());
     }
 
     #[test]

@@ -574,6 +574,11 @@ pub struct FixtureRunner {
     /// Last dialog/tick pair that received a synthetic ModalDialog null event.
     /// Real queued events bypass this; it only paces the no-input idle callback.
     dialog_filter_last_null_event_tick: Option<(u32, u32)>,
+    /// Last dialog/update-window/tick triple that received a synthetic
+    /// ModalDialog update event from the Window Manager invalid-region state.
+    /// Queued mouse/key/update events bypass this; it only prevents the same
+    /// still-invalid dialog from starving later input in one guest tick.
+    dialog_filter_last_update_event_tick: Option<(u32, u32, u32)>,
     /// Override for the application's startup time in Mac-epoch seconds.
     /// Used by scripted frontends to keep guest-visible time deterministic.
     app_start_time: Option<u32>,
@@ -649,6 +654,7 @@ impl FixtureRunner {
             menu_hook_trampoline: 0,
             dialog_filter_event: 0,
             dialog_filter_last_null_event_tick: None,
+            dialog_filter_last_update_event_tick: None,
             app_start_time: None,
             application_partition_size: None,
             opcode_histogram: Box::new([0u64; 65536]),
@@ -4071,7 +4077,13 @@ impl FixtureRunner {
             || self
                 .dispatcher
                 .pending_update_event(&self.bus, 1u16 << 6)
-                .is_some_and(|event| event.message == dialog_ptr)
+                .is_some_and(|event| {
+                    event.message == dialog_ptr
+                        && !self.dialog_filter_update_event_already_sent_this_tick(
+                            dialog_ptr,
+                            event.message,
+                        )
+                })
     }
 
     fn dialog_filter_null_event_already_sent_this_tick(&self, dialog_ptr: u32) -> bool {
@@ -4079,6 +4091,20 @@ impl FixtureRunner {
             .is_some_and(|(sent_dialog, sent_tick)| {
                 sent_dialog == dialog_ptr && sent_tick == self.dispatcher.tick_count
             })
+    }
+
+    fn dialog_filter_update_event_already_sent_this_tick(
+        &self,
+        dialog_ptr: u32,
+        update_window: u32,
+    ) -> bool {
+        self.dialog_filter_last_update_event_tick.is_some_and(
+            |(sent_dialog, sent_window, sent_tick)| {
+                sent_dialog == dialog_ptr
+                    && sent_window == update_window
+                    && sent_tick == self.dispatcher.tick_count
+            },
+        )
     }
 
     fn should_fire_dialog_filter_proc(&self) -> bool {
@@ -4206,7 +4232,13 @@ impl FixtureRunner {
         } else if let Some(update_event) = self
             .dispatcher
             .pending_update_event(&self.bus, 1u16 << 6)
-            .filter(|event| event.message == dialog_ptr)
+            .filter(|event| {
+                event.message == dialog_ptr
+                    && !self.dialog_filter_update_event_already_sent_this_tick(
+                        dialog_ptr,
+                        event.message,
+                    )
+            })
         {
             // `GetNextEvent` normally obtains updateEvt records from the
             // Window Manager's invalid region state. The queued-event path is
@@ -4215,7 +4247,15 @@ impl FixtureRunner {
             // itself is still invalid, deliver that real pending update to the
             // filter rather than falling through to a null event. Restrict this
             // to the current dialog so unrelated behind-window invalid regions
-            // cannot flood modal filters.
+            // cannot flood modal filters. Pace this synthetic update source to
+            // once per guest tick: IM:I I-8433 says GetNextEvent returns the
+            // next available event subject to priority rules, and IM:I I-9079
+            // describes update events as generated from the Window Manager's
+            // accumulated update region. Re-offering the same still-invalid
+            // region in a tight ModalDialog filter loop can otherwise starve
+            // queued user input.
+            self.dialog_filter_last_update_event_tick =
+                Some((dialog_ptr, update_event.message, ticks));
             update_event
         } else {
             // Modal filters are called on null events too; many apps render
@@ -8090,6 +8130,97 @@ mod tests {
         assert_eq!(runner.bus.read_word(event_ptr), 6);
         assert_eq!(runner.bus.read_long(event_ptr + 2), dialog_ptr);
         assert_eq!(runner.dialog_filter_last_null_event_tick, None);
+    }
+
+    #[test]
+    fn dialog_filter_paces_synthetic_update_without_starving_queued_input() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let filter_proc = 0x0004_2000u32;
+        let dialog_ptr = runner.bus.alloc(170);
+
+        runner.bus.write_word(filter_proc, 0x4E56);
+        runner.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 17);
+        runner.dispatcher.tick_count = 17;
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.cpu,
+            dialog_ptr,
+            0,
+            100,
+            120,
+            220,
+            360,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner.dispatcher.event_queue.clear();
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
+        runner
+            .dispatcher
+            .dialog_tracking
+            .as_mut()
+            .unwrap()
+            .dialog_ptr = dialog_ptr;
+
+        assert!(runner.fire_dialog_filter_proc());
+        let event_ptr = runner.dialog_filter_event;
+        assert_eq!(runner.bus.read_word(event_ptr), 6);
+        assert_eq!(runner.bus.read_long(event_ptr + 2), dialog_ptr);
+
+        runner.active_interrupt_callback = None;
+        runner.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner
+            .dispatcher
+            .dialog_tracking
+            .as_mut()
+            .unwrap()
+            .last_filter_event = None;
+        assert!(
+            !runner.dialog_filter_has_real_event_pending(dialog_ptr),
+            "the same invalid-region update should not refire indefinitely in one guest tick"
+        );
+
+        runner.dispatcher.event_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: 123,
+            where_h: 234,
+            modifiers: 0,
+        });
+        assert!(
+            runner.dialog_filter_has_real_event_pending(dialog_ptr),
+            "queued user input must bypass synthetic update pacing"
+        );
+        assert!(runner.fire_dialog_filter_proc());
+        assert_eq!(runner.bus.read_word(event_ptr), 1);
+        assert_eq!(runner.bus.read_word(event_ptr + 10), 123);
+        assert_eq!(runner.bus.read_word(event_ptr + 12), 234);
+        assert!(
+            runner.dispatcher.event_queue.is_empty(),
+            "the queued mouse event should be consumed by the filter call"
+        );
+
+        runner.active_interrupt_callback = None;
+        runner
+            .dispatcher
+            .dialog_tracking
+            .as_mut()
+            .unwrap()
+            .last_filter_event = None;
+        runner.bus.write_long(0x016A, 18);
+        runner.dispatcher.tick_count = 18;
+        assert!(
+            runner.dialog_filter_has_real_event_pending(dialog_ptr),
+            "a still-invalid dialog can surface another update event on the next guest tick"
+        );
     }
 
     #[test]
