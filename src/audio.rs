@@ -108,6 +108,9 @@ const HOST_AUDIO_TRANSIENT_PRESERVE_RATIO: f32 = 1.25;
 const HOST_AUDIO_TRANSIENT_PEAK_RATIO: f32 = 1.10;
 
 #[cfg(feature = "gui")]
+const HOST_AUDIO_TRANSIENT_PRESERVE_BUDGET_FRAMES: usize = 64;
+
+#[cfg(feature = "gui")]
 fn host_audio_prefill_samples() -> usize {
     (crate::sound::OUTPUT_RATE as usize * HOST_AUDIO_PREFILL_MSEC) / 1000
 }
@@ -144,6 +147,10 @@ struct SharedAudioState {
     /// Number of consecutive callback frames emitted from an empty buffer
     /// since the last successful sample. Used to log underruns.
     underrun_samples: u32,
+    /// Incoming frames dropped to keep a queued transient at the head of a
+    /// full buffer. Bounded so stale audio cannot starve newer samples when
+    /// the GUI briefly outruns the host device.
+    transient_preserved_frames: usize,
 }
 
 #[cfg(feature = "gui")]
@@ -175,8 +182,13 @@ impl SharedAudioState {
             let incoming_energy = Self::frame_energy_stats(
                 frames[incoming_start..incoming_start + incoming_count].iter(),
             );
+            let transient_budget_available = self
+                .transient_preserved_frames
+                .saturating_add(incoming_count)
+                <= HOST_AUDIO_TRANSIENT_PRESERVE_BUDGET_FRAMES;
             let preserve_front = front_count > 0
                 && incoming_count > 0
+                && transient_budget_available
                 && ((front_energy.mean >= HOST_AUDIO_ACTIVE_FRAME_ENERGY
                     && front_energy.mean
                         > incoming_energy.mean * HOST_AUDIO_TRANSIENT_PRESERVE_RATIO)
@@ -185,6 +197,7 @@ impl SharedAudioState {
                             > incoming_energy.peak * HOST_AUDIO_TRANSIENT_PEAK_RATIO));
 
             if preserve_front {
+                self.transient_preserved_frames += incoming_count;
                 incoming_start += incoming_count;
                 if trace_audio_enabled() {
                     eprintln!(
@@ -205,6 +218,7 @@ impl SharedAudioState {
             if drain_count > 0 {
                 self.buffer.drain(..drain_count);
             }
+            self.transient_preserved_frames = 0;
             if drain_count < overflow {
                 incoming_start += overflow - drain_count;
             }
@@ -247,6 +261,7 @@ impl SharedAudioState {
             self.underrun_samples = self.underrun_samples.saturating_add(1);
             self.source_phase = 0.0;
             self.last_frame = [0.0, 0.0];
+            self.transient_preserved_frames = 0;
             return [0.0, 0.0];
         }
 
@@ -278,14 +293,19 @@ impl SharedAudioState {
         self.last_frame = frame;
 
         self.source_phase += step;
+        let mut consumed_frames = false;
         while self.source_phase >= 1.0 {
             if self.buffer.pop_front().is_none() {
                 break;
             }
+            consumed_frames = true;
             self.source_phase -= 1.0;
             if self.buffer.is_empty() {
                 break;
             }
+        }
+        if consumed_frames {
+            self.transient_preserved_frames = 0;
         }
 
         frame
@@ -397,6 +417,7 @@ impl CpalAudioBackend {
             // Start at silence (0x80 = 0.0 in f32 mapping).
             last_frame: [0.0, 0.0],
             underrun_samples: 0,
+            transient_preserved_frames: 0,
         }));
 
         let err_fn = |err| {
@@ -492,6 +513,7 @@ impl AudioBackend for CpalAudioBackend {
         shared.source_phase = 0.0;
         shared.last_frame = [0.0, 0.0];
         shared.underrun_samples = 0;
+        shared.transient_preserved_frames = 0;
     }
 }
 
@@ -527,6 +549,7 @@ mod tests {
             source_phase: 0.0,
             last_frame: [0.0, 0.0],
             underrun_samples: 0,
+            transient_preserved_frames: 0,
         };
         let new_frames = [[0x90, 0x91], [0xA0, 0xA1], [0xB0, 0xB1], [0xC0, 0xC1]];
 
@@ -562,6 +585,7 @@ mod tests {
             source_phase: 0.0,
             last_frame: [0.0, 0.0],
             underrun_samples: 0,
+            transient_preserved_frames: 0,
         };
         let weaker_tail = [[0x84, 0x84]; 4];
 
@@ -594,6 +618,7 @@ mod tests {
             source_phase: 0.0,
             last_frame: [0.0, 0.0],
             underrun_samples: 0,
+            transient_preserved_frames: 0,
         };
         let weaker_tail = [[0x86, 0x86]; 32];
 
@@ -612,6 +637,47 @@ mod tests {
     }
 
     #[test]
+    fn host_audio_queue_cap_bounds_transient_preservation_when_host_lags() {
+        let max_buffered = host_audio_max_buffered_samples();
+        let mut queued = vec![[0x80, 0x80]; max_buffered];
+        queued[0] = [0xF0, 0xF0];
+        let mut state = SharedAudioState {
+            buffer: std::collections::VecDeque::from(queued),
+            source_phase: 0.0,
+            last_frame: [0.0, 0.0],
+            underrun_samples: 0,
+            transient_preserved_frames: 0,
+        };
+        let weaker_tail = [[0x86, 0x86]; 32];
+
+        state.queue_frames(&weaker_tail, weaker_tail.len());
+        state.queue_frames(&weaker_tail, weaker_tail.len());
+        assert_eq!(
+            state.buffer.front().copied(),
+            Some([0xF0, 0xF0]),
+            "short overflow bursts should still protect the leading click"
+        );
+
+        state.queue_frames(&weaker_tail, weaker_tail.len());
+
+        assert_eq!(state.buffer.len(), max_buffered);
+        assert_ne!(
+            state.buffer.front().copied(),
+            Some([0xF0, 0xF0]),
+            "transient preservation must be bounded so stale queue head audio cannot starve newer samples"
+        );
+        assert!(
+            state
+                .buffer
+                .iter()
+                .rev()
+                .take(weaker_tail.len())
+                .any(|frame| weaker_tail.contains(frame)),
+            "once the transient budget is spent, current incoming audio should be admitted"
+        );
+    }
+
+    #[test]
     fn host_audio_upsampling_preserves_queued_sample_edges() {
         let mut state = SharedAudioState {
             buffer: std::collections::VecDeque::from(vec![
@@ -623,6 +689,7 @@ mod tests {
             source_phase: 0.0,
             last_frame: [0.0, 0.0],
             underrun_samples: 0,
+            transient_preserved_frames: 0,
         };
 
         let output = (0..8)
@@ -656,6 +723,7 @@ mod tests {
             source_phase: 0.75,
             last_frame: [1.0, -0.5],
             underrun_samples: 0,
+            transient_preserved_frames: 0,
         };
 
         let first = state.next_frame(44_100);
@@ -672,6 +740,7 @@ mod tests {
             source_phase: 0.75,
             last_frame: [1.0, 1.0],
             underrun_samples: 0,
+            transient_preserved_frames: 0,
         };
 
         assert_eq!(state.next_frame(44_100), [0.0, 0.0]);
