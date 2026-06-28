@@ -905,6 +905,71 @@ impl MacMemoryBus {
         ptr
     }
 
+    /// Allocate memory from the heap with a stronger start-address alignment.
+    ///
+    /// This keeps the same user-visible size and free-list behavior as
+    /// [`Self::alloc`], but lets Toolbox managers request stable record
+    /// placement without making every heap allocation pay that cost.
+    pub fn alloc_aligned(&mut self, size: u32, alignment: u32) -> u32 {
+        if alignment <= 4 || !alignment.is_power_of_two() {
+            return self.alloc(size);
+        }
+
+        let aligned = Self::allocation_bucket_size(size);
+
+        if let Some(blocks) = self.free_blocks.get_mut(&aligned) {
+            if let Some(index) = blocks.iter().position(|addr| addr % alignment == 0) {
+                let addr = blocks.swap_remove(index);
+                self.alloc_sizes.insert(addr, size);
+                trace_alloc_event("reuse-exact-aligned", addr, size, aligned);
+                return addr;
+            }
+        }
+
+        let best = self
+            .free_blocks
+            .iter()
+            .filter(|(&k, v)| {
+                k > aligned
+                    && !v.is_empty()
+                    && Self::can_reuse_bucket_for_request(k, aligned)
+                    && v.iter().any(|addr| addr % alignment == 0)
+            })
+            .map(|(&k, _)| k)
+            .min();
+        if let Some(bucket) = best {
+            let blocks = self
+                .free_blocks
+                .get_mut(&bucket)
+                .expect("free bucket exists");
+            let index = blocks
+                .iter()
+                .position(|addr| addr % alignment == 0)
+                .expect("aligned free block exists");
+            let addr = blocks.swap_remove(index);
+            self.alloc_sizes.insert(addr, size);
+            self.alloc_bucket_sizes.insert(addr, bucket);
+            trace_alloc_event("reuse-best-aligned", addr, size, bucket);
+            return addr;
+        }
+
+        let ptr = (self.heap_ptr + alignment - 1) & !(alignment - 1);
+        let new_ptr = ptr + aligned;
+
+        if new_ptr >= self.heap_limit {
+            eprintln!(
+                "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
+                size, alignment, self.heap_ptr, self.heap_limit
+            );
+            return 0;
+        }
+
+        self.heap_ptr = new_ptr;
+        self.alloc_sizes.insert(ptr, size);
+        trace_alloc_event("bump-aligned", ptr, size, aligned);
+        ptr
+    }
+
     /// Return the allocated size for a given address, or None if unknown.
     pub fn get_alloc_size(&self, addr: u32) -> Option<u32> {
         self.alloc_sizes.get(&addr).copied()
@@ -1413,6 +1478,52 @@ mod tests {
         assert_eq!(
             large_again, large,
             "the original large block should remain available for a matching request"
+        );
+    }
+
+    #[test]
+    fn alloc_aligned_skips_to_requested_boundary() {
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+
+        let skew = bus.alloc(5);
+        assert_eq!(skew, 0x200000);
+
+        let aligned = bus.alloc_aligned(170, 256);
+        assert_eq!(
+            aligned & 0xFF,
+            0,
+            "aligned allocation should start on the requested boundary"
+        );
+        assert_eq!(
+            bus.get_alloc_size(aligned),
+            Some(170),
+            "logical size remains the caller-requested size"
+        );
+
+        let next = bus.alloc(4);
+        assert_eq!(
+            next,
+            aligned + MacMemoryBus::allocation_bucket_size(170),
+            "only the leading alignment gap is skipped"
+        );
+    }
+
+    #[test]
+    fn alloc_aligned_reuses_aligned_free_blocks() {
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+
+        let aligned = bus.alloc_aligned(170, 256);
+        let skewed = bus.alloc(170);
+        assert_eq!(aligned & 0xFF, 0);
+        assert_ne!(skewed & 0xFF, 0);
+
+        bus.free(skewed);
+        bus.free(aligned);
+
+        let reused = bus.alloc_aligned(170, 256);
+        assert_eq!(
+            reused, aligned,
+            "aligned allocation should prefer an aligned free block over a skewed one"
         );
     }
 

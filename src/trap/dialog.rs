@@ -21,6 +21,7 @@ static TRACE_DIALOG_FILTER: OnceLock<bool> = OnceLock::new();
 static TRACE_TEXTEDIT: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_ITEMS: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_TEXT_INLINE: OnceLock<bool> = OnceLock::new();
+const MANAGER_DIALOG_RECORD_ALIGNMENT: u32 = 256;
 
 struct DialogCIconLayout {
     width: i16,
@@ -4780,7 +4781,12 @@ impl super::TrapDispatcher {
         let dlg_ptr = if storage_ptr != 0 {
             storage_ptr
         } else {
-            bus.alloc(170)
+            // GetNewDialog/NewDialog allocate storage when dStorage is NIL
+            // (IM:I I-424, I-412). System 7's Memory Manager zone layout
+            // gives manager-owned records stable low-byte placement that
+            // some 68K apps accidentally depend on; keep that shape local
+            // to Dialog Manager records instead of changing all heap blocks.
+            bus.alloc_aligned(170, MANAGER_DIALOG_RECORD_ALIGNMENT)
         };
 
         self.window_stack.push((
@@ -16472,6 +16478,47 @@ mod tests {
         assert_eq!(bus.read_word(0x0A60) as i16, -192);
         assert!(disp.window_list.is_empty());
         assert!(disp.dialog_items.is_empty());
+    }
+
+    #[test]
+    fn get_new_dialog_nil_storage_allocates_low_byte_clean_dialog_record() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((640 * 480) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 640, 640, 480, 8);
+
+        let dlog = build_test_dlog((40, 50, 120, 240), 1911, 0);
+        let ditl = build_test_ditl_item(4, (50, 80, 70, 140), b"OK");
+        disp.install_test_resource(&mut bus, *b"DLOG", 1910, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1911, &ditl);
+        let skew = bus.alloc(5);
+        assert_ne!(
+            (skew + MacMemoryBus::allocation_bucket_size(5)) & 0xFF,
+            0,
+            "test precondition should leave the heap skewed before GetNewDialog"
+        );
+
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage = NIL
+        bus.write_word(TEST_SP + 8, 1910);
+        bus.write_long(TEST_SP + 10, 0xDEAD_BEEF);
+
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        assert_ne!(dialog_ptr, 0);
+        assert_eq!(
+            dialog_ptr & 0xFF,
+            0,
+            "manager-owned DialogRecord pointers should keep the low byte clear"
+        );
+        assert_eq!(
+            bus.get_alloc_size(dialog_ptr),
+            Some(170),
+            "DialogRecord allocation should keep its logical size"
+        );
     }
 
     #[test]
