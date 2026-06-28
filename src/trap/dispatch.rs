@@ -771,6 +771,8 @@ pub(crate) struct RegionRecording {
 pub struct TrapDispatcher {
     /// Loaded resources by handle -> (ptr, type, id)
     pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
+    /// Fast index from (resource-file refnum, type, id) to its live handle.
+    pub(crate) resource_handles_by_key: HashMap<(u16, [u8; 4], i16), u32>,
     /// Mutable Memory Manager state bits by handle.
     /// Resource ownership is derived from `loaded_handles`; this map stores
     /// only flags guest code may change (lock, purgeable, etc.).
@@ -812,6 +814,9 @@ pub struct TrapDispatcher {
     pub(crate) detached_handle_files: HashMap<u32, u16>,
     /// Resource fork reference (loaded into memory)
     pub(crate) resources: Option<LoadedResources>,
+    /// Canonical resource bytes keyed by (resource-file refnum, type, id).
+    /// Used to reload unloaded resources without reparsing the whole fork.
+    pub(crate) resource_backing_data: HashMap<(u16, [u8; 4], i16), Vec<u8>>,
     /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
     pub(crate) movie_states: HashMap<u32, MovieState>,
     /// Movie Toolbox current error value for GetMoviesError.
@@ -1824,17 +1829,20 @@ impl TrapDispatcher {
         let data_ptr = bus.alloc(data.len().max(1) as u32);
         bus.write_bytes(data_ptr, data);
 
-        let resources = self.resources.get_or_insert_with(|| LoadedResources {
-            files: HashMap::from([(0u16, ResourceFileMap::default())]),
-            names: HashMap::new(),
-            search_order: vec![0],
-            current_file: 0,
-        });
-        let file = resources.files.entry(refnum).or_default();
-        file.loaded.insert((res_type, id), data_ptr);
-        if !resources.search_order.contains(&refnum) {
-            resources.search_order.push(refnum);
+        {
+            let resources = self.resources.get_or_insert_with(|| LoadedResources {
+                files: HashMap::from([(0u16, ResourceFileMap::default())]),
+                names: HashMap::new(),
+                search_order: vec![0],
+                current_file: 0,
+            });
+            let file = resources.files.entry(refnum).or_default();
+            file.loaded.insert((res_type, id), data_ptr);
+            if !resources.search_order.contains(&refnum) {
+                resources.search_order.push(refnum);
+            }
         }
+        self.remember_resource_backing_data(refnum, res_type, id, data.to_vec());
         data_ptr
     }
 
@@ -2217,6 +2225,7 @@ impl TrapDispatcher {
 
         let mut dispatcher = Self {
             loaded_handles: HashMap::new(),
+            resource_handles_by_key: HashMap::new(),
             handle_state_bits: HashMap::new(),
             vm_held_page_counts: HashMap::new(),
             vm_held_page_history: HashSet::new(),
@@ -2228,6 +2237,7 @@ impl TrapDispatcher {
             resource_handle_files: HashMap::new(),
             detached_handle_files: HashMap::new(),
             resources: None,
+            resource_backing_data: HashMap::new(),
             movie_states: HashMap::new(),
             movie_error: 0,
             movie_sticky_error: 0,
@@ -3654,6 +3664,67 @@ impl TrapDispatcher {
         }
     }
 
+    pub(crate) fn remember_resource_backing_data(
+        &mut self,
+        refnum: u16,
+        res_type: [u8; 4],
+        res_id: i16,
+        data: Vec<u8>,
+    ) {
+        self.resource_backing_data
+            .insert((refnum, res_type, res_id), data);
+    }
+
+    pub(crate) fn forget_resource_backing_data(
+        &mut self,
+        refnum: u16,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) {
+        self.resource_backing_data
+            .remove(&(refnum, res_type, res_id));
+    }
+
+    pub(crate) fn remember_resource_fork_backing_data(&mut self, refnum: u16, fork: &ResourceFork) {
+        for ((res_type, res_id), resource) in fork.resources() {
+            self.resource_backing_data
+                .entry((refnum, *res_type, *res_id))
+                .or_insert_with(|| resource.data.clone());
+        }
+    }
+
+    pub(crate) fn clear_resource_file_backing_data(&mut self, refnum: u16) {
+        self.resource_backing_data
+            .retain(|(entry_refnum, _, _), _| *entry_refnum != refnum);
+    }
+
+    pub(crate) fn remember_resource_handle_index(
+        &mut self,
+        handle: u32,
+        refnum: u16,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) {
+        self.resource_handles_by_key
+            .insert((refnum, res_type, res_id), handle);
+    }
+
+    pub(crate) fn forget_resource_handle_index_for_handle(&mut self, handle: u32) {
+        let Some((_, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
+            return;
+        };
+        let Some(refnum) = self.resource_handle_files.get(&handle).copied() else {
+            return;
+        };
+        self.resource_handles_by_key
+            .remove(&(refnum, res_type, res_id));
+    }
+
+    pub(crate) fn clear_resource_file_handle_index(&mut self, refnum: u16) {
+        self.resource_handles_by_key
+            .retain(|(entry_refnum, _, _), _| *entry_refnum != refnum);
+    }
+
     pub(crate) fn resource_search_order(&self) -> Vec<u16> {
         let Some(resources) = self.resources.as_ref() else {
             return Vec::new();
@@ -3797,6 +3868,8 @@ impl TrapDispatcher {
             closed_name = resources.names.remove(&refnum);
             closed = true;
         }
+        self.clear_resource_file_backing_data(refnum);
+        self.clear_resource_file_handle_index(refnum);
 
         if !closed {
             return false;
@@ -4161,6 +4234,8 @@ impl TrapDispatcher {
     /// Loads ALL resource types from the fork (not just a hardcoded whitelist).
     pub fn load_resources(&mut self, fork: &ResourceFork, bus: &mut MacMemoryBus) {
         let file = self.allocate_resource_fork(fork, bus);
+        self.clear_resource_file_backing_data(0);
+        self.remember_resource_fork_backing_data(0, fork);
         // Log resource types summary including nrct check.
         // Behind SYSTEMLESS_TRACE_LOAD so library consumers don't see this
         // ~30-line dump on every game load.
@@ -4280,6 +4355,7 @@ impl TrapDispatcher {
         for (key, attrs) in incoming.attrs {
             target.attrs.entry(key).or_insert(attrs);
         }
+        self.remember_resource_fork_backing_data(refnum, fork);
         count
     }
 
@@ -4309,6 +4385,8 @@ impl TrapDispatcher {
             }
         }
         self.register_resource_file(refnum, file);
+        self.clear_resource_file_backing_data(refnum);
+        self.remember_resource_fork_backing_data(refnum, fork);
         if crate::runner::trace_load_enabled() {
             eprintln!("[RESOURCE] Merged {} resources from additional fork", count);
         }

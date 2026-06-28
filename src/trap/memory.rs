@@ -482,6 +482,7 @@ impl super::TrapDispatcher {
                     }
                 }
                 self.detached_handles.remove(&handle);
+                self.forget_resource_handle_index_for_handle(handle);
                 self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
                 self.detached_handle_files.remove(&handle);
@@ -630,7 +631,7 @@ impl super::TrapDispatcher {
                         }
                         _ => {
                             if self.res_purge {
-                                let _ = self.write_resource_backing_if_changed(handle);
+                                let _ = self.write_resource_backing_if_changed(bus, handle);
                             }
                         }
                     }

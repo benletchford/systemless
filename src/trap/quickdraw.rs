@@ -9020,6 +9020,7 @@ impl super::TrapDispatcher {
                         Self::free_handle_and_target(bus, icon_pm_table_handle);
                         Self::free_handle_and_target(bus, icon_data_handle);
                         self.ptr_to_handle.remove(&icon_ptr);
+                        self.forget_resource_handle_index_for_handle(icon_handle);
                         self.loaded_handles.remove(&icon_handle);
                         self.resource_handle_files.remove(&icon_handle);
                         bus.free(icon_ptr);

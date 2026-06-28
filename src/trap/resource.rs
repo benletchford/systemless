@@ -660,28 +660,32 @@ impl super::TrapDispatcher {
         ptr: u32,
         refnum: u16,
     ) -> u32 {
-        if let Some((&handle, _)) = self.loaded_handles.iter().find(
-            |(handle, (existing_ptr, existing_type, existing_id))| {
-                *existing_ptr == ptr
-                    && *existing_type == res_type
-                    && *existing_id == res_id
-                    && self.resource_handle_files.get(handle).copied() == Some(refnum)
-            },
-        ) {
-            // IM:More Macintosh Toolbox 1993, 1-79: SetResLoad(TRUE)
-            // restores automatic loading for resource-returning routines.
-            // If this resource was first seen while SetResLoad(FALSE) was
-            // active, the handle exists but its master pointer is NIL; a
-            // later lookup with loading enabled should fill it and restore
-            // the reverse ptr->handle ownership so RecoverHandle keeps
-            // working after the refill.
-            if self.res_load && bus.read_long(handle) == 0 {
-                bus.write_long(handle, ptr);
+        let key = (refnum, res_type, res_id);
+        if let Some(handle) = self.resource_handles_by_key.get(&key).copied() {
+            if let Some((existing_ptr, existing_type, existing_id)) =
+                self.loaded_handles.get(&handle).copied()
+            {
+                if existing_type == res_type
+                    && existing_id == res_id
+                    && self.resource_handle_files.get(&handle).copied() == Some(refnum)
+                {
+                    // IM:More Macintosh Toolbox 1993, 1-79: SetResLoad(TRUE)
+                    // restores automatic loading for resource-returning routines.
+                    // If this resource was first seen while SetResLoad(FALSE) was
+                    // active, the handle exists but its master pointer is NIL; a
+                    // later lookup with loading enabled should fill it and restore
+                    // the reverse ptr->handle ownership so RecoverHandle keeps
+                    // working after the refill.
+                    if self.res_load && bus.read_long(handle) == 0 {
+                        bus.write_long(handle, existing_ptr);
+                    }
+                    if existing_ptr != 0 {
+                        self.ptr_to_handle.insert(existing_ptr, handle);
+                    }
+                    return handle;
+                }
             }
-            if ptr != 0 {
-                self.ptr_to_handle.insert(ptr, handle);
-            }
-            return handle;
+            self.resource_handles_by_key.remove(&key);
         }
 
         let handle = bus.alloc(4);
@@ -692,6 +696,7 @@ impl super::TrapDispatcher {
         bus.write_long(handle, if self.res_load { ptr } else { 0 });
         self.loaded_handles.insert(handle, (ptr, res_type, res_id));
         self.resource_handle_files.insert(handle, refnum);
+        self.remember_resource_handle_index(handle, key.0, key.1, key.2);
         if self.res_load && ptr != 0 {
             self.ptr_to_handle.insert(ptr, handle);
         }
@@ -712,16 +717,23 @@ impl super::TrapDispatcher {
     }
 
     fn resource_file_contains(&self, refnum: u16, res_type: [u8; 4], res_id: i16) -> bool {
-        let Some(file_name) = self.resource_file_name(refnum) else {
-            return false;
-        };
-        let Some(rsrc_bytes) = self.vfs_rsrc.get(file_name) else {
-            return false;
-        };
-        let Some(fork) = ResourceFork::parse(rsrc_bytes) else {
-            return false;
-        };
-        fork.resources().contains_key(&(res_type, res_id))
+        if self.resources.as_ref().is_some_and(|resources| {
+            resources
+                .files
+                .get(&refnum)
+                .is_some_and(|file| file.loaded.contains_key(&(res_type, res_id)))
+        }) {
+            return true;
+        }
+
+        if self
+            .resource_backing_data
+            .contains_key(&(refnum, res_type, res_id))
+        {
+            return true;
+        }
+
+        false
     }
 
     fn resource_ptr_referenced_elsewhere(&self, refnum: u16, ptr: u32) -> bool {
@@ -739,13 +751,34 @@ impl super::TrapDispatcher {
         res_type: [u8; 4],
         res_id: i16,
     ) -> Option<u32> {
-        let file_name = self.resource_file_name(refnum)?.to_string();
-        let rsrc_bytes = self.vfs_rsrc.get(&file_name)?;
-        let fork = ResourceFork::parse(rsrc_bytes)?;
-        let resource = fork.resources().get(&(res_type, res_id))?;
-        let data = resource.data.clone();
-        let attrs = resource.attrs;
-        let name = resource.name.clone();
+        let (data, attrs, name) = if let Some(data) = self
+            .resource_backing_data
+            .get(&(refnum, res_type, res_id))
+            .cloned()
+        {
+            let attrs = self
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.files.get(&refnum))
+                .and_then(|file| file.attrs.get(&(res_type, res_id)).copied())
+                .unwrap_or(0);
+            let name = self
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.files.get(&refnum))
+                .and_then(|file| file.names_by_id.get(&(res_type, res_id)).cloned());
+            (data, attrs, name)
+        } else {
+            let file_name = self.resource_file_name(refnum)?.to_string();
+            let rsrc_bytes = self.vfs_rsrc.get(&file_name)?;
+            let fork = ResourceFork::parse(rsrc_bytes)?;
+            let resource = fork.resources().get(&(res_type, res_id))?;
+            let data = resource.data.clone();
+            let attrs = resource.attrs;
+            let name = resource.name.clone();
+            self.remember_resource_backing_data(refnum, res_type, res_id, data.clone());
+            (data, attrs, name)
+        };
         let ptr = bus.alloc(data.len() as u32);
         if ptr == 0 {
             return None;
@@ -934,6 +967,7 @@ impl super::TrapDispatcher {
                             .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
                     }
                 }
+                self.forget_resource_backing_data(refnum, res_type, res_id);
                 bus.write_word(0x0A60, 0);
                 true
             } else {
@@ -946,6 +980,8 @@ impl super::TrapDispatcher {
                             .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
                     }
                 }
+                self.forget_resource_backing_data(current_refnum, res_type, res_id);
+                self.forget_resource_handle_index_for_handle(handle);
                 self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
                 bus.write_word(0x0A60, 0);
@@ -1028,6 +1064,15 @@ impl super::TrapDispatcher {
             }
         }
 
+        if let Some(size) = bus.get_alloc_size(ptr) {
+            self.remember_resource_backing_data(
+                current_refnum,
+                res_type,
+                new_id,
+                bus.read_bytes(ptr, size as usize),
+            );
+        }
+
         bus.write_word(0x0A60, 0);
         true
     }
@@ -1036,13 +1081,33 @@ impl super::TrapDispatcher {
     /// clearing its resChanged bit in the resource map. Returns true
     /// when the handle was a writable changed resource and the flag was
     /// cleared, false otherwise.
-    pub(crate) fn write_resource_backing_if_changed(&mut self, handle: u32) -> bool {
+    pub(crate) fn write_resource_backing_if_changed(
+        &mut self,
+        bus: &MacMemoryBus,
+        handle: u32,
+    ) -> bool {
         let Some((refnum, res_type, res_id)) = self.resource_record_for_handle(handle) else {
             return false;
         };
         let attrs = self.resource_attributes_for_handle(handle).unwrap_or(0);
         if (attrs & 0x0008) != 0 || (attrs & Self::RES_CHANGED_ATTR) == 0 {
             return false;
+        }
+
+        let handle_ptr = bus.read_long(handle);
+        let backing_ptr = if handle_ptr != 0 {
+            handle_ptr
+        } else {
+            self.loaded_handles
+                .get(&handle)
+                .map(|(ptr, _, _)| *ptr)
+                .unwrap_or(0)
+        };
+        if backing_ptr != 0 {
+            if let Some(size) = bus.get_alloc_size(backing_ptr) {
+                let data = bus.read_bytes(backing_ptr, size as usize);
+                self.remember_resource_backing_data(refnum, res_type, res_id, data);
+            }
         }
 
         if let Some(resources) = self.resources.as_mut() {
@@ -1131,6 +1196,14 @@ impl super::TrapDispatcher {
             if let Some(size) = bus.get_alloc_size(live_ptr) {
                 return Some(bus.read_bytes(live_ptr, size as usize));
             }
+        }
+
+        if let Some(data) = self
+            .resource_backing_data
+            .get(&(refnum, res_type, res_id))
+            .cloned()
+        {
+            return Some(data);
         }
 
         let file_name = self.resource_file_name(refnum)?;
@@ -1315,6 +1388,11 @@ impl super::TrapDispatcher {
         })() else {
             return false;
         };
+
+        if let Some(fork) = ResourceFork::parse(&bytes) {
+            self.clear_resource_file_backing_data(refnum);
+            self.remember_resource_fork_backing_data(refnum, &fork);
+        }
 
         let len = bytes.len();
         self.vfs_rsrc.insert(file_name.clone(), bytes);
@@ -1581,6 +1659,7 @@ impl super::TrapDispatcher {
                                 bus.write_long(handle, detached_ptr);
                             }
                         }
+                        self.forget_resource_handle_index_for_handle(handle);
                         self.loaded_handles.remove(&handle);
                         if let Some(refnum) = self.resource_handle_files.remove(&handle) {
                             self.detached_handle_files.insert(handle, refnum);
@@ -1656,8 +1735,27 @@ impl super::TrapDispatcher {
                                 self.resource_file_contains(refnum, record_type, record_id)
                             })
                             .unwrap_or(false);
+                        if can_reload {
+                            if let Some((refnum, record_type, record_id)) = resource_record {
+                                if !self.resource_backing_data.contains_key(&(
+                                    refnum,
+                                    record_type,
+                                    record_id,
+                                )) {
+                                    if let Some(size) = bus.get_alloc_size(ptr) {
+                                        self.remember_resource_backing_data(
+                                            refnum,
+                                            record_type,
+                                            record_id,
+                                            bus.read_bytes(ptr, size as usize),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         bus.write_long(handle, 0);
                         self.ptr_to_handle.remove(&ptr);
+                        self.forget_resource_handle_index_for_handle(handle);
                         self.loaded_handles.remove(&handle);
                         self.resource_handle_files.remove(&handle);
                         self.handle_state_bits.remove(&handle);
@@ -2506,6 +2604,21 @@ impl super::TrapDispatcher {
                             if let Some(entry) = self.loaded_handles.get_mut(&handle) {
                                 entry.2 = new_id;
                             }
+                            if old_id != new_id {
+                                self.resource_handles_by_key
+                                    .remove(&(refnum, res_type, old_id));
+                                self.remember_resource_handle_index(
+                                    handle, refnum, res_type, new_id,
+                                );
+                            }
+                        }
+                        if old_id != new_id {
+                            if let Some(data) = self
+                                .resource_backing_data
+                                .remove(&(refnum, res_type, old_id))
+                            {
+                                self.remember_resource_backing_data(refnum, res_type, new_id, data);
+                            }
                         }
 
                         if let Some(resources) = self.resources.as_mut() {
@@ -2604,6 +2717,7 @@ impl super::TrapDispatcher {
                     // Register in loaded_handles and resource_handle_files
                     self.loaded_handles.insert(handle, (ptr, res_type, res_id));
                     self.resource_handle_files.insert(handle, refnum);
+                    self.remember_resource_handle_index(handle, refnum, res_type, res_id);
 
                     if let Some(resources) = self.resources.as_mut() {
                         if let Some(file) = resources.files.get_mut(&refnum) {
@@ -2625,6 +2739,16 @@ impl super::TrapDispatcher {
                                     }
                                 }
                             }
+                        }
+                    }
+                    if ptr != 0 {
+                        if let Some(size) = bus.get_alloc_size(ptr) {
+                            self.remember_resource_backing_data(
+                                refnum,
+                                res_type,
+                                res_id,
+                                bus.read_bytes(ptr, size as usize),
+                            );
                         }
                     }
                     bus.write_word(0x0A60, 0); // noErr
@@ -2698,7 +2822,7 @@ impl super::TrapDispatcher {
                         if let Some((refnum, _, _)) = self.resource_record_for_handle(handle) {
                             let _ = self.flush_resource_file_refnum(bus, refnum);
                         }
-                        let _ = self.write_resource_backing_if_changed(handle);
+                        let _ = self.write_resource_backing_if_changed(bus, handle);
                         bus.write_word(0x0A60, 0);
                     }
                 } else {
@@ -7525,6 +7649,7 @@ mod tests {
             search_order: vec![0],
             current_file: 0,
         });
+        dispatcher.remember_resource_backing_data(0, *res_type, res_id, data.to_vec());
         data_ptr
     }
 
@@ -8205,6 +8330,12 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"DLOG", 200, &[0xAB; 8]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"DLOG", 200, data_ptr);
+        assert_eq!(
+            disp.resource_handles_by_key
+                .get(&(0, *b"DLOG", 200))
+                .copied(),
+            Some(handle)
+        );
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -8429,6 +8560,12 @@ mod tests {
             !disp.resource_handle_files.contains_key(&handle),
             "ReleaseResource should remove the old handle's resource file binding"
         );
+        assert!(
+            !disp
+                .resource_handles_by_key
+                .contains_key(&(0, *b"DLOG", 200)),
+            "ReleaseResource should remove the stale resource handle index"
+        );
         assert_eq!(
             disp.ptr_to_handle.get(&data_ptr).copied(),
             None,
@@ -8521,6 +8658,58 @@ mod tests {
         assert_ne!(reloaded_handle, handle);
         assert_ne!(reloaded_ptr, 0);
         assert_eq!(bus.get_alloc_size(reloaded_ptr), Some(bytes.len() as u32));
+        assert_eq!(bus.read_bytes(reloaded_ptr, bytes.len()), bytes);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn released_resource_reloads_from_backing_cache_without_reparsing_fork() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let bytes = [0xCD; 8];
+        let rsrc_bytes = make_single_resource_fork_bytes(*b"PICT", 23003, &bytes);
+        disp.vfs_rsrc.insert("CachedReload".to_string(), rsrc_bytes);
+        let refnum = disp.open_resource_file_from_vfs_key(&mut bus, "CachedReload", false);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 23003u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"PICT"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        let old_ptr = bus.read_long(handle);
+        assert_ne!(handle, 0);
+        assert_ne!(old_ptr, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        call(&mut disp, true, 0x1A3, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_long(handle), 0);
+        assert_eq!(bus.get_alloc_size(old_ptr), None);
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .unwrap()
+                .files
+                .get(&refnum)
+                .unwrap()
+                .loaded
+                .get(&(*b"PICT", 23003))
+                .copied(),
+            Some(0)
+        );
+
+        disp.vfs_rsrc.remove("CachedReload");
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 23003u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"PICT"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let reloaded_handle = bus.read_long(TEST_SP + 6);
+        let reloaded_ptr = bus.read_long(reloaded_handle);
+        assert_ne!(reloaded_handle, 0);
+        assert_ne!(reloaded_ptr, 0);
         assert_eq!(bus.read_bytes(reloaded_ptr, bytes.len()), bytes);
         assert_eq!(bus.read_word(0x0A60), 0);
     }

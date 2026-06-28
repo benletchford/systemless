@@ -1133,7 +1133,7 @@ impl super::TrapDispatcher {
             (true, 0x1BF) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
-                let handle = match self.find_resource_any(*b"MENU", menu_id) {
+                let handle = match self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
                     Some((refnum, res_ptr)) => {
                         let handle = self.get_or_create_resource_handle_in_file(
                             bus, *b"MENU", menu_id, res_ptr, refnum,
@@ -2120,6 +2120,7 @@ impl super::TrapDispatcher {
                         bus.free(menu_ptr);
                         self.ptr_to_handle.remove(&menu_ptr);
                     }
+                    self.forget_resource_handle_index_for_handle(menu_handle);
                     self.loaded_handles.remove(&menu_handle);
                     self.detached_handles.remove(&menu_handle);
                     self.resource_handle_files.remove(&menu_handle);

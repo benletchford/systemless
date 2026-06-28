@@ -3576,6 +3576,7 @@ impl super::TrapDispatcher {
 
         let resource_backing = self.loaded_handles.get(&handle).copied();
         self.detached_handles.remove(&handle);
+        self.forget_resource_handle_index_for_handle(handle);
         self.loaded_handles.remove(&handle);
         self.resource_handle_files.remove(&handle);
         self.detached_handle_files.remove(&handle);
