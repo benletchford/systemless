@@ -42,7 +42,10 @@ const FRAME_DURATION: std::time::Duration = std::time::Duration::from_micros(16_
 const MIN_RENDER_HEADROOM: std::time::Duration = std::time::Duration::from_micros(1_500);
 const MAX_RENDER_HEADROOM: std::time::Duration = std::time::Duration::from_micros(8_000);
 const RENDER_HEADROOM_MARGIN: std::time::Duration = std::time::Duration::from_micros(500);
-const CPU_BATCH_INSTRUCTIONS: usize = 100_000;
+/// Foreground GUI work is checked against the host deadline only between
+/// batches. Keep each slice well below a realtime VBL so heavy startup loads
+/// can still present intermediate drawing and service Sound Manager callbacks.
+const CPU_BATCH_INSTRUCTIONS: usize = 25_000;
 const SOUND_CALLBACK_SLICE_INSTRUCTIONS: usize = CPU_BATCH_INSTRUCTIONS;
 const SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME: usize = SOUND_CALLBACK_SLICE_INSTRUCTIONS;
 const AUDIO_CALLBACK_CHUNK_SAMPLES: usize = 32;
@@ -1450,8 +1453,8 @@ mod tests {
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
         );
-        let pc = runner.bus_mut().alloc(64 * 1024);
-        for offset in (0..64 * 1024).step_by(2) {
+        let pc = runner.bus_mut().alloc(256 * 1024);
+        for offset in (0..256 * 1024).step_by(2) {
             runner.bus_mut().write_word(pc + offset, 0x4E71); // NOP
         }
         runner.cpu_mut().write_reg(Register::PC, pc);
@@ -1462,7 +1465,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("dummy"), false, Some(1.0), false);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION);
-        app.next_frame_time = Some(now + FRAME_DURATION);
+        app.next_frame_time = Some(now + FRAME_DURATION * 4);
         app.next_cpu_budget_time = Some(now);
         app.last_presented_guest_tick = Some(0);
         app.force_next_render = false;
@@ -1752,6 +1755,24 @@ mod tests {
         assert_eq!(
             App::next_render_headroom(std::time::Duration::from_micros(20_000)),
             MAX_RENDER_HEADROOM
+        );
+    }
+
+    #[test]
+    fn gui_foreground_batches_stay_well_below_one_realtime_vbl() {
+        let realtime_instructions_per_tick =
+            (systemless::runner::DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND
+                / systemless::runner::DEFAULT_VBL_HZ) as usize;
+
+        assert!(
+            CPU_BATCH_INSTRUCTIONS <= realtime_instructions_per_tick / 8,
+            "GUI batches should yield several times per realtime VBL during heavy drawing; batch={} vbl_budget={}",
+            CPU_BATCH_INSTRUCTIONS,
+            realtime_instructions_per_tick
+        );
+        assert_eq!(
+            SOUND_CALLBACK_SLICE_INSTRUCTIONS, CPU_BATCH_INSTRUCTIONS,
+            "Sound Manager callback slices should stay aligned with GUI yield cadence"
         );
     }
 
