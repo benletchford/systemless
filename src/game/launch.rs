@@ -270,52 +270,221 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
 }
 
 fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
-    let mut offset = WEB_PACK_MAGIC.len();
-    let entry_count = read_u32_be(file_data, &mut offset)? as usize;
-    let mut executable_entry: Option<ExecutableCandidate> = None;
+    let mut loader =
+        WebPackLoader::new(runner, file_data)?.ok_or_else(|| "Not a web pack".to_string())?;
+    while !loader.load_next_chunk(runner, usize::MAX)? {}
+    loader.finish(runner)
+}
 
-    {
-        let dispatcher = runner.dispatcher_mut();
-        dispatcher.vfs.reserve(entry_count);
-        dispatcher.vfs_rsrc.reserve(entry_count);
-        dispatcher.vfs_metadata.reserve(entry_count);
+/// Incremental loader for Systemless web packs (`KPK1`).
+///
+/// The standard `load_game` path consumes the whole pack synchronously. Browser
+/// frontends can use this loader to copy large data/resource forks in bounded
+/// chunks and yield to the event loop between calls.
+pub struct WebPackLoader<'a> {
+    file_data: &'a [u8],
+    offset: usize,
+    total_entries: usize,
+    loaded_entries: usize,
+    executable_entry: Option<ExecutableCandidate>,
+    pending: Option<WebPackPendingEntry>,
+}
+
+impl<'a> WebPackLoader<'a> {
+    pub fn new(runner: &mut FixtureRunner, file_data: &'a [u8]) -> Result<Option<Self>, String> {
+        if !file_data.starts_with(WEB_PACK_MAGIC) {
+            return Ok(None);
+        }
+
+        let mut offset = WEB_PACK_MAGIC.len();
+        let total_entries = read_u32_be(file_data, &mut offset)? as usize;
+        {
+            let dispatcher = runner.dispatcher_mut();
+            dispatcher.vfs.reserve(total_entries);
+            dispatcher.vfs_rsrc.reserve(total_entries);
+            dispatcher.vfs_metadata.reserve(total_entries);
+        }
+
+        Ok(Some(Self {
+            file_data,
+            offset,
+            total_entries,
+            loaded_entries: 0,
+            executable_entry: None,
+            pending: None,
+        }))
     }
 
-    for _ in 0..entry_count {
-        let name_len = read_u16_be(file_data, &mut offset)? as usize;
-        let name_bytes = read_exact(file_data, &mut offset, name_len)?;
+    pub fn total_entries(&self) -> usize {
+        self.total_entries
+    }
+
+    pub fn loaded_entries(&self) -> usize {
+        self.loaded_entries
+    }
+
+    pub fn archive_bytes_total(&self) -> usize {
+        self.file_data.len()
+    }
+
+    pub fn archive_bytes_loaded(&self) -> usize {
+        self.pending
+            .as_ref()
+            .map_or(self.offset, WebPackPendingEntry::archive_bytes_loaded)
+    }
+
+    /// Copy and mount up to `max_bytes` of fork payload. Returns `true` once
+    /// all entries have been mounted and `finish` can be called.
+    pub fn load_next_chunk(
+        &mut self,
+        runner: &mut FixtureRunner,
+        max_bytes: usize,
+    ) -> Result<bool, String> {
+        let mut remaining = max_bytes.max(1);
+
+        while remaining > 0 && self.loaded_entries < self.total_entries {
+            if self.pending.is_none() {
+                self.pending = Some(self.read_next_entry_header()?);
+            }
+
+            let copied = {
+                let pending = self.pending.as_mut().expect("pending web-pack entry");
+                pending.copy_next_chunk(self.file_data, remaining)
+            };
+            remaining = remaining.saturating_sub(copied);
+
+            if self
+                .pending
+                .as_ref()
+                .is_some_and(WebPackPendingEntry::is_complete)
+            {
+                let pending = self.pending.take().expect("complete web-pack entry");
+                maybe_select_executable(
+                    &mut self.executable_entry,
+                    &pending.name,
+                    &pending.rsrc,
+                    pending.is_appl,
+                    pending.data_len,
+                    *b"????",
+                );
+                insert_forks_into_vfs(
+                    runner,
+                    &pending.name,
+                    pending.data,
+                    pending.rsrc,
+                    pending.file_type_code,
+                    *b"????",
+                    0,
+                );
+                self.loaded_entries += 1;
+            } else if copied == 0 {
+                break;
+            }
+        }
+
+        Ok(self.loaded_entries == self.total_entries && self.pending.is_none())
+    }
+
+    pub fn finish(self, runner: &mut FixtureRunner) -> Result<LoadedApp, String> {
+        if self.loaded_entries != self.total_entries || self.pending.is_some() {
+            return Err("Web pack load is not complete".to_string());
+        }
+
+        log_vfs(runner);
+
+        let executable = self
+            .executable_entry
+            .ok_or("No executable found in web pack")?;
+        if crate::runner::trace_load_enabled() {
+            eprintln!("[LOAD] Selected executable: {}", executable.name);
+        }
+        load_selected_executable(runner, &executable)
+    }
+
+    fn read_next_entry_header(&mut self) -> Result<WebPackPendingEntry, String> {
+        let name_len = read_u16_be(self.file_data, &mut self.offset)? as usize;
+        let name_bytes = read_exact(self.file_data, &mut self.offset, name_len)?;
         let name = String::from_utf8(name_bytes.to_vec())
             .map_err(|_| "Invalid UTF-8 in web pack entry name".to_string())?;
 
-        let file_type = read_exact(file_data, &mut offset, 4)?;
+        let file_type = read_exact(self.file_data, &mut self.offset, 4)?;
         let mut file_type_code = [0u8; 4];
         file_type_code.copy_from_slice(file_type);
-        let is_appl = file_type_code == *b"APPL";
 
-        let data_len = read_u32_be(file_data, &mut offset)? as usize;
-        let data = read_exact(file_data, &mut offset, data_len)?.to_vec();
+        let data_len = read_u32_be(self.file_data, &mut self.offset)? as usize;
+        let data_start = self.offset;
+        read_exact(self.file_data, &mut self.offset, data_len)?;
 
-        let rsrc_len = read_u32_be(file_data, &mut offset)? as usize;
-        let rsrc = read_exact(file_data, &mut offset, rsrc_len)?.to_vec();
+        let rsrc_len = read_u32_be(self.file_data, &mut self.offset)? as usize;
+        let rsrc_start = self.offset;
+        read_exact(self.file_data, &mut self.offset, rsrc_len)?;
 
-        maybe_select_executable(
-            &mut executable_entry,
-            &name,
-            &rsrc,
-            is_appl,
+        Ok(WebPackPendingEntry {
+            name,
+            file_type_code,
+            is_appl: file_type_code == *b"APPL",
+            data_start,
             data_len,
-            *b"????",
-        );
-        insert_forks_into_vfs(runner, &name, data, rsrc, file_type_code, *b"????", 0);
+            data_copied: 0,
+            data: Vec::with_capacity(data_len),
+            rsrc_start,
+            rsrc_len,
+            rsrc_copied: 0,
+            rsrc: Vec::with_capacity(rsrc_len),
+        })
+    }
+}
+
+struct WebPackPendingEntry {
+    name: String,
+    file_type_code: [u8; 4],
+    is_appl: bool,
+    data_start: usize,
+    data_len: usize,
+    data_copied: usize,
+    data: Vec<u8>,
+    rsrc_start: usize,
+    rsrc_len: usize,
+    rsrc_copied: usize,
+    rsrc: Vec<u8>,
+}
+
+impl WebPackPendingEntry {
+    fn copy_next_chunk(&mut self, file_data: &[u8], max_bytes: usize) -> usize {
+        let mut remaining = max_bytes;
+
+        if self.data_copied < self.data_len && remaining > 0 {
+            let chunk = remaining.min(self.data_len - self.data_copied);
+            let start = self.data_start + self.data_copied;
+            self.data
+                .extend_from_slice(&file_data[start..start + chunk]);
+            self.data_copied += chunk;
+            remaining -= chunk;
+        }
+
+        if self.rsrc_copied < self.rsrc_len && remaining > 0 {
+            let chunk = remaining.min(self.rsrc_len - self.rsrc_copied);
+            let start = self.rsrc_start + self.rsrc_copied;
+            self.rsrc
+                .extend_from_slice(&file_data[start..start + chunk]);
+            self.rsrc_copied += chunk;
+            remaining -= chunk;
+        }
+
+        max_bytes - remaining
     }
 
-    log_vfs(runner);
-
-    let executable = executable_entry.ok_or("No executable found in web pack")?;
-    if crate::runner::trace_load_enabled() {
-        eprintln!("[LOAD] Selected executable: {}", executable.name);
+    fn is_complete(&self) -> bool {
+        self.data_copied == self.data_len && self.rsrc_copied == self.rsrc_len
     }
-    load_selected_executable(runner, &executable)
+
+    fn archive_bytes_loaded(&self) -> usize {
+        if self.data_copied < self.data_len {
+            self.data_start + self.data_copied
+        } else {
+            self.rsrc_start + self.rsrc_copied
+        }
+    }
 }
 
 fn insert_forks_into_vfs(
@@ -1113,6 +1282,90 @@ mod tests {
         bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
 
         bytes
+    }
+
+    struct TestWebPackEntry<'a> {
+        name: &'a str,
+        file_type: [u8; 4],
+        data: &'a [u8],
+        rsrc: &'a [u8],
+    }
+
+    fn make_web_pack(entries: &[TestWebPackEntry<'_>]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(WEB_PACK_MAGIC);
+        bytes.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for entry in entries {
+            bytes.extend_from_slice(&(entry.name.len() as u16).to_be_bytes());
+            bytes.extend_from_slice(entry.name.as_bytes());
+            bytes.extend_from_slice(&entry.file_type);
+            bytes.extend_from_slice(&(entry.data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(entry.data);
+            bytes.extend_from_slice(&(entry.rsrc.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(entry.rsrc);
+        }
+        bytes
+    }
+
+    #[test]
+    fn web_pack_loader_is_opt_in_for_kpk_payloads() {
+        let mut runner = new_runner();
+
+        assert!(WebPackLoader::new(&mut runner, b"not a web pack")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn web_pack_loader_mounts_forks_incrementally() {
+        let data = b"abcdefghijkl".to_vec();
+        let rsrc = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
+        let pack = make_web_pack(&[
+            TestWebPackEntry {
+                name: "Folder/Data",
+                file_type: *b"TEXT",
+                data: &data,
+                rsrc: &[],
+            },
+            TestWebPackEntry {
+                name: "Folder/Sidecar.rsrc",
+                file_type: *b"rsrc",
+                data: &rsrc,
+                rsrc: &[],
+            },
+        ]);
+        let mut runner = new_runner();
+        let mut loader = WebPackLoader::new(&mut runner, &pack).unwrap().unwrap();
+
+        assert_eq!(loader.total_entries(), 2);
+        assert_eq!(loader.loaded_entries(), 0);
+        assert!(loader.archive_bytes_total() > data.len() + rsrc.len());
+
+        assert!(!loader.load_next_chunk(&mut runner, 4).unwrap());
+        assert_eq!(loader.loaded_entries(), 0);
+        assert!(runner.dispatcher().vfs.is_empty());
+        assert!(loader.archive_bytes_loaded() > WEB_PACK_MAGIC.len());
+
+        let mut calls = 1;
+        while !loader.load_next_chunk(&mut runner, 4).unwrap() {
+            calls += 1;
+            assert!(calls < 64, "incremental web-pack load did not finish");
+        }
+
+        assert_eq!(loader.loaded_entries(), 2);
+        assert_eq!(runner.dispatcher().vfs.get("Folder/Data"), Some(&data));
+        assert_eq!(
+            runner.dispatcher().vfs.get("Folder/Sidecar.rsrc"),
+            Some(&rsrc)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Folder/Sidecar.rsrc"),
+            Some(&rsrc)
+        );
+        match loader.finish(&mut runner) {
+            Ok(_) => panic!("non-executable web pack should not finish as a loaded app"),
+            Err(err) => assert!(err.contains("No executable found in web pack")),
+        }
     }
 
     #[test]
