@@ -152,10 +152,9 @@ pub fn init_game(runner: &mut FixtureRunner, app: &LoadedApp) {
         // For 8bpp, index 255 = black in the standard Mac CLUT.
         // For 1bpp, 0xFF = black (all bits set).
         let (scrn_base, row_bytes, _, scrn_height, _) = runner.dispatcher().screen_mode;
-        let bus = runner.bus_mut();
-        for i in 0..(row_bytes * scrn_height as u32) {
-            bus.write_byte(scrn_base + i, 0xFF);
-        }
+        runner
+            .bus_mut()
+            .fill_bytes(scrn_base, row_bytes * scrn_height as u32, 0xFF);
     }
 }
 
@@ -292,15 +291,6 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
         let rsrc_len = read_u32_be(file_data, &mut offset)? as usize;
         let rsrc = read_exact(file_data, &mut offset, rsrc_len)?.to_vec();
 
-        insert_forks_into_vfs(
-            runner,
-            &name,
-            data,
-            rsrc.clone(),
-            file_type_code,
-            *b"????",
-            0,
-        );
         maybe_select_executable(
             &mut executable_entry,
             &name,
@@ -309,6 +299,7 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
             data_len,
             *b"????",
         );
+        insert_forks_into_vfs(runner, &name, data, rsrc, file_type_code, *b"????", 0);
     }
 
     log_vfs(runner);
@@ -812,23 +803,22 @@ fn insert_payload_into_vfs(
     for file in payload.files {
         let data_len = file.data.len();
         let is_appl = file.file_type == *b"APPL";
-        let rsrc = file.rsrc;
+        maybe_select_executable(
+            executable_entry,
+            &file.name,
+            &file.rsrc,
+            is_appl,
+            data_len,
+            file.creator,
+        );
         insert_forks_into_vfs(
             runner,
             &file.name,
             file.data,
-            rsrc.clone(),
+            file.rsrc,
             file.file_type,
             file.creator,
             file.finder_flags,
-        );
-        maybe_select_executable(
-            executable_entry,
-            &file.name,
-            &rsrc,
-            is_appl,
-            data_len,
-            file.creator,
         );
     }
 }
@@ -841,7 +831,17 @@ fn load_selected_executable(
         .dispatcher_mut()
         .set_launched_app_path(&executable.name);
 
-    let fork = ResourceFork::parse(&executable.rsrc).ok_or("Failed to parse resource fork")?;
+    let rsrc = runner
+        .dispatcher()
+        .vfs_rsrc
+        .get(&executable.vfs_key)
+        .ok_or_else(|| {
+            format!(
+                "Selected executable resource fork missing: {}",
+                executable.name
+            )
+        })?;
+    let fork = ResourceFork::parse(rsrc).ok_or("Failed to parse resource fork")?;
     let app = runner
         .load_app(&fork)
         .ok_or_else(|| "Failed to load app".to_string())?;
@@ -949,12 +949,7 @@ fn maybe_select_executable(
         return;
     }
 
-    let is_executable = if let Some(fork) = ResourceFork::parse(rsrc) {
-        fork.get_code(0).is_some()
-    } else {
-        false
-    };
-    if !is_executable {
+    if !ResourceFork::contains_code(rsrc, 0) {
         return;
     }
 
@@ -973,7 +968,7 @@ fn maybe_select_executable(
 
     let candidate = ExecutableCandidate {
         name: name.to_string(),
-        rsrc: rsrc.to_vec(),
+        vfs_key: crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(name),
         is_appl,
         has_data_fork: data_len > 0,
         score: data_len.max(rsrc.len()),
@@ -1005,7 +1000,7 @@ fn executable_name_override() -> Option<String> {
 #[derive(Clone, Debug)]
 struct ExecutableCandidate {
     name: String,
-    rsrc: Vec<u8>,
+    vfs_key: String,
     is_appl: bool,
     has_data_fork: bool,
     score: usize,
@@ -1196,7 +1191,7 @@ mod tests {
 
         let executable = ExecutableCandidate {
             name: "Folder/Runtime".to_string(),
-            rsrc: app_rsrc,
+            vfs_key: "Folder/Runtime".to_string(),
             is_appl: true,
             has_data_fork: true,
             score: 128,
@@ -1211,7 +1206,6 @@ mod tests {
 
     #[test]
     fn launch_resource_companion_requires_empty_data_fork() {
-        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
         let companion_rsrc = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
         let mut runner = new_runner();
 
@@ -1227,7 +1221,7 @@ mod tests {
 
         let executable = ExecutableCandidate {
             name: "Folder/Runtime".to_string(),
-            rsrc: app_rsrc,
+            vfs_key: "Folder/Runtime".to_string(),
             is_appl: true,
             has_data_fork: true,
             score: 128,
@@ -1239,7 +1233,6 @@ mod tests {
 
     #[test]
     fn launch_resource_companion_rejects_exact_name_creator_mismatch() {
-        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
         let companion_rsrc = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
         let mut runner = new_runner();
 
@@ -1255,7 +1248,7 @@ mod tests {
 
         let executable = ExecutableCandidate {
             name: "Folder/Runtime".to_string(),
-            rsrc: app_rsrc,
+            vfs_key: "Folder/Runtime".to_string(),
             is_appl: true,
             has_data_fork: true,
             score: 128,

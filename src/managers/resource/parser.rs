@@ -50,18 +50,101 @@ impl ResourceFork {
 }
 
 impl ResourceFork {
-    /// Parse a resource fork from raw data
-    pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < 16 {
-            return None;
+    /// Return true when the raw resource fork map contains a CODE resource
+    /// with the requested ID. This avoids parsing and copying every resource
+    /// when callers only need executable detection.
+    pub fn contains_code(data: &[u8], id: i16) -> bool {
+        Self::contains_resource(data, CODE_TYPE, id)
+    }
+
+    /// Return true when the raw resource fork map contains a resource with
+    /// the requested type and ID, and the referenced data block is in bounds.
+    pub fn contains_resource(data: &[u8], target_type: ResourceType, target_id: i16) -> bool {
+        let Some(ResourceForkLayout {
+            data_offset, map, ..
+        }) = resource_fork_layout(data)
+        else {
+            return false;
+        };
+
+        let type_list_offset = u16::from_be_bytes([map[24], map[25]]) as usize;
+        let num_types = u16::from_be_bytes([map[28], map[29]]) as usize + 1;
+        if type_list_offset >= map.len() {
+            return false;
         }
 
-        // Resource fork header (16 bytes)
-        // Inside Macintosh Volume I, I-126
-        let data_offset = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        let map_offset = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
-        let data_length = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
-        let map_length = u32::from_be_bytes([data[12], data[13], data[14], data[15]]) as usize;
+        for i in 0..num_types {
+            let Some(entry_offset) = (2usize).checked_add(i.saturating_mul(8)) else {
+                return false;
+            };
+            let Some(entry_end) = entry_offset.checked_add(8) else {
+                return false;
+            };
+            let map_entry_offset = type_list_offset + entry_offset;
+            let map_entry_end = type_list_offset + entry_end;
+            if map_entry_end > map.len() {
+                return false;
+            }
+
+            let res_type: ResourceType = [
+                map[map_entry_offset],
+                map[map_entry_offset + 1],
+                map[map_entry_offset + 2],
+                map[map_entry_offset + 3],
+            ];
+            if res_type != target_type {
+                continue;
+            }
+
+            let num_resources =
+                u16::from_be_bytes([map[map_entry_offset + 4], map[map_entry_offset + 5]]) as usize
+                    + 1;
+            let ref_list_offset =
+                u16::from_be_bytes([map[map_entry_offset + 6], map[map_entry_offset + 7]]) as usize;
+            let Some(ref_list_start) = type_list_offset.checked_add(ref_list_offset) else {
+                return false;
+            };
+            if ref_list_start >= map.len() {
+                return false;
+            }
+
+            for j in 0..num_resources {
+                let Some(ref_offset) = ref_list_start.checked_add(j.saturating_mul(12)) else {
+                    return false;
+                };
+                let Some(ref_end) = ref_offset.checked_add(12) else {
+                    return false;
+                };
+                if ref_end > map.len() {
+                    return false;
+                }
+
+                let id = i16::from_be_bytes([map[ref_offset], map[ref_offset + 1]]);
+                if id != target_id {
+                    continue;
+                }
+
+                let res_data_offset = ((map[ref_offset + 5] as usize) << 16)
+                    | ((map[ref_offset + 6] as usize) << 8)
+                    | (map[ref_offset + 7] as usize);
+                return resource_data_block_in_bounds(data, data_offset, res_data_offset);
+            }
+
+            return false;
+        }
+
+        false
+    }
+
+    /// Parse a resource fork from raw data
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        let ResourceForkLayout {
+            data_offset,
+            map_offset,
+            data_length,
+            map_length,
+            map,
+        } = resource_fork_layout(data)?;
 
         tracing::debug!(
             "Resource fork: data@0x{:04X} ({}), map@0x{:04X} ({})",
@@ -70,13 +153,6 @@ impl ResourceFork {
             map_offset,
             map_length
         );
-
-        if map_offset + map_length > data.len() || data_offset + data_length > data.len() {
-            tracing::warn!("Resource fork header invalid");
-            return None;
-        }
-
-        let map = &data[map_offset..map_offset + map_length];
 
         // Resource map structure (Inside Macintosh Volume I, I-127)
         // Offset 0-15: Copy of resource fork header (16 bytes)
@@ -299,6 +375,73 @@ impl ResourceFork {
     }
 }
 
+struct ResourceForkLayout<'a> {
+    data_offset: usize,
+    map_offset: usize,
+    data_length: usize,
+    map_length: usize,
+    map: &'a [u8],
+}
+
+fn resource_fork_layout(data: &[u8]) -> Option<ResourceForkLayout<'_>> {
+    if data.len() < 16 {
+        return None;
+    }
+
+    // Resource fork header (16 bytes). Inside Macintosh Volume I, I-126.
+    let data_offset = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let map_offset = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let data_length = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
+    let map_length = u32::from_be_bytes([data[12], data[13], data[14], data[15]]) as usize;
+
+    let data_end = data_offset.checked_add(data_length)?;
+    let map_end = map_offset.checked_add(map_length)?;
+    if data_end > data.len() || map_end > data.len() {
+        tracing::warn!("Resource fork header invalid");
+        return None;
+    }
+
+    let map = &data[map_offset..map_end];
+    if map.len() < 30 {
+        tracing::warn!("Resource map too small");
+        return None;
+    }
+
+    Some(ResourceForkLayout {
+        data_offset,
+        map_offset,
+        data_length,
+        map_length,
+        map,
+    })
+}
+
+fn resource_data_block_in_bounds(data: &[u8], data_offset: usize, res_data_offset: usize) -> bool {
+    let Some(abs_data_offset) = data_offset.checked_add(res_data_offset) else {
+        return false;
+    };
+    let Some(len_end) = abs_data_offset.checked_add(4) else {
+        return false;
+    };
+    if len_end > data.len() {
+        return false;
+    }
+
+    let res_len = u32::from_be_bytes([
+        data[abs_data_offset],
+        data[abs_data_offset + 1],
+        data[abs_data_offset + 2],
+        data[abs_data_offset + 3],
+    ]) as usize;
+    let Some(res_data_start) = abs_data_offset.checked_add(4) else {
+        return false;
+    };
+    let Some(res_data_end) = res_data_start.checked_add(res_len) else {
+        return false;
+    };
+    res_data_end <= data.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +449,64 @@ mod tests {
     #[test]
     fn test_resource_type_constants() {
         assert_eq!(&CODE_TYPE, b"CODE");
+    }
+
+    fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
+        let data_offset = 16u32;
+        let data_length = (4 + data.len()) as u32;
+        let map_offset = data_offset + data_length;
+        let type_list_offset = 30u16;
+        let ref_list_offset = 10u16;
+        let name_list_offset = 40u16;
+        let map_length = 52u32;
+
+        let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+        header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+        header[8..12].copy_from_slice(&data_length.to_be_bytes());
+        header[12..16].copy_from_slice(&map_length.to_be_bytes());
+        bytes[0..16].copy_from_slice(&header);
+
+        let data_start = data_offset as usize;
+        bytes[data_start..data_start + 4].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes[data_start + 4..data_start + 4 + data.len()].copy_from_slice(data);
+
+        let map_start = map_offset as usize;
+        bytes[map_start..map_start + 16].copy_from_slice(&header);
+        bytes[map_start + 24..map_start + 26].copy_from_slice(&type_list_offset.to_be_bytes());
+        bytes[map_start + 26..map_start + 28].copy_from_slice(&name_list_offset.to_be_bytes());
+
+        let type_list_start = map_start + type_list_offset as usize;
+        bytes[type_list_start..type_list_start + 2].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 2..type_list_start + 6].copy_from_slice(&res_type);
+        bytes[type_list_start + 6..type_list_start + 8].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 8..type_list_start + 10]
+            .copy_from_slice(&ref_list_offset.to_be_bytes());
+
+        let ref_list_start = map_start + type_list_offset as usize + ref_list_offset as usize;
+        bytes[ref_list_start..ref_list_start + 2].copy_from_slice(&(res_id as u16).to_be_bytes());
+        bytes[ref_list_start + 2..ref_list_start + 4].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+
+        bytes
+    }
+
+    #[test]
+    fn contains_code_checks_resource_map_without_full_parse() {
+        let fork = make_single_resource_fork_bytes(*b"CODE", 0, &[1, 2, 3, 4]);
+
+        assert!(ResourceFork::contains_code(&fork, 0));
+        assert!(ResourceFork::contains_resource(&fork, *b"CODE", 0));
+        assert!(!ResourceFork::contains_code(&fork, 1));
+        assert!(!ResourceFork::contains_resource(&fork, *b"PICT", 0));
+    }
+
+    #[test]
+    fn contains_resource_rejects_out_of_bounds_resource_data() {
+        let mut fork = make_single_resource_fork_bytes(*b"CODE", 0, &[1, 2, 3, 4]);
+        fork[16..20].copy_from_slice(&64u32.to_be_bytes());
+
+        assert!(!ResourceFork::contains_code(&fork, 0));
     }
 }

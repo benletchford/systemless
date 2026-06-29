@@ -1247,9 +1247,8 @@ impl FixtureRunner {
         }
 
         let (scrn_base, row_bytes, _, scrn_height, _) = self.dispatcher.screen_mode;
-        for i in 0..(row_bytes * scrn_height as u32) {
-            self.bus.write_byte(scrn_base + i, 0xFF);
-        }
+        self.bus
+            .fill_bytes(scrn_base, row_bytes * scrn_height as u32, 0xFF);
     }
 
     fn switch_to_launched_application(
@@ -4679,9 +4678,7 @@ fn load_app_generic<M: MemoryBus>(
 
     // Clear A5 world
     let globals_zero_end = globals_end + 0x40000;
-    for addr in load_address..globals_zero_end {
-        bus.write_byte(addr, 0);
-    }
+    bus.fill_zeros(load_address, globals_zero_end.saturating_sub(load_address));
     bus.write_long(0x0904, a5_base); // CurrentA5
     bus.write_word(0x0934, header.jump_table_offset as u16); // CurJTOffset - Inside Macintosh Volume II, II-62
     bus.write_word(0x028E, 0x0000); // ROM85
