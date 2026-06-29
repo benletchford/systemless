@@ -987,6 +987,8 @@ impl FixtureRunner {
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
         self.dispatcher.push_mouse_down(v, h);
         self.sync_mouse_lowmem();
+        self.wake_pending_wait_next_event_if_input_available();
+        self.wake_foreground_after_input();
     }
 
     /// Inject a mouse-up event.
@@ -1005,6 +1007,8 @@ impl FixtureRunner {
     pub fn push_mouse_up(&mut self, v: i16, h: i16) {
         self.dispatcher.push_mouse_up(v, h);
         self.sync_mouse_lowmem();
+        self.wake_pending_wait_next_event_if_input_available();
+        self.wake_foreground_after_input();
     }
 
     /// Write the three mouse-position low-memory globals (MTemp $0828,
@@ -1051,6 +1055,8 @@ impl FixtureRunner {
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.push_key_down(key, char_code);
         self.sync_key_map_lowmem();
+        self.wake_pending_wait_next_event_if_input_available();
+        self.wake_foreground_after_input();
     }
 
     /// Inject a key-up event, applying arrow→numpad remapping if configured.
@@ -1058,6 +1064,8 @@ impl FixtureRunner {
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.push_key_up(key, char_code);
         self.sync_key_map_lowmem();
+        self.wake_pending_wait_next_event_if_input_available();
+        self.wake_foreground_after_input();
     }
 
     /// Remap arrow key virtual key codes to numpad equivalents when enabled.
@@ -2166,6 +2174,7 @@ impl FixtureRunner {
                             .finalize_dialog_draw_procs_if_idle(&mut self.bus);
                     }
                     self.active_interrupt_callback = None;
+                    self.refill_foreground_budget_after_async_return();
                     if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
                     {
                         continue;
@@ -2849,6 +2858,9 @@ impl FixtureRunner {
         if units <= 0 {
             return false;
         }
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
 
         self.tick_budget -= units;
         while self.tick_budget <= 0 && self.frozen_ticks.is_none() {
@@ -2859,6 +2871,9 @@ impl FixtureRunner {
             }
             self.advance_guest_tick();
             self.tick_budget += self.instructions_per_tick as i32;
+            if self.active_interrupt_callback.is_some() {
+                return false;
+            }
             if let Some(cap) = tick_cap {
                 if self.bus.read_long(0x016A) >= cap {
                     return true;
@@ -2886,15 +2901,7 @@ impl FixtureRunner {
         // to 0x80 even when no GetNextEvent ever drains the queue —
         // critical for polling-only games (Bonkheads-Deluxe class titles)
         // that would otherwise see the button as "held forever".
-        let mut unmatched_mousedowns: i32 = 0;
-        for e in self.dispatcher.event_queue.iter() {
-            match e.what {
-                1 => unmatched_mousedowns += 1, // mouseDown
-                2 => unmatched_mousedowns -= 1, // mouseUp pairs off the previous mouseDown
-                _ => {}
-            }
-        }
-        let has_pending_unmatched_down = unmatched_mousedowns > 0;
+        let has_pending_unmatched_down = self.dispatcher.has_unmatched_queued_mouse_down();
         let pressed = self.dispatcher.mouse_button || has_pending_unmatched_down;
         let mb_state: u8 = if pressed { 0x00 } else { 0x80 };
         self.bus.write_byte(0x0172, mb_state);
@@ -2930,6 +2937,21 @@ impl FixtureRunner {
             return true;
         };
 
+        if let (Some(resume_pc), Some(resume_sp)) = (pending.resume_pc, pending.resume_sp) {
+            let current_pc = self.cpu.read_reg(Register::PC);
+            let current_sp = self.cpu.read_reg(Register::A7);
+            if current_pc != resume_pc || current_sp != resume_sp {
+                self.dispatcher.pending_wait_sleep_ticks = 0;
+                if crate::trap::dispatch::trace_input_enabled() {
+                    eprintln!(
+                        "[INPUT] dropping stale WaitNextEvent sleep return parked pc=${:08X} sp=${:08X}; current pc=${:08X} sp=${:08X}",
+                        resume_pc, resume_sp, current_pc, current_sp
+                    );
+                }
+                return false;
+            }
+        }
+
         let (what, message, where_v, where_h, modifiers, has_event) = self
             .dispatcher
             .dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask);
@@ -2956,6 +2978,34 @@ impl FixtureRunner {
             );
         }
         true
+    }
+
+    fn wake_pending_wait_next_event_if_input_available(&mut self) {
+        if self.active_interrupt_callback.is_some() {
+            return;
+        }
+        if self.dispatcher.pending_wait_sleep_ticks == 0
+            || self.dispatcher.pending_wait_next_event_return.is_none()
+        {
+            return;
+        }
+        // Event Manager sleep is interrupted as soon as a matching input event
+        // is available; callers injecting input between run slices should not
+        // have to wait for the next foreground CPU step to observe the wake.
+        // Macintosh Toolbox Essentials 1992, p. 2-22.
+        let _ = self.deliver_pending_wait_next_event_if_available();
+    }
+
+    fn wake_foreground_after_input(&mut self) {
+        if self.tick_budget <= 0 {
+            self.refill_foreground_budget_after_async_return();
+        }
+    }
+
+    fn refill_foreground_budget_after_async_return(&mut self) {
+        if self.tick_budget <= 0 {
+            self.tick_budget = self.instructions_per_tick.max(2) as i32;
+        }
     }
 
     fn service_wait_sleep_ticks(&mut self, tick_cap: Option<u32>) -> bool {
@@ -5886,6 +5936,93 @@ mod tests {
     }
 
     #[test]
+    fn timer_callback_fired_at_tick_cap_runs_before_yielding() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = 0x0002_0000;
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.tick_budget = 0;
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS
+        runner.dispatcher.timer_tasks.push(TimerTask {
+            task_ptr: 0x0039_38C8,
+            tm_addr: callback_addr,
+            active: true,
+            fire_at_tick: 101,
+        });
+
+        let (steps, running) = runner.run_steps(1, Some(101));
+
+        assert!(running);
+        assert_eq!(
+            steps, 1,
+            "a timer fired while reaching the tick cap must get a CPU slice"
+        );
+        assert_eq!(runner.bus.read_long(0x016A), 101);
+        assert!(runner.active_interrupt_callback.is_some());
+        assert_ne!(runner.timer_trampoline, 0);
+        assert_eq!(
+            runner.cpu.read_reg(Register::PC),
+            runner.timer_trampoline + 4
+        );
+    }
+
+    #[test]
+    fn timer_callback_return_runs_foreground_before_next_due_timer() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = 0x0002_0000;
+
+        runner.bus.write_word(interrupted_pc, 0x4E71); // foreground NOP
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.bus.write_long(0x016A, 101);
+        runner.dispatcher.tick_count = 101;
+        runner.set_instructions_per_tick(1);
+        runner.tick_budget = 0;
+        runner.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source: ActiveInterruptCallbackSource::Timer,
+            resume_pc: interrupted_pc,
+            resume_sp: interrupted_sp,
+            d_regs: [0; 8],
+            a_regs: [0, 0, 0, 0, 0, 0, 0, interrupted_sp],
+            ccr: 0,
+            restore_port: None,
+        });
+        runner.dispatcher.timer_tasks.push(TimerTask {
+            task_ptr: 0x0039_38C8,
+            tm_addr: callback_addr,
+            active: true,
+            fire_at_tick: 102,
+        });
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(
+            runner.cpu.read_reg(Register::PC),
+            interrupted_pc + 2,
+            "resumed foreground instruction should run before the next timer interrupt"
+        );
+        assert_eq!(
+            runner.guest_tick(),
+            101,
+            "returning from an interrupt must not immediately spend an exhausted budget on another tick"
+        );
+        assert!(runner.active_interrupt_callback.is_none());
+        assert!(
+            runner.dispatcher.timer_tasks[0].active,
+            "the next due timer should remain queued until foreground code gets a slice"
+        );
+    }
+
+    #[test]
     fn sound_doubleback_callback_resume_restores_ccr_before_branch() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000;
@@ -7883,6 +8020,8 @@ mod tests {
             event_ptr,
             result_ptr,
             event_mask: 0xFFFF,
+            resume_pc: None,
+            resume_sp: None,
         });
         runner.push_mouse_down(123, 456);
 
@@ -7904,6 +8043,167 @@ mod tests {
         );
         assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
         assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+    }
+
+    #[test]
+    fn push_mouse_down_wakes_pending_wait_next_event_immediately() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let event_ptr = 0x0020_0000;
+        let result_ptr = 0x0020_0020;
+
+        runner.bus.write_word(result_ptr, 0);
+        runner.dispatcher.sent_open_app_event = true;
+        runner
+            .dispatcher
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+        runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
+            event_ptr,
+            result_ptr,
+            event_mask: 0xFFFF,
+            resume_pc: None,
+            resume_sp: None,
+        });
+
+        runner.push_mouse_down(123, 456);
+
+        assert_eq!(
+            runner.bus.read_word(event_ptr),
+            1,
+            "input injection should wake a sleeping WaitNextEvent before the next CPU slice"
+        );
+        assert_eq!(runner.bus.read_word(event_ptr + 10), 123u16);
+        assert_eq!(runner.bus.read_word(event_ptr + 12), 456u16);
+        assert_eq!(runner.bus.read_word(result_ptr), 0xFFFF);
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+        assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+    }
+
+    #[test]
+    fn push_mouse_down_leaves_pending_wait_next_event_parked_during_interrupt_callback() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let event_ptr = 0x0020_0000;
+        let result_ptr = 0x0020_0020;
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+
+        runner.bus.write_word(result_ptr, 0);
+        runner.dispatcher.sent_open_app_event = true;
+        runner
+            .dispatcher
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+        runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
+            event_ptr,
+            result_ptr,
+            event_mask: 0xFFFF,
+            resume_pc: None,
+            resume_sp: None,
+        });
+        runner.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source: ActiveInterruptCallbackSource::Timer,
+            resume_pc: interrupted_pc,
+            resume_sp: interrupted_sp,
+            d_regs: [0; 8],
+            a_regs: [0, 0, 0, 0, 0, 0, 0, interrupted_sp],
+            ccr: 0,
+            restore_port: None,
+        });
+
+        runner.push_mouse_down(123, 456);
+
+        assert_eq!(
+            runner.bus.read_word(event_ptr),
+            0,
+            "input must not rewrite a foreground WaitNextEvent record while an interrupt callback is active"
+        );
+        assert_eq!(runner.bus.read_word(result_ptr), 0);
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 60);
+        assert!(runner.dispatcher.pending_wait_next_event_return.is_some());
+        assert!(
+            runner
+                .dispatcher
+                .event_queue
+                .iter()
+                .any(|event| event.what == 1 && event.where_v == 123 && event.where_h == 456),
+            "the mouseDown should remain queued for the foreground event loop"
+        );
+    }
+
+    #[test]
+    fn pending_wait_next_event_drops_stale_return_after_foreground_moves_on() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let parked_pc = 0x0001_0000;
+        let stale_pc = 0x0001_0010;
+        let parked_sp = 0x007F_FFC0;
+        let event_ptr = 0x0020_0000;
+        let result_ptr = 0x0020_0020;
+
+        runner.bus.write_word(stale_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, stale_pc);
+        runner.cpu.write_reg(Register::A7, parked_sp);
+        runner.bus.write_word(result_ptr, 0xA582);
+        runner.dispatcher.sent_open_app_event = true;
+        runner
+            .dispatcher
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+        runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
+            event_ptr,
+            result_ptr,
+            event_mask: 0xFFFF,
+            resume_pc: Some(parked_pc),
+            resume_sp: Some(parked_sp),
+        });
+        runner.dispatcher.push_mouse_down(123, 456);
+
+        let (steps, running) = runner.run_steps(1, Some(10));
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(
+            runner.bus.read_word(result_ptr),
+            0xA582,
+            "a stale WaitNextEvent return slot may now belong to a caller frame"
+        );
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+        assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+        assert!(
+            runner
+                .dispatcher
+                .event_queue
+                .iter()
+                .any(|event| event.what == 1 && event.where_v == 123 && event.where_h == 456),
+            "stale WNE cleanup should not silently consume a queued event"
+        );
+    }
+
+    #[test]
+    fn push_mouse_down_restores_foreground_budget_before_next_tick_cap_run() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+
+        runner.bus.write_word(program_start, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.tick_budget = 0;
+
+        runner.push_mouse_down(123, 456);
+
+        let (steps, running) = runner.run_steps(1, Some(110));
+
+        assert!(running);
+        assert_eq!(
+            steps, 1,
+            "input injected at an exhausted tick boundary should let foreground code run"
+        );
+        assert_eq!(
+            runner.bus.read_long(0x016A),
+            100,
+            "foreground input wake must not spend the next slice only advancing ticks"
+        );
     }
 
     #[test]

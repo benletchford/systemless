@@ -403,6 +403,8 @@ pub(crate) struct PendingWaitNextEventReturn {
     pub event_ptr: u32,
     pub result_ptr: u32,
     pub event_mask: u16,
+    pub resume_pc: Option<u32>,
+    pub resume_sp: Option<u32>,
 }
 
 /// State for ModalDialog mouse/key tracking across frames.
@@ -3547,6 +3549,18 @@ impl TrapDispatcher {
     /// Coordinates are in Mac screen space (0,0 = top-left of screen).
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
         self.mouse_pos = (v, h);
+    }
+
+    pub(crate) fn has_unmatched_queued_mouse_down(&self) -> bool {
+        let mut unmatched_mousedowns: i32 = 0;
+        for event in self.event_queue.iter() {
+            match event.what {
+                1 => unmatched_mousedowns += 1,
+                2 => unmatched_mousedowns -= 1,
+                _ => {}
+            }
+        }
+        unmatched_mousedowns > 0
     }
 
     /// Push a mouse-down event into the event queue.

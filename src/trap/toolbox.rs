@@ -2052,6 +2052,8 @@ impl super::TrapDispatcher {
                             event_ptr,
                             result_ptr: sp + 14,
                             event_mask,
+                            resume_pc: Some(trap_pc.wrapping_add(2)),
+                            resume_sp: Some(sp + 14),
                         });
                 } else {
                     self.pending_wait_next_event_return = None;
@@ -2159,14 +2161,11 @@ impl super::TrapDispatcher {
                 let global_ptr = bus.read_long(a5);
                 let port = bus.read_long(global_ptr);
                 let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, port);
-                let (port_rect_top, port_rect_left) = self.port_rect_top_left(bus, port);
-                let global_top = port_rect_top.wrapping_sub(bounds_top);
-                let global_left = port_rect_left.wrapping_sub(bounds_left);
 
-                // Same conversion as GlobalToLocal: local = global - the
-                // current port's global offset.
-                let local_v = self.mouse_pos.0.wrapping_sub(global_top);
-                let local_h = self.mouse_pos.1.wrapping_sub(global_left);
+                // Same conversion as GlobalToLocal: local = global +
+                // portBits.bounds.topLeft.
+                let local_v = self.mouse_pos.0.wrapping_add(bounds_top);
+                let local_h = self.mouse_pos.1.wrapping_add(bounds_left);
                 if self.debug_get_mouse_last_local != (local_v, local_h) {
                     self.debug_get_mouse_local_change_count =
                         self.debug_get_mouse_local_change_count.saturating_add(1);
@@ -2190,19 +2189,16 @@ impl super::TrapDispatcher {
 
             // StillDown ($A973)
             // FUNCTION StillDown: BOOLEAN;
-            // Returns TRUE if the mouse button is currently down AND there are no
-            // pending mouse events (mouseDown or mouseUp) in the event queue.
-            // This distinguishes "still held from original press" from "released
-            // and pressed again".
+            // Returns TRUE if the mouse button is still down from the original
+            // press. A queued mouseDown for that press must not end tracking;
+            // a queued mouseUp does.
             // Inside Macintosh Volume I, I-259
             // Reference: Executor src/toolevent.cpp C_StillDown
-            // StillDown ($A973): Returns TRUE if button is down AND no pending mouse events in queue (IM Vol I, I-259)
+            // StillDown ($A973): Returns TRUE if button is down and no mouseUp is pending.
             (true, 0x173) => {
                 let sp = cpu.read_reg(Register::A7);
-                let has_mouse_event = self.event_queue.iter().any(|e| {
-                    e.what == 1 || e.what == 2 // mouseDown or mouseUp
-                });
-                let result = self.mouse_button && !has_mouse_event;
+                let has_mouse_up_event = self.event_queue.iter().any(|e| e.what == 2);
+                let result = self.mouse_button && !has_mouse_up_event;
                 if result {
                     self.debug_still_down_true_count =
                         self.debug_still_down_true_count.saturating_add(1);
@@ -2213,9 +2209,9 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_input_enabled() && !result {
                     let pc = cpu.read_reg(Register::PC);
                     eprintln!(
-                            "[INPUT] StillDown -> false (mouse_button={} has_mouse_event={}) PC=${:08X}",
-                            self.mouse_button, has_mouse_event, pc
-                        );
+                        "[INPUT] StillDown -> false (mouse_button={} has_mouse_up_event={}) PC=${:08X}",
+                        self.mouse_button, has_mouse_up_event, pc
+                    );
                 }
                 bus.write_word(sp, if result { 0xFFFF } else { 0 });
                 Ok(())
@@ -2223,18 +2219,18 @@ impl super::TrapDispatcher {
 
             // Button ($A974)
             // FUNCTION Button: BOOLEAN;
-            // Returns TRUE if the mouse button is down or a mouseDown is still
-            // pending in the OS event queue. MTE 1992 p. 2-109 describes
-            // Button as looking for a mouse-down event in the queue; polling
-            // code also observes the VBL-maintained MBState byte.
+            // Returns TRUE if the mouse button is currently down. The runner
+            // mirrors unmatched queued mouseDowns into MBState for code that
+            // polls after an injected press, but paired mouseDown/mouseUp
+            // events must not create a phantom press after release.
             // Reference: Executor src/toolevent.cpp C_Button
-            // Button ($A974): Returns TRUE for queued mouseDown or pressed MBState per MTE 1992 p. 2-109
+            // Button ($A974): Tests current mouse-button state.
             (true, 0x174) => {
                 let sp = cpu.read_reg(Register::A7);
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 let mb_state = bus.read_byte(0x0172);
                 let queued_mouse_down = self.event_queue.iter().any(|event| event.what == 1);
-                let mut pressed = mb_state == 0x00 || queued_mouse_down;
+                let mut pressed = mb_state == 0x00 || self.mouse_button;
                 // Diagnostic: force pressed=true at a specific PC via
                 // SYSTEMLESS_FORCE_BUTTON_TRUE_AT_PC=0xADDR.
                 if let Some(target) = force_button_true_at_pc() {
@@ -2248,8 +2244,8 @@ impl super::TrapDispatcher {
                 }
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
-                        "[INPUT] Button -> {} (MBState=${:02X} mouse_button={} queued_mouse_down={})",
-                        pressed, mb_state, self.mouse_button, queued_mouse_down
+                        "[INPUT] Button pc=${:08X} -> {} (MBState=${:02X} mouse_button={} queued_mouse_down={})",
+                        trap_pc, pressed, mb_state, self.mouse_button, queued_mouse_down
                     );
                 }
                 if pressed {
@@ -5665,12 +5661,9 @@ impl super::TrapDispatcher {
             // WaitMouseUp ($A977): Like StillDown, but removes mouseUp from queue if button not still held (IM Vol I, I-259)
             (true, 0x177) => {
                 let sp = cpu.read_reg(Register::A7);
-                // Same logic as StillDown: button down AND no pending mouse events
+                // Same logic as StillDown: button down and no pending mouseUp.
                 let still_down = if self.mouse_button {
-                    let has_mouse_event = self.event_queue.iter().any(|e| {
-                        e.what == 1 || e.what == 2 // mouseDown or mouseUp
-                    });
-                    !has_mouse_event
+                    !self.event_queue.iter().any(|e| e.what == 2)
                 } else {
                     false
                 };
@@ -12552,6 +12545,28 @@ mod tests {
             "GetMouse should report the mouse in current-port local coordinates"
         );
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, pt_ptr);
+        bus.write_word(port + 8, (-20i16) as u16);
+        bus.write_word(port + 10, (-10i16) as u16);
+        bus.write_word(port + 16, 80);
+        bus.write_word(port + 18, 90);
+        disp.mouse_pos = (100, 100);
+
+        let result = disp.dispatch_toolbox(true, 0x172, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            (
+                bus.read_word(pt_ptr) as i16,
+                bus.read_word(pt_ptr + 2) as i16
+            ),
+            (80, 90),
+            "GetMouse should use portBits.bounds, not portRect.topLeft, after SetOrigin"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     // StillDown ($A973) — button pressed
@@ -12572,6 +12587,43 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp);
     }
 
+    #[test]
+    fn test_still_down_ignores_queued_mouse_down_from_original_press() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_word(sp, 0);
+
+        disp.push_mouse_down(50, 100);
+
+        let result = disp.dispatch_toolbox(true, 0x173, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_word(sp),
+            0xFFFF,
+            "StillDown should keep tracking while the original queued mouseDown is still pending"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn test_still_down_stops_after_mouse_up_event() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_word(sp, 0xFFFF);
+
+        disp.push_mouse_down(50, 100);
+        disp.push_mouse_up(50, 100);
+
+        let result = disp.dispatch_toolbox(true, 0x173, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
     // StillDown ($A973) — button not pressed
     #[test]
     fn test_still_down_not_pressed() {
@@ -12586,6 +12638,48 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         assert_eq!(bus.read_word(sp), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn test_wait_mouse_up_ignores_queued_mouse_down_from_original_press() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_word(sp, 0);
+
+        disp.push_mouse_down(50, 100);
+
+        let result = disp.dispatch_toolbox(true, 0x177, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_word(sp),
+            0xFFFF,
+            "WaitMouseUp should keep tracking while only the original mouseDown is queued"
+        );
+        assert!(disp.event_queue.iter().any(|event| event.what == 1));
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn test_wait_mouse_up_false_removes_mouse_up_event() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_word(sp, 0xFFFF);
+
+        disp.push_mouse_down(50, 100);
+        disp.push_mouse_up(50, 100);
+
+        let result = disp.dispatch_toolbox(true, 0x177, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp), 0);
+        assert!(
+            disp.event_queue.iter().all(|event| event.what != 2),
+            "WaitMouseUp should consume the queued mouseUp that ended tracking"
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp);
     }
 
@@ -12621,13 +12715,32 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp);
     }
 
-    // Button ($A974) also reports a pending mouseDown in the event queue.
     #[test]
-    fn test_button_reports_queued_mouse_down() {
+    fn test_button_reports_internal_physical_press_when_mbstate_is_stale_up() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         bus.write_word(sp, 0);
-        bus.write_byte(0x0172, 0x80); // physical state already released
+        bus.write_byte(0x0172, 0x80); // stale until low-memory sync
+        disp.push_mouse_down(50, 100);
+
+        let result = disp.dispatch_toolbox(true, 0x174, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_word(sp),
+            0xFFFF,
+            "Button should observe the current internal physical press even if MBState is stale"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn test_button_ignores_paired_queued_mouse_down_after_release() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_word(sp, 0xFFFF);
+        bus.write_byte(0x0172, 0x80);
         disp.push_mouse_down(50, 100);
         disp.push_mouse_up(50, 100);
 
@@ -12637,8 +12750,8 @@ mod tests {
 
         assert_eq!(
             bus.read_word(sp),
-            0xFFFF,
-            "Button should observe a queued mouseDown even after MBState released"
+            0,
+            "a queued mouseDown paired with a later mouseUp must not create a phantom Button press"
         );
         assert_eq!(cpu.read_reg(Register::A7), sp);
     }
@@ -12648,7 +12761,7 @@ mod tests {
     // mouse_button is false, but $0172 retains the pressed state until
     // the next tick — matching real hardware VBL latency.
     #[test]
-    fn test_button_reads_mbstate_not_internal_flag() {
+    fn test_button_honors_stale_pressed_mbstate_until_tick_resync() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
