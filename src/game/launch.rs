@@ -274,6 +274,13 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
     let entry_count = read_u32_be(file_data, &mut offset)? as usize;
     let mut executable_entry: Option<ExecutableCandidate> = None;
 
+    {
+        let dispatcher = runner.dispatcher_mut();
+        dispatcher.vfs.reserve(entry_count);
+        dispatcher.vfs_rsrc.reserve(entry_count);
+        dispatcher.vfs_metadata.reserve(entry_count);
+    }
+
     for _ in 0..entry_count {
         let name_len = read_u16_be(file_data, &mut offset)? as usize;
         let name_bytes = read_exact(file_data, &mut offset, name_len)?;
@@ -323,7 +330,7 @@ fn insert_forks_into_vfs(
     let normalized_name = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(name);
     // If data fork is empty but resource fork doesn't parse as a resource fork,
     // use resource fork bytes as data fork (some archives have forks swapped).
-    if data.is_empty() && !rsrc.is_empty() && ResourceFork::parse(&rsrc).is_none() {
+    if data.is_empty() && !rsrc.is_empty() && !ResourceFork::has_valid_layout(&rsrc) {
         runner
             .dispatcher_mut()
             .vfs
@@ -337,14 +344,13 @@ fn insert_forks_into_vfs(
 
     let data_backed_rsrc = rsrc.is_empty()
         && name.to_ascii_lowercase().ends_with(".rsrc")
-        && ResourceFork::parse(
+        && ResourceFork::has_valid_layout(
             runner
                 .dispatcher()
                 .vfs
                 .get(&normalized_name)
                 .map_or(&[][..], |bytes| bytes.as_slice()),
-        )
-        .is_some();
+        );
 
     if !rsrc.is_empty() {
         runner
@@ -1256,6 +1262,56 @@ mod tests {
         };
 
         assert!(launch_resource_companion_keys(runner.dispatcher(), &executable).is_empty());
+    }
+
+    #[test]
+    fn data_backed_rsrc_sidecar_is_mounted_as_resource_fork() {
+        let sidecar = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
+        let mut runner = new_runner();
+
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/Runtime.rsrc",
+            sidecar.clone(),
+            Vec::new(),
+            *b"rsrc",
+            *b"ABCD",
+            0,
+        );
+
+        assert_eq!(
+            runner.dispatcher().vfs.get("Folder/Runtime.rsrc"),
+            Some(&sidecar)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Folder/Runtime.rsrc"),
+            Some(&sidecar)
+        );
+    }
+
+    #[test]
+    fn swapped_non_resource_fork_bytes_remain_available_as_data() {
+        let swapped = b"not a resource fork".to_vec();
+        let mut runner = new_runner();
+
+        insert_forks_into_vfs(
+            &mut runner,
+            "Folder/Read Me",
+            Vec::new(),
+            swapped.clone(),
+            *b"TEXT",
+            *b"ttxt",
+            0,
+        );
+
+        assert_eq!(
+            runner.dispatcher().vfs.get("Folder/Read Me"),
+            Some(&swapped)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Folder/Read Me"),
+            Some(&swapped)
+        );
     }
 
     #[test]

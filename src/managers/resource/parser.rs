@@ -50,6 +50,13 @@ impl ResourceFork {
 }
 
 impl ResourceFork {
+    /// Return true when the bytes have a structurally valid resource-fork
+    /// header and map. This is intentionally cheaper than `parse`: callers
+    /// that only need to classify a fork can avoid copying every resource.
+    pub fn has_valid_layout(data: &[u8]) -> bool {
+        resource_fork_layout(data).is_some()
+    }
+
     /// Return true when the raw resource fork map contains a CODE resource
     /// with the requested ID. This avoids parsing and copying every resource
     /// when callers only need executable detection.
@@ -496,6 +503,7 @@ mod tests {
     fn contains_code_checks_resource_map_without_full_parse() {
         let fork = make_single_resource_fork_bytes(*b"CODE", 0, &[1, 2, 3, 4]);
 
+        assert!(ResourceFork::has_valid_layout(&fork));
         assert!(ResourceFork::contains_code(&fork, 0));
         assert!(ResourceFork::contains_resource(&fork, *b"CODE", 0));
         assert!(!ResourceFork::contains_code(&fork, 1));
@@ -507,6 +515,16 @@ mod tests {
         let mut fork = make_single_resource_fork_bytes(*b"CODE", 0, &[1, 2, 3, 4]);
         fork[16..20].copy_from_slice(&64u32.to_be_bytes());
 
+        assert!(ResourceFork::has_valid_layout(&fork));
+        assert!(!ResourceFork::contains_code(&fork, 0));
+    }
+
+    #[test]
+    fn resource_fork_layout_rejects_truncated_maps() {
+        let mut fork = make_single_resource_fork_bytes(*b"CODE", 0, &[1, 2, 3, 4]);
+        fork.truncate(fork.len() - 1);
+
+        assert!(!ResourceFork::has_valid_layout(&fork));
         assert!(!ResourceFork::contains_code(&fork, 0));
     }
 }
