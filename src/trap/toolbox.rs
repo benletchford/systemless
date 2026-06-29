@@ -2052,6 +2052,7 @@ impl super::TrapDispatcher {
                             event_ptr,
                             result_ptr: sp + 14,
                             event_mask,
+                            mouse_rgn,
                             resume_pc: Some(trap_pc.wrapping_add(2)),
                             resume_sp: Some(sp + 14),
                         });

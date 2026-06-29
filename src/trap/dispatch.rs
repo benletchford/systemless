@@ -403,6 +403,7 @@ pub(crate) struct PendingWaitNextEventReturn {
     pub event_ptr: u32,
     pub result_ptr: u32,
     pub event_mask: u16,
+    pub mouse_rgn: u32,
     pub resume_pc: Option<u32>,
     pub resume_sp: Option<u32>,
 }

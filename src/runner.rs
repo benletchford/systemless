@@ -975,6 +975,8 @@ impl FixtureRunner {
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
         self.dispatcher.set_mouse_position(v, h);
         self.sync_mouse_position_lowmem();
+        self.wake_pending_wait_next_event_if_input_available();
+        self.wake_foreground_after_input();
     }
 
     /// Inject a mouse-down event and sync low-memory globals.
@@ -2927,13 +2929,12 @@ impl FixtureRunner {
     }
 
     fn deliver_pending_wait_next_event_if_available(&mut self) -> bool {
-        if self.dispatcher.event_queue.is_empty() {
-            return false;
-        }
-
         let Some(pending) = self.dispatcher.pending_wait_next_event_return.take() else {
-            self.dispatcher.pending_wait_sleep_ticks = 0;
-            return true;
+            if !self.dispatcher.event_queue.is_empty() {
+                self.dispatcher.pending_wait_sleep_ticks = 0;
+                return true;
+            }
+            return false;
         };
 
         if let (Some(resume_pc), Some(resume_sp)) = (pending.resume_pc, pending.resume_sp) {
@@ -2951,9 +2952,27 @@ impl FixtureRunner {
             }
         }
 
-        let (what, message, where_v, where_h, modifiers, has_event) = self
+        let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) = self
             .dispatcher
             .dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask);
+        if !has_event {
+            if let Some(event) = self.dispatcher.mouse_moved_event_for_region(
+                &self.bus,
+                pending.event_mask,
+                pending.mouse_rgn,
+            ) {
+                what = event.what;
+                message = event.message;
+                where_v = event.where_v;
+                where_h = event.where_h;
+                modifiers = event.modifiers;
+                has_event = true;
+                self.dispatcher.debug_mouse_moved_event_count = self
+                    .dispatcher
+                    .debug_mouse_moved_event_count
+                    .saturating_add(1);
+            }
+        }
         if !has_event {
             self.dispatcher.pending_wait_next_event_return = Some(pending);
             return false;
@@ -2972,7 +2991,7 @@ impl FixtureRunner {
         self.dispatcher.pending_wait_sleep_ticks = 0;
         if crate::trap::dispatch::trace_input_enabled() {
             eprintln!(
-                "[INPUT] WaitNextEvent sleep woke with queued event what={} message=${:08X}",
+                "[INPUT] WaitNextEvent sleep woke with input event what={} message=${:08X}",
                 what, message
             );
         }
@@ -5007,6 +5026,24 @@ mod tests {
         }
 
         fn stop(&mut self) {}
+    }
+
+    fn test_region_handle(
+        bus: &mut crate::memory::MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> u32 {
+        let rgn_ptr = 0x0030_0100;
+        let rgn_handle = 0x0030_0140;
+        bus.write_long(rgn_handle, rgn_ptr);
+        bus.write_word(rgn_ptr, 10);
+        bus.write_word(rgn_ptr + 2, top as u16);
+        bus.write_word(rgn_ptr + 4, left as u16);
+        bus.write_word(rgn_ptr + 6, bottom as u16);
+        bus.write_word(rgn_ptr + 8, right as u16);
+        rgn_handle
     }
 
     fn make_resource_fork_bytes(resources: &[([u8; 4], i16, &[u8])]) -> Vec<u8> {
@@ -8017,6 +8054,7 @@ mod tests {
             event_ptr,
             result_ptr,
             event_mask: 0xFFFF,
+            mouse_rgn: 0,
             resume_pc: None,
             resume_sp: None,
         });
@@ -8058,6 +8096,7 @@ mod tests {
             event_ptr,
             result_ptr,
             event_mask: 0xFFFF,
+            mouse_rgn: 0,
             resume_pc: None,
             resume_sp: None,
         });
@@ -8074,6 +8113,48 @@ mod tests {
         assert_eq!(runner.bus.read_word(result_ptr), 0xFFFF);
         assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
         assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+    }
+
+    #[test]
+    fn set_mouse_position_wakes_pending_wait_next_event_with_mouse_moved_region() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let event_ptr = 0x0020_0000;
+        let result_ptr = 0x0020_0020;
+        let mouse_rgn = test_region_handle(&mut runner.bus, 10, 20, 30, 40);
+
+        runner.set_mouse_position(20, 25);
+        runner.bus.write_word(result_ptr, 0);
+        runner.dispatcher.sent_open_app_event = true;
+        runner
+            .dispatcher
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+        runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
+            event_ptr,
+            result_ptr,
+            event_mask: 0x8000,
+            mouse_rgn,
+            resume_pc: None,
+            resume_sp: None,
+        });
+
+        runner.set_mouse_position(50, 25);
+
+        assert_eq!(
+            runner.bus.read_word(event_ptr),
+            15,
+            "mouse movement outside the pending mouseRgn should wake WaitNextEvent with osEvt"
+        );
+        assert_eq!(runner.bus.read_long(event_ptr + 2), 0xFA00_0000);
+        assert_eq!(runner.bus.read_word(event_ptr + 10), 50u16);
+        assert_eq!(runner.bus.read_word(event_ptr + 12), 25u16);
+        assert_eq!(runner.bus.read_word(result_ptr), 0xFFFF);
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+        assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+        assert_eq!(
+            runner.dispatcher.debug_mouse_moved_event_count, 1,
+            "async wake path should share the normal mouse-moved event accounting"
+        );
     }
 
     #[test]
@@ -8094,6 +8175,7 @@ mod tests {
             event_ptr,
             result_ptr,
             event_mask: 0xFFFF,
+            mouse_rgn: 0,
             resume_pc: None,
             resume_sp: None,
         });
@@ -8149,6 +8231,7 @@ mod tests {
             event_ptr,
             result_ptr,
             event_mask: 0xFFFF,
+            mouse_rgn: 0,
             resume_pc: Some(parked_pc),
             resume_sp: Some(parked_sp),
         });
@@ -8200,6 +8283,34 @@ mod tests {
             runner.bus.read_long(0x016A),
             100,
             "foreground input wake must not spend the next slice only advancing ticks"
+        );
+    }
+
+    #[test]
+    fn set_mouse_position_restores_foreground_budget_before_next_tick_cap_run() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+
+        runner.bus.write_word(program_start, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.tick_budget = 0;
+
+        runner.set_mouse_position(123, 456);
+
+        let (steps, running) = runner.run_steps(1, Some(110));
+
+        assert!(running);
+        assert_eq!(
+            steps, 1,
+            "mouse movement at an exhausted tick boundary should let polling foreground code run"
+        );
+        assert_eq!(
+            runner.bus.read_long(0x016A),
+            100,
+            "foreground mouse-move wake must not spend the next slice only advancing ticks"
         );
     }
 
