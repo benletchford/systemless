@@ -6327,13 +6327,20 @@ impl super::TrapDispatcher {
                         let spec_ptr = bus.read_long(sp + 10);
                         let filename = read_fsspec_name(bus, spec_ptr);
                         if !filename.is_empty() {
-                            let normalized = super::TrapDispatcher::normalize_vfs_path(&filename);
-                            self.vfs.entry(normalized.clone()).or_default();
-                            self.vfs_rsrc.entry(normalized.clone()).or_default();
-                            self.set_vfs_entry_finfo(&normalized, file_type, creator, 0);
-                            self.touch_vfs_entry(&normalized);
+                            let vref = bus.read_word(spec_ptr) as i16;
+                            let dir_id = bus.read_long(spec_ptr + 2);
+                            let Some(vfs_key) = self.vfs_key_for_fsspec(vref, dir_id, &filename)
+                            else {
+                                bus.write_word(0x0A60, (-120i16) as u16); // dirNFErr
+                                cpu.write_reg(Register::A7, sp + 14);
+                                return Some(Ok(()));
+                            };
+                            self.vfs.entry(vfs_key.clone()).or_default();
+                            self.vfs_rsrc.entry(vfs_key.clone()).or_default();
+                            self.set_vfs_entry_finfo(&vfs_key, file_type, creator, 0);
+                            self.touch_vfs_entry(&vfs_key);
                             if let Some(ref dir) = self.output_dir {
-                                let host_path = dir.join(&normalized);
+                                let host_path = dir.join(&vfs_key);
                                 if let Some(parent) = host_path.parent() {
                                     let _ = std::fs::create_dir_all(parent);
                                 }
@@ -7203,20 +7210,20 @@ impl super::TrapDispatcher {
         }
 
         if !filename.is_empty() {
-            if let Some(path) = self.find_vfs_file_in_directory(dir_id, filename) {
-                self.vfs_file_metadata(&path)?;
-                return Some(super::dispatch::VfsCatalogEntry {
-                    path: path.clone(),
-                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
-                    is_directory: false,
-                });
-            }
             if let Some(path) = self.find_vfs_directory_in_directory(dir_id, filename) {
                 let directory = self.vfs_directories.get(&path)?;
                 return Some(super::dispatch::VfsCatalogEntry {
                     path: path.clone(),
                     name: directory.name.clone(),
                     is_directory: true,
+                });
+            }
+            if let Some(path) = self.find_vfs_file_in_directory(dir_id, filename) {
+                self.vfs_file_metadata(&path)?;
+                return Some(super::dispatch::VfsCatalogEntry {
+                    path: path.clone(),
+                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                    is_directory: false,
                 });
             }
         }
@@ -11446,6 +11453,48 @@ mod tests {
     }
 
     #[test]
+    fn hlfs_dispatch_fspcreateresfile_honors_parent_dir_id() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pilots_dir_id = disp.ensure_vfs_directory("EV Override 1.0.1/Pilots");
+        let spec_ptr = 0x300000u32;
+        write_fsspec(
+            &mut bus,
+            spec_ptr,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            pilots_dir_id,
+            b"Rick Hardslab",
+        );
+
+        let sp = TEST_SP;
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, u32::from_be_bytes(*b"PIL "));
+        bus.write_long(sp + 6, u32::from_be_bytes(*b"EVO!"));
+        bus.write_long(sp + 10, spec_ptr);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 14);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        assert!(!disp.vfs.contains_key("Rick Hardslab"));
+        assert!(!disp.vfs_rsrc.contains_key("Rick Hardslab"));
+        assert!(disp
+            .vfs
+            .contains_key("EV Override 1.0.1/Pilots/Rick Hardslab"));
+        assert!(disp
+            .vfs_rsrc
+            .contains_key("EV Override 1.0.1/Pilots/Rick Hardslab"));
+        let metadata = disp
+            .vfs_file_metadata("EV Override 1.0.1/Pilots/Rick Hardslab")
+            .expect("created pilot metadata");
+        assert_eq!(metadata.parent_dir_id, pilots_dir_id);
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"PIL "));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"EVO!"));
+    }
+
+    #[test]
     fn hlfs_dispatch_fspopenresfile_dedup_keeps_current_resource_file() {
         // More Macintosh Toolbox 1993, p. 1-63: reopening an already-open
         // resource fork returns the existing refnum without making that file
@@ -12753,6 +12802,39 @@ mod tests {
             disp.directory_path_for_id(created_dir_id),
             Some("System Folder/Preferences/Sierra")
         );
+    }
+
+    #[test]
+    fn fsdispatch_pbgetcatinfo_prefers_exact_directory_over_file_fallback() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("EV Override 1.0.1");
+        let pilots_dir_id = disp.ensure_vfs_directory("EV Override 1.0.1/Pilots");
+        disp.vfs
+            .insert("EV Override 1.0.1/Pilots/Ben".to_string(), vec![0x42]);
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"Pilots");
+        bus.write_word(pb + 16, 0x3FFF); // ioResult poison
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0); // ioFDirIndex
+        bus.write_long(pb + 48, app_dir_id);
+        cpu.write_reg(Register::D0, 9); // HFSDispatch selector: PBGetCatInfo
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Pilots".to_vec());
+        assert_eq!(
+            bus.read_byte(pb + 30),
+            0x10,
+            "PBGetCatInfo returned a directory"
+        );
+        assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"fold"));
+        assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
+        assert_eq!(bus.read_long(pb + 48), pilots_dir_id);
+        assert_eq!(bus.read_long(pb + 100), app_dir_id);
     }
 
     // ================================================================

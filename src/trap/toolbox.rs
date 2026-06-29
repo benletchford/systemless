@@ -9,7 +9,7 @@ use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::dispatch::MovieState;
+use super::dispatch::{DialogItem, MovieState, StandardFilePutTrackingState};
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
 static TRACE_MUNGER: OnceLock<bool> = OnceLock::new();
@@ -91,12 +91,13 @@ fn standard_file_put_reply_modern(
     vref: i16,
     dir_id: u32,
     name: &[u8],
+    replacing: bool,
 ) {
     if reply_ptr == 0 {
         return;
     }
     bus.write_byte(reply_ptr, 0xFF); // sfGood = TRUE
-    bus.write_byte(reply_ptr + 1, 0); // sfReplacing = FALSE
+    bus.write_byte(reply_ptr + 1, if replacing { 0xFF } else { 0 }); // sfReplacing
     bus.write_long(reply_ptr + 2, 0); // sfType
     bus.write_word(reply_ptr + 6, vref as u16); // sfFile.vRefNum
     bus.write_long(reply_ptr + 8, dir_id); // sfFile.parID
@@ -144,6 +145,21 @@ struct StandardFileSelection {
     file_type: u32,
     finder_flags: u16,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StandardFilePutAction {
+    Save,
+    Cancel,
+}
+
+const STANDARD_FILE_SAVE_ITEM: i16 = 1;
+const STANDARD_FILE_NAME_ITEM: i16 = 4;
+const STANDARD_FILE_DIALOG_WIDTH: i16 = 360;
+const STANDARD_FILE_DIALOG_HEIGHT: i16 = 148;
+const STANDARD_FILE_PROMPT_RECT: (i16, i16, i16, i16) = (20, 24, 40, 330);
+const STANDARD_FILE_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
+const STANDARD_FILE_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
+const STANDARD_FILE_SAVE_RECT: (i16, i16, i16, i16) = (103, 258, 125, 338);
 
 #[inline]
 fn return_noerr_and_pop<C: CpuOps>(cpu: &mut C, bytes: u32) -> Result<()> {
@@ -626,6 +642,331 @@ impl super::TrapDispatcher {
             return Some(selection);
         }
         all_types_match
+    }
+
+    fn standard_file_put_prompt(bus: &MacMemoryBus, prompt_ptr: u32) -> String {
+        if prompt_ptr == 0 {
+            return "Save as:".to_string();
+        }
+        let prompt = bus.read_pstring(prompt_ptr);
+        if prompt.is_empty() {
+            "Save as:".to_string()
+        } else {
+            decode_mac_roman(&prompt)
+        }
+    }
+
+    fn standard_file_put_dialog_bounds(&self) -> (i16, i16, i16, i16) {
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        let left = ((screen_width as i16 - STANDARD_FILE_DIALOG_WIDTH) / 2).max(8);
+        let top = ((screen_height as i16 - STANDARD_FILE_DIALOG_HEIGHT) / 2).max(24);
+        (
+            top,
+            left,
+            top + STANDARD_FILE_DIALOG_HEIGHT,
+            left + STANDARD_FILE_DIALOG_WIDTH,
+        )
+    }
+
+    fn standard_file_put_dialog_items(tracking: &StandardFilePutTrackingState) -> Vec<DialogItem> {
+        vec![
+            DialogItem {
+                item_type: 4,
+                rect: STANDARD_FILE_SAVE_RECT,
+                text: "Save".to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 4,
+                rect: STANDARD_FILE_CANCEL_RECT,
+                text: "Cancel".to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 8,
+                rect: STANDARD_FILE_PROMPT_RECT,
+                text: tracking.prompt.clone(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 16,
+                rect: STANDARD_FILE_NAME_RECT,
+                text: tracking.name.clone(),
+                sel_start: tracking.sel_start,
+                sel_end: tracking.sel_end,
+                ..DialogItem::default()
+            },
+        ]
+    }
+
+    fn draw_standard_file_put_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        tracking: &StandardFilePutTrackingState,
+    ) {
+        let items = Self::standard_file_put_dialog_items(tracking);
+        self.draw_dialog(
+            bus,
+            tracking.bounds,
+            2,
+            "",
+            &items,
+            STANDARD_FILE_SAVE_ITEM,
+            &tracking.name,
+            STANDARD_FILE_NAME_ITEM,
+            false,
+            0,
+        );
+        let (top, left, _, _) = tracking.bounds;
+        let (button_top, button_left, button_bottom, button_right) = STANDARD_FILE_SAVE_RECT;
+        self.draw_button(
+            bus,
+            top + button_top,
+            left + button_left,
+            top + button_bottom,
+            left + button_right,
+            "Save",
+            true,
+        );
+    }
+
+    fn begin_standard_file_put_tracking(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        modern_reply: bool,
+        reply_ptr: u32,
+        stack_ptr: u32,
+        pop_total: u32,
+        prompt_ptr: u32,
+        default_name_ptr: u32,
+    ) {
+        let default_name = standard_file_default_name(bus, default_name_ptr);
+        let mut name = decode_mac_roman(&default_name);
+        Self::standard_file_clamp_name(&mut name);
+        let bounds = self.standard_file_put_dialog_bounds();
+        let saved_pixels = self.save_dialog_pixels(bus, bounds);
+        let name_len = name.len().min(i16::MAX as usize) as i16;
+        let tracking = StandardFilePutTrackingState {
+            modern_reply,
+            reply_ptr,
+            stack_ptr,
+            pop_total,
+            vref: self.resolve_volume_ref_num(self.app_wd_refnum),
+            old_wd_ref: self.app_wd_refnum,
+            dir_id: self.default_dir_id,
+            prompt: Self::standard_file_put_prompt(bus, prompt_ptr),
+            name,
+            sel_start: 0,
+            sel_end: name_len,
+            bounds,
+            saved_pixels,
+        };
+        self.draw_standard_file_put_dialog(bus, &tracking);
+        self.standard_file_put_tracking = Some(tracking);
+    }
+
+    fn service_standard_file_put_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        mut tracking: StandardFilePutTrackingState,
+    ) {
+        let mut action = None;
+        while let Some(event) = self.event_queue.pop_front() {
+            match event.what {
+                1 => {
+                    action = self.standard_file_put_mouse_action(
+                        &tracking,
+                        event.where_v,
+                        event.where_h,
+                    );
+                    break;
+                }
+                3 | 5 => {
+                    action = Self::standard_file_put_key_action(
+                        &mut tracking,
+                        event.message,
+                        event.modifiers,
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        match action {
+            Some(StandardFilePutAction::Save) => {
+                if tracking.name.trim().is_empty() {
+                    self.standard_file_put_tracking = Some(tracking);
+                    return;
+                }
+                self.finish_standard_file_put_tracking(cpu, bus, tracking, true);
+            }
+            Some(StandardFilePutAction::Cancel) => {
+                self.finish_standard_file_put_tracking(cpu, bus, tracking, false);
+            }
+            None => {
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+            }
+        }
+    }
+
+    fn finish_standard_file_put_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        tracking: StandardFilePutTrackingState,
+        accepted: bool,
+    ) {
+        self.restore_dialog_pixels(bus, tracking.bounds, &tracking.saved_pixels);
+        if accepted {
+            let mut name = encode_mac_roman_lossy(&tracking.name);
+            if name.is_empty() {
+                name.extend_from_slice(b"Untitled");
+            }
+            name.truncate(63);
+            if tracking.modern_reply {
+                let target_name = decode_mac_roman(&name);
+                let replacing = self
+                    .find_vfs_file_in_directory(tracking.dir_id, &target_name)
+                    .is_some()
+                    || self
+                        .find_vfs_rsrc_file_in_directory(tracking.dir_id, &target_name)
+                        .is_some();
+                standard_file_put_reply_modern(
+                    bus,
+                    tracking.reply_ptr,
+                    tracking.vref,
+                    tracking.dir_id,
+                    &name,
+                    replacing,
+                );
+            } else {
+                standard_file_put_reply_old(bus, tracking.reply_ptr, tracking.old_wd_ref, &name);
+            }
+        } else {
+            standard_file_cancel_reply(bus, tracking.reply_ptr);
+        }
+        cpu.write_reg(Register::A7, tracking.stack_ptr + tracking.pop_total);
+        cpu.write_reg(Register::D0, 0);
+    }
+
+    fn standard_file_put_mouse_action(
+        &self,
+        tracking: &StandardFilePutTrackingState,
+        v: i16,
+        h: i16,
+    ) -> Option<StandardFilePutAction> {
+        let (top, left, _, _) = tracking.bounds;
+        let local_v = v - top;
+        let local_h = h - left;
+        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_SAVE_RECT) {
+            Some(StandardFilePutAction::Save)
+        } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_CANCEL_RECT) {
+            Some(StandardFilePutAction::Cancel)
+        } else {
+            None
+        }
+    }
+
+    fn standard_file_put_key_action(
+        tracking: &mut StandardFilePutTrackingState,
+        message: u32,
+        modifiers: u16,
+    ) -> Option<StandardFilePutAction> {
+        let key_code = ((message >> 8) & 0xFF) as u8;
+        let char_code = (message & 0xFF) as u8;
+        let command_down = (modifiers & 0x0100) != 0;
+
+        if char_code == 0x0D || char_code == 0x03 || key_code == 0x24 || key_code == 0x4C {
+            return Some(StandardFilePutAction::Save);
+        }
+        if char_code == 0x1B || key_code == 0x35 || (command_down && char_code == b'.') {
+            return Some(StandardFilePutAction::Cancel);
+        }
+        if command_down && char_code.eq_ignore_ascii_case(&b'a') {
+            tracking.sel_start = 0;
+            tracking.sel_end = tracking.name.len().min(i16::MAX as usize) as i16;
+            return None;
+        }
+        if char_code == 0x08 || key_code == 0x33 {
+            Self::standard_file_backspace(tracking);
+            return None;
+        }
+        if command_down || !(0x20..=0x7E).contains(&char_code) || matches!(char_code, b'/' | b':') {
+            return None;
+        }
+
+        let ch = char_code as char;
+        Self::standard_file_replace_selection(tracking, ch);
+        None
+    }
+
+    fn standard_file_backspace(tracking: &mut StandardFilePutTrackingState) {
+        let (start, end) = Self::standard_file_selection_range(tracking);
+        if start < end {
+            tracking.name.replace_range(start..end, "");
+            tracking.sel_start = start.min(i16::MAX as usize) as i16;
+            tracking.sel_end = tracking.sel_start;
+            return;
+        }
+        if start == 0 {
+            return;
+        }
+        let prev = tracking.name[..start]
+            .char_indices()
+            .last()
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        tracking.name.replace_range(prev..start, "");
+        tracking.sel_start = prev.min(i16::MAX as usize) as i16;
+        tracking.sel_end = tracking.sel_start;
+    }
+
+    fn standard_file_replace_selection(
+        tracking: &mut StandardFilePutTrackingState,
+        replacement: char,
+    ) {
+        let (start, end) = Self::standard_file_selection_range(tracking);
+        tracking
+            .name
+            .replace_range(start..end, &replacement.to_string());
+        Self::standard_file_clamp_name(&mut tracking.name);
+        let cursor = (start + replacement.len_utf8()).min(tracking.name.len());
+        let cursor = Self::standard_file_clamp_boundary(&tracking.name, cursor);
+        tracking.sel_start = cursor.min(i16::MAX as usize) as i16;
+        tracking.sel_end = tracking.sel_start;
+    }
+
+    fn standard_file_selection_range(tracking: &StandardFilePutTrackingState) -> (usize, usize) {
+        let len = tracking.name.len();
+        let a = (tracking.sel_start.max(0) as usize).min(len);
+        let b = (tracking.sel_end.max(0) as usize).min(len);
+        let start = Self::standard_file_clamp_boundary(&tracking.name, a.min(b));
+        let end = Self::standard_file_clamp_boundary(&tracking.name, a.max(b));
+        (start, end)
+    }
+
+    fn standard_file_clamp_name(name: &mut String) {
+        while encode_mac_roman_lossy(name).len() > 63 {
+            if name.pop().is_none() {
+                break;
+            }
+        }
+    }
+
+    fn standard_file_clamp_boundary(text: &str, mut idx: usize) -> usize {
+        idx = idx.min(text.len());
+        while idx > 0 && !text.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        idx
+    }
+
+    fn standard_file_point_in_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
+        let (top, left, bottom, right) = rect;
+        v >= top && v < bottom && h >= left && h < right
     }
 
     fn build_alias_record(&mut self, bus: &MacMemoryBus, target_ptr: u32) -> Vec<u8> {
@@ -7650,14 +7991,14 @@ impl super::TrapDispatcher {
             // StandardFileReply for $0005..$0008) into a VAR reply
             // pointer that the caller pushed by reference.
             //
-            // Systemless has no native file-picker UI and never displays
-            // a modal SF dialog. Get-file routines normally collapse to
-            // the documented "user canceled" path; headless harnesses can
-            // set SYSTEMLESS_STANDARD_GET_FILE to select a VFS file
-            // explicitly. Put-file routines accept the caller's
-            // default/original filename in the app's current directory so
-            // games that require a new save file can continue through their
-            // normal File Manager create/open path.
+            // Get-file routines normally collapse to the documented "user
+            // canceled" path; headless harnesses can set
+            // SYSTEMLESS_STANDARD_GET_FILE to select a VFS file explicitly.
+            // In GUI mode, put-file routines retain a small Standard File
+            // save dialog until Save or Cancel. Direct/headless put-file
+            // calls accept the caller's default/original filename in the
+            // app's current directory so deterministic probes can continue
+            // through their normal File Manager create/open path.
             //
             // Selector encoding is pure low-byte routine number
             // (high byte $00) per IM:Files 3-45..3-54 explicit
@@ -7676,13 +8017,18 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I (1985), pages I-518..I-527.
             // Inside Macintosh Volume VI (1991), pages 26-21..26-25
             // (CustomGetFile / CustomPutFile additions).
-            // Pack3 / Standard File ($A9EA): Per-selector Pascal frames per IM:Files 3-45..3-54: $0001 SFPutFile pop 22 reply@SP+2, $0002 SFGetFile pop 28 reply@SP+2, $0003 SFPPutFile pop 28 reply@SP+8, $0004 SFPGetFile pop 34 reply@SP+8, $0005 StandardPutFile pop 14 reply@SP+2, $0006 StandardGetFile pop 16 reply@SP+2, $0007 CustomPutFile pop 40 reply@SP+28, $0008 CustomGetFile pop 42 reply@SP+28. Get-file selectors write cancel or an explicit selected file; put-file selectors return an accepted reply using the supplied default/original name.
+            // Pack3 / Standard File ($A9EA): Per-selector Pascal frames per IM:Files 3-45..3-54: $0001 SFPutFile pop 22 reply@SP+2, $0002 SFGetFile pop 28 reply@SP+2, $0003 SFPPutFile pop 28 reply@SP+8, $0004 SFPGetFile pop 34 reply@SP+8, $0005 StandardPutFile pop 14 reply@SP+2, $0006 StandardGetFile pop 16 reply@SP+2, $0007 CustomPutFile pop 40 reply@SP+28, $0008 CustomGetFile pop 42 reply@SP+28. Get-file selectors write cancel or an explicit selected file; put-file selectors return an accepted reply using the supplied default/original name in headless mode or after GUI Save.
             (true, 0x1EA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                if let Some(tracking) = self.standard_file_put_tracking.take() {
+                    self.service_standard_file_put_tracking(cpu, bus, tracking);
+                    return Some(Ok(()));
+                }
                 let (
                     arg_bytes,
                     reply_offset,
+                    prompt_offset,
                     default_name_offset,
                     modern_reply,
                     accepts_file,
@@ -7694,7 +8040,7 @@ impl super::TrapDispatcher {
                     //                     VAR reply: SFReply);
                     // IM:Files 3-52 / IM:I I-519..I-522. Reply ptr is
                     // last Pascal arg → at SP+2 above the selector.
-                    0x0001 => (20u32, 2u32, Some(10u32), false, true, None),
+                    0x0001 => (20u32, 2u32, Some(14u32), Some(10u32), false, true, None),
                     // PROCEDURE SFGetFile(where: Point; prompt: Str255;
                     //                     fileFilter: ProcPtr;
                     //                     numTypes: Integer;
@@ -7702,31 +8048,31 @@ impl super::TrapDispatcher {
                     //                     dlgHook: ProcPtr;
                     //                     VAR reply: SFReply);
                     // IM:Files 3-52..3-53 / IM:I I-523..I-526.
-                    0x0002 => (26u32, 2u32, None, false, false, Some((14u32, 10u32))),
+                    0x0002 => (26u32, 2u32, None, None, false, false, Some((14u32, 10u32))),
                     // PROCEDURE SFPPutFile(...; VAR reply: SFReply;
                     //                       dlgID: Integer;
                     //                       filterProc: ProcPtr);
                     // IM:I I-522..I-523. filterProc(4) + dlgID(2) sit
                     // ABOVE reply ptr on the stack → reply at SP+8.
-                    0x0003 => (26u32, 8u32, Some(16u32), false, true, None),
+                    0x0003 => (26u32, 8u32, Some(20u32), Some(16u32), false, true, None),
                     // PROCEDURE SFPGetFile(...; VAR reply: SFReply;
                     //                       dlgID: Integer;
                     //                       filterProc: ProcPtr);
                     // IM:I I-526..I-527.
-                    0x0004 => (32u32, 8u32, None, false, false, Some((20u32, 16u32))),
+                    0x0004 => (32u32, 8u32, None, None, false, false, Some((20u32, 16u32))),
                     // PROCEDURE StandardPutFile(prompt: Str255;
                     //                           defaultName: Str255;
                     //                           VAR reply:
                     //                             StandardFileReply);
                     // IM:Files 3-45.
-                    0x0005 => (12u32, 2u32, Some(6u32), true, true, None),
+                    0x0005 => (12u32, 2u32, Some(10u32), Some(6u32), true, true, None),
                     // PROCEDURE StandardGetFile(fileFilter: ProcPtr;
                     //                           numTypes: Integer;
                     //                           typeList: SFTypeList;
                     //                           VAR reply:
                     //                             StandardFileReply);
                     // IM:Files 3-50.
-                    0x0006 => (14u32, 2u32, None, true, false, Some((10u32, 6u32))),
+                    0x0006 => (14u32, 2u32, None, None, true, false, Some((10u32, 6u32))),
                     // PROCEDURE CustomPutFile(prompt: Str255;
                     //                          defaultName: Str255;
                     //                          VAR reply:
@@ -7742,7 +8088,7 @@ impl super::TrapDispatcher {
                     // activate(4) + activeList(4) + filter(4) +
                     // dlgHook(4) + where(4) + dlgID(2) = 26 bytes
                     // ABOVE reply → reply at SP+28.
-                    0x0007 => (38u32, 28u32, Some(32u32), true, true, None),
+                    0x0007 => (38u32, 28u32, Some(36u32), Some(32u32), true, true, None),
                     // PROCEDURE CustomGetFile(fileFilter: ProcPtr;
                     //                          numTypes: Integer;
                     //                          typeList: SFTypeList;
@@ -7756,7 +8102,7 @@ impl super::TrapDispatcher {
                     //                          activateProc: ProcPtr;
                     //                          yourDataPtr: UNIV Ptr);
                     // IM:Files 3-51 / IM:VI 26-22.
-                    0x0008 => (40u32, 28u32, None, true, false, Some((36u32, 32u32))),
+                    0x0008 => (40u32, 28u32, None, None, true, false, Some((36u32, 32u32))),
                     _ => {
                         // No other selectors documented in IM:Files
                         // 3-45..3-54 or IM:I I-518..I-527. Pop just
@@ -7774,11 +8120,35 @@ impl super::TrapDispatcher {
                     let default_name_ptr = default_name_offset
                         .map(|offset| bus.read_long(sp + offset))
                         .unwrap_or(0);
+                    let prompt_ptr = prompt_offset
+                        .map(|offset| bus.read_long(sp + offset))
+                        .unwrap_or(0);
+                    if self.yield_for_ui {
+                        self.begin_standard_file_put_tracking(
+                            bus,
+                            modern_reply,
+                            reply_ptr,
+                            sp,
+                            pop_total,
+                            prompt_ptr,
+                            default_name_ptr,
+                        );
+                        return Some(Ok(()));
+                    }
                     let name = standard_file_default_name(bus, default_name_ptr);
                     let vref = self.resolve_volume_ref_num(self.app_wd_refnum);
                     let dir_id = self.default_dir_id;
                     if modern_reply {
-                        standard_file_put_reply_modern(bus, reply_ptr, vref, dir_id, &name);
+                        let target_name = decode_mac_roman(&name);
+                        let replacing = self
+                            .find_vfs_file_in_directory(dir_id, &target_name)
+                            .is_some()
+                            || self
+                                .find_vfs_rsrc_file_in_directory(dir_id, &target_name)
+                                .is_some();
+                        standard_file_put_reply_modern(
+                            bus, reply_ptr, vref, dir_id, &name, replacing,
+                        );
                     } else {
                         standard_file_put_reply_old(bus, reply_ptr, self.app_wd_refnum, &name);
                     }
@@ -19166,6 +19536,179 @@ mod tests {
         assert_eq!(bus.read_pstring(reply_ptr + 12), b"Twilight Save".to_vec());
         assert_eq!(cpu.read_reg(Register::A7), sp + 14);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — StandardPutFile selector $0005
+    // IM:Files 1992 p. 3-61: sfReplacing is TRUE after the user verifies
+    // a save name that duplicates an existing file.
+    #[test]
+    fn standard_put_file_sets_replacing_for_existing_current_directory_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x3201C0u32;
+        let default_name_ptr = 0x320340u32;
+        let pilots_dir = disp.ensure_vfs_directory("Pilots");
+        disp.default_dir_id = pilots_dir;
+        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.vfs_rsrc
+            .insert("Pilots/Existing Pilot".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("Pilots/Existing Pilot", *b"PIL ", *b"EVO!", 0);
+        bus.write_pstring(default_name_ptr, b"Existing Pilot");
+        bus.write_word(sp, 0x0005); // StandardPutFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, default_name_ptr); // defaultName
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr + 1), 0xFF);
+        assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 12), b"Existing Pilot".to_vec());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — StandardPutFile selector $0005
+    // IM:Files 1992 pp. 1-43 and 3-45: StandardPutFile presents the save
+    // dialog and returns the user's chosen FSSpec after Save.
+    #[test]
+    fn standard_put_file_gui_tracking_accepts_typed_name_on_return() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x3201C0u32;
+        let prompt_ptr = 0x320300u32;
+        let default_name_ptr = 0x320340u32;
+        let pilots_dir = disp.ensure_vfs_directory("Pilots");
+        disp.default_dir_id = pilots_dir;
+        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.yield_for_ui = true;
+
+        bus.write_pstring(prompt_ptr, b"Pilot file:");
+        bus.write_pstring(default_name_ptr, b"Untitled");
+        bus.write_word(sp, 0x0005); // StandardPutFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, default_name_ptr); // defaultName
+        bus.write_long(sp + 10, prompt_ptr); // prompt
+
+        let start = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(start.is_some());
+        assert!(start.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.is_standard_file_put_tracking());
+
+        for byte in b"Rick" {
+            disp.event_queue.push_back(QueuedEvent {
+                what: 3,
+                message: (u32::from(*byte) << 8) | u32::from(*byte),
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+            let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert!(disp.is_standard_file_put_tracking());
+        }
+
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_240D,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        let accept = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(accept.unwrap().is_ok());
+        assert!(!disp.is_standard_file_put_tracking());
+
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr + 1), 0);
+        assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 12), b"Rick".to_vec());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) + HighLevelFSDispatch ($AA52)
+    // IM:Files 1992 pp. 3-45 and 2-329: StandardPutFile returns an FSSpec
+    // suitable for subsequent File Manager calls such as FSpCreate.
+    #[test]
+    fn standard_put_file_gui_reply_can_drive_fspcreate_save_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x320600u32;
+        let prompt_ptr = 0x320700u32;
+        let default_name_ptr = 0x320740u32;
+        let pilots_dir = disp.ensure_vfs_directory("Pilots");
+        disp.default_dir_id = pilots_dir;
+        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.yield_for_ui = true;
+
+        bus.write_pstring(prompt_ptr, b"Pilot file:");
+        bus.write_pstring(default_name_ptr, b"Untitled");
+        bus.write_word(sp, 0x0005); // StandardPutFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, default_name_ptr); // defaultName
+        bus.write_long(sp + 10, prompt_ptr); // prompt
+
+        let start = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(start.unwrap().is_ok());
+        assert!(disp.is_standard_file_put_tracking());
+
+        for byte in b"Rick Hardslab" {
+            disp.event_queue.push_back(QueuedEvent {
+                what: 3,
+                message: (u32::from(*byte) << 8) | u32::from(*byte),
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+            assert!(disp
+                .dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+        }
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_240D,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        assert!(disp
+            .dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(bus.read_pstring(reply_ptr + 12), b"Rick Hardslab".to_vec());
+
+        let create_sp = cpu.read_reg(Register::A7);
+        let spec_ptr = reply_ptr + 6;
+        bus.write_word(create_sp, 0); // scriptTag
+        bus.write_long(create_sp + 2, u32::from_be_bytes(*b"PIL "));
+        bus.write_long(create_sp + 6, u32::from_be_bytes(*b"EVO!"));
+        bus.write_long(create_sp + 10, spec_ptr);
+        cpu.write_reg(Register::D0, 4); // FSpCreate selector
+
+        let create = disp
+            .dispatch_resource(true, 0x252, &mut cpu, &mut bus)
+            .expect("HighLevelFSDispatch should be handled");
+        assert!(create.is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), create_sp + 14);
+        assert_eq!(bus.read_word(create_sp + 14), 0);
+        assert!(disp.vfs.contains_key("Pilots/Rick Hardslab"));
+        assert!(disp.vfs_rsrc.contains_key("Pilots/Rick Hardslab"));
+        let metadata = disp
+            .vfs_file_metadata("Pilots/Rick Hardslab")
+            .expect("created pilot metadata");
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"PIL "));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"EVO!"));
     }
 
     // Pack3 / Standard File ($A9EA) — SFPutFile selector $0001

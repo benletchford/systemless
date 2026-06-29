@@ -477,6 +477,30 @@ pub struct DialogTrackingState {
     pub active_user_item: Option<DialogUserItemTrackingState>,
 }
 
+/// Retained state for the Standard File Package save dialogs.
+///
+/// StandardPutFile/CustomPutFile are modal package routines rather than
+/// Dialog Manager calls, but they still run an internal event loop and return
+/// only after Save or Cancel. The runner refires `_Pack3` while this state is
+/// present, mirroring the existing ModalDialog/MenuSelect HLE pattern.
+/// Inside Macintosh: Files (1992), pp. 3-13, 3-45 to 3-47.
+#[derive(Clone, Debug)]
+pub(crate) struct StandardFilePutTrackingState {
+    pub modern_reply: bool,
+    pub reply_ptr: u32,
+    pub stack_ptr: u32,
+    pub pop_total: u32,
+    pub vref: i16,
+    pub old_wd_ref: i16,
+    pub dir_id: u32,
+    pub prompt: String,
+    pub name: String,
+    pub sel_start: i16,
+    pub sel_end: i16,
+    pub bounds: (i16, i16, i16, i16),
+    pub saved_pixels: Vec<u8>,
+}
+
 /// Popup-menu control state owned by an active ModalDialog loop.
 pub struct DialogPopupTrackingState {
     pub item_no: i16,
@@ -1286,6 +1310,10 @@ pub struct TrapDispatcher {
     /// Extra instruction-budget units reported by HLE traps that completed
     /// sizeable manager work inside Rust rather than through guest 68k code.
     pub(crate) pending_hle_tick_cost: i32,
+    /// True while the runner is servicing a GUI/realtime frontend slice.
+    /// Direct/headless stepping leaves this false so package calls that used
+    /// to be immediate remain deterministic in non-interactive tests.
+    pub(crate) yield_for_ui: bool,
     /// Remaining ticks for the Delay ($A03B) trap to consume.
     /// On a real Mac, Delay blocks the application for numTicks; in our HLE
     /// the runner drains these one-at-a-time via advance_guest_tick().
@@ -1441,6 +1469,8 @@ pub struct TrapDispatcher {
     pub(crate) primary_vbl_slot: i16,
     /// Active dialog tracking state (non-None while ModalDialog is tracking input)
     pub dialog_tracking: Option<DialogTrackingState>,
+    /// Active Standard File Package save dialog tracking state.
+    pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
     /// Parsed dialog items keyed by dialog pointer, for GetDItem/ModalDialog
     pub dialog_items: HashMap<u32, Vec<DialogItem>>,
     /// Original rects for items hidden via HideDialogItem,
@@ -2510,6 +2540,7 @@ impl TrapDispatcher {
             pending_wait_sleep_ticks: 0,
             pending_wait_next_event_return: None,
             pending_hle_tick_cost: 0,
+            yield_for_ui: false,
             pending_delay_ticks: 0,
             cursor_data: Some(Self::default_arrow_cursor_image()),
             cursor_level: 0,
@@ -2564,6 +2595,7 @@ impl TrapDispatcher {
             vbl_tasks: Vec::new(),
             primary_vbl_slot: 0,
             dialog_tracking: None,
+            standard_file_put_tracking: None,
             dialog_items: HashMap::new(),
             hidden_dialog_item_rects: HashMap::new(),
             dialog_item_handles: HashMap::new(),
@@ -2629,6 +2661,11 @@ impl TrapDispatcher {
         self.dialog_tracking.is_some()
     }
 
+    /// Whether StandardPutFile/CustomPutFile is actively tracking input.
+    pub fn is_standard_file_put_tracking(&self) -> bool {
+        self.standard_file_put_tracking.is_some()
+    }
+
     /// Whether TrackControl is actively tracking a control.
     pub fn is_control_tracking(&self) -> bool {
         self.control_tracking.is_some()
@@ -2645,9 +2682,11 @@ impl TrapDispatcher {
         let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
         let is_dialog_refire =
             matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
+        let is_standard_file_refire = trap_no_autopop == 0xA9EA;
         let is_control_refire = trap_no_autopop == 0xA968;
         (is_menu_refire && self.is_menu_tracking())
             || (is_dialog_refire && self.is_dialog_tracking())
+            || (is_standard_file_refire && self.is_standard_file_put_tracking())
             || (is_control_refire && self.is_control_tracking())
     }
 
@@ -4818,6 +4857,7 @@ impl TrapDispatcher {
         if pc < 0x00800000
             && self.menu_tracking.is_none()
             && self.dialog_tracking.is_none()
+            && self.standard_file_put_tracking.is_none()
             && !is_idle_trap
         {
             self.game_trap_count += 1;

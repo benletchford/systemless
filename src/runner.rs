@@ -9,7 +9,7 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 use crate::{Error, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Cache env-var lookups (per-call syscall otherwise).
@@ -371,6 +371,41 @@ const MENU_HOOK_TRAMPOLINE_OFFSET: u32 = 0xA0;
 const DIALOG_CALLBACK_SCRATCH_FALLBACK: u32 = 0x0000_1200;
 /// Compact Mac video hardware refreshes at approximately 60.15 Hz.
 pub const DEFAULT_VBL_HZ: f64 = 60.15;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VfsFileSummary {
+    pub path: String,
+    pub data_len: usize,
+    pub resource_len: usize,
+    pub data_hash: u64,
+    pub resource_hash: u64,
+    pub file_type: u32,
+    pub creator: u32,
+    pub finder_flags: u16,
+    pub created_date: u32,
+    pub modified_date: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VfsFileSnapshot {
+    pub path: String,
+    pub data_fork: Vec<u8>,
+    pub resource_fork: Vec<u8>,
+    pub file_type: u32,
+    pub creator: u32,
+    pub finder_flags: u16,
+    pub created_date: u32,
+    pub modified_date: u32,
+}
+
+fn vfs_fork_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
 /// Default emulated CPU speed for realtime frontends (Mac IIci-class 68030).
 pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
     crate::machine_profile::ORACLE_MACHINE_PROFILE.realtime_cpu_mhz;
@@ -1184,6 +1219,116 @@ impl FixtureRunner {
     /// Get the contents of a file from the virtual filesystem.
     pub fn vfs_read(&self, filename: &str) -> Option<&[u8]> {
         self.dispatcher.vfs.get(filename).map(|v| v.as_slice())
+    }
+
+    pub fn vfs_file_summaries(&mut self) -> Vec<VfsFileSummary> {
+        self.vfs_file_paths()
+            .into_iter()
+            .filter_map(|path| self.vfs_file_summary_for_path(&path))
+            .collect()
+    }
+
+    pub fn vfs_file_snapshot(&mut self, path: &str) -> Option<VfsFileSnapshot> {
+        let normalized = TrapDispatcher::normalize_vfs_path(path);
+        if normalized.is_empty() || normalized.starts_with("__rsrc__") {
+            return None;
+        }
+        if !self.dispatcher.vfs.contains_key(&normalized)
+            && !self.dispatcher.vfs_rsrc.contains_key(&normalized)
+        {
+            return None;
+        }
+        let metadata = self.dispatcher.vfs_file_metadata(&normalized)?;
+        Some(VfsFileSnapshot {
+            path: normalized.clone(),
+            data_fork: self
+                .dispatcher
+                .vfs
+                .get(&normalized)
+                .cloned()
+                .unwrap_or_default(),
+            resource_fork: self
+                .dispatcher
+                .vfs_rsrc
+                .get(&normalized)
+                .cloned()
+                .unwrap_or_default(),
+            file_type: metadata.file_type,
+            creator: metadata.creator,
+            finder_flags: metadata.finder_flags,
+            created_date: metadata.created_date,
+            modified_date: metadata.modified_date,
+        })
+    }
+
+    pub fn import_vfs_file(&mut self, file: &VfsFileSnapshot) {
+        let normalized = TrapDispatcher::normalize_vfs_path(&file.path);
+        if normalized.is_empty() || normalized.starts_with("__rsrc__") {
+            return;
+        }
+
+        self.dispatcher
+            .vfs
+            .insert(normalized.clone(), file.data_fork.clone());
+        self.dispatcher
+            .vfs_rsrc
+            .insert(normalized.clone(), file.resource_fork.clone());
+        self.dispatcher.ensure_vfs_file_metadata(&normalized);
+        if let Some(metadata) = self.dispatcher.vfs_metadata.get_mut(&normalized) {
+            metadata.file_type = file.file_type;
+            metadata.creator = file.creator;
+            metadata.finder_flags = file.finder_flags;
+            if file.created_date != 0 {
+                metadata.created_date = file.created_date;
+            }
+            if file.modified_date != 0 {
+                metadata.modified_date = file.modified_date;
+            }
+        }
+    }
+
+    fn vfs_file_paths(&mut self) -> Vec<String> {
+        self.dispatcher.ensure_vfs_catalog();
+        let mut paths = BTreeSet::new();
+        for path in self.dispatcher.vfs.keys() {
+            if !path.starts_with("__rsrc__") {
+                paths.insert(TrapDispatcher::normalize_vfs_path(path));
+            }
+        }
+        for path in self.dispatcher.vfs_rsrc.keys() {
+            if !path.starts_with("__rsrc__") {
+                paths.insert(TrapDispatcher::normalize_vfs_path(path));
+            }
+        }
+        paths.into_iter().filter(|path| !path.is_empty()).collect()
+    }
+
+    fn vfs_file_summary_for_path(&mut self, path: &str) -> Option<VfsFileSummary> {
+        let metadata = self.dispatcher.vfs_file_metadata(path)?;
+        let data_fork = self
+            .dispatcher
+            .vfs
+            .get(path)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let resource_fork = self
+            .dispatcher
+            .vfs_rsrc
+            .get(path)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        Some(VfsFileSummary {
+            path: path.to_string(),
+            data_len: data_fork.len(),
+            resource_len: resource_fork.len(),
+            data_hash: vfs_fork_hash(data_fork),
+            resource_hash: vfs_fork_hash(resource_fork),
+            file_type: metadata.file_type,
+            creator: metadata.creator,
+            finder_flags: metadata.finder_flags,
+            created_date: metadata.created_date,
+            modified_date: metadata.modified_date,
+        })
     }
 
     /// Execute exactly one 68k instruction. Returns the per-step result
@@ -2607,6 +2752,7 @@ impl FixtureRunner {
                         continue;
                     }
 
+                    self.dispatcher.yield_for_ui = yield_for_ui;
                     match self
                         .dispatcher
                         .dispatch(opcode, &mut self.cpu, &mut self.bus)
@@ -5091,6 +5237,48 @@ mod tests {
         bus.write_word(rgn_ptr + 6, bottom as u16);
         bus.write_word(rgn_ptr + 8, right as u16);
         rgn_handle
+    }
+
+    #[test]
+    fn vfs_file_snapshot_round_trips_both_forks_and_metadata() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .vfs
+            .insert("Pilots/Test Pilot".to_string(), vec![1, 2, 3]);
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Pilots/Test Pilot".to_string(), vec![4, 5, 6, 7]);
+        runner
+            .dispatcher
+            .vfs
+            .insert("__rsrc__Pilots/Test Pilot".to_string(), vec![0xEE]);
+        runner
+            .dispatcher
+            .set_vfs_entry_metadata("Pilots/Test Pilot", *b"PIL ", *b"EVO!", 0x4000);
+
+        let summaries = runner.vfs_file_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].path, "Pilots/Test Pilot");
+        assert_eq!(summaries[0].data_len, 3);
+        assert_eq!(summaries[0].resource_len, 4);
+        assert_eq!(summaries[0].file_type, u32::from_be_bytes(*b"PIL "));
+        assert_eq!(summaries[0].creator, u32::from_be_bytes(*b"EVO!"));
+
+        let snapshot = runner
+            .vfs_file_snapshot("Pilots/Test Pilot")
+            .expect("snapshot");
+        assert_eq!(snapshot.data_fork, vec![1, 2, 3]);
+        assert_eq!(snapshot.resource_fork, vec![4, 5, 6, 7]);
+        assert_eq!(snapshot.finder_flags, 0x4000);
+
+        let mut restored = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        restored.import_vfs_file(&snapshot);
+        assert_eq!(
+            restored.vfs_file_snapshot("Pilots/Test Pilot"),
+            Some(snapshot)
+        );
     }
 
     fn make_resource_fork_bytes(resources: &[([u8; 4], i16, &[u8])]) -> Vec<u8> {
