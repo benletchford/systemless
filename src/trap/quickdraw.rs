@@ -7878,14 +7878,88 @@ impl super::TrapDispatcher {
                             );
                         }
                     }
+                    let streamed_pic_ptr = self.materialize_recent_spooled_picture(bus, pic_ptr);
+                    let draw_pic_ptr = streamed_pic_ptr.unwrap_or(pic_ptr);
+                    let is_screen_picture_target =
+                        port_base == self.screen_mode.0 && port_rb == self.screen_mode.1;
+                    let mut preseeded_screen_from_pict = false;
+                    let mut preseeded_offscreen_from_pict = false;
+                    let mut preseeded_draw_clut: Option<[[u16; 3]; 256]> = None;
+                    if recent_resource_ctable_clut.is_none() {
+                        let peeked_clut =
+                            super::pict::peek_initial_packbits_clut(bus, draw_pic_ptr);
+                        if let Some(peeked_clut) = peeked_clut {
+                            if is_screen_picture_target {
+                                if let Some((raw_pict_array, pict_clut_array)) =
+                                    Self::picture_clut_arrays(
+                                        &self.color_manager_clut,
+                                        &peeked_clut,
+                                    )
+                                {
+                                    if Self::should_seed_screen_palette_from_pict(
+                                        &raw_pict_array,
+                                        &self.color_manager_clut,
+                                    ) && !pict_seed_clut_disabled()
+                                    {
+                                        self.device_clut = pict_clut_array;
+                                        self.color_manager_clut = pict_clut_array;
+                                        self.seeded_picture_palette = pict_clut_array;
+                                        self.seeded_picture_palette_until_tick =
+                                            self.tick_count.saturating_add(48);
+                                        self.sync_canonical_offscreen_ctabs_to_clut(
+                                            bus,
+                                            &pict_clut_array,
+                                        );
+                                        preseeded_draw_clut = Some(pict_clut_array);
+                                        preseeded_screen_from_pict = true;
+                                    }
+                                }
+                            } else if port_ps == 8 {
+                                if let Some((raw_pict_array, pict_clut_array)) =
+                                    Self::picture_clut_arrays(&port_clut, &peeked_clut)
+                                {
+                                    if Self::should_preserve_offscreen_picture_indices_from_pict(
+                                        &raw_pict_array,
+                                        &port_clut,
+                                        &self.color_manager_clut,
+                                    ) {
+                                        preseeded_draw_clut = Some(raw_pict_array);
+                                        preseeded_offscreen_from_pict = true;
+                                    } else if Self::should_seed_screen_palette_from_pict(
+                                        &raw_pict_array,
+                                        &port_clut,
+                                    ) && !pict_seed_clut_disabled()
+                                    {
+                                        if port_ctab_handle != 0 {
+                                            let ctab_ptr = bus.read_long(port_ctab_handle);
+                                            let ct_flags = if ctab_ptr != 0 {
+                                                bus.read_word(ctab_ptr + 4)
+                                            } else {
+                                                0x8000
+                                            };
+                                            let _ = self.overwrite_color_table_handle_with_clut(
+                                                bus,
+                                                port_ctab_handle,
+                                                &pict_clut_array,
+                                                ct_flags,
+                                            );
+                                        }
+                                        preseeded_draw_clut = Some(pict_clut_array);
+                                        preseeded_offscreen_from_pict = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Always use the stable Color Manager CLUT for PICT rendering.
                     // Using device_clut during seeded-palette fades would bake
                     // transient palette indices into the framebuffer that become
                     // wrong after the palette reverts to standard system colors.
                     // Inside Macintosh: Imaging With QuickDraw 1994, p. 7-14
-                    let draw_port_clut = recent_resource_ctable_clut.as_ref().unwrap_or(&port_clut);
-                    let is_screen_picture_target =
-                        port_base == self.screen_mode.0 && port_rb == self.screen_mode.1;
+                    let draw_port_clut = recent_resource_ctable_clut
+                        .as_ref()
+                        .or(preseeded_draw_clut.as_ref())
+                        .unwrap_or(&port_clut);
                     if !is_screen_picture_target {
                         if let (Some(fetch), Some(fetch_clut)) = (
                             recent_resource_ctable_fetch.as_ref(),
@@ -7901,8 +7975,6 @@ impl super::TrapDispatcher {
                         }
                     }
 
-                    let streamed_pic_ptr = self.materialize_recent_spooled_picture(bus, pic_ptr);
-                    let draw_pic_ptr = streamed_pic_ptr.unwrap_or(pic_ptr);
                     let picture_bytes = bus
                         .get_alloc_size(draw_pic_ptr)
                         .or_else(|| bus.get_alloc_size(pic_ptr))
@@ -7968,54 +8040,57 @@ impl super::TrapDispatcher {
                                 fetch_clut,
                                 Some(fetch.ct_id),
                             );
-                        } else if let Some(pict_clut) = pict_clut.as_ref() {
-                            if let Some((raw_pict_array, pict_clut_array)) =
-                                Self::picture_clut_arrays(&self.color_manager_clut, pict_clut)
-                            {
-                                if Self::should_seed_screen_palette_from_pict(
-                                    &raw_pict_array,
-                                    &self.color_manager_clut,
-                                ) && !pict_seed_clut_disabled()
+                        } else if !preseeded_screen_from_pict {
+                            if let Some(pict_clut) = pict_clut.as_ref() {
+                                if let Some((raw_pict_array, pict_clut_array)) =
+                                    Self::picture_clut_arrays(&self.color_manager_clut, pict_clut)
                                 {
-                                    if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
-                                        let cm_before = self.color_manager_clut[0];
-                                        let pict0 = pict_clut_array[0];
-                                        eprintln!(
+                                    if Self::should_seed_screen_palette_from_pict(
+                                        &raw_pict_array,
+                                        &self.color_manager_clut,
+                                    ) && !pict_seed_clut_disabled()
+                                    {
+                                        if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
+                                            let cm_before = self.color_manager_clut[0];
+                                            let pict0 = pict_clut_array[0];
+                                            eprintln!(
                                             "[CM-WRITE] PictSeed@6097 tick={} cm[0]=({:04X},{:04X},{:04X}) <- pict[0]=({:04X},{:04X},{:04X})",
                                             self.tick_count, cm_before[0], cm_before[1], cm_before[2], pict0[0], pict0[1], pict0[2]
                                         );
-                                    }
-                                    self.device_clut = pict_clut_array;
-                                    self.color_manager_clut = pict_clut_array;
-                                    self.seeded_picture_palette = pict_clut_array;
-                                    self.seeded_picture_palette_until_tick =
-                                        self.tick_count.saturating_add(48);
-                                    self.sync_canonical_offscreen_ctabs_to_clut(
-                                        bus,
-                                        &pict_clut_array,
-                                    );
-                                    // The first pass just drew against the port's
-                                    // pre-seed logical table. Replay the picture
-                                    // once against the newly-seeded screen CLUT so
-                                    // direct screen draws land the same indices an
-                                    // offscreen GWorld + later CopyBits would show.
-                                    let device_ct_seed =
-                                        Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
-                                            .unwrap_or(0);
-                                    let _ = super::pict::draw_picture(
-                                        bus,
-                                        draw_pic_ptr,
-                                        adj_top,
-                                        adj_left,
-                                        adj_bottom,
-                                        adj_right,
-                                        port_mode,
-                                        &self.device_clut,
-                                        device_ct_seed,
-                                        dst_clip.as_ref(),
-                                    );
-                                    if trace_palette_enabled() {
-                                        eprintln!(
+                                        }
+                                        self.device_clut = pict_clut_array;
+                                        self.color_manager_clut = pict_clut_array;
+                                        self.seeded_picture_palette = pict_clut_array;
+                                        self.seeded_picture_palette_until_tick =
+                                            self.tick_count.saturating_add(48);
+                                        self.sync_canonical_offscreen_ctabs_to_clut(
+                                            bus,
+                                            &pict_clut_array,
+                                        );
+                                        // The first pass just drew against the port's
+                                        // pre-seed logical table. Replay the picture
+                                        // once against the newly-seeded screen CLUT so
+                                        // direct screen draws land the same indices an
+                                        // offscreen GWorld + later CopyBits would show.
+                                        let device_ct_seed = Self::ctab_seed(
+                                            bus,
+                                            self.current_gdevice_ctab_handle(bus),
+                                        )
+                                        .unwrap_or(0);
+                                        let _ = super::pict::draw_picture(
+                                            bus,
+                                            draw_pic_ptr,
+                                            adj_top,
+                                            adj_left,
+                                            adj_bottom,
+                                            adj_right,
+                                            port_mode,
+                                            &self.device_clut,
+                                            device_ct_seed,
+                                            dst_clip.as_ref(),
+                                        );
+                                        if trace_palette_enabled() {
+                                            eprintln!(
                                             "[PALETTE] SeedFromPicture tick={} picHandle=${:08X} picPtr=${:08X} cm[0]=({:04X},{:04X},{:04X}) cm[1]=({:04X},{:04X},{:04X}) cm[16]=({:04X},{:04X},{:04X}) cm[42]=({:04X},{:04X},{:04X}) cm[128]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
                                             self.tick_count,
                                             pic_handle,
@@ -8039,11 +8114,12 @@ impl super::TrapDispatcher {
                                             self.color_manager_clut[255][1],
                                             self.color_manager_clut[255][2]
                                         );
+                                        }
                                     }
                                 }
                             }
                         }
-                    } else if ok && port_ps == 8 {
+                    } else if ok && port_ps == 8 && !preseeded_offscreen_from_pict {
                         if let Some(pict_clut) = pict_clut.as_ref() {
                             if let Some((raw_pict_array, pict_clut_array)) =
                                 Self::picture_clut_arrays(&port_clut, pict_clut)

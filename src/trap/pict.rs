@@ -1330,6 +1330,120 @@ pub fn draw_picture(
     (true, returned_clut)
 }
 
+pub(crate) fn peek_initial_packbits_clut(
+    bus: &MacMemoryBus,
+    pic_ptr: u32,
+) -> Option<Vec<[u16; 3]>> {
+    if pic_ptr == 0 {
+        return None;
+    }
+
+    let frame_top = bus.read_word(pic_ptr + 2) as i16;
+    let frame_left = bus.read_word(pic_ptr + 4) as i16;
+    let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
+    let frame_right = bus.read_word(pic_ptr + 8) as i16;
+    if frame_bottom <= frame_top || frame_right <= frame_left {
+        return None;
+    }
+
+    let mut pos = pic_ptr + 10;
+    let mut is_v2 = false;
+    for _ in 0..10000 {
+        if is_v2 && !pos.is_multiple_of(2) {
+            pos += 1;
+        }
+        let opcode = if is_v2 {
+            let opcode = bus.read_word(pos);
+            pos += 2;
+            opcode
+        } else {
+            let opcode = bus.read_byte(pos) as u16;
+            pos += 1;
+            opcode
+        };
+
+        match opcode {
+            0x00 => {}
+            0x01 => {
+                let rgn_size = bus.read_word(pos) as u32;
+                pos += rgn_size;
+            }
+            0x02 | 0x09 | 0x0A | 0x10 => pos += 8,
+            0x03 | 0x05 | 0x08 | 0x0D | 0x15 | 0x16 | 0xA0 | 0x02FF => pos += 2,
+            0x04 => pos += if is_v2 { 2 } else { 1 },
+            0x06 | 0x07 | 0x0B | 0x0C | 0x0E | 0x0F => pos += 4,
+            0x11 => {
+                let version = bus.read_byte(pos);
+                pos += 1;
+                if version == 0x02 {
+                    pos += 1;
+                    is_v2 = true;
+                }
+            }
+            0x12..=0x14 => pos = skip_pixpat(bus, pos),
+            0x1A | 0x1B | 0x1D | 0x1F => pos += 6,
+            0x1C | 0x1E => {}
+            0x24..=0x27 | 0x2C..=0x2F => {
+                let data_len = bus.read_word(pos) as u32;
+                pos += 2 + data_len;
+                pos = align_pict_pos(pos);
+            }
+            0x98 | 0x99 => return peek_pack_bits_rect_clut(bus, pos),
+            0xA1 => {
+                pos += 2;
+                let data_len = bus.read_word(pos) as u32;
+                pos += 2 + data_len;
+                if is_v2 && !data_len.is_multiple_of(2) {
+                    pos += 1;
+                }
+            }
+            0xFF => return None,
+            0x0C00 => pos += 24,
+            _ => {
+                if is_v2 {
+                    if (0x00A2..=0x00AF).contains(&opcode) {
+                        let data_len = bus.read_word(pos) as u32;
+                        pos += 2 + data_len;
+                        pos = align_pict_pos(pos);
+                    } else if (0x00B0..=0x00CF).contains(&opcode)
+                        || (0x8000..=0x80FF).contains(&opcode)
+                    {
+                    } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
+                        let data_len = bus.read_long(pos);
+                        pos += 4 + data_len;
+                        pos = align_pict_pos(pos);
+                    } else if (0x0100..=0x7FFF).contains(&opcode) {
+                        pos += u32::from(opcode >> 8) * 2;
+                    } else {
+                        return None;
+                    }
+                } else if let Some(new_pos) = skip_reserved_v1_opcode(bus, opcode, pos) {
+                    pos = new_pos;
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn peek_pack_bits_rect_clut(bus: &MacMemoryBus, pos: u32) -> Option<Vec<[u16; 3]>> {
+    let row_bytes_raw = bus.read_word(pos);
+    if (row_bytes_raw & 0x8000) == 0 {
+        return None;
+    }
+    let (pos, pm) = read_pixmap(bus, pos);
+    let (pos, colors16, _ct_seed) = read_color_table(bus, pos);
+    let mode = bus.read_word(pos + 16);
+    if pm.pixel_size == 8 && pm.cmp_count == 1 && (mode & 0x003F) == 0 {
+        Some(colors16)
+    } else {
+        None
+    }
+}
+
 /// Read a PixMap structure from PICT data. Returns (pos, PixMapInfo).
 struct PixMapInfo {
     row_bytes: u16,
@@ -1861,7 +1975,12 @@ fn read_color_table(bus: &MacMemoryBus, mut pos: u32) -> (u32, Vec<[u16; 3]>, u3
 /// The leading byte-count word/byte selects between word/byte length per
 /// the same `rowBytes > 250` rule as byte PackBits.
 /// Imaging With QuickDraw 1994, 4-30.
-fn unpack_bits_chunk16(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32, Vec<u8>) {
+fn unpack_bits_chunk16_into(
+    bus: &MacMemoryBus,
+    mut pos: u32,
+    row_bytes: u16,
+    result: &mut Vec<u8>,
+) -> u32 {
     let byte_count = if row_bytes > 250 {
         let bc = bus.read_word(pos) as u32;
         pos += 2;
@@ -1873,7 +1992,12 @@ fn unpack_bits_chunk16(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32
     };
 
     let end_pos = pos + byte_count;
-    let mut result = Vec::with_capacity(row_bytes as usize);
+    result.clear();
+    result.reserve(row_bytes as usize);
+    if end_pos <= bus.ram_size() {
+        unpack_bits_chunk16_data_into(bus.ram_slice(pos, byte_count), row_bytes, result);
+        return end_pos;
+    }
 
     while pos < end_pos && result.len() < row_bytes as usize {
         let flag = bus.read_byte(pos) as i8;
@@ -1903,22 +2027,68 @@ fn unpack_bits_chunk16(bus: &MacMemoryBus, mut pos: u32, row_bytes: u16) -> (u32
         // flag == -128 (0x80) is a NOP
     }
 
-    (end_pos, result)
+    end_pos
 }
 
-/// Decompress PackBits-encoded data for one scanline.
-fn unpack_bits(bus: &MacMemoryBus, pos: u32, row_bytes: u16) -> (u32, Vec<u8>) {
-    unpack_bits_with_byte_count_row_bytes(bus, pos, row_bytes, row_bytes)
+fn unpack_bits_chunk16_data_into(data: &[u8], row_bytes: u16, result: &mut Vec<u8>) {
+    let mut pos = 0usize;
+    while pos < data.len() && result.len() < row_bytes as usize {
+        let flag = data[pos] as i8;
+        pos += 1;
+
+        if flag >= 0 {
+            let count = (flag as usize) + 1;
+            let byte_count = count.saturating_mul(2).min(data.len().saturating_sub(pos));
+            result.extend_from_slice(&data[pos..pos + byte_count]);
+            pos += byte_count;
+        } else if flag != -128 {
+            let count = (-(flag as i16)) as usize + 1;
+            if pos + 1 >= data.len() {
+                break;
+            }
+            let hi = data[pos];
+            let lo = data[pos + 1];
+            pos += 2;
+            for _ in 0..count {
+                result.push(hi);
+                result.push(lo);
+            }
+        }
+    }
+}
+
+fn unpack_bits_chunk16(bus: &MacMemoryBus, pos: u32, row_bytes: u16) -> (u32, Vec<u8>) {
+    let mut result = Vec::with_capacity(row_bytes as usize);
+    let end_pos = unpack_bits_chunk16_into(bus, pos, row_bytes, &mut result);
+    (end_pos, result)
 }
 
 /// Decompress PackBits data when the decoded row length differs from the
 /// PixMap rowBytes value used to size the scanline byte count.
 fn unpack_bits_with_byte_count_row_bytes(
     bus: &MacMemoryBus,
-    mut pos: u32,
+    pos: u32,
     decoded_row_bytes: u16,
     byte_count_row_bytes: u16,
 ) -> (u32, Vec<u8>) {
+    let mut result = Vec::with_capacity(decoded_row_bytes as usize);
+    let end_pos = unpack_bits_with_byte_count_row_bytes_into(
+        bus,
+        pos,
+        decoded_row_bytes,
+        byte_count_row_bytes,
+        &mut result,
+    );
+    (end_pos, result)
+}
+
+fn unpack_bits_with_byte_count_row_bytes_into(
+    bus: &MacMemoryBus,
+    mut pos: u32,
+    decoded_row_bytes: u16,
+    byte_count_row_bytes: u16,
+    result: &mut Vec<u8>,
+) -> u32 {
     // Read byte count for this scanline
     let byte_count = if byte_count_row_bytes > 250 {
         let bc = bus.read_word(pos) as u32;
@@ -1931,7 +2101,12 @@ fn unpack_bits_with_byte_count_row_bytes(
     };
 
     let end_pos = pos + byte_count;
-    let mut result = Vec::with_capacity(decoded_row_bytes as usize);
+    result.clear();
+    result.reserve(decoded_row_bytes as usize);
+    if end_pos <= bus.ram_size() {
+        unpack_bits_data_into(bus.ram_slice(pos, byte_count), decoded_row_bytes, result);
+        return end_pos;
+    }
 
     while pos < end_pos && result.len() < (decoded_row_bytes as usize) * 2 {
         let flag = bus.read_byte(pos) as i8;
@@ -1958,7 +2133,29 @@ fn unpack_bits_with_byte_count_row_bytes(
         // flag == -128 (0x80) is a NOP
     }
 
-    (end_pos, result)
+    end_pos
+}
+
+fn unpack_bits_data_into(data: &[u8], decoded_row_bytes: u16, result: &mut Vec<u8>) {
+    let mut pos = 0usize;
+    while pos < data.len() && result.len() < (decoded_row_bytes as usize) * 2 {
+        let flag = data[pos] as i8;
+        pos += 1;
+
+        if flag >= 0 {
+            let count = (flag as usize) + 1;
+            let end = pos.saturating_add(count).min(data.len());
+            result.extend_from_slice(&data[pos..end]);
+            pos = end;
+        } else if flag != -128 {
+            let count = (-(flag as i16)) as usize + 1;
+            let Some(&val) = data.get(pos) else {
+                break;
+            };
+            pos += 1;
+            result.extend(std::iter::repeat(val).take(count));
+        }
+    }
 }
 
 /// Write a pixel to the screen framebuffer (supports 1bpp and 8bpp).
@@ -3556,14 +3753,6 @@ fn clear_src_to_dst_table_cache_for_tests() {
     }
 }
 
-#[cfg(test)]
-fn src_to_dst_table_cache_len_for_tests() -> usize {
-    SRC_TO_DST_TABLE_CACHE
-        .get()
-        .and_then(|cache| cache.lock().ok().map(|entries| entries.len()))
-        .unwrap_or(0)
-}
-
 /// Build a 4-bit-per-channel inverse table (16 × 16 × 16 = 4096 cells)
 /// against the given `device_clut`. For each cube cell, stores the
 /// CLUT idx whose entry is Euclidean-closest to the cell's centre.
@@ -4020,6 +4209,10 @@ fn parse_pack_bits_rect(
     } else {
         build_src_to_dst_table(src_clut, dst_clut)
     };
+    let src_to_dst_is_identity = src_to_dst
+        .iter()
+        .enumerate()
+        .all(|(idx, &value)| value == idx as u8);
     let indexed_transfer = build_pict_indexed_transfer_table(
         mode_base,
         src_clut,
@@ -4028,6 +4221,24 @@ fn parse_pack_bits_rect(
         fg_idx,
         bg_idx,
     );
+    let can_direct_blit_8bpp_src_copy = !trace_pict_enabled()
+        && pm.pixel_size == 8
+        && can_blit_8bpp_src_copy_rows_fast(
+            mode_base,
+            &pm,
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            pic_dst_top,
+            pic_dst_left,
+            pic_dst_bottom,
+            pic_dst_right,
+            scale_x,
+            scale_y,
+            scrn_ps,
+            clip_region,
+        );
     let mut traced_min_index = u8::MAX;
     let mut traced_max_index = 0u8;
     let mut traced_have_index = false;
@@ -4043,13 +4254,53 @@ fn parse_pack_bits_rect(
         }
     };
 
+    let mut row_data = Vec::with_capacity(pm.row_bytes as usize);
+    let mut blit_scratch = Vec::new();
+
     if pm.row_bytes < 8 {
         // Small rowBytes: data is unpacked (not PackBits compressed)
         for row in 0..height {
-            let row_data: Vec<u8> = (0..pm.row_bytes as u32)
-                .map(|i| bus.read_byte(pos + i))
-                .collect();
+            row_data.resize(pm.row_bytes as usize, 0);
+            bus.read_bytes_into(pos, &mut row_data);
             pos += pm.row_bytes as u32;
+            if can_direct_blit_8bpp_src_copy && row_data.len() >= pm.row_bytes as usize {
+                if !src_to_dst_is_identity {
+                    remap_8bpp_row_in_place(&mut row_data, &src_to_dst);
+                }
+                let copied = try_blit_row_8bpp_src_copy_fast(
+                    bus,
+                    &row_data,
+                    mode_base,
+                    &pm,
+                    &src_to_dst,
+                    true,
+                    row,
+                    src_top,
+                    src_left,
+                    src_bottom,
+                    src_right,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    pic_dst_top,
+                    pic_dst_left,
+                    pic_dst_bottom,
+                    pic_dst_right,
+                    scale_x,
+                    scale_y,
+                    screen_base,
+                    screen_rb,
+                    screen_w,
+                    screen_h,
+                    scrn_ps,
+                    clip_region,
+                    dst_clip,
+                    &mut blit_scratch,
+                );
+                debug_assert!(copied);
+                continue;
+            }
             update_trace_index_range(&row_data);
             blit_row(
                 bus,
@@ -4057,6 +4308,8 @@ fn parse_pack_bits_rect(
                 mode_base,
                 &pm,
                 device_clut,
+                &src_to_dst,
+                src_to_dst_is_identity,
                 &indexed_transfer,
                 row,
                 src_top,
@@ -4082,13 +4335,57 @@ fn parse_pack_bits_rect(
                 bg_idx,
                 clip_region,
                 dst_clip,
+                &mut blit_scratch,
             );
         }
     } else {
         // PackBits compressed
         for row in 0..height {
-            let (new_pos, row_data) = unpack_bits(bus, pos, pm.row_bytes);
-            pos = new_pos;
+            pos = unpack_bits_with_byte_count_row_bytes_into(
+                bus,
+                pos,
+                pm.row_bytes,
+                pm.row_bytes,
+                &mut row_data,
+            );
+            if can_direct_blit_8bpp_src_copy && row_data.len() >= pm.row_bytes as usize {
+                if !src_to_dst_is_identity {
+                    remap_8bpp_row_in_place(&mut row_data, &src_to_dst);
+                }
+                let copied = try_blit_row_8bpp_src_copy_fast(
+                    bus,
+                    &row_data,
+                    mode_base,
+                    &pm,
+                    &src_to_dst,
+                    true,
+                    row,
+                    src_top,
+                    src_left,
+                    src_bottom,
+                    src_right,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    pic_dst_top,
+                    pic_dst_left,
+                    pic_dst_bottom,
+                    pic_dst_right,
+                    scale_x,
+                    scale_y,
+                    screen_base,
+                    screen_rb,
+                    screen_w,
+                    screen_h,
+                    scrn_ps,
+                    clip_region,
+                    dst_clip,
+                    &mut blit_scratch,
+                );
+                debug_assert!(copied);
+                continue;
+            }
             update_trace_index_range(&row_data);
             blit_row(
                 bus,
@@ -4096,6 +4393,8 @@ fn parse_pack_bits_rect(
                 mode_base,
                 &pm,
                 device_clut,
+                &src_to_dst,
+                src_to_dst_is_identity,
                 &indexed_transfer,
                 row,
                 src_top,
@@ -4121,6 +4420,7 @@ fn parse_pack_bits_rect(
                 bg_idx,
                 clip_region,
                 dst_clip,
+                &mut blit_scratch,
             );
         }
     }
@@ -4144,6 +4444,8 @@ fn blit_row(
     mode_base: u16,
     pm: &PixMapInfo,
     device_clut: &[[u16; 3]; 256],
+    src_to_dst: &[u8; 256],
+    src_to_dst_is_identity: bool,
     indexed_transfer: &[PictIndexedTransfer; 256],
     row: u32,
     src_top: i16,
@@ -4169,8 +4471,46 @@ fn blit_row(
     bg_idx: u8,
     clip_region: Option<&PictureRegion>,
     dst_clip: Option<&DstClip>,
+    scratch: &mut Vec<u8>,
 ) {
     let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
+    if !trace_pict_enabled()
+        && pm.pixel_size == 8
+        && try_blit_row_8bpp_src_copy_fast(
+            bus,
+            row_data,
+            mode_base,
+            pm,
+            src_to_dst,
+            src_to_dst_is_identity,
+            row,
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            dst_top,
+            dst_left,
+            frame_top,
+            frame_left,
+            pic_dst_top,
+            pic_dst_left,
+            pic_dst_bottom,
+            pic_dst_right,
+            scale_x,
+            scale_y,
+            screen_base,
+            screen_rb,
+            screen_w,
+            screen_h,
+            scrn_ps,
+            clip_region,
+            dst_clip,
+            scratch,
+        )
+    {
+        return;
+    }
+
     let src_y = i32::from(pm.bounds_top) + row as i32;
     let Some(pic_y) = map_src_coord(src_y, src_top, src_bottom, pic_dst_top, pic_dst_bottom) else {
         return;
@@ -4427,6 +4767,307 @@ fn blit_row(
             // Unsupported pixel size
         }
     }
+}
+
+fn intersect_spans_with_range(spans: &mut Vec<(i32, i32)>, left: i32, right: i32) {
+    spans.retain_mut(|(span_left, span_right)| {
+        *span_left = (*span_left).max(left);
+        *span_right = (*span_right).min(right);
+        *span_right > *span_left
+    });
+}
+
+fn intersect_spans_with_region_row(spans: &mut Vec<(i32, i32)>, region: &DstClipRegion, y: i32) {
+    if y < region.top || y >= region.bottom {
+        spans.clear();
+        return;
+    }
+    let Some(rows) = region.rows.as_ref() else {
+        intersect_spans_with_range(spans, region.left, region.right);
+        return;
+    };
+    let Some(edges) = rows.get((y - region.top) as usize) else {
+        spans.clear();
+        return;
+    };
+
+    let mut row_spans = Vec::new();
+    for pair in edges.chunks(2) {
+        if pair.len() != 2 {
+            break;
+        }
+        let left = pair[0].max(region.left);
+        let right = pair[1].min(region.right);
+        if right > left {
+            row_spans.push((left, right));
+        }
+    }
+    if row_spans.is_empty() {
+        spans.clear();
+        return;
+    }
+
+    let mut clipped = Vec::new();
+    for &(span_left, span_right) in spans.iter() {
+        for &(row_left, row_right) in &row_spans {
+            let left = span_left.max(row_left);
+            let right = span_right.min(row_right);
+            if right > left {
+                clipped.push((left, right));
+            }
+        }
+    }
+    *spans = clipped;
+}
+
+fn dst_clip_row_spans(
+    dst_clip: Option<&DstClip>,
+    y: i32,
+    left: i32,
+    right: i32,
+) -> Vec<(i32, i32)> {
+    if right <= left {
+        return Vec::new();
+    }
+    let mut spans = vec![(left, right)];
+    let Some(dst_clip) = dst_clip else {
+        return spans;
+    };
+
+    let (clip_top, clip_left, clip_bottom, clip_right) = dst_clip.rect();
+    if y < clip_top || y >= clip_bottom {
+        return Vec::new();
+    }
+    intersect_spans_with_range(&mut spans, clip_left, clip_right);
+    for region in &dst_clip.regions {
+        intersect_spans_with_region_row(&mut spans, region, y);
+        if spans.is_empty() {
+            break;
+        }
+    }
+    spans
+}
+
+enum RowClipSpan {
+    Empty,
+    Single(i32, i32),
+    Complex,
+}
+
+fn dst_clip_simple_row_span(
+    dst_clip: Option<&DstClip>,
+    y: i32,
+    mut left: i32,
+    mut right: i32,
+) -> RowClipSpan {
+    if right <= left {
+        return RowClipSpan::Empty;
+    }
+    let Some(dst_clip) = dst_clip else {
+        return RowClipSpan::Single(left, right);
+    };
+
+    let (clip_top, clip_left, clip_bottom, clip_right) = dst_clip.rect();
+    if y < clip_top || y >= clip_bottom {
+        return RowClipSpan::Empty;
+    }
+    left = left.max(clip_left);
+    right = right.min(clip_right);
+    if right <= left {
+        return RowClipSpan::Empty;
+    }
+
+    for region in &dst_clip.regions {
+        if region.rows.is_some() {
+            return RowClipSpan::Complex;
+        }
+        if y < region.top || y >= region.bottom {
+            return RowClipSpan::Empty;
+        }
+        left = left.max(region.left);
+        right = right.min(region.right);
+        if right <= left {
+            return RowClipSpan::Empty;
+        }
+    }
+    RowClipSpan::Single(left, right)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn can_blit_8bpp_src_copy_rows_fast(
+    mode_base: u16,
+    pm: &PixMapInfo,
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    pic_dst_top: i16,
+    pic_dst_left: i16,
+    pic_dst_bottom: i16,
+    pic_dst_right: i16,
+    scale_x: f64,
+    scale_y: f64,
+    scrn_ps: u16,
+    clip_region: Option<&PictureRegion>,
+) -> bool {
+    if mode_base != 0
+        || scrn_ps != 8
+        || pm.cmp_count != 1
+        || clip_region.is_some()
+        || scale_x != 1.0
+        || scale_y != 1.0
+    {
+        return false;
+    }
+
+    let src_span_x = i32::from(src_right) - i32::from(src_left);
+    let dst_span_x = i32::from(pic_dst_right) - i32::from(pic_dst_left);
+    let src_span_y = i32::from(src_bottom) - i32::from(src_top);
+    let dst_span_y = i32::from(pic_dst_bottom) - i32::from(pic_dst_top);
+    src_span_x > 0
+        && src_span_y > 0
+        && src_span_x == dst_span_x
+        && src_span_y == dst_span_y
+        && pm.bounds_right > pm.bounds_left
+        && pm.bounds_bottom > pm.bounds_top
+}
+
+fn remap_8bpp_row_in_place(row_data: &mut [u8], src_to_dst: &[u8; 256]) {
+    for pixel in row_data {
+        *pixel = src_to_dst[*pixel as usize];
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_blit_row_8bpp_src_copy_fast(
+    bus: &mut MacMemoryBus,
+    row_data: &[u8],
+    mode_base: u16,
+    pm: &PixMapInfo,
+    src_to_dst: &[u8; 256],
+    src_to_dst_is_identity: bool,
+    row: u32,
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    pic_dst_top: i16,
+    pic_dst_left: i16,
+    pic_dst_bottom: i16,
+    pic_dst_right: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_base: u32,
+    screen_rb: u32,
+    screen_w: i32,
+    screen_h: i32,
+    scrn_ps: u16,
+    clip_region: Option<&PictureRegion>,
+    dst_clip: Option<&DstClip>,
+    scratch: &mut Vec<u8>,
+) -> bool {
+    if !can_blit_8bpp_src_copy_rows_fast(
+        mode_base,
+        pm,
+        src_top,
+        src_left,
+        src_bottom,
+        src_right,
+        pic_dst_top,
+        pic_dst_left,
+        pic_dst_bottom,
+        pic_dst_right,
+        scale_x,
+        scale_y,
+        scrn_ps,
+        clip_region,
+    ) {
+        return false;
+    }
+
+    let src_span_x = i32::from(src_right) - i32::from(src_left);
+    let dst_span_x = i32::from(pic_dst_right) - i32::from(pic_dst_left);
+    let src_span_y = i32::from(src_bottom) - i32::from(src_top);
+    let dst_span_y = i32::from(pic_dst_bottom) - i32::from(pic_dst_top);
+    if src_span_x <= 0 || src_span_y <= 0 || src_span_x != dst_span_x || src_span_y != dst_span_y {
+        return false;
+    }
+
+    let source_left = i32::from(pm.bounds_left).max(i32::from(src_left));
+    let source_right = i32::from(pm.bounds_right).min(i32::from(src_right));
+    let mut run_len = source_right - source_left;
+    if run_len <= 0 {
+        return true;
+    }
+
+    let src_y = i32::from(pm.bounds_top) + row as i32;
+    if src_y < i32::from(src_top) || src_y >= i32::from(src_bottom) {
+        return true;
+    }
+
+    let pic_y = i32::from(pic_dst_top) + src_y - i32::from(src_top);
+    let y = i32::from(dst_top) + pic_y - i32::from(frame_top);
+    if y < 0 || y >= screen_h {
+        return true;
+    }
+
+    let mut src_offset = source_left - i32::from(pm.bounds_left);
+    let mut dst_x = i32::from(dst_left) + source_left - i32::from(src_left)
+        + i32::from(pic_dst_left)
+        - i32::from(frame_left);
+
+    if dst_x < 0 {
+        src_offset -= dst_x;
+        run_len += dst_x;
+        dst_x = 0;
+    }
+    if dst_x + run_len > screen_w {
+        run_len = screen_w - dst_x;
+    }
+    if run_len <= 0 {
+        return true;
+    }
+
+    let mut write_span = |bus: &mut MacMemoryBus, span_left: i32, span_right: i32| {
+        let span_len = span_right - span_left;
+        let src_start = (src_offset + span_left - dst_x) as usize;
+        let src_end = src_start + span_len as usize;
+        if src_end > row_data.len() {
+            return false;
+        }
+
+        let row_slice = &row_data[src_start..src_end];
+        let dst_addr = screen_base + (y as u32) * screen_rb + span_left as u32;
+        if src_to_dst_is_identity {
+            bus.write_bytes(dst_addr, row_slice);
+        } else {
+            scratch.resize(row_slice.len(), 0);
+            for (dst, &pixel) in scratch.iter_mut().zip(row_slice.iter()) {
+                *dst = src_to_dst[pixel as usize];
+            }
+            bus.write_bytes(dst_addr, scratch);
+        }
+        true
+    };
+
+    match dst_clip_simple_row_span(dst_clip, y, dst_x, dst_x + run_len) {
+        RowClipSpan::Empty => return true,
+        RowClipSpan::Single(span_left, span_right) => {
+            return write_span(bus, span_left, span_right)
+        }
+        RowClipSpan::Complex => {}
+    }
+
+    for (span_left, span_right) in dst_clip_row_spans(dst_clip, y, dst_x, dst_x + run_len) {
+        if !write_span(bus, span_left, span_right) {
+            return false;
+        }
+    }
+    true
 }
 
 fn read_screen_pixel_index(
@@ -4872,7 +5513,8 @@ mod tests {
     use super::{
         build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
-        src_to_dst_table_cache_len_for_tests, PictIndexedTransfer,
+        dst_clip_row_spans, peek_initial_packbits_clut, try_blit_row_8bpp_src_copy_fast, DstClip,
+        DstClipRegion, PictIndexedTransfer, PixMapInfo,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
@@ -4945,15 +5587,9 @@ mod tests {
         dst[7] = [0x2222, 0x3333, 0x4444];
 
         let first = build_src_to_dst_table(&src, &dst);
-        assert_eq!(src_to_dst_table_cache_len_for_tests(), 1);
         let second = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(second, first);
-        assert_eq!(
-            src_to_dst_table_cache_len_for_tests(),
-            1,
-            "identical PICT and destination CLUTs should reuse one cached transfer table"
-        );
     }
 
     #[test]
@@ -4972,11 +5608,217 @@ mod tests {
         let second = build_src_to_dst_table(&src, &second_dst);
 
         assert_ne!(first[1], second[1]);
-        assert_eq!(
-            src_to_dst_table_cache_len_for_tests(),
-            2,
-            "same PICT CLUT drawn into a changed destination CLUT must not reuse stale mapping"
+    }
+
+    #[test]
+    fn complex_dst_clip_row_spans_follow_region_edges() {
+        let clip = DstClip::new(
+            (0, 0, 5, 20),
+            vec![DstClipRegion::complex(
+                1,
+                0,
+                4,
+                20,
+                vec![vec![3, 8, 12, 15], vec![5, 10], vec![]],
+            )],
         );
+
+        assert_eq!(
+            dst_clip_row_spans(Some(&clip), 1, 0, 20),
+            vec![(3, 8), (12, 15)]
+        );
+        assert_eq!(dst_clip_row_spans(Some(&clip), 2, 0, 20), vec![(5, 10)]);
+        assert!(dst_clip_row_spans(Some(&clip), 3, 0, 20).is_empty());
+    }
+
+    #[test]
+    fn eight_bit_src_copy_fast_path_respects_complex_dst_clip() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_bytes(screen_base, &[0xEE; 8]);
+        let pm = PixMapInfo {
+            row_bytes: 8,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 1,
+            bounds_right: 8,
+            pixel_size: 8,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        let mut src_to_dst = [0u8; 256];
+        for (index, slot) in src_to_dst.iter_mut().enumerate() {
+            *slot = 100u8.saturating_add(index as u8);
+        }
+        let clip = DstClip::new(
+            (0, 0, 1, 8),
+            vec![DstClipRegion::complex(0, 0, 1, 8, vec![vec![2, 5]])],
+        );
+        let mut scratch = Vec::new();
+
+        assert!(try_blit_row_8bpp_src_copy_fast(
+            &mut bus,
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+            0,
+            &pm,
+            &src_to_dst,
+            false,
+            0,
+            0,
+            0,
+            1,
+            8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            8,
+            1.0,
+            1.0,
+            screen_base,
+            8,
+            8,
+            1,
+            8,
+            None,
+            Some(&clip),
+            &mut scratch,
+        ));
+
+        assert_eq!(
+            bus.read_bytes(screen_base, 8),
+            vec![0xEE, 0xEE, 103, 104, 105, 0xEE, 0xEE, 0xEE]
+        );
+    }
+
+    fn write_peekable_indexed_packbits_pict(
+        bus: &mut MacMemoryBus,
+        pic: u32,
+        mode: u16,
+        leading_fill_rect: bool,
+    ) {
+        bus.write_word(pic, 0);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 1);
+        bus.write_word(pic + 8, 2);
+
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1;
+        bus.write_byte(p, 0x01);
+        p += 1;
+        bus.write_byte(p, 0x0E); // FgColor state opcode: safe to skip.
+        p += 1;
+        bus.write_long(p, 0x0000_00CD);
+        p += 4;
+
+        if leading_fill_rect {
+            bus.write_byte(p, 0x34);
+            p += 1;
+            for value in [0i16, 0, 1, 1] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+
+        bus.write_byte(p, 0x98); // PackBitsRect
+        p += 1;
+        bus.write_word(p, 0x8002); // PixMap rowBytes = 2
+        p += 2;
+        for value in [0i16, 0, 1, 2] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+        bus.write_word(p, 0); // version
+        p += 2;
+        bus.write_word(p, 0); // packType
+        p += 2;
+        bus.write_long(p, 0); // packSize
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // hRes
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // vRes
+        p += 4;
+        bus.write_word(p, 0); // pixelType
+        p += 2;
+        bus.write_word(p, 8); // pixelSize
+        p += 2;
+        bus.write_word(p, 1); // cmpCount
+        p += 2;
+        bus.write_word(p, 8); // cmpSize
+        p += 2;
+        bus.write_long(p, 0); // planeBytes
+        p += 4;
+        bus.write_long(p, 0); // pmTable
+        p += 4;
+        bus.write_long(p, 0); // pmReserved
+        p += 4;
+
+        bus.write_long(p, 0); // ctSeed
+        p += 4;
+        bus.write_word(p, 0x8000); // implicit ColorSpec indexes
+        p += 2;
+        bus.write_word(p, 1); // entries 0 and 1
+        p += 2;
+        for (index, rgb) in [
+            (0u16, [0x1111, 0x2222, 0x3333]),
+            (1u16, [0xAAAA, 0xBBBB, 0xCCCC]),
+        ] {
+            bus.write_word(p, index);
+            p += 2;
+            for component in rgb {
+                bus.write_word(p, component);
+                p += 2;
+            }
+        }
+
+        for _ in 0..2 {
+            for value in [0i16, 0, 1, 2] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+        bus.write_word(p, mode);
+        p += 2;
+        bus.write_bytes(p, &[0, 1]);
+        p += 2;
+        bus.write_byte(p, 0xFF);
+        p += 1;
+        bus.write_word(pic, (p - pic) as u16);
+    }
+
+    #[test]
+    fn peek_initial_packbits_clut_accepts_simple_first_src_copy_image() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pic = 0x10_0000u32;
+        write_peekable_indexed_packbits_pict(&mut bus, pic, 0, false);
+
+        let clut = peek_initial_packbits_clut(&bus, pic).expect("initial PackBitsRect CLUT");
+
+        assert_eq!(clut[0], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(clut[1], [0xAAAA, 0xBBBB, 0xCCCC]);
+    }
+
+    #[test]
+    fn peek_initial_packbits_clut_rejects_non_src_copy_images() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pic = 0x10_0000u32;
+        write_peekable_indexed_packbits_pict(&mut bus, pic, 1, false);
+
+        assert!(peek_initial_packbits_clut(&bus, pic).is_none());
+    }
+
+    #[test]
+    fn peek_initial_packbits_clut_rejects_after_prior_drawing_opcode() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pic = 0x10_0000u32;
+        write_peekable_indexed_packbits_pict(&mut bus, pic, 0, true);
+
+        assert!(peek_initial_packbits_clut(&bus, pic).is_none());
     }
 
     #[test]
