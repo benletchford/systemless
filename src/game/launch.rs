@@ -10,6 +10,7 @@ use crate::runner::{FixtureRunner, FixtureRunnerConfig};
 use stuffit::SitArchive;
 
 const WEB_PACK_MAGIC: &[u8; 4] = b"KPK1";
+const WEB_PACK_INITIAL_FORK_RESERVE_BYTES: usize = 1024 * 1024;
 
 /// Standard RAM size for all frontends (32 MB).
 pub const RAM_SIZE: u32 = crate::machine_profile::ORACLE_MACHINE_PROFILE.ram_size_bytes;
@@ -288,10 +289,19 @@ pub struct WebPackLoader<'a> {
     loaded_entries: usize,
     executable_entry: Option<ExecutableCandidate>,
     pending: Option<WebPackPendingEntry>,
+    remove_paths: Vec<String>,
 }
 
 impl<'a> WebPackLoader<'a> {
     pub fn new(runner: &mut FixtureRunner, file_data: &'a [u8]) -> Result<Option<Self>, String> {
+        Self::new_with_remove_paths(runner, file_data, &[])
+    }
+
+    pub fn new_with_remove_paths(
+        runner: &mut FixtureRunner,
+        file_data: &'a [u8],
+        remove_paths: &[&str],
+    ) -> Result<Option<Self>, String> {
         if !file_data.starts_with(WEB_PACK_MAGIC) {
             return Ok(None);
         }
@@ -312,6 +322,11 @@ impl<'a> WebPackLoader<'a> {
             loaded_entries: 0,
             executable_entry: None,
             pending: None,
+            remove_paths: remove_paths
+                .iter()
+                .map(|path| crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(path))
+                .filter(|path| !path.is_empty())
+                .collect(),
         }))
     }
 
@@ -344,7 +359,12 @@ impl<'a> WebPackLoader<'a> {
 
         while remaining > 0 && self.loaded_entries < self.total_entries {
             if self.pending.is_none() {
-                self.pending = Some(self.read_next_entry_header()?);
+                let header = self.read_next_entry_header()?;
+                if self.should_skip_entry(&header.name) {
+                    self.loaded_entries += 1;
+                    continue;
+                }
+                self.pending = Some(WebPackPendingEntry::new(header));
             }
 
             let copied = {
@@ -401,7 +421,7 @@ impl<'a> WebPackLoader<'a> {
         load_selected_executable(runner, &executable)
     }
 
-    fn read_next_entry_header(&mut self) -> Result<WebPackPendingEntry, String> {
+    fn read_next_entry_header(&mut self) -> Result<WebPackEntryHeader, String> {
         let name_len = read_u16_be(self.file_data, &mut self.offset)? as usize;
         let name_bytes = read_exact(self.file_data, &mut self.offset, name_len)?;
         let name = String::from_utf8(name_bytes.to_vec())
@@ -419,20 +439,61 @@ impl<'a> WebPackLoader<'a> {
         let rsrc_start = self.offset;
         read_exact(self.file_data, &mut self.offset, rsrc_len)?;
 
-        Ok(WebPackPendingEntry {
+        Ok(WebPackEntryHeader {
             name,
             file_type_code,
             is_appl: file_type_code == *b"APPL",
             data_start,
             data_len,
-            data_copied: 0,
-            data: Vec::with_capacity(data_len),
             rsrc_start,
             rsrc_len,
-            rsrc_copied: 0,
-            rsrc: Vec::with_capacity(rsrc_len),
         })
     }
+
+    fn should_skip_entry(&self, name: &str) -> bool {
+        if self.remove_paths.is_empty() {
+            return false;
+        }
+
+        let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(name);
+        for remove_path in &self.remove_paths {
+            if vfs_path_matches_remove(&normalized, remove_path) {
+                return true;
+            }
+
+            let Some(executable) = self.executable_entry.as_ref() else {
+                continue;
+            };
+            let parent =
+                crate::trap::dispatch::TrapDispatcher::vfs_parent_path(&executable.vfs_key);
+            if parent.is_empty() {
+                if vfs_path_matches_remove(&normalized, remove_path) {
+                    return true;
+                }
+                continue;
+            }
+
+            let mut resolved = String::with_capacity(parent.len() + 1 + remove_path.len());
+            resolved.push_str(parent);
+            resolved.push('/');
+            resolved.push_str(remove_path);
+            if vfs_path_matches_remove(&normalized, &resolved) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+struct WebPackEntryHeader {
+    name: String,
+    file_type_code: [u8; 4],
+    is_appl: bool,
+    data_start: usize,
+    data_len: usize,
+    rsrc_start: usize,
+    rsrc_len: usize,
 }
 
 struct WebPackPendingEntry {
@@ -450,6 +511,22 @@ struct WebPackPendingEntry {
 }
 
 impl WebPackPendingEntry {
+    fn new(header: WebPackEntryHeader) -> Self {
+        Self {
+            name: header.name,
+            file_type_code: header.file_type_code,
+            is_appl: header.is_appl,
+            data_start: header.data_start,
+            data_len: header.data_len,
+            data_copied: 0,
+            data: Vec::with_capacity(initial_web_pack_fork_capacity(header.data_len)),
+            rsrc_start: header.rsrc_start,
+            rsrc_len: header.rsrc_len,
+            rsrc_copied: 0,
+            rsrc: Vec::with_capacity(initial_web_pack_fork_capacity(header.rsrc_len)),
+        }
+    }
+
     fn copy_next_chunk(&mut self, file_data: &[u8], max_bytes: usize) -> usize {
         let mut remaining = max_bytes;
 
@@ -485,6 +562,21 @@ impl WebPackPendingEntry {
             self.rsrc_start + self.rsrc_copied
         }
     }
+}
+
+fn vfs_path_matches_remove(path: &str, remove_path: &str) -> bool {
+    if path.eq_ignore_ascii_case(remove_path) {
+        return true;
+    }
+    if path.as_bytes().get(remove_path.len()) != Some(&b'/') {
+        return false;
+    }
+    path.get(..remove_path.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(remove_path))
+}
+
+fn initial_web_pack_fork_capacity(len: usize) -> usize {
+    len.min(WEB_PACK_INITIAL_FORK_RESERVE_BYTES)
 }
 
 fn insert_forks_into_vfs(
@@ -1366,6 +1458,69 @@ mod tests {
             Ok(_) => panic!("non-executable web pack should not finish as a loaded app"),
             Err(err) => assert!(err.contains("No executable found in web pack")),
         }
+    }
+
+    #[test]
+    fn web_pack_loader_skips_relative_remove_paths_after_executable_parent_known() {
+        let app_data = b"app-data".to_vec();
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, b"code");
+        let skipped_rsrc = vec![7; 64];
+        let kept_data = b"keep".to_vec();
+        let pack = make_web_pack(&[
+            TestWebPackEntry {
+                name: "Game/Game App",
+                file_type: *b"APPL",
+                data: &app_data,
+                rsrc: &app_rsrc,
+            },
+            TestWebPackEntry {
+                name: "Game/Plug-Ins/MAGMA",
+                file_type: *b"DATA",
+                data: &[],
+                rsrc: &skipped_rsrc,
+            },
+            TestWebPackEntry {
+                name: "Game/Plug-Ins/Keep",
+                file_type: *b"DATA",
+                data: &kept_data,
+                rsrc: &[],
+            },
+        ]);
+        let mut runner = new_runner();
+        let mut loader =
+            WebPackLoader::new_with_remove_paths(&mut runner, &pack, &["Plug-Ins/MAGMA"])
+                .unwrap()
+                .unwrap();
+
+        while !loader.load_next_chunk(&mut runner, 4).unwrap() {}
+
+        assert_eq!(loader.loaded_entries(), 3);
+        assert_eq!(
+            runner.dispatcher().vfs.get("Game/Game App"),
+            Some(&app_data)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Game/Game App"),
+            Some(&app_rsrc)
+        );
+        assert!(!runner.dispatcher().vfs.contains_key("Game/Plug-Ins/MAGMA"));
+        assert!(!runner
+            .dispatcher()
+            .vfs_rsrc
+            .contains_key("Game/Plug-Ins/MAGMA"));
+        assert_eq!(
+            runner.dispatcher().vfs.get("Game/Plug-Ins/Keep"),
+            Some(&kept_data)
+        );
+    }
+
+    #[test]
+    fn web_pack_loader_caps_initial_large_fork_reserve() {
+        assert_eq!(initial_web_pack_fork_capacity(128), 128);
+        assert_eq!(
+            initial_web_pack_fork_capacity(WEB_PACK_INITIAL_FORK_RESERVE_BYTES + 1),
+            WEB_PACK_INITIAL_FORK_RESERVE_BYTES
+        );
     }
 
     #[test]
