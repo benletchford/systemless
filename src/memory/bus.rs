@@ -569,6 +569,48 @@ impl RamStorage {
     }
 
     #[inline]
+    fn copy_bytes_in_bounds(&mut self, src_index: usize, dst_index: usize, len: usize) {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                std::ptr::copy(
+                    v.as_ptr().add(src_index),
+                    v.as_mut_ptr().add(dst_index),
+                    len,
+                );
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                std::ptr::copy(ptr.add(src_index), ptr.add(dst_index), len);
+            },
+        }
+    }
+
+    #[inline]
+    fn copy_mapped_bytes_in_bounds(
+        &mut self,
+        src_index: usize,
+        dst_index: usize,
+        len: usize,
+        map: &[u8; 256],
+    ) {
+        match self {
+            RamStorage::Owned(v) => unsafe {
+                let src = v.as_ptr().add(src_index);
+                let dst = v.as_mut_ptr().add(dst_index);
+                for offset in 0..len {
+                    *dst.add(offset) = map[*src.add(offset) as usize];
+                }
+            },
+            RamStorage::External(ptr, _) => unsafe {
+                let src = ptr.add(src_index);
+                let dst = ptr.add(dst_index);
+                for offset in 0..len {
+                    *dst.add(offset) = map[*src.add(offset) as usize];
+                }
+            },
+        }
+    }
+
+    #[inline]
     fn fill_zeros_in_bounds(&mut self, index: usize, len: usize) {
         match self {
             RamStorage::Owned(v) => unsafe {
@@ -1019,6 +1061,58 @@ impl MacMemoryBus {
                 unsafe { std::slice::from_raw_parts(ptr.add(s), len as usize) }
             }
         }
+    }
+
+    /// Copy a RAM range to another RAM range with one bounds/tracing gate.
+    /// Falls back to byte writes when debug watchpoints or framebuffer-write
+    /// tracing are active so diagnostics still observe each destination byte.
+    #[inline]
+    pub fn copy_ram_bytes(&mut self, src: u32, dst: u32, len: u32) -> bool {
+        #[cfg(debug_assertions)]
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        #[cfg(not(debug_assertions))]
+        let fast = fb_write_trace_range().is_none();
+        let src_end = (src as u64).saturating_add(len as u64);
+        let dst_end = (dst as u64).saturating_add(len as u64);
+        if src_end > self.ram_size as u64 || dst_end > self.ram_size as u64 {
+            return false;
+        }
+        if fast {
+            self.ram
+                .copy_bytes_in_bounds(src as usize, dst as usize, len as usize);
+            return true;
+        }
+        for offset in 0..len {
+            let byte = self.read_byte(src.wrapping_add(offset));
+            self.write_byte(dst.wrapping_add(offset), byte);
+        }
+        true
+    }
+
+    /// Copy a RAM range through an 8-bit lookup table into another RAM range.
+    /// Used by indexed blitters that need source-palette to destination-palette
+    /// translation without allocating a scratch row.
+    #[inline]
+    pub fn copy_mapped_ram_bytes(&mut self, src: u32, dst: u32, len: u32, map: &[u8; 256]) -> bool {
+        #[cfg(debug_assertions)]
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        #[cfg(not(debug_assertions))]
+        let fast = fb_write_trace_range().is_none();
+        let src_end = (src as u64).saturating_add(len as u64);
+        let dst_end = (dst as u64).saturating_add(len as u64);
+        if src_end > self.ram_size as u64 || dst_end > self.ram_size as u64 {
+            return false;
+        }
+        if fast {
+            self.ram
+                .copy_mapped_bytes_in_bounds(src as usize, dst as usize, len as usize, map);
+            return true;
+        }
+        for offset in 0..len {
+            let byte = map[self.read_byte(src.wrapping_add(offset)) as usize];
+            self.write_byte(dst.wrapping_add(offset), byte);
+        }
+        true
     }
 
     /// Load data into memory at the given address
@@ -1636,6 +1730,44 @@ mod tests {
             "byte before write_bytes window"
         );
         assert_eq!(bus.read_byte(0x13E8), 0xCC, "byte after write_bytes window");
+    }
+
+    #[test]
+    fn copy_ram_bytes_handles_overlap_and_bounds() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        for i in 0..16u32 {
+            bus.write_byte(0x1000 + i, i as u8);
+        }
+
+        assert!(bus.copy_ram_bytes(0x1000, 0x1004, 8));
+        assert_eq!(
+            bus.read_bytes(0x1000, 12),
+            vec![0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7],
+            "RAM copy should match memmove semantics for overlapping ranges"
+        );
+
+        bus.write_byte(0x0FFF, 0xAA);
+        assert!(!bus.copy_ram_bytes(0x0FFF, 0xFFFF, 2));
+        assert_eq!(
+            bus.read_byte(0x0FFF),
+            0xAA,
+            "out-of-bounds copy should report failure before writing"
+        );
+    }
+
+    #[test]
+    fn copy_mapped_ram_bytes_applies_lookup_table() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_bytes(0x2000, &[1, 2, 3, 4]);
+        bus.write_bytes(0x3000, &[0xEE; 4]);
+        let mut map = [0u8; 256];
+        for (index, slot) in map.iter_mut().enumerate() {
+            *slot = 255u8.wrapping_sub(index as u8);
+        }
+
+        assert!(bus.copy_mapped_ram_bytes(0x2000, 0x3000, 4, &map));
+        assert_eq!(bus.read_bytes(0x3000, 4), vec![254, 253, 252, 251]);
+        assert!(!bus.copy_mapped_ram_bytes(0x2000, 0xFFFF, 2, &map));
     }
 
     #[test]

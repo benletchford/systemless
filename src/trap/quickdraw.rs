@@ -20282,6 +20282,26 @@ impl super::TrapDispatcher {
         if !Self::set_entries_request_in_range(bus, table_ptr, start, count) {
             return;
         }
+        self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
+        let target_gdh = if self.main_gdevice_handle != 0 {
+            self.main_gdevice_handle
+        } else {
+            self.palette_target_gdevice_handle(bus)
+        };
+        let ctab_handle = Self::gdevice_ctab_handle(bus, target_gdh);
+        let _ = self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count);
+        // Note: color_manager_clut is NOT updated here. Low-level video
+        // driver SetEntries only changes the hardware CLUT for palette
+        // animation. QuickDraw's index mapping (ITable) stays stable.
+    }
+
+    fn apply_set_entries_to_device_clut_unchecked(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        table_ptr: u32,
+        start: i16,
+        count: i16,
+    ) {
         let num_entries = (count + 1) as u32;
         // Low-level SetEntries always targets the screen's hardware CLUT
         // and GDevice ColorTable, regardless of the current GrafPort.
@@ -20327,11 +20347,6 @@ impl super::TrapDispatcher {
                 }
             }
         }
-        let ctab_handle = Self::gdevice_ctab_handle(bus, target_gdh);
-        let _ = self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count);
-        // Note: color_manager_clut is NOT updated here. Low-level video
-        // driver SetEntries only changes the hardware CLUT for palette
-        // animation. QuickDraw's index mapping (ITable) stays stable.
         if trace_palette && target_is_screen {
             let [r0, g0, b0] = self.device_clut[0];
             let [r1, g1, b1] = self.device_clut[1];
@@ -20514,7 +20529,7 @@ impl super::TrapDispatcher {
         //
         // Regression coverage:
         //   setentries_replaces_custom_palette_with_canonical_table
-        self.apply_set_entries(bus, table_ptr, start, count);
+        self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
 
         // Publish `device_clut → color_manager_clut` only on a full-replace
         // SetEntries (start=0, count=255) that represents a fresh palette
@@ -22942,6 +22957,34 @@ mod tests {
         assert_eq!(bus.read_word(entry + 4), 0x2222);
         assert_eq!(bus.read_word(entry + 6), 0x3333);
         assert_ne!(reseeded, initial_seed);
+    }
+
+    #[test]
+    fn test_high_level_set_entries_reseeds_gdevice_color_table_once() {
+        let (mut d, _cpu, mut bus) = setup();
+        d.ensure_main_gdevice(&mut bus);
+        let ctab_handle = d.current_gdevice_ctab_handle(&bus);
+        let ctab_ptr = bus.read_long(ctab_handle);
+        let next_seed = d.next_ct_seed;
+
+        let table_ptr = bus.alloc(8);
+        bus.write_word(table_ptr, 17); // value
+        bus.write_word(table_ptr + 2, 0x1111);
+        bus.write_word(table_ptr + 4, 0x2222);
+        bus.write_word(table_ptr + 6, 0x3333);
+
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, -1, 0);
+
+        let entry = ctab_ptr + 8 + 17 * 8;
+        assert_eq!(bus.read_word(entry + 2), 0x1111);
+        assert_eq!(bus.read_word(entry + 4), 0x2222);
+        assert_eq!(bus.read_word(entry + 6), 0x3333);
+        assert_eq!(
+            bus.read_long(ctab_ptr),
+            next_seed,
+            "high-level SetEntries should not reseed the GDevice CTab twice"
+        );
+        assert_eq!(d.next_ct_seed, next_seed + 1);
     }
 
     #[test]
