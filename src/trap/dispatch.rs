@@ -2991,6 +2991,72 @@ impl TrapDispatcher {
         self.vfs_metadata.remove(&normalized);
     }
 
+    pub fn remove_vfs_path(&mut self, name: &str) -> bool {
+        let normalized = Self::normalize_vfs_path(name);
+        if normalized.is_empty() {
+            return false;
+        }
+
+        let prefix = format!("{}/", normalized);
+        let mut removed = false;
+
+        let data_keys: Vec<String> = self
+            .vfs
+            .keys()
+            .filter(|key| *key == &normalized || key.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in data_keys {
+            removed |= self.vfs.remove(&key).is_some();
+            self.vfs_metadata.remove(&key);
+        }
+
+        let rsrc_keys: Vec<String> = self
+            .vfs_rsrc
+            .keys()
+            .filter(|key| *key == &normalized || key.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in rsrc_keys {
+            removed |= self.vfs_rsrc.remove(&key).is_some();
+            self.vfs_metadata.remove(&key);
+        }
+
+        removed |= self.vfs_metadata.remove(&normalized).is_some();
+
+        let directory_keys: Vec<String> = self
+            .vfs_directories
+            .keys()
+            .filter(|key| *key == &normalized || key.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in directory_keys {
+            if let Some(directory) = self.vfs_directories.remove(&key) {
+                self.vfs_directory_paths.remove(&directory.dir_id);
+                removed = true;
+            }
+        }
+
+        removed
+    }
+
+    pub fn remove_vfs_path_relative_to_launched_app(&mut self, name: &str) -> bool {
+        if self.remove_vfs_path(name) {
+            return true;
+        }
+
+        let Some(app_path) = self.launched_app_path.clone() else {
+            return false;
+        };
+        let parent = Self::vfs_parent_path(&app_path);
+        if parent.is_empty() {
+            return false;
+        }
+
+        let normalized = Self::normalize_vfs_path(name);
+        self.remove_vfs_path(&format!("{}/{}", parent, normalized))
+    }
+
     pub(crate) fn vfs_file_metadata(&mut self, name: &str) -> Option<VfsMetadata> {
         let normalized = Self::normalize_vfs_path(name);
         if self.vfs.contains_key(&normalized) || self.vfs_rsrc.contains_key(&normalized) {
@@ -5215,6 +5281,58 @@ mod tests {
             disp.find_vfs_rsrc_file_in_directory(pref_dir_id, "Settings.rsrc"),
             None
         );
+    }
+
+    #[test]
+    fn remove_vfs_path_removes_data_resource_and_metadata_entries() {
+        let mut disp = TrapDispatcher::new();
+        disp.vfs.insert("Game/Plug-In".to_string(), vec![1, 2, 3]);
+        disp.vfs_rsrc
+            .insert("Game/Plug-In".to_string(), vec![4, 5, 6]);
+        disp.set_vfs_entry_metadata("Game/Plug-In", *b"DATA", *b"TEST", 0x4000);
+
+        assert!(disp.remove_vfs_path("Game/Plug-In"));
+        assert!(!disp.vfs.contains_key("Game/Plug-In"));
+        assert!(!disp.vfs_rsrc.contains_key("Game/Plug-In"));
+        assert!(!disp.vfs_metadata.contains_key("Game/Plug-In"));
+    }
+
+    #[test]
+    fn remove_vfs_path_removes_directory_subtree_without_touching_siblings() {
+        let mut disp = TrapDispatcher::new();
+        disp.ensure_vfs_directory("Game/Plug-Ins/MAGMA");
+        disp.ensure_vfs_directory("Game/Plug-Ins/Keep");
+        disp.vfs
+            .insert("Game/Plug-Ins/MAGMA/Data".to_string(), vec![1]);
+        disp.vfs_rsrc
+            .insert("Game/Plug-Ins/MAGMA/Data".to_string(), vec![2]);
+        disp.vfs
+            .insert("Game/Plug-Ins/Keep/Data".to_string(), vec![3]);
+        disp.set_vfs_entry_metadata("Game/Plug-Ins/MAGMA/Data", *b"DATA", *b"MAGM", 0);
+        disp.set_vfs_entry_metadata("Game/Plug-Ins/Keep/Data", *b"DATA", *b"KEEP", 0);
+
+        assert!(disp.remove_vfs_path("Game/Plug-Ins/MAGMA"));
+        assert!(!disp.vfs.contains_key("Game/Plug-Ins/MAGMA/Data"));
+        assert!(!disp.vfs_rsrc.contains_key("Game/Plug-Ins/MAGMA/Data"));
+        assert!(!disp.vfs_metadata.contains_key("Game/Plug-Ins/MAGMA/Data"));
+        assert!(!disp.vfs_directories.contains_key("Game/Plug-Ins/MAGMA"));
+        assert!(disp.vfs.contains_key("Game/Plug-Ins/Keep/Data"));
+        assert!(disp.vfs_metadata.contains_key("Game/Plug-Ins/Keep/Data"));
+        assert!(disp.vfs_directories.contains_key("Game/Plug-Ins/Keep"));
+    }
+
+    #[test]
+    fn remove_vfs_path_relative_to_launched_app_uses_app_parent() {
+        let mut disp = TrapDispatcher::new();
+        disp.vfs
+            .insert("Game Folder/Plug-Ins/MAGMA".to_string(), vec![1]);
+        disp.vfs_rsrc
+            .insert("Game Folder/Plug-Ins/MAGMA".to_string(), vec![2]);
+        disp.set_launched_app_path("Game Folder/Game App");
+
+        assert!(disp.remove_vfs_path_relative_to_launched_app("Plug-Ins/MAGMA"));
+        assert!(!disp.vfs.contains_key("Game Folder/Plug-Ins/MAGMA"));
+        assert!(!disp.vfs_rsrc.contains_key("Game Folder/Plug-Ins/MAGMA"));
     }
 
     #[test]
