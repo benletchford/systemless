@@ -14,10 +14,14 @@
 //! headless-only library and skip the `winit` / `softbuffer` / `cpal`
 //! link.
 
+#[path = "systemless/desktop_save_store.rs"]
+mod desktop_save_store;
+
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use desktop_save_store::DesktopSaveStore;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
@@ -105,6 +109,7 @@ struct App {
     frame_argb: Vec<u32>,
     scaled_row: Vec<u32>,
     runner: Option<FixtureRunner>,
+    save_store: Option<DesktopSaveStore>,
     game_path: PathBuf,
     initialized: bool,
     total_instructions: u64,
@@ -157,6 +162,7 @@ impl App {
             frame_argb: Vec::new(),
             scaled_row: Vec::new(),
             runner: None,
+            save_store: None,
             game_path,
             initialized: false,
             total_instructions: 0,
@@ -208,6 +214,21 @@ impl App {
         }
         let app =
             game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
+        let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner);
+        eprintln!(
+            "[SYSTEMLESS] Desktop save dir: {}",
+            save_store.root().display()
+        );
+        let restored_saves = save_store.load_saved_files();
+        for file in &restored_saves {
+            runner.import_vfs_file(file);
+        }
+        if !restored_saves.is_empty() {
+            eprintln!(
+                "[SYSTEMLESS] Restored {} desktop save file(s)",
+                restored_saves.len()
+            );
+        }
         game::init_game(&mut runner, &app);
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
@@ -237,7 +258,22 @@ impl App {
         );
 
         self.runner = Some(runner);
+        self.save_store = Some(save_store);
         self.initialized = true;
+    }
+
+    fn sync_save_files(&mut self, force: bool) {
+        let Some(save_store) = self.save_store.as_mut() else {
+            return;
+        };
+        let Some(runner) = self.runner.as_mut() else {
+            return;
+        };
+        if force {
+            save_store.sync_save_files_now(runner);
+        } else {
+            save_store.sync_save_files(runner);
+        }
     }
 
     fn cpu_budget_for_duration(duration: std::time::Duration, ips: f64, credit: &mut f64) -> usize {
@@ -614,6 +650,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
+                self.sync_save_files(true);
                 eprintln!(
                     "[SYSTEMLESS] Window closed. Total instructions: {}",
                     self.total_instructions
@@ -712,6 +749,7 @@ impl ApplicationHandler for App {
 
         // Step emulation, then render
         self.step_frame();
+        self.sync_save_files(false);
 
         // Check if screen mode changed
         if let Some(runner) = &self.runner {
@@ -795,6 +833,21 @@ fn run_headless(game_path: &std::path::Path, max_instructions: usize, show_menu_
         runner.set_menu_bar_visible(true);
     }
     let app = game::load_game_from_path(&mut runner, game_path).expect("Failed to load game");
+    let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, &mut runner);
+    eprintln!(
+        "[SYSTEMLESS] Desktop save dir: {}",
+        save_store.root().display()
+    );
+    let restored_saves = save_store.load_saved_files();
+    for file in &restored_saves {
+        runner.import_vfs_file(file);
+    }
+    if !restored_saves.is_empty() {
+        eprintln!(
+            "[SYSTEMLESS] Restored {} desktop save file(s)",
+            restored_saves.len()
+        );
+    }
     game::init_game(&mut runner, &app);
 
     let chunk = 100_000;
@@ -820,6 +873,7 @@ fn run_headless(game_path: &std::path::Path, max_instructions: usize, show_menu_
     }
 
     eprintln!("[HEADLESS] Completed {} instructions", total);
+    save_store.sync_save_files_now(&mut runner);
     save_screenshot(&runner, 9999);
 }
 

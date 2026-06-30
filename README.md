@@ -58,6 +58,12 @@ Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource for
 Archives may contain multiple files; Systemless populates the in-memory VFS and
 selects an executable resource fork from the archive.
 
+Desktop saves are stored next to the launched archive under
+`.systemless/saves/<archive-name>/`. For example, launching
+`/Games/EV Override 1.0.1.sit` restores and persists saves under
+`/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
+resource forks and is kept separate from the original archive.
+
 Systemless does not ship applications, games, Mac ROMs, or Apple system software.
 Use legally obtained application archives.
 
@@ -79,6 +85,43 @@ runner.composite_frame();
 ```
 
 Use `systemless::display` to render the current framebuffer for custom frontends.
+
+## Save Persistence
+
+Systemless keeps the guest filesystem in the runner's in-memory VFS. Persistence
+is a frontend responsibility: the engine exposes snapshots of VFS files, and a
+frontend decides where to store them.
+
+Use the `FixtureRunner` VFS snapshot API for save files:
+
+- `vfs_file_summaries()` lists VFS files with fork sizes, hashes, and metadata.
+- `vfs_file_snapshot(path)` exports one file's data fork, resource fork, and
+  Finder metadata.
+- `import_vfs_file(snapshot)` restores a previously exported file into the VFS.
+- `remove_vfs_file(path)` removes a file from the VFS.
+
+The expected frontend sequence is:
+
+```text
+create runner
+load archive into runner
+record archive VFS summaries/fingerprints
+load stored save snapshots
+import_vfs_file(...) for each stored save
+init_game(...)
+periodically scan vfs_file_summaries()
+persist changed user-save snapshots from vfs_file_snapshot(...)
+flush one final scan on shutdown
+```
+
+Record the archive fingerprints before importing stored saves. That lets the
+frontend avoid copying packaged game files into the save store and persist only
+new or changed user-save files. Save-file filtering is frontend policy; common
+filters exclude System Folder preferences, temporary items, Trash, and desktop
+database files.
+
+The built-in desktop runner uses this API and stores snapshots next to the
+launched archive under `.systemless/saves/<archive-name>/`.
 
 ## Crate Map
 
