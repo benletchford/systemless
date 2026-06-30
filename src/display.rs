@@ -781,6 +781,447 @@ fn render_color_cursor_argb(
     }
 }
 
+/// Overlay line-oriented debug text onto an ARGB framebuffer.
+pub fn render_debug_overlay_argb(pixels: &mut [u32], width: u32, height: u32, lines: &[String]) {
+    if pixels.is_empty() || width == 0 || height == 0 || lines.is_empty() {
+        return;
+    }
+
+    let width = width as usize;
+    let height = height as usize;
+    if pixels.len() < width.saturating_mul(height) {
+        return;
+    }
+
+    let margin = 6usize;
+    let pad = 4usize;
+    let char_w = 6usize;
+    let line_h = 8usize;
+    if width <= margin * 2 || height <= margin * 2 {
+        return;
+    }
+
+    let max_chars = ((width - margin * 2).saturating_sub(pad * 2) / char_w).max(1);
+    let max_lines = ((height - margin * 2).saturating_sub(pad * 2) / line_h).max(1);
+    let visible_lines = lines.len().min(max_lines);
+    let longest = lines
+        .iter()
+        .take(visible_lines)
+        .map(|line| line.chars().count().min(max_chars))
+        .max()
+        .unwrap_or(0);
+    if longest == 0 {
+        return;
+    }
+
+    let panel_x = margin;
+    let panel_y = margin;
+    let panel_w = (longest * char_w + pad * 2).min(width - panel_x);
+    let panel_h = (visible_lines * line_h + pad * 2).min(height - panel_y);
+    fill_rect_argb(
+        pixels, width, height, panel_x, panel_y, panel_w, panel_h, 0xFF101010,
+    );
+    stroke_rect_argb(
+        pixels, width, height, panel_x, panel_y, panel_w, panel_h, 0xFF4A9C63,
+    );
+
+    let text_x = panel_x + pad;
+    let mut text_y = panel_y + pad;
+    for line in lines.iter().take(visible_lines) {
+        draw_debug_text_argb(
+            pixels, width, height, text_x, text_y, line, max_chars, 0xFFE8F0EA,
+        );
+        text_y += line_h;
+    }
+}
+
+/// Overlay line-oriented debug text onto an RGBA framebuffer.
+pub fn render_debug_overlay_rgba(pixels: &mut [u8], width: u32, height: u32, lines: &[String]) {
+    if pixels.is_empty() || width == 0 || height == 0 || lines.is_empty() {
+        return;
+    }
+
+    let width = width as usize;
+    let height = height as usize;
+    if pixels.len() < width.saturating_mul(height).saturating_mul(4) {
+        return;
+    }
+
+    let margin = 6usize;
+    let pad = 4usize;
+    let char_w = 6usize;
+    let line_h = 8usize;
+    if width <= margin * 2 || height <= margin * 2 {
+        return;
+    }
+
+    let max_chars = ((width - margin * 2).saturating_sub(pad * 2) / char_w).max(1);
+    let max_lines = ((height - margin * 2).saturating_sub(pad * 2) / line_h).max(1);
+    let visible_lines = lines.len().min(max_lines);
+    let longest = lines
+        .iter()
+        .take(visible_lines)
+        .map(|line| line.chars().count().min(max_chars))
+        .max()
+        .unwrap_or(0);
+    if longest == 0 {
+        return;
+    }
+
+    let panel_x = margin;
+    let panel_y = margin;
+    let panel_w = (longest * char_w + pad * 2).min(width - panel_x);
+    let panel_h = (visible_lines * line_h + pad * 2).min(height - panel_y);
+    fill_rect_rgba(
+        pixels,
+        width,
+        height,
+        panel_x,
+        panel_y,
+        panel_w,
+        panel_h,
+        [0x10, 0x10, 0x10, 0xFF],
+    );
+    stroke_rect_rgba(
+        pixels,
+        width,
+        height,
+        panel_x,
+        panel_y,
+        panel_w,
+        panel_h,
+        [0x4A, 0x9C, 0x63, 0xFF],
+    );
+
+    let text_x = panel_x + pad;
+    let mut text_y = panel_y + pad;
+    for line in lines.iter().take(visible_lines) {
+        draw_debug_text_rgba(
+            pixels,
+            width,
+            height,
+            text_x,
+            text_y,
+            line,
+            max_chars,
+            [0xE8, 0xF0, 0xEA, 0xFF],
+        );
+        text_y += line_h;
+    }
+}
+
+fn fill_rect_argb(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    rect_w: usize,
+    rect_h: usize,
+    color: u32,
+) {
+    let right = x.saturating_add(rect_w).min(width);
+    let bottom = y.saturating_add(rect_h).min(height);
+    for row in y..bottom {
+        let start = row * width + x.min(width);
+        let end = row * width + right;
+        pixels[start..end].fill(color);
+    }
+}
+
+fn fill_rect_rgba(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    rect_w: usize,
+    rect_h: usize,
+    color: [u8; 4],
+) {
+    let right = x.saturating_add(rect_w).min(width);
+    let bottom = y.saturating_add(rect_h).min(height);
+    for row in y..bottom {
+        for col in x.min(width)..right {
+            let idx = (row * width + col) * 4;
+            pixels[idx..idx + 4].copy_from_slice(&color);
+        }
+    }
+}
+
+fn stroke_rect_argb(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    rect_w: usize,
+    rect_h: usize,
+    color: u32,
+) {
+    if rect_w == 0 || rect_h == 0 || x >= width || y >= height {
+        return;
+    }
+    let right = x.saturating_add(rect_w).min(width).saturating_sub(1);
+    let bottom = y.saturating_add(rect_h).min(height).saturating_sub(1);
+    for col in x..=right {
+        pixels[y * width + col] = color;
+        pixels[bottom * width + col] = color;
+    }
+    for row in y..=bottom {
+        pixels[row * width + x] = color;
+        pixels[row * width + right] = color;
+    }
+}
+
+fn stroke_rect_rgba(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    rect_w: usize,
+    rect_h: usize,
+    color: [u8; 4],
+) {
+    if rect_w == 0 || rect_h == 0 || x >= width || y >= height {
+        return;
+    }
+    let right = x.saturating_add(rect_w).min(width).saturating_sub(1);
+    let bottom = y.saturating_add(rect_h).min(height).saturating_sub(1);
+    for col in x..=right {
+        let top_idx = (y * width + col) * 4;
+        let bottom_idx = (bottom * width + col) * 4;
+        pixels[top_idx..top_idx + 4].copy_from_slice(&color);
+        pixels[bottom_idx..bottom_idx + 4].copy_from_slice(&color);
+    }
+    for row in y..=bottom {
+        let left_idx = (row * width + x) * 4;
+        let right_idx = (row * width + right) * 4;
+        pixels[left_idx..left_idx + 4].copy_from_slice(&color);
+        pixels[right_idx..right_idx + 4].copy_from_slice(&color);
+    }
+}
+
+fn draw_debug_text_argb(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    text: &str,
+    max_chars: usize,
+    color: u32,
+) {
+    let mut cursor_x = x;
+    for ch in text.chars().take(max_chars) {
+        draw_debug_char_argb(pixels, width, height, cursor_x, y, ch, color);
+        cursor_x += 6;
+    }
+}
+
+fn draw_debug_text_rgba(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    text: &str,
+    max_chars: usize,
+    color: [u8; 4],
+) {
+    let mut cursor_x = x;
+    for ch in text.chars().take(max_chars) {
+        draw_debug_char_rgba(pixels, width, height, cursor_x, y, ch, color);
+        cursor_x += 6;
+    }
+}
+
+fn draw_debug_char_argb(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    ch: char,
+    color: u32,
+) {
+    let glyph = debug_glyph(ch.to_ascii_uppercase());
+    for (row, bits) in glyph.iter().enumerate() {
+        let gy = y + row;
+        if gy >= height {
+            break;
+        }
+        for col in 0..5 {
+            let gx = x + col;
+            if gx >= width {
+                continue;
+            }
+            if ((bits >> (4 - col)) & 1) != 0 {
+                pixels[gy * width + gx] = color;
+            }
+        }
+    }
+}
+
+fn draw_debug_char_rgba(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    ch: char,
+    color: [u8; 4],
+) {
+    let glyph = debug_glyph(ch.to_ascii_uppercase());
+    for (row, bits) in glyph.iter().enumerate() {
+        let gy = y + row;
+        if gy >= height {
+            break;
+        }
+        for col in 0..5 {
+            let gx = x + col;
+            if gx >= width {
+                continue;
+            }
+            if ((bits >> (4 - col)) & 1) != 0 {
+                let idx = (gy * width + gx) * 4;
+                pixels[idx..idx + 4].copy_from_slice(&color);
+            }
+        }
+    }
+}
+
+fn debug_glyph(ch: char) -> [u8; 7] {
+    match ch {
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'B' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' => [
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ],
+        'D' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' => [
+            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' => [
+            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        'J' => [
+            0b00001, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+        ],
+        'X' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+        'Y' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
+        ],
+        '6' => [
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+        ],
+        ' ' => [0, 0, 0, 0, 0, 0, 0],
+        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
+        ',' => [0, 0, 0, 0, 0b01100, 0b01100, 0b01000],
+        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
+        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
+        '/' => [
+            0b00001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000,
+        ],
+        '[' => [
+            0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110,
+        ],
+        ']' => [
+            0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110,
+        ],
+        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
+        _ => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
+    }
+}
+
 /// Convert a 16-bit Mac CLUT entry to 0xAARRGGBB.
 pub fn clut_to_argb(clut: &[[u16; 3]; 256], index: u8) -> u32 {
     let [r8, g8, b8] = clut_to_rgba8(clut, index);

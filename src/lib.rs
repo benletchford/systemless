@@ -34,6 +34,7 @@
 
 pub mod audio;
 pub mod cpu;
+pub mod debug_overlay;
 pub mod disk_image;
 pub mod display;
 mod error;

@@ -1,6 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::cpu::{M68kCpu, Register, StepResult};
+use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::loader::{
     ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
 };
@@ -746,6 +747,50 @@ impl FixtureRunner {
 
     pub fn total_instructions(&self) -> u64 {
         self.total_instructions
+    }
+
+    pub fn debug_overlay_snapshot(
+        &self,
+        frame_stats: DebugOverlayFrameStats,
+    ) -> DebugOverlaySnapshot {
+        use crate::memory::globals::addr;
+
+        let dispatcher = &self.dispatcher;
+        let (_, _, screen_width, screen_height, pixel_size) = dispatcher.screen_mode;
+        let cursor_image = dispatcher.cursor_data();
+        let cursor_mask_nonzero_bytes = cursor_image
+            .as_ref()
+            .map(|(_, mask, _, _)| mask.iter().filter(|&&byte| byte != 0).count());
+        let cursor_hotspot = cursor_image
+            .as_ref()
+            .map(|(_, _, hot_v, hot_h)| (*hot_v, *hot_h));
+
+        DebugOverlaySnapshot {
+            frame_stats,
+            guest_tick: self.guest_tick(),
+            total_instructions: self.total_instructions,
+            trap_count: dispatcher.trap_count,
+            game_trap_count: dispatcher.game_trap_count,
+            cursor_visible: dispatcher.cursor_visible(),
+            cursor_level: dispatcher.cursor_level(),
+            cursor_data_present: dispatcher.cursor_data_present(),
+            cursor_mask_nonzero_bytes,
+            cursor_hotspot,
+            cursor_position: dispatcher.mouse_position(),
+            mouse_button: dispatcher.mouse_button,
+            fullscreen_locked: dispatcher.fullscreen_locked,
+            mbar_height: self.bus.read_word(addr::MBAR_HEIGHT),
+            screen_width,
+            screen_height,
+            pixel_size,
+            front_window: dispatcher.front_window(),
+            window_bounds: dispatcher.window_bounds(),
+            window_count: dispatcher.window_count(),
+            menu_count: dispatcher.menu_count(),
+            halted: self.halted,
+            halted_trap: self.halted_trap,
+            halted_pc: self.halted_pc,
+        }
     }
 
     pub fn cpu(&self) -> &M68kCpu {

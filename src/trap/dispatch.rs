@@ -3820,6 +3820,16 @@ impl TrapDispatcher {
         self.cursor_visible
     }
 
+    /// Current cursor hide/show nesting level.
+    pub fn cursor_level(&self) -> i16 {
+        self.cursor_level
+    }
+
+    /// Whether a cursor image is installed, independent of visibility.
+    pub fn cursor_data_present(&self) -> bool {
+        self.cursor_data.is_some()
+    }
+
     /// Explicit screen-space transform for frontends that need to map host
     /// mouse coordinates back into a fullscreen game's source playfield.
     ///

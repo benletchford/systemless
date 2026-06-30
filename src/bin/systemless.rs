@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use desktop_save_store::DesktopSaveStore;
+use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
@@ -136,6 +137,11 @@ struct App {
     last_presented_guest_tick: Option<u32>,
     /// Force the next host present even if the guest tick has not advanced.
     force_next_render: bool,
+    /// Show the Systemless debug overlay on top of the game framebuffer.
+    debug_overlay_visible: bool,
+    debug_last_frame_at: Option<std::time::Instant>,
+    debug_host_fps: Option<f64>,
+    debug_frame_ms: Option<f64>,
     /// Remap arrow keys to numpad equivalents (for keyboards without a numpad)
     arrows_as_numpad: bool,
     /// Optional GUI CPU cap in instructions per second (cpu_mhz × 1_000_000).
@@ -178,6 +184,10 @@ impl App {
             frame_count: 0,
             last_presented_guest_tick: None,
             force_next_render: true,
+            debug_overlay_visible: false,
+            debug_last_frame_at: None,
+            debug_host_fps: None,
+            debug_frame_ms: None,
             arrows_as_numpad,
             emulated_ips: cpu_mhz.map(|mhz| mhz * 1_000_000.0),
             show_menu_bar,
@@ -303,6 +313,23 @@ impl App {
     fn next_render_headroom(render_time: std::time::Duration) -> std::time::Duration {
         let target = render_time.saturating_add(RENDER_HEADROOM_MARGIN);
         target.clamp(MIN_RENDER_HEADROOM, MAX_RENDER_HEADROOM)
+    }
+
+    fn update_debug_frame_stats(&mut self, now: std::time::Instant) {
+        let Some(previous) = self.debug_last_frame_at.replace(now) else {
+            return;
+        };
+        let delta = now.saturating_duration_since(previous).as_secs_f64();
+        if delta <= 0.0 {
+            return;
+        }
+        let frame_ms = delta * 1000.0;
+        let smoothed_ms = self
+            .debug_frame_ms
+            .map(|current| current.mul_add(0.8, frame_ms * 0.2))
+            .unwrap_or(frame_ms);
+        self.debug_frame_ms = Some(smoothed_ms);
+        self.debug_host_fps = Some(1000.0 / smoothed_ms);
     }
 
     fn next_frame_target(
@@ -514,6 +541,9 @@ impl App {
         if self.force_next_render {
             return true;
         }
+        if self.debug_overlay_visible {
+            return true;
+        }
         let Some(runner) = self.runner.as_ref() else {
             return false;
         };
@@ -524,6 +554,7 @@ impl App {
 
     fn render_frame(&mut self) {
         let render_start = std::time::Instant::now();
+        self.update_debug_frame_stats(render_start);
         let size = {
             let Some(window) = self.window.as_ref() else {
                 return;
@@ -558,6 +589,16 @@ impl App {
         display::render_screen_argb(runner.bus(), screen_mode, &device_clut, &mut frame_argb);
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
+        }
+        if self.debug_overlay_visible {
+            let lines = runner
+                .debug_overlay_snapshot(DebugOverlayFrameStats {
+                    host_fps: self.debug_host_fps,
+                    frame_ms: self.debug_frame_ms,
+                    ..DebugOverlayFrameStats::default()
+                })
+                .lines();
+            display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
 
         let scale = (buf_w / game_w).min(buf_h / game_h).max(1) as usize;
@@ -689,6 +730,17 @@ impl ApplicationHandler for App {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 self.force_next_render = true;
+                if matches!(event.physical_key, PhysicalKey::Code(KeyCode::F3)) {
+                    if event.state == ElementState::Pressed && !event.repeat {
+                        self.debug_overlay_visible = !self.debug_overlay_visible;
+                        if self.debug_overlay_visible {
+                            self.debug_last_frame_at = None;
+                            self.debug_host_fps = None;
+                            self.debug_frame_ms = None;
+                        }
+                    }
+                    return;
+                }
                 if let Some(runner) = self.runner.as_mut() {
                     let (mac_key, char_code) = host_key_to_mac(
                         &event.logical_key,
