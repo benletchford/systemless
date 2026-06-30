@@ -1371,6 +1371,37 @@ impl FixtureRunner {
         }
     }
 
+    pub fn import_vfs_file_relative_to_launched_app(
+        &mut self,
+        relative_dir: &str,
+        file: &VfsFileSnapshot,
+    ) -> std::result::Result<(), String> {
+        let app_path = self
+            .dispatcher
+            .launched_app_path
+            .clone()
+            .ok_or_else(|| "launched app path is not available".to_string())?;
+        let app_parent = TrapDispatcher::vfs_parent_path(&app_path);
+        if app_parent.is_empty() {
+            return Err("launched app has no parent folder".to_string());
+        }
+
+        let relative_dir = TrapDispatcher::normalize_vfs_path(relative_dir);
+        if relative_dir.is_empty() || relative_dir.starts_with('/') || relative_dir.contains("..") {
+            return Err(format!("invalid relative VFS directory {relative_dir:?}"));
+        }
+        let file_path = TrapDispatcher::normalize_vfs_path(&file.path);
+        let filename = TrapDispatcher::vfs_basename(&file_path);
+        if filename.is_empty() {
+            return Err("plugin file has no filename".to_string());
+        }
+
+        let mut mounted = file.clone();
+        mounted.path = format!("{app_parent}/{relative_dir}/{filename}");
+        self.import_vfs_file(&mounted);
+        Ok(())
+    }
+
     pub fn remove_vfs_file(&mut self, path: &str) -> bool {
         self.dispatcher.remove_vfs_path(path)
     }
@@ -5424,6 +5455,47 @@ mod tests {
 
         assert!(restored.remove_vfs_file("Pilots/Test Pilot"));
         assert_eq!(restored.vfs_file_snapshot("Pilots/Test Pilot"), None);
+    }
+
+    #[test]
+    fn import_vfs_file_relative_to_launched_app_mounts_under_app_parent() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .set_launched_app_path("EV Override/EV Override");
+        let plugin = VfsFileSnapshot {
+            path: "Warblade".to_string(),
+            data_fork: Vec::new(),
+            resource_fork: vec![1, 2, 3, 4],
+            file_type: u32::from_be_bytes(*b"Op.f"),
+            creator: u32::from_be_bytes(*b"Es.O"),
+            finder_flags: 0x4000,
+            created_date: 123,
+            modified_date: 456,
+        };
+
+        runner
+            .import_vfs_file_relative_to_launched_app("EV Plug-Ins", &plugin)
+            .expect("relative plugin import");
+
+        let mounted = runner
+            .vfs_file_snapshot("EV Override/EV Plug-Ins/Warblade")
+            .expect("mounted plugin snapshot");
+        assert_eq!(mounted.resource_fork, plugin.resource_fork);
+        assert_eq!(mounted.file_type, plugin.file_type);
+        assert_eq!(mounted.creator, plugin.creator);
+        assert_eq!(mounted.finder_flags, plugin.finder_flags);
+
+        let parent_dir_id = runner
+            .dispatcher
+            .vfs_metadata
+            .get("EV Override/EV Plug-Ins/Warblade")
+            .expect("plugin metadata")
+            .parent_dir_id;
+        let entries = runner.dispatcher.list_vfs_catalog_entries(parent_dir_id);
+        assert!(entries
+            .iter()
+            .any(|entry| !entry.is_directory && entry.name == "Warblade"));
     }
 
     fn make_resource_fork_bytes(resources: &[([u8; 4], i16, &[u8])]) -> Vec<u8> {
