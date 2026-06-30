@@ -1287,6 +1287,10 @@ impl FixtureRunner {
         }
     }
 
+    pub fn remove_vfs_file(&mut self, path: &str) -> bool {
+        self.dispatcher.remove_vfs_path(path)
+    }
+
     fn vfs_file_paths(&mut self) -> Vec<String> {
         self.dispatcher.ensure_vfs_catalog();
         let mut paths = BTreeSet::new();
@@ -5279,6 +5283,9 @@ mod tests {
             restored.vfs_file_snapshot("Pilots/Test Pilot"),
             Some(snapshot)
         );
+
+        assert!(restored.remove_vfs_file("Pilots/Test Pilot"));
+        assert_eq!(restored.vfs_file_snapshot("Pilots/Test Pilot"), None);
     }
 
     fn make_resource_fork_bytes(resources: &[([u8; 4], i16, &[u8])]) -> Vec<u8> {

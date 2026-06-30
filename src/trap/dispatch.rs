@@ -501,6 +501,35 @@ pub(crate) struct StandardFilePutTrackingState {
     pub saved_pixels: Vec<u8>,
 }
 
+/// Candidate file shown by a retained Standard File get dialog.
+#[derive(Clone, Debug)]
+pub(crate) struct StandardFileGetEntry {
+    pub name: Vec<u8>,
+    pub display_name: String,
+    pub vref: i16,
+    pub wd_ref: i16,
+    pub dir_id: u32,
+    pub file_type: u32,
+    pub finder_flags: u16,
+}
+
+/// Retained state for the Standard File Package open dialogs.
+///
+/// StandardGetFile/CustomGetFile are modal package routines like the save
+/// variants. In browser/UI-yield mode this lets `_Pack3` refire until the user
+/// picks a visible file or cancels.
+#[derive(Clone, Debug)]
+pub(crate) struct StandardFileGetTrackingState {
+    pub modern_reply: bool,
+    pub reply_ptr: u32,
+    pub stack_ptr: u32,
+    pub pop_total: u32,
+    pub entries: Vec<StandardFileGetEntry>,
+    pub selected: usize,
+    pub bounds: (i16, i16, i16, i16),
+    pub saved_pixels: Vec<u8>,
+}
+
 /// Popup-menu control state owned by an active ModalDialog loop.
 pub struct DialogPopupTrackingState {
     pub item_no: i16,
@@ -1471,6 +1500,8 @@ pub struct TrapDispatcher {
     pub dialog_tracking: Option<DialogTrackingState>,
     /// Active Standard File Package save dialog tracking state.
     pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
+    /// Active Standard File Package open dialog tracking state.
+    pub(crate) standard_file_get_tracking: Option<StandardFileGetTrackingState>,
     /// Parsed dialog items keyed by dialog pointer, for GetDItem/ModalDialog
     pub dialog_items: HashMap<u32, Vec<DialogItem>>,
     /// Original rects for items hidden via HideDialogItem,
@@ -2596,6 +2627,7 @@ impl TrapDispatcher {
             primary_vbl_slot: 0,
             dialog_tracking: None,
             standard_file_put_tracking: None,
+            standard_file_get_tracking: None,
             dialog_items: HashMap::new(),
             hidden_dialog_item_rects: HashMap::new(),
             dialog_item_handles: HashMap::new(),
@@ -2666,6 +2698,11 @@ impl TrapDispatcher {
         self.standard_file_put_tracking.is_some()
     }
 
+    /// Whether StandardGetFile/CustomGetFile is actively tracking input.
+    pub fn is_standard_file_get_tracking(&self) -> bool {
+        self.standard_file_get_tracking.is_some()
+    }
+
     /// Whether TrackControl is actively tracking a control.
     pub fn is_control_tracking(&self) -> bool {
         self.control_tracking.is_some()
@@ -2686,7 +2723,8 @@ impl TrapDispatcher {
         let is_control_refire = trap_no_autopop == 0xA968;
         (is_menu_refire && self.is_menu_tracking())
             || (is_dialog_refire && self.is_dialog_tracking())
-            || (is_standard_file_refire && self.is_standard_file_put_tracking())
+            || (is_standard_file_refire
+                && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
             || (is_control_refire && self.is_control_tracking())
     }
 
@@ -4858,6 +4896,7 @@ impl TrapDispatcher {
             && self.menu_tracking.is_none()
             && self.dialog_tracking.is_none()
             && self.standard_file_put_tracking.is_none()
+            && self.standard_file_get_tracking.is_none()
             && !is_idle_trap
         {
             self.game_trap_count += 1;

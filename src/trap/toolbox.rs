@@ -9,7 +9,10 @@ use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::dispatch::{DialogItem, MovieState, StandardFilePutTrackingState};
+use super::dispatch::{
+    DialogItem, MovieState, StandardFileGetEntry, StandardFileGetTrackingState,
+    StandardFilePutTrackingState,
+};
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
 static TRACE_MUNGER: OnceLock<bool> = OnceLock::new();
@@ -152,6 +155,12 @@ enum StandardFilePutAction {
     Cancel,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StandardFileGetAction {
+    Open,
+    Cancel,
+}
+
 const STANDARD_FILE_SAVE_ITEM: i16 = 1;
 const STANDARD_FILE_NAME_ITEM: i16 = 4;
 const STANDARD_FILE_DIALOG_WIDTH: i16 = 360;
@@ -160,6 +169,14 @@ const STANDARD_FILE_PROMPT_RECT: (i16, i16, i16, i16) = (20, 24, 40, 330);
 const STANDARD_FILE_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
 const STANDARD_FILE_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
 const STANDARD_FILE_SAVE_RECT: (i16, i16, i16, i16) = (103, 258, 125, 338);
+const STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 360;
+const STANDARD_FILE_GET_DIALOG_HEIGHT: i16 = 196;
+const STANDARD_FILE_GET_OPEN_ITEM: i16 = 1;
+const STANDARD_FILE_GET_PROMPT_RECT: (i16, i16, i16, i16) = (20, 24, 40, 330);
+const STANDARD_FILE_GET_LIST_RECT: (i16, i16, i16, i16) = (48, 24, 135, 330);
+const STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
+const STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (151, 166, 173, 246);
+const STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (151, 258, 173, 338);
 
 #[inline]
 fn return_noerr_and_pop<C: CpuOps>(cpu: &mut C, bytes: u32) -> Result<()> {
@@ -644,6 +661,521 @@ impl super::TrapDispatcher {
         all_types_match
     }
 
+    fn standard_file_get_type_list(
+        bus: &MacMemoryBus,
+        num_types: i16,
+        type_list_ptr: u32,
+    ) -> Option<Option<Vec<u32>>> {
+        if num_types == 0 || num_types < -1 || (num_types > 0 && type_list_ptr == 0) {
+            return None;
+        }
+        if num_types <= 0 {
+            return Some(None);
+        }
+        let count = (num_types as usize).min(64);
+        let mut file_types = Vec::with_capacity(count);
+        for index in 0..count {
+            file_types.push(bus.read_long(type_list_ptr + (index as u32 * 4)));
+        }
+        Some(Some(file_types))
+    }
+
+    fn standard_file_get_candidates(
+        &mut self,
+        bus: &MacMemoryBus,
+        num_types: i16,
+        type_list_ptr: u32,
+    ) -> Vec<StandardFileGetEntry> {
+        let Some(file_types) = Self::standard_file_get_type_list(bus, num_types, type_list_ptr)
+        else {
+            return Vec::new();
+        };
+        let file_types = file_types.as_deref();
+
+        let current =
+            self.standard_file_get_candidates_in_directory(self.default_dir_id, file_types);
+        if !current.is_empty() {
+            return current;
+        }
+
+        let mut pilot_dirs = self
+            .vfs_directories
+            .iter()
+            .filter(|(path, dir)| !path.is_empty() && dir.name.eq_ignore_ascii_case("Pilots"))
+            .map(|(path, dir)| (path.clone(), dir.dir_id))
+            .collect::<Vec<_>>();
+        pilot_dirs.sort_by(|left, right| {
+            left.0
+                .to_ascii_lowercase()
+                .cmp(&right.0.to_ascii_lowercase())
+        });
+
+        let mut entries = Vec::new();
+        for (_, dir_id) in pilot_dirs {
+            if dir_id == self.default_dir_id {
+                continue;
+            }
+            entries.extend(self.standard_file_get_candidates_in_directory(dir_id, file_types));
+        }
+        entries
+    }
+
+    fn standard_file_get_candidates_in_directory(
+        &mut self,
+        dir_id: u32,
+        file_types: Option<&[u32]>,
+    ) -> Vec<StandardFileGetEntry> {
+        let mut entries = Vec::new();
+        for entry in self.list_vfs_catalog_entries(dir_id) {
+            if entry.is_directory {
+                continue;
+            }
+            let Some(metadata) = self.vfs_file_metadata(&entry.path) else {
+                continue;
+            };
+            if file_types.is_some_and(|types| !types.contains(&metadata.file_type)) {
+                continue;
+            }
+            let vref = Self::boot_volume_ref_num();
+            let wd_ref = self
+                .open_working_directory(vref, metadata.parent_dir_id, 0)
+                .unwrap_or(vref);
+            let mut name = encode_mac_roman_lossy(&entry.name);
+            name.truncate(63);
+            entries.push(StandardFileGetEntry {
+                name,
+                display_name: entry.name,
+                vref,
+                wd_ref,
+                dir_id: metadata.parent_dir_id,
+                file_type: metadata.file_type,
+                finder_flags: metadata.finder_flags,
+            });
+        }
+        entries
+    }
+
+    fn standard_file_get_dialog_bounds(&self) -> (i16, i16, i16, i16) {
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        let left = ((screen_width as i16 - STANDARD_FILE_GET_DIALOG_WIDTH) / 2).max(8);
+        let top = ((screen_height as i16 - STANDARD_FILE_GET_DIALOG_HEIGHT) / 2).max(24);
+        (
+            top,
+            left,
+            top + STANDARD_FILE_GET_DIALOG_HEIGHT,
+            left + STANDARD_FILE_GET_DIALOG_WIDTH,
+        )
+    }
+
+    fn standard_file_get_dialog_items(tracking: &StandardFileGetTrackingState) -> Vec<DialogItem> {
+        let prompt = if tracking.entries.is_empty() {
+            "No matching files.".to_string()
+        } else {
+            "Select a file:".to_string()
+        };
+        vec![
+            DialogItem {
+                item_type: 4,
+                rect: STANDARD_FILE_GET_OPEN_RECT,
+                text: "Open".to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 4,
+                rect: STANDARD_FILE_GET_CANCEL_RECT,
+                text: "Cancel".to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 8,
+                rect: STANDARD_FILE_GET_PROMPT_RECT,
+                text: prompt,
+                ..DialogItem::default()
+            },
+        ]
+    }
+
+    fn draw_standard_file_get_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        tracking: &StandardFileGetTrackingState,
+    ) {
+        let items = Self::standard_file_get_dialog_items(tracking);
+        self.draw_dialog(
+            bus,
+            tracking.bounds,
+            2,
+            "",
+            &items,
+            STANDARD_FILE_GET_OPEN_ITEM,
+            "",
+            0,
+            false,
+            0,
+        );
+        let (top, left, _, _) = tracking.bounds;
+        let (button_top, button_left, button_bottom, button_right) = STANDARD_FILE_GET_OPEN_RECT;
+        self.draw_button(
+            bus,
+            top + button_top,
+            left + button_left,
+            top + button_bottom,
+            left + button_right,
+            "Open",
+            true,
+        );
+        self.draw_standard_file_get_list(bus, tracking);
+    }
+
+    fn draw_standard_file_get_list(
+        &self,
+        bus: &mut MacMemoryBus,
+        tracking: &StandardFileGetTrackingState,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (dialog_top, dialog_left, _, _) = tracking.bounds;
+        let (list_top, list_left, list_bottom, list_right) = STANDARD_FILE_GET_LIST_RECT;
+        let top = dialog_top + list_top;
+        let left = dialog_left + list_left;
+        let bottom = dialog_top + list_bottom;
+        let right = dialog_left + list_right;
+
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            false,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            top + 1,
+            right,
+            true,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            bottom - 1,
+            left,
+            bottom,
+            right,
+            true,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            left + 1,
+            true,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            right - 1,
+            bottom,
+            right,
+            true,
+        );
+
+        if tracking.entries.is_empty() {
+            Self::fb_draw_string(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                left + 6,
+                top + 16,
+                "No files",
+                0,
+                12,
+            );
+            return;
+        }
+
+        let first_visible = Self::standard_file_get_first_visible_index(tracking);
+        let visible_rows = Self::standard_file_get_visible_rows();
+        for row in 0..visible_rows {
+            let index = first_visible + row;
+            let Some(entry) = tracking.entries.get(index) else {
+                break;
+            };
+            let row_top = top + 2 + (row as i16 * STANDARD_FILE_GET_ROW_HEIGHT);
+            let row_bottom = (row_top + STANDARD_FILE_GET_ROW_HEIGHT).min(bottom - 1);
+            let selected = index == tracking.selected;
+            if selected {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    row_top,
+                    left + 2,
+                    row_bottom,
+                    right - 2,
+                    true,
+                );
+            }
+            let text = Self::standard_file_get_display_name(&entry.display_name);
+            if selected {
+                Self::fb_draw_string_styled_ink(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    left + 6,
+                    row_top + 11,
+                    &text,
+                    0,
+                    12,
+                    0,
+                    false,
+                );
+            } else {
+                Self::fb_draw_string(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    left + 6,
+                    row_top + 11,
+                    &text,
+                    0,
+                    12,
+                );
+            }
+        }
+    }
+
+    fn standard_file_get_display_name(name: &str) -> String {
+        let mut out = String::new();
+        for (index, ch) in name.chars().enumerate() {
+            if index >= 36 {
+                out.push_str("...");
+                return out;
+            }
+            out.push(ch);
+        }
+        out
+    }
+
+    fn standard_file_get_visible_rows() -> usize {
+        let inner_height =
+            (STANDARD_FILE_GET_LIST_RECT.2 - STANDARD_FILE_GET_LIST_RECT.0 - 3).max(0);
+        (inner_height / STANDARD_FILE_GET_ROW_HEIGHT).max(1) as usize
+    }
+
+    fn standard_file_get_first_visible_index(tracking: &StandardFileGetTrackingState) -> usize {
+        if tracking.entries.is_empty() {
+            return 0;
+        }
+        let visible_rows = Self::standard_file_get_visible_rows();
+        let selected = tracking.selected.min(tracking.entries.len() - 1);
+        selected.saturating_sub(visible_rows.saturating_sub(1))
+    }
+
+    fn begin_standard_file_get_tracking(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        modern_reply: bool,
+        reply_ptr: u32,
+        stack_ptr: u32,
+        pop_total: u32,
+        num_types: i16,
+        type_list_ptr: u32,
+    ) {
+        let entries = self.standard_file_get_candidates(bus, num_types, type_list_ptr);
+        let bounds = self.standard_file_get_dialog_bounds();
+        let saved_pixels = self.save_dialog_pixels(bus, bounds);
+        let tracking = StandardFileGetTrackingState {
+            modern_reply,
+            reply_ptr,
+            stack_ptr,
+            pop_total,
+            entries,
+            selected: 0,
+            bounds,
+            saved_pixels,
+        };
+        self.draw_standard_file_get_dialog(bus, &tracking);
+        self.standard_file_get_tracking = Some(tracking);
+    }
+
+    fn service_standard_file_get_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        mut tracking: StandardFileGetTrackingState,
+    ) {
+        let mut action = None;
+        while let Some(event) = self.event_queue.pop_front() {
+            match event.what {
+                1 => {
+                    action = Self::standard_file_get_mouse_action(
+                        &mut tracking,
+                        event.where_v,
+                        event.where_h,
+                    );
+                    break;
+                }
+                3 | 5 => {
+                    action = Self::standard_file_get_key_action(
+                        &mut tracking,
+                        event.message,
+                        event.modifiers,
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        match action {
+            Some(StandardFileGetAction::Open) => {
+                self.finish_standard_file_get_tracking(cpu, bus, tracking, true);
+            }
+            Some(StandardFileGetAction::Cancel) => {
+                self.finish_standard_file_get_tracking(cpu, bus, tracking, false);
+            }
+            None => {
+                self.draw_standard_file_get_dialog(bus, &tracking);
+                self.standard_file_get_tracking = Some(tracking);
+            }
+        }
+    }
+
+    fn finish_standard_file_get_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        tracking: StandardFileGetTrackingState,
+        accepted: bool,
+    ) {
+        self.restore_dialog_pixels(bus, tracking.bounds, &tracking.saved_pixels);
+        if accepted {
+            if let Some(selection) = tracking.entries.get(tracking.selected) {
+                if tracking.modern_reply {
+                    standard_file_get_reply_modern(
+                        bus,
+                        tracking.reply_ptr,
+                        selection.vref,
+                        selection.dir_id,
+                        selection.file_type,
+                        selection.finder_flags,
+                        &selection.name,
+                    );
+                } else {
+                    standard_file_get_reply_old(
+                        bus,
+                        tracking.reply_ptr,
+                        selection.wd_ref,
+                        selection.file_type,
+                        &selection.name,
+                    );
+                }
+            } else {
+                standard_file_cancel_reply(bus, tracking.reply_ptr);
+            }
+        } else {
+            standard_file_cancel_reply(bus, tracking.reply_ptr);
+        }
+        cpu.write_reg(Register::A7, tracking.stack_ptr + tracking.pop_total);
+        cpu.write_reg(Register::D0, 0);
+    }
+
+    fn standard_file_get_mouse_action(
+        tracking: &mut StandardFileGetTrackingState,
+        v: i16,
+        h: i16,
+    ) -> Option<StandardFileGetAction> {
+        let (top, left, _, _) = tracking.bounds;
+        let local_v = v - top;
+        let local_h = h - left;
+        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_GET_OPEN_RECT) {
+            if tracking.entries.is_empty() {
+                return None;
+            }
+            return Some(StandardFileGetAction::Open);
+        }
+        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_GET_CANCEL_RECT) {
+            return Some(StandardFileGetAction::Cancel);
+        }
+        if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_GET_LIST_RECT)
+            && !tracking.entries.is_empty()
+        {
+            let row = ((local_v - STANDARD_FILE_GET_LIST_RECT.0 - 2) / STANDARD_FILE_GET_ROW_HEIGHT)
+                .max(0) as usize;
+            let index = Self::standard_file_get_first_visible_index(tracking) + row;
+            if index < tracking.entries.len() {
+                tracking.selected = index;
+            }
+        }
+        None
+    }
+
+    fn standard_file_get_key_action(
+        tracking: &mut StandardFileGetTrackingState,
+        message: u32,
+        modifiers: u16,
+    ) -> Option<StandardFileGetAction> {
+        let key_code = ((message >> 8) & 0xFF) as u8;
+        let char_code = (message & 0xFF) as u8;
+        let command_down = (modifiers & 0x0100) != 0;
+
+        if char_code == 0x0D || char_code == 0x03 || key_code == 0x24 || key_code == 0x4C {
+            return (!tracking.entries.is_empty()).then_some(StandardFileGetAction::Open);
+        }
+        if char_code == 0x1B || key_code == 0x35 || (command_down && char_code == b'.') {
+            return Some(StandardFileGetAction::Cancel);
+        }
+        if tracking.entries.is_empty() {
+            return None;
+        }
+        if key_code == 0x7E || char_code == 0x1E {
+            tracking.selected = tracking.selected.saturating_sub(1);
+        } else if key_code == 0x7D || char_code == 0x1F {
+            tracking.selected = (tracking.selected + 1).min(tracking.entries.len() - 1);
+        }
+        None
+    }
+
     fn standard_file_put_prompt(bus: &MacMemoryBus, prompt_ptr: u32) -> String {
         if prompt_ptr == 0 {
             return "Save as:".to_string();
@@ -746,13 +1278,14 @@ impl super::TrapDispatcher {
         let bounds = self.standard_file_put_dialog_bounds();
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
         let name_len = name.len().min(i16::MAX as usize) as i16;
+        let old_wd_ref = self.standard_file_old_reply_wd_ref();
         let tracking = StandardFilePutTrackingState {
             modern_reply,
             reply_ptr,
             stack_ptr,
             pop_total,
             vref: self.resolve_volume_ref_num(self.app_wd_refnum),
-            old_wd_ref: self.app_wd_refnum,
+            old_wd_ref,
             dir_id: self.default_dir_id,
             prompt: Self::standard_file_put_prompt(bus, prompt_ptr),
             name,
@@ -763,6 +1296,12 @@ impl super::TrapDispatcher {
         };
         self.draw_standard_file_put_dialog(bus, &tracking);
         self.standard_file_put_tracking = Some(tracking);
+    }
+
+    fn standard_file_old_reply_wd_ref(&mut self) -> i16 {
+        let vref = self.resolve_volume_ref_num(self.app_wd_refnum);
+        self.open_working_directory(vref, self.default_dir_id, 0)
+            .unwrap_or_else(|| self.resolve_volume_ref_num(self.app_wd_refnum))
     }
 
     fn service_standard_file_put_tracking<C: CpuOps>(
@@ -8025,6 +8564,10 @@ impl super::TrapDispatcher {
                     self.service_standard_file_put_tracking(cpu, bus, tracking);
                     return Some(Ok(()));
                 }
+                if let Some(tracking) = self.standard_file_get_tracking.take() {
+                    self.service_standard_file_get_tracking(cpu, bus, tracking);
+                    return Some(Ok(()));
+                }
                 let (
                     arg_bytes,
                     reply_offset,
@@ -8150,15 +8693,57 @@ impl super::TrapDispatcher {
                             bus, reply_ptr, vref, dir_id, &name, replacing,
                         );
                     } else {
-                        standard_file_put_reply_old(bus, reply_ptr, self.app_wd_refnum, &name);
+                        let wd_ref = self.standard_file_old_reply_wd_ref();
+                        standard_file_put_reply_old(bus, reply_ptr, wd_ref, &name);
                     }
-                } else if let Some(selection) = self.standard_file_env_selection().or_else(|| {
+                } else if let Some(selection) = self.standard_file_env_selection() {
+                    // StandardGetFile returns sfGood, sfType, and an FSSpec
+                    // for the selected file; SFGetFile's old SFReply uses a
+                    // working-directory refnum in vRefNum.
+                    // Inside Macintosh: Files (1992), pages 1-12, 3-42,
+                    // 3-45..3-54.
+                    if modern_reply {
+                        standard_file_get_reply_modern(
+                            bus,
+                            reply_ptr,
+                            selection.vref,
+                            selection.dir_id,
+                            selection.file_type,
+                            selection.finder_flags,
+                            &selection.name,
+                        );
+                    } else {
+                        standard_file_get_reply_old(
+                            bus,
+                            reply_ptr,
+                            selection.wd_ref,
+                            selection.file_type,
+                            &selection.name,
+                        );
+                    }
+                } else if self.yield_for_ui {
+                    if let Some((num_types_offset, type_list_offset)) = get_filter_offsets {
+                        let num_types = bus.read_word(sp + num_types_offset) as i16;
+                        let type_list_ptr = bus.read_long(sp + type_list_offset);
+                        self.begin_standard_file_get_tracking(
+                            bus,
+                            modern_reply,
+                            reply_ptr,
+                            sp,
+                            pop_total,
+                            num_types,
+                            type_list_ptr,
+                        );
+                        return Some(Ok(()));
+                    }
+                    standard_file_cancel_reply(bus, reply_ptr);
+                } else if let Some(selection) =
                     get_filter_offsets.and_then(|(num_types_offset, type_list_offset)| {
                         let num_types = bus.read_word(sp + num_types_offset) as i16;
                         let type_list_ptr = bus.read_long(sp + type_list_offset);
                         self.standard_file_auto_selection(bus, num_types, type_list_ptr)
                     })
-                }) {
+                {
                     // StandardGetFile returns sfGood, sfType, and an FSSpec
                     // for the selected file; SFGetFile's old SFReply uses a
                     // working-directory refnum in vRefNum.
@@ -19450,6 +20035,82 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
+    // Pack3 / Standard File ($A9EA) — StandardGetFile selector $0006.
+    // The retained GUI path must let browser users select restored pilot
+    // files rather than canceling silently.
+    #[test]
+    fn standard_get_file_gui_tracking_opens_selected_pilots_file() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x320B00u32;
+        let type_list_ptr = 0x320C00u32;
+        let app_dir = disp.ensure_vfs_directory("EV Override 1.0.1");
+        let pilots_dir = disp.ensure_vfs_directory("EV Override 1.0.1/Pilots");
+        disp.default_dir_id = app_dir;
+        disp.yield_for_ui = true;
+        disp.vfs_rsrc
+            .insert("EV Override 1.0.1/Pilots/Last Pilot".to_string(), vec![1]);
+        disp.set_vfs_entry_metadata("EV Override 1.0.1/Pilots/Last Pilot", *b"PIL ", *b"EVO!", 0);
+        disp.vfs_rsrc.insert(
+            "EV Override 1.0.1/Pilots/Rick Hardslab".to_string(),
+            vec![2, 3, 4],
+        );
+        disp.set_vfs_entry_metadata(
+            "EV Override 1.0.1/Pilots/Rick Hardslab",
+            *b"PIL ",
+            *b"EVO!",
+            0x4000,
+        );
+        bus.write_long(type_list_ptr, u32::from_be_bytes(*b"PIL "));
+        bus.write_word(sp, 0x0006); // StandardGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 6, type_list_ptr); // typeList
+        bus.write_word(sp + 10, 1); // numTypes
+        bus.write_long(sp + 12, 0); // fileFilter
+
+        let start = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(start.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.is_standard_file_get_tracking());
+
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_7D1F, // ArrowDown
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        let select_second = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(select_second.unwrap().is_ok());
+        assert!(disp.is_standard_file_get_tracking());
+
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_240D, // Return
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        let open = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(open.unwrap().is_ok());
+
+        assert!(!disp.is_standard_file_get_tracking());
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
+        assert_eq!(
+            bus.read_word(reply_ptr + 6),
+            crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+        );
+        assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 12), b"Rick Hardslab".to_vec());
+        assert_eq!(bus.read_word(reply_ptr + 78), 0x4000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
     // Pack3 / Standard File ($A9EA) — SFGetFile selector $0002
     // IM:Files 1992 pp. 3-53 and 3-61; IM:I I-523..I-526.
     #[test]
@@ -19503,6 +20164,62 @@ mod tests {
             bus.read_pstring(reply_ptr + 10),
             b"Tom Fighter Paris".to_vec()
         );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 28);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — SFGetFile selector $0002.
+    // Old SFReply GUI selections return a WDRefNum for the selected file's
+    // directory, matching the headless path.
+    #[test]
+    fn sf_get_file_gui_tracking_opens_selected_pilots_file_with_wdrefnum() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x320D00u32;
+        let type_list_ptr = 0x320E00u32;
+        let app_dir = disp.ensure_vfs_directory("Escape Velocity 1.0.5 ƒ");
+        let pilots_dir = disp.ensure_vfs_directory("Escape Velocity 1.0.5 ƒ/Pilots");
+        disp.default_dir_id = app_dir;
+        disp.yield_for_ui = true;
+        disp.vfs_rsrc.insert(
+            "Escape Velocity 1.0.5 ƒ/Pilots/Ace".to_string(),
+            vec![1, 2, 3],
+        );
+        disp.set_vfs_entry_metadata("Escape Velocity 1.0.5 ƒ/Pilots/Ace", *b"PIL ", *b"EV  ", 0);
+        bus.write_long(type_list_ptr, u32::from_be_bytes(*b"PIL "));
+        bus.write_word(sp, 0x0002); // SFGetFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 10, type_list_ptr); // typeList
+        bus.write_word(sp + 14, 1); // numTypes
+        bus.write_long(sp + 18, 0); // fileFilter
+
+        let start = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(start.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.is_standard_file_get_tracking());
+
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_240D,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        let open = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(open.unwrap().is_ok());
+
+        let wd_ref = bus.read_word(reply_ptr + 6) as i16;
+        let wd_info = disp
+            .working_directory_info(wd_ref)
+            .expect("SFGetFile GUI path should return a WDRefNum");
+        assert!(!disp.is_standard_file_get_tracking());
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
+        assert_eq!(wd_info.dir_id, pilots_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 10), b"Ace".to_vec());
         assert_eq!(cpu.read_reg(Register::A7), sp + 28);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
@@ -19719,7 +20436,7 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x320380u32;
         let original_name_ptr = 0x320500u32;
-        disp.app_wd_refnum = -37;
+        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         bus.write_pstring(original_name_ptr, b"Old Save");
         bus.write_word(sp, 0x0001); // SFPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -19731,8 +20448,93 @@ mod tests {
 
         assert_eq!(bus.read_byte(reply_ptr), 0xFF);
         assert_eq!(bus.read_byte(reply_ptr + 1), 0);
-        assert_eq!(bus.read_word(reply_ptr + 6), (-37i16) as u16);
+        assert_eq!(
+            bus.read_word(reply_ptr + 6),
+            crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+        );
         assert_eq!(bus.read_pstring(reply_ptr + 10), b"Old Save".to_vec());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — SFPutFile selector $0001.
+    // Files 1992 p. 1-12: SFReply.vRefNum is a WDRefNum encoding the
+    // volume and parent directory of the selected file.
+    #[test]
+    fn sf_put_file_returns_working_directory_refnum_for_current_save_directory() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x320580u32;
+        let original_name_ptr = 0x320680u32;
+        let pilots_dir = disp.ensure_vfs_directory("Pilots");
+        disp.default_dir_id = pilots_dir;
+        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        bus.write_pstring(original_name_ptr, b"Old Pilot");
+        bus.write_word(sp, 0x0001); // SFPutFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 10, original_name_ptr); // origName
+
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        let wd_ref = bus.read_word(reply_ptr + 6) as i16;
+        let wd_info = disp
+            .working_directory_info(wd_ref)
+            .expect("SFPutFile should return a WDRefNum for the save directory");
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(wd_info.dir_id, pilots_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 10), b"Old Pilot".to_vec());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack3 / Standard File ($A9EA) — SFPutFile selector $0001.
+    // The retained GUI path must return the same selected-directory WDRefNum
+    // as the headless path after the user accepts the save.
+    #[test]
+    fn sf_put_file_gui_tracking_returns_working_directory_refnum() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x320780u32;
+        let original_name_ptr = 0x320880u32;
+        let prompt_ptr = 0x3208C0u32;
+        let pilots_dir = disp.ensure_vfs_directory("Pilots");
+        disp.default_dir_id = pilots_dir;
+        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.yield_for_ui = true;
+        bus.write_pstring(original_name_ptr, b"Old Pilot");
+        bus.write_pstring(prompt_ptr, b"Pilot file:");
+        bus.write_word(sp, 0x0001); // SFPutFile selector
+        bus.write_long(sp + 2, reply_ptr); // VAR reply
+        bus.write_long(sp + 10, original_name_ptr); // origName
+        bus.write_long(sp + 14, prompt_ptr); // prompt
+
+        let start = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(start.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.is_standard_file_put_tracking());
+
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_240D,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        let accept = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(accept.unwrap().is_ok());
+
+        let wd_ref = bus.read_word(reply_ptr + 6) as i16;
+        let wd_info = disp
+            .working_directory_info(wd_ref)
+            .expect("SFPutFile GUI path should return a WDRefNum for the save directory");
+        assert!(!disp.is_standard_file_put_tracking());
+        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(wd_info.dir_id, pilots_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 10), b"Old Pilot".to_vec());
         assert_eq!(cpu.read_reg(Register::A7), sp + 22);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
