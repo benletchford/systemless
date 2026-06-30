@@ -308,6 +308,8 @@ fn read_allocated_bytes(bus: &MacMemoryBus, ptr: u32) -> Vec<u8> {
 }
 
 fn record_movie_error(dispatcher: &mut super::TrapDispatcher, err: i16) {
+    // QuickTime 1993, p. 2-85: every Movie Toolbox function updates the
+    // current error; the first nonzero result also latches as the sticky error.
     dispatcher.movie_error = err;
     if err != 0 && dispatcher.movie_sticky_error == 0 {
         dispatcher.movie_sticky_error = err;
@@ -8695,6 +8697,7 @@ impl super::TrapDispatcher {
                         let dir_id = bus.read_long(spec_ptr + 2);
                         let wants_write = permission == 2 || permission == 3;
                         let Some(vfs_key) = self.vfs_key_for_fsspec(vref, dir_id, &filename) else {
+                            record_movie_error(self, -43);
                             bus.write_word(sp + 10, (-43i16) as u16);
                             cpu.write_reg(Register::A7, sp + 10);
                             cpu.write_reg(Register::D0, (-43i16) as u32);
@@ -8739,6 +8742,7 @@ impl super::TrapDispatcher {
                                 refnum
                             }
                         } else {
+                            record_movie_error(self, -43);
                             bus.write_word(sp + 10, (-43i16) as u16);
                             cpu.write_reg(Register::A7, sp + 10);
                             cpu.write_reg(Register::D0, (-43i16) as u32);
@@ -8751,6 +8755,7 @@ impl super::TrapDispatcher {
                         bus.write_word(sp + 10, 0);
                         cpu.write_reg(Register::A7, sp + 10);
                         cpu.write_reg(Register::D0, 0);
+                        record_movie_error(self, 0);
                         Ok(())
                     }
                     0x00F0 => {
@@ -21406,6 +21411,63 @@ mod tests {
             Some("AmoebArena/Movies/C&G".to_string())
         );
         assert_eq!(disp.current_resource_refnum(), refnum);
+    }
+
+    #[test]
+    fn movietoolboxdispatch_open_movie_file_missing_sets_current_and_sticky_error() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let spec_ptr = 0x300000;
+        let ref_num_ptr = 0x300100;
+        let movies_dir = disp.ensure_vfs_directory("AmoebArena/Movies");
+        disp.ensure_vfs_catalog();
+        write_test_fsspec(&mut bus, spec_ptr, -1, movies_dir, b"Missing");
+        bus.write_word(ref_num_ptr, 0xCAFE);
+        disp.movie_error = 0;
+        disp.movie_sticky_error = 0;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0192); // OpenMovieFile
+        bus.write_word(sp, 0x0100); // fsRdPerm as SignedByte in the high byte.
+        bus.write_long(sp + 2, ref_num_ptr);
+        bus.write_long(sp + 6, spec_ptr);
+        bus.write_word(sp + 10, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "OpenMovieFile should be handled");
+        assert!(result.unwrap().is_ok(), "OpenMovieFile should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), (-43i16) as u16);
+        assert_eq!(cpu.read_reg(Register::D0), (-43i16) as u32);
+        assert_eq!(
+            bus.read_word(ref_num_ptr),
+            0xCAFE,
+            "missing movie must not overwrite resRefNum"
+        );
+        assert_eq!(disp.movie_error, -43);
+        assert_eq!(disp.movie_sticky_error, -43);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0003); // GetMoviesError
+        bus.write_word(sp, 0xBEEF);
+        let current = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(current.is_some(), "GetMoviesError should be handled");
+        assert!(current.unwrap().is_ok(), "GetMoviesError should return");
+        assert_eq!(bus.read_word(sp), (-43i16) as u16);
+        assert_eq!(cpu.read_reg(Register::D0), (-43i16) as u32);
+        assert_eq!(disp.movie_error, 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0004); // GetMoviesStickyError
+        bus.write_word(sp, 0xBEEF);
+        let sticky = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(sticky.is_some(), "GetMoviesStickyError should be handled");
+        assert!(
+            sticky.unwrap().is_ok(),
+            "GetMoviesStickyError should return"
+        );
+        assert_eq!(bus.read_word(sp), (-43i16) as u16);
+        assert_eq!(cpu.read_reg(Register::D0), (-43i16) as u32);
     }
 
     #[test]
