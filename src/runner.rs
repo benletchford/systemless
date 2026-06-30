@@ -975,7 +975,9 @@ impl FixtureRunner {
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
         self.dispatcher.set_mouse_position(v, h);
         self.sync_mouse_position_lowmem();
-        self.wake_pending_wait_next_event_if_input_available();
+        if !self.wake_pending_wait_next_event_if_input_available() {
+            self.wake_pending_wait_next_event_with_null_event_for_polling_input();
+        }
         self.wake_foreground_after_input();
     }
 
@@ -2998,20 +3000,65 @@ impl FixtureRunner {
         true
     }
 
-    fn wake_pending_wait_next_event_if_input_available(&mut self) {
+    fn wake_pending_wait_next_event_if_input_available(&mut self) -> bool {
         if self.active_interrupt_callback.is_some() {
-            return;
+            return false;
         }
         if self.dispatcher.pending_wait_sleep_ticks == 0
             || self.dispatcher.pending_wait_next_event_return.is_none()
         {
-            return;
+            return false;
         }
         // Event Manager sleep is interrupted as soon as a matching input event
         // is available; callers injecting input between run slices should not
         // have to wait for the next foreground CPU step to observe the wake.
         // Macintosh Toolbox Essentials 1992, p. 2-22.
-        let _ = self.deliver_pending_wait_next_event_if_available();
+        self.deliver_pending_wait_next_event_if_available()
+    }
+
+    fn wake_pending_wait_next_event_with_null_event_for_polling_input(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+        if self.dispatcher.pending_wait_sleep_ticks == 0 {
+            return false;
+        }
+        let Some(pending) = self.dispatcher.pending_wait_next_event_return.take() else {
+            return false;
+        };
+
+        if let (Some(resume_pc), Some(resume_sp)) = (pending.resume_pc, pending.resume_sp) {
+            let current_pc = self.cpu.read_reg(Register::PC);
+            let current_sp = self.cpu.read_reg(Register::A7);
+            if current_pc != resume_pc || current_sp != resume_sp {
+                self.dispatcher.pending_wait_sleep_ticks = 0;
+                if crate::trap::dispatch::trace_input_enabled() {
+                    eprintln!(
+                        "[INPUT] dropping stale WaitNextEvent polling wake parked pc=${:08X} sp=${:08X}; current pc=${:08X} sp=${:08X}",
+                        resume_pc, resume_sp, current_pc, current_sp
+                    );
+                }
+                return false;
+            }
+        }
+
+        let (where_v, where_h) = self.dispatcher.mouse_position();
+        let modifiers = self.dispatcher.current_event_modifiers();
+        self.dispatcher.write_event_record(
+            &mut self.bus,
+            pending.event_ptr,
+            0,
+            0,
+            where_v,
+            where_h,
+            modifiers,
+        );
+        self.bus.write_word(pending.result_ptr, 0);
+        self.dispatcher.pending_wait_sleep_ticks = 0;
+        if crate::trap::dispatch::trace_input_enabled() {
+            eprintln!("[INPUT] WaitNextEvent sleep woke with null event for polling input");
+        }
+        true
     }
 
     fn wake_foreground_after_input(&mut self) {
@@ -8154,6 +8201,71 @@ mod tests {
         assert_eq!(
             runner.dispatcher.debug_mouse_moved_event_count, 1,
             "async wake path should share the normal mouse-moved event accounting"
+        );
+    }
+
+    #[test]
+    fn set_mouse_position_wakes_pending_wait_next_event_with_null_for_polling_loop() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+        let event_ptr = 0x0020_0000;
+        let result_ptr = 0x0020_0020;
+
+        runner.bus.write_word(program_start, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.tick_budget = 0;
+        runner.bus.write_word(result_ptr, 0xFFFF);
+        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.write_event_record(
+            &mut runner.bus,
+            event_ptr,
+            0xFFFF,
+            0xABCD_EF01,
+            1,
+            2,
+            3,
+        );
+        runner.dispatcher.pending_wait_sleep_ticks = 60;
+        runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
+            event_ptr,
+            result_ptr,
+            event_mask: 0xFFFF,
+            mouse_rgn: 0,
+            resume_pc: None,
+            resume_sp: None,
+        });
+
+        runner.set_mouse_position(123, 456);
+
+        assert_eq!(
+            runner.bus.read_word(event_ptr),
+            0,
+            "mouse movement with no mouseRgn event should wake WNE as a null event for polling loops"
+        );
+        assert_eq!(runner.bus.read_long(event_ptr + 2), 0);
+        assert_eq!(runner.bus.read_word(event_ptr + 10), 123u16);
+        assert_eq!(runner.bus.read_word(event_ptr + 12), 456u16);
+        assert_eq!(
+            runner.bus.read_word(result_ptr),
+            0,
+            "WaitNextEvent should return FALSE when the wake is only for polling input"
+        );
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
+        assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+
+        let (steps, running) = runner.run_steps(1, Some(110));
+        assert!(running);
+        assert_eq!(
+            steps, 1,
+            "polling wake should let foreground code resume before the old sleep expires"
+        );
+        assert_eq!(
+            runner.bus.read_long(0x016A),
+            100,
+            "polling wake must not spend the next slice only advancing ticks"
         );
     }
 
