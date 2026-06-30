@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use systemless::runner::{FixtureRunner, VfsFileSnapshot, VfsFileSummary};
+use systemless::runner::{FixtureRunner, VfsFileSnapshot, VfsFileStat, VfsFileSummary};
 
 const SAVE_SCAN_FRAME_INTERVAL: u8 = 30;
 const METADATA_FILE: &str = "metadata.json";
@@ -15,7 +15,7 @@ const RESOURCE_FORK_FILE: &str = "resource.fork";
 #[derive(Debug)]
 pub struct DesktopSaveStore {
     root: PathBuf,
-    archive_vfs_fingerprints: HashMap<String, SaveFingerprint>,
+    archive_vfs_stats: HashMap<String, VfsFileStat>,
     last_vfs_fingerprints: HashMap<String, SaveFingerprint>,
     persisted_save_paths: HashSet<String>,
     save_scan_frame: u8,
@@ -48,6 +48,21 @@ impl From<&VfsFileSummary> for SaveFingerprint {
     }
 }
 
+impl From<&VfsFileSnapshot> for SaveFingerprint {
+    fn from(snapshot: &VfsFileSnapshot) -> Self {
+        Self {
+            data_len: snapshot.data_fork.len(),
+            resource_len: snapshot.resource_fork.len(),
+            data_hash: save_fork_hash(&snapshot.data_fork),
+            resource_hash: save_fork_hash(&snapshot.resource_fork),
+            file_type: snapshot.file_type,
+            creator: snapshot.creator,
+            finder_flags: snapshot.finder_flags,
+            modified_date: snapshot.modified_date,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct StoredSaveMetadata {
     version: u8,
@@ -63,7 +78,7 @@ impl DesktopSaveStore {
     pub fn for_loaded_archive(game_path: &Path, runner: &mut FixtureRunner) -> Self {
         Self {
             root: save_root_for_game_path(game_path),
-            archive_vfs_fingerprints: vfs_fingerprints(runner),
+            archive_vfs_stats: vfs_stats(runner),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,
@@ -87,6 +102,10 @@ impl DesktopSaveStore {
             }
         };
         self.persisted_save_paths = files.iter().map(|file| file.path.clone()).collect();
+        self.last_vfs_fingerprints = files
+            .iter()
+            .map(|file| (file.path.clone(), SaveFingerprint::from(file)))
+            .collect();
         files
     }
 
@@ -99,26 +118,25 @@ impl DesktopSaveStore {
     }
 
     pub fn sync_save_files_now(&mut self, runner: &mut FixtureRunner) {
-        let summaries = runner.vfs_file_summaries();
-        let mut next_fingerprints = summaries
-            .iter()
-            .map(|summary| (summary.path.clone(), SaveFingerprint::from(summary)))
-            .collect::<HashMap<_, _>>();
+        let stats = runner.vfs_file_stats_where(is_user_save_path);
+        let mut next_fingerprints = HashMap::new();
         let mut next_persisted_paths = HashSet::new();
 
-        for summary in summaries {
-            if !is_user_save_path(&summary.path) {
-                continue;
-            }
-
-            let fingerprint = SaveFingerprint::from(&summary);
-            if self
-                .archive_vfs_fingerprints
-                .get(&summary.path)
-                .is_some_and(|archive| archive == &fingerprint)
+        for stat in stats {
+            if !self.persisted_save_paths.contains(&stat.path)
+                && self
+                    .archive_vfs_stats
+                    .get(&stat.path)
+                    .is_some_and(|archive| vfs_stats_match(archive, &stat))
             {
                 continue;
             }
+
+            let Some(summary) = runner.vfs_file_summary(&stat.path) else {
+                continue;
+            };
+            let fingerprint = SaveFingerprint::from(&summary);
+            next_fingerprints.insert(summary.path.clone(), fingerprint.clone());
 
             let Some(snapshot) = runner.vfs_file_snapshot(&summary.path) else {
                 continue;
@@ -236,12 +254,30 @@ impl DesktopSaveStore {
     }
 }
 
-fn vfs_fingerprints(runner: &mut FixtureRunner) -> HashMap<String, SaveFingerprint> {
+fn vfs_stats(runner: &mut FixtureRunner) -> HashMap<String, VfsFileStat> {
     runner
-        .vfs_file_summaries()
+        .vfs_file_stats_where(|_| true)
         .into_iter()
-        .map(|summary| (summary.path.clone(), SaveFingerprint::from(&summary)))
+        .map(|stat| (stat.path.clone(), stat))
         .collect()
+}
+
+fn vfs_stats_match(left: &VfsFileStat, right: &VfsFileStat) -> bool {
+    left.data_len == right.data_len
+        && left.resource_len == right.resource_len
+        && left.file_type == right.file_type
+        && left.creator == right.creator
+        && left.finder_flags == right.finder_flags
+        && left.modified_date == right.modified_date
+}
+
+fn save_fork_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn load_saved_files_from_root(root: &Path) -> io::Result<Vec<VfsFileSnapshot>> {
@@ -446,7 +482,7 @@ mod tests {
         let root = temp.path().join(".systemless/saves/EVO");
         let store = DesktopSaveStore {
             root: root.clone(),
-            archive_vfs_fingerprints: HashMap::new(),
+            archive_vfs_stats: HashMap::new(),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,

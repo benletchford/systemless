@@ -388,6 +388,18 @@ pub struct VfsFileSummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VfsFileStat {
+    pub path: String,
+    pub data_len: usize,
+    pub resource_len: usize,
+    pub file_type: u32,
+    pub creator: u32,
+    pub finder_flags: u16,
+    pub created_date: u32,
+    pub modified_date: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VfsFileSnapshot {
     pub path: String,
     pub data_fork: Vec<u8>,
@@ -1267,10 +1279,37 @@ impl FixtureRunner {
     }
 
     pub fn vfs_file_summaries(&mut self) -> Vec<VfsFileSummary> {
+        self.vfs_file_summaries_where(|_| true)
+    }
+
+    pub fn vfs_file_summaries_where<F>(&mut self, mut include: F) -> Vec<VfsFileSummary>
+    where
+        F: FnMut(&str) -> bool,
+    {
         self.vfs_file_paths()
             .into_iter()
+            .filter(|path| include(path))
             .filter_map(|path| self.vfs_file_summary_for_path(&path))
             .collect()
+    }
+
+    pub fn vfs_file_stats_where<F>(&mut self, mut include: F) -> Vec<VfsFileStat>
+    where
+        F: FnMut(&str) -> bool,
+    {
+        self.vfs_file_paths()
+            .into_iter()
+            .filter(|path| include(path))
+            .filter_map(|path| self.vfs_file_stat_for_path(&path))
+            .collect()
+    }
+
+    pub fn vfs_file_summary(&mut self, path: &str) -> Option<VfsFileSummary> {
+        let normalized = TrapDispatcher::normalize_vfs_path(path);
+        if normalized.is_empty() || normalized.starts_with("__rsrc__") {
+            return None;
+        }
+        self.vfs_file_summary_for_path(&normalized)
     }
 
     pub fn vfs_file_snapshot(&mut self, path: &str) -> Option<VfsFileSnapshot> {
@@ -1353,7 +1392,7 @@ impl FixtureRunner {
     }
 
     fn vfs_file_summary_for_path(&mut self, path: &str) -> Option<VfsFileSummary> {
-        let metadata = self.dispatcher.vfs_file_metadata(path)?;
+        let stat = self.vfs_file_stat_for_path(path)?;
         let data_fork = self
             .dispatcher
             .vfs
@@ -1367,11 +1406,32 @@ impl FixtureRunner {
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         Some(VfsFileSummary {
-            path: path.to_string(),
-            data_len: data_fork.len(),
-            resource_len: resource_fork.len(),
+            path: stat.path,
+            data_len: stat.data_len,
+            resource_len: stat.resource_len,
             data_hash: vfs_fork_hash(data_fork),
             resource_hash: vfs_fork_hash(resource_fork),
+            file_type: stat.file_type,
+            creator: stat.creator,
+            finder_flags: stat.finder_flags,
+            created_date: stat.created_date,
+            modified_date: stat.modified_date,
+        })
+    }
+
+    fn vfs_file_stat_for_path(&mut self, path: &str) -> Option<VfsFileStat> {
+        let metadata = self.dispatcher.vfs_file_metadata(path)?;
+        let data_len = self.dispatcher.vfs.get(path).map(Vec::len).unwrap_or(0);
+        let resource_len = self
+            .dispatcher
+            .vfs_rsrc
+            .get(path)
+            .map(Vec::len)
+            .unwrap_or(0);
+        Some(VfsFileStat {
+            path: path.to_string(),
+            data_len,
+            resource_len,
             file_type: metadata.file_type,
             creator: metadata.creator,
             finder_flags: metadata.finder_flags,
@@ -2208,6 +2268,7 @@ impl FixtureRunner {
         audio_samples: usize,
         yield_for_ui: bool,
         sound_work_only: bool,
+        finish_frame: bool,
     ) -> (usize, bool) {
         // Freeze ticks while menu/control tracking is active. ModalDialog
         // refires still return to the GUI for intermediate rendering, but
@@ -2894,10 +2955,12 @@ impl FixtureRunner {
                                     {
                                         continue;
                                     }
-                                    self.finish_host_frame(
-                                        audio_samples,
-                                        sound_interrupt_dispatched,
-                                    );
+                                    if finish_frame {
+                                        self.finish_host_frame(
+                                            audio_samples,
+                                            sound_interrupt_dispatched,
+                                        );
+                                    }
                                     return (count, true);
                                 }
                             }
@@ -2975,7 +3038,9 @@ impl FixtureRunner {
             self.dispatcher.instruction_count = self.total_instructions;
         }
 
-        self.finish_host_frame(audio_samples, sound_interrupt_dispatched || sound_work_only);
+        if finish_frame {
+            self.finish_host_frame(audio_samples, sound_interrupt_dispatched || sound_work_only);
+        }
 
         (count, !self.halted)
     }
@@ -2998,6 +3063,7 @@ impl FixtureRunner {
             audio_samples,
             tick_override.is_some(),
             false,
+            true,
         )
     }
 
@@ -3009,7 +3075,7 @@ impl FixtureRunner {
         max_steps: usize,
         audio_samples: usize,
     ) -> (usize, bool) {
-        self.run_steps_internal(max_steps, None, audio_samples, true, false)
+        self.run_steps_internal(max_steps, None, audio_samples, true, false, true)
     }
 
     /// Run a GUI frame slice paced by wall-clock time.
@@ -3029,13 +3095,27 @@ impl FixtureRunner {
         deadline_tick: u32,
         audio_samples: usize,
     ) -> (usize, bool) {
-        self.run_steps_internal(max_steps, Some(deadline_tick), audio_samples, true, false)
+        self.run_steps_internal(
+            max_steps,
+            Some(deadline_tick),
+            audio_samples,
+            true,
+            false,
+            true,
+        )
+    }
+
+    /// Run a GUI CPU slice paced by wall-clock time without finalizing a host
+    /// frame. Browser frontends use this to execute several small CPU batches
+    /// and then redraw chrome / mix queued audio once for the outer frame.
+    pub fn run_gui_cpu_slice(&mut self, max_steps: usize, deadline_tick: u32) -> (usize, bool) {
+        self.run_steps_internal(max_steps, Some(deadline_tick), 0, true, false, false)
     }
 
     /// Run pending Sound Manager interrupt work without advancing TickCount
     /// or continuing into foreground guest code after the callback returns.
     pub fn run_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
-        self.run_steps_internal(max_steps, None, 0, true, true)
+        self.run_steps_internal(max_steps, None, 0, true, true, true)
     }
 
     /// Run for a specific number of steps (for GUI/headless callers that don't
@@ -3049,7 +3129,7 @@ impl FixtureRunner {
     /// [`halted_sp`](Self::halted_sp), [`halted_d0`](Self::halted_d0)
     /// accessors after this call returns.
     pub fn run_steps(&mut self, max_steps: usize, tick_override: Option<u32>) -> (usize, bool) {
-        self.run_steps_internal(max_steps, tick_override, 0, false, false)
+        self.run_steps_internal(max_steps, tick_override, 0, false, false, true)
     }
 
     fn charge_tick_budget(&mut self, units: i32, tick_cap: Option<u32>) -> bool {
@@ -5305,9 +5385,22 @@ mod tests {
             .insert("__rsrc__Pilots/Test Pilot".to_string(), vec![0xEE]);
         runner
             .dispatcher
+            .vfs
+            .insert("Game Data/Shapes".to_string(), vec![0xAA; 1024]);
+        runner
+            .dispatcher
             .set_vfs_entry_metadata("Pilots/Test Pilot", *b"PIL ", *b"EVO!", 0x4000);
+        runner
+            .dispatcher
+            .set_vfs_entry_metadata("Game Data/Shapes", *b"shap", *b"26.2", 0);
 
         let summaries = runner.vfs_file_summaries();
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries
+            .iter()
+            .any(|summary| summary.path == "Game Data/Shapes"));
+
+        let summaries = runner.vfs_file_summaries_where(|path| path.starts_with("Pilots/"));
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].path, "Pilots/Test Pilot");
         assert_eq!(summaries[0].data_len, 3);
@@ -7077,6 +7170,37 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(runner.active_interrupt_callback.is_none());
         assert!(!runner.has_pending_sound_work());
+    }
+
+    #[test]
+    fn gui_cpu_slice_does_not_finalize_host_frame() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let callback_addr = runner.bus.alloc(2);
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(PendingSoundCallback::Command {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                cmd: SndCommand {
+                    cmd: crate::sound::cmd::CALLBACK,
+                    param1: 0,
+                    param2: 0,
+                },
+            });
+
+        let (steps, running) = runner.run_gui_cpu_slice(0, 0);
+
+        assert!(running);
+        assert_eq!(steps, 0);
+        assert!(
+            runner.active_interrupt_callback.is_none(),
+            "CPU-only GUI slices must not fire host-frame sound callbacks"
+        );
+        assert!(runner.has_pending_sound_work());
     }
 
     #[test]
