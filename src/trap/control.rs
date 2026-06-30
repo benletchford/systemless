@@ -238,11 +238,13 @@ impl super::TrapDispatcher {
         } else {
             (0, 0, 0, 0)
         };
+        let r_top = bus.read_word(ctrl_ptr + 8) as i16;
         let r_left = bus.read_word(ctrl_ptr + 10) as i16;
-        let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
         let r_right = bus.read_word(ctrl_ptr + 14) as i16;
+        let selected_value = bus.read_word(ctrl_ptr + 18) as i16;
+        let selected_index = selected_value.max(0) as usize;
+        let abs_top = owner_top + r_top;
         let abs_left = owner_left + r_left;
-        let abs_bottom = owner_top + r_bottom;
 
         let mut width = (r_right - r_left).max(80);
         if let Some(menu) = self.menus.get(menu_idx) {
@@ -252,20 +254,54 @@ impl super::TrapDispatcher {
                     + 24;
                 width = width.max(w);
             }
-            let bottom =
-                (abs_bottom + self.menu_items_height(bus, &menu.items) + 2).min(screen_height);
+            let selected_item_offset = if selected_index >= 1 && selected_index <= menu.items.len()
+            {
+                menu.items
+                    .iter()
+                    .take(selected_index - 1)
+                    .map(|item| self.menu_item_height(bus, item))
+                    .sum::<i16>()
+            } else {
+                0
+            };
+            // The standard popup CDEF opens the live menu with the current
+            // value's item aligned to the popup box, matching the Menu
+            // Manager's PopUpMenuSelect(top, left, popUpItem) convention.
+            let desired_top = abs_top - 1 - selected_item_offset;
+            let height = (self.menu_items_height(bus, &menu.items) + 2).max(1);
+            let clamped_top = if screen_height <= 0 {
+                desired_top
+            } else if height >= screen_height {
+                0
+            } else {
+                desired_top.clamp(0, screen_height - height)
+            };
+            let bottom = if screen_height > 0 {
+                (clamped_top + height).min(screen_height)
+            } else {
+                clamped_top + height
+            };
             return (
-                abs_bottom,
+                clamped_top,
                 abs_left,
                 bottom,
                 (abs_left + width).min(screen_width),
             );
         }
 
+        let desired_top = abs_top - 1;
+        let height = 2;
+        let clamped_top = if screen_height <= 0 {
+            desired_top
+        } else if height >= screen_height {
+            0
+        } else {
+            desired_top.clamp(0, screen_height - height)
+        };
         (
-            abs_bottom,
+            clamped_top,
             abs_left,
-            abs_bottom + 2,
+            clamped_top + height,
             (abs_left + width).min(screen_width),
         )
     }
@@ -4805,10 +4841,21 @@ mod tests {
             sp,
             "popup tracking should defer the TrackControl stack pop"
         );
-        assert!(disp.control_tracking.is_some());
+        let dropdown_rect = disp
+            .control_tracking
+            .as_ref()
+            .map(|tracking| tracking.dropdown_rect)
+            .expect("popup tracking should open a dropdown");
+        let (dropdown_top, dropdown_left, dropdown_bottom, _) = dropdown_rect;
+        assert_eq!(
+            (dropdown_top, dropdown_left, dropdown_bottom),
+            (9, 20, 43),
+            "popup tracking should align selected item 1 with the control box, \
+             not open below the control bottom"
+        );
         assert_eq!(bus.read_word(sp + 12), 0xBEEF);
 
-        disp.mouse_pos = (48, 25);
+        disp.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
