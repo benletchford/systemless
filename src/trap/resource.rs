@@ -147,6 +147,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"cput"
             | b"proc"
             | b"mach"
+            | b"kbd "
             | b"qd  "
             | b"qdrw"
             | b"ram "
@@ -2978,7 +2979,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Operating System Utilities 1994,
             // 1-31..1-35.
             //
-            // Gestalt ($A0AD): documented selectors including vers/sysv/evnt/cput/proc/mach/qd/qdrw/ram/fpu/mmu/snd/ttsc/te/tmgr/alis/fs/fold/qtim/drag/os/powr/appr/addr/sdev/stdf/help/vm; guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
+            // Gestalt ($A0AD): documented selectors including vers/sysv/evnt/cput/proc/mach/kbd/qd/qdrw/ram/fpu/mmu/snd/ttsc/te/tmgr/alis/fs/fold/qtim/drag/os/powr/appr/addr/sdev/stdf/help/vm; guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
             (false, 0xAD) => {
                 let selector = cpu.read_reg(Register::D0);
                 let sel = selector.to_be_bytes();
@@ -3210,6 +3211,18 @@ impl super::TrapDispatcher {
                             Register::A0,
                             ORACLE_MACHINE_PROFILE.gestalt_machine_type as u32,
                         );
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltKeyboardType ('kbd ') -> Extended ADB Keyboard.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // 1-8 / 1-18 defines this selector as the keyboard type
+                    // code for the keyboard that produced the last keystroke;
+                    // MPW Universal Headers Gestalt.h defines
+                    // gestaltExtADBKbd = 4. Systemless exposes a desktop
+                    // extended-keyboard virtual input profile, including
+                    // keypad aliases used by Marathon-class games.
+                    b"kbd " => {
+                        cpu.write_reg(Register::A0, 4);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltQuickdrawVersion ('qd  ') -> System 7
@@ -11833,6 +11846,19 @@ mod tests {
     }
 
     #[test]
+    fn gestalt_keyboard_type_reports_extended_adb_keyboard() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"kbd "));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
     fn gestalt_common_classic_environment_selectors_do_not_error() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -11895,6 +11921,18 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0xFFFFEA51u32);
+    }
+
+    #[test]
+    fn newgestalt_rejects_builtin_keyboard_selector() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0x0040_0000);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"kbd "));
+
+        call_trap_word(&mut disp, 0xA3AD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF_EA50);
     }
 
     /// Mirrors B1 + B2 of a3ad_a5ad_newgestalt_replacegestalt_strict:
