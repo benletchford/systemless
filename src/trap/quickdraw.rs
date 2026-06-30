@@ -2221,7 +2221,7 @@ impl super::TrapDispatcher {
             // the width-preservation invariant). Brings the
             // catalogue row from 1/7=14% to 7/7=100% via the
             // multi-id-witnessing single-fixture pattern.
-            // OffsetRect ($A8A8): Pops 8 bytes; mutates VAR-out r in place per IM:I-174 (top+dv, left+dh, bottom+dv, right+dh); covered by offset_rect (legacy composite) + offset_rect_translation (6 granular ids witnessing per-sign translation classes + zero no-op + width/height preservation invariant + sequential-call composition)
+            // OffsetRect ($A8A8): Pops 8 bytes; mutates VAR-out r in place per IM:I-174 (top+dv, left+dh, bottom+dv, right+dh); coordinate INTEGER arithmetic wraps at 16 bits; covered by offset_rect (legacy composite) + offset_rect_translation (6 granular ids witnessing per-sign translation classes + zero no-op + width/height preservation invariant + sequential-call composition)
             (true, 0x0A8) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dv = bus.read_word(sp) as i16;
@@ -2232,10 +2232,10 @@ impl super::TrapDispatcher {
                 let left = bus.read_word(rect_ptr + 2) as i16;
                 let bottom = bus.read_word(rect_ptr + 4) as i16;
                 let right = bus.read_word(rect_ptr + 6) as i16;
-                bus.write_word(rect_ptr, (top + dv) as u16);
-                bus.write_word(rect_ptr + 2, (left + dh) as u16);
-                bus.write_word(rect_ptr + 4, (bottom + dv) as u16);
-                bus.write_word(rect_ptr + 6, (right + dh) as u16);
+                bus.write_word(rect_ptr, top.wrapping_add(dv) as u16);
+                bus.write_word(rect_ptr + 2, left.wrapping_add(dh) as u16);
+                bus.write_word(rect_ptr + 4, bottom.wrapping_add(dv) as u16);
+                bus.write_word(rect_ptr + 6, right.wrapping_add(dh) as u16);
                 Ok(())
             }
 
@@ -27133,6 +27133,28 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         let r = read_rect(&bus, rect_ptr);
         assert_eq!(r, (15, 30, 105, 210));
+    }
+
+    #[test]
+    fn offset_rect_wraps_16bit_coordinate_additions() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let rect_ptr = 0x300000u32;
+        bus.write_word(rect_ptr, 0x7FFE);
+        bus.write_word(rect_ptr + 2, 0x7FFF);
+        bus.write_word(rect_ptr + 4, 0x8000);
+        bus.write_word(rect_ptr + 6, 0x8001);
+        bus.write_word(TEST_SP, 5u16); // dv
+        bus.write_word(TEST_SP + 2, 2u16); // dh
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let result = d.dispatch_quickdraw(true, 0x0A8, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(rect_ptr), 0x8003);
+        assert_eq!(bus.read_word(rect_ptr + 2), 0x8001);
+        assert_eq!(bus.read_word(rect_ptr + 4), 0x8005);
+        assert_eq!(bus.read_word(rect_ptr + 6), 0x8003);
     }
 
     #[test]
