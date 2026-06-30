@@ -27801,7 +27801,13 @@ mod tests {
         tracking.rendered_pixels = stale_open_popup_pixels.clone();
         tracking.rendered_pixels_final = true;
 
-        disp.mouse_pos = (148, 125);
+        let (dropdown_top, dropdown_left, _, _) = disp
+            .dialog_tracking
+            .as_ref()
+            .and_then(|tracking| tracking.active_popup.as_ref())
+            .map(|popup| popup.dropdown_rect)
+            .expect("popup tracking should expose the live dropdown rect");
+        disp.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
         disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
