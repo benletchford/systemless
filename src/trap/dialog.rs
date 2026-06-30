@@ -516,8 +516,10 @@ impl super::TrapDispatcher {
     const NULL_STYLE_SCRAP_OFFSET: u32 = 0x04;
     const NULL_STYLE_REC_SIZE: u32 = 0x08;
 
+    // Inside Macintosh Volume V, V-274: StScrpRec is a count word
+    // followed immediately by ScrpSTElement entries (`scrpStyleTab EQU 2`).
     const SCRAP_N_STYLES_OFFSET: u32 = 0x00;
-    const SCRAP_STYLE_TAB_OFFSET: u32 = 0x0C;
+    const SCRAP_STYLE_TAB_OFFSET: u32 = 0x02;
     const SCRAP_STYLE_START_CHAR_OFFSET: u32 = 0x00;
     const SCRAP_STYLE_HEIGHT_OFFSET: u32 = 0x04;
     const SCRAP_STYLE_ASCENT_OFFSET: u32 = 0x06;
@@ -526,7 +528,7 @@ impl super::TrapDispatcher {
     const SCRAP_STYLE_SIZE_OFFSET: u32 = 0x0C;
     const SCRAP_STYLE_COLOR_OFFSET: u32 = 0x0E;
     const SCRAP_STYLE_ELEMENT_SIZE: u32 = 0x14;
-    const STYLE_SCRAP_REC_SIZE: u32 = 0x20;
+    const STYLE_SCRAP_REC_SIZE: u32 = Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_ELEMENT_SIZE;
 
     const TE_FEATURE_AUTO_SCROLL: u16 = 0;
     const TE_FEATURE_TEXT_BUFFERING: u16 = 1;
@@ -1884,7 +1886,6 @@ impl super::TrapDispatcher {
         if style_count == 0 {
             return false;
         }
-
         let existing_runs = self.te_style_runs(bus, te_handle, text_len);
         let mut candidates: Vec<(usize, u8, TeResolvedStyle)> =
             Vec::with_capacity(existing_runs.len() + style_count + 2);
@@ -31213,6 +31214,68 @@ mod tests {
         assert_eq!(runs[1].start, 6);
         assert_eq!(runs[1].style_index, 1);
         assert_eq!(runs[1].style.size, 12);
+    }
+
+    #[test]
+    fn testyleinsert_parses_stscrprec_style_table_after_count_word() {
+        // IM:V V-274 and MPW TextEdit.h: StScrpRec is `short scrpNStyles`
+        // immediately followed by `ScrpSTElement scrpStyleTab[]`.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.tx_font = 0;
+        disp.tx_face = 0;
+        disp.tx_size = 12;
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 80, 200), (0, 0, 80, 200));
+
+        let text = b"TITLE body";
+        let text_ptr = bus.alloc(text.len() as u32);
+        bus.write_bytes(text_ptr, text);
+
+        let style_scrap = TrapDispatcher::allocate_handle_with_data(&mut bus, 2 + 2 * 0x14);
+        let scrap_ptr = bus.read_long(style_scrap);
+        bus.write_word(scrap_ptr, 2);
+
+        let first = scrap_ptr + 2;
+        bus.write_long(first, 0);
+        bus.write_word(first + 4, 10);
+        bus.write_word(first + 6, 8);
+        bus.write_word(first + 8, 0);
+        bus.write_word(first + 10, 1);
+        bus.write_word(first + 12, 9);
+        bus.write_word(first + 14, 0);
+        bus.write_word(first + 16, 0);
+        bus.write_word(first + 18, 0);
+
+        let second = first + 0x14;
+        bus.write_long(second, 6);
+        bus.write_word(second + 4, 14);
+        bus.write_word(second + 6, 11);
+        bus.write_word(second + 8, 3);
+        bus.write_word(second + 10, 0);
+        bus.write_word(second + 12, 12);
+        bus.write_word(second + 14, 0x1111);
+        bus.write_word(second + 16, 0x2222);
+        bus.write_word(second + 18, 0x3333);
+
+        bus.write_word(TEST_SP, 0x0007);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, style_scrap);
+        bus.write_long(TEST_SP + 10, text.len() as u32);
+        bus.write_long(TEST_SP + 14, text_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let runs = disp.te_style_runs(&bus, te_handle, text.len());
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].start, 0);
+        assert_eq!(runs[0].style.face, 1);
+        assert_eq!(runs[0].style.size, 9);
+        assert_eq!(runs[1].start, 6);
+        assert_eq!(runs[1].style.font, 3);
+        assert_eq!(runs[1].style.size, 12);
+        assert_eq!(runs[1].style.color, (0x1111, 0x2222, 0x3333));
     }
 
     // Inside Macintosh: Text (1993), p. 2-92: TEAutoView takes

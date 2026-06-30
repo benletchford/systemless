@@ -5556,6 +5556,74 @@ mod tests {
     }
 
     #[test]
+    fn immediate_pending_launch_application_switches_from_vfs_without_event_yield() {
+        use crate::memory::globals::addr;
+
+        let current_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let helper_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let current_fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &current_code0)]);
+        let helper_fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &helper_code0)]);
+        let current_fork =
+            ResourceFork::parse(&current_fork_bytes).expect("parse current app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        runner
+            .dispatcher
+            .vfs
+            .insert("Apps/Main App".to_string(), Vec::new());
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Apps/Main App".to_string(), current_fork_bytes);
+        runner
+            .dispatcher
+            .vfs
+            .insert("Apps/Register Helper".to_string(), Vec::new());
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Apps/Register Helper".to_string(), helper_fork_bytes);
+        runner.dispatcher.ensure_vfs_catalog();
+        runner.dispatcher.set_launched_app_path("Apps/Main App");
+
+        let app = runner.load_app(&current_fork).expect("load current app");
+        runner.init_app(&app);
+        runner.bus.write_long(addr::TICKS, 4321);
+        runner.dispatcher.tick_count = 4321;
+        runner
+            .dispatcher
+            .queue_pending_launch_application("Apps/Register Helper", false);
+
+        let switched = runner.service_pending_launch_application(false);
+
+        assert!(
+            switched,
+            "immediate pending launch should not require an Event Manager yield"
+        );
+        assert!(
+            !runner.is_halted(),
+            "immediate queued helper launch should not halt the runner"
+        );
+        assert_eq!(
+            runner.dispatcher.launched_app_path.as_deref(),
+            Some("Apps/Register Helper")
+        );
+        assert_eq!(
+            runner.bus.read_long(addr::TICKS),
+            4321,
+            "foreground app switch must preserve system TickCount"
+        );
+        let cur_ap_len = runner.bus.read_byte(addr::CUR_APNAME) as usize;
+        let cur_ap_name = String::from_utf8(
+            (0..cur_ap_len)
+                .map(|i| runner.bus.read_byte(addr::CUR_APNAME + 1 + i as u32))
+                .collect(),
+        )
+        .expect("CurApName is ASCII");
+        assert_eq!(cur_ap_name, "Register Helper");
+    }
+
+    #[test]
     fn fixture_runner_defaults_to_classic_system7_theme() {
         let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 

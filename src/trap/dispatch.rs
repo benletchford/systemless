@@ -3029,6 +3029,10 @@ impl TrapDispatcher {
         self.launched_app_path = Some(normalized);
     }
 
+    pub fn launched_app_path(&self) -> Option<&str> {
+        self.launched_app_path.as_deref()
+    }
+
     pub(crate) fn queue_pending_launch_application(&mut self, name: &str, after_event_yield: bool) {
         let normalized = Self::normalize_vfs_path(name);
         self.pending_launch_app = Some(PendingLaunchApplication {

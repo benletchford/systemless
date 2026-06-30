@@ -15625,6 +15625,103 @@ mod tests {
     }
 
     #[test]
+    fn launchapplication_existing_target_without_launchcontinue_queues_immediate_runner_launch() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_before = cpu.read_reg(Register::A7);
+        let launch_pb = bus.alloc(64);
+        let app_spec = bus.alloc(32);
+        let target_dir_id = disp.ensure_vfs_directory("LaunchTargets");
+        disp.vfs
+            .insert("LaunchTargets/Register Helper".to_string(), Vec::new());
+
+        cpu.write_reg(Register::A0, launch_pb);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+
+        for offset in 0..64u32 {
+            bus.write_byte(launch_pb + offset, 0);
+        }
+        bus.write_word(launch_pb + 6, 0x4C43); // extendedBlock
+        bus.write_long(launch_pb + 8, 32); // extendedBlockLen
+        bus.write_word(launch_pb + 12, 0);
+        bus.write_word(launch_pb + 14, 0);
+        bus.write_long(launch_pb + 16, app_spec);
+
+        for offset in 0..32u32 {
+            bus.write_byte(app_spec + offset, 0);
+        }
+        bus.write_word(app_spec, 0);
+        bus.write_long(app_spec + 2, target_dir_id);
+        write_pascal_string(&mut bus, app_spec + 6, "Register Helper");
+
+        let result = disp.dispatch_toolbox(true, 0x1F2, &mut cpu, &mut bus);
+        assert!(result.is_some(), "LaunchApplication should be handled");
+        assert!(
+            result.unwrap().is_ok(),
+            "existing foreground launch target should return for runner-level app switching"
+        );
+        assert_eq!(cpu.read_reg(Register::A0), launch_pb);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(
+            disp.launched_app_path.as_deref(),
+            Some("LaunchTargets/Register Helper")
+        );
+        assert_eq!(
+            disp.take_pending_launch_application(false).as_deref(),
+            Some("LaunchTargets/Register Helper"),
+            "non-launchContinue foreground target should be immediately serviceable"
+        );
+    }
+
+    #[test]
+    fn launchapplication_launchdontswitch_records_existing_target_without_queueing() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_before = cpu.read_reg(Register::A7);
+        let launch_pb = bus.alloc(64);
+        let app_spec = bus.alloc(32);
+        let target_dir_id = disp.ensure_vfs_directory("LaunchTargets");
+        disp.vfs
+            .insert("LaunchTargets/Register Helper".to_string(), Vec::new());
+
+        cpu.write_reg(Register::A0, launch_pb);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+
+        for offset in 0..64u32 {
+            bus.write_byte(launch_pb + offset, 0);
+        }
+        bus.write_word(launch_pb + 6, 0x4C43); // extendedBlock
+        bus.write_long(launch_pb + 8, 32); // extendedBlockLen
+        bus.write_word(launch_pb + 12, 0);
+        bus.write_word(launch_pb + 14, 0x4200); // launchContinue | launchDontSwitch
+        bus.write_long(launch_pb + 16, app_spec);
+
+        for offset in 0..32u32 {
+            bus.write_byte(app_spec + offset, 0);
+        }
+        bus.write_word(app_spec, 0);
+        bus.write_long(app_spec + 2, target_dir_id);
+        write_pascal_string(&mut bus, app_spec + 6, "Register Helper");
+
+        let result = disp.dispatch_toolbox(true, 0x1F2, &mut cpu, &mut bus);
+        assert!(result.is_some(), "LaunchApplication should be handled");
+        assert!(
+            result.unwrap().is_ok(),
+            "launchDontSwitch with launchContinue should return without foreground switching"
+        );
+        assert_eq!(cpu.read_reg(Register::A0), launch_pb);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(
+            disp.launched_app_path.as_deref(),
+            Some("LaunchTargets/Register Helper")
+        );
+        assert!(
+            disp.take_pending_launch_application(true).is_none(),
+            "launchDontSwitch target should not queue a foreground app switch"
+        );
+    }
+
+    #[test]
     fn chain_records_cmdline_path_and_curpageoption_before_halt() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
