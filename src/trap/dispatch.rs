@@ -711,15 +711,60 @@ pub(crate) struct AeCallState {
     /// pushed an OSErr slot before `_Pack8`, and `RTD #12` lands SP
     /// pointing right at it).
     pub expected_sp_after_rtd: u32,
+    /// Optional result code to report to the original Pack8 caller after
+    /// the handler returns. AEProcessAppleEvent reports the handler's
+    /// OSErr; AESend reports delivery status, so same-process sends use
+    /// noErr here while the handler result remains a reply-event concern.
+    pub result_override: Option<i16>,
+    /// Optional Object Support Library continuation. When AEResolve calls a
+    /// guest object accessor, the accessor returns through the same Pack8
+    /// trampoline as AE handlers; this state tells the trampoline whether to
+    /// resume another accessor level or finish the original AEResolve call.
+    pub resolve_state: Option<AeResolveState>,
 }
 
-/// Minimal AppleEvent descriptor state synthesized by Pack8 routine 27.
-/// This records the attributes that AEGetAttribute* must expose while
-/// dispatching startup high-level events such as Open Application.
+/// Minimal AppleEvent descriptor value tracked by Pack8. The real Apple Event
+/// Manager serializes descriptor records into handles; Systemless only needs
+/// enough structured state for caller-observable get/put routines.
+#[derive(Clone, Debug)]
+pub(crate) struct AeDescriptor {
+    pub desc_type: u32,
+    pub data: Vec<u8>,
+    pub fields: HashMap<u32, AeDescriptor>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AeObjectAccessor {
+    pub accessor_ptr: u32,
+    pub refcon: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AeResolveLevel {
+    pub desired_class: u32,
+    pub key_form: u32,
+    pub key_data: AeDescriptor,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AeResolveState {
+    pub return_pc: u32,
+    pub result_slot: u32,
+    pub final_token_desc: u32,
+    pub levels: Vec<AeResolveLevel>,
+    pub next_level: usize,
+    pub current_token_desc: u32,
+    pub container_class: u32,
+}
+
+/// Minimal AppleEvent descriptor state synthesized by Pack8. This records
+/// attributes that AEGetAttribute* must expose and parameters that
+/// AEGetParam* must return while dispatching AppleEvents.
 #[derive(Clone, Debug)]
 pub(crate) struct SyntheticAppleEvent {
     pub event_class: u32,
     pub event_id: u32,
+    pub params: HashMap<u32, AeDescriptor>,
 }
 
 /// A queued Mac event (mouseDown, mouseUp, keyDown, etc.)
@@ -921,6 +966,18 @@ pub struct TrapDispatcher {
     /// Synthetic AppleEvent descriptors currently visible to guest
     /// handlers. Key is the guest address of the AEDesc record.
     pub(crate) ae_events: HashMap<u32, SyntheticAppleEvent>,
+    /// Non-event AEDesc records currently visible to guest AppleEvent code.
+    /// Key is the guest address of the AEDesc record.
+    pub(crate) ae_descriptors: HashMap<u32, AeDescriptor>,
+    /// Shared descriptor-list/record backing keyed by AEDesc data pointer.
+    /// AE records are often copied by value; the copied descriptor record
+    /// keeps the same data handle, so keyed fields must follow that backing
+    /// rather than the stack address of a single AEDesc variable.
+    pub(crate) ae_descriptor_backing: HashMap<u32, AeDescriptor>,
+    /// Object accessor dispatch table entries registered through
+    /// AEInstallObjectAccessor. Key is `(isSysHandler, desiredClass,
+    /// containerType)`.
+    pub(crate) ae_object_accessors: HashMap<(bool, u32, u32), AeObjectAccessor>,
     /// Gestalt selectors registered at runtime via `_NewGestalt` ($A3AD)
     /// or replaced via `_ReplaceGestalt` ($A5AD). Key is the OSType
     /// selector code packed big-endian; value is the guest-side selector
@@ -940,6 +997,9 @@ pub struct TrapDispatcher {
     /// post-`_Pack8` PC. `None` means no AE call is currently in
     /// flight.
     pub(crate) ae_call_state: Option<AeCallState>,
+    /// Outer AE handler states suspended by nested same-process AppleEvent
+    /// dispatches.
+    pub(crate) ae_call_state_stack: Vec<AeCallState>,
     /// Address of the lazily-allocated 6-byte trampoline used for AE
     /// handler returns. Holds `30 3C FE FE A8 16` (`MOVE.W #$FEFE, D0;
     /// _Pack8`) — the matching Pack8 dispatch with selector `$FEFE`
@@ -2427,8 +2487,12 @@ impl TrapDispatcher {
             segment_map: HashMap::new(),
             ae_handlers: HashMap::new(),
             ae_events: HashMap::new(),
+            ae_descriptors: HashMap::new(),
+            ae_descriptor_backing: HashMap::new(),
+            ae_object_accessors: HashMap::new(),
             gestalt_registry: HashMap::new(),
             ae_call_state: None,
+            ae_call_state_stack: Vec::new(),
             ae_trampoline_addr: None,
             mask_table_addr: None,
             loadseg_getresource_state: None,
