@@ -9585,14 +9585,33 @@ impl super::TrapDispatcher {
             }
 
             // ========== CursorDeviceDispatch ($AADB) ==========
-            // Cursor Device Manager dispatcher. The classic glue passes
-            // selector $0B in D0; this path clears the Pascal result slot
-            // and pops the selector word so the caller sees noErr.
-            // CursorDeviceDispatch ($AADB): Returns 0
+            // Cursor Device Manager dispatcher. Universal Interfaces 3.4
+            // CursorDevices.h declares selectors 0..13 as OSErr Pascal
+            // functions selected by MOVEQ #selector,D0; _CursorDeviceDispatch.
+            // Stack cleanup still depends on the selected routine's argument
+            // byte count.
+            // CursorDeviceDispatch ($AADB): Returns noErr and consumes selector-specific args
             (true, 0x2DB) => {
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_word(sp + 2, 0);
-                cpu.write_reg(Register::A7, sp + 2);
+                let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
+                let arg_bytes = match selector {
+                    0 | 1 => 12, // Move/MoveTo(device, x, y)
+                    2 | 4 | 5 | 11 | 12 | 13 => 4,
+                    3 | 7 => 6,
+                    6 => 12, // ButtonOp(device, button, opcode, data)
+                    8..=10 => 8,
+                    _ => 0,
+                };
+
+                if matches!(selector, 11 | 12) {
+                    let device_ptr_ptr = bus.read_long(sp);
+                    if device_ptr_ptr != 0 {
+                        bus.write_long(device_ptr_ptr, 0);
+                    }
+                }
+
+                bus.write_word(sp + arg_bytes, 0);
+                cpu.write_reg(Register::A7, sp + arg_bytes);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
@@ -10978,23 +10997,20 @@ impl super::TrapDispatcher {
             // help: status query, balloon show/remove, font config,
             // help-resource lookup, and help-message extraction.
             //
-            // Selector encoding is `(arg_words << 8) | routine` per
-            // IM:VI 11148+ Pack14 trap macro table — the same
-            // Apple-Events Pack8 convention, NOT the Pack2/3/6 pure-
-            // low-byte convention. The high byte of the selector
-            // gives the number of WORDS of args pushed on the stack;
-            // arg_bytes = high_byte * 2. Total pop = 2 (selector) +
-            // arg_bytes.
+            // Selector encoding is `(arg_words << 8) | routine`.
+            // Public MPW glue emits `MOVE.W #selector,D0; _Pack14`;
+            // the selector word is NOT pushed on the stack. The high
+            // byte gives the number of WORDS of args pushed on the
+            // stack; arg_bytes = high_byte * 2.
             //
             // Pascal calling convention: caller pre-pushes a 2-byte
             // result slot for OSErr / Boolean / Integer FUNCTION
             // returns, then pushes args left-to-right (first source-
-            // listed arg deepest, last shallowest at SP+2 just above
-            // the selector word at SP+0). Trap pops 2 + arg_bytes,
-            // exposing the result slot at the new SP+0. We mirror
-            // each result to BOTH the stack slot AND D0 for callers
-            // that read either way (matches the Pack6 / IUMagString
-            // pattern).
+            // listed arg deepest, last shallowest at SP+0). Trap pops
+            // arg_bytes, exposing the result slot at the new SP+0. We
+            // mirror each result to BOTH the stack slot AND D0 for
+            // callers that read either way (matches the Pack6 /
+            // IUMagString pattern).
             //
             // HLE compromise: Systemless has no Balloon Help subsystem
             // — no cursor tracking, no balloon WDEF / window, no
@@ -11027,14 +11043,14 @@ impl super::TrapDispatcher {
             // Inside Macintosh: More Macintosh Toolbox 1993, ch. 3,
             // Help Manager, pages 3-1..3-173 + selector summary at
             // page 3-173 (MMTb 11320..11340).
-            // Pack14 / Help Manager ($A830): Per-selector Pascal frames per IM:MMTb 1993 ch.3 + selector table 3-173: $0002 HMRemoveBalloon pop 2 D0=hmHelpDisabled, $0003 HMGetBalloons pop 2 D0=0 result=FALSE, $0007 HMIsBalloon pop 2 D0=0 result=FALSE, $0104 HMSetBalloons pop 4 D0=0, $0108 HMSetFont pop 4 D0=0, $0109 HMSetFontSize pop 4 D0=0, $010C HMSetDialogResID pop 4 D0=0, $0200 HMGetHelpMenuHandle pop 6 writes NIL to *mh D0=hmHelpManagerNotInited, $020A HMGetFont pop 6 writes 0 to *font D0=0, $020B HMGetFontSize pop 6 writes 0 to *fontSize D0=0, $020D HMSetMenuResID pop 6 D0=0, $0213 HMGetDialogResID pop 6 writes -1 to *resID D0=resNotFound, $0215 HMGetBalloonWindow pop 6 writes NIL to *window D0=0, $0314 HMGetMenuResID pop 8 writes -1 to *resID D0=resNotFound, $040E HMBalloonRect pop 10 writes Rect(0,0,0,0) D0=0, $040F HMBalloonPict pop 10 writes NIL to *coolPict D0=0, $0410 HMScanTemplateItems pop 10 D0=resNotFound, $0711 HMExtractHelpMsg pop 16 D0=resNotFound, $0B01 HMShowBalloon pop 24 D0=hmHelpDisabled, $0E05 HMShowMenuBalloon pop 30 D0=hmHelpDisabled, $1306 HMGetIndHelpMsg pop 40 D0=resNotFound.
+            // Pack14 / Help Manager ($A830): Per-selector Pascal frames per IM:MMTb 1993 ch.3 + selector table 3-173; selector is in D0, not on the stack. $0002 HMRemoveBalloon pop 0 D0=hmHelpDisabled, $0003 HMGetBalloons pop 0 D0=0 result=FALSE, $0007 HMIsBalloon pop 0 D0=0 result=FALSE, $0104 HMSetBalloons pop 2 D0=0, $0108 HMSetFont pop 2 D0=0, $0109 HMSetFontSize pop 2 D0=0, $010C HMSetDialogResID pop 2 D0=0, $0200 HMGetHelpMenuHandle pop 4 writes NIL to *mh D0=hmHelpManagerNotInited, $020A HMGetFont pop 4 writes 0 to *font D0=0, $020B HMGetFontSize pop 4 writes 0 to *fontSize D0=0, $020D HMSetMenuResID pop 4 D0=0, $0213 HMGetDialogResID pop 4 writes -1 to *resID D0=resNotFound, $0215 HMGetBalloonWindow pop 4 writes NIL to *window D0=0, $0314 HMGetMenuResID pop 6 writes -1 to *resID D0=resNotFound, $040E HMBalloonRect pop 8 writes Rect(0,0,0,0) D0=0, $040F HMBalloonPict pop 8 writes NIL to *coolPict D0=0, $0410 HMScanTemplateItems pop 8 D0=resNotFound, $0711 HMExtractHelpMsg pop 14 D0=resNotFound, $0B01 HMShowBalloon pop 22 D0=hmHelpDisabled, $0E05 HMShowMenuBalloon pop 28 D0=hmHelpDisabled, $1306 HMGetIndHelpMsg pop 38 D0=resNotFound.
             (true, 0x030) => {
                 const HM_HELP_DISABLED: i16 = -850;
                 const HM_HELP_MGR_NOT_INITED: i16 = -855;
                 const RES_NOT_FOUND: i16 = -192;
 
                 let sp = cpu.read_reg(Register::A7);
-                let selector = bus.read_word(sp);
+                let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
 
                 // Helper: write OSErr/Integer result word to BOTH the
                 // stack slot at sp+pop_total AND D0, then advance A7.
@@ -11047,157 +11063,156 @@ impl super::TrapDispatcher {
 
                 match selector {
                     // FUNCTION HMRemoveBalloon: OSErr;
-                    // IM:MMTb 3-105. Pop = 2 (selector only).
+                    // IM:MMTb 3-105. No parameters.
                     // No balloon ever up in HLE → noErr per the IM
                     // result table ("No error or the help balloon
                     // was removed").
-                    0x0002 => finish(bus, cpu, 2, 0),
+                    0x0002 => finish(bus, cpu, 0, 0),
 
                     // FUNCTION HMGetBalloons: Boolean;
-                    // IM:MMTb 3-98. Pop = 2.
+                    // IM:MMTb 3-98. No parameters.
                     // Help disabled in HLE → FALSE (0).
-                    0x0003 => finish(bus, cpu, 2, 0),
+                    0x0003 => finish(bus, cpu, 0, 0),
 
                     // FUNCTION HMIsBalloon: Boolean;
-                    // IM:MMTb 3-99. Pop = 2.
+                    // IM:MMTb 3-99. No parameters.
                     // No balloon up in HLE → FALSE (0).
-                    0x0007 => finish(bus, cpu, 2, 0),
+                    0x0007 => finish(bus, cpu, 0, 0),
 
                     // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
-                    // IM:MMTb 3-107. Pop = 4 (selector + flag).
+                    // IM:MMTb 3-107. Pop = 2 (flag).
                     // Accept and ignore — no help to enable/disable.
-                    0x0104 => finish(bus, cpu, 4, 0),
+                    0x0104 => finish(bus, cpu, 2, 0),
 
                     // FUNCTION HMSetFont(font: Integer): OSErr;
-                    // IM:MMTb 3-112. Pop = 4. Accept and ignore.
-                    0x0108 => finish(bus, cpu, 4, 0),
+                    // IM:MMTb 3-112. Pop = 2. Accept and ignore.
+                    0x0108 => finish(bus, cpu, 2, 0),
 
                     // FUNCTION HMSetFontSize(fontSize: Integer): OSErr;
-                    // IM:MMTb 3-113. Pop = 4. Accept and ignore.
-                    0x0109 => finish(bus, cpu, 4, 0),
+                    // IM:MMTb 3-113. Pop = 2. Accept and ignore.
+                    0x0109 => finish(bus, cpu, 2, 0),
 
                     // FUNCTION HMSetDialogResID(resID: Integer): OSErr;
-                    // IM:MMTb 3-117. Pop = 4. Accept and ignore.
-                    0x010C => finish(bus, cpu, 4, 0),
+                    // IM:MMTb 3-117. Pop = 2. Accept and ignore.
+                    0x010C => finish(bus, cpu, 2, 0),
 
                     // FUNCTION HMGetHelpMenuHandle(VAR mh: MenuHandle): OSErr;
-                    // IM:MMTb 3-109. Pop = 6 (sel + mh ptr).
-                    // mh ptr at SP+2. Write NIL to *mh per
+                    // IM:MMTb 3-109. Pop = 4 (mh ptr).
+                    // mh ptr at SP+0. Write NIL to *mh per
                     // hmHelpManagerNotInited contract.
                     0x0200 => {
-                        let mh_ptr = bus.read_long(sp + 2);
+                        let mh_ptr = bus.read_long(sp);
                         if mh_ptr != 0 {
                             bus.write_long(mh_ptr, 0);
                         }
-                        finish(bus, cpu, 6, HM_HELP_MGR_NOT_INITED);
+                        finish(bus, cpu, 4, HM_HELP_MGR_NOT_INITED);
                     }
 
                     // FUNCTION HMGetFont(VAR font: Integer): OSErr;
-                    // IM:MMTb 3-110. Pop = 6. Write 0 (system font)
+                    // IM:MMTb 3-110. Pop = 4. Write 0 (system font)
                     // to *font.
                     0x020A => {
-                        let font_ptr = bus.read_long(sp + 2);
+                        let font_ptr = bus.read_long(sp);
                         if font_ptr != 0 {
                             bus.write_word(font_ptr, 0);
                         }
-                        finish(bus, cpu, 6, 0);
+                        finish(bus, cpu, 4, 0);
                     }
 
                     // FUNCTION HMGetFontSize(VAR fontSize: Integer): OSErr;
-                    // IM:MMTb 3-111. Pop = 6. Write 0 (system size)
+                    // IM:MMTb 3-111. Pop = 4. Write 0 (system size)
                     // to *fontSize.
                     0x020B => {
-                        let size_ptr = bus.read_long(sp + 2);
+                        let size_ptr = bus.read_long(sp);
                         if size_ptr != 0 {
                             bus.write_word(size_ptr, 0);
                         }
-                        finish(bus, cpu, 6, 0);
+                        finish(bus, cpu, 4, 0);
                     }
 
                     // FUNCTION HMSetMenuResID(menuID, resID: Integer): OSErr;
-                    // IM:MMTb 3-114. Pop = 6. resID at SP+2 (last
-                    // arg), menuID at SP+4. Accept and ignore.
-                    0x020D => finish(bus, cpu, 6, 0),
+                    // IM:MMTb 3-114. Pop = 4. Accept and ignore.
+                    0x020D => finish(bus, cpu, 4, 0),
 
                     // FUNCTION HMGetDialogResID(VAR resID: Integer): OSErr;
-                    // IM:MMTb 3-118. Pop = 6. Write -1 to *resID
+                    // IM:MMTb 3-118. Pop = 4. Write -1 to *resID
                     // per "no hdlg set" → resNotFound contract.
                     0x0213 => {
-                        let res_id_ptr = bus.read_long(sp + 2);
+                        let res_id_ptr = bus.read_long(sp);
+                        if res_id_ptr != 0 {
+                            bus.write_word(res_id_ptr, (-1i16) as u16);
+                        }
+                        finish(bus, cpu, 4, RES_NOT_FOUND);
+                    }
+
+                    // FUNCTION HMGetBalloonWindow(VAR window: WindowPtr): OSErr;
+                    // IM:MMTb 3-121. Pop = 4. Write NIL to *window
+                    // per "no balloon up" contract.
+                    0x0215 => {
+                        let window_ptr = bus.read_long(sp);
+                        if window_ptr != 0 {
+                            bus.write_long(window_ptr, 0);
+                        }
+                        finish(bus, cpu, 4, 0);
+                    }
+
+                    // FUNCTION HMGetMenuResID(menuID: Integer;
+                    //                         VAR resID: Integer): OSErr;
+                    // IM:MMTb 3-115. Pop = 6. resID ptr at SP+0
+                    // (last arg), menuID at SP+4. Write -1 to
+                    // *resID per "no hmnu set" → resNotFound.
+                    0x0314 => {
+                        let res_id_ptr = bus.read_long(sp);
                         if res_id_ptr != 0 {
                             bus.write_word(res_id_ptr, (-1i16) as u16);
                         }
                         finish(bus, cpu, 6, RES_NOT_FOUND);
                     }
 
-                    // FUNCTION HMGetBalloonWindow(VAR window: WindowPtr): OSErr;
-                    // IM:MMTb 3-121. Pop = 6. Write NIL to *window
-                    // per "no balloon up" contract.
-                    0x0215 => {
-                        let window_ptr = bus.read_long(sp + 2);
-                        if window_ptr != 0 {
-                            bus.write_long(window_ptr, 0);
-                        }
-                        finish(bus, cpu, 6, 0);
-                    }
-
-                    // FUNCTION HMGetMenuResID(menuID: Integer;
-                    //                         VAR resID: Integer): OSErr;
-                    // IM:MMTb 3-115. Pop = 8. resID ptr at SP+2
-                    // (last arg), menuID at SP+6. Write -1 to
-                    // *resID per "no hmnu set" → resNotFound.
-                    0x0314 => {
-                        let res_id_ptr = bus.read_long(sp + 2);
-                        if res_id_ptr != 0 {
-                            bus.write_word(res_id_ptr, (-1i16) as u16);
-                        }
-                        finish(bus, cpu, 8, RES_NOT_FOUND);
-                    }
-
                     // FUNCTION HMBalloonRect(aHelpMsg: HMMessageRecord;
                     //                        VAR coolRect: Rect): OSErr;
-                    // IM:MMTb 3-119. Pop = 10. coolRect ptr at SP+2
-                    // (last arg), aHelpMsg ptr at SP+6. Write
+                    // IM:MMTb 3-119. Pop = 8. coolRect ptr at SP+0
+                    // (last arg), aHelpMsg ptr at SP+4. Write
                     // Rect(0,0,0,0) — empty, no balloon to size.
                     0x040E => {
-                        let rect_ptr = bus.read_long(sp + 2);
+                        let rect_ptr = bus.read_long(sp);
                         if rect_ptr != 0 {
                             bus.write_word(rect_ptr, 0);
                             bus.write_word(rect_ptr + 2, 0);
                             bus.write_word(rect_ptr + 4, 0);
                             bus.write_word(rect_ptr + 6, 0);
                         }
-                        finish(bus, cpu, 10, 0);
+                        finish(bus, cpu, 8, 0);
                     }
 
                     // FUNCTION HMBalloonPict(aHelpMsg: HMMessageRecord;
                     //                        VAR coolPict: PicHandle): OSErr;
-                    // IM:MMTb 3-120. Pop = 10. coolPict ptr at SP+2.
+                    // IM:MMTb 3-120. Pop = 8. coolPict ptr at SP+0.
                     // Write NIL to *coolPict.
                     0x040F => {
-                        let pict_ptr = bus.read_long(sp + 2);
+                        let pict_ptr = bus.read_long(sp);
                         if pict_ptr != 0 {
                             bus.write_long(pict_ptr, 0);
                         }
-                        finish(bus, cpu, 10, 0);
+                        finish(bus, cpu, 8, 0);
                     }
 
                     // FUNCTION HMScanTemplateItems(whichID,
                     //                              whichResFile: Integer;
                     //                              whichType: ResType): OSErr;
-                    // IM:MMTb 3-116. Pop = 10. No help resources
+                    // IM:MMTb 3-116. Pop = 8. No help resources
                     // ever loaded → resNotFound.
-                    0x0410 => finish(bus, cpu, 10, RES_NOT_FOUND),
+                    0x0410 => finish(bus, cpu, 8, RES_NOT_FOUND),
 
                     // FUNCTION HMExtractHelpMsg(whichType: ResType;
                     //                           whichResID, whichMsg,
                     //                           whichState: Integer;
                     //                           VAR aHelpMsg:
                     //                           HMMessageRecord): OSErr;
-                    // IM:MMTb 3-126. Pop = 16. No help resources →
+                    // IM:MMTb 3-126. Pop = 14. No help resources →
                     // resNotFound. Don't touch aHelpMsg (caller's
                     // record stays untouched).
-                    0x0711 => finish(bus, cpu, 16, RES_NOT_FOUND),
+                    0x0711 => finish(bus, cpu, 14, RES_NOT_FOUND),
 
                     // FUNCTION HMShowBalloon(aHelpMsg: HMMessageRecord;
                     //                        tip: Point;
@@ -11205,9 +11220,9 @@ impl super::TrapDispatcher {
                     //                        tipProc: Ptr;
                     //                        theProc, variant,
                     //                        method: Integer): OSErr;
-                    // IM:MMTb 3-100. Pop = 24. Help disabled →
+                    // IM:MMTb 3-100. Pop = 22. Help disabled →
                     // hmHelpDisabled.
-                    0x0B01 => finish(bus, cpu, 24, HM_HELP_DISABLED),
+                    0x0B01 => finish(bus, cpu, 22, HM_HELP_DISABLED),
 
                     // FUNCTION HMShowMenuBalloon(itemNum,
                     //                            itemMenuID: Integer;
@@ -11218,9 +11233,9 @@ impl super::TrapDispatcher {
                     //                            tipProc: Ptr;
                     //                            theProc,
                     //                            variant: Integer): OSErr;
-                    // IM:MMTb 3-103. Pop = 30. Help disabled →
+                    // IM:MMTb 3-103. Pop = 28. Help disabled →
                     // hmHelpDisabled.
-                    0x0E05 => finish(bus, cpu, 30, HM_HELP_DISABLED),
+                    0x0E05 => finish(bus, cpu, 28, HM_HELP_DISABLED),
 
                     // FUNCTION HMGetIndHelpMsg(whichType: ResType;
                     //                          whichResID, whichMsg,
@@ -11233,22 +11248,18 @@ impl super::TrapDispatcher {
                     //                          VAR aHelpMsg:
                     //                          HMMessageRecord;
                     //                          VAR count: Integer): OSErr;
-                    // IM:MMTb 3-128. Pop = 40. No help resources →
+                    // IM:MMTb 3-128. Pop = 38. No help resources →
                     // resNotFound. Don't touch any VAR-out param —
                     // caller's records stay untouched per the IM
                     // contract that resNotFound means "did not
                     // populate anything".
-                    0x1306 => finish(bus, cpu, 40, RES_NOT_FOUND),
+                    0x1306 => finish(bus, cpu, 38, RES_NOT_FOUND),
 
-                    // Unknown selector — pop just the 2-byte selector
-                    // and leave the FUNCTION result slot untouched +
-                    // D0 = noErr. A future System addition that
-                    // assigns a new Pack14 routine should fill in a
-                    // new arm above; the unknown-selector path is
-                    // intentionally a permissive no-op so the caller
-                    // can degrade gracefully.
+                    // Unknown selector — preserve the stack and return
+                    // noErr in D0. A future System addition that assigns
+                    // a new Pack14 routine should fill in a new arm above.
                     _ => {
-                        cpu.write_reg(Register::A7, sp + 2);
+                        cpu.write_reg(Register::A7, sp);
                         cpu.write_reg(Register::D0, 0);
                     }
                 }
@@ -20972,19 +20983,19 @@ mod tests {
         let sp = TEST_SP;
         let mh_ptr = bus.alloc(4);
 
+        cpu.write_reg(Register::D0, 0x0200);
         bus.write_long(mh_ptr, 0xDEAD_BEEF);
-        bus.write_word(sp, 0x0200); // HMGetHelpMenuHandle selector
-        bus.write_long(sp + 2, mh_ptr);
-        bus.write_word(sp + 6, 0xBEEF); // result slot poison
+        bus.write_long(sp, mh_ptr);
+        bus.write_word(sp + 4, 0xBEEF); // result slot poison
 
         let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
         assert_eq!(bus.read_long(mh_ptr), 0);
-        assert_eq!(bus.read_word(sp + 6), (-855i16) as u16);
+        assert_eq!(bus.read_word(sp + 4), (-855i16) as u16);
         assert_eq!(cpu.read_reg(Register::D0), (-855i16) as i32 as u32);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     #[test]
@@ -20993,19 +21004,54 @@ mod tests {
         let sp = TEST_SP;
         let font_ptr = bus.alloc(2);
 
+        cpu.write_reg(Register::D0, 0x020A);
         bus.write_word(font_ptr, 0x1357);
-        bus.write_word(sp, 0x020A); // HMGetFont selector
-        bus.write_long(sp + 2, font_ptr);
-        bus.write_word(sp + 6, 0xBEEF); // result slot poison
+        bus.write_long(sp, font_ptr);
+        bus.write_word(sp + 4, 0xBEEF); // result slot poison
 
         let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
         assert_eq!(bus.read_word(font_ptr), 0);
-        assert_eq!(bus.read_word(sp + 6), 0);
+        assert_eq!(bus.read_word(sp + 4), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn pack14_hmgetballoons_uses_d0_selector_and_preserves_no_arg_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::D0, 0x0003);
+        bus.write_word(sp, 0xBEEF); // Boolean result slot
+
+        let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn pack14_hmsetballoons_pops_flag_arg_only() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::D0, 0x0104);
+        bus.write_word(sp, 1); // flag
+        bus.write_word(sp + 2, 0xBEEF); // OSErr result slot
+
+        let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 2), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
     }
 
     #[test]
@@ -22715,21 +22761,49 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
     }
 
-    // CursorDeviceDispatch ($AADB) — selector in D0, no stack args
+    // CursorDeviceDispatch ($AADB) — selector in D0, Pascal args on stack.
     #[test]
-    fn test_extended_dispatch() {
+    fn cursordevicenextdevice_consumes_pointer_arg_and_clears_result() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        let device_slot = sp + 0x40;
+
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x1234_5678);
+        cpu.write_reg(Register::D0, 0x0000_000B);
+        bus.write_long(sp, device_slot);
+        bus.write_word(sp + 4, 0xBEEF);
+        bus.write_long(device_slot, 0x1111_2222);
 
         let result = disp.dispatch_toolbox(true, 0x2DB, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
-        assert_eq!(bus.read_word(sp + 2), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(bus.read_long(device_slot), 0);
+    }
+
+    #[test]
+    fn cursordevicebuttonop_consumes_full_selector_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0006);
+        bus.write_long(sp, 0x1111_2222); // ourDevice
+        bus.write_word(sp + 4, 2); // buttonNumber
+        bus.write_word(sp + 6, 1); // opcode
+        bus.write_long(sp + 8, 0x3333_4444); // data
+        bus.write_word(sp + 12, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2DB, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 0);
     }
 
     // Movie Toolbox Dispatch ($AAAA)
