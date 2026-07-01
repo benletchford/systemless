@@ -1160,7 +1160,8 @@ fn keycode_to_mac(key: &PhysicalKey) -> u8 {
 fn keycode_to_mac_char(key: &PhysicalKey) -> u8 {
     match key {
         PhysicalKey::Code(code) => match code {
-            KeyCode::Enter | KeyCode::NumpadEnter => 13,
+            KeyCode::Enter => 13,
+            KeyCode::NumpadEnter => 0x03,
             KeyCode::Tab => 9,
             KeyCode::Space => 32,
             KeyCode::Backspace => 8,
@@ -1346,6 +1347,14 @@ mod tests {
                 None,
             ),
             (0x5B, b'8')
+        );
+        assert_eq!(
+            host_key_to_mac(
+                &Key::Named(NamedKey::Enter),
+                &PhysicalKey::Code(KeyCode::NumpadEnter),
+                None,
+            ),
+            (0x4C, 0x03)
         );
     }
 
