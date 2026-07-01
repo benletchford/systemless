@@ -8010,14 +8010,10 @@ impl super::TrapDispatcher {
             // DragTheRgn / DragGrayRgn — all share the "no WaitMouseUp /
             // no DragHook dispatch" no-op shape).
             //
-            // Result sentinel: $80008000 (high word $8000 + low word $8000)
-            // per IM:I I-302: "If the user releases the mouse button outside
-            // slopRect, DragGrayRgn returns $80008000". Systemless's HLE has
-            // no slopRect hit-test, so the "user released outside slopRect"
-            // sentinel is the appropriate semantic — apps that branch on
-            // result == $80008000 take the "no drag, leave the region in
-            // place" path which matches what real Mac does when the user
-            // gestured outside the bounds.
+            // Systemless has no real WaitMouseUp outline loop, but it uses
+            // the current local mouse position as the terminal release point:
+            // inside slopRect returns the bounded offset, outside slopRect
+            // returns the $80008000 no-drag sentinel per IM:I I-302.
             //
             // Pop-count history note (load-bearing for future audits): an
             // earlier iteration pinned this trap at pop=30, assuming Rect
@@ -8027,10 +8023,11 @@ impl super::TrapDispatcher {
             // src/trap/window.rs:0x126 pops 22 — they MUST match per
             // IM:I I-93). This path uses pop=22 + result slot
             // @ sp+22.
-            // DragGrayRgn ($A905): Pops 22 args bytes (theRgn 4 + startPt 4 + limitRect ptr 4 + slopRect ptr 4 + axis 2 + actionProc 4) per IM:I-91 PEA convention + IM:I I-93 _DragTheRgn macro alias; writes $80008000 (no drag) to 4-byte LONGINT result slot @ sp+22 per IM:I I-302 "If the user releases the mouse button outside slopRect"
+            // DragGrayRgn ($A905): Pops 22 args bytes (theRgn 4 + startPt 4 + limitRect ptr 4 + slopRect ptr 4 + axis 2 + actionProc 4) per IM:I-91 PEA convention + IM:I I-93 _DragTheRgn macro alias; writes the bounded offset or $80008000 no-drag sentinel to the 4-byte LONGINT result slot @ sp+22 per IM:I I-302.
             (true, 0x105) => {
                 let sp = cpu.read_reg(Register::A7);
-                Self::finish_drag_result(cpu, bus, sp, 0x80008000u32);
+                let result = self.drag_region_result(bus, sp);
+                Self::finish_drag_result(cpu, bus, sp, result);
                 Ok(())
             }
 
@@ -19294,23 +19291,72 @@ mod tests {
         assert!(!disp.res_purge);
     }
 
+    fn write_drag_region_frame(
+        bus: &mut crate::memory::MacMemoryBus,
+        sp: u32,
+        start: (i16, i16),
+        limit_rect_ptr: u32,
+        slop_rect_ptr: u32,
+        axis: i16,
+    ) {
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, axis as u16);
+        bus.write_long(sp + 6, slop_rect_ptr);
+        bus.write_long(sp + 10, limit_rect_ptr);
+        bus.write_word(sp + 14, start.0 as u16);
+        bus.write_word(sp + 16, start.1 as u16);
+        bus.write_long(sp + 18, 0x300000);
+        bus.write_long(sp + 22, 0xDEAD_BEEF);
+    }
+
+    fn write_test_rect(
+        bus: &mut crate::memory::MacMemoryBus,
+        ptr: u32,
+        rect: (i16, i16, i16, i16),
+    ) {
+        bus.write_word(ptr, rect.0 as u16);
+        bus.write_word(ptr + 2, rect.1 as u16);
+        bus.write_word(ptr + 4, rect.2 as u16);
+        bus.write_word(ptr + 6, rect.3 as u16);
+    }
+
     // IM:I I-302 + IM:I I-91: DragGrayRgn is the gray-outline alias of
-    // DragTheRgn, and the non-drag path returns the $80008000 sentinel.
+    // DragTheRgn, and the outside-slop path returns $80008000.
     #[test]
-    fn draggrayrgn_returns_no_drag_sentinel_and_consumes_arguments() {
+    fn draggrayrgn_returns_no_drag_sentinel_outside_sloprect_and_consumes_arguments() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP - 22;
         cpu.write_reg(Register::A7, sp);
-        for i in 0..22u32 {
-            bus.write_byte(sp + i, 0xAA);
-        }
-        bus.write_long(sp + 22, 0xDEAD_BEEF);
+        let limit_rect = 0x240000;
+        let slop_rect = 0x240008;
+        write_test_rect(&mut bus, limit_rect, (0, 0, 100, 100));
+        write_test_rect(&mut bus, slop_rect, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), limit_rect, slop_rect, 0);
+        disp.set_mouse_position(140, 20);
 
         let result = disp.dispatch_toolbox(true, 0x105, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(bus.read_long(TEST_SP), 0x8000_8000);
+    }
+
+    #[test]
+    fn draggrayrgn_returns_offset_inside_sloprect() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+        let limit_rect = 0x240000;
+        let slop_rect = 0x240008;
+        write_test_rect(&mut bus, limit_rect, (0, 0, 100, 100));
+        write_test_rect(&mut bus, slop_rect, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), limit_rect, slop_rect, 0);
+        disp.set_mouse_position(30, 50);
+
+        let result = disp.dispatch_toolbox(true, 0x105, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_long(TEST_SP), 0x0014_001E);
     }
 
     // SetResLoad ($A99B) — Mac Pascal Boolean is in the high byte

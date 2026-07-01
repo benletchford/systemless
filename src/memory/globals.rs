@@ -94,6 +94,11 @@ pub mod addr {
     pub const THE_PORT: u32 = 0x09DA; // Current GrafPort (ptr)
     pub const SCRN_BASE: u32 = 0x0824; // Screen base address (ptr) - Inside Macintosh II, II-19
 
+    /// GhostWindow: pointer to a window that FrontWindow must not consider
+    /// frontmost, even when it is first in the Window Manager list.
+    /// Inside Macintosh Volume I, I-287; Volume III, low-memory globals table.
+    pub const GHOST_WINDOW: u32 = 0x0A84;
+
     // Mouse position globals (Points are 4 bytes: v word, h word)
     // Reference: Executor docs/globals.cpp
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level

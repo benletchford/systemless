@@ -21,6 +21,10 @@ fn trace_dragwindow_enabled() -> bool {
 }
 
 impl super::TrapDispatcher {
+    const DRAG_NO_DRAG_SENTINEL: u32 = 0x8000_8000;
+    const DRAG_NO_CONSTRAINT: i16 = 0;
+    const DRAG_H_AXIS_ONLY: i16 = 1;
+    const DRAG_V_AXIS_ONLY: i16 = 2;
     const USER_WINDOW_KIND: u16 = 8;
     const WINDOW_KIND_OFFSET: u32 = 108;
     const WINDOW_VISIBLE_OFFSET: u32 = 110;
@@ -68,12 +72,76 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, sp + 22);
     }
 
+    pub(crate) fn drag_region_result(&self, bus: &MacMemoryBus, sp: u32) -> u32 {
+        let axis = bus.read_word(sp + 4) as i16;
+        let slop_rect_ptr = bus.read_long(sp + 6);
+        let limit_rect_ptr = bus.read_long(sp + 10);
+        let start_v = bus.read_word(sp + 14) as i16;
+        let start_h = bus.read_word(sp + 16) as i16;
+
+        if slop_rect_ptr == 0 {
+            return Self::DRAG_NO_DRAG_SENTINEL;
+        }
+        let slop_rect = Self::read_rect(bus, slop_rect_ptr);
+        let (release_v, release_h) = self.current_mouse_local_point(bus);
+        if !Self::point_in_rect(release_v, release_h, slop_rect) {
+            return Self::DRAG_NO_DRAG_SENTINEL;
+        }
+
+        let (mut offset_v, mut offset_h) = if limit_rect_ptr != 0 {
+            let limit_rect = Self::read_rect(bus, limit_rect_ptr);
+            if Self::rect_is_empty(limit_rect) {
+                (release_v, release_h)
+            } else {
+                Self::clamp_point_to_rect(release_v, release_h, limit_rect)
+            }
+        } else {
+            (release_v, release_h)
+        };
+
+        match axis {
+            Self::DRAG_H_AXIS_ONLY => offset_v = start_v,
+            Self::DRAG_V_AXIS_ONLY => offset_h = start_h,
+            Self::DRAG_NO_CONSTRAINT => {}
+            _ => {}
+        }
+
+        let dv = offset_v.wrapping_sub(start_v) as u16 as u32;
+        let dh = offset_h.wrapping_sub(start_h) as u16 as u32;
+        (dv << 16) | dh
+    }
+
     fn rect_is_empty(rect: (i16, i16, i16, i16)) -> bool {
         rect.2 <= rect.0 || rect.3 <= rect.1
     }
 
+    fn read_rect(bus: &MacMemoryBus, rect_ptr: u32) -> (i16, i16, i16, i16) {
+        (
+            bus.read_word(rect_ptr) as i16,
+            bus.read_word(rect_ptr + 2) as i16,
+            bus.read_word(rect_ptr + 4) as i16,
+            bus.read_word(rect_ptr + 6) as i16,
+        )
+    }
+
     fn point_in_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
         v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3
+    }
+
+    fn clamp_point_to_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> (i16, i16) {
+        (
+            v.clamp(rect.0, rect.2.wrapping_sub(1)),
+            h.clamp(rect.1, rect.3.wrapping_sub(1)),
+        )
+    }
+
+    fn current_mouse_local_point(&self, bus: &MacMemoryBus) -> (i16, i16) {
+        let (v, h) = self.mouse_pos;
+        if self.current_port == 0 {
+            return (v, h);
+        }
+        let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, self.current_port);
+        (v.wrapping_add(bounds_top), h.wrapping_add(bounds_left))
     }
 
     fn copy_window_color_table_resource(&mut self, bus: &mut MacMemoryBus, table_id: i16) -> u32 {
@@ -2735,9 +2803,10 @@ impl super::TrapDispatcher {
             (true, 0x124) => {
                 let sp = cpu.read_reg(Register::A7);
                 let list = self.window_list.clone();
+                let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
                 let result = list
                     .into_iter()
-                    .find(|&w| self.window_visible(bus, w))
+                    .find(|&w| w != ghost_window && self.window_visible(bus, w))
                     .unwrap_or(0);
                 bus.write_long(sp, result);
                 Ok(())
@@ -3020,12 +3089,10 @@ impl super::TrapDispatcher {
             //   - GrowWindow  → 0 (LONGINT zero == "no drag" sentinel
             //     per IM:I I-298: "GrowWindow returns 0 if the user
             //     releases the mouse button without moving it")
-            //   - DragTheRgn  → 0 (per IM:I I-302 "DragTheRgn returns
-            //     the dragged region's offset packed as a LongInt")
-            //   - DragGrayRgn → $80008000 (high word $8000 + low word
-            //     $8000 == sentinel "no drag" per IM:I I-302: "If the
-            //     user releases the mouse button outside slopRect,
-            //     DragGrayRgn returns $80008000 (no offset)")
+            //   - DragTheRgn / DragGrayRgn → use the frontend's current
+            //     mouse position as the release point; return the bounded
+            //     offset if inside slopRect, or the $80008000 no-drag
+            //     sentinel if outside it.
             //
             // Pascal frame discipline (Rect args BY POINTER per IM:I-91
             // PEA-sizeRect example: "a Rect is an 8-byte record, so push
@@ -3611,10 +3678,11 @@ impl super::TrapDispatcher {
             // _DragGrayRgn or, after setting the global variable DragPattern,
             // _DragTheRgn"). Same Pascal sig, same pop count of 22.
             // See family-level rationale block above $A925 DragWindow arm.
-            // DragTheRgn ($A926): Pops 22 args bytes (theRgn 4 + startPt 4 + limitRect ptr 4 + slopRect ptr 4 + axis 2 + actionProc 4) per IM:I-91 PEA convention + writes $80008000 to 4-byte LONGINT result slot @ sp+22; macro-aliased to $A905 DragGrayRgn per IM:I I-93, and BasiliskII returns the same no-drag sentinel as DragGrayRgn.
+            // DragTheRgn ($A926): Pops 22 args bytes (theRgn 4 + startPt 4 + limitRect ptr 4 + slopRect ptr 4 + axis 2 + actionProc 4) per IM:I-91 PEA convention + writes the bounded offset or $80008000 no-drag sentinel to the 4-byte LONGINT result slot @ sp+22 per IM:I I-302.
             (true, 0x126) => {
                 let sp = cpu.read_reg(Register::A7);
-                Self::finish_drag_result(cpu, bus, sp, 0x80008000u32);
+                let result = self.drag_region_result(bus, sp);
+                Self::finish_drag_result(cpu, bus, sp, result);
                 Ok(())
             }
 
@@ -6952,6 +7020,26 @@ mod tests {
     }
 
     #[test]
+    fn front_window_skips_lowmem_ghost_window() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let ghost = 0x200040u32;
+        let doc = 0x200140u32;
+        disp.window_list = vec![ghost, doc];
+        disp.front_window = ghost;
+        bus.write_byte(ghost + 110u32, 0xFF);
+        bus.write_byte(doc + 110u32, 0xFF);
+        bus.write_long(crate::memory::globals::addr::GHOST_WINDOW, ghost);
+
+        let result = dispatch(&mut disp, 0x124, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let returned = bus.read_long(TEST_SP);
+        assert_eq!(
+            returned, doc,
+            "FrontWindow must ignore low-memory GhostWindow"
+        );
+    }
+
+    #[test]
     fn front_window_returns_nil_when_all_hidden() {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
@@ -8522,24 +8610,102 @@ mod tests {
         }
     }
 
+    fn write_drag_region_frame(
+        bus: &mut crate::memory::MacMemoryBus,
+        sp: u32,
+        start: (i16, i16),
+        limit_rect_ptr: u32,
+        slop_rect_ptr: u32,
+        axis: i16,
+    ) {
+        bus.write_long(sp, 0); // actionProc
+        bus.write_word(sp + 4, axis as u16);
+        bus.write_long(sp + 6, slop_rect_ptr);
+        bus.write_long(sp + 10, limit_rect_ptr);
+        bus.write_word(sp + 14, start.0 as u16);
+        bus.write_word(sp + 16, start.1 as u16);
+        bus.write_long(sp + 18, 0x300000); // theRgn
+        bus.write_long(sp + 22, 0xDEAD_BEEF);
+    }
+
+    fn write_test_rect(
+        bus: &mut crate::memory::MacMemoryBus,
+        ptr: u32,
+        rect: (i16, i16, i16, i16),
+    ) {
+        bus.write_word(ptr, rect.0 as u16);
+        bus.write_word(ptr + 2, rect.1 as u16);
+        bus.write_word(ptr + 4, rect.2 as u16);
+        bus.write_word(ptr + 6, rect.3 as u16);
+    }
+
     // IM:I I-302 + IM:I I-91: DragTheRgn is the custom-outline alias of
-    // DragGrayRgn, and the no-drag path returns the $80008000 sentinel.
+    // DragGrayRgn, and the outside-slop path returns $80008000.
     #[test]
-    fn dragthergn_returns_no_drag_sentinel_and_consumes_arguments() {
+    fn dragthergn_returns_no_drag_sentinel_outside_sloprect_and_consumes_arguments() {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let sp = TEST_SP - 22;
         cpu.write_reg(Register::A7, sp);
-        for i in 0..22u32 {
-            bus.write_byte(sp + i, 0x55);
-        }
-        bus.write_long(sp + 22, 0xDEAD_BEEF);
+        let limit_rect = 0x240000;
+        let slop_rect = 0x240008;
+        write_test_rect(&mut bus, limit_rect, (0, 0, 100, 100));
+        write_test_rect(&mut bus, slop_rect, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), limit_rect, slop_rect, 0);
+        disp.set_mouse_position(140, 20);
 
         let result = dispatch(&mut disp, 0x126, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(bus.read_long(TEST_SP), 0x8000_8000);
+    }
+
+    #[test]
+    fn dragthergn_returns_current_local_mouse_offset_inside_sloprect() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+
+        let port = 0x210000;
+        disp.current_port = port;
+        bus.write_word(port + 8, (-100i16) as u16);
+        bus.write_word(port + 10, (-200i16) as u16);
+
+        let limit_rect = 0x240000;
+        let slop_rect = 0x240008;
+        write_test_rect(&mut bus, limit_rect, (0, 0, 100, 100));
+        write_test_rect(&mut bus, slop_rect, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), limit_rect, slop_rect, 0);
+        disp.set_mouse_position(130, 250); // local (30, 50)
+
+        let result = dispatch(&mut disp, 0x126, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_long(TEST_SP), 0x0014_001E);
+    }
+
+    #[test]
+    fn dragthergn_pins_to_limitrect_and_honors_axis_constraint() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+
+        let limit_rect = 0x240000;
+        let slop_rect = 0x240008;
+        write_test_rect(&mut bus, limit_rect, (0, 0, 30, 70));
+        write_test_rect(&mut bus, slop_rect, (0, 0, 100, 100));
+        write_drag_region_frame(&mut bus, sp, (10, 10), limit_rect, slop_rect, 1);
+        disp.set_mouse_position(40, 90);
+
+        let result = dispatch(&mut disp, 0x126, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(
+            bus.read_long(TEST_SP),
+            0x0000_003B,
+            "hAxisOnly keeps vertical offset zero and clamps h to right-1"
+        );
     }
 
     // IM:I p.I-294 (signature/call-frame summary on p.I-91):
