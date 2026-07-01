@@ -1389,6 +1389,62 @@ impl super::TrapDispatcher {
         window_ptr != 0 && bus.read_byte(window_ptr + Self::WINDOW_VISIBLE_OFFSET) != 0
     }
 
+    fn frontmost_visible_window_in_list(&self, bus: &MacMemoryBus) -> u32 {
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        self.window_list
+            .iter()
+            .copied()
+            .find(|&w| w != ghost_window && self.window_visible(bus, w))
+            .unwrap_or(0)
+    }
+
+    fn front_window_for_internal_state(&self, bus: &MacMemoryBus) -> u32 {
+        let visible_window = self.frontmost_visible_window_in_list(bus);
+        if visible_window != 0 {
+            visible_window
+        } else {
+            self.window_list.first().copied().unwrap_or(0)
+        }
+    }
+
+    fn front_window_for_trap(&self, bus: &MacMemoryBus) -> u32 {
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        if self.front_window != 0
+            && self.front_window != ghost_window
+            && self.window_visible(bus, self.front_window)
+        {
+            return self.front_window;
+        }
+        self.frontmost_visible_window_in_list(bus)
+    }
+
+    fn window_proc_id(&self, window_ptr: u32) -> i16 {
+        self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0)
+    }
+
+    fn window_is_custom_utility_layer_candidate(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> bool {
+        let proc_id = self.window_proc_id(window_ptr);
+        self.window_visible(bus, window_ptr)
+            && !Self::window_is_document_proc(proc_id)
+            && self.window_uses_custom_def_proc(bus, window_ptr)
+    }
+
+    fn document_should_remain_active_behind_custom_utility(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+        behind: u32,
+    ) -> bool {
+        behind != 0
+            && behind != 0xFFFF_FFFF
+            && Self::window_is_document_proc(self.window_proc_id(window_ptr))
+            && self.window_is_custom_utility_layer_candidate(bus, behind)
+    }
+
     /// Allocate (or replace) the title StringHandle for a window and write
     /// the given bytes as a Pascal string into it.
     /// Inside Macintosh Volume I, I-276: titleHandle is a StringHandle.
@@ -1553,11 +1609,20 @@ impl super::TrapDispatcher {
             self.window_list.push(window_ptr);
         }
         self.sync_window_list_links(bus);
-        let list = self.window_list.clone();
-        self.front_window = list
-            .into_iter()
-            .find(|&w| self.window_visible(bus, w))
-            .unwrap_or_else(|| self.window_list.first().copied().unwrap_or(0));
+        if self.document_should_remain_active_behind_custom_utility(bus, window_ptr, behind) {
+            // Floating utility windows/palettes remain visually above document
+            // windows, but the active window is still the document the user is
+            // working in. Overview 1992 p. 125 notes this active/frontmost
+            // exception for apps that support floating windows; HIG 1992
+            // pp. 137, 144 describes utility windows and palettes as floating
+            // above document windows.
+            self.front_window = window_ptr;
+            bus.write_byte(behind + Self::WINDOW_HILITED_OFFSET, 0x00);
+            bus.write_byte(window_ptr + Self::WINDOW_HILITED_OFFSET, 0xFF);
+            self.sync_cached_front_window_render_state(bus);
+        } else {
+            self.front_window = self.front_window_for_internal_state(bus);
+        }
         if self.front_window != window_ptr {
             self.sync_cached_front_window_render_state(bus);
         }
@@ -2802,12 +2867,7 @@ impl super::TrapDispatcher {
             // FrontWindow ($A924): Returns front_window handle
             (true, 0x124) => {
                 let sp = cpu.read_reg(Register::A7);
-                let list = self.window_list.clone();
-                let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
-                let result = list
-                    .into_iter()
-                    .find(|&w| w != ghost_window && self.window_visible(bus, w))
-                    .unwrap_or(0);
+                let result = self.front_window_for_trap(bus);
                 bus.write_long(sp, result);
                 Ok(())
             }
@@ -7056,6 +7116,126 @@ mod tests {
         assert_eq!(
             returned, 0,
             "FrontWindow must return NIL when all windows are invisible"
+        );
+    }
+
+    #[test]
+    fn front_window_returns_active_document_behind_custom_utility_layer() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_wdef_resource(&mut disp, &mut bus, 200);
+
+        let utility = bus.alloc(256);
+        let document = bus.alloc(256);
+        let utility_proc_id = (200i16 << 4) | 3;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            utility,
+            disp.screen_mode.0,
+            34,
+            2,
+            114,
+            82,
+            "",
+            utility_proc_id,
+            true,
+            false,
+            false,
+            0,
+        );
+        bus.write_byte(
+            utility + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            document,
+            disp.screen_mode.0,
+            40,
+            86,
+            473,
+            622,
+            "Document",
+            8,
+            false,
+            false,
+            true,
+            0,
+        );
+        disp.apply_behind_parameter(&mut bus, document, utility);
+
+        assert_eq!(
+            disp.window_list,
+            vec![utility, document],
+            "custom utility window must remain visually in front"
+        );
+        assert_eq!(
+            disp.front_window, document,
+            "standard document behind a custom utility layer remains active"
+        );
+        assert_eq!(
+            bus.read_byte(utility + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0x00,
+            "floating utility should not keep active-window hilite"
+        );
+        assert_eq!(
+            bus.read_byte(document + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0xFF,
+            "document should be the active/hilited window"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        let result = dispatch(&mut disp, 0x124, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(TEST_SP),
+            utility,
+            "FrontWindow should skip the active document while it is still hidden"
+        );
+
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(sp, 1);
+        bus.write_long(sp + 2, document);
+
+        let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            disp.front_window, document,
+            "ShowHide(TRUE) should not disturb the pending active document"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        let result = dispatch(&mut disp, 0x124, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(TEST_SP),
+            document,
+            "FrontWindow should return the active document, not the floating utility layer"
+        );
+
+        let wnd_ptr_ptr = bus.alloc(4);
+        let find_sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, find_sp);
+        bus.write_long(find_sp, wnd_ptr_ptr);
+        bus.write_word(find_sp + 4, 40);
+        bus.write_word(find_sp + 6, 10);
+        bus.write_word(find_sp + 8, 0);
+
+        let result = dispatch(&mut disp, 0x12C, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_word(TEST_SP - 2),
+            3,
+            "FindWindow should still report content in the visual utility layer"
+        );
+        assert_eq!(
+            bus.read_long(wnd_ptr_ptr),
+            utility,
+            "FindWindow should hit-test against visual layer order"
         );
     }
 
