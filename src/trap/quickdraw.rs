@@ -405,11 +405,22 @@ impl super::TrapDispatcher {
                     let addr = global_ptr.wrapping_add(offset as u32);
                     bus.write_bytes(addr, bytes);
                 };
-                write_pat(-8, &[0x00; 8]); // white
-                write_pat(-16, &[0xFF; 8]); // black
-                write_pat(-24, &[0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]); // gray
-                write_pat(-32, &[0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22]); // ltGray
-                write_pat(-40, &[0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD]); // dkGray
+                write_pat(-8, &[0x00; 8]);
+                write_pat(-16, &[0xFF; 8]);
+                write_pat(-24, &[0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+                write_pat(-32, &[0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22]);
+                write_pat(-40, &[0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD]);
+                // IM:I I-145/I-147 and I-162 list `arrow` as the
+                // predefined standard arrow Cursor global between
+                // `dkGray` and `screenBits`. With globalPtr == @thePort,
+                // reverse QuickDraw globals place it at globalPtr-108.
+                let (arrow_data, arrow_mask, arrow_hot_v, arrow_hot_h) =
+                    Self::default_arrow_cursor();
+                let arrow_addr = global_ptr.wrapping_sub(108);
+                bus.write_bytes(arrow_addr, &arrow_data);
+                bus.write_bytes(arrow_addr + 32, &arrow_mask);
+                bus.write_word(arrow_addr + 64, arrow_hot_v as u16);
+                bus.write_word(arrow_addr + 66, arrow_hot_h as u16);
 
                 // Populate qd.screenBits from the runner's authoritative
                 // screen_mode rather than from low-mem global $083C —
@@ -22543,6 +22554,32 @@ mod tests {
         assert_eq!(
             bus.read_bytes(global_ptr.wrapping_sub(24), 8),
             vec![0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]
+        );
+    }
+
+    #[test]
+    fn initgraf_initializes_arrow_global_to_standard_cursor() {
+        // IM:I I-145/I-147 documents `arrow` as the predefined standard
+        // arrow Cursor global; IM:I I-162 places it in the reverse-ordered
+        // QuickDraw globals block between dkGray and screenBits.
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(128 * 64);
+        d.screen_mode = (screen_base, 128, 64, 32, 1);
+        let global_ptr = 0x191800u32;
+        bus.write_long(TEST_SP, global_ptr);
+
+        let result = d.dispatch_quickdraw(true, 0x06E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let (data, mask, hot_v, hot_h) = TrapDispatcher::default_arrow_cursor();
+        let arrow_ptr = global_ptr.wrapping_sub(108);
+        assert_eq!(bus.read_bytes(arrow_ptr, 32), data.to_vec());
+        assert_eq!(bus.read_bytes(arrow_ptr + 32, 32), mask.to_vec());
+        assert_eq!(bus.read_word(arrow_ptr + 64) as i16, hot_v);
+        assert_eq!(bus.read_word(arrow_ptr + 66) as i16, hot_h);
+        assert!(
+            mask.iter().any(|&byte| byte != 0),
+            "standard arrow cursor mask should be renderable"
         );
     }
 
