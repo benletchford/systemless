@@ -3531,6 +3531,16 @@ impl super::TrapDispatcher {
                         bus.write_bytes(dst_addr, &src_row);
                     }
                     if dst_info.base == self.screen_mode.0 {
+                        self.refresh_dialog_saved_pixels_after_screen_draw(
+                            bus,
+                            self.current_port,
+                            (
+                                clip_t.saturating_sub(dst_info.bounds_top),
+                                clip_l.saturating_sub(dst_info.bounds_left),
+                                clip_b.saturating_sub(dst_info.bounds_top),
+                                clip_r.saturating_sub(dst_info.bounds_left),
+                            ),
+                        );
                         self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                             bus,
                             self.current_port,
@@ -4080,6 +4090,16 @@ impl super::TrapDispatcher {
                     }
                 }
                 if dst_info.base == self.screen_mode.0 {
+                    self.refresh_dialog_saved_pixels_after_screen_draw(
+                        bus,
+                        self.current_port,
+                        (
+                            clip_t.saturating_sub(dst_info.bounds_top),
+                            clip_l.saturating_sub(dst_info.bounds_left),
+                            clip_b.saturating_sub(dst_info.bounds_top),
+                            clip_r.saturating_sub(dst_info.bounds_left),
+                        ),
+                    );
                     self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                         bus,
                         self.current_port,
@@ -5446,6 +5466,16 @@ impl super::TrapDispatcher {
 
                 if base_addr == self.screen_mode.0 && self.debug_scroll_rect_last_changed_bytes > 0
                 {
+                    self.refresh_dialog_saved_pixels_after_screen_draw(
+                        bus,
+                        the_port,
+                        (
+                            top.saturating_sub(port_top),
+                            left.saturating_sub(port_left),
+                            bottom.saturating_sub(port_top),
+                            right.saturating_sub(port_left),
+                        ),
+                    );
                     self.refresh_visible_dialog_snapshot_after_bulk_port_draw(bus, the_port);
                 }
 
@@ -8301,6 +8331,16 @@ impl super::TrapDispatcher {
                     }
 
                     if ok && port_base == self.screen_mode.0 {
+                        self.refresh_dialog_saved_pixels_after_screen_draw(
+                            bus,
+                            self.current_port,
+                            (
+                                use_top.saturating_sub(port_bounds_top),
+                                use_left.saturating_sub(port_bounds_left),
+                                use_bottom.saturating_sub(port_bounds_top),
+                                use_right.saturating_sub(port_bounds_left),
+                            ),
+                        );
                         self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                             bus,
                             self.current_port,
@@ -13325,6 +13365,15 @@ impl super::TrapDispatcher {
                         self.ensure_dialog_background_saved_for_screen_port(bus, port);
                     }
                     self.write_cpixel(bus, &info, rgb);
+                    if info.base == self.screen_mode.0 {
+                        let screen_v = info.dy.min(i16::MAX as u32) as i16;
+                        let screen_h = info.dx.min(i16::MAX as u32) as i16;
+                        self.refresh_dialog_saved_pixels_after_screen_draw(
+                            bus,
+                            port,
+                            (screen_v, screen_h, screen_v + 1, screen_h + 1),
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -18596,6 +18645,16 @@ impl super::TrapDispatcher {
         }
 
         if dst_info.base == self.screen_mode.0 {
+            self.refresh_dialog_saved_pixels_after_screen_draw(
+                bus,
+                self.current_port,
+                (
+                    clip_t.saturating_sub(dst_info.bounds_top),
+                    clip_l.saturating_sub(dst_info.bounds_left),
+                    clip_b.saturating_sub(dst_info.bounds_top),
+                    clip_r.saturating_sub(dst_info.bounds_left),
+                ),
+            );
             self.refresh_visible_dialog_snapshot_after_bulk_port_draw(bus, self.current_port);
         }
 
@@ -21274,6 +21333,18 @@ impl super::TrapDispatcher {
                     src_to_dst[usize::from(src_value)],
                 );
             }
+        }
+        if is_screen_port {
+            self.refresh_dialog_saved_pixels_after_screen_draw(
+                bus,
+                port,
+                (
+                    top.saturating_sub(bounds_top),
+                    left.saturating_sub(bounds_left),
+                    bottom.saturating_sub(bounds_top),
+                    right.saturating_sub(bounds_left),
+                ),
+            );
         }
         true
     }
