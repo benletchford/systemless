@@ -61,6 +61,20 @@ fn signed_byte_from_stack_word(word: u16) -> i16 {
     i16::from(byte as i8)
 }
 
+fn file_permission_from_stack_word(word: u16) -> i16 {
+    fn is_file_permission(byte: u8) -> bool {
+        matches!(byte, 0..=4)
+    }
+
+    let high = (word >> 8) as u8;
+    let low = (word & 0x00FF) as u8;
+    match (is_file_permission(high), is_file_permission(low)) {
+        (true, false) => high as i16,
+        (false, true) => low as i16,
+        _ => signed_byte_from_stack_word(word),
+    }
+}
+
 fn temporary_memory_free_estimate(bus: &MacMemoryBus) -> u32 {
     (bus.ram_size() / 2).clamp(8 * 1024 * 1024, 64 * 1024 * 1024)
 }
@@ -5927,7 +5941,12 @@ impl super::TrapDispatcher {
                         // the refNum-poison band records the divergence.
                         let sp = cpu.read_reg(Register::A7);
                         let ref_num_ptr = bus.read_long(sp);
-                        let permission = bus.read_word(sp + 4) as i16;
+                        // `permission` is a SignedByte. MPW SC emits a
+                        // byte push for FSpOpenDF (see the checked-in
+                        // MPW-built AA52_fsp_lock_errors fixture), while
+                        // A7 still reserves a stack word; some callers leave
+                        // nonzero padding in the other byte.
+                        let permission = file_permission_from_stack_word(bus.read_word(sp + 4));
                         let spec_ptr = bus.read_long(sp + 6);
 
                         let filename = read_fsspec_name(bus, spec_ptr);
@@ -5941,26 +5960,12 @@ impl super::TrapDispatcher {
                         if let Some(vfs_name) =
                             self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                         {
-                            // IM:Files 9578: "If you request exclusive read/write
-                            // permission but another access path is already open,
-                            // PBHOpenDF returns … opWrErr as its function result."
-                            // fsRdWrPerm=3, fsWrPerm=2, fsCurPerm=0
-                            let wants_write = permission == 2 || permission == 3;
-                            if wants_write {
-                                let already_open_for_write = self
-                                    .write_refnums
-                                    .iter()
-                                    .any(|rn| self.open_files.get(rn) == Some(&vfs_name));
-                                if already_open_for_write {
-                                    eprintln!(
-                                        "[TRAP] FSpOpenDF(\"{}\") -> opWrErr (-49)",
-                                        filename
-                                    );
-                                    bus.write_word(sp + 10, (-49i16) as u16);
-                                    cpu.write_reg(Register::A7, sp + 10);
-                                    return Some(Ok(()));
-                                }
-                            }
+                            // IM:Files 1992, 2-326: fsWrPerm=2,
+                            // fsRdWrPerm=3, fsRdWrShPerm=4. Systemless keeps
+                            // the BasiliskII/extfs noErr open behavior pinned
+                            // by aa52_fsp_lock_errors, but still records
+                            // which access paths requested write permission.
+                            let wants_write = matches!(permission, 2 | 3 | 4);
 
                             let refnum = self.next_refnum;
                             self.next_refnum += 1;
@@ -11302,6 +11307,112 @@ mod tests {
         );
         // Result at new SP should be 0
         assert_eq!(bus.read_word(new_sp), 0);
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspopendf_packed_signedbyte_permission_marks_write_path() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("Prefs".to_string(), b"existing prefs".to_vec());
+
+        let spec_ptr = 0x300000u32;
+        write_fsspec(&mut bus, spec_ptr, 1, 2, b"Prefs");
+
+        let ref_num_ptr = 0x300200u32;
+        let sp = TEST_SP;
+        bus.write_long(sp, ref_num_ptr);
+        bus.write_word(sp + 4, 0x0233); // fsWrPerm in high byte, nonzero padding low byte.
+        bus.write_long(sp + 6, spec_ptr);
+
+        cpu.write_reg(Register::D0, 2);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        let refnum = bus.read_word(ref_num_ptr);
+        assert_eq!(new_sp, TEST_SP + 10);
+        assert_eq!(bus.read_word(new_sp), 0);
+        assert!(
+            disp.write_refnums.contains(&refnum),
+            "packed fsWrPerm must be tracked as a write-open access path"
+        );
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspopendf_double_exclusive_write_open_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Save.dat".to_string(), vec![1, 2, 3]);
+
+        let spec_ptr = 0x300000u32;
+        write_fsspec(&mut bus, spec_ptr, 1, 2, b"Save.dat");
+
+        let first_ref_ptr = 0x300200u32;
+        let sp = TEST_SP;
+        bus.write_long(sp, first_ref_ptr);
+        bus.write_word(sp + 4, 3); // fsRdWrPerm
+        bus.write_long(sp + 6, spec_ptr);
+        cpu.write_reg(Register::D0, 2);
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(cpu.read_reg(Register::A7)), 0);
+
+        let second_ref_ptr = 0x300220u32;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(sp, second_ref_ptr);
+        bus.write_word(sp + 4, 0x0333); // fsRdWrPerm in high byte, non-permission padding low byte.
+        bus.write_long(sp + 6, spec_ptr);
+        bus.write_word(second_ref_ptr, 0x7FFF);
+        cpu.write_reg(Register::D0, 2);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 10);
+        assert_eq!(bus.read_word(new_sp), 0);
+        let second_refnum = bus.read_word(second_ref_ptr);
+        assert_ne!(
+            second_refnum, 0x7FFF,
+            "BasiliskII/extfs-compatible second FSpOpenDF publishes a refnum"
+        );
+        assert!(
+            disp.write_refnums.contains(&second_refnum),
+            "packed fsRdWrPerm must be tracked on the second write-open path"
+        );
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspopendf_locked_file_write_remains_openable() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Locked.dat".to_string(), vec![1, 2, 3]);
+        disp.locked_files.insert("Locked.dat".to_string());
+
+        let spec_ptr = 0x300000u32;
+        write_fsspec(&mut bus, spec_ptr, 1, 2, b"Locked.dat");
+
+        let ref_num_ptr = 0x300200u32;
+        let sp = TEST_SP;
+        bus.write_long(sp, ref_num_ptr);
+        bus.write_word(sp + 4, 0x0233); // fsWrPerm in high byte, non-permission padding low byte.
+        bus.write_long(sp + 6, spec_ptr);
+        bus.write_word(ref_num_ptr, 0x7FFF);
+        cpu.write_reg(Register::D0, 2);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 10);
+        assert_eq!(bus.read_word(new_sp), 0);
+        let refnum = bus.read_word(ref_num_ptr);
+        assert_ne!(
+            refnum, 0x7FFF,
+            "BasiliskII/extfs-compatible locked FSpOpenDF publishes a refnum"
+        );
+        assert!(
+            disp.write_refnums.contains(&refnum),
+            "packed fsWrPerm must still be tracked as write-open"
+        );
     }
 
     // ================================================================
