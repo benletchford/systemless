@@ -2751,7 +2751,8 @@ impl super::TrapDispatcher {
         );
 
         let is_movable_modal = self.window_proc_id == 5;
-        let has_go_away = active && matches!(self.window_proc_id, 0 | 4) && self.go_away_flag;
+        let has_go_away =
+            active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
 
         // Draw title bar border. Classic document WDEFs leave the top edge
         // open; System 7.5.3 paints only side edges, bottom separator, and
@@ -3327,7 +3328,7 @@ impl super::TrapDispatcher {
     ///   - plainDBox (2): Single 1-pixel border
     ///   - dBoxProc (1): Double border (outer 1px at ±8, inner 2px at ±5)
     ///   - altDBoxProc (3): Single border + 2-pixel drop shadow
-    ///   - documentProc (0), noGrowDocProc (4): Title bar chrome
+    ///   - document/zoom document procs (0, 4, 8, 12, 16): Title bar chrome
     ///   - movableDBoxProc (5): Double border + title bar chrome
     ///
     /// Draws a single window's chrome inline by deriving its screen-coord
@@ -3349,10 +3350,9 @@ impl super::TrapDispatcher {
         if self.window_uses_custom_def_proc(bus, window_ptr) {
             return;
         }
-        // plainDBox (2), dBoxProc (1), altDBoxProc (3), and rDocProc (16)
-        // windows have NO title bar — only a border — per Inside Macintosh
-        // Volume I, I-275. Dispatch to draw_window_frame for those procIDs
-        // rather than draw_window_chrome (which paints title-bar chrome).
+        // plainDBox (2), dBoxProc (1), and altDBoxProc (3) windows have
+        // no title bar; dispatch to draw_window_frame rather than
+        // draw_window_chrome (which paints title-bar chrome).
         let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
         let port_version = bus.read_word(window_ptr + 6);
         let (pmap_top, pmap_left) = if (port_version & 0xC000) == 0xC000 {
@@ -3541,7 +3541,7 @@ impl super::TrapDispatcher {
                     true,
                 );
             }
-            0 | 4 => {
+            proc_id if Self::window_is_document_proc(proc_id) => {
                 // Document-style windows with title bars
                 // Erase structure region (content + title bar + 1px border + shadow)
                 let tb_top = wind_top - 19;
@@ -3662,8 +3662,8 @@ impl super::TrapDispatcher {
         // Inside Macintosh Volume V, V-245; Tricks of the Mac Game
         // Programming Gurus 1995, p. 30-265
         // `menu_bar_hidden` (default-on for game runtimes — see
-        // `TrapDispatcher::menu_bar_hidden`) suppresses the chrome strip
-        // even when MBarHeight is non-zero. Treat it like fullscreen for
+        // `TrapDispatcher::menu_bar_hidden`) suppresses the menu bar even
+        // when MBarHeight is non-zero. Treat it like fullscreen for
         // visRgn-expansion purposes so the band the menu bar would occupy
         // is owned by the front window's visRgn, not left unpainted.
         let effective_mbar = if self.fullscreen_locked || self.menu_bar_hidden {
@@ -3706,14 +3706,27 @@ impl super::TrapDispatcher {
             }
         }
 
-        let skip_chrome = matches!(self.window_proc_id, 1 | 2 | 3 | 5) || effective_mbar <= 0;
+        let hidden_menu_fullscreen_top = if menu_bar_height > 0 {
+            menu_bar_height.saturating_add(2)
+        } else {
+            22
+        };
+        let hidden_menu_fullscreen_window = self.menu_bar_hidden
+            && wt <= hidden_menu_fullscreen_top
+            && wl <= 2
+            && wb >= screen_h as i16 - 2
+            && wr >= screen_w as i16 - 2;
+        let skip_chrome = matches!(self.window_proc_id, 1 | 2 | 3 | 5)
+            || self.fullscreen_locked
+            || menu_bar_height <= 0
+            || hidden_menu_fullscreen_window;
 
         // Draw chrome for each visible non-front window FIRST
         // (back-to-front order per window_list which is front-to-back),
         // then the front window on top. Each back-window's chrome uses its
         // WindowRecord-stored state (bounds derived from portPixMap bounds,
         // title from titleHandle, goAway byte, hilited byte).
-        if !skip_chrome && effective_mbar > 0 {
+        if !skip_chrome && menu_bar_height > 0 {
             let list_snapshot = self.window_list.clone();
             let saved_bounds = self.window_bounds;
             let saved_title = self.window_title.clone();
@@ -4249,6 +4262,62 @@ mod redraw_chrome_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn redraw_chrome_repaints_document_window_when_host_hides_menu_bar() {
+        let (mut disp, mut cpu, mut bus) = super::super::test_helpers::setup();
+        let screen_base = bus.alloc(800 * 600);
+        for offset in 0..800 * 600 {
+            bus.write_byte(screen_base + offset, 0xAA);
+        }
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = true;
+
+        let window_addr = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            screen_base,
+            60,
+            30,
+            220,
+            370,
+            "Zoom",
+            8,
+            true,
+            true,
+            true,
+            0,
+        );
+
+        for y in 0..20u32 {
+            for x in 0..800u32 {
+                bus.write_byte(screen_base + y * 800 + x, 0xAA);
+            }
+        }
+        for y in 41..59u32 {
+            for x in 29..371u32 {
+                bus.write_byte(screen_base + y * 800 + x, 0xAA);
+            }
+        }
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 10 * 800 + 100),
+            0xAA,
+            "hidden host menu bar should not be repainted"
+        );
+        assert_ne!(
+            bus.read_byte(screen_base + 45 * 800 + 50),
+            0xAA,
+            "non-fullscreen zoom document windows should redraw titlebar chrome"
+        );
     }
 
     /// Counterpart to the kiosk-mode test above: when `menu_bar_hidden

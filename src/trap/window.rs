@@ -992,8 +992,12 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn window_is_document_proc(proc_id: i16) -> bool {
+        matches!(proc_id, 0 | 4 | 8 | 12 | 16)
+    }
+
     fn window_uses_save_under(&self, proc_id: i16) -> bool {
-        !matches!(proc_id, 0 | 4)
+        !Self::window_is_document_proc(proc_id)
     }
 
     fn save_window_under_pixels_for_proc(
@@ -1885,10 +1889,10 @@ impl super::TrapDispatcher {
         // for the System 7.5.3 hidden/backmost cases that preserve it.
         self.set_current_port_state(bus, cpu, window_ptr, Some(gd_handle));
 
-        // If the previous front window was a document-style window (procID 0/4),
+        // If the previous front window was a document-style window,
         // redraw its title bar as inactive (no close box, no stripes).
         // On a real Mac, only the front window shows active chrome.
-        if self.front_window != 0 && matches!(self.window_proc_id, 0 | 4) && visible {
+        if self.front_window != 0 && Self::window_is_document_proc(self.window_proc_id) && visible {
             self.draw_window_chrome(bus, false);
         }
 
@@ -1950,7 +1954,7 @@ impl super::TrapDispatcher {
             22
         };
         let suppress_document_chrome = self.menu_bar_hidden
-            && matches!(wind_proc_id, 0 | 4)
+            && Self::window_is_document_proc(wind_proc_id)
             && wind_top <= hidden_menu_fullscreen_top
             && wind_left <= 2
             && wind_bottom >= screen_h as i16 - 2
@@ -8436,45 +8440,51 @@ mod tests {
     }
 
     #[test]
-    fn hidden_menu_mode_draws_normal_document_window_frame() {
+    fn hidden_menu_mode_draws_document_window_variant_frames() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc(800 * 600);
-        for offset in 0..800 * 600 {
-            bus.write_byte(screen_base + offset, 0xAA);
-        }
         bus.write_long(0x0824, screen_base);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.menu_bar_hidden = true;
+        for proc_id in [0, 4, 8, 12, 16] {
+            for offset in 0..800 * 600 {
+                bus.write_byte(screen_base + offset, 0xAA);
+            }
+            disp.menu_bar_hidden = true;
+            disp.front_window = 0;
+            disp.window_proc_id = 0;
+            disp.window_list.clear();
+            disp.window_saved_under_pixels.clear();
 
-        let window_addr = bus.alloc(256);
-        disp.init_cgraf_window(
-            &mut bus,
-            &mut cpu,
-            window_addr,
-            screen_base,
-            180,
-            400,
-            420,
-            600,
-            "Player",
-            4,
-            true,
-            true,
-            true,
-            0,
-        );
+            let window_addr = bus.alloc(256);
+            disp.init_cgraf_window(
+                &mut bus,
+                &mut cpu,
+                window_addr,
+                screen_base,
+                180,
+                400,
+                420,
+                600,
+                "Player",
+                proc_id,
+                true,
+                true,
+                true,
+                0,
+            );
 
-        assert_ne!(
-            bus.read_byte(screen_base + 240 * 800 + 450),
-            0xAA,
-            "normal document windows should erase their content even when the host menu bar is hidden"
-        );
-        assert_ne!(
-            bus.read_byte(screen_base + 162 * 800 + 450),
-            0xAA,
-            "normal document windows should still draw title-bar chrome"
-        );
+            assert_ne!(
+                bus.read_byte(screen_base + 240 * 800 + 450),
+                0xAA,
+                "document window procID {proc_id} should erase its content even when the host menu bar is hidden"
+            );
+            assert_ne!(
+                bus.read_byte(screen_base + 162 * 800 + 450),
+                0xAA,
+                "document window procID {proc_id} should still draw title-bar chrome"
+            );
+        }
     }
 
     // IM:I I-302 + IM:I I-91: DragTheRgn is the custom-outline alias of
