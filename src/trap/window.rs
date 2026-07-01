@@ -1408,14 +1408,16 @@ impl super::TrapDispatcher {
     }
 
     fn front_window_for_trap(&self, bus: &MacMemoryBus) -> u32 {
-        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
-        if self.front_window != 0
-            && self.front_window != ghost_window
-            && self.window_visible(bus, self.front_window)
-        {
-            return self.front_window;
-        }
         self.frontmost_visible_window_in_list(bus)
+    }
+
+    fn frontmost_tracked_window(&self, bus: &MacMemoryBus) -> u32 {
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        self.window_list
+            .iter()
+            .copied()
+            .find(|&w| w != ghost_window)
+            .unwrap_or(0)
     }
 
     fn window_proc_id(&self, window_ptr: u32) -> i16 {
@@ -2615,7 +2617,7 @@ impl super::TrapDispatcher {
                 let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
-                    let was_front = self.front_window == the_window;
+                    let was_front = self.frontmost_tracked_window(bus) == the_window;
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
                     self.set_window_vis_from_content(bus, the_window, true);
                     if !was_visible {
@@ -2861,10 +2863,11 @@ impl super::TrapDispatcher {
             // FUNCTION FrontWindow: WindowPtr;
             // Inside Macintosh Volume I, I-274
             //
-            // "FrontWindow returns a pointer to the frontmost window.
-            //  If there are no windows or all windows are invisible,
-            //  it returns NIL."
-            // FrontWindow ($A924): Returns front_window handle
+            // Returns the first visible window in the Window Manager list.
+            // If there are no visible windows, it returns NIL. The low-memory
+            // GhostWindow is skipped when present.
+            // Inside Macintosh Volume I, I-274; Macintosh Toolbox Essentials
+            // 1992, p. 4-93.
             (true, 0x124) => {
                 let sp = cpu.read_reg(Register::A7);
                 let result = self.front_window_for_trap(bus);
@@ -6301,6 +6304,96 @@ mod tests {
         );
     }
 
+    #[test]
+    fn showwindow_hidden_first_window_becomes_frontwindow_even_if_cached_front_was_behind() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let document = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            document,
+            disp.screen_mode.0,
+            120,
+            120,
+            320,
+            520,
+            "Document",
+            8,
+            true,
+            false,
+            true,
+            0,
+        );
+
+        let dialog = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            dialog,
+            disp.screen_mode.0,
+            90,
+            180,
+            260,
+            460,
+            "Dialog",
+            3,
+            false,
+            false,
+            true,
+            0,
+        );
+        disp.front_window = document;
+        bus.write_byte(
+            document + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+        bus.write_byte(
+            dialog + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0x00,
+        );
+        disp.event_queue.clear();
+
+        assert_eq!(
+            disp.window_list.first().copied(),
+            Some(dialog),
+            "the hidden dialog must be first in Window Manager order"
+        );
+        assert_eq!(
+            disp.front_window_for_trap(&bus),
+            document,
+            "FrontWindow skips the hidden first window before ShowWindow"
+        );
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, dialog);
+        let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        let result = dispatch(&mut disp, 0x124, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            bus.read_long(TEST_SP),
+            dialog,
+            "FrontWindow must return the first visible window in the window list"
+        );
+        assert_eq!(
+            disp.front_window, dialog,
+            "ShowWindow should activate a newly visible window that is frontmost in list order"
+        );
+        assert!(
+            disp.event_queue.iter().any(|event| event.what == 8
+                && event.message == dialog
+                && (event.modifiers & 1) == 1),
+            "ShowWindow must queue an activate event for the newly visible frontmost window"
+        );
+    }
+
     // ---------------------------------------------------------------
     // 10. HideWindow (0x116) -- pops 4 bytes
     // ---------------------------------------------------------------
@@ -7213,8 +7306,18 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(
             bus.read_long(TEST_SP),
+            utility,
+            "FrontWindow should return the first visible window in Window Manager order"
+        );
+
+        bus.write_long(crate::memory::globals::addr::GHOST_WINDOW, utility);
+        cpu.write_reg(Register::A7, TEST_SP);
+        let result = dispatch(&mut disp, 0x124, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(TEST_SP),
             document,
-            "FrontWindow should return the active document, not the floating utility layer"
+            "GhostWindow should exclude the floating utility layer from FrontWindow"
         );
 
         let wnd_ptr_ptr = bus.alloc(4);
