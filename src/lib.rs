@@ -33,6 +33,7 @@
 //! [`m68k`]: https://crates.io/crates/m68k
 
 pub mod audio;
+pub mod binhex;
 pub mod cpu;
 pub mod debug_overlay;
 pub mod disk_image;

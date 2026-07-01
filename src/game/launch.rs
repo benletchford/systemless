@@ -1,7 +1,8 @@
 //! Shared game loading and initialization for all Systemless frontends.
 //!
-//! Consolidates ROM loading (MacBinary + StuffIt), runner initialization,
-//! and post-load configuration so all frontends behave identically.
+//! Consolidates ROM loading (BinHex + MacBinary + StuffIt), runner
+//! initialization, and post-load configuration so all frontends behave
+//! identically.
 
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
@@ -32,7 +33,7 @@ pub fn new_runner() -> FixtureRunner {
     )
 }
 
-/// Load a game ROM from raw file bytes (MacBinary, StuffIt archive, or raw resource fork).
+/// Load a game ROM from raw file bytes (BinHex, MacBinary, StuffIt archive, or raw resource fork).
 ///
 /// Handles StuffIt archives (populates VFS with all entries, finds executable),
 /// MacBinary files, and macOS resource fork paths. Returns the LoadedApp on success.
@@ -41,6 +42,8 @@ pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
         load_web_pack(runner, file_data)
     } else if is_stuffit_archive(file_data) {
         load_stuffit(runner, file_data)
+    } else if crate::binhex::looks_like_binhex(file_data) {
+        load_binhex(runner, file_data)
     } else if crate::disk_image::looks_like_dc42_or_hfs(file_data) {
         load_disk_image(runner, file_data)
     } else {
@@ -83,7 +86,7 @@ pub fn pack_stuffit_for_web(file_data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Load a game from a file path, trying macOS resource fork first, then MacBinary/StuffIt.
+/// Load a game from a file path, trying explicit containers before macOS resource forks.
 pub fn load_game_from_path(
     runner: &mut FixtureRunner,
     path: &std::path::Path,
@@ -96,6 +99,7 @@ pub fn load_game_from_path(
     // Finder metadata resource fork on the host; that is not the launchable app.
     if file_data.starts_with(WEB_PACK_MAGIC)
         || is_stuffit_archive(&file_data)
+        || crate::binhex::looks_like_binhex(&file_data)
         || crate::disk_image::looks_like_dc42_or_hfs(&file_data)
     {
         return load_game(runner, &file_data);
@@ -194,6 +198,44 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
 
     let executable =
         executable_entry.ok_or_else(|| no_executable_archive_error(&skipped_disk_image_errors))?;
+    if crate::runner::trace_load_enabled() {
+        eprintln!("[LOAD] Selected executable: {}", executable.name);
+    }
+    load_selected_executable(runner, &executable)
+}
+
+fn load_binhex(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
+    let file = crate::binhex::decode(file_data)?.ok_or_else(|| "Not a BinHex file".to_string())?;
+
+    if crate::runner::trace_load_enabled() {
+        eprintln!("[LOAD] Decoded BinHex file: {}", file.name);
+    }
+    if is_stuffit_archive(&file.data) {
+        return load_stuffit(runner, &file.data);
+    }
+    if crate::disk_image::looks_like_dc42_or_hfs(&file.data) {
+        if crate::runner::trace_load_enabled() {
+            eprintln!("[LOAD] BinHex data fork contains HFS disk image");
+        }
+        return load_disk_image(runner, &file.data);
+    }
+
+    let mut executable_entry: Option<ExecutableCandidate> = None;
+    insert_payload_into_vfs(
+        runner,
+        payload_from_forks(
+            &file.name,
+            file.data,
+            file.rsrc,
+            file.file_type,
+            file.creator,
+            file.finder_flags,
+        )?,
+        &mut executable_entry,
+    );
+    log_vfs(runner);
+
+    let executable = executable_entry.ok_or("No executable found in BinHex file")?;
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
