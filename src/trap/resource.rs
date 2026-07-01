@@ -7244,6 +7244,14 @@ impl super::TrapDispatcher {
                     is_directory: false,
                 });
             }
+            if let Some(path) = self.find_vfs_rsrc_file_in_directory(dir_id, filename) {
+                self.vfs_file_metadata(&path)?;
+                return Some(super::dispatch::VfsCatalogEntry {
+                    path: path.clone(),
+                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                    is_directory: false,
+                });
+            }
         }
 
         None
@@ -12983,6 +12991,43 @@ mod tests {
         assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"fold"));
         assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
         assert_eq!(bus.read_long(pb + 48), pilots_dir_id);
+        assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbgetcatinfo_finds_resource_only_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+        disp.vfs_rsrc.insert(
+            "Game Folder/Resource Data".to_string(),
+            vec![0xCA, 0xFE, 0xBA, 0xBE],
+        );
+        disp.set_vfs_entry_metadata("Game Folder/Resource Data", *b"rsrc", *b"GAME", 0x0040);
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"Resource Data");
+        bus.write_word(pb + 16, 0x3FFF); // ioResult poison
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0); // ioFDirIndex
+        bus.write_long(pb + 48, app_dir_id);
+        cpu.write_reg(Register::D0, 9); // HFSDispatch selector: PBGetCatInfo
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Resource Data".to_vec());
+        assert_eq!(bus.read_byte(pb + 30), 0, "PBGetCatInfo returned a file");
+        assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"rsrc"));
+        assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"GAME"));
+        assert_eq!(bus.read_word(pb + 40), 0x0040);
+        assert!(
+            bus.read_long(pb + 48) >= 32,
+            "ioDirID should become a file ID"
+        );
+        assert_eq!(bus.read_long(pb + 54), 0, "data fork length");
+        assert_eq!(bus.read_long(pb + 64), 4, "resource fork length");
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
     }
 
