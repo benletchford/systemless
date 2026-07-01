@@ -5855,7 +5855,9 @@ impl super::TrapDispatcher {
             }
 
             // HighLevelFSDispatch ($AA52)
-            // HighLevelFSDispatch ($AA52): Selectors: 1=FSMakeFSSpec, 2=FSpOpenDF, 4=FSpCreate, 6=FSpDelete, 9=FSpSetFLock, 10=FSpRstFLock
+            // HighLevelFSDispatch ($AA52): Selectors: 1=FSMakeFSSpec, 2=FSpOpenDF,
+            // 4=FSpCreate, 5=FSpDirCreate, 6=FSpDelete, 9=FSpSetFLock,
+            // 10=FSpRstFLock, 13=FSpOpenResFile, 14=FSpCreateResFile
             (true, 0x252) => {
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
                 eprintln!("[TRAP] HighLevelFSDispatch Selector={}", selector);
@@ -6109,6 +6111,75 @@ impl super::TrapDispatcher {
                             bus.write_word(sp + 14, 0); // noErr
                         }
                         cpu.write_reg(Register::A7, sp + 14);
+                        Ok(())
+                    }
+                    5 => {
+                        // FSpDirCreate ($AA52, selector 5)
+                        // Creates a directory specified by an FSSpec and
+                        // returns its directory ID.
+                        // FUNCTION FSpDirCreate(spec: FSSpec; scriptTag: ScriptCode;
+                        //   VAR createdDirID: LongInt): OSErr;
+                        // Files 1992, 2-158
+                        let sp = cpu.read_reg(Register::A7);
+                        let created_dir_id_ptr = bus.read_long(sp);
+                        let spec_ptr = bus.read_long(sp + 6);
+                        let filename = read_fsspec_name(bus, spec_ptr);
+                        let vref = bus.read_word(spec_ptr) as i16;
+                        let dir_id = bus.read_long(spec_ptr + 2);
+
+                        let result = if filename.is_empty() {
+                            -37i16 // bdNamErr
+                        } else {
+                            let parent_dir_id = self.resolve_directory_id(vref, dir_id);
+                            let Some(parent_path) = self
+                                .directory_path_for_id(parent_dir_id)
+                                .map(str::to_string)
+                            else {
+                                bus.write_word(sp + 10, (-120i16) as u16); // dirNFErr
+                                cpu.write_reg(Register::A7, sp + 10);
+                                return Some(Ok(()));
+                            };
+                            let child_name = super::TrapDispatcher::normalize_vfs_path(&filename);
+                            if child_name.is_empty() {
+                                -37i16 // bdNamErr
+                            } else {
+                                let child_path = if parent_path.is_empty() {
+                                    child_name
+                                } else {
+                                    format!("{parent_path}/{child_name}")
+                                };
+                                let duplicate = self
+                                    .vfs_directories
+                                    .keys()
+                                    .any(|path| path.eq_ignore_ascii_case(&child_path))
+                                    || self
+                                        .vfs
+                                        .keys()
+                                        .any(|path| path.eq_ignore_ascii_case(&child_path))
+                                    || self
+                                        .vfs_rsrc
+                                        .keys()
+                                        .any(|path| path.eq_ignore_ascii_case(&child_path));
+                                if duplicate {
+                                    -48i16 // dupFNErr
+                                } else {
+                                    let new_dir_id = self.ensure_vfs_directory(&child_path);
+                                    if created_dir_id_ptr != 0 {
+                                        bus.write_long(created_dir_id_ptr, new_dir_id);
+                                    }
+                                    if let Some(ref dir) = self.output_dir {
+                                        let _ = std::fs::create_dir_all(dir.join(&child_path));
+                                    }
+                                    eprintln!(
+                                        "[TRAP] FSpDirCreate(\"{}\") parentDirID={} -> dirID={}",
+                                        filename, parent_dir_id, new_dir_id
+                                    );
+                                    0
+                                }
+                            }
+                        };
+                        bus.write_word(sp + 10, result as u16);
+                        cpu.write_reg(Register::A7, sp + 10);
                         Ok(())
                     }
                     6 => {
@@ -11631,6 +11702,81 @@ mod tests {
         assert!(
             disp.vfs.contains_key("NewFile.dat"),
             "file should be added to VFS"
+        );
+    }
+
+    // ================================================================
+    // 13c2. HighLevelFSDispatch (0x252) selector 5 — FSpDirCreate
+    // ================================================================
+    #[test]
+    fn hlfs_dispatch_fspdircreate_creates_child_directory_and_returns_dirid() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let parent_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+        let spec_ptr = 0x300000u32;
+        let created_dir_id_ptr = 0x300100u32;
+        write_fsspec(
+            &mut bus,
+            spec_ptr,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            parent_dir_id,
+            b"Humongous Entertainment",
+        );
+        bus.write_long(created_dir_id_ptr, 0xDEAD_BEEF);
+
+        let sp = TEST_SP;
+        bus.write_long(sp, created_dir_id_ptr);
+        bus.write_word(sp + 4, 0); // scriptTag
+        bus.write_long(sp + 6, spec_ptr);
+        bus.write_word(sp + 10, 0xBEEF); // result poison
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 5);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, 0);
+        let created_dir_id = bus.read_long(created_dir_id_ptr);
+        assert_ne!(created_dir_id, parent_dir_id);
+        assert_eq!(
+            disp.directory_path_for_id(created_dir_id),
+            Some("System Folder/Preferences/Humongous Entertainment")
+        );
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspdircreate_duplicate_returns_dupfneerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let parent_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+        disp.ensure_vfs_directory("System Folder/Preferences/Humongous Entertainment");
+        let spec_ptr = 0x300000u32;
+        let created_dir_id_ptr = 0x300100u32;
+        write_fsspec(
+            &mut bus,
+            spec_ptr,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            parent_dir_id,
+            b"Humongous Entertainment",
+        );
+        bus.write_long(created_dir_id_ptr, 0xDEAD_BEEF);
+
+        let sp = TEST_SP;
+        bus.write_long(sp, created_dir_id_ptr);
+        bus.write_word(sp + 4, 0);
+        bus.write_long(sp + 6, spec_ptr);
+        bus.write_word(sp + 10, 0xBEEF);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 5);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, -48);
+        assert_eq!(
+            bus.read_long(created_dir_id_ptr),
+            0xDEAD_BEEF,
+            "duplicate failure should not overwrite createdDirID"
         );
     }
 

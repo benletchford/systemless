@@ -116,6 +116,7 @@ pub mod addr {
     pub const VCB_Q_HDR: u32 = 0x0356; // VCB queue header
     pub const FS_Q_HDR: u32 = 0x0360; // File I/O queue header
     pub const CUR_DIR_STORE: u32 = 0x0398; // Directory ID of directory last opened (long) - Inside Macintosh Volume IV, IV-72
+    pub const FS_FCB_LEN: u32 = 0x03F6; // Size of a file control block (word) - Files 1992, 2-384
 
     // Memory Manager globals (for NewPtr, etc.)
     pub const APP_L_ZONE: u32 = 0x02AA; // Application zone (ptr)

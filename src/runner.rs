@@ -24,6 +24,10 @@ static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
 const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
+const APPLICATION_RESOURCE_REFNUM: u16 = 2;
+const HFS_FCB_SIZE: u16 = 94;
+const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
+const HFS_VCB_SIZE: u32 = 178;
 
 fn trace_dialog_filter_enabled() -> bool {
     *TRACE_DIALOG_FILTER
@@ -1687,6 +1691,101 @@ impl FixtureRunner {
         handle
     }
 
+    fn write_fixed_pstring(&mut self, ptr: u32, value: &str, max_len: usize) {
+        let bytes = value.as_bytes();
+        let len = bytes.len().min(max_len);
+        self.bus.write_byte(ptr, len as u8);
+        for (i, &byte) in bytes.iter().take(len).enumerate() {
+            self.bus.write_byte(ptr + 1 + i as u32, byte);
+        }
+    }
+
+    fn seed_current_application_file_manager_state(&mut self) {
+        use crate::memory::globals::addr;
+
+        let Some(app_path) = self.dispatcher.launched_app_path.clone() else {
+            return;
+        };
+        self.dispatcher.ensure_vfs_file_metadata(&app_path);
+        let metadata = self
+            .dispatcher
+            .vfs_metadata
+            .get(&app_path)
+            .copied()
+            .unwrap_or(crate::trap::dispatch::VfsMetadata {
+                file_id: 0,
+                parent_dir_id: self.dispatcher.default_dir_id,
+                file_type: u32::from_be_bytes(*b"APPL"),
+                creator: u32::from_be_bytes(*b"????"),
+                finder_flags: 0,
+                created_date: 0,
+                modified_date: 0,
+            });
+        let resource_len = self
+            .dispatcher
+            .vfs_rsrc
+            .get(&app_path)
+            .map(|bytes| bytes.len() as u32)
+            .unwrap_or(0);
+
+        let vcb_ptr = self.bus.alloc(HFS_VCB_SIZE);
+        if vcb_ptr == 0 {
+            return;
+        }
+        self.bus.fill_bytes(vcb_ptr, HFS_VCB_SIZE, 0);
+        self.bus.write_word(vcb_ptr + 8, 0x4244); // vcbSigWord: HFS volume
+        self.write_fixed_pstring(
+            vcb_ptr + 44,
+            crate::trap::dispatch::TrapDispatcher::boot_volume_name(),
+            27,
+        );
+        self.bus.write_word(
+            vcb_ptr + 78,
+            crate::trap::dispatch::BOOT_VOLUME_REF_NUM as u16,
+        ); // vcbVRefNum
+        self.bus
+            .write_long(vcb_ptr + 172, self.dispatcher.default_dir_id);
+
+        self.bus.write_long(addr::DEF_VCB_PTR, vcb_ptr);
+        self.bus.write_word(addr::VCB_Q_HDR, 0);
+        self.bus.write_long(addr::VCB_Q_HDR + 2, vcb_ptr);
+        self.bus.write_long(addr::VCB_Q_HDR + 6, vcb_ptr);
+
+        let fcb_buffer = self.bus.alloc(HFS_FCB_BUFFER_SIZE as u32);
+        if fcb_buffer == 0 {
+            return;
+        }
+        self.bus
+            .fill_bytes(fcb_buffer, HFS_FCB_BUFFER_SIZE as u32, 0);
+        self.bus.write_word(fcb_buffer, HFS_FCB_BUFFER_SIZE);
+        let fcb = fcb_buffer + APPLICATION_RESOURCE_REFNUM as u32;
+        self.bus.write_long(fcb, metadata.file_id);
+        self.bus.write_word(fcb + 4, 0x0200); // fcbFlags bit 9: resource fork
+        self.bus.write_long(fcb + 8, resource_len);
+        self.bus.write_long(fcb + 12, resource_len);
+        self.bus.write_long(fcb + 20, vcb_ptr);
+        self.bus.write_long(fcb + 50, metadata.file_type);
+        self.bus.write_long(fcb + 58, metadata.parent_dir_id);
+        let app_name = crate::trap::dispatch::TrapDispatcher::vfs_basename(&app_path).to_string();
+        self.write_fixed_pstring(fcb + 62, &app_name, 31);
+
+        // Files 1992, 2-81 and 2-384: the FCB buffer begins with a length
+        // word, file reference numbers are offsets into that buffer, and
+        // System 7 FCBs are 94 bytes. The first application resource fork
+        // access path therefore has refnum 2.
+        self.bus.write_long(addr::FCB_S_PTR, fcb_buffer);
+        self.bus.write_word(addr::FS_FCB_LEN, HFS_FCB_SIZE);
+        self.bus
+            .write_word(addr::CUR_APREF_NUM, APPLICATION_RESOURCE_REFNUM);
+
+        self.dispatcher
+            .open_files
+            .insert(APPLICATION_RESOURCE_REFNUM, format!("__rsrc__{}", app_path));
+        self.dispatcher
+            .file_positions
+            .insert(APPLICATION_RESOURCE_REFNUM, 0);
+    }
+
     /// Seed the Mac-canonical low-memory globals (`MemTop`,
     /// `CurStackBase`, `ApplLimit`, `Lo3Bytes`, `Ticks`, etc.) and
     /// the A5 World start so `run_steps` lands the guest in a
@@ -1820,7 +1919,7 @@ impl FixtureRunner {
         // CurApName: application name as Pascal string (Str31).
         // AppParmHandle is allocated below, after the zone header is reserved.
         // Inside Macintosh Volume II, II-57 to II-58
-        self.bus.write_word(addr::CUR_APREF_NUM, 0); // app resources use refnum 0
+        self.bus.write_word(addr::CUR_APREF_NUM, 0);
         if let Some(app_path) = &self.dispatcher.launched_app_path {
             let app_name = crate::trap::dispatch::TrapDispatcher::vfs_basename(app_path);
             let name_bytes = app_name.as_bytes();
@@ -1879,6 +1978,7 @@ impl FixtureRunner {
             free_bytes,
             free_bytes as f64 / (1024.0 * 1024.0)
         );
+        self.seed_current_application_file_manager_state();
 
         // AppParmHandle: handle to Finder information about files selected
         // when launching the application. A normal Finder application launch
@@ -6306,6 +6406,88 @@ mod tests {
             runner.bus.read_word(data_ptr + 2),
             0,
             "normal application launch has no selected documents"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_current_application_fcb_low_memory_state() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher_mut()
+            .vfs_rsrc
+            .insert("Games/Armor Alley".to_string(), vec![0xA5; 1234]);
+        runner
+            .dispatcher_mut()
+            .set_vfs_entry_metadata("Games/Armor Alley", *b"APPL", *b"TEST", 0);
+        runner
+            .dispatcher_mut()
+            .set_launched_app_path("Games/Armor Alley");
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.bus.read_word(addr::CUR_APREF_NUM),
+            APPLICATION_RESOURCE_REFNUM,
+            "CurApRefNum should be the app resource fork access path"
+        );
+        assert_eq!(
+            runner.bus.read_word(addr::FS_FCB_LEN),
+            HFS_FCB_SIZE,
+            "System 7 FCB size should be exposed for direct low-memory readers"
+        );
+        let fcb_buffer = runner.bus.read_long(addr::FCB_S_PTR);
+        assert_ne!(fcb_buffer, 0, "FCBSPtr should point to an FCB buffer");
+        assert_eq!(
+            runner.bus.read_word(fcb_buffer),
+            HFS_FCB_BUFFER_SIZE,
+            "FCB buffer length should include the leading length word"
+        );
+        let fcb = fcb_buffer + APPLICATION_RESOURCE_REFNUM as u32;
+        assert_eq!(
+            runner.bus.read_word(fcb + 4),
+            0x0200,
+            "the application access path should describe a resource fork"
+        );
+        assert_eq!(runner.bus.read_long(fcb + 8), 1234);
+        assert_eq!(runner.bus.read_long(fcb + 12), 1234);
+        assert_eq!(runner.bus.read_long(fcb + 50), u32::from_be_bytes(*b"APPL"));
+        assert_eq!(
+            runner.bus.read_long(fcb + 58),
+            runner.dispatcher.default_dir_id
+        );
+
+        let vcb = runner.bus.read_long(fcb + 20);
+        assert_ne!(vcb, 0, "fcbVPtr should point to the boot volume VCB");
+        assert_eq!(runner.bus.read_long(addr::DEF_VCB_PTR), vcb);
+        assert_eq!(runner.bus.read_long(addr::VCB_Q_HDR + 2), vcb);
+        assert_eq!(runner.bus.read_long(addr::VCB_Q_HDR + 6), vcb);
+        assert_eq!(runner.bus.read_word(vcb + 8), 0x4244);
+        assert_eq!(
+            runner.bus.read_word(vcb + 78) as i16,
+            crate::trap::dispatch::BOOT_VOLUME_REF_NUM
+        );
+        assert_eq!(
+            runner
+                .dispatcher
+                .open_files
+                .get(&APPLICATION_RESOURCE_REFNUM),
+            Some(&"__rsrc__Games/Armor Alley".to_string())
         );
     }
 
