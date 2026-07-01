@@ -2245,10 +2245,15 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
     }
     let form_size =
         u32::from_be_bytes([file_data[4], file_data[5], file_data[6], file_data[7]]) as usize;
-    let form_end = 8usize.checked_add(form_size)?;
-    if form_end < 12 || form_end > file_data.len() {
+    let declared_form_end = 8usize.checked_add(form_size)?;
+    if declared_form_end < 12 {
         return None;
     }
+    // Some classic archives preserve AIFF data forks whose final SSND/FORM
+    // length runs past EOF. File playback can still start from the headers
+    // and available sample bytes, so clamp only the enclosing boundary here;
+    // individual non-SSND chunks remain strict below.
+    let form_end = declared_form_end.min(file_data.len());
     let form_kind = &file_data[8..12];
     if form_kind != b"AIFF" && form_kind != b"AIFC" {
         return None;
@@ -2256,6 +2261,7 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
 
     let mut offset = 12usize;
     let mut channels: Option<usize> = None;
+    let mut num_sample_frames: Option<usize> = None;
     let mut sample_size: Option<usize> = None;
     let mut sample_rate_hz: Option<f64> = None;
     let mut ssnd_data: Option<&[u8]> = None;
@@ -2269,8 +2275,9 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
             file_data[offset + 7],
         ]) as usize;
         offset += 8;
-        let chunk_end = offset.checked_add(chunk_size)?;
-        if chunk_end > form_end {
+        let declared_chunk_end = offset.checked_add(chunk_size)?;
+        let chunk_end = declared_chunk_end.min(form_end);
+        if declared_chunk_end > form_end && chunk_id != b"SSND" {
             return None;
         }
         let chunk = &file_data[offset..chunk_end];
@@ -2280,6 +2287,8 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
                     return None;
                 }
                 channels = Some(u16::from_be_bytes([chunk[0], chunk[1]]) as usize);
+                num_sample_frames =
+                    Some(u32::from_be_bytes([chunk[2], chunk[3], chunk[4], chunk[5]]) as usize);
                 sample_size = Some(u16::from_be_bytes([chunk[6], chunk[7]]) as usize);
                 sample_rate_hz = Some(extended80_to_f64(&chunk[8..18])?);
                 if form_kind == b"AIFC" {
@@ -2306,11 +2315,15 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
             }
             _ => {}
         }
+        if declared_chunk_end > form_end {
+            break;
+        }
         let padded_size = chunk_size.checked_add(chunk_size & 1)?;
         offset = offset.checked_add(padded_size)?;
     }
 
     let channels = channels?;
+    let num_sample_frames = num_sample_frames?;
     let sample_size = sample_size?;
     let sample_rate_hz = sample_rate_hz?;
     let ssnd_data = ssnd_data?;
@@ -2326,7 +2339,8 @@ fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
     if frame_bytes == 0 {
         return None;
     }
-    let frame_count = ssnd_data.len() / frame_bytes;
+    let available_frame_count = ssnd_data.len() / frame_bytes;
+    let frame_count = available_frame_count.min(num_sample_frames);
     let mut samples = Vec::with_capacity(frame_count);
 
     for frame in 0..frame_count {
@@ -2758,6 +2772,20 @@ mod tests {
 
         let (samples, rate) = parse_aiff_samples(&aiff).expect("valid FORM with trailing bytes");
         assert_eq!(samples, vec![0xC0, 0x40]);
+        assert_eq!(rate, 0x0001_0000);
+    }
+
+    #[test]
+    fn parse_aiff_samples_accepts_truncated_final_sound_data_chunk() {
+        // Some StuffIt-preserved AIFF data forks declare a FORM/SSND length a
+        // few bytes past EOF. SndStartFilePlay should still accept the file
+        // and play the complete sample frames that are actually present.
+        let one_hz = [0x3F, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let mut aiff = build_aiff(b"AIFF", 2, 8, one_hz, &[0x40, 0x40, 0xC0, 0xC0], None);
+        aiff.truncate(aiff.len() - 2);
+
+        let (samples, rate) = parse_aiff_samples(&aiff).expect("truncated final SSND accepted");
+        assert_eq!(samples, vec![0xC0]);
         assert_eq!(rate, 0x0001_0000);
     }
 
