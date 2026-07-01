@@ -4308,11 +4308,25 @@ impl super::TrapDispatcher {
             (false, 0x0A) => {
                 let pb = cpu.read_reg(Register::A0);
                 let name_ptr = bus.read_long(pb + 18);
+                let vref = bus.read_word(pb + 22) as i16;
+                let dir_id = bus.read_long(pb + 48);
                 let filename = Self::read_pb_filename(bus, name_ptr);
                 eprintln!("[TRAP] PBOpenRF(\"{}\")", filename);
 
-                // Try to find resource fork in vfs_rsrc
-                if let Some(vfs_key) = self.find_vfs_rsrc_file(&filename) {
+                let is_hfs_variant = (self.current_trap_word & 0x0F00) == 0x0200;
+                let scoped_vfs_key = if is_hfs_variant {
+                    self.hfs_lookup_directory_ids(vref, dir_id)
+                        .into_iter()
+                        .find_map(|dir_id| self.find_vfs_rsrc_file_in_directory(dir_id, &filename))
+                } else {
+                    None
+                };
+
+                // Try to find resource fork in vfs_rsrc. PBHOpenRF first uses
+                // the HFS parent directory fields, then preserves the legacy
+                // broad lookup as a compatibility fallback for flattened archives.
+                if let Some(vfs_key) = scoped_vfs_key.or_else(|| self.find_vfs_rsrc_file(&filename))
+                {
                     let rsrc_data = self.vfs_rsrc.get(&vfs_key).unwrap().clone();
                     eprintln!(
                         "[TRAP] PBOpenRF: found rsrc fork for \"{}\" ({} bytes)",
@@ -17994,6 +18008,43 @@ mod tests {
         assert_eq!(bus.read_word(pb + 16), 0);
         assert!(bus.read_word(pb + 24) > 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn test_pbh_open_rf_prefers_io_dir_id_resource_fork() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let target_dir_id = disp.ensure_vfs_directory("Game/Target Data");
+        disp.ensure_vfs_directory("Game/Other Data");
+        disp.vfs_rsrc
+            .insert("Game/Other Data/Shared".to_string(), vec![0x11, 0x22]);
+        disp.vfs_rsrc
+            .insert("Game/Target Data/Shared".to_string(), vec![0xAA, 0xBB]);
+
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        let name_ptr = 0x310000u32;
+        bus.write_pstring(name_ptr, b"Shared");
+        bus.write_long(pb + 18, name_ptr);
+        bus.write_word(pb + 22, TrapDispatcher::boot_volume_ref_num_u16());
+        bus.write_byte(pb + 27, 1); // fsRdPerm
+        bus.write_long(pb + 48, target_dir_id);
+        disp.current_trap_word = 0xA20A; // PBHOpenRF
+
+        let result = disp.dispatch_toolbox(false, 0x0A, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        let refnum = bus.read_word(pb + 24);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            disp.open_files.get(&refnum),
+            Some(&"__rsrc__Game/Target Data/Shared".to_string())
+        );
+        assert_eq!(
+            disp.vfs.get("__rsrc__Game/Target Data/Shared").unwrap(),
+            &vec![0xAA, 0xBB]
+        );
     }
 
     #[test]
