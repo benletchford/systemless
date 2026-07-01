@@ -304,6 +304,26 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn trap_address_table_key(&self, trap_word: u16) -> u16 {
+        match self.current_trap_word & 0x0FFF {
+            // NGetTrapAddress/NSetTrapAddress NEWTOOL variants.
+            // Inside Macintosh: Operating System Utilities 1994, pp. 8-27
+            // and 8-30: trapNum may be an A-line instruction or trap number;
+            // irrelevant high bits are masked according to the trap type.
+            0x647 | 0x746 => 0xA800 | (trap_word & 0x03FF),
+            // NEWOS / OS-table variants mask to the low 8-bit OS table.
+            0x146 | 0x247 | 0x346 => 0xA000 | (trap_word & 0x00FF),
+            _ => {
+                let trap_num = trap_word & 0x03FF;
+                if matches!(trap_num, 0x000..=0x04F | 0x054 | 0x057) {
+                    0xA000 | (trap_num & 0x00FF)
+                } else {
+                    0xA800 | trap_num
+                }
+            }
+        }
+    }
+
     fn looks_like_callable_proc(bus: &MacMemoryBus, proc_ptr: u32) -> bool {
         if proc_ptr == 0 || proc_ptr > bus.ram_size().saturating_sub(2) {
             return false;
@@ -726,7 +746,8 @@ impl super::TrapDispatcher {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_variant = self.current_trap_word & 0x0FFF;
                 // Check native trap table first (returns address set by SetTrapAddress)
-                if let Some(&addr) = self.native_trap_table.get(&trap_word) {
+                let trap_table_key = self.trap_address_table_key(trap_word);
+                if let Some(&addr) = self.native_trap_table.get(&trap_table_key) {
                     cpu.write_reg(Register::A0, addr);
                 } else if trap_variant == 0x746 {
                     // Real GetToolTrapAddress/GetToolBoxTrapAddress
@@ -857,6 +878,7 @@ impl super::TrapDispatcher {
             // SetTrapAddress ($A047): Installs native 68K trap handler via D0=trap word, A0=handler; per IM:II II-384
             (false, 0x47) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
+                let trap_table_key = self.trap_address_table_key(trap_word);
                 let handler_addr = cpu.read_reg(Register::A0);
                 // Restore-to-default detection: when SetTrapAddress
                 // sees an address that *we* handed back from a prior
@@ -881,9 +903,9 @@ impl super::TrapDispatcher {
                     .values()
                     .any(|&addr| addr == handler_addr);
                 if is_legacy_fakeptr || is_trampoline {
-                    self.native_trap_table.remove(&trap_word);
+                    self.native_trap_table.remove(&trap_table_key);
                 } else {
-                    self.native_trap_table.insert(trap_word, handler_addr);
+                    self.native_trap_table.insert(trap_table_key, handler_addr);
                 }
                 Ok(())
             }
@@ -6699,6 +6721,33 @@ mod tests {
             cpu.read_reg(Register::A0),
             0x00400000,
             "GetTrapAddress should return the handler set by SetTrapAddress"
+        );
+    }
+
+    #[test]
+    fn nsettrapaddress_newtool_bare_trap_number_installs_canonical_tool_handler() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let handler_addr = 0x0040_0000;
+
+        // `_SetTrapAddress newTool` accepts either an A-line instruction
+        // or a bare trap number in D0. In either case the Toolbox table
+        // key is the canonical A-line word later dispatched by the CPU.
+        dispatcher.current_trap_word = 0xA647;
+        cpu.write_reg(Register::D0, 0x01F4);
+        cpu.write_reg(Register::A0, handler_addr);
+
+        let result = dispatcher.dispatch_memory(false, 0x47, &mut cpu, &mut bus);
+        assert!(result.is_some(), "NSetTrapAddress should be handled");
+        assert!(result.unwrap().is_ok(), "NSetTrapAddress should succeed");
+
+        assert_eq!(
+            dispatcher.native_trap_table.get(&0xA9F4).copied(),
+            Some(handler_addr),
+            "bare Toolbox trap numbers must install under their canonical A-line word"
+        );
+        assert!(
+            !dispatcher.native_trap_table.contains_key(&0x01F4),
+            "the raw bare trap number is not a dispatchable trap-table key"
         );
     }
 
