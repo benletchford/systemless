@@ -5396,13 +5396,15 @@ fn load_app_generic<M: MemoryBus>(
         // original CODE 0 parse). Near-model segments get their JT entries
         // populated by the app's startup code and patched by LoadSeg.
         if matches!(segment_header, Some(CodeSegmentHeader::MpwFar)) {
-            // Far-model CODE segment (40-byte header)
-            let header_size = 40u32;
             for (i, entry) in jump_table.iter_mut().enumerate() {
                 if entry.segment == code_res.id {
                     entry.loaded = true;
                     let effective_offset = entry.offset as u32;
-                    entry.address = user_addr + header_size + effective_offset;
+                    // MPW far-model jump-table offsets are measured from the
+                    // beginning of the CODE segment. The first externally
+                    // callable routine can therefore sit at offset $28, just
+                    // after the 40-byte far header.
+                    entry.address = user_addr + effective_offset;
 
                     let jt_addr = jt_base + (i as u32 * 8);
                     bus.write_word(jt_addr, code_res.id as u16);
@@ -5784,6 +5786,40 @@ mod tests {
                 preferred_size: 0x0030_0000,
                 minimum_size: 0x0020_0000,
             })
+        );
+    }
+
+    #[test]
+    fn load_app_patches_mpw_far_jump_table_offsets_from_segment_start() {
+        // Inside Macintosh: Processes 1994, p. 7-8: a loaded MPW jump-table
+        // entry keeps the routine offset from the beginning of the segment.
+        let mut code0 = minimal_code0(40, 0x2000, 8, 32);
+        code0[16..24].copy_from_slice(&[
+            0x00, 0x01, // segment 1
+            0xA9, 0xF0, // far-model unloaded LoadSeg trap
+            0x00, 0x00, 0x00, 0x28, // first routine immediately after the far header
+        ]);
+
+        let mut code1 = vec![0u8; 0x30];
+        code1[0] = 0xFF;
+        code1[1] = 0xFF;
+        code1[0x28] = 0x4E;
+        code1[0x29] = 0x75;
+
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"CODE", 1, &code1)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        let jt_base = app.a5_base + app.code0_header.jump_table_offset;
+        let code1_base = app.segment_bases[&1];
+
+        assert_eq!(runner.bus.read_word(jt_base), 1);
+        assert_eq!(runner.bus.read_word(jt_base + 2), 0x4EF9);
+        assert_eq!(
+            runner.bus.read_long(jt_base + 4),
+            code1_base + 0x28,
+            "MPW far offsets must not be adjusted by the 40-byte header twice"
         );
     }
 
