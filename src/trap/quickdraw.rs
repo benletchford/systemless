@@ -5872,6 +5872,29 @@ impl super::TrapDispatcher {
                 // then trap).
                 let d0 = cpu.read_reg(Register::D0);
                 let d0_selector = Self::palette_dispatch_selector(d0);
+                if d0 == 0 && bus.read_long(sp + 2) == 0 {
+                    // Entry2Index (public _PaletteDispatch selector $0000)
+                    // FUNCTION Entry2Index(entry: Integer): LongInt;
+                    // Inside Macintosh Volume VI, p. 20-25.
+                    //
+                    // Some 68k callers emit:
+                    //   CLR.L -(A7)       ; LongInt result slot
+                    //   MOVE.W entry,-(A7)
+                    //   MOVEQ #0,D0
+                    //   _PaletteDispatch
+                    //   MOVE.L (A7)+,D0
+                    //
+                    // That puts the entry argument at SP+0 and a cleared
+                    // long result slot at SP+2. Handle it before the legacy
+                    // stack-selector compatibility mapping below, where the
+                    // same small word values historically meant duplicated
+                    // AA90..AAA0 Palette Manager trap selectors.
+                    let entry = bus.read_word(sp) as i16;
+                    let index = self.palette_entry_to_device_index(bus, entry);
+                    bus.write_long(sp + 2, index);
+                    cpu.write_reg(Register::A7, sp + 2);
+                    return Some(Ok(()));
+                }
                 if d0_selector == 0x0002 {
                     // RestoreDeviceClut (public _PaletteDispatch selector $0002)
                     // PROCEDURE RestoreDeviceClut(gdh: GDHandle);
@@ -16050,6 +16073,27 @@ impl super::TrapDispatcher {
         let (rgb, usage, _tolerance) =
             Self::read_palette_color_info(bus, palette_handle, entry as u16)?;
         Some((rgb, usage))
+    }
+
+    fn palette_entry_to_device_index(&self, bus: &MacMemoryBus, entry: i16) -> u32 {
+        if entry < 0 {
+            return 0;
+        }
+
+        if let Some((rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry) {
+            if (usage & PM_EXPLICIT) != 0 {
+                return u32::from((entry as u16) & 0x00FF);
+            }
+
+            return u32::from(super::pict::closest_clut_index(
+                rgb[0],
+                rgb[1],
+                rgb[2],
+                &self.device_clut,
+            ));
+        }
+
+        u32::from((entry as u16) & 0x00FF)
     }
 
     /// Read a 256-entry CLUT from a CTabHandle in guest memory.
@@ -32808,6 +32852,59 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
         assert_eq!(d.current_port, saved_port);
+    }
+
+    #[test]
+    fn palettedispatch_entry2index_d0_zero_writes_long_result_and_pops_entry_only() {
+        // Spin Doctor's startup code builds a 256-byte palette-entry lookup
+        // table with the ROM-style Entry2Index selector-0 path:
+        // CLR.L -(A7); MOVE.W entry,-(A7); MOVEQ #0,D0; _PaletteDispatch.
+        let (mut d, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 0);
+        bus.write_word(TEST_SP, 0x00FD);
+        bus.write_long(TEST_SP + 2, 0);
+        bus.write_long(TEST_SP + 6, 0xCAFE_BABE);
+
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(bus.read_long(TEST_SP + 2), 0x0000_00FD);
+        assert_eq!(bus.read_long(TEST_SP + 6), 0xCAFE_BABE);
+    }
+
+    #[test]
+    fn palettedispatch_entry2index_uses_current_window_palette_when_available() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let window = 0x181000u32;
+        let target_rgb = [0x1111, 0x2222, 0x3333];
+
+        d.current_port = window;
+        d.front_window = window;
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[42] = target_rgb;
+
+        let palette = d.create_palette_from_ctab(&mut bus, 8, 0, super::PM_TOLERANT, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            7,
+            target_rgb,
+            super::PM_TOLERANT,
+            0,
+        );
+        d.set_window_palette_association(window, palette, 0);
+
+        cpu.write_reg(Register::D0, 0);
+        bus.write_word(TEST_SP, 7);
+        bus.write_long(TEST_SP + 2, 0);
+
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(bus.read_long(TEST_SP + 2), 42);
     }
 
     #[test]
