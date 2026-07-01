@@ -44,6 +44,33 @@ fn free_heap_estimate(bus: &MacMemoryBus) -> u32 {
     crate::memory::app_heap_free_bytes(bus)
 }
 
+fn reconcile_application_zone_limit(bus: &mut MacMemoryBus, old_limit: u32, new_limit: u32) {
+    if old_limit == new_limit {
+        return;
+    }
+
+    let app_zone = bus.read_long(addr::APP_L_ZONE);
+    if app_zone == 0 || new_limit <= app_zone {
+        return;
+    }
+
+    let bk_lim = bus.read_long(app_zone);
+    if bk_lim != old_limit {
+        return;
+    }
+
+    let zcb_free = bus.read_long(app_zone + 12);
+    let adjusted_free = if new_limit > old_limit {
+        zcb_free.saturating_add(new_limit - old_limit)
+    } else {
+        zcb_free.saturating_sub(old_limit - new_limit)
+    };
+    let zone_size = new_limit.saturating_sub(app_zone);
+
+    bus.write_long(app_zone, new_limit); // bkLim
+    bus.write_long(app_zone + 12, adjusted_free.min(zone_size)); // zcbFree
+}
+
 fn init_zone_header(
     bus: &mut MacMemoryBus,
     start: u32,
@@ -1023,6 +1050,8 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory 1992, 2-84..2-85; Inside Macintosh Volume II, II-30
             // SetApplLimit ($A02D): Writes zoneLimit to ApplLimit unless the current
             // heap already extends past zoneLimit, in which case the heap is not cut back.
+            // When the application-zone header is still tracking the old limit, keep
+            // bkLim/zcbFree in step so a following MaxApplZone leaves FreeMem nonzero.
             (false, 0x2D) => {
                 let zone_limit = cpu.read_reg(Register::A0);
                 let heap_end = bus.read_long(crate::memory::globals::addr::HEAP_END);
@@ -1031,6 +1060,7 @@ impl super::TrapDispatcher {
                 if zone_limit >= heap_end {
                     if zone_limit != appl_limit {
                         bus.write_long(crate::memory::globals::addr::APPL_LIMIT, zone_limit);
+                        reconcile_application_zone_limit(bus, appl_limit, zone_limit);
                     }
                 } else {
                     // IM:Memory 1992, p. 2-85:
@@ -8509,6 +8539,62 @@ mod tests {
             cpu.read_reg(Register::D0),
             zcb_free,
             "FreeMem must read the zone header's free-byte count after MaxApplZone"
+        );
+    }
+
+    #[test]
+    fn free_mem_survives_setapplimit_then_maxapplzone_startup_sequence() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let app_zone = 0x0020_0000;
+        let heap_end = app_zone + 64;
+        let original_limit = 0x006A_E000;
+        let lowered_limit = original_limit - 0x4000;
+        let original_free = original_limit - app_zone - 64;
+        let lowered_free = original_free - 0x4000;
+        bus.write_long(crate::memory::globals::addr::MEM_TOP, 64 * 1024 * 1024);
+        bus.write_long(crate::memory::globals::addr::APP_L_ZONE, app_zone);
+        bus.write_long(crate::memory::globals::addr::THE_ZONE, app_zone);
+        bus.write_long(crate::memory::globals::addr::HEAP_END, heap_end);
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, original_limit);
+        bus.write_long(app_zone, original_limit); // bkLim
+        bus.write_long(app_zone + 12, original_free); // zcbFree
+
+        cpu.write_reg(Register::A0, lowered_limit);
+        let result = dispatcher.dispatch_memory(false, 0x2D, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SetApplLimit should be handled");
+        assert!(result.unwrap().is_ok(), "SetApplLimit should succeed");
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::APPL_LIMIT),
+            lowered_limit,
+            "SetApplLimit should lower ApplLimit before MaxApplZone"
+        );
+        assert_eq!(
+            bus.read_long(app_zone),
+            lowered_limit,
+            "SetApplLimit should keep application-zone bkLim in sync"
+        );
+        assert_eq!(
+            bus.read_long(app_zone + 12),
+            lowered_free,
+            "SetApplLimit should reduce zcbFree by the removed zone span"
+        );
+
+        let result = dispatcher.dispatch_memory(false, 0x63, &mut cpu, &mut bus);
+        assert!(result.is_some(), "MaxApplZone should be handled");
+        assert!(result.unwrap().is_ok(), "MaxApplZone should succeed");
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::HEAP_END),
+            lowered_limit,
+            "MaxApplZone should expand HeapEnd to the lowered ApplLimit"
+        );
+
+        let result = dispatcher.dispatch_memory(false, 0x1C, &mut cpu, &mut bus);
+        assert!(result.is_some(), "FreeMem should be handled");
+        assert!(result.unwrap().is_ok(), "FreeMem should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            lowered_free,
+            "FreeMem must not collapse to zero after SetApplLimit followed by MaxApplZone"
         );
     }
 
