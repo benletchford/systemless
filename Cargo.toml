@@ -26,6 +26,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 cpal = { version = "0.15", optional = true }
 stuffit = "0.1.5"
 hfs-reader = "0.1.1"
+hfsplus = "0.2.4"
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
@@ -39,6 +40,7 @@ name = "systemless"
 required-features = ["gui"]
 
 [dev-dependencies]
+hfsplus = { version = "0.2.4", features = ["testutil"] }
 tempfile = "3"
 
 # The 68k interpreter is the dominant hot path; fat LTO + a single

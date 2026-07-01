@@ -262,6 +262,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "byteorder-lite"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1019,6 +1025,16 @@ name = "hfs-reader"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36a822b987c359fdbdbd791c51a00bb4f7cec2d2b5c843de0288d4efbf212667"
+
+[[package]]
+name = "hfsplus"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1003d8eed80d61e8e8ea6a958bbe1afd3aef060882b9d6134e50500dd307c0dc"
+dependencies = [
+ "byteorder",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "id-arena"
@@ -2183,6 +2199,7 @@ version = "0.1.100"
 dependencies = [
  "cpal",
  "hfs-reader",
+ "hfsplus",
  "image",
  "libm",
  "m68k",
