@@ -21,6 +21,7 @@ fn trace_dragwindow_enabled() -> bool {
 }
 
 impl super::TrapDispatcher {
+    const USER_WINDOW_KIND: u16 = 8;
     const WINDOW_KIND_OFFSET: u32 = 108;
     const WINDOW_VISIBLE_OFFSET: u32 = 110;
     const WINDOW_HILITED_OFFSET: u32 = 111;
@@ -1281,7 +1282,10 @@ impl super::TrapDispatcher {
         go_away_flag: bool,
         ref_con: u32,
     ) {
-        bus.write_word(window_ptr + Self::WINDOW_KIND_OFFSET, 0);
+        bus.write_word(
+            window_ptr + Self::WINDOW_KIND_OFFSET,
+            Self::USER_WINDOW_KIND,
+        );
         bus.write_byte(
             window_ptr + Self::WINDOW_VISIBLE_OFFSET,
             if visible { 0xFF } else { 0x00 },
@@ -4208,6 +4212,37 @@ mod tests {
             (100, 200, 300, 500),
             "updateRgn is stored in global coordinates"
         );
+    }
+
+    #[test]
+    fn init_cgraf_window_sets_user_window_kind_independent_of_wdef_proc_id() {
+        // Application WindowRecords use userKind=8 in windowKind; the WDEF
+        // procID that drives chrome/variation behavior is stored separately.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            100,
+            200,
+            300,
+            500,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        assert_eq!(
+            bus.read_word(window_addr + super::super::TrapDispatcher::WINDOW_KIND_OFFSET),
+            super::super::TrapDispatcher::USER_WINDOW_KIND
+        );
+        assert_eq!(disp.window_proc_ids.get(&window_addr), Some(&2));
     }
 
     #[test]
