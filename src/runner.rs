@@ -21,6 +21,7 @@ static TRACE_VBL: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RUNNER: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
 
+const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 
@@ -474,6 +475,14 @@ fn is_sound_interrupt_source(source: ActiveInterruptCallbackSource) -> bool {
             | ActiveInterruptCallbackSource::SoundFileCompletion
             | ActiveInterruptCallbackSource::SoundDoubleBack
     )
+}
+
+fn align4(value: u32) -> u32 {
+    value.saturating_add(3) & !3
+}
+
+fn app_heap_start_for_loaded_app(app: &LoadedApp) -> u32 {
+    APP_HEAP_FLOOR.max(align4(app.loaded_image_end))
 }
 
 /// Configuration knobs for [`FixtureRunner`]. Use
@@ -1492,27 +1501,21 @@ impl FixtureRunner {
     /// directly only when you've already parsed the resource fork
     /// yourself (e.g. building a custom test fixture).
     pub fn load_app(&mut self, fork: &ResourceFork) -> Option<LoadedApp> {
-        // Resource data is allocated before `init_app` writes the
-        // application heap zone header. Reserve the header range first so
-        // early app resources cannot land at the zone base and later be
-        // overwritten by `bkLim`, `hFstFree`, or `zcbFree`.
+        let app = load_app_generic(fork, &mut self.bus, self.config.load_address)?;
+        let heap_start = app_heap_start_for_loaded_app(&app);
+
+        // Resource data is allocated after direct CODE/global loading. Reserve
+        // the app-zone header at the actual heap start so early app resources
+        // cannot land in loader-owned memory or under `bkLim`/`hFstFree`.
         // Inside Macintosh Volume II, II-22.
-        self.bus.reserve_heap(APP_ZONE_HEADER_SIZE);
-        // Load resources into dispatcher for GetResource trap
+        self.bus
+            .reserve_heap_until(heap_start.saturating_add(APP_ZONE_HEADER_SIZE));
         self.dispatcher.load_resources(fork, &mut self.bus);
 
-        let app = load_app_generic(fork, &mut self.bus, self.config.load_address);
+        let segments: HashMap<i16, u32> = app.segment_bases.iter().map(|(&k, &v)| (k, v)).collect();
+        self.dispatcher.register_segments(segments);
 
-        if let Some(ref loaded_app) = app {
-            let segments: HashMap<i16, u32> = loaded_app
-                .segment_bases
-                .iter()
-                .map(|(&k, &v)| (k, v))
-                .collect();
-            self.dispatcher.register_segments(segments);
-        }
-
-        app
+        Some(app)
     }
 
     fn clear_startup_framebuffer(&mut self) {
@@ -1776,11 +1779,11 @@ impl FixtureRunner {
 
         // Memory Manager zone globals
         // Inside Macintosh Volume II, II-19 and II-29..II-30.
-        // The heap starts at 0x200000 (set in bus.rs). HeapEnd begins at
-        // the initial application-zone extent; ApplLimit is the ceiling the
-        // Memory Manager can grow toward, and BufPtr sits above that limit
-        // for sound/disk buffers.
-        let heap_start: u32 = 0x200000;
+        // The heap normally starts at 0x200000, but large applications can
+        // place A5 globals or CODE segments above that floor. In that case,
+        // move the application zone above the direct-loaded image so Toolbox
+        // heap allocations cannot overwrite executable/app-global memory.
+        let heap_start = app_heap_start_for_loaded_app(app);
         let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
         let initial_heap_end = heap_start + zone_header_size;
         let stack_base = app.initial_sp;
@@ -1804,7 +1807,7 @@ impl FixtureRunner {
                     .and_then(|heap_span| heap_start.checked_add(heap_span))
             })
             .filter(|&limit| limit > initial_heap_end && limit < default_appl_limit)
-            .unwrap_or(default_appl_limit);
+            .unwrap_or(default_appl_limit.max(initial_heap_end));
         let buf_ptr = appl_limit; // Buffer area at the limit
         self.bus.write_long(addr::SYS_ZONE, heap_start);
         self.bus.write_long(addr::APP_L_ZONE, heap_start);
@@ -1860,9 +1863,9 @@ impl FixtureRunner {
         // Apps and the Memory Manager read the zone header to determine
         // available memory. zcbFree (offset +12) must reflect free bytes.
         // Reserve heap space so alloc() doesn't overwrite the zone header.
-        self.bus.reserve_heap(zone_header_size);
-        let zone_size = appl_limit - heap_start;
-        let free_bytes = zone_size - zone_header_size;
+        self.bus.reserve_heap_until(initial_heap_end);
+        let zone_size = appl_limit.saturating_sub(heap_start);
+        let free_bytes = zone_size.saturating_sub(zone_header_size);
         self.bus.write_long(heap_start, appl_limit); // bkLim: end of zone
         self.bus
             .write_long(heap_start + 8, heap_start + zone_header_size); // hFstFree
@@ -5321,6 +5324,10 @@ fn load_app_generic<M: MemoryBus>(
     let size_resource = fork
         .get(*b"SIZE", -1)
         .and_then(|res| ApplicationSizeResource::parse(&res.data));
+    let loaded_image_end = align4(globals_zero_end.max(current_load_ptr));
+    if trace_load_enabled() {
+        eprintln!("[LOAD] Loaded image end=${:08X}", loaded_image_end);
+    }
 
     // Stack at top of RAM
     let stack_top = bus.ram_size() - 16;
@@ -5330,6 +5337,7 @@ fn load_app_generic<M: MemoryBus>(
         a5_base,
         jump_table,
         segment_bases,
+        loaded_image_end,
         initial_sp: stack_top,
         size_resource,
     })
@@ -5610,6 +5618,48 @@ mod tests {
             runner.bus.read_bytes(bgas_ptr, bgas.len()),
             bgas,
             "init_app must not overwrite resources loaded before zone setup"
+        );
+    }
+
+    #[test]
+    fn load_app_places_resources_above_large_loaded_image() {
+        use crate::memory::globals::addr;
+
+        let code0 = minimal_code0(0x001D_0000, 0x0340, 0, 0);
+        let marker = [0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+        let fork_bytes =
+            make_resource_fork_bytes(&[(*b"BGAS", 128, &marker), (*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        assert!(
+            app.loaded_image_end > APP_HEAP_FLOOR,
+            "fixture should force the loaded image across the default heap floor"
+        );
+
+        let heap_start = app_heap_start_for_loaded_app(&app);
+        let (_, marker_ptr) = runner
+            .dispatcher
+            .find_resource_any(*b"BGAS", 128)
+            .expect("BGAS resource loaded");
+        assert!(
+            marker_ptr >= heap_start + APP_ZONE_HEADER_SIZE,
+            "resource data must be allocated after the relocated zone header"
+        );
+        assert_eq!(runner.bus.read_bytes(marker_ptr, marker.len()), marker);
+
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::APP_L_ZONE), heap_start);
+        assert_eq!(
+            runner.bus.read_long(addr::HEAP_END),
+            heap_start + APP_ZONE_HEADER_SIZE
+        );
+        assert_eq!(
+            runner.bus.read_bytes(marker_ptr, marker.len()),
+            marker,
+            "launch initialization must not clobber resources for large loaded images"
         );
     }
 
@@ -6046,6 +6096,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };
@@ -6075,6 +6126,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };
@@ -6110,6 +6162,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: Some(ApplicationSizeResource {
                 flags: 0x0080,
@@ -6154,6 +6207,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: Some(ApplicationSizeResource {
                 flags: 0x0080,
@@ -6189,6 +6243,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };
@@ -6220,6 +6275,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };
@@ -6266,6 +6322,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };
@@ -6313,6 +6370,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };
@@ -6341,6 +6399,7 @@ mod tests {
             a5_base: 0x0040_0000,
             jump_table: Vec::new(),
             segment_bases: HashMap::new(),
+            loaded_image_end: 0,
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };

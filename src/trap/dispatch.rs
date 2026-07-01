@@ -1027,6 +1027,10 @@ pub struct TrapDispatcher {
     /// resource fork, but some installers call `GetResource('clut', depth)`
     /// directly instead of `GetCTable`.
     pub(crate) system_clut_cache: HashMap<i16, u32>,
+    /// Cache of synthetic System-file `'KCHR'` resource pointers. The
+    /// U.S. Roman keyboard-layout resource ID 0 is present in every
+    /// System file and is used directly by apps that call KeyTranslate.
+    pub(crate) system_kchr_cache: HashMap<i16, u32>,
     /// Cache of allocated tool-trap trampolines for GetTrapAddress.
     /// Each entry is a 2-byte allocation containing the auto-pop
     /// variant of the canonical tool-trap word. When the guest does
@@ -2443,6 +2447,7 @@ impl TrapDispatcher {
             system_str_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
+            system_kchr_cache: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -4338,6 +4343,97 @@ impl TrapDispatcher {
             bus.write_word(entry + 6, b);
         }
         self.system_clut_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate (and cache) the standard U.S. Roman keyboard-layout
+    /// resource (`'KCHR'` ID 0). Inside Macintosh: Text 1993, C-18..C-19
+    /// defines the resource as a version byte, a 256-byte table-selection
+    /// index, and 128-byte character-mapping tables keyed by virtual key code.
+    pub(crate) fn synthesize_system_kchr(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_kchr_cache.get(&res_id) {
+            return Some(ptr);
+        }
+        if res_id != 0 {
+            return None;
+        }
+
+        const TABLES: usize = 2;
+        const TABLE_BASE: usize = 1 + 256;
+        const LEN: usize = TABLE_BASE + TABLES * 128;
+        let mut body = vec![0u8; LEN];
+        for modifier in 0..=255usize {
+            body[1 + modifier] = if (modifier & 0x22) != 0 { 1 } else { 0 };
+        }
+
+        let normal = TABLE_BASE;
+        let shifted = TABLE_BASE + 128;
+        let keys: &[(usize, u8, u8)] = &[
+            (0x00, b'a', b'A'),
+            (0x01, b's', b'S'),
+            (0x02, b'd', b'D'),
+            (0x03, b'f', b'F'),
+            (0x04, b'h', b'H'),
+            (0x05, b'g', b'G'),
+            (0x06, b'z', b'Z'),
+            (0x07, b'x', b'X'),
+            (0x08, b'c', b'C'),
+            (0x09, b'v', b'V'),
+            (0x0B, b'b', b'B'),
+            (0x0C, b'q', b'Q'),
+            (0x0D, b'w', b'W'),
+            (0x0E, b'e', b'E'),
+            (0x0F, b'r', b'R'),
+            (0x10, b'y', b'Y'),
+            (0x11, b't', b'T'),
+            (0x12, b'1', b'!'),
+            (0x13, b'2', b'@'),
+            (0x14, b'3', b'#'),
+            (0x15, b'4', b'$'),
+            (0x16, b'6', b'^'),
+            (0x17, b'5', b'%'),
+            (0x18, b'=', b'+'),
+            (0x19, b'9', b'('),
+            (0x1A, b'7', b'&'),
+            (0x1B, b'-', b'_'),
+            (0x1C, b'8', b'*'),
+            (0x1D, b'0', b')'),
+            (0x1E, b']', b'}'),
+            (0x1F, b'o', b'O'),
+            (0x20, b'u', b'U'),
+            (0x21, b'[', b'{'),
+            (0x22, b'i', b'I'),
+            (0x23, b'p', b'P'),
+            (0x24, b'\r', b'\r'),
+            (0x25, b'l', b'L'),
+            (0x26, b'j', b'J'),
+            (0x27, b'\'', b'"'),
+            (0x28, b'k', b'K'),
+            (0x29, b';', b':'),
+            (0x2A, b'\\', b'|'),
+            (0x2B, b',', b'<'),
+            (0x2C, b'/', b'?'),
+            (0x2D, b'n', b'N'),
+            (0x2E, b'm', b'M'),
+            (0x2F, b'.', b'>'),
+            (0x31, b' ', b' '),
+            (0x32, b'`', b'~'),
+        ];
+        for &(vk, unshifted, shifted_char) in keys {
+            body[normal + vk] = unshifted;
+            body[shifted + vk] = shifted_char;
+        }
+
+        let ptr = bus.alloc(body.len() as u32);
+        if ptr == 0 {
+            return None;
+        }
+        bus.write_bytes(ptr, &body);
+        self.system_kchr_cache.insert(res_id, ptr);
         Some(ptr)
     }
 
