@@ -96,6 +96,17 @@ fn write_osdispatch_oseerr_result<C: CpuOps>(
     cpu.write_reg(Register::A7, result_slot);
 }
 
+fn write_osdispatch_selector_result<C: CpuOps>(
+    cpu: &mut C,
+    bus: &mut MacMemoryBus,
+    selector_slot: u32,
+    err: i16,
+) {
+    bus.write_word(selector_slot, err as u16);
+    cpu.write_reg(Register::D0, err as i32 as u32);
+    cpu.write_reg(Register::A7, selector_slot);
+}
+
 fn scribble_temporary_allocation(bus: &mut MacMemoryBus, address: u32, size: u32) {
     for offset in 0..size {
         bus.write_byte(address.wrapping_add(offset), 0xA5);
@@ -209,6 +220,26 @@ impl super::TrapDispatcher {
             filename,
             ".AIn" | ".AOut" | ".BIn" | ".BOut" | ".MPP" | ".ATP" | ".XPP"
         )
+    }
+
+    fn address_is_loaded_code(&self, address: u32) -> bool {
+        let mut bases: Vec<u32> = self.segment_map.values().copied().collect();
+        bases.sort_unstable();
+
+        let Some((index, &base)) = bases
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, base)| address >= **base)
+        else {
+            return false;
+        };
+
+        bases
+            .get(index + 1)
+            .map(|&next| address < next)
+            .unwrap_or(false)
+            && address >= base
     }
 
     /// Minimal serialized resource fork containing an empty resource map.
@@ -5503,13 +5534,13 @@ impl super::TrapDispatcher {
                 let sp_entry = cpu.read_reg(Register::A7);
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
-                let (selector, sp) = match stack_sel {
+                let (selector, sp, selector_from_stack) = match stack_sel {
                     0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D => {
                         // Pop the selector word pushed by MOVE.W #sel,-(SP).
                         cpu.write_reg(Register::A7, sp_entry + 2);
-                        (stack_sel, sp_entry + 2)
+                        (stack_sel, sp_entry + 2, true)
                     }
-                    _ => (d0_sel, sp_entry),
+                    _ => (d0_sel, sp_entry, false),
                 };
                 match selector {
                     0x0015 => {
@@ -5733,6 +5764,17 @@ impl super::TrapDispatcher {
                         // FUNCTION GetProcessInformation(PSN: ProcessSerialNumber;
                         //   VAR info: ProcessInfoRec): OSErr;
                         // Processes 1994, pp. 2-23 to 2-24
+                        if selector_from_stack && self.address_is_loaded_code(bus.read_long(sp)) {
+                            // Some 68k C runtimes factor the inline selector
+                            // into a leaf thunk that pushes only
+                            // `MOVE.W #selector,-(SP)` above a JSR return
+                            // address. In that shape the selector word is the
+                            // only safe OSErr result slot; consuming the
+                            // ordinary argument frame would skip the return PC.
+                            write_osdispatch_selector_result(cpu, bus, sp_entry, NO_ERR as i16);
+                            return Some(Ok(()));
+                        }
+
                         let info_ptr = bus.read_long(sp);
                         let psn_ptr = bus.read_long(sp + 4);
                         let psn_high = bus.read_long(psn_ptr);
@@ -15317,6 +15359,41 @@ mod tests {
             "processName should be populated"
         );
         assert_ne!(bus.read_word(app_spec_ptr), 0, "processAppSpec.vRefNum");
+    }
+
+    #[test]
+    fn osdispatch_getprocessinformation_selector_only_thunk_preserves_return_address() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let trap_return_pc = 0x0003_4112u32;
+        let thunk_return_pc = 0x0003_2F36u32;
+        let saved_caller_a6 = 0x03FF_FFECu32;
+        disp.register_segments(HashMap::from([
+            (1i16, 0x0003_1A00u32),
+            (2i16, 0x0003_8298u32),
+        ]));
+        cpu.write_reg(Register::PC, trap_return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x003A);
+        bus.write_long(TEST_SP + 2, thunk_return_pc);
+        bus.write_long(TEST_SP + 6, saved_caller_a6);
+        bus.write_long(TEST_SP + 10, 0x1234_5678);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(TEST_SP), 0, "selector slot becomes noErr");
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP,
+            "selector-only thunks expect MOVE.W (SP)+ to reveal the return PC"
+        );
+        assert_eq!(
+            bus.read_long(TEST_SP + 2),
+            thunk_return_pc,
+            "OSDispatch must not consume or overwrite the JSR return address"
+        );
+        assert_eq!(bus.read_long(TEST_SP + 6), saved_caller_a6);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
     #[test]
