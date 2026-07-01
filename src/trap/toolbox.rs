@@ -12078,7 +12078,7 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A0, 0);
         cpu.write_reg(Register::D0, -192i32 as u32);
         bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound per IM:IV-15
-        Self::write_point_words(bus, sp + 6, Self::list_no_click_cell());
+        bus.write_long(sp + 6, 0);
         cpu.write_reg(Register::A7, sp + 6);
         Ok(())
     }
@@ -17521,6 +17521,31 @@ mod tests {
 
         assert_eq!(bus.read_word(sp + 4), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn get_ind_resource_miss_writes_nil_handle_result() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.install_test_resource(&mut bus, *b"crsr", 128, &[0xAA, 0xBB]);
+
+        for (trap, name) in [(0x19D, "GetIndResource"), (0x00E, "Get1IndResource")] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::A0, 0xCAFE_BABE);
+            cpu.write_reg(Register::D0, 0);
+            bus.write_word(0x0A60, 0);
+            bus.write_word(TEST_SP, 2); // Index is 1-based; only one crsr exists.
+            bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"crsr"));
+            bus.write_long(TEST_SP + 6, 0xDEAD_BEEF);
+
+            let result = disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus);
+            assert!(result.is_some(), "{name} should be handled");
+            assert!(result.unwrap().is_ok(), "{name} should return normally");
+
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6, "{name} SP");
+            assert_eq!(cpu.read_reg(Register::A0), 0, "{name} A0");
+            assert_eq!(bus.read_long(TEST_SP + 6), 0, "{name} result slot");
+            assert_eq!(bus.read_word(0x0A60) as i16, -192, "{name} ResErr");
+        }
     }
 
     // GetNamedResource ($A9A1)
