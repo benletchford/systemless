@@ -701,7 +701,9 @@ impl super::TrapDispatcher {
             }
 
             // SetPort ($A873)
-            // SetPort ($A873): Sets current port via A5 globals
+            // Makes the specified grafPort the current port.
+            // PROCEDURE SetPort(port: GrafPtr);
+            // Inside Macintosh Volume I, p. I-165.
             (true, 0x073) => {
                 let sp = cpu.read_reg(Register::A7);
                 let port = bus.read_long(sp);
@@ -720,7 +722,12 @@ impl super::TrapDispatcher {
                     }
                     return Some(Ok(()));
                 }
-                self.set_current_port_state(bus, cpu, port, None);
+                // SetPort changes ThePort, not TheGDevice. Color QuickDraw
+                // code that avoids SetGWorld is expected to pair SetGDevice
+                // with SetPort for offscreen drawing (Imaging With QuickDraw
+                // 1994, p. 5-24; Inside Macintosh Volume V, p. V-124).
+                let current_gdevice = (self.current_gdevice != 0).then_some(self.current_gdevice);
+                self.set_current_port_state(bus, cpu, port, current_gdevice);
                 Ok(())
             }
 
@@ -21513,19 +21520,22 @@ impl super::TrapDispatcher {
             return None;
         }
 
+        // Compiled 'crsr' resources embed a full PixMap record, with baseAddr
+        // at +0 and pmTable still stored as a resource-relative offset.
+        // Inside Macintosh Volume V, V-74
         let raw_pixmap = resource_ptr + map_offset;
-        let raw_row_bytes = bus.read_word(raw_pixmap);
+        let raw_row_bytes = bus.read_word(raw_pixmap + 4);
         let row_bytes = u32::from(raw_row_bytes & 0x3FFF);
-        let top = bus.read_word(raw_pixmap + 2) as i16;
-        let left = bus.read_word(raw_pixmap + 4) as i16;
-        let bottom = bus.read_word(raw_pixmap + 6) as i16;
-        let right = bus.read_word(raw_pixmap + 8) as i16;
+        let top = bus.read_word(raw_pixmap + 6) as i16;
+        let left = bus.read_word(raw_pixmap + 8) as i16;
+        let bottom = bus.read_word(raw_pixmap + 10) as i16;
+        let right = bus.read_word(raw_pixmap + 12) as i16;
         let height = bottom.saturating_sub(top).max(0) as u32;
         if row_bytes == 0 || height == 0 {
             return None;
         }
 
-        let table_offset = bus.read_long(raw_pixmap + 38);
+        let table_offset = bus.read_long(raw_pixmap + 42);
         let pixel_data_len = if table_offset > data_offset {
             table_offset - data_offset
         } else {
@@ -21567,25 +21577,8 @@ impl super::TrapDispatcher {
         bus.write_word(pixmap_ptr + 8, left as u16);
         bus.write_word(pixmap_ptr + 10, bottom as u16);
         bus.write_word(pixmap_ptr + 12, right as u16);
-        for (raw_off, live_off, len) in [
-            (10u32, 14u32, 2u32),
-            (12, 16, 2),
-            (14, 18, 4),
-            (18, 22, 4),
-            (22, 26, 4),
-            (26, 30, 2),
-            (28, 32, 2),
-            (30, 34, 2),
-            (32, 36, 2),
-            (34, 38, 4),
-            (42, 46, 4),
-        ] {
-            for i in 0..len {
-                bus.write_byte(
-                    pixmap_ptr + live_off + i,
-                    bus.read_byte(raw_pixmap + raw_off + i),
-                );
-            }
+        for off in 14u32..50u32 {
+            bus.write_byte(pixmap_ptr + off, bus.read_byte(raw_pixmap + off));
         }
         bus.write_long(pixmap_ptr + 42, ctab_handle);
 
@@ -22382,6 +22375,11 @@ mod tests {
         assert_ne!(pixmap_ptr, 0);
         assert_ne!(data_ptr, 0);
         assert_eq!(bus.read_long(pixmap_ptr), data_ptr);
+        assert_eq!(bus.read_word(pixmap_ptr + 4) & 0x3FFF, 4);
+        assert_eq!(bus.read_word(pixmap_ptr + 6) as i16, 0);
+        assert_eq!(bus.read_word(pixmap_ptr + 8) as i16, 0);
+        assert_eq!(bus.read_word(pixmap_ptr + 10) as i16, 16);
+        assert_eq!(bus.read_word(pixmap_ptr + 12) as i16, 16);
         assert_ne!(
             bus.read_long(pixmap_ptr + 42),
             0xD2,
@@ -22858,6 +22856,41 @@ mod tests {
             0xDEAD_BEEF,
             "SetPort must not synthesize pen state into non-port memory"
         );
+    }
+
+    #[test]
+    fn setport_preserves_current_gdevice_selected_by_setgdevice() {
+        // Imaging With QuickDraw 1994 p. 5-24 documents the legacy offscreen
+        // sequence that pairs SetGDevice with SetPort instead of SetGWorld.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let custom_gdh = 0x0050_0000u32;
+
+        bus.write_long(TEST_SP, custom_gdh);
+        let set_device = d.dispatch_quickdraw(true, 0x231, &mut cpu, &mut bus);
+        assert!(set_device.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(d.current_gdevice, custom_gdh);
+        assert_eq!(bus.read_long(0x0CC8), custom_gdh);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, port_ptr);
+        let set_port = d.dispatch_quickdraw(true, 0x073, &mut cpu, &mut bus);
+        assert!(set_port.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(d.current_port, port_ptr);
+        assert_eq!(d.current_gdevice, custom_gdh);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            port_ptr
+        );
+        assert_eq!(bus.read_long(0x0CC8), custom_gdh);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        let get_device = d.dispatch_quickdraw(true, 0x232, &mut cpu, &mut bus);
+        assert!(get_device.unwrap().is_ok());
+        assert_eq!(bus.read_long(TEST_SP), custom_gdh);
     }
 
     #[test]
@@ -29935,15 +29968,18 @@ mod tests {
         }
 
         let pixmap = 0x60usize;
-        data[pixmap..pixmap + 2].copy_from_slice(&0x8004u16.to_be_bytes());
-        data[pixmap + 2..pixmap + 4].copy_from_slice(&0i16.to_be_bytes());
-        data[pixmap + 4..pixmap + 6].copy_from_slice(&0i16.to_be_bytes());
-        data[pixmap + 6..pixmap + 8].copy_from_slice(&16i16.to_be_bytes());
-        data[pixmap + 8..pixmap + 10].copy_from_slice(&16i16.to_be_bytes());
-        data[pixmap + 28..pixmap + 30].copy_from_slice(&2u16.to_be_bytes());
-        data[pixmap + 30..pixmap + 32].copy_from_slice(&1u16.to_be_bytes());
+        data[pixmap..pixmap + 4].copy_from_slice(&0u32.to_be_bytes());
+        data[pixmap + 4..pixmap + 6].copy_from_slice(&0x8004u16.to_be_bytes());
+        data[pixmap + 6..pixmap + 8].copy_from_slice(&0i16.to_be_bytes());
+        data[pixmap + 8..pixmap + 10].copy_from_slice(&0i16.to_be_bytes());
+        data[pixmap + 10..pixmap + 12].copy_from_slice(&16i16.to_be_bytes());
+        data[pixmap + 12..pixmap + 14].copy_from_slice(&16i16.to_be_bytes());
+        data[pixmap + 22..pixmap + 26].copy_from_slice(&0x0048_0000u32.to_be_bytes());
+        data[pixmap + 26..pixmap + 30].copy_from_slice(&0x0048_0000u32.to_be_bytes());
         data[pixmap + 32..pixmap + 34].copy_from_slice(&2u16.to_be_bytes());
-        data[pixmap + 38..pixmap + 42].copy_from_slice(&0xD2u32.to_be_bytes());
+        data[pixmap + 34..pixmap + 36].copy_from_slice(&1u16.to_be_bytes());
+        data[pixmap + 36..pixmap + 38].copy_from_slice(&2u16.to_be_bytes());
+        data[pixmap + 42..pixmap + 46].copy_from_slice(&0xD2u32.to_be_bytes());
 
         let pixels = 0x92usize;
         for row in 0..16usize {
