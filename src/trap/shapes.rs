@@ -1241,6 +1241,16 @@ impl super::TrapDispatcher {
                             let dy = (y - bounds_top) as u32;
                             bus.write_bytes(pix_base + dy * pix_row_bytes + dx, &row);
                         }
+                        self.refresh_dialog_saved_pixels_after_screen_draw(
+                            bus,
+                            port,
+                            (
+                                top.saturating_sub(bounds_top),
+                                left.saturating_sub(bounds_left),
+                                bottom.saturating_sub(bounds_top),
+                                right.saturating_sub(bounds_left),
+                            ),
+                        );
                         self.refresh_visible_dialog_snapshot_for_port(bus, port);
                         return;
                     }
@@ -1471,6 +1481,16 @@ impl super::TrapDispatcher {
             }
         }
         if touched_screen {
+            self.refresh_dialog_saved_pixels_after_screen_draw(
+                bus,
+                port,
+                (
+                    touch_top.saturating_sub(bounds_top),
+                    touch_left.saturating_sub(bounds_left),
+                    touch_bottom.saturating_sub(bounds_top),
+                    touch_right.saturating_sub(bounds_left),
+                ),
+            );
             self.refresh_visible_dialog_snapshot_for_port(bus, port);
         }
 

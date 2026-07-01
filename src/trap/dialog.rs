@@ -4885,12 +4885,7 @@ impl super::TrapDispatcher {
         rect: (i16, i16, i16, i16),
     ) -> Vec<u8> {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
-        let (top, left, bottom, right) = rect;
-        let margin = Self::DBOX_FRAME_MARGIN;
-        let save_top = top - margin; // dBoxProc structure region
-        let save_left = left - margin;
-        let save_bottom = bottom + margin;
-        let save_right = right + margin;
+        let (save_top, save_left, save_bottom, save_right) = Self::dialog_saved_pixel_rect(rect);
         // Guard against negative y (top < 5) and y >= screen_h. `y as u32`
         // sign-extends a negative i16 to a huge value that overflows when
         // multiplied by row_bytes. Off-screen rows contribute zeros.
@@ -4972,6 +4967,136 @@ impl super::TrapDispatcher {
         self.ensure_dialog_background_saved(bus, port, bounds);
     }
 
+    fn dialog_saved_pixel_rect(rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+        let (top, left, bottom, right) = rect;
+        let margin = Self::DBOX_FRAME_MARGIN;
+        (top - margin, left - margin, bottom + margin, right + margin)
+    }
+
+    pub(crate) fn refresh_dialog_saved_pixels_after_screen_draw(
+        &mut self,
+        bus: &MacMemoryBus,
+        drawing_port: u32,
+        screen_rect: (i16, i16, i16, i16),
+    ) {
+        if screen_rect.0 >= screen_rect.2 || screen_rect.1 >= screen_rect.3 {
+            return;
+        }
+
+        let dialogs: Vec<(u32, (i16, i16, i16, i16))> = self
+            .dialog_visible_snapshots
+            .iter()
+            .map(|(&dialog_ptr, snapshot)| (dialog_ptr, snapshot.bounds))
+            .collect();
+        for (dialog_ptr, bounds) in dialogs {
+            if dialog_ptr == drawing_port
+                || self.active_modeless_dialog_draw_proc == Some(dialog_ptr)
+            {
+                continue;
+            }
+            self.refresh_single_dialog_saved_pixels_after_screen_draw(
+                bus,
+                dialog_ptr,
+                bounds,
+                screen_rect,
+            );
+        }
+    }
+
+    fn refresh_single_dialog_saved_pixels_after_screen_draw(
+        &mut self,
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        screen_rect: (i16, i16, i16, i16),
+    ) {
+        let save_rect = Self::dialog_saved_pixel_rect(bounds);
+        let Some(intersection) = Self::rect_intersection(save_rect, screen_rect) else {
+            return;
+        };
+
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = self.get_screen_params();
+        let Some(saved) = self.dialog_saved_pixels.get_mut(&dialog_ptr) else {
+            return;
+        };
+        let (save_top, save_left, save_bottom, save_right) = save_rect;
+        let row_width = save_right.saturating_sub(save_left) as usize;
+        let row_count = save_bottom.saturating_sub(save_top) as usize;
+        if row_width == 0 || row_count == 0 {
+            return;
+        }
+
+        match pixel_size {
+            8 => {
+                let expected = row_width.saturating_mul(row_count);
+                if saved.len() < expected {
+                    return;
+                }
+                let top = intersection.0.max(0);
+                let left = intersection.1.max(0);
+                let bottom = intersection.2.min(screen_h);
+                let right = intersection.3.min(screen_w).min(row_bytes as i16);
+                if top >= bottom || left >= right {
+                    return;
+                }
+                for y in top..bottom {
+                    let saved_offset =
+                        (y - save_top) as usize * row_width + (left - save_left) as usize;
+                    let len = (right - left) as usize;
+                    let row_addr = screen_base + (y as u32) * row_bytes + (left as u32);
+                    let row = bus.read_bytes(row_addr, len);
+                    saved[saved_offset..saved_offset + len].copy_from_slice(&row);
+                }
+            }
+            1 => {
+                if save_right <= 0 {
+                    return;
+                }
+                let byte_left = (save_left.max(0) as u32) / 8;
+                let byte_right = (save_right as u32).div_ceil(8);
+                let byte_end = byte_right.min(row_bytes);
+                if byte_left >= byte_end {
+                    return;
+                }
+                let row_len = (byte_end - byte_left) as usize;
+                let first_saved_row = save_top.max(0);
+                let top = intersection.0.max(0);
+                let left = intersection.1.max(0);
+                let bottom = intersection.2.min(screen_h);
+                let right = intersection
+                    .3
+                    .min(screen_w)
+                    .min((row_bytes.saturating_mul(8)) as i16);
+                if top >= bottom || left >= right {
+                    return;
+                }
+                for y in top..bottom {
+                    let row_offset = (y - first_saved_row) as usize * row_len;
+                    if row_offset + row_len > saved.len() {
+                        return;
+                    }
+                    for x in left..right {
+                        let byte_x = (x as u32) / 8;
+                        if byte_x < byte_left || byte_x >= byte_end {
+                            continue;
+                        }
+                        let bit = 7 - ((x as u32) & 7);
+                        let mask = 1u8 << bit;
+                        let screen_byte =
+                            bus.read_byte(screen_base + (y as u32) * row_bytes + byte_x);
+                        let saved_idx = row_offset + (byte_x - byte_left) as usize;
+                        if (screen_byte & mask) != 0 {
+                            saved[saved_idx] |= mask;
+                        } else {
+                            saved[saved_idx] &= !mask;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Restore previously saved framebuffer pixels under a dialog.
     pub(crate) fn restore_dialog_pixels(
         &self,
@@ -4980,12 +5105,7 @@ impl super::TrapDispatcher {
         saved: &[u8],
     ) {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
-        let (top, left, bottom, right) = rect;
-        let margin = Self::DBOX_FRAME_MARGIN;
-        let save_top = top - margin;
-        let save_left = left - margin;
-        let save_bottom = bottom + margin;
-        let save_right = right + margin;
+        let (save_top, save_left, save_bottom, save_right) = Self::dialog_saved_pixel_rect(rect);
         // Mirror save_dialog_pixels y-bounds guard — saved bytes for off-screen
         // rows are skipped so write position stays aligned with the packed input buffer.
         let row_width = (save_right - save_left) as usize;
@@ -25774,6 +25894,82 @@ mod tests {
             !disp.dialog_saved_pixels.contains_key(&dialog_ptr),
             "saved pixels must be consumed after DisposDialog"
         );
+    }
+
+    #[test]
+    fn visible_dialog_saved_background_tracks_screen_draws_behind_it() {
+        // Some applications keep animating their screen-backed main window
+        // while a visible DLOG is frontmost. The Window Manager still closes
+        // the dialog via CloseWindow/DisposDialog (IM:I I-283, I-425), so the
+        // saved-under pixels must reflect those later behind-dialog draws.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes: u32 = 640;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let bounds = (100i16, 100i16, 150i16, 200i16);
+        let dialog_ptr = bus.alloc(170);
+        let background_port = bus.alloc(170);
+        let save_top = 92u32;
+        let save_left = 92u32;
+        let save_bottom = 158u32;
+        let save_right = 208u32;
+        let row_width = (save_right - save_left) as usize;
+
+        for y in save_top..save_bottom {
+            for x in save_left..save_right {
+                bus.write_byte(screen_base + y * row_bytes + x, 0xEE);
+            }
+        }
+
+        disp.dialog_saved_pixels.insert(
+            dialog_ptr,
+            vec![0x11; row_width * (save_bottom - save_top) as usize],
+        );
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: vec![0xEE; row_width * (save_bottom - save_top) as usize],
+            },
+        );
+
+        for y in 120u32..123 {
+            for x in 130u32..139 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0x44);
+            }
+        }
+        disp.refresh_dialog_saved_pixels_after_screen_draw(
+            &bus,
+            background_port,
+            (120, 130, 123, 139),
+        );
+
+        let saved = disp.dialog_saved_pixels.get(&dialog_ptr).unwrap();
+        let touched_idx = (120 - save_top) as usize * row_width + (130 - save_left) as usize;
+        let untouched_idx = (100 - save_top) as usize * row_width + (100 - save_left) as usize;
+        assert_eq!(saved[touched_idx], 0x44);
+        assert_eq!(saved[untouched_idx], 0x11);
+
+        for y in save_top..save_bottom {
+            for x in save_left..save_right {
+                bus.write_byte(screen_base + y * row_bytes + x, 0xEE);
+            }
+        }
+
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = bounds;
+        disp.window_list = vec![dialog_ptr];
+        disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_byte(screen_base + 120 * row_bytes + 130), 0x44);
+        assert_eq!(bus.read_byte(screen_base + 100 * row_bytes + 100), 0x11);
     }
 
     #[test]
