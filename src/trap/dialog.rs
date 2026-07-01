@@ -957,20 +957,20 @@ impl super::TrapDispatcher {
         bus.write_word(addr + 6, rect.3 as u16);
     }
 
-    fn te_rect_is_plausible(rect: (i16, i16, i16, i16)) -> bool {
-        let (top, left, bottom, right) = rect;
-        top <= bottom
-            && left <= right
-            && top.abs() <= 4096
-            && left.abs() <= 4096
-            && bottom.abs() <= 4096
-            && right.abs() <= 4096
-            && (bottom - top).abs() <= 4096
-            && (right - left).abs() <= 4096
-    }
-
     fn te_rect_is_empty(rect: (i16, i16, i16, i16)) -> bool {
         rect.0 == 0 && rect.1 == 0 && rect.2 == 0 && rect.3 == 0
+    }
+
+    fn te_rect_ptr_candidate(bus: &MacMemoryBus, ptr: u32) -> Option<(i16, i16, i16, i16)> {
+        if ptr == 0 || (ptr & 1) != 0 || ptr < 0x1000 {
+            return None;
+        }
+        let end = ptr.checked_add(8)?;
+        if end > bus.ram_size() {
+            return None;
+        }
+
+        Some(Self::te_read_rect(bus, ptr))
     }
 
     /// Decode TENew/TEStyleNew arguments off the Pascal stack, sniffing
@@ -998,26 +998,20 @@ impl super::TrapDispatcher {
         // Pascal second arg (viewRect / viewRect_ptr) is SHALLOWEST → sp+0.
         let view_ptr_word = bus.read_long(sp);
         let dest_ptr_word = bus.read_long(sp + 4);
-        let view_via_ptr = if view_ptr_word != 0 {
-            Some(Self::te_read_rect(bus, view_ptr_word))
-        } else {
-            None
-        };
-        let dest_via_ptr = if dest_ptr_word != 0 {
-            Some(Self::te_read_rect(bus, dest_ptr_word))
-        } else {
-            None
-        };
-        let view_is_rect_ptr = view_via_ptr.is_some_and(Self::te_rect_is_plausible);
-        let dest_is_rect_ptr = dest_via_ptr.is_some_and(Self::te_rect_is_plausible);
-        if view_is_rect_ptr && dest_is_rect_ptr {
+        let view_via_ptr = Self::te_rect_ptr_candidate(bus, view_ptr_word);
+        let dest_via_ptr = Self::te_rect_ptr_candidate(bus, dest_ptr_word);
+        if let (Some(dest), Some(view)) = (dest_via_ptr, view_via_ptr) {
             // Modern MPW Universal Headers pointer convention (8 bytes).
-            let dest = dest_via_ptr.unwrap();
-            let view = view_via_ptr.unwrap();
             if Self::te_rect_is_empty(view) && !Self::te_rect_is_empty(dest) {
                 (dest, dest, 8)
             } else if Self::te_rect_is_empty(dest) && !Self::te_rect_is_empty(view) {
                 (view, view, 8)
+            } else if Self::te_rect_is_empty(dest) && Self::te_rect_is_empty(view) {
+                (
+                    Self::te_read_rect(bus, sp + 8),
+                    Self::te_read_rect(bus, sp),
+                    16,
+                )
             } else {
                 (dest, view, 8)
             }
@@ -12431,10 +12425,9 @@ impl super::TrapDispatcher {
             // BasiliskII System 7.5.3 ROM accepts the pointer-arg
             // convention (the bake fixture uses it). Systemless's HLE
             // sniffs which convention the caller used by inspecting
-            // whether the first two long words on the stack point at
-            // plausible Rects (te_new_rect_args at dialog.rs:312..348)
-            // and pops either 8 bytes (pointer convention) or 16
-            // bytes (by-value convention) accordingly.
+            // whether the first two long words on the stack are valid
+            // guest pointers and pops either 8 bytes (pointer convention)
+            // or 16 bytes (by-value convention) accordingly.
             //
             // Strict bake witnesses 5 documented behaviors:
             //   * a9d2_tenew_strict
@@ -29292,6 +29285,111 @@ mod tests {
             bus.read_long(TEST_SP + 12),
             0xCAFE_BABE,
             "sentinel past 4-byte result slot must survive"
+        );
+    }
+
+    #[test]
+    fn tenew_pointer_arg_convention_accepts_wide_ordered_destrect() {
+        // Some MPW callers pass a Rect embedded at the start of an
+        // application record. TextEdit accepts the pointer convention
+        // even when the destination Rect is wider than the visible
+        // screen; the trap must still pop only the two pointer args.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let dest_record_ptr: u32 = 0x190040;
+        bus.write_word(dest_record_ptr, 159);
+        bus.write_word(dest_record_ptr + 2, 500);
+        bus.write_word(dest_record_ptr + 4, 171);
+        bus.write_word(dest_record_ptr + 6, 10500);
+
+        let view_rect_ptr: u32 = 0x190060;
+        bus.write_word(view_rect_ptr, 159);
+        bus.write_word(view_rect_ptr + 2, 500);
+        bus.write_word(view_rect_ptr + 4, 171);
+        bus.write_word(view_rect_ptr + 6, 10500);
+
+        bus.write_long(TEST_SP, view_rect_ptr);
+        bus.write_long(TEST_SP + 4, dest_record_ptr);
+        bus.write_long(TEST_SP + 8, 0xDEAD_BEEF);
+        bus.write_long(TEST_SP + 12, 0xCAFE_BABE);
+
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 8,
+            "TENew pointer convention must pop exactly two pointers"
+        );
+
+        let te_handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(te_handle, 0);
+        assert_ne!(te_handle, 0xDEAD_BEEF);
+        assert_eq!(
+            bus.read_long(TEST_SP + 12),
+            0xCAFE_BABE,
+            "TENew must not write past the 4-byte function-result slot"
+        );
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_ne!(te_ptr, 0);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6) as i16,
+            10500,
+            "wide destRect.right must round-trip from caller memory"
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET + 6) as i16,
+            10500,
+            "wide viewRect.right must round-trip from caller memory"
+        );
+    }
+
+    #[test]
+    fn tenew_pointer_arg_convention_is_based_on_valid_pointers_not_rect_shape() {
+        // The calling convention is determined by the stack containing
+        // two Rect pointers. Unusual caller Rect contents must not make
+        // the trap consume a legacy by-value frame and corrupt the
+        // caller's saved registers.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let dest_rect_ptr: u32 = 0x190080;
+        bus.write_word(dest_rect_ptr, 552);
+        bus.write_word(dest_rect_ptr + 2, 525);
+        bus.write_word(dest_rect_ptr + 4, 520);
+        bus.write_word(dest_rect_ptr + 6, 10525);
+
+        let view_rect_ptr: u32 = 0x1900A0;
+        bus.write_word(view_rect_ptr, 552);
+        bus.write_word(view_rect_ptr + 2, 525);
+        bus.write_word(view_rect_ptr + 4, 520);
+        bus.write_word(view_rect_ptr + 6, 10525);
+
+        bus.write_long(TEST_SP, view_rect_ptr);
+        bus.write_long(TEST_SP + 4, dest_rect_ptr);
+        bus.write_long(TEST_SP + 8, 0xDEAD_BEEF);
+        bus.write_long(TEST_SP + 12, 0xCAFE_BABE);
+
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        let te_handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(te_handle, 0);
+        assert_ne!(te_handle, 0xDEAD_BEEF);
+        assert_eq!(bus.read_long(TEST_SP + 12), 0xCAFE_BABE);
+
+        let te_ptr = bus.read_long(te_handle);
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16,
+            552
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 4) as i16,
+            520
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6) as i16,
+            10525
         );
     }
 

@@ -172,7 +172,7 @@ impl super::TrapDispatcher {
                         );
                     }
                     if snd_ptr != 0 {
-                        self.snd_play_resource(bus, chan_ptr, snd_ptr)
+                        self.snd_play_resource(bus, chan_ptr, async_flag != 0, snd_ptr)
                     } else {
                         // IM:Sound 1994 p. 2-122: unloaded sound handle -> resProblem.
                         -204
@@ -805,14 +805,8 @@ impl super::TrapDispatcher {
                             } else {
                                 -205 // badChannel
                             }
-                        } else if self
-                            .sound_manager
-                            .find_channel_mut(chan_ptr)
-                            .is_some_and(|chan| chan.enqueue(cmd))
-                        {
-                            0
                         } else {
-                            -203 // queueFull
+                            self.enqueue_guest_sound_command(bus, chan_ptr, cmd)
                         }
                     } else {
                         self.execute_sound_command(bus, chan_ptr, cmd);
@@ -990,6 +984,30 @@ impl super::TrapDispatcher {
         bus.write_word(addr, cmd.cmd);
         bus.write_word(addr + 2, cmd.param1 as u16);
         bus.write_long(addr + 4, cmd.param2);
+    }
+
+    fn enqueue_guest_sound_command(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        chan_ptr: u32,
+        cmd: SndCommand,
+    ) -> i16 {
+        // IM:Sound 1994 pp. 2-13 and 2-99: SndChannel owns a FIFO queue of
+        // SndCommand records after qHead/qTail.
+        let q_length = bus
+            .read_word(chan_ptr + GUEST_SND_CHANNEL_Q_LENGTH_OFFSET)
+            .max(1) as usize;
+        let q_head = bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET) as usize % q_length;
+        let q_tail = bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET) as usize % q_length;
+        let next_tail = (q_tail + 1) % q_length;
+        if next_tail == q_head {
+            return -203; // queueFull
+        }
+
+        let cmd_addr = chan_ptr + GUEST_SND_CHANNEL_QUEUE_OFFSET + (q_tail as u32) * 8;
+        self.write_guest_snd_command(bus, cmd_addr, Some(cmd));
+        bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, next_tail as u16);
+        0
     }
 
     pub(crate) fn sync_guest_sound_channel_state(&self, bus: &mut MacMemoryBus) {
@@ -1407,7 +1425,13 @@ impl super::TrapDispatcher {
     /// Parse a snd resource and play it.
     /// Handles format 1 and format 2.
     /// Reference: executor sound.cpp ROMlib_get_snd_cmds / C_SndPlay
-    fn snd_play_resource(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32, snd_ptr: u32) -> i16 {
+    fn snd_play_resource(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        chan_ptr: u32,
+        async_play: bool,
+        snd_ptr: u32,
+    ) -> i16 {
         let format = bus.read_word(snd_ptr) as i16;
         let alloc_size = bus.get_alloc_size(snd_ptr);
         let mut offset: u32;
@@ -1483,6 +1507,20 @@ impl super::TrapDispatcher {
             // keep the channel alive and auto-release it from the runner after
             // the mixer has consumed the pending samples.
             let guest_ptr = bus.alloc(GUEST_SND_CHANNEL_SIZE);
+            bus.write_long(guest_ptr, 0); // nextChan
+            bus.write_long(guest_ptr + 4, 0); // firstMod
+            bus.write_long(guest_ptr + 8, 0); // callBack
+            bus.write_long(guest_ptr + 12, 0); // userInfo
+            bus.write_long(guest_ptr + 16, 0); // wait
+            self.write_guest_snd_command(
+                bus,
+                guest_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET,
+                None,
+            );
+            bus.write_word(guest_ptr + GUEST_SND_CHANNEL_FLAGS_OFFSET, 0);
+            bus.write_word(guest_ptr + GUEST_SND_CHANNEL_Q_LENGTH_OFFSET, 128);
+            bus.write_word(guest_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET, 0);
+            bus.write_word(guest_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, 0);
             let mut chan = SndChannel::new(guest_ptr, true);
             chan.mark_auto_dispose_when_idle();
             self.sound_manager.channels.push(chan);
@@ -1521,7 +1559,27 @@ impl super::TrapDispatcher {
                 );
             }
 
-            self.execute_sound_command(bus, effective_chan, cmd);
+            let queue_for_later = async_play
+                && effective_chan != 0
+                && self
+                    .sound_manager
+                    .find_channel_mut(effective_chan)
+                    .map(|chan| {
+                        chan.has_active_playback()
+                            || chan.double_buffer.is_some()
+                            || bus.read_word(effective_chan + GUEST_SND_CHANNEL_Q_HEAD_OFFSET)
+                                != bus.read_word(effective_chan + GUEST_SND_CHANNEL_Q_TAIL_OFFSET)
+                    })
+                    .unwrap_or(false);
+
+            if queue_for_later {
+                let err = self.enqueue_guest_sound_command(bus, effective_chan, cmd);
+                if err != 0 {
+                    return err;
+                }
+            } else {
+                self.execute_sound_command(bus, effective_chan, cmd);
+            }
         }
 
         if temporary_channel
@@ -1820,7 +1878,7 @@ impl super::TrapDispatcher {
                         res_num, snd_ptr
                     );
                 }
-                let err = self.snd_play_resource(bus, chan_ptr, snd_ptr);
+                let err = self.snd_play_resource(bus, chan_ptr, async_flag != 0, snd_ptr);
                 if err == 0 {
                     self.sound_manager.debug_file_play_count += 1;
                 }
@@ -2556,8 +2614,10 @@ fn mace_i16_to_u8(value: i32) -> u8 {
 mod tests {
     use super::{
         decode_double_buffer_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
-        extended80_to_f64, parse_aiff_samples, synth_sys_beep_samples, GUEST_SND_CHANNEL_SIZE,
-        SAMPLED_SYNTH_ID, SOUND_MANAGER_3_SYNTH_VERSION,
+        extended80_to_f64, parse_aiff_samples, synth_sys_beep_samples,
+        GUEST_SND_CHANNEL_Q_HEAD_OFFSET, GUEST_SND_CHANNEL_Q_LENGTH_OFFSET,
+        GUEST_SND_CHANNEL_Q_TAIL_OFFSET, GUEST_SND_CHANNEL_SIZE, SAMPLED_SYNTH_ID,
+        SOUND_MANAGER_3_SYNTH_VERSION,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
@@ -2844,6 +2904,71 @@ mod tests {
             disp.sound_manager.mix_frame(4),
             vec![0x40, 0x80, 0xC0, 0xFF]
         );
+    }
+
+    #[test]
+    fn sndplay_async_busy_channel_queues_buffer_resource_until_current_playback_finishes() {
+        // Sound 1994, pp. 2-13, 2-121, and 2-123: a SndChannel is a FIFO
+        // command queue, and SndPlay sends the sound resource's commands into
+        // that channel. An asynchronous SndPlay must not restart an active
+        // bufferCmd already playing on the same channel.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let chan_ptr = 0x250400;
+        disp.sound_manager
+            .channels
+            .push(SndChannel::new(chan_ptr, false));
+        bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_LENGTH_OFFSET, 128);
+        bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET, 0);
+        bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, 0);
+        disp.sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .play_buffer(
+                vec![0x10, 0x11],
+                crate::sound::OUTPUT_RATE << 16,
+                PlaybackKind::Buffer,
+                0,
+            );
+
+        let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
+        let header_offset = 16u32;
+        let header = snd_ptr + header_offset;
+        bus.write_word(snd_ptr + 4, 1); // numCommands
+        bus.write_word(snd_ptr + 6, 0x8000 | cmd::BUFFER); // dataOffsetFlag + bufferCmd
+        bus.write_word(snd_ptr + 8, 0);
+        bus.write_long(snd_ptr + 10, header_offset);
+        bus.write_long(header, 0);
+        bus.write_long(header + 4, 2);
+        bus.write_long(header + 8, crate::sound::OUTPUT_RATE << 16);
+        bus.write_long(header + 12, 0);
+        bus.write_long(header + 16, 0);
+        bus.write_byte(header + 20, 0);
+        bus.write_byte(header + 21, 60);
+        bus.write_bytes(header + 22, &[0xA0, 0xA1]);
+
+        bus.write_word(sp, 1); // async = TRUE
+        bus.write_long(sp + 2, snd_handle);
+        bus.write_long(sp + 6, chan_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x005, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(
+            bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET),
+            1,
+            "resource command should enter the channel FIFO"
+        );
+        assert_eq!(
+            disp.sound_manager.mix_frame(2),
+            vec![0x10, 0x11],
+            "current buffer must finish before queued SndPlay data starts"
+        );
+
+        disp.service_guest_sound_queues(&mut bus);
+        assert_eq!(disp.sound_manager.mix_frame(2), vec![0xA0, 0xA1]);
     }
 
     #[test]
@@ -4064,6 +4189,65 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![128, 128]
         );
+    }
+
+    #[test]
+    fn snddocommand_busy_channel_queues_buffer_cmd_for_later_bus_backed_decode() {
+        // A queued bufferCmd needs MacMemoryBus access when it eventually
+        // starts, so it must live in the guest SndChannel FIFO drained by
+        // service_guest_sound_queues, not the mixer-only internal queue.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let create_sp = TEST_SP;
+        let chan_ptr_ptr = 0x2203A0;
+        bus.write_long(chan_ptr_ptr, 0);
+        bus.write_long(create_sp, 0);
+        bus.write_long(create_sp + 4, 0);
+        bus.write_word(create_sp + 8, 5);
+        bus.write_long(create_sp + 10, chan_ptr_ptr);
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let chan_ptr = bus.read_long(chan_ptr_ptr);
+        disp.sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .play_buffer(
+                vec![0x20, 0x21],
+                crate::sound::OUTPUT_RATE << 16,
+                PlaybackKind::Buffer,
+                0,
+            );
+
+        let header = 0x230180;
+        bus.write_long(header, 0);
+        bus.write_long(header + 4, 2);
+        bus.write_long(header + 8, crate::sound::OUTPUT_RATE << 16);
+        bus.write_long(header + 12, 0);
+        bus.write_long(header + 16, 0);
+        bus.write_byte(header + 20, 0);
+        bus.write_byte(header + 21, 60);
+        bus.write_bytes(header + 22, &[0xB0, 0xB1]);
+
+        let cmd_ptr = 0x230160;
+        bus.write_word(cmd_ptr, cmd::BUFFER);
+        bus.write_word(cmd_ptr + 2, 0);
+        bus.write_long(cmd_ptr + 4, header);
+
+        let sp = TEST_SP + 0x40;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // noWait = TRUE
+        bus.write_long(sp + 2, cmd_ptr);
+        bus.write_long(sp + 6, chan_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x003, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(disp.sound_manager.mix_frame(2), vec![0x20, 0x21]);
+
+        disp.service_guest_sound_queues(&mut bus);
+        assert_eq!(disp.sound_manager.mix_frame(2), vec![0xB0, 0xB1]);
     }
 
     #[test]
