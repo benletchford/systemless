@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::dispatch::{
-    AeCoercionHandler, AeDescriptor, AeObjectAccessor, AeResolveLevel, AeResolveState, DialogItem,
-    MovieState, StandardFileGetEntry, StandardFileGetTrackingState, StandardFilePutTrackingState,
-    SyntheticAppleEvent,
+    AeCoercionHandler, AeDescriptor, AeObjectAccessor, AePrivateHashTable, AeResolveLevel,
+    AeResolveState, DialogItem, MovieState, StandardFileGetEntry, StandardFileGetTrackingState,
+    StandardFilePutTrackingState, SyntheticAppleEvent,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
@@ -32,12 +32,15 @@ const AE_TYPE_TYPE: u32 = u32::from_be_bytes(*b"type");
 const AE_TYPE_NULL: u32 = u32::from_be_bytes(*b"null");
 const AE_TYPE_WILDCARD: u32 = u32::from_be_bytes(*b"****");
 const AE_TYPE_OBJECT_SPECIFIER: u32 = u32::from_be_bytes(*b"obj ");
+const AE_EVENT_ID_ANSWER: u32 = u32::from_be_bytes(*b"ansr");
 const AE_KEY_DESIRED_CLASS: u32 = u32::from_be_bytes(*b"want");
 const AE_KEY_CONTAINER: u32 = u32::from_be_bytes(*b"from");
 const AE_KEY_KEY_FORM: u32 = u32::from_be_bytes(*b"form");
 const AE_KEY_KEY_DATA: u32 = u32::from_be_bytes(*b"seld");
 const AE_KEY_EVENT_CLASS_ATTR: u32 = u32::from_be_bytes(*b"evcl");
 const AE_KEY_EVENT_ID_ATTR: u32 = u32::from_be_bytes(*b"evid");
+const AE_SEND_MODE_REPLY_MASK: u32 = 0x0000_0003;
+const AE_SEND_MODE_WAIT_REPLY: u32 = 0x0000_0003;
 const AE_ERR_COERCION_FAIL: i16 = -1700;
 const AE_ERR_DESC_NOT_FOUND: i16 = -1701;
 const AE_ERR_HANDLER_NOT_FOUND: i16 = -1717;
@@ -783,10 +786,105 @@ impl super::TrapDispatcher {
         self.ae_descriptors.insert(desc_ptr, desc);
     }
 
+    fn write_synthetic_apple_event_descriptor(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        desc_ptr: u32,
+        event_class: u32,
+        event_id: u32,
+    ) {
+        let mut event_data = Vec::with_capacity(8);
+        event_data.extend_from_slice(&event_class.to_be_bytes());
+        event_data.extend_from_slice(&event_id.to_be_bytes());
+        self.write_ae_descriptor_value(
+            bus,
+            desc_ptr,
+            Self::ae_descriptor(AE_TYPE_APPLE_EVENT, event_data),
+        );
+        self.ae_events.insert(
+            desc_ptr,
+            SyntheticAppleEvent {
+                event_class,
+                event_id,
+                params: HashMap::new(),
+                items: Vec::new(),
+            },
+        );
+    }
+
+    fn dispose_ae_descriptor_record(&mut self, bus: &mut MacMemoryBus, desc_ptr: u32) {
+        let data_handle = if desc_ptr != 0 {
+            bus.read_long(desc_ptr + 4)
+        } else {
+            0
+        };
+        let data_ptr = if data_handle != 0 {
+            bus.read_long(data_handle)
+        } else {
+            0
+        };
+
+        self.ae_events.remove(&desc_ptr);
+        self.ae_descriptors.remove(&desc_ptr);
+        // AEDesc records are copied by value; sibling records may still share
+        // this data handle, so keep structured backing until the process exits.
+        if data_ptr != 0 {
+            self.ptr_to_handle.remove(&data_ptr);
+        }
+        write_null_aedesc(bus, desc_ptr);
+    }
+
     fn ae_descriptor_record(&mut self, bus: &mut MacMemoryBus, desc: AeDescriptor) -> u32 {
         let desc_ptr = bus.alloc(8);
         self.write_ae_descriptor_value(bus, desc_ptr, desc);
         desc_ptr
+    }
+
+    fn ae_create_private_hash_table(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        result_ptr: u32,
+        entry_sizes: u32,
+        allocation_size: u32,
+    ) -> i16 {
+        let key_size = ((entry_sizes >> 16) & 0xFFFF) as usize;
+        let value_size = (entry_sizes & 0xFFFF) as usize;
+        if result_ptr == 0 || key_size == 0 || value_size == 0 {
+            return -50;
+        }
+
+        let handle = bus.alloc(4);
+        if handle == 0 {
+            return -108;
+        }
+        let table_size = allocation_size.max(16) as usize;
+        let mut table_bytes = vec![0; table_size];
+        table_bytes[4..8].copy_from_slice(&(table_size as u32).to_be_bytes());
+        table_bytes[8..12].copy_from_slice(&(key_size as u32).to_be_bytes());
+        table_bytes[12..16].copy_from_slice(&(value_size as u32).to_be_bytes());
+        let data_ptr = self.write_bytes_to_handle(bus, handle, &table_bytes);
+        if data_ptr == 0 {
+            return -108;
+        }
+
+        self.ae_private_hash_tables.insert(
+            handle,
+            AePrivateHashTable {
+                key_size,
+                value_size,
+                entries: HashMap::new(),
+            },
+        );
+        bus.write_long(result_ptr, handle);
+        0
+    }
+
+    fn ae_private_hash_key(bus: &MacMemoryBus, key_ptr: u32, key_size: usize) -> Option<Vec<u8>> {
+        if key_ptr == 0 {
+            None
+        } else {
+            Some(bus.read_bytes(key_ptr, key_size))
+        }
     }
 
     fn ae_descriptor_u32(desc: &AeDescriptor) -> Option<u32> {
@@ -5173,6 +5271,113 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                // Private Object Support Library hash-table selectors used
+                // by the System 7 AEObjectInit glue. MPW's
+                // AEObjectSupportLib.o creates per-application and system
+                // object-accessor dispatch tables with $092E, then uses
+                // $0831/$0833/$0632 to insert, look up, and remove fixed-size
+                // key/value records. These are not public Interapplication
+                // Communication APIs, but linked classic object-support code
+                // calls them before the documented AE object routines can
+                // work.
+                if routine == 46 && param_bytes == 18 {
+                    let result_ptr = bus.read_long(sp);
+                    let entry_sizes = bus.read_long(sp + 10);
+                    let allocation_size = bus.read_long(sp + 14);
+                    let err = self.ae_create_private_hash_table(
+                        bus,
+                        result_ptr,
+                        entry_sizes,
+                        allocation_size,
+                    );
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
+                if routine == 49 && param_bytes == 16 {
+                    let value_ptr = bus.read_long(sp);
+                    let key_ptr = bus.read_long(sp + 4);
+                    let table_handle = bus.read_long(sp + 12);
+                    let err = if let Some(table) =
+                        self.ae_private_hash_tables.get_mut(&table_handle)
+                    {
+                        if let Some(key) = Self::ae_private_hash_key(bus, key_ptr, table.key_size) {
+                            let value = if value_ptr == 0 {
+                                Vec::new()
+                            } else {
+                                bus.read_bytes(value_ptr, table.value_size)
+                            };
+                            if value.len() == table.value_size {
+                                table.entries.insert(key, value);
+                                0
+                            } else {
+                                -50
+                            }
+                        } else {
+                            -50
+                        }
+                    } else {
+                        AE_ERR_ACCESSOR_NOT_FOUND
+                    };
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
+                if routine == 51 && param_bytes == 16 {
+                    let value_ptr = bus.read_long(sp);
+                    let key_ptr = bus.read_long(sp + 4);
+                    let table_handle = bus.read_long(sp + 12);
+                    let err = if let Some(table) = self.ae_private_hash_tables.get(&table_handle) {
+                        if let Some(key) = Self::ae_private_hash_key(bus, key_ptr, table.key_size) {
+                            if let Some(value) = table.entries.get(&key) {
+                                if value_ptr != 0 {
+                                    bus.write_bytes(value_ptr, value);
+                                }
+                                0
+                            } else {
+                                AE_ERR_ACCESSOR_NOT_FOUND
+                            }
+                        } else {
+                            -50
+                        }
+                    } else {
+                        AE_ERR_ACCESSOR_NOT_FOUND
+                    };
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
+                if routine == 50 && param_bytes == 12 {
+                    let key_ptr = bus.read_long(sp);
+                    let table_handle = bus.read_long(sp + 8);
+                    let err = if let Some(table) =
+                        self.ae_private_hash_tables.get_mut(&table_handle)
+                    {
+                        if let Some(key) = Self::ae_private_hash_key(bus, key_ptr, table.key_size) {
+                            if table.entries.remove(&key).is_some() {
+                                0
+                            } else {
+                                AE_ERR_ACCESSOR_NOT_FOUND
+                            }
+                        } else {
+                            -50
+                        }
+                    } else {
+                        AE_ERR_ACCESSOR_NOT_FOUND
+                    };
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
+
                 // Routines 55/56/57 manage Object Support Library accessor
                 // dispatch entries. AEResolve chooses an accessor by
                 // desired class and container-token descriptor type,
@@ -5719,31 +5924,15 @@ impl super::TrapDispatcher {
                 // record's data. Systemless's bump allocator cannot reclaim
                 // the copied bytes, but clearing tracked state and writing a
                 // null descriptor matches caller-visible reuse semantics.
+                // Structured descriptor backing is keyed by the data handle,
+                // which may be shared by AEDesc records copied by value.
                 //
                 // AEDisposeDesc (0x0204)
                 // FUNCTION AEDisposeDesc(theAEDesc: AEDesc): OSErr;
                 // Inside Macintosh Volume VI, 6-87.
                 if routine == 4 && param_bytes == 4 {
                     let desc_ptr = bus.read_long(sp);
-                    let data_handle = if desc_ptr != 0 {
-                        bus.read_long(desc_ptr + 4)
-                    } else {
-                        0
-                    };
-                    let data_ptr = if data_handle != 0 {
-                        bus.read_long(data_handle)
-                    } else {
-                        0
-                    };
-                    self.ae_events.remove(&desc_ptr);
-                    self.ae_descriptors.remove(&desc_ptr);
-                    if data_handle != 0 {
-                        self.ae_descriptor_backing.remove(&data_handle);
-                    }
-                    if data_ptr != 0 {
-                        self.ptr_to_handle.remove(&data_ptr);
-                    }
-                    write_null_aedesc(bus, desc_ptr);
+                    self.dispose_ae_descriptor_record(bus, desc_ptr);
                     let new_sp = sp + param_bytes;
                     bus.write_word(new_sp, 0);
                     cpu.write_reg(Register::A7, new_sp);
@@ -5768,22 +5957,11 @@ impl super::TrapDispatcher {
                     let event_id = bus.read_long(sp + 14);
                     let event_class = bus.read_long(sp + 18);
                     if result_desc != 0 {
-                        let mut event_data = Vec::with_capacity(8);
-                        event_data.extend_from_slice(&event_class.to_be_bytes());
-                        event_data.extend_from_slice(&event_id.to_be_bytes());
-                        self.write_ae_descriptor_value(
+                        self.write_synthetic_apple_event_descriptor(
                             bus,
                             result_desc,
-                            Self::ae_descriptor(AE_TYPE_APPLE_EVENT, event_data),
-                        );
-                        self.ae_events.insert(
-                            result_desc,
-                            SyntheticAppleEvent {
-                                event_class,
-                                event_id,
-                                params: HashMap::new(),
-                                items: Vec::new(),
-                            },
+                            event_class,
+                            event_id,
                         );
                     }
                     let new_sp = sp + param_bytes;
@@ -6083,25 +6261,7 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
 
-                    let data_handle = if token_desc != 0 {
-                        bus.read_long(token_desc + 4)
-                    } else {
-                        0
-                    };
-                    let data_ptr = if data_handle != 0 {
-                        bus.read_long(data_handle)
-                    } else {
-                        0
-                    };
-                    self.ae_events.remove(&token_desc);
-                    self.ae_descriptors.remove(&token_desc);
-                    if data_handle != 0 {
-                        self.ae_descriptor_backing.remove(&data_handle);
-                    }
-                    if data_ptr != 0 {
-                        self.ptr_to_handle.remove(&data_ptr);
-                    }
-                    write_null_aedesc(bus, token_desc);
+                    self.dispose_ae_descriptor_record(bus, token_desc);
                     let new_sp = sp + param_bytes;
                     bus.write_word(new_sp, 0);
                     cpu.write_reg(Register::A7, new_sp);
@@ -6294,22 +6454,8 @@ impl super::TrapDispatcher {
                         // null reply descriptor matches the no-reply
                         // path for a synthetic open-application event.
                         let event_desc = bus.alloc(8);
-                        let mut event_data = Vec::with_capacity(8);
-                        event_data.extend_from_slice(&oapp_class.to_be_bytes());
-                        event_data.extend_from_slice(&oapp_id.to_be_bytes());
-                        self.write_ae_descriptor_value(
-                            bus,
-                            event_desc,
-                            Self::ae_descriptor(AE_TYPE_APPLE_EVENT, event_data),
-                        );
-                        self.ae_events.insert(
-                            event_desc,
-                            SyntheticAppleEvent {
-                                event_class: oapp_class,
-                                event_id: oapp_id,
-                                params: HashMap::new(),
-                                items: Vec::new(),
-                            },
+                        self.write_synthetic_apple_event_descriptor(
+                            bus, event_desc, oapp_class, oapp_id,
                         );
                         let reply_desc = bus.alloc(8);
                         bus.write_long(reply_desc, AE_TYPE_NULL);
@@ -6370,8 +6516,20 @@ impl super::TrapDispatcher {
                 if routine == 23 && param_bytes == 26 {
                     let reply_desc = bus.read_long(sp + 18);
                     let event_desc = bus.read_long(sp + 22);
+                    let send_mode = bus.read_long(sp + 14);
                     if reply_desc != 0 {
-                        write_null_aedesc(bus, reply_desc);
+                        if (send_mode & AE_SEND_MODE_REPLY_MASK) == AE_SEND_MODE_WAIT_REPLY {
+                            self.write_synthetic_apple_event_descriptor(
+                                bus,
+                                reply_desc,
+                                AE_TYPE_APPLE_EVENT,
+                                AE_EVENT_ID_ANSWER,
+                            );
+                        } else {
+                            self.ae_events.remove(&reply_desc);
+                            self.ae_descriptors.remove(&reply_desc);
+                            write_null_aedesc(bus, reply_desc);
+                        }
                     }
                     if let Some(event) = self.ae_events.get(&event_desc).cloned() {
                         if let Some((handler_ptr, refcon)) =
@@ -13785,9 +13943,10 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
         quicktime_movie_metadata, AE_ERR_ACCESSOR_NOT_FOUND, AE_ERR_DESC_NOT_FOUND,
-        AE_ERR_HANDLER_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC, AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER,
-        AE_KEY_COUNT_PROC, AE_KEY_DESIRED_CLASS, AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR,
-        AE_KEY_KEY_DATA, AE_KEY_KEY_FORM, AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION,
+        AE_ERR_HANDLER_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC, AE_EVENT_ID_ANSWER,
+        AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER, AE_KEY_COUNT_PROC, AE_KEY_DESIRED_CLASS,
+        AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR, AE_KEY_KEY_DATA, AE_KEY_KEY_FORM,
+        AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION, AE_SEND_MODE_WAIT_REPLY,
         AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_OBJECT_SPECIFIER, AE_TYPE_TYPE,
         AE_TYPE_WILDCARD,
     };
@@ -23247,6 +23406,92 @@ mod tests {
     }
 
     #[test]
+    fn pack8_private_object_support_hash_table_round_trip() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let table_out_ptr = 0x0030_0000u32;
+        let key_ptr = 0x0030_0010u32;
+        let value_ptr = 0x0030_0020u32;
+        let fetched_value_ptr = 0x0030_0030u32;
+        let desired_class = u32::from_be_bytes(*b"cwin");
+        let container_type = u32::from_be_bytes(*b"Toke");
+        let accessor_ptr = 0x0040_2222u32;
+        let accessor_refcon = 0x0102_0304u32;
+
+        cpu.write_reg(Register::D0, 0x092E);
+        bus.write_long(sp, table_out_ptr);
+        bus.write_word(sp + 4, 0); // system table flag, ignored by table allocation
+        bus.write_long(sp + 6, 0);
+        bus.write_long(sp + 10, 0x0008_0008); // 8-byte key, 8-byte value
+        bus.write_long(sp + 14, 16);
+        bus.write_word(sp + 18, 0xBEEF);
+        let create = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 18), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+
+        let table_handle = bus.read_long(table_out_ptr);
+        assert_ne!(table_handle, 0);
+        let table_data = bus.read_long(table_handle);
+        assert_ne!(table_data, 0);
+        assert_eq!(bus.get_alloc_size(table_data), Some(16));
+        assert_eq!(bus.read_long(table_data + 4), 16);
+        assert_eq!(bus.read_long(table_data + 8), 8);
+        assert_eq!(bus.read_long(table_data + 12), 8);
+        assert_eq!(disp.ptr_to_handle.get(&table_data), Some(&table_handle));
+
+        bus.write_long(key_ptr, desired_class);
+        bus.write_long(key_ptr + 4, container_type);
+        bus.write_long(value_ptr, accessor_ptr);
+        bus.write_long(value_ptr + 4, accessor_refcon);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0831);
+        bus.write_long(sp, value_ptr);
+        bus.write_long(sp + 4, key_ptr);
+        bus.write_long(sp + 8, 0);
+        bus.write_long(sp + 12, table_handle);
+        bus.write_word(sp + 16, 0xBEEF);
+        let insert = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(insert.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 16), 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0833);
+        bus.write_long(sp, fetched_value_ptr);
+        bus.write_long(sp + 4, key_ptr);
+        bus.write_long(sp + 8, 0);
+        bus.write_long(sp + 12, table_handle);
+        bus.write_word(sp + 16, 0xBEEF);
+        let get = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(get.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 16), 0);
+        assert_eq!(bus.read_long(fetched_value_ptr), accessor_ptr);
+        assert_eq!(bus.read_long(fetched_value_ptr + 4), accessor_refcon);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0632);
+        bus.write_long(sp, key_ptr);
+        bus.write_long(sp + 4, 0);
+        bus.write_long(sp + 8, table_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+        let remove = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(remove.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 12), 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0833);
+        bus.write_long(sp, fetched_value_ptr);
+        bus.write_long(sp + 4, key_ptr);
+        bus.write_long(sp + 8, 0);
+        bus.write_long(sp + 12, table_handle);
+        bus.write_word(sp + 16, 0xBEEF);
+        let missing = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(missing.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 16), AE_ERR_ACCESSOR_NOT_FOUND as u16);
+    }
+
+    #[test]
     fn pack8_descriptor_list_put_count_get_and_size_round_trip() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
@@ -23637,6 +23882,114 @@ mod tests {
     }
 
     #[test]
+    fn pack8_aesend_wait_reply_provides_reply_event_to_handler() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let scratch_sp = TEST_SP - 0x100;
+        let event_class = u32::from_be_bytes(*b"misc");
+        let event_id = u32::from_be_bytes(*b"slct");
+        let direct_object = u32::from_be_bytes(*b"----");
+        let handler_ptr = 0x0040_B000u32;
+        let event_desc = 0x0030_0000u32;
+        let reply_desc = 0x0030_0100u32;
+        let target_desc = 0x0030_0200u32;
+        let value_ptr = 0x0030_0300u32;
+        let out_data = 0x0030_0400u32;
+        let type_code_ptr = 0x0030_0500u32;
+        let actual_size_ptr = 0x0030_0600u32;
+        let return_pc = 0x00F0_1357u32;
+        let reply_value = 0x1234_5678u32;
+
+        cpu.write_reg(Register::D0, 0x091F); // AEInstallEventHandler
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, 0);
+        bus.write_long(sp + 6, handler_ptr);
+        bus.write_long(sp + 10, event_id);
+        bus.write_long(sp + 14, event_class);
+        bus.write_word(sp + 18, 0xBEEF);
+        let install = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(install.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0B14); // AECreateAppleEvent
+        bus.write_long(sp, event_desc);
+        bus.write_long(sp + 4, 0);
+        bus.write_word(sp + 8, 0xFFFF);
+        bus.write_long(sp + 10, target_desc);
+        bus.write_long(sp + 14, event_id);
+        bus.write_long(sp + 18, event_class);
+        bus.write_word(sp + 22, 0xBEEF);
+        let create = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::D0, 0x0D17); // AESend
+        bus.write_long(sp, 0); // filterProc
+        bus.write_long(sp + 4, 0); // idleProc
+        bus.write_long(sp + 8, 0xFFFF_FFFF); // kAEDefaultTimeout
+        bus.write_word(sp + 12, 0); // kAENormalPriority
+        bus.write_long(sp + 14, AE_SEND_MODE_WAIT_REPLY);
+        bus.write_long(sp + 18, reply_desc);
+        bus.write_long(sp + 22, event_desc);
+        bus.write_word(sp + 26, 0xBEEF);
+        let send = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(send.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::PC), handler_ptr);
+        assert_eq!(bus.read_long(reply_desc), AE_TYPE_APPLE_EVENT);
+        let reply_event = disp
+            .ae_events
+            .get(&reply_desc)
+            .expect("wait-reply AESend should provide a reply AppleEvent");
+        assert_eq!(reply_event.event_class, AE_TYPE_APPLE_EVENT);
+        assert_eq!(reply_event.event_id, AE_EVENT_ID_ANSWER);
+
+        bus.write_long(value_ptr, reply_value);
+        cpu.write_reg(Register::A7, scratch_sp);
+        cpu.write_reg(Register::D0, 0x0A0F); // AEPutParamPtr
+        bus.write_long(scratch_sp, 4);
+        bus.write_long(scratch_sp + 4, value_ptr);
+        bus.write_long(scratch_sp + 8, AE_TYPE_TYPE);
+        bus.write_long(scratch_sp + 12, direct_object);
+        bus.write_long(scratch_sp + 16, reply_desc);
+        bus.write_word(scratch_sp + 20, 0xBEEF);
+        let put = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(put.unwrap().is_ok());
+        assert_eq!(bus.read_word(scratch_sp + 20), 0);
+
+        let state = disp
+            .ae_call_state
+            .clone()
+            .expect("expected in-flight AESend handler call");
+        bus.write_word(state.expected_sp_after_rtd, 0);
+        cpu.write_reg(Register::A7, state.expected_sp_after_rtd);
+        cpu.write_reg(Register::D0, 0xFEFE);
+        let trampoline = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(trampoline.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        cpu.write_reg(Register::A7, scratch_sp);
+        cpu.write_reg(Register::D0, 0x0E11); // AEGetParamPtr
+        bus.write_long(scratch_sp, actual_size_ptr);
+        bus.write_long(scratch_sp + 4, 4);
+        bus.write_long(scratch_sp + 8, out_data);
+        bus.write_long(scratch_sp + 12, type_code_ptr);
+        bus.write_long(scratch_sp + 16, AE_TYPE_WILDCARD);
+        bus.write_long(scratch_sp + 20, direct_object);
+        bus.write_long(scratch_sp + 24, reply_desc);
+        bus.write_word(scratch_sp + 28, 0xBEEF);
+        let get = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(get.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(scratch_sp + 28), 0);
+        assert_eq!(bus.read_long(type_code_ptr), AE_TYPE_TYPE);
+        assert_eq!(bus.read_long(actual_size_ptr), 4);
+        assert_eq!(bus.read_long(out_data), reply_value);
+    }
+
+    #[test]
     fn pack8_aesend_nested_handler_restores_outer_ae_call_state() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
@@ -23845,6 +24198,74 @@ mod tests {
         bus.write_word(sp + 20, 0xBEEF);
         let put = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
         assert!(put.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0E11); // AEGetKeyPtr
+        bus.write_long(sp, actual_size_ptr);
+        bus.write_long(sp + 4, 4);
+        bus.write_long(sp + 8, out_data);
+        bus.write_long(sp + 12, type_code_ptr);
+        bus.write_long(sp + 16, AE_TYPE_WILDCARD);
+        bus.write_long(sp + 20, AE_KEY_DESIRED_CLASS);
+        bus.write_long(sp + 24, record_desc);
+        bus.write_word(sp + 28, 0xBEEF);
+        let get = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(get.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 28), 0);
+        assert_eq!(bus.read_long(type_code_ptr), AE_TYPE_TYPE);
+        assert_eq!(bus.read_long(actual_size_ptr), 4);
+        assert_eq!(bus.read_long(out_data), desired_class);
+    }
+
+    #[test]
+    fn pack8_aedisposedesc_keeps_shared_record_backing_for_value_copies() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let record_desc = 0x0030_0000u32;
+        let record_copy = 0x0030_0100u32;
+        let value_ptr = 0x0030_0200u32;
+        let type_code_ptr = 0x0030_0300u32;
+        let out_data = 0x0030_0400u32;
+        let actual_size_ptr = 0x0030_0500u32;
+        let desired_class = u32::from_be_bytes(*b"cwin");
+
+        cpu.write_reg(Register::D0, 0x0706); // AECreateList(..., isRecord=TRUE)
+        bus.write_long(sp, record_desc);
+        bus.write_word(sp + 4, 0x0100);
+        bus.write_long(sp + 6, 0);
+        bus.write_long(sp + 10, 0);
+        bus.write_word(sp + 14, 0xBEEF);
+        let create = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+
+        let data_handle = bus.read_long(record_desc + 4);
+        bus.write_long(record_copy, bus.read_long(record_desc));
+        bus.write_long(record_copy + 4, data_handle);
+        bus.write_long(value_ptr, desired_class);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0A0F); // AEPutKeyPtr
+        bus.write_long(sp, 4);
+        bus.write_long(sp + 4, value_ptr);
+        bus.write_long(sp + 8, AE_TYPE_TYPE);
+        bus.write_long(sp + 12, AE_KEY_DESIRED_CLASS);
+        bus.write_long(sp + 16, record_copy);
+        bus.write_word(sp + 20, 0xBEEF);
+        let put = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(put.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0204); // AEDisposeDesc
+        bus.write_long(sp, record_copy);
+        bus.write_word(sp + 4, 0xBEEF);
+        let dispose = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(dispose.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(bus.read_long(record_copy), AE_TYPE_NULL);
+        assert_eq!(bus.read_long(record_copy + 4), 0);
+        assert_eq!(bus.read_long(record_desc + 4), data_handle);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0E11); // AEGetKeyPtr

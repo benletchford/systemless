@@ -741,6 +741,13 @@ pub(crate) struct AeObjectAccessor {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct AePrivateHashTable {
+    pub key_size: usize,
+    pub value_size: usize,
+    pub entries: HashMap<Vec<u8>, Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct AeResolveLevel {
     pub desired_class: u32,
     pub key_form: u32,
@@ -987,6 +994,9 @@ pub struct TrapDispatcher {
     /// AEInstallObjectAccessor. Key is `(isSysHandler, desiredClass,
     /// containerType)`.
     pub(crate) ae_object_accessors: HashMap<(bool, u32, u32), AeObjectAccessor>,
+    /// Private Object Support Library hash tables created through Pack8
+    /// selector $092E and accessed through selectors $0831/$0833/$0632.
+    pub(crate) ae_private_hash_tables: HashMap<u32, AePrivateHashTable>,
     /// Special AppleEvent handlers registered through
     /// AEInstallSpecialHandler or AESetObjectCallbacks. Key is
     /// `(isSysHandler, functionClass)`.
@@ -2506,6 +2516,7 @@ impl TrapDispatcher {
             ae_descriptors: HashMap::new(),
             ae_descriptor_backing: HashMap::new(),
             ae_object_accessors: HashMap::new(),
+            ae_private_hash_tables: HashMap::new(),
             ae_special_handlers: HashMap::new(),
             ae_coercion_handlers: HashMap::new(),
             gestalt_registry: HashMap::new(),
