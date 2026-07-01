@@ -7343,31 +7343,42 @@ impl super::TrapDispatcher {
             return entries.get(fdir_index as usize - 1).cloned();
         }
 
-        if !filename.is_empty() {
-            if let Some(path) = self.find_vfs_directory_in_directory(dir_id, filename) {
-                let directory = self.vfs_directories.get(&path)?;
-                return Some(super::dispatch::VfsCatalogEntry {
-                    path: path.clone(),
-                    name: directory.name.clone(),
-                    is_directory: true,
-                });
-            }
-            if let Some(path) = self.find_vfs_file_in_directory(dir_id, filename) {
-                self.vfs_file_metadata(&path)?;
-                return Some(super::dispatch::VfsCatalogEntry {
-                    path: path.clone(),
-                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
-                    is_directory: false,
-                });
-            }
-            if let Some(path) = self.find_vfs_rsrc_file_in_directory(dir_id, filename) {
-                self.vfs_file_metadata(&path)?;
-                return Some(super::dispatch::VfsCatalogEntry {
-                    path: path.clone(),
-                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
-                    is_directory: false,
-                });
-            }
+        // PBGetCatInfo with ioFDirIndex = 0 selects ioNamePtr. System 7.5.3
+        // treats an empty name as the directory selected by ioDirID rather than
+        // as a missing child. Files 1992, 2-190 to 2-192.
+        if filename.is_empty() {
+            let directory = self.directory_entry_for_id(dir_id)?;
+            let path = self.directory_path_for_id(dir_id)?.to_string();
+            return Some(super::dispatch::VfsCatalogEntry {
+                path,
+                name: directory.name.clone(),
+                is_directory: true,
+            });
+        }
+
+        if let Some(path) = self.find_vfs_directory_in_directory(dir_id, filename) {
+            let directory = self.vfs_directories.get(&path)?;
+            return Some(super::dispatch::VfsCatalogEntry {
+                path: path.clone(),
+                name: directory.name.clone(),
+                is_directory: true,
+            });
+        }
+        if let Some(path) = self.find_vfs_file_in_directory(dir_id, filename) {
+            self.vfs_file_metadata(&path)?;
+            return Some(super::dispatch::VfsCatalogEntry {
+                path: path.clone(),
+                name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                is_directory: false,
+            });
+        }
+        if let Some(path) = self.find_vfs_rsrc_file_in_directory(dir_id, filename) {
+            self.vfs_file_metadata(&path)?;
+            return Some(super::dispatch::VfsCatalogEntry {
+                path: path.clone(),
+                name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                is_directory: false,
+            });
         }
 
         None
@@ -13249,6 +13260,39 @@ mod tests {
         assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
         assert_eq!(bus.read_long(pb + 48), pilots_dir_id);
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbgetcatinfo_empty_name_returns_directory_itself() {
+        // Some legacy apps probe the current directory with ioFDirIndex = 0
+        // and an empty ioNamePtr. Treat the empty name as the directory
+        // selected by ioDirID rather than a missing child.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"");
+        bus.write_word(pb + 16, 0x3FFF); // ioResult poison
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0); // ioFDirIndex
+        bus.write_long(pb + 48, app_dir_id);
+        cpu.write_reg(Register::D0, 9); // HFSDispatch selector: PBGetCatInfo
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Game Folder".to_vec());
+        assert_eq!(
+            bus.read_byte(pb + 30),
+            0x10,
+            "PBGetCatInfo returned a directory"
+        );
+        assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"fold"));
+        assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
+        assert_eq!(bus.read_long(pb + 48), app_dir_id);
+        assert_eq!(bus.read_long(pb + 100), 2);
     }
 
     #[test]
