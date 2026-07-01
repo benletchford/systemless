@@ -164,6 +164,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
         SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
 
     let mut executable_entry: Option<ExecutableCandidate> = None;
+    let mut skipped_disk_image_errors = Vec::new();
 
     for entry in &archive.entries {
         if entry.is_folder {
@@ -185,12 +186,14 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             entry.creator,
             entry.finder_flags,
         )?;
+        skipped_disk_image_errors.extend(payload.skipped_disk_image_errors.iter().cloned());
         insert_payload_into_vfs(runner, payload, &mut executable_entry);
     }
 
     log_vfs(runner);
 
-    let executable = executable_entry.ok_or("No executable found in archive")?;
+    let executable =
+        executable_entry.ok_or_else(|| no_executable_archive_error(&skipped_disk_image_errors))?;
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
@@ -249,6 +252,13 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
     runner
         .load_app(&fork)
         .ok_or_else(|| "Failed to load app".to_string())
+}
+
+fn no_executable_archive_error(skipped_disk_image_errors: &[String]) -> String {
+    skipped_disk_image_errors.first().map_or_else(
+        || "No executable found in archive".to_string(),
+        |err| format!("No executable found in archive; skipped nested disk image: {err}"),
+    )
 }
 
 fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
@@ -643,6 +653,7 @@ fn insert_forks_into_vfs(
 struct Payload {
     dirs: Vec<String>,
     files: Vec<PayloadFile>,
+    skipped_disk_image_errors: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -985,35 +996,53 @@ fn payload_from_forks(
         return Ok(Payload {
             dirs: Vec::new(),
             files: vec![file],
+            skipped_disk_image_errors: Vec::new(),
         });
     }
 
-    if let Some(image) = crate::disk_image::extract_dc42_or_hfs(&data)
-        .map_err(|e| format!("Disk image {name}: {e}"))?
-    {
-        if crate::runner::trace_load_enabled() {
-            eprintln!(
-                "[LOAD] Extracting HFS disk image \"{}\" from data fork: volume \"{}\", {} files",
-                name,
-                image.volume_name,
-                image.files.len()
-            );
+    let mut skipped_disk_image_errors = Vec::new();
+    match crate::disk_image::extract_dc42_or_hfs(&data) {
+        Ok(Some(image)) => {
+            if crate::runner::trace_load_enabled() {
+                eprintln!(
+                    "[LOAD] Extracting HFS disk image \"{}\" from data fork: volume \"{}\", {} files",
+                    name,
+                    image.volume_name,
+                    image.files.len()
+                );
+            }
+            return payload_from_disk_image(image);
         }
-        return payload_from_disk_image(image);
+        Ok(None) => {}
+        Err(err) => {
+            let err = format!("Disk image {name} data fork: {err}");
+            if crate::runner::trace_load_enabled() {
+                eprintln!("[LOAD] Skipping nested disk image: {err}");
+            }
+            skipped_disk_image_errors.push(err);
+        }
     }
 
-    if let Some(image) = crate::disk_image::extract_dc42_or_hfs(&rsrc)
-        .map_err(|e| format!("Disk image {name}: {e}"))?
-    {
-        if crate::runner::trace_load_enabled() {
-            eprintln!(
-                "[LOAD] Extracting HFS disk image \"{}\" from resource fork: volume \"{}\", {} files",
-                name,
-                image.volume_name,
-                image.files.len()
-            );
+    match crate::disk_image::extract_dc42_or_hfs(&rsrc) {
+        Ok(Some(image)) => {
+            if crate::runner::trace_load_enabled() {
+                eprintln!(
+                    "[LOAD] Extracting HFS disk image \"{}\" from resource fork: volume \"{}\", {} files",
+                    name,
+                    image.volume_name,
+                    image.files.len()
+                );
+            }
+            return payload_from_disk_image(image);
         }
-        return payload_from_disk_image(image);
+        Ok(None) => {}
+        Err(err) => {
+            let err = format!("Disk image {name} resource fork: {err}");
+            if crate::runner::trace_load_enabled() {
+                eprintln!("[LOAD] Skipping nested disk image: {err}");
+            }
+            skipped_disk_image_errors.push(err);
+        }
     }
 
     Ok(Payload {
@@ -1026,6 +1055,7 @@ fn payload_from_forks(
             creator,
             finder_flags,
         }],
+        skipped_disk_image_errors,
     })
 }
 
@@ -1054,6 +1084,7 @@ fn payload_from_disk_image(image: crate::disk_image::DiskImageContents) -> Resul
     Ok(Payload {
         dirs: image.dirs,
         files,
+        skipped_disk_image_errors: Vec::new(),
     })
 }
 
@@ -1399,6 +1430,12 @@ mod tests {
         bytes
     }
 
+    fn minimal_raw_filesystem_image(signature: u16) -> Vec<u8> {
+        let mut bytes = vec![0; 2048];
+        bytes[1024..1026].copy_from_slice(&signature.to_be_bytes());
+        bytes
+    }
+
     #[test]
     fn web_pack_loader_is_opt_in_for_kpk_payloads() {
         let mut runner = new_runner();
@@ -1511,6 +1548,43 @@ mod tests {
         assert_eq!(
             runner.dispatcher().vfs.get("Game/Plug-Ins/Keep"),
             Some(&kept_data)
+        );
+    }
+
+    #[test]
+    fn unsupported_nested_disk_image_is_preserved_as_payload_file() {
+        let image = minimal_raw_filesystem_image(0x482B);
+        let payload = payload_from_forks(
+            "Extras/Unsupported.img",
+            image.clone(),
+            Vec::new(),
+            *b"dImg",
+            *b"ddsk",
+            0,
+        )
+        .expect("unsupported nested image should not abort archive payload loading");
+
+        assert!(payload.dirs.is_empty());
+        assert_eq!(payload.files.len(), 1);
+        assert_eq!(payload.files[0].name, "Extras/Unsupported.img");
+        assert_eq!(payload.files[0].data, image);
+        assert_eq!(payload.files[0].file_type, *b"dImg");
+        assert_eq!(payload.files[0].creator, *b"ddsk");
+        assert_eq!(payload.skipped_disk_image_errors.len(), 1);
+        assert!(
+            payload.skipped_disk_image_errors[0].contains("HFS+"),
+            "error should preserve the unsupported filesystem detail"
+        );
+    }
+
+    #[test]
+    fn no_executable_archive_error_mentions_skipped_nested_disk_image() {
+        let errors =
+            vec!["Disk image Extras/Unsupported.img data fork: Image is HFS+, not HFS".to_string()];
+
+        assert_eq!(
+            no_executable_archive_error(&errors),
+            "No executable found in archive; skipped nested disk image: Disk image Extras/Unsupported.img data fork: Image is HFS+, not HFS"
         );
     }
 
