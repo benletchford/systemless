@@ -33,6 +33,7 @@ const TEXT_STYLE_OUTLINE: u8 = 0x08;
 const TEXT_STYLE_SHADOW: u8 = 0x10;
 const TEXT_STYLE_CONDENSE: u8 = 0x20;
 const TEXT_STYLE_EXTEND: u8 = 0x40;
+const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
 
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
@@ -967,6 +968,172 @@ impl super::TrapDispatcher {
                     bit != 0,
                 );
             }
+        }
+    }
+
+    fn fb_pixel_is_logical_black(
+        bus: &MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+    ) -> bool {
+        if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
+            return false;
+        }
+        if pixel_size == 8 {
+            let addr = screen_base + (y as u32) * row_bytes + (x as u32);
+            bus.read_byte(addr) == Self::logical_black_pixel_index(bus)
+        } else {
+            let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
+            let bit = 7 - (x as u32 % 8);
+            let addr = screen_base + byte_offset;
+            (bus.read_byte(addr) & (1 << bit)) != 0
+        }
+    }
+
+    fn visible_window_count(&self, bus: &MacMemoryBus) -> usize {
+        let mut count = 0usize;
+        let mut saw = HashSet::new();
+        for &window in &self.window_list {
+            if window != 0 && saw.insert(window) && bus.read_byte(window + 110u32) != 0 {
+                count += 1;
+            }
+        }
+        if self.front_window != 0
+            && saw.insert(self.front_window)
+            && bus.read_byte(self.front_window + 110u32) != 0
+        {
+            count += 1;
+        }
+        count
+    }
+
+    fn front_window_is_dialog_like(&self) -> bool {
+        self.front_window != 0
+            && (self.dialog_items.contains_key(&self.front_window)
+                || matches!(
+                    self.window_proc_ids
+                        .get(&self.front_window)
+                        .copied()
+                        .unwrap_or(self.window_proc_id),
+                    1 | 2 | 3 | 5
+                ))
+    }
+
+    fn exposed_background_samples_are_black(
+        &self,
+        bus: &MacMemoryBus,
+        excluded_rect: (i16, i16, i16, i16),
+    ) -> bool {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let top = excluded_rect.0.max(0).min(screen_height);
+        let left = excluded_rect.1.max(0).min(screen_width);
+        let bottom = excluded_rect.2.max(0).min(screen_height);
+        let right = excluded_rect.3.max(0).min(screen_width);
+        let rects = [
+            (0, 0, top, screen_width),
+            (bottom, 0, screen_height, screen_width),
+            (top, 0, bottom, left),
+            (top, right, bottom, screen_width),
+        ];
+
+        let mut sampled = false;
+        for (rt, rl, rb, rr) in rects {
+            if rt >= rb || rl >= rr {
+                continue;
+            }
+            let mut y = rt;
+            while y < rb {
+                let mut x = rl;
+                while x < rr {
+                    sampled = true;
+                    let sample_points = [
+                        (x, y),
+                        (x.saturating_add(1).min(rr - 1), y),
+                        (x, y.saturating_add(1).min(rb - 1)),
+                    ];
+                    for (sample_x, sample_y) in sample_points {
+                        if !Self::fb_pixel_is_logical_black(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            sample_x,
+                            sample_y,
+                        ) {
+                            return false;
+                        }
+                    }
+                    x = x.saturating_add(16);
+                }
+                y = y.saturating_add(16);
+            }
+        }
+        sampled
+    }
+
+    fn fill_desktop_pattern_outside_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        excluded_rect: (i16, i16, i16, i16),
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let top = excluded_rect.0.max(0).min(screen_height);
+        let left = excluded_rect.1.max(0).min(screen_width);
+        let bottom = excluded_rect.2.max(0).min(screen_height);
+        let right = excluded_rect.3.max(0).min(screen_width);
+        let rects = [
+            (0, 0, top, screen_width),
+            (bottom, 0, screen_height, screen_width),
+            (top, 0, bottom, left),
+            (top, right, bottom, screen_width),
+        ];
+
+        for (rt, rl, rb, rr) in rects {
+            Self::fb_fill_pattern_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                rt,
+                rl,
+                rb,
+                rr,
+                STANDARD_GRAY_PATTERN,
+            );
+        }
+    }
+
+    fn restore_kiosk_dialog_desktop_background(&self, bus: &mut MacMemoryBus) {
+        if !self.menu_bar_hidden
+            || self.fullscreen_locked
+            || !self.front_window_is_dialog_like()
+            || self.visible_window_count(bus) != 1
+        {
+            return;
+        }
+
+        let bounds = self
+            .window_structure_rect(bus, self.front_window)
+            .unwrap_or(self.window_bounds);
+        if self.exposed_background_samples_are_black(bus, bounds) {
+            // SetDeskCPat defines the desktop as the Window Manager's
+            // patterned background. In kiosk mode, preserve black full-screen
+            // game surfaces, but restore the standard desktop pattern behind
+            // single floating dialogs whose exposed background is still the
+            // startup black stage.
+            // Inside Macintosh Volume V, V-210
+            self.fill_desktop_pattern_outside_rect(bus, bounds);
         }
     }
 
@@ -3474,6 +3641,8 @@ impl super::TrapDispatcher {
             self.fullscreen_locked = true;
         }
 
+        self.restore_kiosk_dialog_desktop_background(bus);
+
         if !self.menus.is_empty() && !self.fullscreen_locked && !self.menu_bar_hidden {
             self.draw_menu_bar_to_fb(bus);
         }
@@ -3737,6 +3906,7 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod redraw_chrome_tests {
+    use super::super::dispatch::DialogItem;
     use super::super::test_helpers::setup_with_port;
     use super::super::TrapDispatcher;
     use crate::memory::MemoryBus;
@@ -4132,6 +4302,72 @@ mod redraw_chrome_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn redraw_chrome_restores_desktop_pattern_behind_single_kiosk_dialog() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0xFF);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.menu_bar_hidden = true;
+        disp.fullscreen_locked = false;
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (100, 180, 208, 620);
+        disp.window_proc_id = 5;
+        disp.window_proc_ids.insert(PORT_PTR, 5);
+        disp.dialog_items
+            .insert(PORT_PTR, vec![DialogItem::default()]);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base),
+            0xFF,
+            "standard gray pattern starts with a black pixel"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 1),
+            0x00,
+            "standard gray pattern should add white desktop pixels"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 120 * row_bytes + 200),
+            0xFF,
+            "dialog bounds must not be overwritten by the desktop fill"
+        );
+        assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
+    }
+
+    #[test]
+    fn redraw_chrome_keeps_existing_content_behind_kiosk_dialog() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, _screen_w, screen_h, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0xFF);
+        bus.write_byte(screen_base, 0x00);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.menu_bar_hidden = true;
+        disp.fullscreen_locked = false;
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (100, 180, 208, 620);
+        disp.window_proc_id = 5;
+        disp.window_proc_ids.insert(PORT_PTR, 5);
+        disp.dialog_items
+            .insert(PORT_PTR, vec![DialogItem::default()]);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 16),
+            0xFF,
+            "nonblack exposed content should suppress the desktop-pattern fill"
+        );
     }
 
     /// Pin directive #3 from the task brief: "stays hidden even when
