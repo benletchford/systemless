@@ -746,7 +746,7 @@ impl super::TrapDispatcher {
         Self::best_luma_pixel_index(bus, ctab, true).unwrap_or(0)
     }
 
-    fn logical_black_pixel_index(bus: &MacMemoryBus) -> u8 {
+    pub(crate) fn logical_black_pixel_index(bus: &MacMemoryBus) -> u8 {
         let Some(ctab) = Self::active_gdevice_ctab(bus) else {
             return 255;
         };

@@ -4955,6 +4955,20 @@ impl super::TrapDispatcher {
         self.dialog_saved_pixels.insert(dialog_ptr, background);
     }
 
+    fn dialog_saved_white_like_count(&self, saved: &[u8]) -> usize {
+        let (_, _, _, _, pixel_size) = self.get_screen_params();
+        match pixel_size {
+            8 => saved
+                .iter()
+                .filter(|&&idx| {
+                    let [r, g, b] = self.device_clut[idx as usize];
+                    r >= 0xEEEE && g >= 0xEEEE && b >= 0xEEEE
+                })
+                .count(),
+            _ => saved.iter().filter(|&&byte| byte == 0).count(),
+        }
+    }
+
     pub(crate) fn ensure_dialog_background_saved_for_screen_port(
         &mut self,
         bus: &MacMemoryBus,
@@ -8709,11 +8723,32 @@ impl super::TrapDispatcher {
         dispose_storage: bool,
     ) {
         let was_front = self.front_window == dialog_ptr;
-        let exposed_rect = self.window_bounds;
+        let retained_visible_bounds = self
+            .dialog_visible_snapshots
+            .get(&dialog_ptr)
+            .map(|snapshot| snapshot.bounds);
+        let dialog_record_bounds = if dialog_ptr != 0 && self.dialog_items.contains_key(&dialog_ptr)
+        {
+            Self::dialog_screen_bounds(bus, dialog_ptr)
+        } else {
+            self.window_bounds
+        };
+        let exposed_rect = if was_front {
+            self.window_bounds
+        } else {
+            retained_visible_bounds.unwrap_or(dialog_record_bounds)
+        };
         let initial_draw_deferred = self.dialog_initial_draw_deferred.remove(&dialog_ptr);
+        let retained_saved_mostly_white = self
+            .dialog_saved_pixels
+            .get(&dialog_ptr)
+            .is_some_and(|saved| self.saved_pixels_are_mostly_logical_white(saved));
+        let mut restored_mostly_white_saved_under = false;
 
         if was_front && !initial_draw_deferred {
             if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
+                restored_mostly_white_saved_under =
+                    self.saved_pixels_are_mostly_logical_white(&saved);
                 self.restore_dialog_pixels(bus, self.window_bounds, &saved);
             }
         } else {
@@ -8722,6 +8757,16 @@ impl super::TrapDispatcher {
 
         self.dialog_visible_snapshots.remove(&dialog_ptr);
         self.dialog_modal_entered.remove(&dialog_ptr);
+        if !was_front && retained_saved_mostly_white && self.screen_is_hidden_menu_game_surface(bus)
+        {
+            // IM:I I-283/I-425 close semantics expose and invalidate the
+            // window behind. Fullscreen games sometimes create a modal
+            // dialog before their backing surface contains meaningful pixels;
+            // presenting that blank saved-under as content produces a white
+            // dialog-shaped flash until the queued repaint catches up.
+            self.erase_dialog_exposure_to_logical_black(bus, exposed_rect);
+            self.erase_front_window_port_exposure_to_logical_black(bus, exposed_rect);
+        }
         if self.pending_modal_button_dispose_dialog == Some(dialog_ptr) {
             self.pending_modal_button_dispose_dialog = None;
         }
@@ -8751,6 +8796,10 @@ impl super::TrapDispatcher {
                 self.window_title = prev_title;
                 if prev_window != 0 {
                     bus.write_byte(prev_window + 111, 0xFF);
+                    if self.window_visible(bus, prev_window) {
+                        self.blit_window_to_screen(bus);
+                        self.blit_large_manual_cport_to_screen(bus);
+                    }
                     if !self.event_queue.iter().any(|event| {
                         event.what == 8
                             && event.message == prev_window
@@ -8775,7 +8824,137 @@ impl super::TrapDispatcher {
                     self.invalidate_window_rect(bus, prev_window, exposed_local);
                     self.queue_window_update_event(prev_window);
                 }
+                let should_erase_blank_exposure = restored_mostly_white_saved_under
+                    && if prev_window != 0 {
+                        self.promoted_window_is_fullscreen_game_surface(bus, prev_bounds)
+                    } else {
+                        self.screen_is_hidden_menu_game_surface(bus)
+                    };
+                if should_erase_blank_exposure {
+                    // Same fullscreen blank-saved-under guard as the retained
+                    // non-front path above; the app's update event remains
+                    // queued, so this is only the interim exposed surface.
+                    self.erase_dialog_exposure_to_logical_black(bus, exposed_rect);
+                    self.erase_front_window_port_exposure_to_logical_black(bus, exposed_rect);
+                }
             }
+        }
+    }
+
+    fn saved_pixels_are_mostly_logical_white(&self, saved: &[u8]) -> bool {
+        let (_, _, _, _, pixel_size) = self.get_screen_params();
+        pixel_size == 8
+            && !saved.is_empty()
+            && self
+                .dialog_saved_white_like_count(saved)
+                .saturating_mul(100)
+                >= saved.len().saturating_mul(80)
+    }
+
+    fn promoted_window_is_fullscreen_game_surface(
+        &self,
+        bus: &MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+    ) -> bool {
+        let (_, _, screen_w, screen_h, _) = self.get_screen_params();
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        bounds.0 <= 0
+            && bounds.1 <= 0
+            && bounds.2 >= screen_h
+            && bounds.3 >= screen_w
+            && (self.menu_bar_hidden || self.fullscreen_locked || menu_bar_height == 0)
+    }
+
+    fn screen_is_hidden_menu_game_surface(&self, bus: &MacMemoryBus) -> bool {
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        self.menu_bar_hidden || self.fullscreen_locked || menu_bar_height == 0
+    }
+
+    fn erase_dialog_exposure_to_logical_black(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (top, left, bottom, right) = Self::dialog_saved_pixel_rect(bounds);
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            true,
+        );
+    }
+
+    fn erase_front_window_port_exposure_to_logical_black(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+    ) {
+        let port = self.front_window;
+        if port == 0 {
+            return;
+        }
+        let port_version = bus.read_word(port + 6);
+        let (base, row_bytes, pixel_size, port_top, port_left, port_bottom, port_right) =
+            if (port_version & 0xC000) == 0xC000 {
+                let pm_handle = bus.read_long(port + 2);
+                if pm_handle == 0 {
+                    return;
+                }
+                let pm_ptr = bus.read_long(pm_handle);
+                if pm_ptr == 0 {
+                    return;
+                }
+                (
+                    bus.read_long(pm_ptr) & 0x3FFF_FFFF,
+                    (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
+                    bus.read_word(pm_ptr + 32),
+                    bus.read_word(pm_ptr + 6) as i16,
+                    bus.read_word(pm_ptr + 8) as i16,
+                    bus.read_word(pm_ptr + 10) as i16,
+                    bus.read_word(pm_ptr + 12) as i16,
+                )
+            } else {
+                (
+                    bus.read_long(port + 2),
+                    (bus.read_word(port + 6) & 0x3FFF) as u32,
+                    1,
+                    bus.read_word(port + 8) as i16,
+                    bus.read_word(port + 10) as i16,
+                    bus.read_word(port + 12) as i16,
+                    bus.read_word(port + 14) as i16,
+                )
+            };
+        if base == 0 || base == self.screen_mode.0 || pixel_size != 8 || row_bytes == 0 {
+            return;
+        }
+
+        let (top, left, bottom, right) = Self::dialog_saved_pixel_rect(bounds);
+        let top = top.max(port_top);
+        let left = left.max(port_left);
+        let bottom = bottom.min(port_bottom);
+        let right = right.min(port_right);
+        if top >= bottom || left >= right {
+            return;
+        }
+        let fill = Self::logical_black_pixel_index(bus);
+        let width = (right - left) as usize;
+        let row = vec![fill; width];
+        for y in top..bottom {
+            let dy = (y - port_top) as u32;
+            let dx = (left - port_left) as u32;
+            if dx >= row_bytes || width as u32 > row_bytes.saturating_sub(dx) {
+                continue;
+            }
+            bus.write_bytes(base + dy * row_bytes + dx, &row);
         }
     }
 
