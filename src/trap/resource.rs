@@ -142,6 +142,7 @@ const GESTALT_UNDEF_SELECTOR_ERR: u32 = 0xFFFF_EA51;
 /// Gestalt Manager (built-in or previously installed).
 /// Inside Macintosh: Operating System Utilities 1994, 1-34.
 const GESTALT_DUP_SELECTOR_ERR: u32 = 0xFFFF_EA50;
+const GESTALT_68040_LOGICAL_PAGE_SIZE_BYTES: u32 = 4096;
 
 /// Closed list of `Gestalt` selectors recognised by Systemless's built-in
 /// query handler. Kept in sync with the match arms in the `(false,
@@ -165,6 +166,8 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"qd  "
             | b"qdrw"
             | b"ram "
+            | b"lram"
+            | b"pgsz"
             | b"fpu "
             | b"mmu "
             | b"snd "
@@ -3255,9 +3258,27 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A0, 0x000F);
                         cpu.write_reg(Register::D0, 0);
                     }
-                    // gestaltPhysicalRAMSize ('ram ') -> 32MB
+                    // gestaltPhysicalRAMSize ('ram ') -> emulated physical RAM
                     b"ram " => {
                         cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltLogicalRAMSize ('lram') -> logical memory.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-19: when virtual memory is not installed, this is
+                    // the same value as gestaltPhysicalRAMSize.
+                    b"lram" => {
+                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltLogicalPageSize ('pgsz') -> logical page size.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-19: defined for MC68010/020/030/040 systems and
+                    // undefined for MC68000-only machines. Systemless exposes
+                    // a 68040 profile, so report the page granularity used by
+                    // the profile's flat logical address space.
+                    b"pgsz" => {
+                        cpu.write_reg(Register::A0, GESTALT_68040_LOGICAL_PAGE_SIZE_BYTES);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltFPUType ('fpu ') -> 68040 FPU
@@ -7237,6 +7258,14 @@ impl super::TrapDispatcher {
                 });
             }
             if let Some(path) = self.find_vfs_file_in_directory(dir_id, filename) {
+                self.vfs_file_metadata(&path)?;
+                return Some(super::dispatch::VfsCatalogEntry {
+                    path: path.clone(),
+                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                    is_directory: false,
+                });
+            }
+            if let Some(path) = self.find_vfs_rsrc_file_in_directory(dir_id, filename) {
                 self.vfs_file_metadata(&path)?;
                 return Some(super::dispatch::VfsCatalogEntry {
                     path: path.clone(),
@@ -11860,6 +11889,26 @@ mod tests {
     }
 
     #[test]
+    fn gestalt_logical_memory_selectors_match_68040_profile() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"lram"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            crate::machine_profile::ORACLE_MACHINE_PROFILE.ram_size_bytes
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"pgsz"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 4096);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
     fn gestalt_display_manager_selectors_match_basilisk753() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -12983,6 +13032,43 @@ mod tests {
         assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"fold"));
         assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
         assert_eq!(bus.read_long(pb + 48), pilots_dir_id);
+        assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbgetcatinfo_finds_resource_only_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+        disp.vfs_rsrc.insert(
+            "Game Folder/Resource Data".to_string(),
+            vec![0xCA, 0xFE, 0xBA, 0xBE],
+        );
+        disp.set_vfs_entry_metadata("Game Folder/Resource Data", *b"rsrc", *b"GAME", 0x0040);
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"Resource Data");
+        bus.write_word(pb + 16, 0x3FFF); // ioResult poison
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0); // ioFDirIndex
+        bus.write_long(pb + 48, app_dir_id);
+        cpu.write_reg(Register::D0, 9); // HFSDispatch selector: PBGetCatInfo
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Resource Data".to_vec());
+        assert_eq!(bus.read_byte(pb + 30), 0, "PBGetCatInfo returned a file");
+        assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"rsrc"));
+        assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"GAME"));
+        assert_eq!(bus.read_word(pb + 40), 0x0040);
+        assert!(
+            bus.read_long(pb + 48) >= 32,
+            "ioDirID should become a file ID"
+        );
+        assert_eq!(bus.read_long(pb + 54), 0, "data fork length");
+        assert_eq!(bus.read_long(pb + 64), 4, "resource fork length");
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
     }
 
