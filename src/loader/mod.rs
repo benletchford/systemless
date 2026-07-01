@@ -170,9 +170,152 @@ impl CodeSegmentHeader {
     }
 }
 
+/// Full header used by MPW far-model `CODE` resources.
+///
+/// Mac OS Runtime Architectures describes the far header as carrying
+/// relocation stream offsets for A5-relative and PC-relative longwords.
+/// The streams encode deltas in words; the Segment Manager applies them
+/// after loading the segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MpwFarSegmentHeader {
+    pub near_entry_start_a5_offset: u32,
+    pub near_entry_count: u32,
+    pub far_entry_start_a5_offset: u32,
+    pub far_entry_count: u32,
+    pub a5_relocation_data_offset: u32,
+    pub current_a5: u32,
+    pub pc_relocation_data_offset: u32,
+    pub load_address: u32,
+}
+
+impl MpwFarSegmentHeader {
+    pub const SIZE: usize = 40;
+    pub const CURRENT_A5_OFFSET: u32 = 24;
+    pub const LOAD_ADDRESS_OFFSET: u32 = 32;
+
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < Self::SIZE || u16::from_be_bytes([data[0], data[1]]) != 0xFFFF {
+            return None;
+        }
+
+        Some(Self {
+            near_entry_start_a5_offset: read_be_u32(data, 4)?,
+            near_entry_count: read_be_u32(data, 8)?,
+            far_entry_start_a5_offset: read_be_u32(data, 12)?,
+            far_entry_count: read_be_u32(data, 16)?,
+            a5_relocation_data_offset: read_be_u32(data, 20)?,
+            current_a5: read_be_u32(data, 24)?,
+            pc_relocation_data_offset: read_be_u32(data, 28)?,
+            load_address: read_be_u32(data, 32)?,
+        })
+    }
+
+    pub fn a5_relocation_offsets(self, data: &[u8]) -> Option<Vec<u32>> {
+        let Some((start, end)) = relocation_stream_bounds(
+            self.a5_relocation_data_offset,
+            Some(self.pc_relocation_data_offset),
+            data.len(),
+        )?
+        else {
+            return Some(Vec::new());
+        };
+        decode_relocation_offsets(data, start, end)
+    }
+
+    pub fn pc_relocation_offsets(self, data: &[u8]) -> Option<Vec<u32>> {
+        let Some((start, end)) =
+            relocation_stream_bounds(self.pc_relocation_data_offset, None, data.len())?
+        else {
+            return Some(Vec::new());
+        };
+        decode_relocation_offsets(data, start, end)
+    }
+}
+
+fn read_be_u32(data: &[u8], offset: usize) -> Option<u32> {
+    let bytes = data.get(offset..offset + 4)?;
+    Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn relocation_stream_bounds(
+    start: u32,
+    following_start: Option<u32>,
+    data_len: usize,
+) -> Option<Option<(usize, usize)>> {
+    if start == 0 {
+        return Some(None);
+    }
+
+    let start = start as usize;
+    if start >= data_len {
+        return None;
+    }
+
+    let end = following_start
+        .filter(|&next| next != 0)
+        .map(|next| next as usize)
+        .filter(|&next| next > start && next <= data_len)
+        .unwrap_or(data_len);
+
+    Some(Some((start, end)))
+}
+
+fn decode_relocation_offsets(data: &[u8], start: usize, end: usize) -> Option<Vec<u32>> {
+    if start > end || end > data.len() {
+        return None;
+    }
+
+    let mut offsets = Vec::new();
+    let mut cursor = start;
+    let mut offset = 0u32;
+    let data_len = data.len() as u32;
+
+    while cursor < end {
+        let first = *data.get(cursor)?;
+        cursor += 1;
+
+        let units = if first == 0 {
+            let second = *data.get(cursor)?;
+            cursor += 1;
+            if second == 0 {
+                break;
+            }
+            if (second & 0x80) == 0 {
+                return None;
+            }
+            if cursor + 3 > end {
+                return None;
+            }
+            let third = *data.get(cursor)?;
+            let fourth = *data.get(cursor + 1)?;
+            let fifth = *data.get(cursor + 2)?;
+            cursor += 3;
+            (((second & 0x7F) as u32) << 24)
+                | ((third as u32) << 16)
+                | ((fourth as u32) << 8)
+                | fifth as u32
+        } else if (first & 0x80) != 0 {
+            let second = *data.get(cursor)?;
+            cursor += 1;
+            (((first & 0x7F) as u32) << 8) | second as u32
+        } else {
+            first as u32
+        };
+
+        let delta = units.checked_mul(2)?;
+        offset = offset.checked_add(delta)?;
+        if offset.checked_add(4)? > data_len {
+            return None;
+        }
+        offsets.push(offset);
+    }
+
+    Some(offsets)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationSizeResource, CodeSegmentHeader};
+    use super::{ApplicationSizeResource, CodeSegmentHeader, MpwFarSegmentHeader};
 
     #[test]
     fn parses_application_size_resource_flags_and_partition_sizes() {
@@ -233,6 +376,28 @@ mod tests {
         assert_eq!(mpw_far.code_header_size(), 40);
         assert_eq!(mpw_far.jump_table_start_offset(), None);
         assert_eq!(mpw_far.jump_table_entry_count(), None);
+    }
+
+    #[test]
+    fn decodes_mpw_far_relocation_stream_offsets() {
+        let mut data = vec![0u8; 0x1450];
+        data[0..2].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        data[20..24].copy_from_slice(&0x40u32.to_be_bytes());
+        data[28..32].copy_from_slice(&0x44u32.to_be_bytes());
+
+        data[0x40..0x44].copy_from_slice(&[
+            0x8A, 0x14, // two-byte delta: 0x0A14 words => byte offset 0x1428
+            0x00, 0x00, // end
+        ]);
+        data[0x44..0x47].copy_from_slice(&[
+            0x15, // one-byte delta: 0x15 words => byte offset 0x2A
+            0x00, 0x00,
+        ]);
+
+        let header = MpwFarSegmentHeader::parse(&data).expect("parse MPW far header");
+
+        assert_eq!(header.a5_relocation_offsets(&data), Some(vec![0x1428]));
+        assert_eq!(header.pc_relocation_offsets(&data), Some(vec![0x2A]));
     }
 }
 

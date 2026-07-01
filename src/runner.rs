@@ -4,6 +4,7 @@ use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::loader::{
     ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
+    MpwFarSegmentHeader,
 };
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -5129,6 +5130,74 @@ impl Drop for FixtureRunner {
 // Loader Implementation
 // =============================================================================
 
+fn apply_mpw_far_segment_relocations<M: MemoryBus>(
+    bus: &mut M,
+    segment_id: i16,
+    segment_addr: u32,
+    data: &[u8],
+    a5_base: u32,
+) {
+    let Some(header) = MpwFarSegmentHeader::parse(data) else {
+        return;
+    };
+
+    let mut a5_relocation_count = 0usize;
+    match header.a5_relocation_offsets(data) {
+        Some(offsets) => {
+            a5_relocation_count = offsets.len();
+            for offset in offsets {
+                let addr = segment_addr.wrapping_add(offset);
+                let relocated = bus.read_long(addr).wrapping_add(a5_base);
+                bus.write_long(addr, relocated);
+            }
+        }
+        None => {
+            if trace_load_enabled() {
+                eprintln!(
+                    "[LOAD] CODE {} has invalid MPW far A5 relocation data at ${:08X}",
+                    segment_id, header.a5_relocation_data_offset
+                );
+            }
+        }
+    }
+
+    let mut pc_relocation_count = 0usize;
+    match header.pc_relocation_offsets(data) {
+        Some(offsets) => {
+            pc_relocation_count = offsets.len();
+            for offset in offsets {
+                let addr = segment_addr.wrapping_add(offset);
+                let relocated = bus.read_long(addr).wrapping_add(segment_addr);
+                bus.write_long(addr, relocated);
+            }
+        }
+        None => {
+            if trace_load_enabled() {
+                eprintln!(
+                    "[LOAD] CODE {} has invalid MPW far PC relocation data at ${:08X}",
+                    segment_id, header.pc_relocation_data_offset
+                );
+            }
+        }
+    }
+
+    bus.write_long(
+        segment_addr + MpwFarSegmentHeader::CURRENT_A5_OFFSET,
+        a5_base,
+    );
+    bus.write_long(
+        segment_addr + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET,
+        segment_addr,
+    );
+
+    if trace_load_enabled() {
+        eprintln!(
+            "[LOAD] Applied MPW far relocations for CODE {}: a5={}, pc={}",
+            segment_id, a5_relocation_count, pc_relocation_count
+        );
+    }
+}
+
 fn load_app_generic<M: MemoryBus>(
     fork: &ResourceFork,
     bus: &mut M,
@@ -5396,6 +5465,8 @@ fn load_app_generic<M: MemoryBus>(
         // original CODE 0 parse). Near-model segments get their JT entries
         // populated by the app's startup code and patched by LoadSeg.
         if matches!(segment_header, Some(CodeSegmentHeader::MpwFar)) {
+            apply_mpw_far_segment_relocations(bus, code_res.id, user_addr, &code_res.data, a5_base);
+
             for (i, entry) in jump_table.iter_mut().enumerate() {
                 if entry.segment == code_res.id {
                     entry.loaded = true;
@@ -5820,6 +5891,63 @@ mod tests {
             runner.bus.read_long(jt_base + 4),
             code1_base + 0x28,
             "MPW far offsets must not be adjusted by the 40-byte header twice"
+        );
+    }
+
+    #[test]
+    fn load_app_applies_mpw_far_a5_and_pc_relocations() {
+        let mut code0 = minimal_code0(40, 0x2000, 8, 32);
+        code0[16..24].copy_from_slice(&[
+            0x00, 0x01, // segment 1
+            0xA9, 0xF0, // far-model unloaded LoadSeg trap
+            0x00, 0x00, 0x00, 0x28,
+        ]);
+
+        let mut code1 = vec![0u8; 0x60];
+        code1[0..2].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        code1[20..24].copy_from_slice(&0x50u32.to_be_bytes());
+        code1[28..32].copy_from_slice(&0x54u32.to_be_bytes());
+        code1[0x28..0x2A].copy_from_slice(&[0x4E, 0xB9]); // JSR.L absolute
+        code1[0x2A..0x2E].copy_from_slice(&0x100u32.to_be_bytes());
+        code1[0x30..0x32].copy_from_slice(&[0x20, 0x79]); // MOVEA.L absolute
+        code1[0x32..0x36].copy_from_slice(&0x40u32.to_be_bytes());
+        code1[0x50..0x54].copy_from_slice(&[
+            0x19, // A5 relocation at byte offset 0x32
+            0x00, 0x00, 0x00,
+        ]);
+        code1[0x54..0x57].copy_from_slice(&[
+            0x15, // PC relocation at byte offset 0x2A
+            0x00, 0x00,
+        ]);
+
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"CODE", 1, &code1)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        let code1_base = app.segment_bases[&1];
+
+        assert_eq!(
+            runner.bus.read_long(code1_base + 0x2A),
+            code1_base + 0x100,
+            "PC relocation stream must add the loaded segment address"
+        );
+        assert_eq!(
+            runner.bus.read_long(code1_base + 0x32),
+            app.a5_base + 0x40,
+            "A5 relocation stream must add the current A5"
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_long(code1_base + MpwFarSegmentHeader::CURRENT_A5_OFFSET),
+            app.a5_base
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_long(code1_base + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET),
+            code1_base
         );
     }
 
