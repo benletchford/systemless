@@ -142,6 +142,7 @@ const GESTALT_UNDEF_SELECTOR_ERR: u32 = 0xFFFF_EA51;
 /// Gestalt Manager (built-in or previously installed).
 /// Inside Macintosh: Operating System Utilities 1994, 1-34.
 const GESTALT_DUP_SELECTOR_ERR: u32 = 0xFFFF_EA50;
+const GESTALT_68040_LOGICAL_PAGE_SIZE_BYTES: u32 = 4096;
 
 /// Closed list of `Gestalt` selectors recognised by Systemless's built-in
 /// query handler. Kept in sync with the match arms in the `(false,
@@ -165,6 +166,8 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"qd  "
             | b"qdrw"
             | b"ram "
+            | b"lram"
+            | b"pgsz"
             | b"fpu "
             | b"mmu "
             | b"snd "
@@ -3255,9 +3258,27 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A0, 0x000F);
                         cpu.write_reg(Register::D0, 0);
                     }
-                    // gestaltPhysicalRAMSize ('ram ') -> 32MB
+                    // gestaltPhysicalRAMSize ('ram ') -> emulated physical RAM
                     b"ram " => {
                         cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltLogicalRAMSize ('lram') -> logical memory.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-19: when virtual memory is not installed, this is
+                    // the same value as gestaltPhysicalRAMSize.
+                    b"lram" => {
+                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltLogicalPageSize ('pgsz') -> logical page size.
+                    // Inside Macintosh: Operating System Utilities 1994,
+                    // p. 1-19: defined for MC68010/020/030/040 systems and
+                    // undefined for MC68000-only machines. Systemless exposes
+                    // a 68040 profile, so report the page granularity used by
+                    // the profile's flat logical address space.
+                    b"pgsz" => {
+                        cpu.write_reg(Register::A0, GESTALT_68040_LOGICAL_PAGE_SIZE_BYTES);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltFPUType ('fpu ') -> 68040 FPU
@@ -11864,6 +11885,26 @@ mod tests {
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::A0), 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_logical_memory_selectors_match_68040_profile() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"lram"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            crate::machine_profile::ORACLE_MACHINE_PROFILE.ram_size_bytes
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"pgsz"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 4096);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
