@@ -3092,14 +3092,6 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                if dst_info.base == self.screen_mode.0 {
-                    self.copybits_screen_count += 1;
-                    self.note_screen_copybits_rect(
-                        src_top, src_left, src_bottom, src_right, dst_top, dst_left, dst_bottom,
-                        dst_right,
-                    );
-                }
-
                 if trace_menu_redraw_enabled()
                     && trace_menu_redraw_rect_intersects(dst_top, dst_left, dst_bottom, dst_right)
                 {
@@ -3238,6 +3230,11 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 if dst_info.base == self.screen_mode.0 {
+                    self.copybits_screen_count += 1;
+                    self.note_screen_copybits_rect(
+                        src_top, src_left, src_bottom, src_right, dst_top, dst_left, dst_bottom,
+                        dst_right,
+                    );
                     self.ensure_dialog_background_saved_for_screen_port(bus, port);
                 }
 
@@ -29692,6 +29689,43 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_bytes(dst_base, 4), vec![9, 9, 9, 9]);
+    }
+
+    #[test]
+    fn copy_bits_empty_mask_to_screen_does_not_count_as_screen_blit() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        let src_rect = 0x303000u32;
+        let dst_rect = 0x303010u32;
+
+        d.screen_mode = (dst_base, 4, 4, 1, 8);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 4, 1, 0);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 4, 1, 0);
+        bus.write_bytes(src_base, &[1, 2, 3, 4]);
+        bus.write_bytes(dst_base, &[9, 9, 9, 9]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 4);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 4);
+
+        let mask_rgn = bus.alloc(4);
+        assert!(TrapDispatcher::write_region(&mut bus, mask_rgn, None, &[]));
+
+        bus.write_long(TEST_SP, mask_rgn);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 4), vec![9, 9, 9, 9]);
+        assert_eq!(
+            d.copybits_screen_count, 0,
+            "fully clipped CopyBits into the screen must not disable later presentation fallbacks"
+        );
     }
 
     #[test]

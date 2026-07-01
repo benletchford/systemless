@@ -731,6 +731,7 @@ pub(crate) struct AeDescriptor {
     pub desc_type: u32,
     pub data: Vec<u8>,
     pub fields: HashMap<u32, AeDescriptor>,
+    pub items: Vec<(u32, AeDescriptor)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -765,6 +766,14 @@ pub(crate) struct SyntheticAppleEvent {
     pub event_class: u32,
     pub event_id: u32,
     pub params: HashMap<u32, AeDescriptor>,
+    pub items: Vec<(u32, AeDescriptor)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AeCoercionHandler {
+    pub handler_ptr: u32,
+    pub refcon: u32,
+    pub from_type_is_desc: bool,
 }
 
 /// A queued Mac event (mouseDown, mouseUp, keyDown, etc.)
@@ -978,6 +987,13 @@ pub struct TrapDispatcher {
     /// AEInstallObjectAccessor. Key is `(isSysHandler, desiredClass,
     /// containerType)`.
     pub(crate) ae_object_accessors: HashMap<(bool, u32, u32), AeObjectAccessor>,
+    /// Special AppleEvent handlers registered through
+    /// AEInstallSpecialHandler or AESetObjectCallbacks. Key is
+    /// `(isSysHandler, functionClass)`.
+    pub(crate) ae_special_handlers: HashMap<(bool, u32), u32>,
+    /// Coercion handlers registered through AEInstallCoercionHandler. Key is
+    /// `(isSysHandler, fromType, toType)`.
+    pub(crate) ae_coercion_handlers: HashMap<(bool, u32, u32), AeCoercionHandler>,
     /// Gestalt selectors registered at runtime via `_NewGestalt` ($A3AD)
     /// or replaced via `_ReplaceGestalt` ($A5AD). Key is the OSType
     /// selector code packed big-endian; value is the guest-side selector
@@ -2490,6 +2506,8 @@ impl TrapDispatcher {
             ae_descriptors: HashMap::new(),
             ae_descriptor_backing: HashMap::new(),
             ae_object_accessors: HashMap::new(),
+            ae_special_handlers: HashMap::new(),
+            ae_coercion_handlers: HashMap::new(),
             gestalt_registry: HashMap::new(),
             ae_call_state: None,
             ae_call_state_stack: Vec::new(),
