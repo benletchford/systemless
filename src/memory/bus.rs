@@ -881,7 +881,17 @@ impl MacMemoryBus {
     /// later write the zone header during application initialization.
     pub fn reserve_heap(&mut self, size: u32) {
         let aligned = (size + 3) & !3;
-        self.heap_ptr = self.heap_ptr.max(0x200000 + aligned);
+        self.reserve_heap_until(0x200000 + aligned);
+    }
+
+    /// Advance the heap bump pointer past an absolute guest address.
+    ///
+    /// Loader-owned regions are written directly rather than allocated through
+    /// the Memory Manager shim, so the runner uses this before materializing
+    /// Toolbox heap objects that must not overlap the loaded application image.
+    pub fn reserve_heap_until(&mut self, end_addr: u32) {
+        let aligned = (end_addr + 3) & !3;
+        self.heap_ptr = self.heap_ptr.max(aligned);
     }
 
     pub fn alloc(&mut self, size: u32) -> u32 {

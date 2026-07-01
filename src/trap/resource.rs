@@ -1562,6 +1562,30 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"KCHR" {
+                    if let Some(ptr) = self.synthesize_system_kchr(bus, res_id) {
+                        if trace_getresource_enabled() {
+                            let preview: Vec<String> = bus
+                                .read_bytes(ptr, 16)
+                                .iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect();
+                            eprintln!(
+                                "[GETRESOURCE]   -> synthetic ptr=${:08X} preview={}",
+                                ptr,
+                                preview.join(" ")
+                            );
+                        }
+                        let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 cpu.write_reg(Register::A0, 0);
                 cpu.write_reg(Register::D0, 0);
                 bus.write_word(0x0A60, 0);
@@ -7973,6 +7997,52 @@ mod tests {
         assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
         assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
         assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
+    }
+
+    #[test]
+    fn get_resource_synthesizes_standard_roman_kchr_id_zero() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let sp = TEST_SP;
+        bus.write_word(sp, 0u16); // standard U.S. Roman keyboard layout
+        bus.write_long(sp + 2, u32::from_be_bytes(*b"KCHR"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 6, "SP should advance by 6");
+        let handle = bus.read_long(new_sp);
+        assert_ne!(handle, 0, "synthetic KCHR must return a handle");
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(0x0A60), 0, "ResErr should be noErr");
+
+        let kchr = bus.read_long(handle);
+        assert_ne!(kchr, 0, "synthetic KCHR handle must be loaded");
+        assert_eq!(bus.get_alloc_size(kchr), Some(1 + 256 + 128 * 2));
+        assert_eq!(bus.read_byte(kchr), 0, "KCHR version byte");
+        assert_eq!(
+            bus.read_byte(kchr + 1),
+            0,
+            "modifier byte 0 should select the unshifted table"
+        );
+        assert_eq!(
+            bus.read_byte(kchr + 2),
+            0,
+            "modifier byte 1 is Command-only and should stay unshifted"
+        );
+        assert_eq!(
+            bus.read_byte(kchr + 3),
+            1,
+            "modifier byte 2 should select the shifted table"
+        );
+
+        let table0 = kchr + 1 + 256;
+        let table1 = table0 + 128;
+        assert_eq!(bus.read_byte(table0), b'a');
+        assert_eq!(bus.read_byte(table1), b'A');
+        assert_eq!(bus.read_byte(table0 + 0x0C), b'q');
+        assert_eq!(bus.read_byte(table1 + 0x0C), b'Q');
     }
 
     #[test]

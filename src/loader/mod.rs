@@ -238,7 +238,8 @@ mod tests {
 
 /// State produced by loading a 68k application: parsed CODE 0 header,
 /// resolved A5 placement, jump-table slot vector, per-segment load
-/// addresses, and the initial stack pointer the runner will seed.
+/// addresses, the end of the direct-loaded image, and the initial stack
+/// pointer the runner will seed.
 ///
 /// Returned by
 /// [`FixtureRunner::load_app`](crate::runner::FixtureRunner::load_app)
@@ -256,6 +257,10 @@ pub struct LoadedApp {
     /// Map from CODE resource ID to the guest address where each
     /// segment was loaded.
     pub segment_bases: HashMap<i16, u32>,
+    /// First byte after direct loader-owned memory (A5 world, CODE 0,
+    /// jump table, and preloaded CODE segments). Heap allocations must
+    /// start at or above this boundary.
+    pub loaded_image_end: u32,
     /// Initial stack pointer (top of below-A5 region) the runner
     /// seeds A7 with before the first instruction.
     pub initial_sp: u32,
