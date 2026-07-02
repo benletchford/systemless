@@ -6670,7 +6670,12 @@ impl super::TrapDispatcher {
                         };
                         let row_bytes = (width * depth).div_ceil(32) * 4;
 
-                        let source_ctab_handle = if ctab_param != 0 {
+                        // IM:VI 21-13: noNewDevice uses the supplied GDevice's
+                        // depth and color table; custom cTable requires an
+                        // offscreen device.
+                        let source_ctab_handle = if no_new_device && source_gdevice != 0 {
+                            Self::gdevice_ctab_handle(bus, source_gdevice)
+                        } else if ctab_param != 0 {
                             ctab_param
                         } else if source_gdevice != 0 {
                             Self::gdevice_ctab_handle(bus, source_gdevice)
@@ -6901,7 +6906,12 @@ impl super::TrapDispatcher {
                         } else {
                             depth_param as u32
                         };
-                        let source_ctab_handle = if ctab_param != 0 {
+                        // IM:VI 21-13: noNewDevice uses the supplied GDevice's
+                        // depth and color table; custom cTable requires an
+                        // offscreen device.
+                        let source_ctab_handle = if no_new_device && source_gdevice != 0 {
+                            Self::gdevice_ctab_handle(bus, source_gdevice)
+                        } else if ctab_param != 0 {
                             ctab_param
                         } else if source_gdevice != 0 {
                             Self::gdevice_ctab_handle(bus, source_gdevice)
@@ -34416,6 +34426,117 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(d.current_port, prior_port);
         assert_eq!(d.current_gdevice, prior_gdevice);
+    }
+
+    #[test]
+    fn test_new_gworld_no_new_device_uses_gdevice_ctab_over_explicit_ctab() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let main_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let main_ctab_ptr = bus.read_long(main_ctab_handle);
+        let main_entry = main_ctab_ptr + 8 + 17 * 8;
+        bus.write_word(main_entry + 2, 0x1111);
+        bus.write_word(main_entry + 4, 0x2222);
+        bus.write_word(main_entry + 6, 0x3333);
+
+        let explicit_ctab_ptr = bus.alloc(8 + 224 * 8);
+        bus.write_long(explicit_ctab_ptr, 0x1234_5678);
+        bus.write_word(explicit_ctab_ptr + 4, 0);
+        bus.write_word(explicit_ctab_ptr + 6, 223);
+        for index in 0..224u32 {
+            let entry = explicit_ctab_ptr + 8 + index * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, 0xAAAA);
+            bus.write_word(entry + 4, 0xBBBB);
+            bus.write_word(entry + 6, 0xCCCC);
+        }
+        let explicit_ctab_handle = bus.alloc(4);
+        bus.write_long(explicit_ctab_handle, explicit_ctab_ptr);
+
+        let bounds_ptr = 0x300000u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 100, 100);
+        bus.write_long(TEST_SP, 1u32 << 1); // noNewDevice
+        bus.write_long(TEST_SP + 4, gdh);
+        bus.write_long(TEST_SP + 8, explicit_ctab_handle);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8u16);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let gw_pmh = bus.read_long(gworld + 2);
+        let gw_pm = bus.read_long(gw_pmh);
+        let gw_ctab_handle = bus.read_long(gw_pm + 42);
+        assert_eq!(gw_ctab_handle, main_ctab_handle);
+
+        let gw_entry = bus.read_long(gw_ctab_handle) + 8 + 17 * 8;
+        assert_eq!(bus.read_word(gw_entry + 2), 0x1111);
+        assert_eq!(bus.read_word(gw_entry + 4), 0x2222);
+        assert_eq!(bus.read_word(gw_entry + 6), 0x3333);
+    }
+
+    #[test]
+    fn test_update_gworld_no_new_device_uses_gdevice_ctab_over_explicit_ctab() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let main_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let main_ctab_ptr = bus.read_long(main_ctab_handle);
+        let main_entry = main_ctab_ptr + 8 + 17 * 8;
+        bus.write_word(main_entry + 2, 0x1111);
+        bus.write_word(main_entry + 4, 0x2222);
+        bus.write_word(main_entry + 6, 0x3333);
+
+        let explicit_ctab_ptr = bus.alloc(8 + 224 * 8);
+        bus.write_long(explicit_ctab_ptr, 0x1234_5678);
+        bus.write_word(explicit_ctab_ptr + 4, 0);
+        bus.write_word(explicit_ctab_ptr + 6, 223);
+        for index in 0..224u32 {
+            let entry = explicit_ctab_ptr + 8 + index * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, 0xAAAA);
+            bus.write_word(entry + 4, 0xBBBB);
+            bus.write_word(entry + 6, 0xCCCC);
+        }
+        let explicit_ctab_handle = bus.alloc(4);
+        bus.write_long(explicit_ctab_handle, explicit_ctab_ptr);
+
+        let bounds_ptr = 0x300000u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 100, 100);
+        bus.write_long(TEST_SP, 0u32);
+        bus.write_long(TEST_SP + 4, 0u32);
+        bus.write_long(TEST_SP + 8, explicit_ctab_handle);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8u16);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0003);
+        bus.write_long(TEST_SP, 1u32 << 1); // noNewDevice
+        bus.write_long(TEST_SP + 4, gdh);
+        bus.write_long(TEST_SP + 8, explicit_ctab_handle);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8u16);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let gw_pmh = bus.read_long(gworld + 2);
+        let gw_pm = bus.read_long(gw_pmh);
+        let gw_ctab_handle = bus.read_long(gw_pm + 42);
+        assert_eq!(gw_ctab_handle, main_ctab_handle);
+        assert_eq!(cpu.read_reg(Register::D0) & (1 << 16), 1 << 16);
+
+        let gw_entry = bus.read_long(gw_ctab_handle) + 8 + 17 * 8;
+        assert_eq!(bus.read_word(gw_entry + 2), 0x1111);
+        assert_eq!(bus.read_word(gw_entry + 4), 0x2222);
+        assert_eq!(bus.read_word(gw_entry + 6), 0x3333);
     }
 
     #[test]
