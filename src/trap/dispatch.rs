@@ -4061,6 +4061,7 @@ impl TrapDispatcher {
         for ((res_type, id), res) in sorted_resources {
             let ptr = bus.alloc(res.data.len() as u32);
             bus.write_bytes(ptr, &res.data);
+            Self::zero_loaded_resource_padding(bus, ptr, res.data.len() as u32);
             loaded.insert((*res_type, *id), ptr);
             attrs.insert((*res_type, *id), res.attrs);
             if let Some(ref name) = res.name {
@@ -4086,6 +4087,36 @@ impl TrapDispatcher {
     ) {
         self.resource_backing_data
             .insert((refnum, res_type, res_id), data);
+    }
+
+    pub(crate) fn loaded_resource_handle_size(data_size: u32) -> u32 {
+        data_size.saturating_add(3) & !3
+    }
+
+    pub(crate) fn zero_loaded_resource_padding(bus: &mut MacMemoryBus, ptr: u32, data_size: u32) {
+        let handle_size = Self::loaded_resource_handle_size(data_size);
+        if ptr != 0 && handle_size > data_size {
+            bus.fill_zeros(ptr.wrapping_add(data_size), handle_size - data_size);
+        }
+    }
+
+    pub(crate) fn resource_handle_memory_size(
+        &self,
+        bus: &MacMemoryBus,
+        handle: u32,
+        ptr: u32,
+    ) -> Option<u32> {
+        let size = bus.get_alloc_size(ptr)?;
+        if let Some((refnum, res_type, res_id)) = self.resource_record_for_handle(handle) {
+            if self
+                .resource_backing_data
+                .get(&(refnum, res_type, res_id))
+                .is_some_and(|data| data.len() as u32 == size)
+            {
+                return Some(Self::loaded_resource_handle_size(size));
+            }
+        }
+        Some(size)
     }
 
     pub(crate) fn forget_resource_backing_data(
@@ -4131,6 +4162,29 @@ impl TrapDispatcher {
         };
         self.resource_handles_by_key
             .remove(&(refnum, res_type, res_id));
+    }
+
+    pub(crate) fn forget_resource_live_map_entry_for_handle(&mut self, handle: u32) {
+        let Some((ptr, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
+            return;
+        };
+        let Some(refnum) = self.resource_handle_files.get(&handle).copied() else {
+            return;
+        };
+        let Some(file) = self
+            .resources
+            .as_mut()
+            .and_then(|resources| resources.files.get_mut(&refnum))
+        else {
+            return;
+        };
+
+        if file.loaded.get(&(res_type, res_id)).copied() == Some(ptr) {
+            file.loaded.remove(&(res_type, res_id));
+        }
+        file.named.retain(|(named_type, _), (named_id, named_ptr)| {
+            !(*named_type == res_type && *named_id == res_id && *named_ptr == ptr)
+        });
     }
 
     pub(crate) fn clear_resource_file_handle_index(&mut self, refnum: u16) {

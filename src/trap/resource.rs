@@ -357,6 +357,27 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let current_header =
+            CodeSegmentHeader::from_words(bus.read_word(seg_addr), bus.read_word(seg_addr + 2));
+        let refreshed_header =
+            CodeSegmentHeader::from_words(bus.read_word(ptr), bus.read_word(ptr + 2));
+        let mut preserve_header_bytes = 0u32;
+        if let (Some(current_count), Some(refreshed_count)) = (
+            current_header.jump_table_entry_count(),
+            refreshed_header.jump_table_entry_count(),
+        ) {
+            let tolerated_count = current_count.saturating_mul(4).max(current_count + 256);
+            if current_count > 0 && refreshed_count > tolerated_count {
+                if trace_loadseg {
+                    eprintln!(
+                        "[TRAP] LoadSeg: preserving CODE {} resident header; resource header {:?} expands resident {:?} entry count {} -> {}",
+                        seg_num, refreshed_header, current_header, current_count, refreshed_count
+                    );
+                }
+                preserve_header_bytes = current_header.code_header_size();
+            }
+        }
+
         let loaded_size = if seg_addr >= 4 {
             bus.read_long(seg_addr - 4)
         } else {
@@ -367,21 +388,35 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let bytes = bus.read_bytes(ptr, copy_len as usize);
-        bus.write_bytes(seg_addr, &bytes);
+        let copied_bytes = if preserve_header_bytes > 0 {
+            let preserved = preserve_header_bytes.min(copy_len);
+            let body_len = copy_len.saturating_sub(preserved);
+            if body_len == 0 {
+                Vec::new()
+            } else {
+                let bytes = bus.read_bytes(ptr + preserved, body_len as usize);
+                bus.write_bytes(seg_addr + preserved, &bytes);
+                bytes
+            }
+        } else {
+            let bytes = bus.read_bytes(ptr, copy_len as usize);
+            bus.write_bytes(seg_addr, &bytes);
+            bytes
+        };
 
         if trace_loadseg {
-            let preview: Vec<String> = bytes
+            let preview: Vec<String> = copied_bytes
                 .iter()
                 .take(16)
                 .map(|byte| format!("{byte:02X}"))
                 .collect();
             eprintln!(
-                "[TRAP] LoadSeg: refreshed CODE {} from resource ptr=${:08X} len={} copied={} preview={}",
+                "[TRAP] LoadSeg: refreshed CODE {} from resource ptr=${:08X} len={} copied={} preserved_header={} preview={}",
                 seg_num,
                 ptr,
                 resource_size,
                 copy_len,
+                preserve_header_bytes,
                 preview.join(" ")
             );
             if resource_size != loaded_size {
@@ -842,6 +877,7 @@ impl super::TrapDispatcher {
             return None;
         }
         bus.write_bytes(ptr, &data);
+        Self::zero_loaded_resource_padding(bus, ptr, data.len() as u32);
 
         if let Some(file) = self
             .resources
@@ -1741,6 +1777,11 @@ impl super::TrapDispatcher {
                                 bus.write_long(handle, detached_ptr);
                             }
                         }
+                        // Detaching severs the handle from the resource map. Keep the
+                        // immutable backing bytes so a later GetResource can reload the
+                        // original fork data, but do not let the file's live map keep
+                        // pointing at this now-private buffer.
+                        self.forget_resource_live_map_entry_for_handle(handle);
                         self.forget_resource_handle_index_for_handle(handle);
                         self.loaded_handles.remove(&handle);
                         if let Some(refnum) = self.resource_handle_files.remove(&handle) {
@@ -1750,6 +1791,8 @@ impl super::TrapDispatcher {
                         bus.write_word(0x0A60, 0);
                     }
                 } else {
+                    // BasiliskII/System 7.5.3 fixture evidence: NIL and
+                    // other non-resource handles return resNotFound.
                     bus.write_word(0x0A60, Self::RES_NOT_FOUND as u16);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -3351,14 +3394,14 @@ impl super::TrapDispatcher {
                     //   Bit 0:  gestaltStereoCapability
                     //   Bit 1:  gestaltStereoMixing
                     //   Bit 3:  gestaltSoundIOMgrPresent
-                    //   Bit 4:  gestaltBuiltInSoundOutput
-                    //   Bit 5:  gestaltHasPCMMixerType
-                    //   Bit 6:  gestaltHasDSPMixerType
+                    //   Bit 4:  gestaltBuiltInSoundInput
+                    //   Bit 5:  gestaltHasSoundInputDevice
+                    //   Bit 6:  gestaltPlayAndRecord
                     //   Bit 7:  gestalt16BitSoundIO
                     //   Bit 10: gestaltSndPlayDoubleBuffer
                     //   Bit 11: gestaltMultiChannels
                     //   Bit 12: gestalt16BitAudioSupport
-                    // Sound 1994, 1-14.
+                    // Sound 1994, 2-91; OS Utilities 1994, 1-23.
                     //
                     // Earlier 0x0C83 subset omitted bits 3..6 and bit 12.
                     // Some Sound-Manager-3-aware titles refuse to start when
@@ -8628,6 +8671,78 @@ mod tests {
         assert_eq!(bus.read_word(0x0A60) as i16, -192);
     }
 
+    // BasiliskII/System 7.5.3 catalogue fixture evidence:
+    // DetachResource(nil) returns resNotFound, matching the non-resource
+    // non-nil handle path.
+    #[test]
+    fn detach_resource_nil_handle_returns_resnotfound() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(0x0A60, 0);
+        bus.write_long(TEST_SP, 0);
+        call(&mut disp, true, 0x192, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(
+            bus.read_word(0x0A60) as i16,
+            super::super::TrapDispatcher::RES_NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn detach_resource_unloads_live_map_entry_but_keeps_backing_data_reloadable() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let original = [0x50, 0x61, 0x6B, 0x20, 0xAA, 0xBB];
+        let data_ptr = disp.install_test_resource(&mut bus, *b"Pak ", 12000, &original);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"Pak ", 12000, data_ptr);
+
+        let decoded_ptr = disp.resize_resource_allocation(&mut bus, handle, data_ptr, 10);
+        bus.write_bytes(decoded_ptr, &[0x00, 0x02, 0x00, 0x0B, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .unwrap()
+                .files
+                .get(&0)
+                .unwrap()
+                .loaded
+                .get(&(*b"Pak ", 12000))
+                .copied(),
+            Some(decoded_ptr)
+        );
+
+        bus.write_long(TEST_SP, handle);
+        call(&mut disp, true, 0x192, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(0x0A60), 0);
+        let detached_ptr = bus.read_long(handle);
+        assert_ne!(detached_ptr, decoded_ptr);
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .unwrap()
+                .files
+                .get(&0)
+                .unwrap()
+                .loaded
+                .get(&(*b"Pak ", 12000)),
+            None
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 12000u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"Pak "));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let reloaded_handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(reloaded_handle, 0);
+        assert_ne!(reloaded_handle, handle);
+        let reloaded_ptr = bus.read_long(reloaded_handle);
+        assert_ne!(reloaded_ptr, decoded_ptr);
+        assert_eq!(bus.read_bytes(reloaded_ptr, original.len()), original);
+    }
+
     // ================================================================
     // 4. LoadResource (0x1A2)
     // ================================================================
@@ -11027,6 +11142,67 @@ mod tests {
         assert_eq!(bus.read_word(island_addr), 1);
         assert_eq!(bus.read_word(island_addr + 2), 0x4EF9);
         assert_eq!(bus.read_long(island_addr + 4), seg_addr + 4);
+    }
+
+    #[test]
+    fn loadseg_getresource_continuation_preserves_header_for_implausibly_expanded_code_header() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let seg_addr = 0x230000u32;
+        bus.write_long(seg_addr - 4, 8);
+        bus.write_word(seg_addr, 0x0000);
+        bus.write_word(seg_addr + 2, 0x0002);
+        bus.write_long(seg_addr + 4, 0x4E56_0000);
+        disp.register_segments(HashMap::from([(1i16, seg_addr)]));
+
+        let corrupted = [
+            0x06, 0x79, 0x69, 0x25, // would decode as THINK far with 10533 entries
+            0x60, 0x00, 0x00, 0x02,
+        ];
+        let ptr = setup_resources(&mut disp, &mut bus, b"CODE", 1, &corrupted);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"CODE", 1, ptr);
+
+        let jt_base = 0x240000u32;
+        bus.write_word(addr::CUR_JT_OFFSET, 0);
+        cpu.write_reg(Register::A5, jt_base);
+        for i in 0..2 {
+            let entry = jt_base + i * 8;
+            bus.write_word(entry, 0);
+            bus.write_word(entry + 2, 0x3F3C);
+            bus.write_word(entry + 4, 1);
+            bus.write_word(entry + 6, 0xA9F0);
+        }
+
+        disp.loadseg_getresource_state = Some(super::super::dispatch::LoadSegGetResourceState {
+            seg_num: 1,
+            entry_addr: jt_base,
+            result_sp: TEST_SP - 4,
+            d_regs: [0x1010_1010; 8],
+            a_regs: [
+                0xA0A0_A0A0,
+                0xA1A1_A1A1,
+                0xA2A2_A2A2,
+                0xA3A3_A3A3,
+                0xA4A4_A4A4,
+                jt_base,
+                0xA6A6_A6A6,
+                TEST_SP,
+            ],
+        });
+        bus.write_long(TEST_SP - 4, handle);
+
+        disp.resume_loadseg_after_getresource(&mut bus, &mut cpu)
+            .unwrap();
+
+        assert_eq!(bus.read_word(seg_addr), 0x0000);
+        assert_eq!(bus.read_word(seg_addr + 2), 0x0002);
+        assert_eq!(bus.read_long(seg_addr + 4), 0x6000_0002);
+        assert_eq!(bus.read_word(jt_base), 1);
+        assert_eq!(bus.read_word(jt_base + 2), 0x4EF9);
+        assert_eq!(bus.read_long(jt_base + 4), seg_addr + 4);
+        assert_eq!(bus.read_word(jt_base + 8), 1);
+        assert_eq!(bus.read_word(jt_base + 10), 0x4EF9);
+        assert_eq!(bus.read_long(jt_base + 12), seg_addr + 4);
     }
 
     #[test]

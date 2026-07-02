@@ -698,7 +698,10 @@ impl super::TrapDispatcher {
                     write_memory_result(cpu, bus, NIL_HANDLE_ERR);
                 } else {
                     let ptr = bus.read_long(handle);
-                    let size = bus.get_alloc_size(ptr).unwrap_or(0);
+                    let size = self
+                        .resource_handle_memory_size(bus, handle, ptr)
+                        .or_else(|| bus.get_alloc_size(ptr))
+                        .unwrap_or(0);
                     if trace_sound_enabled() {
                         if let Some((_resource_ptr, res_type, res_id)) =
                             self.loaded_handles.get(&handle).copied()
@@ -6197,6 +6200,32 @@ mod tests {
             cpu.read_reg(Register::D0),
             256,
             "GetHandleSize should return 256 in D0"
+        );
+    }
+
+    #[test]
+    fn get_handle_size_rounds_loaded_resource_handle_to_longword_size() {
+        // IM:Sound 1994 p. 2-58 demonstrates applications computing a
+        // sampled sound buffer length from GetHandleSize(sndH) minus the
+        // parsed sound-header offset. Classic Resource Manager-loaded
+        // handles expose the longword-rounded loaded block size there,
+        // while SizeResource remains the exact resource-map byte count.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let bytes = vec![0x80; 50];
+        let data_ptr = bus.alloc(bytes.len() as u32);
+        bus.write_bytes(data_ptr, &bytes);
+        dispatcher.remember_resource_backing_data(0, *b"snd ", 417, bytes);
+        let handle =
+            dispatcher.get_or_create_resource_handle_in_file(&mut bus, *b"snd ", 417, data_ptr, 0);
+
+        cpu.write_reg(Register::A0, handle);
+        let result = dispatcher.dispatch_memory(false, 0x25, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetHandleSize should be handled");
+        assert!(result.unwrap().is_ok(), "GetHandleSize should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            52,
+            "loaded resource handles should expose longword-rounded size"
         );
     }
 

@@ -25,6 +25,8 @@ static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
 const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
+const DEFAULT_LOAD_ADDRESS: u32 = 0x0001_0000;
+const LARGE_SIZE_RELOCATION_MINIMUM: u32 = 2 * 1024 * 1024;
 const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
@@ -436,6 +438,7 @@ pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_M
 // shared default machine profile defined above.
 // This lower value lets scripted harnesses run quickly without being wall-clock-paced.
 const INSTRUCTIONS_PER_TICK: u32 = 12_000;
+const DEFAULT_LAUNCH_TICKS: u32 = 600;
 const MAC_EPOCH_OFFSET_FROM_UNIX: u64 = 2_082_844_800;
 const CURSOR_TASK_NOOP_ADDR: u32 = 0x0000_0060;
 
@@ -469,6 +472,7 @@ struct ActiveInterruptCallback {
     resume_sp: u32,
     d_regs: [u32; 8],
     a_regs: [u32; 8],
+    sr: u16,
     ccr: u8,
     restore_port: Option<(u32, u32)>,
 }
@@ -482,12 +486,75 @@ fn is_sound_interrupt_source(source: ActiveInterruptCallbackSource) -> bool {
     )
 }
 
+fn interrupt_callback_sr(source: ActiveInterruptCallbackSource, saved_sr: u16) -> u16 {
+    match source {
+        // A vertical retrace interrupt runs with processor priority level 1
+        // and then restores the previous priority when it completes.
+        // Inside Macintosh: Processes (1994), pp. 1-11 and 6-3.
+        ActiveInterruptCallbackSource::Vbl | ActiveInterruptCallbackSource::CursorTask => {
+            (saved_sr & !0x0700) | 0x2100
+        }
+        _ => saved_sr,
+    }
+}
+
 fn align4(value: u32) -> u32 {
     value.saturating_add(3) & !3
 }
 
 fn app_heap_start_for_loaded_app(app: &LoadedApp) -> u32 {
     APP_HEAP_FLOOR.max(align4(app.loaded_image_end))
+}
+
+fn app_image_start_for_loaded_app(app: &LoadedApp) -> u32 {
+    app.a5_base.saturating_sub(app.code0_header.below_a5)
+}
+
+fn app_visible_zone_start_for_loaded_app(app: &LoadedApp) -> u32 {
+    let image_start = app_image_start_for_loaded_app(app);
+    if image_start >= APP_HEAP_FLOOR.saturating_add(APP_ZONE_HEADER_SIZE) {
+        APP_HEAP_FLOOR
+    } else {
+        app_heap_start_for_loaded_app(app)
+    }
+}
+
+fn load_address_for_size_partition(
+    configured_load_address: u32,
+    header: &Code0Header,
+    size_resource: Option<ApplicationSizeResource>,
+    ram_size: u32,
+) -> u32 {
+    if configured_load_address != DEFAULT_LOAD_ADDRESS {
+        return configured_load_address;
+    }
+
+    let Some(size) = size_resource else {
+        return configured_load_address;
+    };
+    if size.preferred_partition_size().is_none()
+        || size.minimum_size <= LARGE_SIZE_RELOCATION_MINIMUM
+    {
+        return configured_load_address;
+    }
+
+    let desired_a5 =
+        APP_HEAP_FLOOR.saturating_add(size.minimum_size.saturating_sub(APP_STACK_SAFETY_MARGIN));
+    let default_a5 = configured_load_address.saturating_add(header.below_a5);
+    if desired_a5 <= default_a5 {
+        return configured_load_address;
+    }
+
+    // Leave space above the relocated image for stack/screen buffers in
+    // small synthetic runners. The standard frontends use 32 MB, so large
+    // SIZE-partition apps still get the Mac-like high A5 placement.
+    let max_reasonable_load = ram_size.saturating_sub(2 * 1024 * 1024);
+    let relocated_load = align4(desired_a5.saturating_sub(header.below_a5));
+    if relocated_load < max_reasonable_load {
+        relocated_load
+    } else {
+        configured_load_address
+    }
 }
 
 /// Configuration knobs for [`FixtureRunner`]. Use
@@ -522,7 +589,7 @@ impl Default for FixtureRunnerConfig {
     fn default() -> Self {
         Self {
             max_instructions: 10_000_000,
-            load_address: 0x10000,
+            load_address: DEFAULT_LOAD_ADDRESS,
             arrows_as_numpad: false,
             ui_theme: UiThemeId::ClassicSystem7,
             theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
@@ -1802,6 +1869,14 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
 
+        // Classic Mac OS application code runs in supervisor mode with the
+        // processor priority open to level-1 VBL interrupts. The m68k core
+        // starts from CPU reset with all interrupts masked; make the launch
+        // state explicit so interrupt-time HLE can honor guest SR masking.
+        // Inside Macintosh: Processes (1994), pp. 1-11 and 6-3.
+        let launch_sr = (self.cpu.core.get_sr() & !0x0700) | 0x2000;
+        self.cpu.core.set_sr_noint_nosp(launch_sr);
+
         // Initialize low-memory globals
         self.bus.write_long(addr::MEM_TOP, ram_size);
         // CurStackBase ($0908): "Address of base of stack; start of
@@ -1835,7 +1910,8 @@ impl FixtureRunner {
         // random sequences (e.g., ship heading always zero in EV).
         // 600 ticks ≈ 10 seconds of post-boot time, a conservative
         // estimate for a minimal System 7 configuration.
-        self.bus.write_long(addr::TICKS, 0);
+        self.bus.write_long(addr::TICKS, DEFAULT_LAUNCH_TICKS);
+        self.dispatcher.tick_count = DEFAULT_LAUNCH_TICKS;
         let time = self
             .app_start_time
             .unwrap_or_else(current_mac_epoch_seconds);
@@ -1879,13 +1955,16 @@ impl FixtureRunner {
 
         // Memory Manager zone globals
         // Inside Macintosh Volume II, II-19 and II-29..II-30.
-        // The heap normally starts at 0x200000, but large applications can
-        // place A5 globals or CODE segments above that floor. In that case,
-        // move the application zone above the direct-loaded image so Toolbox
-        // heap allocations cannot overwrite executable/app-global memory.
-        let heap_start = app_heap_start_for_loaded_app(app);
+        // Keep actual Systemless allocations above the direct-loaded image,
+        // while the guest-visible application zone can remain at the normal
+        // floor when the loader has placed the application image above it.
+        // Real Mac CODE/resources live inside the app heap; Systemless writes
+        // them directly and then protects them by bumping the allocator.
+        let allocation_heap_start = app_heap_start_for_loaded_app(app);
+        let visible_zone_start = app_visible_zone_start_for_loaded_app(app);
         let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
-        let initial_heap_end = heap_start + zone_header_size;
+        let initial_heap_end = visible_zone_start + zone_header_size;
+        let minimum_safe_appl_limit = self.bus.heap_bump_ptr().max(allocation_heap_start);
         let stack_base = app.initial_sp;
         let default_appl_limit = stack_base - APP_STACK_SAFETY_MARGIN;
         let requested_partition_size = self.application_partition_size.or_else(|| {
@@ -1904,17 +1983,18 @@ impl FixtureRunner {
                 // partition pressure.
                 partition_size
                     .checked_sub(APP_STACK_SAFETY_MARGIN)
-                    .and_then(|heap_span| heap_start.checked_add(heap_span))
+                    .and_then(|heap_span| visible_zone_start.checked_add(heap_span))
             })
+            .map(|limit| limit.max(minimum_safe_appl_limit))
             .filter(|&limit| limit > initial_heap_end && limit < default_appl_limit)
             .unwrap_or(default_appl_limit.max(initial_heap_end));
         let buf_ptr = appl_limit; // Buffer area at the limit
-        self.bus.write_long(addr::SYS_ZONE, heap_start);
-        self.bus.write_long(addr::APP_L_ZONE, heap_start);
+        self.bus.write_long(addr::SYS_ZONE, visible_zone_start);
+        self.bus.write_long(addr::APP_L_ZONE, visible_zone_start);
         self.bus.write_long(addr::HEAP_END, initial_heap_end);
         self.bus.write_long(addr::APPL_LIMIT, appl_limit);
         self.bus.write_long(addr::BUF_PTR, buf_ptr);
-        self.bus.write_long(addr::THE_ZONE, heap_start);
+        self.bus.write_long(addr::THE_ZONE, visible_zone_start);
 
         // CurApRefNum: resource file reference number of the application (word).
         // CurApName: application name as Pascal string (Str31).
@@ -1959,22 +2039,28 @@ impl FixtureRunner {
         self.bus
             .fill_bytes(stack_seed_start, stack_base - stack_seed_start, 0xA5);
 
-        // Zone header at heap_start (Inside Macintosh Volume II, II-22)
+        // Zone header at visible_zone_start (Inside Macintosh Volume II, II-22)
         // Apps and the Memory Manager read the zone header to determine
         // available memory. zcbFree (offset +12) must reflect free bytes.
         // Reserve heap space so alloc() doesn't overwrite the zone header.
-        self.bus.reserve_heap_until(initial_heap_end);
-        let zone_size = appl_limit.saturating_sub(heap_start);
+        self.bus
+            .reserve_heap_until(allocation_heap_start.saturating_add(zone_header_size));
+        let zone_size = appl_limit.saturating_sub(visible_zone_start);
         let free_bytes = zone_size.saturating_sub(zone_header_size);
-        self.bus.write_long(heap_start, appl_limit); // bkLim: end of zone
-        self.bus
-            .write_long(heap_start + 8, heap_start + zone_header_size); // hFstFree
-        self.bus.write_long(heap_start + 12, free_bytes); // zcbFree: total free
-        self.bus
-            .write_long(heap_start + 56, heap_start + zone_header_size); // allocPtr
+        self.bus.write_long(visible_zone_start, appl_limit); // bkLim: end of zone
+        self.bus.write_long(
+            visible_zone_start + 8,
+            visible_zone_start + zone_header_size,
+        ); // hFstFree
+        self.bus.write_long(visible_zone_start + 12, free_bytes); // zcbFree: total free
+        self.bus.write_long(
+            visible_zone_start + 56,
+            visible_zone_start + zone_header_size,
+        ); // allocPtr
         eprintln!(
-            "[INIT] Zone header: start=${:08X} bkLim=${:08X} zcbFree={} ({:.1}MB)",
-            heap_start,
+            "[INIT] Zone header: start=${:08X} allocStart=${:08X} bkLim=${:08X} zcbFree={} ({:.1}MB)",
+            visible_zone_start,
+            allocation_heap_start,
             appl_limit,
             free_bytes,
             free_bytes as f64 / (1024.0 * 1024.0)
@@ -2547,7 +2633,9 @@ impl FixtureRunner {
                             value,
                         );
                     }
-                    self.cpu.core.set_ccr(active_interrupt_callback.ccr);
+                    self.cpu
+                        .core
+                        .set_sr_noint_nosp(active_interrupt_callback.sr);
                     if let Some((port, gdevice)) = active_interrupt_callback.restore_port {
                         self.dispatcher.set_current_port_state(
                             &mut self.bus,
@@ -2663,6 +2751,7 @@ impl FixtureRunner {
             // watchpoint context above is debug-only.
             if crate::memory::bus::fb_write_trace_active()
                 || crate::memory::bus::mem_read_trace_active()
+                || crate::memory::bus::mem_write_trace_active()
             {
                 crate::memory::bus::set_current_pc(pc);
             }
@@ -3664,6 +3753,16 @@ impl FixtureRunner {
         if self.active_interrupt_callback.is_some() {
             return;
         }
+        if (self.cpu.core.get_sr() & 0x0700) >= 0x0100 {
+            if trace_vbl_enabled() {
+                eprintln!(
+                    "[VBL] defer JCrsrTask masked sr=${:04X} pc=${:08X}",
+                    self.cpu.core.get_sr(),
+                    self.cpu.read_reg(Register::PC)
+                );
+            }
+            return;
+        }
 
         let callback_addr = self
             .bus
@@ -3707,6 +3806,16 @@ impl FixtureRunner {
     /// Processes 1994, 4-6 to 4-7; executor src/time/vbl.cpp
     fn fire_vbl_tasks(&mut self) {
         if self.active_interrupt_callback.is_some() {
+            return;
+        }
+        if (self.cpu.core.get_sr() & 0x0700) >= 0x0100 {
+            if trace_vbl_enabled() {
+                eprintln!(
+                    "[VBL] defer masked sr=${:04X} pc=${:08X}",
+                    self.cpu.core.get_sr(),
+                    self.cpu.read_reg(Register::PC)
+                );
+            }
             return;
         }
 
@@ -3772,18 +3881,24 @@ impl FixtureRunner {
             sp,
         ];
         let ccr = self.cpu.core.get_ccr();
+        let sr = self.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         self.bus.write_long(new_sp, current_pc);
         self.cpu.write_reg(Register::A7, new_sp);
+        let source = ActiveInterruptCallbackSource::Vbl;
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
-            source: ActiveInterruptCallbackSource::Vbl,
+            source,
             resume_pc: current_pc,
             resume_sp: sp,
             d_regs,
             a_regs,
+            sr,
             ccr,
             restore_port: None,
         });
+        self.cpu
+            .core
+            .set_sr_noint_nosp(interrupt_callback_sr(source, sr));
         self.cpu.write_reg(Register::PC, tramp);
 
         if trace_vbl_enabled() {
@@ -3884,6 +3999,7 @@ impl FixtureRunner {
                 sp,
             ];
             let ccr = self.cpu.core.get_ccr();
+            let sr = self.cpu.core.get_sr();
 
             // Inject: push current PC, jump to trampoline
             let new_sp = sp.wrapping_sub(4);
@@ -3895,6 +4011,7 @@ impl FixtureRunner {
                 resume_sp: sp,
                 d_regs,
                 a_regs,
+                sr,
                 ccr,
                 restore_port: None,
             });
@@ -4084,6 +4201,7 @@ impl FixtureRunner {
             sp,
         ];
         let ccr = self.cpu.core.get_ccr();
+        let sr = self.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         self.bus.write_long(new_sp, current_pc);
         self.cpu.write_reg(Register::A7, new_sp);
@@ -4093,9 +4211,13 @@ impl FixtureRunner {
             resume_sp: sp,
             d_regs,
             a_regs,
+            sr,
             ccr,
             restore_port: None,
         });
+        self.cpu
+            .core
+            .set_sr_noint_nosp(interrupt_callback_sr(source, sr));
         self.cpu.write_reg(Register::PC, trampoline);
     }
 
@@ -4426,6 +4548,7 @@ impl FixtureRunner {
             sp,
         ];
         let ccr = self.cpu.core.get_ccr();
+        let sr = self.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         let saved_regs_sp = new_sp.wrapping_sub(32);
         self.bus.write_long(tramp + 22, saved_regs_sp);
@@ -4437,6 +4560,7 @@ impl FixtureRunner {
             resume_sp: sp,
             d_regs,
             a_regs,
+            sr,
             ccr,
             restore_port: None,
         });
@@ -4576,6 +4700,7 @@ impl FixtureRunner {
             sp,
         ];
         let ccr = self.cpu.core.get_ccr();
+        let sr = self.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         let saved_regs_sp = new_sp.wrapping_sub(32);
         self.bus.write_long(tramp + 12, saved_regs_sp);
@@ -4587,6 +4712,7 @@ impl FixtureRunner {
             resume_sp: sp,
             d_regs,
             a_regs,
+            sr,
             ccr,
             restore_port: None,
         });
@@ -4905,6 +5031,7 @@ impl FixtureRunner {
             sp,
         ];
         let ccr = self.cpu.core.get_ccr();
+        let sr = self.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         let saved_sp = new_sp.wrapping_sub(32); // SP after MOVEM save at trampoline entry
 
@@ -4935,6 +5062,7 @@ impl FixtureRunner {
             resume_sp: sp,
             d_regs,
             a_regs,
+            sr,
             ccr,
             restore_port: None,
         });
@@ -5201,16 +5329,36 @@ fn apply_mpw_far_segment_relocations<M: MemoryBus>(
 fn load_app_generic<M: MemoryBus>(
     fork: &ResourceFork,
     bus: &mut M,
-    load_address: u32,
+    configured_load_address: u32,
 ) -> Option<LoadedApp> {
     // 1. Load CODE 0 Header
     let code0 = fork.get_code(0)?;
     let header = Code0Header::parse(&code0.data)?;
+    let size_resource = fork
+        .get(*b"SIZE", -1)
+        .and_then(|res| ApplicationSizeResource::parse(&res.data));
+    let load_address = load_address_for_size_partition(
+        configured_load_address,
+        &header,
+        size_resource,
+        bus.ram_size(),
+    );
     if trace_load_enabled() {
         eprintln!(
             "[LOAD] CODE 0 header: above_a5={}, below_a5={}, jt_size={}, jt_offset={}",
             header.above_a5, header.below_a5, header.jump_table_size, header.jump_table_offset
         );
+        if load_address != configured_load_address {
+            if let Some(size) = size_resource {
+                eprintln!(
+                    "[LOAD] Relocated load base for SIZE partition: configured=${:08X} effective=${:08X} preferred={} minimum={}",
+                    configured_load_address,
+                    load_address,
+                    size.preferred_size,
+                    size.minimum_size
+                );
+            }
+        }
     }
 
     let a5_base = load_address + header.below_a5;
@@ -5494,9 +5642,6 @@ fn load_app_generic<M: MemoryBus>(
         current_load_ptr = (user_addr + size + 4 + 3) & !3;
     }
 
-    let size_resource = fork
-        .get(*b"SIZE", -1)
-        .and_then(|res| ApplicationSizeResource::parse(&res.data));
     let loaded_image_end = align4(globals_zero_end.max(current_load_ptr));
     if trace_load_enabled() {
         eprintln!("[LOAD] Loaded image end=${:08X}", loaded_image_end);
@@ -5770,6 +5915,14 @@ mod tests {
         code0
     }
 
+    fn size_resource_bytes(flags: u16, preferred_size: u32, minimum_size: u32) -> Vec<u8> {
+        let mut size = Vec::with_capacity(10);
+        size.extend_from_slice(&flags.to_be_bytes());
+        size.extend_from_slice(&preferred_size.to_be_bytes());
+        size.extend_from_slice(&minimum_size.to_be_bytes());
+        size
+    }
+
     #[test]
     fn init_app_preserves_resources_allocated_before_zone_header() {
         let code0 = minimal_code0(0, 0x2000, 0, 0);
@@ -5791,6 +5944,29 @@ mod tests {
             runner.bus.read_bytes(bgas_ptr, bgas.len()),
             bgas,
             "init_app must not overwrite resources loaded before zone setup"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_post_boot_ticks() {
+        use crate::memory::globals::addr;
+
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.bus.read_long(addr::TICKS),
+            DEFAULT_LAUNCH_TICKS,
+            "fresh app launch should see a realistic nonzero post-boot TickCount"
+        );
+        assert_eq!(
+            runner.dispatcher.tick_count, DEFAULT_LAUNCH_TICKS,
+            "TickCount fast path must stay in sync with low-memory Ticks"
         );
     }
 
@@ -5839,11 +6015,7 @@ mod tests {
     #[test]
     fn load_app_records_application_size_resource_id_minus_one() {
         let code0 = minimal_code0(0, 0x2000, 0, 0);
-        let size = [
-            0x00, 0x80, // mode32BitCompatible
-            0x00, 0x30, 0x00, 0x00, // preferred partition
-            0x00, 0x20, 0x00, 0x00, // minimum partition
-        ];
+        let size = size_resource_bytes(0x0080, 0x0030_0000, 0x0020_0000);
         let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
         let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -5858,6 +6030,96 @@ mod tests {
                 minimum_size: 0x0020_0000,
             })
         );
+    }
+
+    #[test]
+    fn load_app_relocates_large_size_partition_a5_above_application_zone() {
+        let minimum_partition = 4_812_800;
+        let preferred_partition = 6_348_800;
+        let below_a5 = 0x7AF4;
+        let code0 = minimal_code0(0x11F8, below_a5, 0, 0);
+        let size = size_resource_bytes(0x5880, preferred_partition, minimum_partition);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert!(
+            app_image_start_for_loaded_app(&app) > APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE,
+            "relocated app image must leave room for the visible app-zone header"
+        );
+        assert!(
+            app.a5_base - APP_HEAP_FLOOR >= minimum_partition - APP_STACK_SAFETY_MARGIN,
+            "large SIZE partitions should place A5 high enough for direct A5-zone memory checks"
+        );
+        assert!(
+            app.a5_base - APP_HEAP_FLOOR >= 750 * 1024,
+            "Spectre-style startup gates compare A5 - GetZone against a 750K floor"
+        );
+    }
+
+    #[test]
+    fn load_app_leaves_exact_2mb_size_partition_at_default_address() {
+        let below_a5 = 0x68E8;
+        let code0 = minimal_code0(0x0D18, below_a5, 0, 0);
+        let size = size_resource_bytes(0x5880, 0x0020_0000, 0x0020_0000);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert_eq!(app_image_start_for_loaded_app(&app), DEFAULT_LOAD_ADDRESS);
+        assert_eq!(app.a5_base, DEFAULT_LOAD_ADDRESS + below_a5);
+    }
+
+    #[test]
+    fn init_app_exposes_low_visible_zone_for_relocated_size_partition() {
+        use crate::memory::globals::addr;
+
+        let minimum_partition = 4_812_800;
+        let preferred_partition = 6_348_800;
+        let below_a5 = 0x7AF4;
+        let code0 = minimal_code0(0x11F8, below_a5, 0, 0);
+        let marker = [0xCA, 0xFE, 0xBA, 0xBE, 0x12, 0x34, 0x56, 0x78];
+        let size = size_resource_bytes(0x5880, preferred_partition, minimum_partition);
+        let fork_bytes = make_resource_fork_bytes(&[
+            (*b"BGAS", 128, &marker),
+            (*b"CODE", 0, &code0),
+            (*b"SIZE", -1, &size),
+        ]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        let allocation_heap_start = app_heap_start_for_loaded_app(&app);
+        let (_, marker_ptr) = runner
+            .dispatcher
+            .find_resource_any(*b"BGAS", 128)
+            .expect("BGAS resource loaded");
+        assert!(
+            marker_ptr >= allocation_heap_start + APP_ZONE_HEADER_SIZE,
+            "preloaded resources must still allocate above the relocated image"
+        );
+
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::APP_L_ZONE), APP_HEAP_FLOOR);
+        assert_eq!(runner.bus.read_long(addr::THE_ZONE), APP_HEAP_FLOOR);
+        assert_eq!(
+            runner.bus.read_long(addr::HEAP_END),
+            APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE
+        );
+        assert_eq!(
+            runner.bus.read_long(APP_HEAP_FLOOR),
+            runner.bus.read_long(addr::APPL_LIMIT)
+        );
+        assert!(
+            app.a5_base - runner.bus.read_long(addr::THE_ZONE) >= 750 * 1024,
+            "GetZone-visible partition span should satisfy direct startup memory gates"
+        );
+        assert_eq!(runner.bus.read_bytes(marker_ptr, marker.len()), marker);
     }
 
     #[test]
@@ -6805,6 +7067,7 @@ mod tests {
         runner.cpu.write_reg(Register::A0, 0xAAAA_0000);
         runner.cpu.write_reg(Register::A6, 0xCCCC_0000);
         runner.cpu.core.set_ccr(0x04);
+        runner.cpu.core.set_sr_noint_nosp(0x2004);
 
         runner.advance_guest_tick();
 
@@ -6821,7 +7084,9 @@ mod tests {
         assert_eq!(active.a_regs[6], 0xCCCC_0000);
         assert_eq!(active.d_regs[0], 0x1111_1111);
         assert_eq!(active.d_regs[7], 0x7777_7777);
+        assert_eq!(active.sr, 0x2004);
         assert_eq!(active.ccr, 0x04);
+        assert_eq!(runner.cpu.core.get_sr(), 0x2104);
 
         assert_ne!(runner.cursor_task_trampoline, 0);
         assert_eq!(
@@ -6847,6 +7112,27 @@ mod tests {
             runner.bus.read_word(runner.cursor_task_trampoline + 14),
             0x4E75
         );
+    }
+
+    #[test]
+    fn cursor_task_defers_while_processor_priority_masks_level_one() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0002_0000;
+        let interrupted_sp = 0x007F_FFC0;
+
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::J_CRSR_TASK, 0x0004_1234);
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.core.set_sr_noint_nosp(0x2100);
+
+        runner.advance_guest_tick();
+
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cursor_task_trampoline, 0);
+        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]
@@ -6886,6 +7172,7 @@ mod tests {
         assert_eq!(active.a_regs[6], 0xCCCC_0000);
         assert_eq!(active.d_regs[0], 0x1111_1111);
         assert_eq!(active.d_regs[7], 0x7777_7777);
+        assert_eq!(active.sr & 0x001F, 0x001F);
         assert_eq!(active.ccr, 0x1F);
 
         assert_ne!(runner.timer_trampoline, 0);
@@ -6950,6 +7237,7 @@ mod tests {
             resume_sp: interrupted_sp,
             d_regs: [0; 8],
             a_regs: [0, 0, 0, 0, 0, 0, 0, interrupted_sp],
+            sr: 0x2000,
             ccr: 0,
             restore_port: None,
         });
@@ -7289,6 +7577,7 @@ mod tests {
             resume_sp: 0x007F_FFC0,
             d_regs: [0; 8],
             a_regs: [0; 8],
+            sr: 0x2000,
             ccr: 0,
             restore_port: None,
         });
@@ -7757,6 +8046,7 @@ mod tests {
         runner.cpu.write_reg(Register::A7, interrupted_sp);
         runner.cpu.write_reg(Register::A0, 0xAAAA_0000);
         runner.cpu.core.set_ccr(0x04);
+        runner.cpu.core.set_sr_noint_nosp(0x2004);
 
         runner.bus.write_word(task_ptr + 4, 1); // qType = vType
         runner.bus.write_long(task_ptr + 6, 0x0004_1234); // vblAddr
@@ -7775,9 +8065,12 @@ mod tests {
         assert!(matches!(active.source, ActiveInterruptCallbackSource::Vbl));
         assert_eq!(active.resume_pc, interrupted_pc);
         assert_eq!(active.resume_sp, interrupted_sp);
+        assert_eq!(active.sr, 0x2004);
+        assert_eq!(active.ccr, 0x04);
         assert_eq!(runner.bus.read_word(task_ptr + 10), 0);
 
         assert_ne!(runner.vbl_trampoline, 0);
+        assert_eq!(runner.cpu.core.get_sr(), 0x2104);
         assert_eq!(runner.cpu.read_reg(Register::PC), runner.vbl_trampoline);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp - 4);
         assert_eq!(runner.bus.read_long(interrupted_sp - 4), interrupted_pc);
@@ -7787,6 +8080,68 @@ mod tests {
             runner.bus.read_long(runner.vbl_trampoline + 12),
             0x0004_1234
         );
+    }
+
+    #[test]
+    fn vbl_callback_defers_while_processor_priority_masks_level_one() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0002_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let task_ptr = 0x0020_2000;
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.core.set_sr_noint_nosp(0x2100);
+
+        runner.bus.write_word(task_ptr + 4, 1);
+        runner.bus.write_long(task_ptr + 6, 0x0004_1234);
+        runner.bus.write_word(task_ptr + 10, 1);
+        runner.bus.write_word(task_ptr + 12, 0);
+        runner.dispatcher.vbl_tasks.push(VblTask {
+            task_ptr,
+            slot: None,
+        });
+
+        runner.fire_vbl_tasks();
+
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.bus.read_word(task_ptr + 10), 1);
+        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+    }
+
+    #[test]
+    fn vbl_callback_restores_foreground_sr_after_return() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0002_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let task_ptr = 0x0020_2000;
+        let callback_addr = 0x0004_1234;
+
+        runner.bus.write_word(interrupted_pc, 0x4E71); // foreground NOP
+        runner.bus.write_word(callback_addr, 0x4E75); // VBL callback RTS
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.core.set_sr_noint_nosp(0x2004);
+
+        runner.bus.write_word(task_ptr + 4, 1);
+        runner.bus.write_long(task_ptr + 6, callback_addr);
+        runner.bus.write_word(task_ptr + 10, 1);
+        runner.bus.write_word(task_ptr + 12, 0);
+        runner.dispatcher.vbl_tasks.push(VblTask {
+            task_ptr,
+            slot: None,
+        });
+
+        runner.fire_vbl_tasks();
+        assert_eq!(runner.cpu.core.get_sr(), 0x2104);
+
+        let (_steps, running) = runner.run_steps(8, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cpu.core.get_sr(), 0x2004);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]
@@ -8158,6 +8513,7 @@ mod tests {
         runner.cpu.write_reg(Register::PC, base + 4);
         runner.cpu.write_reg(Register::A7, sp);
         runner.cpu.write_reg(Register::D0, 0xDEAD_BEEF);
+        runner.cpu.core.set_sr_noint_nosp(0x2000);
         runner.bus.write_long(sp, 100);
 
         runner.bus.write_word(task_ptr + 4, 1);
@@ -9206,6 +9562,7 @@ mod tests {
             resume_sp: interrupted_sp,
             d_regs: [0; 8],
             a_regs: [0, 0, 0, 0, 0, 0, 0, interrupted_sp],
+            sr: 0x2000,
             ccr: 0,
             restore_port: None,
         });
@@ -10091,6 +10448,7 @@ mod tests {
         runner.bus.write_word(interrupted_pc, 0x4E71);
         runner.cpu.write_reg(Register::PC, interrupted_pc);
         runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.core.set_sr_noint_nosp(0x2000);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.pending_delay_ticks = 1;
 

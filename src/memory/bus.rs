@@ -216,6 +216,16 @@ pub fn mem_read_trace_active() -> bool {
     false
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mem_write_trace_active() -> bool {
+    mem_write_trace_range().is_some()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn mem_write_trace_active() -> bool {
+    false
+}
+
 #[inline]
 fn maybe_log_mem_read(address: u32, width: u8, value: u32) {
     #[cfg(target_arch = "wasm32")]
@@ -1025,6 +1035,10 @@ impl MacMemoryBus {
     /// Return the allocated size for a given address, or None if unknown.
     pub fn get_alloc_size(&self, addr: u32) -> Option<u32> {
         self.alloc_sizes.get(&addr).copied()
+    }
+
+    pub(crate) fn heap_bump_ptr(&self) -> u32 {
+        self.heap_ptr
     }
 
     /// Update the logical size of an existing allocation. Used by
