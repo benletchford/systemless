@@ -293,6 +293,23 @@ impl App {
         budget
     }
 
+    /// Wall-clock origin such that `tick_due_at(origin, now)` equals `guest_tick`.
+    /// Shifts the origin back so a boot-seeded, non-zero TickCount does not make
+    /// the pacer wait real time before running any guest CPU work.
+    fn wall_clock_origin_for_guest_tick(
+        now: std::time::Instant,
+        guest_tick: u32,
+    ) -> std::time::Instant {
+        // Add a half-tick of lead before flooring so `tick_due_at` reliably
+        // maps `now` back to `guest_tick` (rather than `guest_tick - 1` after
+        // float truncation), guaranteeing the first frame already has runnable
+        // guest work. The half-tick (~8ms) lead is sub-frame and harmless.
+        now.checked_sub(std::time::Duration::from_secs_f64(
+            (guest_tick as f64 + 0.5) / systemless::runner::DEFAULT_VBL_HZ,
+        ))
+        .unwrap_or(now)
+    }
+
     fn tick_due_at(origin: std::time::Instant, at: std::time::Instant) -> u32 {
         at.checked_duration_since(origin)
             .unwrap_or_default()
@@ -353,7 +370,16 @@ impl App {
         }
 
         let now = runner.host_now();
-        let start = *self.start_time.get_or_insert(now);
+        // Seed the wall-clock origin from the guest's current tick, not `now`.
+        // The runner boots with a non-zero TickCount (DEFAULT_LAUNCH_TICKS ≈ 600
+        // ≈ 10s of simulated post-boot time), so anchoring the origin at `now`
+        // would leave the guest clock 600 ticks "ahead" of the wall clock. With
+        // `ticks_behind` saturating to 0, the CPU loop would advance no work for
+        // ~10 real seconds until the wall clock caught up — a launch stall. See
+        // wall_clock_origin_for_guest_tick in systemless.org/src/emulator.rs.
+        let start = *self
+            .start_time
+            .get_or_insert_with(|| Self::wall_clock_origin_for_guest_tick(now, runner.guest_tick()));
         let scheduled_frame_end = self.next_frame_time.unwrap_or(now + FRAME_DURATION);
 
         // Wall-clock tick target: where the game clock should be right now.
@@ -1297,6 +1323,38 @@ mod tests {
             queued_stereo_bytes: queued.clone(),
         }));
         (runner, queued)
+    }
+
+    #[test]
+    fn wall_clock_origin_starts_pacer_at_seeded_guest_tick() {
+        // The runner boots with a non-zero TickCount (~600). Anchoring the
+        // wall-clock origin at that seeded tick means the pacer is level with
+        // the guest immediately instead of waiting ~10 real seconds for the
+        // wall clock to reach tick 600 before running any CPU.
+        let now = std::time::Instant::now();
+        let seeded_tick = 600;
+        let origin = App::wall_clock_origin_for_guest_tick(now, seeded_tick);
+
+        assert_eq!(
+            App::tick_due_at(origin, now),
+            seeded_tick,
+            "a non-zero launch TickCount must not make the pacer wait real time before running CPU"
+        );
+    }
+
+    #[test]
+    fn seeded_guest_tick_can_advance_on_first_frame() {
+        // One host frame after boot, the wall-clock target must be at least one
+        // tick ahead of the seeded guest tick so the CPU loop has runnable work.
+        let start = std::time::Instant::now();
+        let seeded_tick = 600;
+        let origin = App::wall_clock_origin_for_guest_tick(start, seeded_tick);
+        let one_frame_later = start + FRAME_DURATION;
+
+        assert!(
+            App::tick_due_at(origin, one_frame_later) > seeded_tick,
+            "the first post-boot frame should have runnable guest work"
+        );
     }
 
     #[test]
