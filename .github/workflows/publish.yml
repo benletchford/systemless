@@ -10,7 +10,6 @@ on:
       - Cargo.lock
       - README.md
       - src/**
-      - assets/**
       - .github/workflows/publish.yml
   workflow_dispatch:
     inputs:

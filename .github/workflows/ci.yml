@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Compile everything (lib + the GUI binary, all features) on each OS so
+      # platform-specific breakage in winit/softbuffer/cpal is caught early.
+      - name: Build all targets
+        run: cargo build --all-targets --all-features
+
+      # test-support enables the scripted_traces module and its tests.
+      - name: Run library tests
+        run: cargo test --lib --features test-support
+
+  checks:
+    name: headless & package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Headless library build (no default features)
+        run: cargo check --no-default-features
+
+      # Catch packaging/metadata problems before a release ever runs.
+      - name: Package dry-run
+        run: cargo publish --locked --dry-run
+
+  lint:
+    name: fmt & clippy (non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux audio dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Non-blocking for now: the tree is not yet rustfmt-clean and clippy
+      # reports pre-existing warnings. Drop `continue-on-error` on each step
+      # (and add `-D warnings` to clippy) once a formatting/clippy pass lands.
+      - name: rustfmt
+        continue-on-error: true
+        run: cargo fmt --check
+
+      - name: clippy
+        continue-on-error: true
+        run: cargo clippy --all-targets --all-features
