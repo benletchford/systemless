@@ -10458,7 +10458,6 @@ impl super::TrapDispatcher {
             //
             // Regression coverage:
             //   src/trap/dialog.rs::tests::disposdialog_restores_saved_background_pixels
-            //   src/trap/dialog.rs::tests::disposdialog_without_saved_pixels_noop
             //   src/trap/dialog.rs::tests::disposdialog_non_front_does_not_restore
             // DisposDialog ($A983): Frees dialog, cleans up dialog_items, restores saved background pixels (IM:I I-425 PaintBehind)
             (true, 0x183) => {
@@ -10497,9 +10496,8 @@ impl super::TrapDispatcher {
                     let s = bus.read_pstring(ptr);
                     self.param_text[i] = s.clone();
                     // Write to DAStrings low-memory global ($0AA0 + i*4).
-                    // The ROM stores each param string as a StringHandle so
-                    // C fixtures can read *(StringHandle*)0x0AA0 to verify
-                    // the substitution was stored.
+                    // The ROM stores each param string as a StringHandle at
+                    // *(StringHandle*)($0AA0 + i*4).
                     // Inside Macintosh Volume I, I-422 (DAStrings global).
                     use crate::memory::globals::addr;
                     let data_len = 1u32 + s.len() as u32;
@@ -12310,13 +12308,6 @@ impl super::TrapDispatcher {
             // call behaves exactly like TEScroll ($A9DD) per the IM
             // "offset by the amount scrolled" guarantee.
             //
-            // Runtime proof: a812_tepinscroll_strict
-            //   B1: in-range dv=-3 with 8-line text exceeds 10-pixel view height
-            //       → destRect.top/bottom shift by exactly -3 (Apple/BII agree)
-            //   B2: dv=-1000 on empty TERec fitting in 200-pixel view
-            //       → destRect unchanged (pin clamps to zero movement)
-            //   B3: Pascal PROCEDURE stack sandwich balances StackSpace.
-            //
             // Regression coverage:
             //   dialog::tests::te_pin_scroll_reads_handle_from_stack_top
             //   dialog::tests::tepinscroll_in_range_negative_dv_offsets_destrect_top_and_bottom_exactly_by_dv
@@ -12446,18 +12437,12 @@ impl super::TrapDispatcher {
             //      destRect.{top,left,bottom,right} and redraws.
             //
             // BasiliskII-vs-Apple divergence note:
-            //   The strict bake at a811_teselview_strict
-            //   witnesses three engines-agree cases (auto-scroll disabled,
-            //   selection in view, Pascal stack discipline). BasiliskII
-            //   System 7.5.3 ROM does NOT scroll destRect when auto-scroll
-            //   is enabled and the selection lies below viewRect — pre and
-            //   post destRect coincide at (0,0,200,30) in the diagnostic
-            //   probe. Apple's IM:Text 1993 p. 2-92 says this case must
-            //   scroll. Systemless implements the Apple-canonical semantic
-            //   (declared via `hle_matches = "apple"` on the catalog row);
-            //   the divergent rule is pinned by the contract test
-            //   `teselview_apple_canonical_below_view_shifts_destrect_up`
-            //   plus the existing assertion-bearing tests in this module.
+            //   BasiliskII System 7.5.3 ROM does NOT scroll destRect when
+            //   auto-scroll is enabled and the selection lies below viewRect
+            //   — pre and post destRect coincide at (0,0,200,30). Apple's
+            //   IM:Text 1993 p. 2-92 says this case must scroll. Systemless
+            //   implements the Apple-canonical semantic; the divergent rule
+            //   is pinned by the assertion-bearing tests in this module.
             (true, 0x011) => {
                 let sp = cpu.read_reg(Register::A7);
                 let te_handle = bus.read_long(sp);
@@ -12608,15 +12593,10 @@ impl super::TrapDispatcher {
             // them in the same observable state (cursor visible,
             // level unchanged) regardless of dispatch.
             //
-            // Engines-agree subset (witnessed by the strict bake
-            // `a855_a856_shieldcursor_obscurecursor_strict`):
-            //   - 0-byte pop balanced across single + 5-call
-            //     StackSpace sandwiches; SP unchanged externally.
             // The Apple-canonical "hides until mouse move" and
             // "must not be balanced by ShowCursor" rules are pinned
-            // in-Rust via `obscure_cursor_noop_preserves_cursor_level_visibility_and_stack`
-            // and declared `witness_kind = "contract"` in the row
-            // since BII and Systemless HLE diverge on the LowMem CrsrVis
+            // in-Rust via `obscure_cursor_noop_preserves_cursor_level_visibility_and_stack`.
+            // BII and Systemless HLE diverge on the LowMem CrsrVis
             // side-effect (BII System 7.5.3 ROM writes CrsrVis;
             // Systemless HLE keeps cursor state internal).
             //
@@ -12849,14 +12829,11 @@ impl super::TrapDispatcher {
             //                              const Rect *viewRect)
             //                                  ONEWORDINLINE(0xA9D2);
             // BasiliskII System 7.5.3 ROM accepts the pointer-arg
-            // convention (the bake fixture uses it). Systemless's HLE
+            // convention. Systemless's HLE
             // sniffs which convention the caller used by inspecting
             // whether the first two long words on the stack are valid
             // guest pointers and pops either 8 bytes (pointer convention)
             // or 16 bytes (by-value convention) accordingly.
-            //
-            // Strict bake witnesses 5 documented behaviors:
-            //   * a9d2_tenew_strict
             //
             // Regression coverage (this file):
             //   tenew_pointer_arg_convention_initializes_destrect_viewrect_and_returns_non_nil_handle
@@ -12911,9 +12888,6 @@ impl super::TrapDispatcher {
             //   txFont/txFace (4-byte overlay at offset 0x4A) holds
             //                     the TEStyleHandle.
             //
-            // Strict bake witnesses 5 documented behaviors:
-            //   * a83e_testylenew_strict
-            //
             // Regression coverage (this file):
             //   testylenew_returns_styled_handle_and_initializes_sentinel_fields
             //   testylenew_pointer_arg_convention_initializes_destrect_viewrect_and_styled_sentinels
@@ -12964,16 +12938,11 @@ impl super::TrapDispatcher {
             // Pascal-LR fix only covered TENew + TEStyleNew sharing
             // the te_new_rect_args helper): this arm read te_handle
             // from sp+2 and pt.v/pt.h from sp+6/sp+8, off-by-2 versus
-            // the canonical Pascal LR layout. The strict bake at
-            // a83c_tegetoffset_strict exposed the
-            // bug (B2 returned 0 instead of teLength=5 because the
-            // off-by-2 read placed garbage in te_handle and the
-            // te_point_to_char helper bailed via the NIL TERec
-            // branch). Fixed by reading args at the canonical sp+0,
-            // sp+4, sp+6 offsets.
-            //
-            // Strict bake witnesses 3 documented behaviors:
-            //   * a83c_tegetoffset_strict
+            // the canonical Pascal LR layout. That off-by-2 read placed
+            // garbage in te_handle so the te_point_to_char helper bailed
+            // via the NIL TERec branch and returned 0 instead of the
+            // expected teLength=5. Fixed by reading args at the canonical
+            // sp+0, sp+4, sp+6 offsets.
             //
             // Regression coverage (this file):
             //   tegetoffset_point_above_destrect_returns_zero
@@ -13060,19 +13029,6 @@ impl super::TrapDispatcher {
             //   teBitTest=-1, coincides with the current setting since
             //   the bit is not mutated). Action codes are teBitClear=0,
             //   teBitSet=1, teBitTest=-1.
-            //
-            // Strict bake coverage:
-            //   a83d_tedispatch_strict witnesses
-            //   selectors $000A and $000E end-to-end against BasiliskII:
-            //   teBitTest on a fresh TENew record returns 0 (auto-scroll
-            //   defaults off per IM:Text 1993 p. 2-97); teBitSet returns
-            //   the prior 0 and a follow-up teBitTest returns 1;
-            //   teBitClear returns the prior 1 and a follow-up teBitTest
-            //   returns 0; TEContinuousStyle returns TRUE on an unstyled
-            //   record and overwrites the caller's poisoned aStyle fields;
-            //   StackSpace round-trips zero across a TEFeatureFlag call,
-            //   pinning the 10-byte arg pop + 2-byte short result Pascal
-            //   FUNCTION protocol under THREEWORDINLINE dispatch.
             //
             // Contract test coverage (this module):
             //   te_dispatch_feature_flag_test_action_returns_current_state
@@ -13993,18 +13949,13 @@ impl super::TrapDispatcher {
             // yields an empty edit record. Systemless additionally defends
             // against NIL text pointer (clears regardless of length);
             // the real Mac ROM (BasiliskII System 7.5.3) does NOT safely
-            // handle NIL source pointers, so the catalog row's strict
-            // bake witnesses only the zero-length branch of the
-            // documented disjunction (see a9cf_tesettext_strict).
+            // handle NIL source pointers.
             //
-            // Witnessed by:
-            //   a9cf_tesettext_strict (BII bake +
-            //     Systemless runtime)
-            //   contract tests in this file:
-            //     tesettext_copies_bytes_updates_length_and_pops_arguments
-            //     tesettext_nil_or_zero_length_input_clears_text
-            //     tesettext_replaces_prior_contents_via_sequential_call
-            //     tesettext_balances_stackspace_with_pascal_protocol
+            // Contract tests in this file:
+            //   tesettext_copies_bytes_updates_length_and_pops_arguments
+            //   tesettext_nil_or_zero_length_input_clears_text
+            //   tesettext_replaces_prior_contents_via_sequential_call
+            //   tesettext_balances_stackspace_with_pascal_protocol
             (true, 0x1CF) => {
                 let sp = cpu.read_reg(Register::A7);
                 let te_handle = bus.read_long(sp);
@@ -14093,14 +14044,11 @@ impl super::TrapDispatcher {
             // (The Pascal canonical signature inlines the 8-byte Rect
             // by value for an 18-byte frame, but MPW C never produces
             // that form. Systemless's HLE only supports the MPW C
-            // canonical layout; the in-Rust contract tests and the
-            // BasiliskII strict bake at
-            // a9ce_tetextbox_strict/ both exercise
+            // canonical layout; the in-Rust contract tests exercise
             // this layout exclusively.)
             //
-            // Behavior witnessed by a9ce_tetextbox_strict
-            // (5-band golden, 4 strict assertions; BII System 7.5.3 ROM
-            // and Systemless HLE produce the same boolean predicates):
+            // Documented behaviors (BII System 7.5.3 ROM and Systemless
+            // HLE produce the same boolean predicates):
             //   1. Erases the destination box before drawing (probe a
             //      pre-blackened pixel far from any glyph is WHITE after
             //      the call) — IM:Text 1993 p. 2-88.
@@ -14379,13 +14327,9 @@ impl super::TrapDispatcher {
             // state (hText, teLength, selStart, selEnd) — it only paints
             // pixels into the TE's inPort within the rUpdate region.
             //
-            // Witnessed by `a9d3_teupdate_strict` (BasiliskII System 7.5.3
-            // ROM, three engines-agree assertions on first deterministic
-            // bake): C-form stack discipline, Pascal-form stack discipline
-            // (via inline `pascal void kx_TEUpdate_Pascal(Rect, TEHandle)
-            // = { 0xA9D3 }` thunk), and TE record-state preservation
-            // across the two calls. Systemless HLE passes the catalog_test
-            // on first try with no source change required — the heuristic
+            // Both the C-form and Pascal-form stack disciplines are
+            // exercised, and TE record state is preserved across the two
+            // calls (BasiliskII System 7.5.3 ROM agrees). The heuristic
             // below correctly identifies both call shapes.
             //
             // Contract coverage:
@@ -14528,14 +14472,9 @@ impl super::TrapDispatcher {
             // DOES update selStart/selEnd on a TEClick call (collapsing
             // to the byte offset corresponding to the click position
             // per IM:I I-376) because it has the real pixel-to-character
-            // mapping. Systemless leaves them unchanged. The strict bake
-            // `a9d4_teclick_strict` therefore witnesses only the
-            // engines-agree intersection (active flag + teLength
-            // preservation + Pascal PROCEDURE stack discipline), and
-            // the Apple-canonical "extend=FALSE collapses selection
-            // to click offset" rule is tracked as a contract-only
-            // assertion in the catalog row (not part of the golden
-            // assertion set).
+            // mapping. Systemless leaves them unchanged; the two engines
+            // still agree on the active flag, teLength preservation, and
+            // Pascal PROCEDURE stack discipline.
             //
             // Both engines DO agree that TEClick must not mutate the
             // active flag (owned by TEActivate/TEDeactivate per
@@ -14718,9 +14657,6 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-385; Text 1993, 2-80
             //
             // Regression coverage:
-            //   teactivate_sets_active_flag
-            //   teactivate_pops_four_bytes
-            //   teactivate_preserves_selection
             //   teactivate_and_tedeactivate_repaint_empty_insertion_caret
             // TEActivate ($A9D8): Sets TERec.active flag per IM:I I-385
             (true, 0x1D8) => {
@@ -14747,9 +14683,6 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-385; Text 1993, 2-80
             //
             // Regression coverage:
-            //   tedeactivate_clears_active_flag
-            //   tedeactivate_pops_four_bytes
-            //   tedeactivate_preserves_selection
             //   teactivate_and_tedeactivate_repaint_empty_insertion_caret
             // TEDeactivate ($A9D9): Clears TERec.active flag per IM:I I-385
             (true, 0x1D9) => {
@@ -14796,8 +14729,7 @@ impl super::TrapDispatcher {
             // documented initial 32-tick interval, toggles caretState, and
             // redraws the edit record. Non-insertion selections do not blink.
             //
-            // Crucial no-mutation contract (witnessed by both
-            // engines): TEIdle MUST NOT mutate TERec.active,
+            // Crucial no-mutation contract: TEIdle MUST NOT mutate TERec.active,
             // TERec.selStart, TERec.selEnd, TERec.teLength, or any
             // other selection / text fields. Selection updates are
             // the exclusive responsibility of TESetSelect /
@@ -14805,11 +14737,6 @@ impl super::TrapDispatcher {
             // handled by TEActivate / TEDeactivate.
             //
             // NIL hTE is a defensive no-op.
-            //
-            // Witnessed by `a9da_teidle_strict` strict bake (3/3 BII
-            // golden assertions): single-call StackSpace balance,
-            // four-field TERec preservation across one call, and
-            // 8-call composition StackSpace balance.
             //
             // Regression coverage:
             //   dialog::tests::teidle_consumes_tehandle_argument
@@ -14859,18 +14786,6 @@ impl super::TrapDispatcher {
             // PROCEDURE TEKey(key: CHAR; hTE: TEHandle);
             // Inside Macintosh Volume I, I-385; Text 1993, 2-81
             //
-            // Regression coverage:
-            //   tekey_inserts_printable_character
-            //   tekey_replaces_selection_with_character
-            //   tekey_backspace_deletes_before_insertion
-            //   tekey_backspace_deletes_selection
-            //   tekey_backspace_at_start_is_noop
-            //   tekey_pops_six_bytes
-            //   tekey_with_nil_hte_is_safe_noop
-            //   tekey_nil_master_ptr_is_safe_noop
-            //   tekey_does_not_mutate_other_te_record
-            //   tekey_insertion_at_start_mid_end_parametric
-            //   tekey_does_not_mutate_other_registers_or_caller_stack
             // TEKey ($A9DC): Inserts character at insertion point, replaces selection; backspace deletes. IM:I I-385
             (true, 0x1DC) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -14985,11 +14900,6 @@ impl super::TrapDispatcher {
             // PROCEDURE TESetAlignment(just: INTEGER; hTE: TEHandle);
             // Inside Macintosh Volume I, I-387; Text 1993, 2-87
             //
-            // Regression coverage:
-            //   tesetalignment_writes_just_field
-            //   tesetalignment_center_value
-            //   tesetalignment_right_value
-            //   tesetalignment_pops_six_bytes
             // TESetAlignment ($A9DF): Writes just field to TERec per IM:I I-387
             (true, 0x1DF) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -22925,9 +22835,8 @@ mod tests {
         // MTE 1992 p. 6-139 and IM:I I-417: mouseDown in an enabled
         // editText item is handled through TextEdit and reports the item,
         // while null events with an editText item call TEIdle and return
-        // FALSE. Systemless TEClick/TEIdle preserve the TERec text/selection
-        // intersection currently shared with the BasiliskII strict bakes, so
-        // theme rendering must not alter the active editField, result slots,
+        // FALSE. Systemless TEClick/TEIdle preserve the TERec text/selection,
+        // so theme rendering must not alter the active editField, result slots,
         // output-slot behavior, TERecord mirroring, or stack protocol.
         let classic = dialog_select_edit_text_mouse_results_for_theme(UiThemeId::ClassicSystem7);
         let themed = dialog_select_edit_text_mouse_results_for_theme(UiThemeId::SystemlessDefault);
@@ -24979,8 +24888,7 @@ mod tests {
         // uses `const Rect *box`, so the caller pushes exactly 14
         // bytes (2-byte just + 4-byte Rect* + 4-byte long + 4-byte
         // text Ptr) and the trap must pop exactly 14 bytes with no
-        // result slot written. Mirrors the strict bake's B4 predicate
-        // in a9ce_tetextbox_strict.
+        // result slot written.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
         disp.current_port = port_ptr;
@@ -30714,12 +30622,11 @@ mod tests {
 
     #[test]
     fn teupdate_preserves_te_record_state_across_redraw() {
-        // Pins the engines-agree contract from a9d3_teupdate_strict:
         // TEUpdate is a redraw operation and MUST NOT mutate hText,
         // teLength, selStart, or selEnd. Per IM:I I-387 + IM:Text 1993
-        // p. 2-88. Mirrors band B3 of the strict bake (text bytes
-        // "HELLO" preserved, teLength==5, selStart==1, selEnd==4 after
-        // both C-form and Pascal-form TEUpdate calls).
+        // p. 2-88: text bytes "HELLO" preserved, teLength==5,
+        // selStart==1, selEnd==4 after both C-form and Pascal-form
+        // TEUpdate calls.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
         let te_ptr = bus.read_long(te_handle);
@@ -30852,8 +30759,7 @@ mod tests {
 
     #[test]
     fn teclick_preserves_terec_active_flag_and_telength() {
-        // Mirrors band B2 of the a9d4_teclick_strict bake: both
-        // BasiliskII System 7.5.3 ROM and Systemless HLE agree that
+        // Both BasiliskII System 7.5.3 ROM and Systemless HLE agree that
         // TEClick must not mutate the active flag (owned by
         // TEActivate/TEDeactivate per IM:I I-385) or teLength
         // (owned by TESetText/TEKey/TEDelete/TEInsert). Inside
@@ -30887,8 +30793,7 @@ mod tests {
 
     #[test]
     fn teclick_repeated_calls_balance_stack_no_drift() {
-        // Mirrors band B3 of the a9d4_teclick_strict bake: an 8-call
-        // composition of TEClick keeps the A7 advance balanced at
+        // An 8-call composition of TEClick keeps the A7 advance balanced at
         // exactly 8 * 10 = 80 bytes; per-call pop errors that cancel
         // within a single call but drift over many invocations are
         // detected here. A7 is reset to TEST_SP between iterations so
@@ -31215,8 +31120,7 @@ mod tests {
         // to be called on every null event from the application's event
         // loop, so per-call pop discipline must compose cleanly across
         // many invocations and the TERec must remain bit-for-bit
-        // identical across the sequence. Mirrors B3 of the
-        // `a9da_teidle_strict` strict bake: 8 successive TEIdle calls,
+        // identical across the sequence: 8 successive TEIdle calls,
         // assert A7 advanced exactly 8 * 4 = 32 bytes AND active /
         // selStart / selEnd / teLength are all preserved.
         let (mut disp, mut cpu, mut bus) = setup();
@@ -32152,8 +32056,7 @@ mod tests {
     // Inside Macintosh Volume VI (1991), p. 15-22: TEFeatureFlag with
     // action teBitClear=0 clears the selector bit and returns the prior
     // state. Symmetric counterpart of `te_dispatch_feature_flag_tracks_auto_scroll_state`
-    // for the clear action; mirrors the strict bake's B3 witness in
-    // a83d_tedispatch_strict.
+    // for the clear action.
     #[test]
     fn tefeatureflag_clear_action_returns_prior_one_state_and_clears_bit() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -32196,7 +32099,7 @@ mod tests {
     // Universal Headers TextEdit.h declares THREEWORDINLINE(0x3F3C, 0x000E, 0xA83D).
     // The 10-byte stack frame (2 selector + 4 hTE + 2 action + 2 feature)
     // is consumed atomically; the post-pop SP points at the 2-byte short
-    // function-result slot. Mirrors the strict bake's B5 witness.
+    // function-result slot.
     #[test]
     fn tedispatch_function_protocol_consumes_threewordinline_stack_frame_for_tefeatureflag() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -32360,9 +32263,9 @@ mod tests {
     #[test]
     fn tepinscroll_in_range_negative_dv_offsets_destrect_top_and_bottom_exactly_by_dv() {
         // Inside Macintosh: Text 1993, p. 2-91: "The destination rectangle
-        // is offset by the amount scrolled." Mirrors the strict bake fixture
-        // a812_tepinscroll_strict band B1 (in-range up-scroll with multi-line
-        // text that overflows the view): with text "A\rB\rC\rD\rE\rF\rG\rH"
+        // is offset by the amount scrolled." In-range up-scroll with
+        // multi-line text that overflows the view: with text
+        // "A\rB\rC\rD\rE\rF\rG\rH"
         // and view height 10, any small negative dv is in-range so destRect.
         // top and destRect.bottom must shift by exactly dv with destRect.
         // left and destRect.right unchanged (dh=0).
@@ -32653,11 +32556,8 @@ mod tests {
         // Inside Macintosh: Text 1993, p. 2-92 (Apple canonical):
         //   "The top left part of the selection range is scrolled
         //    into view."
-        // Witnesses the contract-only assertion
-        //   A811:teselview_autoscroll_enabled_with_selection_below_view_shifts_destrect_up_per_apple_canonical
-        // which the strict bake intentionally does NOT witness
-        // (BasiliskII System 7.5.3 ROM does not scroll destRect in
-        // this case — empirically verified). Systemless implements the
+        // BasiliskII System 7.5.3 ROM does not scroll destRect in
+        // this case (empirically verified); Systemless implements the
         // Apple-canonical semantic.
         //
         // Setup: destRect = (0, 0, 100, 200) tall enough for the
@@ -32697,8 +32597,6 @@ mod tests {
 
     #[test]
     fn teselview_procedure_protocol_consumes_only_tehandle_arg() {
-        // Witness for golden assertion id
-        //   A811:teselview_procedure_protocol_consumes_tehandle_argument_from_stack
         // Pascal PROCEDURE: 4-byte hTE arg, no result. Sentinel guard
         // at TEST_SP+4 must survive the call (trap must not write past
         // its argument frame). A7 advances by exactly 4 bytes.
@@ -32908,10 +32806,9 @@ mod tests {
     #[test]
     fn tesettext_replaces_prior_contents_via_sequential_call() {
         // Inside Macintosh Volume I (1985), p. I-378: TESetText *sets*
-        // (not appends to) the current text contents. Mirrors B2 of the
-        // a9cf_tesettext_strict bake: TESetText("WORLD!", 6) followed by
-        // TESetText("HI", 2) on the same TERec yields teLength == 2
-        // with the first two bytes equal to "HI".
+        // (not appends to) the current text contents: TESetText("WORLD!", 6)
+        // followed by TESetText("HI", 2) on the same TERec yields
+        // teLength == 2 with the first two bytes equal to "HI".
         let (mut disp, mut cpu, mut bus) = setup();
         let te_handle = make_te_with_text(&mut disp, &mut bus, b"OLD");
         let te_ptr = bus.read_long(te_handle);
@@ -32951,8 +32848,8 @@ mod tests {
         // Inside Macintosh Volume I (1985), p. I-378: TESetText is a
         // PROCEDURE with three args (Ptr text, LONGINT length, TEHandle).
         // Pascal LR push order yields a 12-byte arg frame and no result
-        // slot. Mirrors B4 of the a9cf_tesettext_strict bake — A7 must
-        // advance by exactly 12 bytes regardless of arg values.
+        // slot. A7 must advance by exactly 12 bytes regardless of arg
+        // values.
         let (mut disp, mut cpu, mut bus) = setup();
         let te_handle = make_te_with_text(&mut disp, &mut bus, b"SEED");
         let source = bus.alloc(1);
@@ -33517,8 +33414,7 @@ mod tests {
 
     #[test]
     fn obscure_cursor_five_call_composition_preserves_stack_pointer_and_level() {
-        // Mirrors B2 of the a855_a856_shieldcursor_obscurecursor_strict
-        // bake: 5 successive ObscureCursor dispatches inside one
+        // 5 successive ObscureCursor dispatches inside one
         // StackSpace sandwich leave SP unchanged. Per IM:I I-168 the
         // PROCEDURE has no arguments and no result slot, so each call
         // pops 0 bytes; the cumulative SP delta after N calls is zero.

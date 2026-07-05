@@ -3,7 +3,7 @@
 //! Submodules cover the parts of QuickDraw that are not directly
 //! mapped to A-line traps in `crate::trap::quickdraw`:
 //!
-//! - [`fonts`] — built-in DejaVu font baking + heuristic family
+//! - [`fonts`] — original systemless bitmap fonts + heuristic family
 //!   lookup for `GetFontName` / `GetFNum`, plus a runtime override
 //!   path for embedders that want their own font set.
 //! - [`text`] — software glyph rasteriser used by `DrawString`,

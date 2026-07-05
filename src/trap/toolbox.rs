@@ -3528,16 +3528,16 @@ impl super::TrapDispatcher {
                 // Return BOOLEAN result on stack
                 bus.write_word(sp + 14, if has_event { 0xFFFF } else { 0 });
                 cpu.write_reg(Register::A7, sp + 14);
-                // Gate field-map allocation behind is_oracle_recording()
-                // because WNE is hot path; record_oracle_event's own
+                // Gate field-map allocation behind is_trace_recording()
+                // because WNE is hot path; record_trace_event's own
                 // recorder-None early-return runs AFTER the to_string() +
                 // BTreeMap allocations would have happened.
-                if self.is_oracle_recording() {
-                    if let Err(err) = self.record_oracle_event(
+                if self.is_trace_recording() {
+                    if let Err(err) = self.record_trace_event(
                         bus,
                         trap_pc,
                         "wait_next_event",
-                        Self::oracle_field_map(&[
+                        Self::trace_field_map(&[
                             ("mask", event_mask.to_string()),
                             ("sleep", sleep.to_string()),
                             ("has_event", has_event.to_string()),
@@ -4149,15 +4149,12 @@ impl super::TrapDispatcher {
             // iteration; the call is correctly a no-op since no DA is
             // registered.
             //
-            // Engines-agree subset (per a9b4_a9c2_systemtask_systemedit_strict):
+            // Behavioral contract:
             //   - register-only Tool-bit PROCEDURE calling convention
             //     (no Pascal stack frame, no FUNCTION result slot)
             //   - A7 preserved across a single call AND a 5-call
             //     composition (BasiliskII System 7.5.3 ROM walks empty
             //     DA/DCE state and returns without consuming stack)
-            //
-            // Catalogue-proof: a9b4_a9c2_systemtask_systemedit_strict
-            //   B1: A9B4:systemtask_procedure_call_preserves_stack_pointer
             //
             // Contract tests:
             //   - systemtask_procedure_call_preserves_stack_pointer (single call)
@@ -4176,8 +4173,6 @@ impl super::TrapDispatcher {
             //   CurApRefNum ($0900) — INTEGER
             //   AppParmHandle ($0AEC) — Handle
             //
-            // Regression coverage:
-            //   getappparms_returns_app_parameters
             (true, 0x1F5) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ap_param_ptr = bus.read_long(sp);
@@ -4432,8 +4427,8 @@ impl super::TrapDispatcher {
             // sdInstall/sdRemove are accepted as no-ops that simply pop
             // the argument frame. sdPowerOff and sdRestart both halt the
             // guest, which is how the runner surfaces "application wants
-            // to exit". The procedure list is never invoked because the
-            // bake never triggers an actual shutdown; this matches the
+            // to exit". The procedure list is never invoked because no
+            // actual shutdown is ever triggered; this matches the
             // BasiliskII System 7.5 ROM, where queued procs are also dormant
             // until real shutdown.
             (true, 0x095) => {
@@ -4490,11 +4485,11 @@ impl super::TrapDispatcher {
                     // to D0 when the delay is fully consumed.
                     self.pending_delay_ticks = num_ticks;
                 }
-                if let Err(err) = self.record_oracle_event(
+                if let Err(err) = self.record_trace_event(
                     bus,
                     trap_pc,
                     "delay",
-                    Self::oracle_field_map(&[("ticks", num_ticks.to_string())]),
+                    Self::trace_field_map(&[("ticks", num_ticks.to_string())]),
                     false,
                 ) {
                     return Some(Err(err));
@@ -4531,12 +4526,11 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Interapplication Communication (1993),
             // pp. 7-39, 7-41 to 7-42, 7-57.
             //
-            // Systemless models the PPC Toolbox state that the baked fixture
-            // observes: selector $0000 (`PPCInit`) flips the init bit for
+            // Systemless models the observable PPC Toolbox state:
+            // selector $0000 (`PPCInit`) flips the init bit for
             // selectors that need it, but selector $000A (`IPCListPorts`)
             // already succeeds on the zero-request local path before init.
-            // The strict fixture `a0dd_ppc_strict`
-            // witnesses selector $0000 plus selector $000A on both the
+            // Selector $0000 and selector $000A are handled on both the
             // pre-init and post-init local paths.
             (false, 0x0DD) => {
                 let selector = cpu.read_reg(Register::D0) as u16;
@@ -4717,10 +4711,6 @@ impl super::TrapDispatcher {
             // PROCEDURE CloseResFile(refNum: INTEGER);
             // Inside Macintosh Volume I, I-115
             //
-            // Regression coverage:
-            //   closeresfile_removes_file_from_search_order
-            //   closeresfile_resets_current_file
-            //   closeresfile_pops_two_bytes
             // CloseResFile ($A99A): Updates resources, removes file from search order, resets current file per IM:I I-115
             (true, 0x19A) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -4794,8 +4784,6 @@ impl super::TrapDispatcher {
             // cleared to noErr on every successful call so callers don't
             // observe stale errors from earlier Resource Manager calls.
             //
-            // Regression coverage:
-            //   countresources_clears_reserror
             // Count1Resources ($A80D): Counts resources of given type in current resource file
             // CountResources ($A99C): Counts resources of given type; clears ResErr per IM:I I-116
             (true, 0x19C) | (true, 0x00D) => {
@@ -4873,7 +4861,7 @@ impl super::TrapDispatcher {
             // masks `trap & 0x00FF`, so $A20A PBHOpenRF lands on the same
             // low byte and shares this arm.
             //
-            // Regression coverage (BasiliskII goldens):
+            // Regression coverage (BasiliskII references):
             //   - pb_open_rf            — $A00A fnfErr path
             //   - pbh_open_rf_rename    — $A20A + $A20B fnfErr paths
             // PBOpenRF ($A00A): Opens resource fork via PBOpen path
@@ -6736,8 +6724,8 @@ impl super::TrapDispatcher {
             //   INTEGER result to [SP+0] after pop (i.e. the original
             //   SP+4 slot). Net stack effect after the caller's
             //   epilogue reads the result is zero — A7 returns to its
-            //   pre-call value (engines-agree per Pascal FUNCTION
-            //   calling convention).
+            //   pre-call value, per the Pascal FUNCTION
+            //   calling convention.
             //
             // MPW Universal Headers Devices.h (Desk.h is deprecated;
             // the Desk Manager routines moved to Devices.h after
@@ -6746,16 +6734,14 @@ impl super::TrapDispatcher {
             //   EXTERN_API(short) OpenDeskAcc (ConstStr255Param)
             //     ONEWORDINLINE(0xA9B6);
             //
-            // Engines-agree subset (witnessed by the
-            // a9b6_a9b7_opendeskacc_closedeskacc_strict bake):
+            // Behavioral contract:
             //   - Pop 4-byte Str255 pointer argument
             //   - Write the 2-byte INTEGER result slot at [SP+4]
-            //     (the value is engines-divergent — Systemless writes 0;
-            //     BasiliskII writes an undefined refNum per IM —
-            //     but BOTH engines write SOMETHING, so A7 returns to
-            //     its pre-call value after the caller's epilogue.)
+            //     (Systemless writes 0; BasiliskII writes an undefined
+            //     refNum per IM — but both write SOMETHING, so A7 returns
+            //     to its pre-call value after the caller's epilogue.)
             //
-            // Engines-divergent (NOT witnessed):
+            // Unspecified by the contract:
             //   - Absolute INTEGER result value. Per IM:I I-440 the
             //     return value is "undefined" when the DA can't be
             //     opened, so Systemless's 0-sentinel and BII's RTC/heap-
@@ -6766,11 +6752,8 @@ impl super::TrapDispatcher {
             // should ignore the value returned by OpenDeskAcc" so
             // the 0-sentinel is a safe defensive default.
             //
-            // Catalogue-proof:
-            //   a9b6_a9b7_opendeskacc_closedeskacc_strict
-            //   - A9B6:opendeskacc_consumes_name_pointer_and_preserves_stack_pointer
             // Contract tests (in src/trap/toolbox.rs `mod tests`):
-            //   - opendeskacc_consumes_name_pointer_arg_and_writes_result_slot
+            //   - opendeskacc_consumes_name_pointer_and_returns_zero_refnum_in_result_slot
             //   - opendeskacc_five_call_composition_preserves_stack_pointer
             (true, 0x1B6) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -6797,20 +6780,19 @@ impl super::TrapDispatcher {
             //   Stack on entry: SP+0 = refNum INTEGER (2 bytes).
             //   Trap pops the 2-byte argument. No result slot.
             //   Net stack effect: A7 advances by exactly 2 bytes;
-            //   no further caller epilogue is needed (engines-agree
-            //   per Pascal PROCEDURE calling convention).
+            //   no further caller epilogue is needed, per the Pascal
+            //   PROCEDURE calling convention.
             //
             // MPW Universal Headers Devices.h:
             //   EXTERN_API(void) CloseDeskAcc (short refNum)
             //     ONEWORDINLINE(0xA9B7);
             //
-            // Engines-agree subset (witnessed by the
-            // a9b6_a9b7_opendeskacc_closedeskacc_strict bake):
+            // Behavioral contract:
             //   - Pop 2-byte INTEGER refNum argument
             //   - No result slot written
             //   - When refNum=0 (clearly invalid — DA refnums are
-            //     negative on a real Mac), both engines walk the DCE
-            //     chain, find no matching entry, and return without
+            //     negative on a real Mac), the trap walks the DCE
+            //     chain, finds no matching entry, and returns without
             //     effect (the documented "no action is taken" path).
             //
             // Systemless HLE behavior: has no DCE chain / DRVR loading
@@ -6818,9 +6800,6 @@ impl super::TrapDispatcher {
             // for all Systemless windows. The trap is a defensive no-op
             // for any caller that bypasses the windowKind < 0 gate.
             //
-            // Catalogue-proof:
-            //   a9b6_a9b7_opendeskacc_closedeskacc_strict
-            //   - A9B7:closedeskacc_consumes_refnum_and_preserves_stack_pointer
             // Contract tests (in src/trap/toolbox.rs `mod tests`):
             //   - closedeskacc_consumes_refnum_arg_and_writes_no_result
             //   - closedeskacc_five_call_composition_advances_stack_by_ten
@@ -6898,22 +6877,16 @@ impl super::TrapDispatcher {
             // Systemless HLE behavior: pop 4 bytes from A7 and return.
             // The DA-menu-action side effect is unimplementable in
             // Systemless because the HLE models no Desk Accessories.
-            // The engines-agree subset is the Pascal PROCEDURE stack
+            // The essential behavior is the Pascal PROCEDURE stack
             // discipline (pop-4 with no result slot write).
             //
-            // Engines-agree alignment per IM:I 1985 p. I-441:
+            // Stack discipline per IM:I 1985 p. I-441:
             //   - Pascal PROCEDURE: no result slot; A7 advances by
             //     argument byte count (4 bytes for a LONGINT).
-            //   - With menuResult=0, both engines walk the DCE chain
-            //     looking for a DA owning a menu with menuID=0, find
+            //   - With menuResult=0, the trap walks the DCE chain
+            //     looking for a DA owning a menu with menuID=0, finds
             //     none (real DA menus have negative menuIDs per
-            //     I-441), and return per the documented no-DA path.
-            //
-            // Catalogue-proof:
-            //   a9b5_systemmenu_strict — BasiliskII
-            //   strict bake of A9B5 SystemMenu witnessing PROCEDURE
-            //   stack discipline via a single + 5-call composition
-            //   StackSpace sandwich.
+            //     I-441), and returns per the documented no-DA path.
             //
             // Contract tests in this file:
             //   - systemmenu_procedure_call_pops_four_bytes_from_stack
@@ -6943,8 +6916,8 @@ impl super::TrapDispatcher {
             //   result to [SP+0] after pop (i.e. the original SP+2
             //   slot). Net stack effect after the caller's epilogue
             //   reads the result is zero — A7 returns to its pre-call
-            //   value (engines-agree per Pascal FUNCTION calling
-            //   convention).
+            //   value, per the Pascal FUNCTION calling
+            //   convention.
             //
             // Standard editCmd values per the IM:I I-441 table:
             //   0  undoCmd
@@ -6970,15 +6943,12 @@ impl super::TrapDispatcher {
             // apps' Cut/Copy/Paste menu handlers correctly fall
             // through to their own document-editing code.
             //
-            // Engines-agree subset (per a9b4_a9c2_systemtask_systemedit_strict):
+            // Behavioral contract:
             //   - Pascal FUNCTION calling convention with trap-side
             //     2-byte editCmd pop; A7 returns to its pre-call value
             //   - BOOLEAN result == FALSE (0) for every standard
             //     editCmd value (0/2/3/4/5) on the no-DA-owns-active-
             //     window path
-            //
-            // Catalogue-proof: a9b4_a9c2_systemtask_systemedit_strict
-            //   B2: A9C2:systemedit_consumes_editcmd_and_returns_false_boolean_result
             //
             // Contract tests:
             //   - systemedit_consumes_editcmd_and_returns_false_boolean_result (copyCmd)
@@ -6998,7 +6968,6 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-457
             //
             // Regression coverage:
-            //   a9f9_infoscrap_strict
             //   src/trap/toolbox.rs::tests::infoscrap_reports_in_memory_scrapstate_and_entry_size
             //   src/trap/toolbox.rs::tests::infoscrap_scraphandle_serializes_current_entries
             //
@@ -7101,9 +7070,7 @@ impl super::TrapDispatcher {
             // is already resident, so the nominal noErr path remains
             // an in-memory no-op.
             //
-            // Witnessed by:
-            //   a9fb_loadscrap_strict
-            //     (A9FB:loadscrap_returns_noerr_when_no_error)
+            // Regression coverage:
             //   src/trap/toolbox.rs::tests::unloadscrap_and_loadscrap_return_noerr
             //   src/trap/toolbox.rs::tests::loadscrap_writes_noerr_to_pascal_function_result_slot_and_preserves_stack_pointer
             (true, 0x1FB) => {
@@ -7262,10 +7229,6 @@ impl super::TrapDispatcher {
             // PROCEDURE SetResLoad(load: BOOLEAN);
             // Inside Macintosh: More Macintosh Toolbox 1993, 1-79 to 1-80
             //
-            // Regression coverage:
-            //   setresload_toggles_autoload
-            //   setresload_true_enables
-            //   setresload_false_disables
             // SetResLoad ($A99B): Stores load flag in res_load per MMTB 1-79; resource-returning helpers consume it to return empty handles until LoadResource.
             (true, 0x19B) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -7309,9 +7272,6 @@ impl super::TrapDispatcher {
             // FUNCTION CountTypes: INTEGER;
             // Inside Macintosh Volume I, I-117
             //
-            // Regression coverage:
-            //   counttypes_returns_type_count
-            //   counttypes_returns_zero_with_no_resources
             // CountTypes ($A99E): Returns count of unique resource types across all open resource files per IM:I I-117
             (true, 0x19E) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -7339,9 +7299,6 @@ impl super::TrapDispatcher {
             //
             // Index is 1-based. If out of range, writes four NUL bytes.
             //
-            // Regression coverage:
-            //   getindtype_returns_type_by_index
-            //   getindtype_out_of_range_returns_nul
             // GetIndType ($A99F): Returns Nth unique resource type (1-based) via VAR theType ptr; writes four NUL bytes when index out of range per IM:I I-117
             (true, 0x19F) => self.handle_get_ind_type(bus, cpu, false),
 
@@ -7360,10 +7317,6 @@ impl super::TrapDispatcher {
             // commit for Get1IndResource ($A80E) which addressed the
             // identical bug for handles.
             //
-            // Regression coverage:
-            //   get1indtype_returns_nth_type_in_current_file
-            //   get1indtype_out_of_range_returns_nul_bytes
-            //   get1indtype_ignores_types_in_other_open_files
             // Get1IndType ($A80F): Returns Nth unique resource type in current resource file only (assembly name _Get1IxType) per IM:IV-15.
             (true, 0x00F) => self.handle_get_ind_type(bus, cpu, true),
 
@@ -7379,10 +7332,6 @@ impl super::TrapDispatcher {
             // Post-call SP is unchanged — the result word stays where the
             // caller already reserved it.
             //
-            // Regression coverage:
-            //   count1types_returns_zero_with_no_resources_in_current_file
-            //   count1types_counts_unique_types_in_current_file
-            //   count1types_pops_no_args_leaves_word_result
             // Count1Types ($A81C): Counts unique types in current resource file only per IM:MTb 1-102.
             (true, 0x01C) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -7489,11 +7438,6 @@ impl super::TrapDispatcher {
             // PROCEDURE RmveResource(theResource: Handle);
             // Inside Macintosh Volume I, I-124
             //
-            // Regression coverage:
-            //   rmveresource_removes_resource_from_map
-            //   rmveresource_invalid_handle_sets_reserr
-            //   rmveresource_protected_resource_fails
-            //   rmveresource_pops_four_bytes
             // RmveResource ($A9AD): Removes resource reference from current file map; respects resProtected per IM:I I-124
             (true, 0x1AD) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -7508,14 +7452,6 @@ impl super::TrapDispatcher {
             // FUNCTION UniqueID(theType: ResType): INTEGER;
             // Inside Macintosh Volume I, I-121
             //
-            // Regression coverage:
-            //   uniqueid_pair_returns_128_when_no_resources_loaded_parametric
-            //   uniqueid_is_use_res_file_independent_while_unique1id_restricts_to_current_file
-            //   uniqueid_pair_skips_contiguous_run_returns_first_gap_parametric
-            //   uniqueid_pair_returns_128_for_unknown_type_with_other_types_loaded_parametric
-            //   uniqueid_pair_does_not_mutate_other_registers_or_caller_stack_parametric
-            //   uniqueid_returns_unused_id
-            //   uniqueid_avoids_existing_ids
             // UniqueID ($A9C1): Scans all open files for used IDs (USE_RES_FILE_INDEPENDENT per IM:I I-121 "any open resource file"); returns unused ID >= 128
             (true, 0x1C1) => self.handle_unique_id(bus, cpu, false),
 
@@ -7532,15 +7468,6 @@ impl super::TrapDispatcher {
             // Get1IndType ($A80F) which addressed the analogous bugs for
             // handles and types.
             //
-            // Regression coverage:
-            //   uniqueid_pair_returns_128_when_no_resources_loaded_parametric
-            //   uniqueid_is_use_res_file_independent_while_unique1id_restricts_to_current_file
-            //   uniqueid_pair_skips_contiguous_run_returns_first_gap_parametric
-            //   uniqueid_pair_returns_128_for_unknown_type_with_other_types_loaded_parametric
-            //   uniqueid_pair_does_not_mutate_other_registers_or_caller_stack_parametric
-            //   unique1id_generates_id_in_current_file
-            //   unique1id_avoids_ids_in_current_file
-            //   unique1id_ignores_ids_in_other_open_files
             // Unique1ID ($A810): Scans current resource file only for used IDs; returns unused ID >= 128 per IM:IV IV-16.
             (true, 0x010) => self.handle_unique_id(bus, cpu, true),
 
@@ -7573,10 +7500,6 @@ impl super::TrapDispatcher {
             // PROCEDURE UpdateResFile(refNum: INTEGER);
             // Inside Macintosh Volume I, I-124
             //
-            // Regression coverage:
-            //   updateresfile_clears_changed_flags
-            //   updateresfile_invalid_refnum_sets_reserr
-            //   updateresfile_pops_two_bytes
             // UpdateResFile ($A999): Validates refnum; clears resChanged on all resources in file per IM:I I-124
             (true, 0x199) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -7851,8 +7774,8 @@ impl super::TrapDispatcher {
             }
 
             // PutIcon ($A9CA)
-            // Undocumented/internal trap. The BasiliskII-backed runtime proof
-            // only witnesses that the caller stack is preserved, so keep this
+            // Undocumented/internal trap. On BasiliskII the only observable
+            // behavior is that the caller stack is preserved, so keep this
             // as a conservative no-op.
             // Regression coverage:
             //   src/trap/toolbox.rs::tests::puticon_preserves_a7
@@ -8267,14 +8190,10 @@ impl super::TrapDispatcher {
             //     (BII appears to treat any valid fontNum as truthy
             //     regardless of size).
             // The Systemless HLE deliberately follows the Apple-documented
-            // contract; the bakeable subset (
-            // a902_realfont_strict) witnesses only the intersection
-            // where both engines agree (Geneva 12 → TRUE, unregistered
-            // fontNum at non-standard size → FALSE, Pascal FUNCTION
-            // protocol). The Apple-canonical applFont and non-standard-
-            // size rules are witnessed by contract tests below. See
-            // a902_diag_realfont in systemless-trap-fixtures for the
-            // diagnostic probe that established the divergence.
+            // contract: Geneva 12 → TRUE, an unregistered fontNum at a
+            // non-standard size → FALSE, under the Pascal FUNCTION
+            // protocol. The Apple-canonical applFont and non-standard-
+            // size rules are exercised by contract tests below.
             //
             // MPW Universal Headers: <Fonts.h> declares
             //   EXTERN_API(Boolean) RealFont(short fontNum, short size)
@@ -8283,7 +8202,7 @@ impl super::TrapDispatcher {
             //
             // Regression coverage:
             //   realfont_*
-            // RealFont ($A902): Pops 4-byte (fontNum, size) frame, BOOLEAN result at sp+4 per IM:I-223. applFont (1) → FALSE always (IM:I I-223 line 7309). Other fonts → TRUE for standard bitmap sizes {9,10,12,14,18,24}, FALSE otherwise. HLE: no real FOND/FONT enumeration; follows Apple's IM:I I-223 contract — BasiliskII System 7.5 ROM diverges per a902_diag_realfont diagnostic.
+            // RealFont ($A902): Pops 4-byte (fontNum, size) frame, BOOLEAN result at sp+4 per IM:I-223. applFont (1) → FALSE always (IM:I I-223 line 7309). Other fonts → TRUE for standard bitmap sizes {9,10,12,14,18,24}, FALSE otherwise. HLE: no real FOND/FONT enumeration; follows Apple's IM:I I-223 contract — the BasiliskII System 7.5 ROM diverges here.
             (true, 0x102) => {
                 let sp = cpu.read_reg(Register::A7);
                 let size = bus.read_word(sp);
@@ -8336,18 +8255,10 @@ impl super::TrapDispatcher {
             //                                ONEWORDINLINE(0xA903);
             // Traps.h confirms _SetFontLock = 0xA903.
             //
-            // The strict runtime proof at
-            //   a903_setfontlock_strict/
-            // exercises the explicit trap word and the 8-call
-            // alternating stack-discipline composition.
-            //
             // Regression coverage:
             //   setfontlock_true_pops_two_byte_boolean_argument_frame
             //   setfontlock_false_pops_two_byte_boolean_argument_frame
             //   setfontlock_alternating_calls_have_net_sp_delta_zero
-            //
-            // Strict runtime proof:
-            //   a903_setfontlock_strict/
             // SetFontLock ($A903): Pops 2-byte BOOLEAN lockFlag per IM:I I-223 + IM:IV IV-32. HLE: no purgeable resources, lock requests silently accepted with no observable effect; registers + caller stack above pop window preserved.
             (true, 0x103) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -8534,8 +8445,6 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0=b(4), SP+4=a(4). Returns Fixed at SP+8. Pops 8.
             //
-            // Regression coverage:
-            //   fixmul_rounds_half_up_per_im
             // FixMul ($A868): Multiplies two Fixed values with round-half-up per IM:I I-467
             (true, 0x068) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -8883,7 +8792,7 @@ impl super::TrapDispatcher {
             // result into the slot at the former SP+8.
             //
             // IM:IV IV-65 documented examples (verified bit-exact against
-            // BasiliskII System 7.5.3 by a818_fixatan2_strict):
+            // BasiliskII System 7.5.3):
             //     FixATan2(X2Fix( 1.0), X2Fix( 1.0)) = $0000C910 (X2Fix(pi/4))
             //     FixATan2(X2Fix(-1.0), X2Fix(-1.0)) = $FFFDA4D0 (-3*X2Fix(pi/4))
             //
@@ -8895,7 +8804,6 @@ impl super::TrapDispatcher {
             // Cordic returns for the IM-documented inputs.
             //
             // Regression coverage:
-            //   a818_fixatan2_strict (5 of 5 BII-witnessed)
             //   src/trap/toolbox.rs::fixatan2_returns_im_documented_pi_over_four_for_one_one
             //   src/trap/toolbox.rs::fixatan2_only_ratio_matters_scale_invariance
             (true, 0x018) => {
@@ -8916,9 +8824,6 @@ impl super::TrapDispatcher {
             // PROCEDURE SpaceExtra(extra: Fixed);
             // Inside Macintosh Volume I, I-171
             //
-            // Regression coverage:
-            //   spaceextra_sets_port_spextra
-            //   spaceextra_pops_four_bytes
             // SpaceExtra ($A88E): Sets spExtra field in port per IM:I I-171
             (true, 0x08E) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -8989,9 +8894,6 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0=srcBytes(2), SP+2=dstPtr_ptr(4), SP+6=srcPtr_ptr(4). Pop 10.
             //
-            // Regression coverage:
-            //   packbits_compresses_run_of_equal_bytes
-            //   packbits_handles_literal_sequences
             // PackBits ($A8CF): Run-length encodes srcBytes of data; advances VAR srcPtr/dstPtr; per IM:I I-470
             (true, 0x0CF) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -9070,8 +8972,6 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0=dstBytes(2), SP+2=dstPtr_ptr(4), SP+6=srcPtr_ptr(4). Pop 10.
             //
-            // Regression coverage:
-            //   unpackbits_expands_packbits_output
             // UnpackBits ($A8D0): Expands PackBits-compressed data into dstBytes; advances VAR srcPtr/dstPtr; per IM:I I-470
             (true, 0x0D0) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -12315,9 +12215,8 @@ impl super::TrapDispatcher {
             // raw Pascal BOOLEAN high byte verbatim to $0BF4 — TRUE
             // becomes the byte value 0x01 (not a normalised 0xFF) and
             // FALSE becomes 0x00. Systemless mirrors this exact byte by
-            // reading SP+0 directly (no normalisation). BasiliskII
-            // System 7.5.3 ROM follows the same convention, witnessed
-            // by `a814_setfractenable_strict`.
+            // reading SP+0 directly (no normalisation). The BasiliskII
+            // System 7.5.3 ROM follows the same convention.
             //
             // Regression coverage:
             //   tests::setfractenable_true_writes_one_byte_verbatim_to_fract_enable_global
@@ -12513,27 +12412,6 @@ impl super::TrapDispatcher {
             // In the emulator we always return Roman script (0) for script queries
             // and noErr for set operations. This is sufficient for English-only games.
             //
-            // Regression coverage:
-            //   fontscript_returns_roman_script
-            //   intlscript_returns_roman_script
-            //   keyscript_returns_roman_script
-            //   font2script_returns_roman_script
-            //   getenvirons_returns_zero
-            //   setenvirons_returns_noerr
-            //   getscript_returns_zero
-            //   setscript_returns_noerr
-            //   charbyte_returns_single_byte
-            //   chartype_returns_zero
-            //   char2pixel_returns_zero
-            //   pixel2char_maps_pixel_to_character
-            //   transliterate_converts_text
-            //   findword_locates_word_boundaries
-            //   hilitetext_computes_highlight_ranges
-            //   drawjust_draws_justified_text
-            //   measurejust_measures_justified_text
-            //   styledlinebreak_full_style_run_fits_returns_overflow_and_decrements_width
-            //   styledlinebreak_breaks_at_last_space_before_overflow
-            //   styledlinebreak_first_long_word_breaks_on_character_boundary
             // ScriptUtil ($A8B5): Dispatches legacy selectors plus System 7 encoded text-utility selectors; returns Roman/noErr/0 fallbacks where Systemless has no script-system state.
             (true, 0x0B5) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -12792,8 +12670,6 @@ impl super::TrapDispatcher {
             // generic selector-byte heuristic so the documented bootstrap
             // routine remains obvious to future readers.
             //
-            // Regression coverage:
-            //   a82d_pack11_initeditionpack_strict
             // Pack11 ($A82D): `_Pack11` Edition Manager. `InitEditionPack` selector $0100 returns noErr and takes no Pascal args; other selectors still use the generic pop fallback.
             (true, 0x02D) => {
                 let selector = cpu.read_reg(Register::D0) as u16;
@@ -14418,7 +14294,7 @@ mod tests {
     // current grafPort's colrBit field. colrBit is a word-sized INTEGER at
     // GrafPort offset +88 (Imaging With QuickDraw 1994, p. 4-39).
     //
-    // Witnesses for the strict bake `a864_colorbit_strict`:
+    // Regression coverage:
     //   tests::colorbit_writes_whichbit_value_to_current_port_colrbit_field_at_offset_88
     //   tests::colorbit_writes_max_31_value_to_current_port_colrbit_field
     //   tests::colorbit_zero_overwrites_previous_nonzero_colrbit_value
@@ -16170,10 +16046,10 @@ mod tests {
     // Inside Macintosh Volume I (1985), p. I-458: LoadScrap is a 0-arg Tool
     // Trap FUNCTION returning LONGINT (OSStatus) via the Pascal function
     // result slot at [SP+0]; the documented "already in memory" success
-    // path returns noErr without consuming caller stack bytes. Mirrors B1
-    // of the a9fb_loadscrap_strict catalog bake fixture: pre-poisons the
-    // 4-byte result slot at SP+0 with a non-zero sentinel and asserts the
-    // trap overwrites it with 0 (noErr) while leaving A7 untouched.
+    // path returns noErr without consuming caller stack bytes. This test
+    // pre-poisons the 4-byte result slot at SP+0 with a non-zero sentinel
+    // and asserts the trap overwrites it with 0 (noErr) while leaving A7
+    // untouched.
     #[test]
     fn loadscrap_writes_noerr_to_pascal_function_result_slot_and_preserves_stack_pointer() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -16843,8 +16719,8 @@ mod tests {
         );
     }
 
-    // SystemTask ($A9B4) — mirrors B1 of a9b4_a9c2_systemtask_systemedit_strict
-    // (5-call composition catches per-call drift a single sandwich might mask).
+    // SystemTask ($A9B4) — a 5-call composition catches per-call drift a
+    // single call might mask.
     #[test]
     fn systemtask_five_call_composition_preserves_stack_pointer() {
         // IM:I 1985, p. I-440: PROCEDURE SystemTask;
@@ -16891,9 +16767,9 @@ mod tests {
         );
     }
 
-    // OpenDeskAcc ($A9B6) — mirrors B1 of a9b6_a9b7_opendeskacc_closedeskacc_strict
-    // (5-call composition: net stack effect after each Pascal FUNCTION
-    // call's epilogue is zero, so A7 returns to its pre-composition value).
+    // OpenDeskAcc ($A9B6) — 5-call composition: net stack effect after each
+    // Pascal FUNCTION call's epilogue is zero, so A7 returns to its
+    // pre-composition value.
     #[test]
     fn opendeskacc_five_call_composition_preserves_stack_pointer() {
         // IM:I 1985, p. I-440: FUNCTION OpenDeskAcc(theAcc: Str255): INTEGER;
@@ -16926,7 +16802,7 @@ mod tests {
         );
     }
 
-    // CloseDeskAcc ($A9B7) — mirrors B2 of a9b6_a9b7_opendeskacc_closedeskacc_strict
+    // CloseDeskAcc ($A9B7)
     #[test]
     fn closedeskacc_consumes_refnum_arg_and_writes_no_result() {
         // IM:I 1985, p. I-440: PROCEDURE CloseDeskAcc(refNum: INTEGER);
@@ -16946,8 +16822,8 @@ mod tests {
         );
     }
 
-    // CloseDeskAcc ($A9B7) — mirrors B2 of a9b6_a9b7_opendeskacc_closedeskacc_strict
-    // (5-call composition: each call pops 2 bytes so A7 advances by 10).
+    // CloseDeskAcc ($A9B7) — 5-call composition: each call pops 2 bytes so
+    // A7 advances by 10.
     #[test]
     fn closedeskacc_five_call_composition_advances_stack_by_ten() {
         // IM:I 1985, p. I-440: PROCEDURE CloseDeskAcc(refNum: INTEGER);
@@ -16972,7 +16848,7 @@ mod tests {
         );
     }
 
-    // SystemMenu ($A9B5) — mirrors B1 of a9b5_systemmenu_strict (single call).
+    // SystemMenu ($A9B5) — single call.
     // Per IM:I 1985, p. I-441: PROCEDURE SystemMenu(menuResult: LONGINT) pops
     // a 4-byte LONGINT argument and writes no result slot.
     #[test]
@@ -16993,7 +16869,7 @@ mod tests {
         );
     }
 
-    // SystemMenu ($A9B5) — mirrors B1 of a9b5_systemmenu_strict (5-call composition).
+    // SystemMenu ($A9B5) — 5-call composition.
     // Each call pops 4 bytes so A7 advances by 20 after 5 dispatches.
     #[test]
     fn systemmenu_five_call_composition_advances_stack_by_twenty() {
@@ -17045,8 +16921,8 @@ mod tests {
         );
     }
 
-    // SystemEdit ($A9C2) — mirrors B2 of a9b4_a9c2_systemtask_systemedit_strict
-    // (FALSE return + 2-byte arg pop for every standard editCmd per IM:I I-441).
+    // SystemEdit ($A9C2) — FALSE return + 2-byte arg pop for every standard
+    // editCmd per IM:I I-441.
     #[test]
     fn systemedit_returns_false_for_every_standard_editcmd() {
         // IM:I 1985, p. I-441 table:
@@ -17806,7 +17682,7 @@ mod tests {
     // trap reads byte at SP+0 (not SP+1) and writes that byte to $0BF4
     // unchanged — TRUE → 0x01, FALSE → 0x00 (NOT a normalised 0xFF for
     // TRUE). These tests pre-poison $0BF4 with a distinct sentinel and
-    // assert (a) exact byte parity with the input high-byte, (b) the
+    // assert (a) the written byte exactly matches the input high-byte, (b) the
     // trap pops exactly 2 bytes (Pascal PROCEDURE protocol — no
     // function-result slot), and (c) memory adjacent to $0BF4 is
     // preserved (regression guard against any future "fix" that writes
@@ -26673,7 +26549,7 @@ mod tests {
     // FUNCTION FixATan2(x, y: LongInt): Fixed;
     // Inside Macintosh Volume IV (1986), p. IV-65.
     //
-    // Witnesses the IM:IV IV-65 documented value bit-exactly against the
+    // Verifies the IM:IV IV-65 documented value bit-exactly in the
     // Systemless HLE: FixATan2(X2Fix(1.0), X2Fix(1.0)) = 0x0000C910. Pascal
     // LTR push: x first (lands at SP+4), y last (lands at SP+0). Trap pops
     // 8 arg bytes and writes the 4-byte Fixed result into the slot at

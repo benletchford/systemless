@@ -1,7 +1,7 @@
 //! Stable on-disk schema for runtime font overrides.
 //!
-//! `systemless` ships with open-licensed DejaVu glyphs baked into
-//! `baked.rs`. For higher-fidelity rendering an opt-in runtime override
+//! `systemless` ships with its own original bitmap glyphs in the
+//! `pixel_font` modules. For higher-fidelity rendering an opt-in runtime override
 //! path lets a host substitute authentic Mac bitmap fonts (Chicago,
 //! Geneva, Monaco, …) without committing Apple-copyrighted data into
 //! this repo. The override directory is one `.bin` per
@@ -21,8 +21,8 @@
 //! [u8; data_len]                            coverage bytes (0 or 255)
 //! ```
 //!
-//! Glyph order starts with the baked catalogue's ASCII printable 0x20..=0x7E
-//! entries, then appends classic menu symbols that live below ASCII in the
+//! Glyph order starts with the ASCII printable 0x20..=0x7E entries, then
+//! appends classic menu symbols that live below ASCII in the
 //! System font: Command key (Mac Roman 0x11), checkmark (0x12), and Apple mark
 //! (0x14). Missing glyphs are encoded as zero-sized entries with a positive
 //! advance for spaces or `0` advance for "not in font".

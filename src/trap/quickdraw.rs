@@ -4,7 +4,7 @@
 use super::types::{read_rect, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::display::{self, CursorImage};
-use crate::machine_profile::ORACLE_MACHINE_PROFILE;
+use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
@@ -763,12 +763,9 @@ impl super::TrapDispatcher {
             // PROCEDURE PortSize (width,height: INTEGER);
             // Inside Macintosh Volume I, I-165
             //
-            // Golden coverage:
-            //   a876_port_size_state (behavior_state, pixmap)
-            //     Band 1: portRect top-left unchanged
-            //     Band 2: portRect dimensions = (width, height)
-            //     Band 3: clipRgn bbox unchanged
-            //     Band 4: visRgn bbox unchanged
+            // Only portRect changes: its top-left corner is preserved
+            // while its dimensions become (width, height). The clipRgn
+            // and visRgn bounding boxes are left untouched.
             (true, 0x076) => {
                 let sp = cpu.read_reg(Register::A7);
                 let height = bus.read_word(sp) as i16;
@@ -843,15 +840,6 @@ impl super::TrapDispatcher {
             // portBits is replaced by a PixMapHandle at offset 2; the
             // PixMap.bounds at PixMapPtr + 6..14 is shifted by the same
             // delta as a GrafPort's portBits.bounds.
-            //
-            // Golden coverage:
-            //   a877_moveportto_strict
-            //     B1: bits.bounds.topLeft = pre portRect.topLeft - (leftGlobal, topGlobal)
-            //     B2: portRect + clipRgn bbox + visRgn bbox UNCHANGED
-            //     B3: bits.bounds dimensions preserved (only topLeft shifts)
-            //     B4: 4-byte Pascal PROCEDURE stack discipline
-            //   catalogue trap A877_MovePortTo: 4/4 strict
-            //   assertions witnessed.
             (true, 0x077) => {
                 let sp = cpu.read_reg(Register::A7);
                 let top_global = bus.read_word(sp) as i16;
@@ -917,14 +905,6 @@ impl super::TrapDispatcher {
             // Does NOT offset clipRgn — it "sticks" to the coordinate system.
             // PROCEDURE SetOrigin(h, v: INTEGER);
             // Inside Macintosh Volume I, I-166
-            //
-            // Golden coverage:
-            //   a878_set_origin_state (behavior_state, pixmap)
-            //     Band 1: portRect origin = (v, h)
-            //     Band 2: portRect dimensions preserved
-            //     Band 3: portBits.bounds offset by (dv, dh)
-            //     Band 4: visRgn bbox offset by (dv, dh)
-            //     Band 5: clipRgn bbox unchanged
             (true, 0x078) => {
                 self.debug_set_origin_count = self.debug_set_origin_count.saturating_add(1);
                 let sp = cpu.read_reg(Register::A7);
@@ -1337,9 +1317,6 @@ impl super::TrapDispatcher {
             // PROCEDURE GrafDevice(device: INTEGER);
             // Inside Macintosh Volume I, I-165
             //
-            // Regression coverage:
-            //   grafdevice_sets_port_device
-            //   grafdevice_pops_two_bytes
             // GrafDevice ($A872): Sets device field in port per IM:I I-165
             (true, 0x072) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2096,44 +2073,11 @@ impl super::TrapDispatcher {
             //   sp+6  left              (INTEGER)
             //   sp+8  r-pointer (first pushed, VAR-out 4-byte ptr)
             //
-            // Regression coverage: set_rect — 1bpp
-            // 520x80 offscreen indicator-band fixture with
-            // quality="behavior_state" + the catalogue's
-            // `A8A7:rect_set_from_four_scalars` legacy composite
-            // assertion. Five bands witness r.top/r.left/r.bottom/
-            // r.right after SetRect(&r, 10, 20, 50, 80) → expected
-            // (top=20, left=10, bottom=80, right=50) plus a
-            // composite "all four match" Band 0. The fixture uses
-            // direct C struct assignment for canvas + band Rects
-            // (NOT SetRect) so different broken-impl regression
-            // classes (top↔bottom swap, left↔right swap, all-zero
-            // stub) produce pixel-distinct band subsets rather
-            // than collapsing to "blank canvas". A working impl
-            // produces 5 black bands; a no-op stub produces an
-            // all-white canvas.
-            //
-            // Additional regression coverage: set_rect_fields
-            // — sibling 1bpp 640x80 (rowBytes=80) offscreen
-            // indicator-band fixture closing the SIX granular
-            // catalogue ids per A8A7_SetRect.toml:
-            //   A8A7:left_assigned_to_left_field
-            //   A8A7:top_assigned_to_top_field
-            //   A8A7:right_assigned_to_right_field
-            //   A8A7:bottom_assigned_to_bottom_field
-            //   A8A7:negative_coords_preserved
-            //   A8A7:inverted_inputs_preserved
-            // Three SetRect dispatches witness all six ids in 7
-            // bands: r1=(10,20,50,80) for the four field-isolation
-            // ids, r2=(-100,-50,-10,-5) for the negative-coords id
-            // (impl preserves negatives via i16→u16 sign-extending
-            // cast at write_word; no clamping per IM:I-175 silence
-            // on the matter), r3=(50,30,10,20) for the inverted-
-            // inputs id (impl writes args verbatim; no
-            // normalisation per IM:I-175). Brings the catalogue
-            // row from 1/7=14% (lowest) to 7/7=100% in one
-            // iteration via the multi-id-witnessing single-fixture
-            // pattern.
-            // SetRect ($A8A7): Pops 12 bytes; writes 4 INTEGER fields to VAR-out r per IM:I-175; no clamping or normalisation; covered by set_rect (legacy composite) + set_rect_fields (6 granular field-isolation + negative + inverted ids)
+            // Writes the four INTEGER args verbatim into r's fields.
+            // Negatives are preserved via the i16→u16 sign-extending
+            // cast at write_word (no clamping; IM:I-175 is silent on
+            // the matter), and inverted inputs are written as-is with
+            // no normalisation.
             (true, 0x0A7) => {
                 let sp = cpu.read_reg(Register::A7);
                 let bottom = bus.read_word(sp) as i16;
@@ -2153,41 +2097,13 @@ impl super::TrapDispatcher {
             // PROCEDURE InsetRect (VAR r: Rect; dh, dv: INTEGER);
             // Inside Macintosh Volume I, I-176
             //
-            // Regression coverage: inset_rect — 1bpp
-            // 200x80 offscreen indicator-band fixture, strengthened
-            // from compare="trace" + DrawString to compare="pixmap" +
-            // quality="behavior_state" with the catalogue's legacy
-            // composite `A8A9:rect_mutated_in_place` assertion. Four
-            // bands witness r.top/r.left/r.bottom/r.right after
-            // InsetRect((20,10,40,30), 5, 3) → (25,13,35,27).
-            //
-            // Additional regression coverage:
-            // inset_rect_classes — sibling 1bpp 720x80
-            // (rowBytes=90) offscreen indicator-band fixture closing
-            // the FIVE granular catalogue ids per A8A9_InsetRect.toml:
-            //   A8A9:positive_inset_shrinks
-            //   A8A9:negative_inset_expands
-            //   A8A9:asymmetric_inset
-            //   A8A9:zero_inset_no_op
-            //   A8A9:collapse_to_inverted_when_2dh_exceeds_width
-            // Five InsetRect dispatches witness all five ids in 6
-            // bands: r1=(20,10,80,50)+(+5,+10) for positive shrink,
-            // r2=(300,100,420,180)+(-10,-5) for negative expand,
-            // r3=(30,15,110,85)+(+7,-4) for asymmetric (mixed-sign
-            // distinct magnitudes), r4=(350,200,440,270)+(0,0) for
-            // zero no-op, r5=(500,300,600,380)+(+60,+10) for the
-            // collapse case where 2*dh=120 > width=100. IM:I-176
-            // says the collapse result is implementation-defined
-            // ("set to (0,0,0,0)"); BasiliskII produces an inverted
-            // rect (r.right < r.left) and Systemless's mirror impl
-            // matches by writing `(top+dv, left+dh, bottom-dv,
-            // right-dh)` with no clamping. The catalogue pins
-            // BasiliskII's value via apple_documented_value vs
-            // basiliskii_value divergence keys. Brings the catalogue
-            // row from 1/6=17% (tied for lowest) to 6/6=100% in one
-            // iteration via the multi-id-witnessing single-fixture
-            // pattern.
-            // InsetRect ($A8A9): Pops 8 bytes; writes (top+dv, left+dh, bottom-dv, right-dh) per IM:I-176; no clamping on collapse-case overflow (Systemless mirrors BasiliskII semantics, both diverge from Apple's literal "set to (0,0,0,0)" wording); covered by inset_rect (legacy composite) + inset_rect_classes (5 granular per-class ids including BasiliskII-pinned collapse-to-inverted)
+            // Pops 8 bytes; writes (top+dv, left+dh, bottom-dv,
+            // right-dh) per IM:I-176 with no clamping. On the collapse
+            // case (e.g. 2*dh > width) IM:I-176 says the result is
+            // implementation-defined ("set to (0,0,0,0)"); BasiliskII
+            // instead produces an inverted rect (r.right < r.left) and
+            // Systemless mirrors BasiliskII by writing the unclamped
+            // formula verbatim.
             (true, 0x0A9) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dv = bus.read_word(sp) as i16;
@@ -2209,37 +2125,11 @@ impl super::TrapDispatcher {
             // PROCEDURE OffsetRect (VAR r: Rect; dh, dv: INTEGER);
             // Inside Macintosh Volume I, I-174
             //
-            // Regression coverage: offset_rect — 1bpp
-            // 240x80 offscreen indicator-band fixture with
-            // quality="behavior_state" + the catalogue's legacy
-            // composite `A8A8:rect_translated_in_place` assertion.
-            //
-            // Additional regression coverage:
-            // offset_rect_translation — sibling 1bpp
-            // 680x80 (rowBytes=85) offscreen indicator-band fixture
-            // closing the SIX granular catalogue ids per
-            // A8A8_OffsetRect.toml:
-            //   A8A8:positive_dh_dv_translates
-            //   A8A8:negative_dh_dv_translates
-            //   A8A8:asymmetric_translation
-            //   A8A8:zero_translation_no_op
-            //   A8A8:width_height_preserved_under_translation
-            //   A8A8:sequential_calls_compose_translations
-            // Seven OffsetRect dispatches witness all six ids in 6
-            // bands: r1=(20,10,80,50)+(+5,+10) for positive;
-            // r2=(200,100,280,170)+(-3,-8) for negative;
-            // r3=(25,15,90,60)+(+7,-4) for asymmetric;
-            // r4=(300,200,400,250)+(0,0) for zero-translation;
-            // r5=(400,500,700,600)+(+123,-67) for the width/height
-            // preservation invariant — r5's specific post-call
-            // field values are NOT pinned by any other band so B5
-            // gives independent regression detection (a regression
-            // that leaks the InsetRect formula breaks B5 because
-            // (right - dh) - (left + dh) shrinks by 2*dh, breaking
-            // the width-preservation invariant). Brings the
-            // catalogue row from 1/7=14% to 7/7=100% via the
-            // multi-id-witnessing single-fixture pattern.
-            // OffsetRect ($A8A8): Pops 8 bytes; mutates VAR-out r in place per IM:I-174 (top+dv, left+dh, bottom+dv, right+dh); coordinate INTEGER arithmetic wraps at 16 bits; covered by offset_rect (legacy composite) + offset_rect_translation (6 granular ids witnessing per-sign translation classes + zero no-op + width/height preservation invariant + sequential-call composition)
+            // Pops 8 bytes; mutates VAR-out r in place per IM:I-174
+            // (top+dv, left+dh, bottom+dv, right+dh). Coordinate
+            // INTEGER arithmetic wraps at 16 bits. Translation
+            // preserves width and height, and sequential calls
+            // compose their translations.
             (true, 0x0A8) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dv = bus.read_word(sp) as i16;
@@ -2281,39 +2171,11 @@ impl super::TrapDispatcher {
             // bottom == top is empty even though every coordinate
             // field is finite.
             //
-            // Regression coverage:
-            //   * equal_empty_rect — 1bpp 440x80
-            //     offscreen behavior_state golden witnessing the
-            //     EmptyRect contract on (0,0,0,0) -> TRUE plus a
-            //     non-empty (10,5,50,40) -> FALSE, paired with
-            //     EqualRect ($A8A6) tests in one bake. Per
-            //     IM:I-176; baked against System 7.5.3 + real Mac
-            //     ROM under BasiliskII. The paired fixture covers
-            //     the legacy composite catalogue id.
-            //   * empty_rect_predicates — 1bpp 760x80
-            //     offscreen behavior_state golden witnessing FIVE
-            //     net-new granular catalogue ids in one bake:
-            //     `A8AE:zero_rect_is_empty` (r=(0,0,0,0) -> TRUE),
-            //     `A8AE:nonzero_rect_is_not_empty`
-            //       (r=(20,10,120,60) -> FALSE),
-            //     `A8AE:degenerate_horizontal_line_is_empty`
-            //       (r=(40,10,40,60) right==left -> TRUE),
-            //     `A8AE:degenerate_vertical_line_is_empty`
-            //       (r=(20,30,120,30) bottom==top -> TRUE),
-            //     `A8AE:inverted_rect_is_empty`
-            //       (r=(120,80,10,20) strictly inverted -> TRUE).
-            //     Six indicator bands at 1 composite + 5 single-
-            //     witness; pixel-distinct from any
-            //     stub-returns-0/stub-returns-1/strict-< /
-            //     AND-instead-of-OR regression class. Per
-            //     IM:I-176's inclusive-`<=` semantics; r_horiz +
-            //     r_vert specifically pin the equal-only branches
-            //     while r_inv pins the strict-inequality branch
-            //     so the strict-<-vs-<= regression class is
-            //     pixel-distinguishable from the AND-instead-of-
-            //     OR regression class.
-            //
-            // EmptyRect ($A8AE): goldens equal_empty_rect + empty_rect_predicates (IM:I-176)
+            // Per IM:I-176's inclusive-`<=` semantics, a degenerate
+            // horizontal line (right==left), a degenerate vertical
+            // line (bottom==top), and a strictly inverted rect are all
+            // empty — distinguishing the correct `<=` OR-of-two-tests
+            // from a strict-`<` or AND-instead-of-OR misimplementation.
             (true, 0x0AE) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
@@ -2353,40 +2215,11 @@ impl super::TrapDispatcher {
             // the popped 8 bytes of args, as Mac Pascal Boolean
             // (TRUE = $0100, FALSE = $0000).
             //
-            // Regression coverage:
-            //   * pt_in_rect — 1bpp 400x80 offscreen
-            //     behavior_state golden witnessing 3 distinct
-            //     input classes — clearly-inside (TRUE),
-            //     clearly-outside (FALSE), right-boundary (FALSE
-            //     per the exclusive-right semantics) — across 4
-            //     indicator bands. The 4-band layout produces 4
-            //     pixel-distinct outputs across {working impl,
-            //     stub returning 0, stub returning 1, off-by-one
-            //     boundary bug treating `pt.h <= r.right` as
-            //     inclusive}, so any of those regression classes
-            //     fails the byte-exact golden gate. Witnesses
-            //     the legacy composite catalogue identifier
-            //     `A8AD:point_in_rect_predicate`.
-            //   * pt_in_rect_edges — 1bpp 560x80
-            //     offscreen behavior_state golden enumerating the
-            //     seven granular catalogue identifiers across 8
-            //     indicator bands (one composite + seven single-
-            //     case): inside_returns_true (test1=TRUE),
-            //     outside_returns_false (test2=FALSE),
-            //     right_edge_exclusive (test3 with pt.h==r.right
-            //     -> FALSE), bottom_edge_exclusive (test4 with
-            //     pt.v==r.bottom -> FALSE), left_edge_inclusive
-            //     (test5 with pt.h==r.left -> TRUE),
-            //     top_edge_inclusive (test6 with pt.v==r.top ->
-            //     TRUE), empty_rect_returns_false (test7 against
-            //     a degenerate (20,20,20,20) rect -> FALSE per
-            //     IM:I-176 EmptyRect predicate). Each edge test
-            //     isolates ONE boundary at a time; a regression
-            //     that flips ONE edge's inclusivity flips exactly
-            //     one band, so this fixture pins each edge's
-            //     half-open semantics independently.
-            //
-            // PtInRect ($A8AD): pt_in_rect + pt_in_rect_edges (IM:I-175 + I-176)
+            // The half-open semantics make each edge behave
+            // independently: left and top edges are inclusive, right
+            // and bottom edges are exclusive, and a degenerate rect
+            // (e.g. (20,20,20,20)) contains no points per the IM:I-176
+            // EmptyRect predicate.
             (true, 0x0AD) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
@@ -2422,19 +2255,6 @@ impl super::TrapDispatcher {
             // Rect is non-empty (top < bottom AND left < right).
             // Per IM:I-175 the empty-result case clamps dst to
             // (0, 0, 0, 0) and returns FALSE.
-            //
-            // Regression coverage:
-            //   * sect_rect — 1bpp 360x80 offscreen
-            //     behavior_state golden witnessing all four
-            //     output fields plus the FUNCTION result Boolean
-            //     after SectRect((5,10,30,25),(15,20,40,35),
-            //     &dst) -> dst = (15, 20, 30, 25), Boolean =
-            //     TRUE, against poison-prefilled 0x7FFF dst. The
-            //     two source Rects overlap on a 10x5 region so
-            //     neither the empty-result short-circuit nor
-            //     the IM:I-175 "touch at a line or point"
-            //     boundary case fires; the standard max/min
-            //     arithmetic path runs.
             //
             // SectRect ($A8AA)
             (true, 0x0AA) => {
@@ -2488,19 +2308,6 @@ impl super::TrapDispatcher {
             // top OR right <= left) the destination receives the
             // OTHER (non-empty) rectangle; if BOTH are empty the
             // destination is set to (0, 0, 0, 0).
-            //
-            // Regression coverage:
-            //   * union_rect — 1bpp 320x80 offscreen
-            //     behavior_state golden witnessing all four output
-            //     fields after UnionRect((10,5,40,25),(20,30,60,50),
-            //     &dst) -> dst = (10, 5, 60, 50), against
-            //     poison-prefilled 0x7FFF. Both source Rects are
-            //     non-empty so the IM:I-176 empty-source branch
-            //     is NOT exercised — the standard min/max
-            //     arithmetic path runs. Each output field is
-            //     selected from a specific operand: top from src1
-            //     (smaller), left from src1 (smaller), bottom
-            //     from src2 (larger), right from src2 (larger).
             //
             // UnionRect ($A8AB)
             (true, 0x0AB) => {
@@ -2559,27 +2366,10 @@ impl super::TrapDispatcher {
             // (TRUE = $0100 at the high half of the word,
             // FALSE = $0000) with A7 advanced by 8 bytes of args.
             //
-            // Regression coverage:
-            //   * equal_empty_rect — 1bpp 440x80
-            //     offscreen behavior_state golden witnessing the
-            //     legacy composite `A8A6:rect_equality_predicate`
-            //     identifier on identical-rect (TRUE) plus all-
-            //     fields-differ (FALSE) inputs, paired with
-            //     EmptyRect ($A8AE) tests in one bake.
-            //   * equal_rect_fields — 1bpp 600x80
-            //     offscreen behavior_state golden witnessing six
-            //     granular catalogue assertion ids per
-            //     A8A6_EqualRect.toml: identical_rects_return_true
-            //     + differing_top/left/bottom/right_returns_false
-            //     (each isolating one Rect field at a time) +
-            //     two_distinct_empty_rects_compare_unequal (pinning
-            //     the documented "EqualRect compares fields
-            //     literally; no empty-rect normalisation" corner).
-            //     Seven indicator bands (1 composite + 6 single-
-            //     case). Per IM:I-176; baked against System 7.5.3
-            //     + real Mac ROM under BasiliskII.
-            //
-            // EqualRect ($A8A6): goldens equal_empty_rect + equal_rect_fields (IM:I-176)
+            // EqualRect compares the two Rects field-for-field
+            // literally per IM:I-176; there is no empty-rect
+            // normalisation, so two distinct empty rects compare
+            // unequal.
             (true, 0x0A6) => {
                 let sp = cpu.read_reg(Register::A7);
                 let r2_ptr = bus.read_long(sp);
@@ -2604,17 +2394,7 @@ impl super::TrapDispatcher {
             //   dst.bottom = max(pt1.v, pt2.v)
             //   dst.right  = max(pt1.h, pt2.h)
             //
-            // Regression coverage:
-            //   * pt2_rect — 1bpp 280x80 offscreen
-            //     behavior_state golden witnessing all four
-            //     output fields after Pt2Rect((25,60),(90,15),
-            //     &dst) -> dst = (15, 25, 60, 90), against
-            //     poison-prefilled 0x7FFF. Test inputs are chosen
-            //     so each of the four outputs is selected from a
-            //     different operand of min/max — top picks pt2.v,
-            //     left picks pt1.h, bottom picks pt1.v, right
-            //     picks pt2.h.
-            // Pt2Rect ($A8AC): min(v),min(h),max(v),max(h) per IM:I-175; pt2_rect golden
+            // Pt2Rect ($A8AC): min(v),min(h),max(v),max(h) per IM:I-175
             (true, 0x0AC) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_ptr = bus.read_long(sp);
@@ -4069,7 +3849,7 @@ impl super::TrapDispatcher {
                         ("dst_bottom", dst_bottom.to_string()),
                         ("dst_right", dst_right.to_string()),
                     ];
-                    if self.oracle_source().is_some() && dst_info.pixel_size == 8 {
+                    if self.trace_source().is_some() && dst_info.pixel_size == 8 {
                         let fp = copybits_dst_fingerprint(
                             bus, &dst_info, dst_top, dst_left, dst_bottom, dst_right,
                         );
@@ -4083,11 +3863,11 @@ impl super::TrapDispatcher {
                         fields.push(("dst_idx255_count", fp.idx255_count.to_string()));
                         fields.push(("dst_total", fp.total.to_string()));
                     }
-                    if let Err(err) = self.record_oracle_event(
+                    if let Err(err) = self.record_trace_event(
                         bus,
                         trap_pc,
                         "copybits_screen",
-                        Self::oracle_field_map(&fields),
+                        Self::trace_field_map(&fields),
                         true,
                     ) {
                         return Some(Err(err));
@@ -4384,8 +4164,7 @@ impl super::TrapDispatcher {
             // result slot after the trap returns. Net A7 effect
             // across the C-level call is zero.
             //
-            // ## Engines-agree subset (witnessed by
-            //    aa0c_getpixpat_strict)
+            // ## Behaviour shared with BasiliskII System 7.5.3 ROM
             //
             //   (1) Pascal FUNCTION calling convention — A7 net-
             //       balanced across the C-level call (caller pre-
@@ -4397,7 +4176,7 @@ impl super::TrapDispatcher {
             //       BasiliskII System 7.5.3 ROM Color QuickDraw and
             //       Systemless HLE per IM:V V-73 documented behaviour.
             //
-            // ## Engines-divergent absolute behaviour (not witnessed)
+            // ## Behaviour that diverges from BasiliskII
             //
             // On the present-resource path BasiliskII allocates a
             // fresh 28-byte PixPat record initialised from the 'ppat'
@@ -4425,9 +4204,8 @@ impl super::TrapDispatcher {
             // across repeated calls (apps cache the handle and reuse
             // it).
             //
-            // Catalogue proof: aa0c_getpixpat_strict
-            // (BasiliskII System 7.5.3 ROM Color QuickDraw bake) +
-            // contract test getpixpat_pascal_function_preserves_stack_across_five_missing_calls.
+            // Contract-test coverage in this file (mod tests):
+            //   getpixpat_pascal_function_preserves_stack_across_five_missing_calls
             (true, 0x20C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pat_id = bus.read_word(sp) as i16;
@@ -4448,12 +4226,6 @@ impl super::TrapDispatcher {
             //
             // Stack (Pascal): SP+0=protect(BOOLEAN, 16-bit), SP+2=index(INTEGER).
             // Pops 4. BOOLEAN: high byte != 0 means TRUE.
-            //
-            // Catalogue proof:
-            //   aa3d_aa3e_protectentry_reserveentry_strict witnesses pop-4
-            //   calling convention (single + 5-call composition) against
-            //   BasiliskII System 7.5.3 ROM. Absolute CLUT protect-flag
-            //   bookkeeping is engines-divergent.
             (true, 0x23D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let protect = (bus.read_word(sp) >> 8) != 0;
@@ -4471,12 +4243,6 @@ impl super::TrapDispatcher {
             //
             // Stack (Pascal): SP+0=reserve(BOOLEAN, 16-bit), SP+2=index(INTEGER).
             // Pops 4.
-            //
-            // Catalogue proof:
-            //   aa3d_aa3e_protectentry_reserveentry_strict witnesses pop-4
-            //   calling convention (single + 5-call composition) against
-            //   BasiliskII System 7.5.3 ROM. Absolute CLUT reserve-flag
-            //   bookkeeping is engines-divergent.
             (true, 0x23E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let reserve = (bus.read_word(sp) >> 8) != 0;
@@ -4655,12 +4421,12 @@ impl super::TrapDispatcher {
             // is 6 bytes so it is passed by-ref per MPW Pascal calling
             // convention). Trap pops 8 bytes. No FUNCTION result slot.
             //
-            // Engines-agree subset (witnessed by aa0d_makergbpat_strict):
+            // Behaviour shared with BasiliskII:
             //   The documented Tool-bit Pascal PROCEDURE pop-8 calling
             //   convention itself — A7 unchanged across the call after
             //   the 8-byte arg frame is consumed.
             //
-            // Engines-divergent absolute behavior (NOT witnessed):
+            // Behaviour that diverges from BasiliskII:
             //   BII System 7.5.3 ROM Color QuickDraw dereferences pp^^
             //   and *myColor, then writes a dithered 8x8 pattern plus
             //   a partial color table into the pixPat record. Systemless
@@ -4671,14 +4437,8 @@ impl super::TrapDispatcher {
             //   contained, but the calling convention is preserved so
             //   the rest of the program's stack frame stays intact.
             //
-            // Paired catalogue proof:
-            //   aa0d_makergbpat_strict/
-            //     Witnesses 2 engines-agree assertions:
-            //       AA0D:makergbpat_pops_pixpathandle_and_rgbcolor_pointer_arguments
-            //       AA0D:makergbpat_pascal_procedure_preserves_stack_across_five_calls
-            //   src/trap/quickdraw.rs::tests::
-            //     makergbpat_pascal_procedure_preserves_stack_across_five_calls
-            //     (mirrors the strict bake's B2 5-call composition)
+            // Contract-test coverage in this file (mod tests):
+            //   makergbpat_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x20D) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 8);
@@ -4807,12 +4567,6 @@ impl super::TrapDispatcher {
             // semantics could promote to Complete after
             // implementing the relinquish path.
             //
-            // Regression coverage:
-            //   dispose_palette (BasiliskII-baked trace
-            //     of NewPalette × 3 + DisposePalette × 3 interleaved
-            //     lifecycle: alloc, alloc, dispose, alloc, dispose,
-            //     dispose — proves allocator survives mid-lifecycle
-            //     Dispose per IM:V V-180)
             // DisposePalette ($AA93): Pops 4 bytes (PaletteHandle) per IM:V V-180 + IM:V V-291 master trap dispatch table + IM:VI Table C-1 PROCEDURE sig; frees guest palette block + drops palette_updates entry + drops window_palettes refs; does NOT model per-CLUT-device animation-entry relinquish path per IM:V V-180 since Systemless has no AnimateEntry $AA99 / AnimatePalette $AA9A side-effect tracking. Was previously mis-labeled as "ScriptUtil | Stub (no-op) | Pops 2 bytes" — typo in trap-doc Notes only; impl was always correct. Same Stub-mislabel-with-substantive-body status issue as PlotIcon $A94B / UpdtControl $A953 / Draw1Control $A96D / SetItemCmd $A84F surfaced during status review.
             (true, 0x293) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -5538,11 +5292,8 @@ impl super::TrapDispatcher {
             // result slot (A7 -= 4), the trap writes the GDHandle to
             // [A7] without popping any argument frame, and the caller
             // pops the 4-byte slot afterwards. Net A7 zero across the
-            // C-level call. Engines-agree witness: pop-0 + non-NIL
-            // GDHandle in result slot. See the
-            // `aa2a_aa32_getmaindevice_getgdevice_strict` catalogue
-            // fixture for the BasiliskII-baked sibling-pair runtime
-            // proof.
+            // C-level call: pop-0 with a non-NIL GDHandle in the
+            // result slot.
             (true, 0x22A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let gdh = self.ensure_main_gdevice(bus);
@@ -5667,11 +5418,8 @@ impl super::TrapDispatcher {
             // slot calling convention: caller pre-pushes a 4-byte
             // result slot, the trap writes the GDHandle to [A7]
             // without popping any argument frame, and the caller pops
-            // the 4-byte slot afterwards. Engines-agree witness: pop-0
-            // + non-NIL GDHandle in result slot. See the
-            // `aa2a_aa32_getmaindevice_getgdevice_strict` catalogue
-            // fixture for the BasiliskII-baked sibling-pair runtime
-            // proof.
+            // the 4-byte slot afterwards: pop-0 with a non-NIL GDHandle
+            // in the result slot.
             (true, 0x232) => {
                 let sp = cpu.read_reg(Register::A7);
                 let gdh = if self.current_gdevice != 0 {
@@ -5757,14 +5505,8 @@ impl super::TrapDispatcher {
             //  pixel value padded with zeros in the high word."
             //
             // Stack (Pascal): SP+0=rgb_ptr(4), SP+4=index(4). Pops 8.
-            // No FUNCTION result slot.
-            //
-            // Paired catalogue proof:
-            //   aa34_aa36_index2color_realcolor_strict
-            //   (B1 single-call + B2 5-call composition; engines-agree
-            //    on the Pascal PROCEDURE pop-8 calling convention,
-            //    engines-divergent on the absolute RGB read from the
-            //    active gDevice's CLUT.)
+            // No FUNCTION result slot. The absolute RGB read comes from
+            // the active gDevice's CLUT.
             // Index2Color ($AA34): Reads RGB from current GDevice's ctab, IM:V V-141
             (true, 0x234) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -5814,14 +5556,9 @@ impl super::TrapDispatcher {
             //
             // Stack (Pascal): SP+0=rgb_ptr(4). VAR parameter — read RGB
             // through the pointer, complement each channel, write back.
-            // Pops 4. No return value.
-            //
-            // Paired catalogue proof:
-            //   aa33_aa35_color2index_invertcolor_strict
-            //   (B3 single-call + B4 5-call composition; both engines
-            //    take the default ROM 1's-complement path on a fresh
-            //    boot — engines-agree on calling convention AND on the
-            //    ~R, ~G, ~B output bytes per IM:V V-141.)
+            // Pops 4. No return value. On a fresh boot this takes the
+            // default ROM 1's-complement path, producing ~R, ~G, ~B per
+            // IM:V V-141.
             // InvertColor ($AA35): 1's complement of each channel of the VAR RGBColor, IM:V V-141
             (true, 0x235) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -5854,19 +5591,8 @@ impl super::TrapDispatcher {
             //
             // Systemless uses the default 4-bit resolution: a color is
             // "real" iff some entry in device_clut has the same top
-            // 4 bits per channel.
-            //
-            // Paired catalogue proof:
-            //   aa34_aa36_index2color_realcolor_strict
-            //   (B3 single-call + B4 5-call composition; engines-agree
-            //    on the Pascal FUNCTION pop-4 + 2-byte BOOLEAN result
-            //    slot calling convention, engines-divergent on the
-            //    absolute BOOLEAN return value since BII's ROM 8bpp
-            //    CLUT differs from Systemless's device_clut.)
-            //
-            // Regression coverage:
-            //   realcolor_true_for_color_present_in_device_clut
-            //   realcolor_false_when_color_not_in_device_clut
+            // 4 bits per channel. The absolute BOOLEAN return therefore
+            // depends on the contents of device_clut.
             // RealColor ($AA36): TRUE if device_clut has an entry matching top-4-bits-per-channel, IM:V V-141
             (true, 0x236) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -6328,8 +6054,6 @@ impl super::TrapDispatcher {
                     // records other supported depth requests on the GDevice
                     // without changing the backing framebuffer.
                     //
-                    // Regression coverage:
-                    //   setdepth_changes_device_depth
                     0x0A13 => {
                         let _flags = bus.read_word(sp + 2);
                         let _which = bus.read_word(sp + 4);
@@ -6354,8 +6078,6 @@ impl super::TrapDispatcher {
             // no result slot).
             // PROCEDURE GetForeColor (VAR color: RGBColor);
             // Inside Macintosh Volume V (1986), p. V-68
-            // Strict-bake calling-convention witness:
-            // aa19_aa1a_getforecolor_getbackcolor_strict.
             (true, 0x219) => {
                 let sp = cpu.read_reg(Register::A7);
                 let color_ptr = bus.read_long(sp);
@@ -6374,8 +6096,6 @@ impl super::TrapDispatcher {
             // no result slot).
             // PROCEDURE GetBackColor (VAR color: RGBColor);
             // Inside Macintosh Volume V (1986), p. V-68
-            // Strict-bake calling-convention witness:
-            // aa19_aa1a_getforecolor_getbackcolor_strict.
             (true, 0x21A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let color_ptr = bus.read_long(sp);
@@ -8505,9 +8225,6 @@ impl super::TrapDispatcher {
             // PROCEDURE KillPicture(myPicture: PicHandle);
             // Inside Macintosh Volume I, I-189
             //
-            // Regression coverage:
-            //   killpicture_frees_picture
-            //   killpicture_nil_handle_is_safe
             // KillPicture ($A8F5): Frees picture data + handle per IM:I I-189
             (true, 0x0F5) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -8544,14 +8261,11 @@ impl super::TrapDispatcher {
             // and is intended for use in the ctSeed field of a custom
             // color table so the table is recognised as distinct
             // during color table translation. Absolute seed values
-            // are engines-divergent — BII's ROM Color Manager has its
-            // own internal counter initialised above minSeed at boot
-            // while Systemless HLE counts monotonically from 1 via
-            // `next_color_table_seed`. The "non-zero" envelope is
-            // engines-agree on both engines.
-            //
-            // Paired strict bake (engines-agree calling-convention +
-            // non-zero return witness): aa28_getctseed_strict.
+            // differ from BII — BII's ROM Color Manager has its own
+            // internal counter initialised above minSeed at boot while
+            // Systemless HLE counts monotonically from 1 via
+            // `next_color_table_seed`. Both engines share the
+            // calling convention and the "non-zero return" envelope.
             (true, 0x228) => {
                 let sp = cpu.read_reg(Register::A7);
                 bus.write_long(sp, self.next_color_table_seed());
@@ -8577,19 +8291,13 @@ impl super::TrapDispatcher {
             // hardcoded noErr stub that does not track per-call error
             // state; after clean InitGraf/InitFonts/InitWindows/OpenPort
             // with no failing operations preceding the call, BII System
-            // 7.5.3 ROM Color QuickDraw also returns noErr, so the
-            // engines-agree path is exercisable.
+            // 7.5.3 ROM Color QuickDraw also returns noErr.
             //
-            // Engines-agree subset (catalogue-proven):
-            //   - aa40_qderror_strict (pop-0 + 2-byte result slot
-            //     calling convention + noErr value + 5-call composition
-            //     net A7-zero).
+            // BII tracks per-call error codes through qdGlobals and can
+            // return non-zero error states, whereas Systemless always
+            // returns noErr.
             //
-            // Absolute non-zero error states are engines-divergent: BII
-            // tracks per-call error codes through qdGlobals while
-            // Systemless always returns noErr.
-            //
-            // Contract coverage:
+            // Contract-test coverage in this file (mod tests):
             //   quickdraw::tests::qderror_returns_noerr_in_function_result_slot_without_stack_pop
             //   quickdraw::tests::qderror_stub_preserves_general_registers_while_writing_result_slot
             //   quickdraw::tests::qderror_pascal_function_preserves_stack_across_five_calls
@@ -8617,16 +8325,12 @@ impl super::TrapDispatcher {
             // ignored. Index mode (start == -1): each ColorSpec.value
             // names the destination CLUT index.
             //
-            // Engines-agree subset (catalogue-proven):
-            //   - aa3f_setentries_strict (pop-8 calling convention +
-            //     5-call composition net A7-zero).
+            // For the absolute device-CLUT bulk update, BII walks the
+            // active gDevice's CLUT per IM:V V-143 while Systemless
+            // updates device_clut and reseeds the current GDevice
+            // ColorTable.
             //
-            // Absolute device-CLUT bulk update is engines-divergent:
-            // BII walks the active gDevice's CLUT per IM:V V-143 while
-            // Systemless updates device_clut and reseeds the current
-            // GDevice ColorTable.
-            //
-            // Contract coverage:
+            // Contract-test coverage in this file (mod tests):
             //   quickdraw::tests::setentries_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x23F) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -8659,11 +8363,11 @@ impl super::TrapDispatcher {
                         self.fade_trace_remaining = 30;
                     }
                 }
-                if let Err(err) = self.record_oracle_event(
+                if let Err(err) = self.record_trace_event(
                     bus,
                     trap_pc,
                     "set_entries",
-                    Self::oracle_palette_field_map(bus, table_ptr, start, safe_count),
+                    Self::trace_palette_field_map(bus, table_ptr, start, safe_count),
                     true,
                 ) {
                     return Some(Err(err));
@@ -8690,9 +8394,7 @@ impl super::TrapDispatcher {
             // to the 4-byte result slot at the post-pop SP, caller pops
             // the slot. Net A7 effect across the C-level call is zero.
             //
-            // Engines-agree subset (witnessed by
-            // aa1e_getcicon_strict bands B1+B2 and
-            // aa25_disposecicon_strict band B2):
+            // Behaviour:
             //   * Pascal FUNCTION calling convention (A7-balanced
             //     across the C-level call sequence).
             //   * Miss-returns-NIL contract per IM:V V-76 ("If the
@@ -9284,8 +8986,7 @@ impl super::TrapDispatcher {
             // and emit no per-row run data. Non-1bpp parity with Color
             // QuickDraw's pixmapTooDeepErr remains a gap.
             //
-            // Witnessed by:
-            //   a8d7_bitmaptoregion_strict
+            // Contract-test coverage in this file (mod tests):
             //   trap::quickdraw::tests::bitmaptoregion_*
             (true, 0x0D7) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -9533,7 +9234,7 @@ impl super::TrapDispatcher {
             // Destroys the previous structure of the region, then sets it to the empty region (0,0,0,0).
             // PROCEDURE SetEmptyRgn(rgn: RgnHandle);
             // Inside Macintosh Volume I, I-183
-            // Golden: a8dd_set_empty_rgn
+            // Reference: a8dd_set_empty_rgn
             (true, 0x0DD) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rgn_handle = bus.read_long(sp);
@@ -9683,13 +9384,6 @@ impl super::TrapDispatcher {
             // BOOL convention matches EmptyRgn/PtInRgn/RectInRgn:
             // 0x0100 for TRUE, 0x0000 for FALSE.
             //
-            // Regression coverage:
-            //   equalrgn_identical_rect_regions_equal
-            //   equalrgn_different_bbox_unequal
-            //   equalrgn_same_bbox_different_scanlines_unequal
-            //   equalrgn_different_rgn_size_unequal
-            //   equalrgn_nil_handles
-            //   equalrgn_pops_eight_bytes
             // EqualRgn ($A8E3): Full rgnSize byte compare (Executor C_EqualRgn, IM:I I-183); was at wrong slot + bbox-only prior to 2026-04-12
             (true, 0x0E3) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -10016,9 +9710,9 @@ impl super::TrapDispatcher {
             //     JSR-through-slot (a non-corpus pattern).  The HLE
             //     leaves A0/A1/D0/D1 unchanged and pops only the 4 bytes.
             //
-            // Engines-agree subset: stack discipline (4-byte pop) — pinned
-            // by the strict bake a890_stdline_strict and the in-Rust
-            // tests stdline_consumes_point_argument_by_value +
+            // Both engines share the stack discipline (4-byte pop) —
+            // pinned by the in-Rust tests
+            // stdline_consumes_point_argument_by_value +
             // stdline_five_call_composition_pops_twenty_bytes_total.
             //
             // Systemless-only contract: register preservation A0/A1/D0/D1 —
@@ -10061,10 +9755,7 @@ impl super::TrapDispatcher {
             // BasiliskII divergence: BII's System 7.5 ROM faithfully draws
             // the rect AND mutates A0/A1/D0/D1 during rasterisation.  Both
             // engines agree on the 6-byte pop; they diverge on pixel side-
-            // effect and register mutation.  Witnessed by the strict bake
-            // `a8a0_a8b6_stdrect_stdoval_strict` via empty-clipRgn + StackSpace
-            // sandwich, which clips BII's drawing to nothing and asserts A7
-            // advances by exactly 6 bytes per call (single + 5-verb-composition).
+            // effect and register mutation.
             // The Systemless-only register-preservation contract is pinned by
             // `stdrect_stub_preserves_non_stack_registers_in_hle_compromise_path`.
             (true, 0x0A0) => {
@@ -10112,12 +9803,8 @@ impl super::TrapDispatcher {
             // BasiliskII divergence: BII's System 7.5 ROM faithfully draws
             // the rounded rect AND mutates A0/A1/D0/D1 during rasterisation.
             // Both engines agree on the 10-byte pop; they diverge on pixel
-            // side-effect and register mutation.  Witnessed by the strict
-            // bake `a8af_a8bd_stdrrect_stdarc_strict` via empty-clipRgn +
-            // StackSpace sandwich, which clips BII's drawing to nothing and
-            // asserts A7 advances by exactly 10 bytes per call (single +
-            // 5-verb-composition).  The Systemless-only register-preservation
-            // contract is pinned by
+            // side-effect and register mutation.  The Systemless-only
+            // register-preservation contract is pinned by
             // `stdrrect_stub_preserves_non_stack_registers_in_hle_compromise_path`.
             (true, 0x0AF) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -10147,10 +9834,9 @@ impl super::TrapDispatcher {
             // SetStdProcs → JSR-through-slot.  caller_observable = false.
             //
             // BasiliskII divergence: BII's real ROM rasterises the oval AND
-            // mutates A0/A1/D0/D1.  Engines-agree on the 6-byte pop only.
-            // Witnessed by `a8a0_a8b6_stdrect_stdoval_strict` (sibling-trap
-            // combined fixture).  The Systemless-only register-preservation
-            // contract is pinned by `stdoval_stub_preserves_non_stack_registers_in_hle_compromise_path`.
+            // mutates A0/A1/D0/D1.  Both engines agree on the 6-byte pop
+            // only.  The Systemless-only register-preservation contract is
+            // pinned by `stdoval_stub_preserves_non_stack_registers_in_hle_compromise_path`.
             (true, 0x0B6) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 6);
@@ -10197,12 +9883,8 @@ impl super::TrapDispatcher {
             // BasiliskII divergence: BII's System 7.5 ROM faithfully draws
             // the arc/wedge AND mutates A0/A1/D0/D1 during rasterisation.
             // Both engines agree on the 10-byte pop; they diverge on pixel
-            // side-effect and register mutation.  Witnessed by the strict
-            // bake `a8af_a8bd_stdrrect_stdarc_strict` via empty-clipRgn +
-            // StackSpace sandwich, which clips BII's drawing to nothing and
-            // asserts A7 advances by exactly 10 bytes per call (single +
-            // 5-verb-composition with varying startAngle/arcAngle pairs).
-            // The Systemless-only register-preservation contract is pinned by
+            // side-effect and register mutation.  The Systemless-only
+            // register-preservation contract is pinned by
             // `stdarc_stub_preserves_non_stack_registers_in_hle_compromise_path`.
             (true, 0x0BD) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -10243,11 +9925,8 @@ impl super::TrapDispatcher {
             // BasiliskII divergence: BII's System 7.5 ROM faithfully draws the
             // polygon AND mutates A0/A1/D0/D1 during rasterisation.  Both
             // engines agree on the 6-byte pop; they diverge on pixel side-
-            // effect and register mutation.  Witnessed by the strict bake
-            // `a8c5_a8d1_stdpoly_stdrgn_strict` via empty-clipRgn + StackSpace
-            // sandwich, which clips BII's drawing to nothing and asserts A7
-            // advances by exactly 6 bytes per call (single + 5-verb-composition).
-            // The Systemless-only register-preservation contract is pinned by
+            // effect and register mutation.  The Systemless-only
+            // register-preservation contract is pinned by
             // `stdpoly_stub_preserves_non_stack_registers_in_hle_compromise_path`.
             (true, 0x0C5) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -10288,11 +9967,8 @@ impl super::TrapDispatcher {
             // BasiliskII divergence: BII's System 7.5 ROM faithfully draws the
             // region AND mutates A0/A1/D0/D1 during rasterisation.  Both
             // engines agree on the 6-byte pop; they diverge on pixel side-
-            // effect and register mutation.  Witnessed by the strict bake
-            // `a8c5_a8d1_stdpoly_stdrgn_strict` via empty-clipRgn + StackSpace
-            // sandwich, which clips BII's drawing to nothing and asserts A7
-            // advances by exactly 6 bytes per call (single + 5-verb-composition).
-            // The Systemless-only register-preservation contract is pinned by
+            // effect and register mutation.  The Systemless-only
+            // register-preservation contract is pinned by
             // `stdrgn_stub_preserves_non_stack_registers_in_hle_compromise_path`.
             (true, 0x0D1) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -10617,9 +10293,6 @@ impl super::TrapDispatcher {
             // PROCEDURE KillPoly(poly: PolyHandle);
             // Inside Macintosh Volume I, I-191
             //
-            // Regression coverage:
-            //   killpoly_frees_polygon
-            //   killpoly_nil_handle_is_safe
             // KillPoly ($A8CD): Releases polygon memory per IM:I I-191
             (true, 0x0CD) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -11252,8 +10925,7 @@ impl super::TrapDispatcher {
             //                                    ONEWORDINLINE(0xAA08);
             //     #define DisposPixPat(pp) DisposePixPat(pp)
             //
-            // Tool-bit Pascal PROCEDURE ABI (engines-agree calling
-            // convention pinned by aa08_aa09_dispose_copy_pixpat_strict):
+            // Tool-bit Pascal PROCEDURE ABI:
             //   Stack on entry:  [SP+0] = ppat (4 bytes, PixPatHandle).
             //   Stack on exit:   trap pops 4 bytes; A7 net-balanced
             //                    across the call; no FUNCTION result
@@ -11274,17 +10946,14 @@ impl super::TrapDispatcher {
             // the outer handle. Each nested dereference is guarded behind
             // a non-NIL check.
             //
-            // Engines-divergent absolute behavior: BII System 7.5.3 ROM
+            // Absolute behavior differs from BII: BII System 7.5.3 ROM
             // Color QuickDraw walks the full IM:V V-73 handle chain
             // freeing every nested allocation NewPixPat made. Systemless's
             // NewPixPat-allocated records have fewer embedded handles
             // (zero-initialised record with patType=1 only; no embedded
             // patMap/patData/patXData/patXMap), so the actual free-list
-            // mutation is engines-divergent. The bakeable engines-agree
-            // subset is the Pascal PROCEDURE pop-4 calling convention
-            // itself (witnessed by the aa08_aa09_dispose_copy_pixpat_strict
-            // fixture bands B1 single-call + B2 5-call composition with
-            // NewPixPat-allocated handles).
+            // mutation differs. The shared, verifiable subset is the
+            // Pascal PROCEDURE pop-4 calling convention itself.
             //
             // ## TRAP-WORD SWAP FIX (historical)
             // This arm previously matched `(true, 0x209)` and was
@@ -11293,12 +10962,6 @@ impl super::TrapDispatcher {
             // The arm was SWAPPED with CopyPixPat ($AA09); fixed by
             // swapping the trap-word matches. Real-Mac apps emitting
             // _DisposPixPat now correctly land here.
-            //
-            // Regression coverage:
-            //   disposepixpat_frees_pixpat
-            //   disposepixpat_nil_handle_is_harmless
-            //   aa08_aa09_dispose_copy_pixpat_strict
-            //     (BasiliskII-baked calling-convention witness for $AA08 + $AA09 pair)
             (true, 0x208) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ppat_handle = bus.read_long(sp);
@@ -11361,8 +11024,7 @@ impl super::TrapDispatcher {
             // MPW Universal Headers Quickdraw.h:
             //     EXTERN_API(void) PenPixPat(PixPatHandle pp) ONEWORDINLINE(0xAA0A);
             //
-            // Tool-bit Pascal PROCEDURE ABI (engines-agree calling
-            // convention pinned by aa0a_aa0b_pen_back_pixpat_strict):
+            // Tool-bit Pascal PROCEDURE ABI:
             //   Stack on entry:  [SP+0] = pp (4 bytes, PixPatHandle).
             //   Stack on exit:   trap pops 4 bytes; A7 net-balanced
             //                    across the call; no FUNCTION result
@@ -11376,15 +11038,11 @@ impl super::TrapDispatcher {
             // an early-exit no-op path before touching pnPixPat: the
             // pop is still performed but no port-field write happens.
             //
-            // The aa0a_aa0b_pen_back_pixpat_strict fixture witnesses
-            // the engines-agree Pascal PROCEDURE pop-4 calling
-            // convention on the NIL early-exit path (B1 single call,
-            // B2 5-call composition). The absolute pnPixPat-field
-            // mutation and pat1Data copy on the non-NIL path is
-            // exercised only by the existing Systemless unit test
-            // `penpixpat_stores_handle_and_copies_pat1data` because
-            // it requires a host-constructed PixPat record whose
-            // exact layout is engines-divergent.
+            // The NIL early-exit path shares the Pascal PROCEDURE pop-4
+            // calling convention with BII. The absolute pnPixPat-field
+            // mutation and pat1Data copy on the non-NIL path requires a
+            // host-constructed PixPat record whose exact layout differs
+            // between the two engines.
             (true, 0x20A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ppat_handle = bus.read_long(sp);
@@ -11420,8 +11078,7 @@ impl super::TrapDispatcher {
             // MPW Universal Headers Quickdraw.h:
             //     EXTERN_API(void) BackPixPat(PixPatHandle pp) ONEWORDINLINE(0xAA0B);
             //
-            // Tool-bit Pascal PROCEDURE ABI (engines-agree calling
-            // convention pinned by aa0a_aa0b_pen_back_pixpat_strict):
+            // Tool-bit Pascal PROCEDURE ABI:
             //   Stack on entry:  [SP+0] = pp (4 bytes, PixPatHandle).
             //   Stack on exit:   trap pops 4 bytes; A7 net-balanced
             //                    across the call; no FUNCTION result
@@ -11435,10 +11092,8 @@ impl super::TrapDispatcher {
             // before touching bkPixPat: the pop is still performed
             // but no port-field write happens.
             //
-            // The aa0a_aa0b_pen_back_pixpat_strict fixture witnesses
-            // the engines-agree Pascal PROCEDURE pop-4 calling
-            // convention on the NIL early-exit path (B3 single call,
-            // B4 5-call composition).
+            // The NIL early-exit path shares the Pascal PROCEDURE pop-4
+            // calling convention with BII.
             (true, 0x20B) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ppat_handle = bus.read_long(sp);
@@ -11478,8 +11133,7 @@ impl super::TrapDispatcher {
             // MPW Universal Headers Quickdraw.h:
             //     EXTERN_API(void) OpColor(const RGBColor *color) ONEWORDINLINE(0xAA21);
             //
-            // Tool-bit Pascal PROCEDURE ABI (engines-agree calling
-            // convention pinned by aa21_aa22_opcolor_hilitecolor_strict):
+            // Tool-bit Pascal PROCEDURE ABI:
             //   Stack on entry:  [SP+0] = color (4 bytes, RGBColor*).
             //   Stack on exit:   trap pops 4 bytes; A7 net-balanced
             //                    across the call; no FUNCTION result
@@ -11494,17 +11148,9 @@ impl super::TrapDispatcher {
             // write happens. Systemless stores the RGB on the dispatcher
             // (self.op_color) rather than per-port grafVars; this
             // matches the single-port assumption used by fg_color /
-            // bg_color and is engines-divergent vs BII's WMgrCPort
-            // grafVars write on the non-NIL path.
-            //
-            // The aa21_aa22_opcolor_hilitecolor_strict fixture witnesses
-            // the engines-agree Pascal PROCEDURE pop-4 calling
-            // convention on the NIL early-exit path (B1 single call,
-            // B2 5-call composition).
-            //
-            // Regression coverage:
-            //   opcolor_stores_rgb_for_arithmetic_transfer_modes
-            //   opcolor_nil_pointer_is_harmless
+            // bg_color and differs from BII's WMgrCPort grafVars write
+            // on the non-NIL path. The NIL early-exit path shares the
+            // Pascal PROCEDURE pop-4 calling convention with BII.
             (true, 0x221) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rgb_ptr = bus.read_long(sp);
@@ -11537,8 +11183,7 @@ impl super::TrapDispatcher {
             // MPW Universal Headers Quickdraw.h:
             //     EXTERN_API(void) HiliteColor(const RGBColor *color) ONEWORDINLINE(0xAA22);
             //
-            // Tool-bit Pascal PROCEDURE ABI (engines-agree calling
-            // convention pinned by aa21_aa22_opcolor_hilitecolor_strict):
+            // Tool-bit Pascal PROCEDURE ABI:
             //   Stack on entry:  [SP+0] = color (4 bytes, RGBColor*).
             //   Stack on exit:   trap pops 4 bytes; A7 net-balanced
             //                    across the call; no FUNCTION result
@@ -11552,16 +11197,9 @@ impl super::TrapDispatcher {
             // before touching grafVars. Systemless stores the hilite color
             // on the dispatcher (self.hilite_color) rather than per-port
             // grafVars; this matches the single-port assumption used by
-            // fg_color / bg_color and is engines-divergent vs BII's
-            // WMgrCPort grafVars write on the non-NIL path.
-            //
-            // The aa21_aa22_opcolor_hilitecolor_strict fixture witnesses
-            // the engines-agree Pascal PROCEDURE pop-4 calling
-            // convention on the NIL early-exit path (B3 single call,
-            // B4 5-call composition).
-            //
-            // Regression coverage:
-            //   hilitecolor_stores_rgb_for_subsequent_drawing
+            // fg_color / bg_color and differs from BII's WMgrCPort
+            // grafVars write on the non-NIL path. The NIL early-exit path
+            // shares the Pascal PROCEDURE pop-4 calling convention with BII.
             (true, 0x222) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rgb_ptr = bus.read_long(sp);
@@ -11603,16 +11241,11 @@ impl super::TrapDispatcher {
             // ShieldCursor is a stack-shape no-op that only consumes its
             // arguments.  The Apple-canonical cursor-level decrement is
             // pinned via the in-Rust contract test
-            // `shield_cursor_pops_eight_bytes_and_preserves_cursor_state_in_hle`
-            // and declared `witness_kind = "contract"` in the catalogue
-            // row since both engines diverge on the LowMem CrsrVis side
-            // effect (BII System 7.5.3 ROM writes CrsrVis; Systemless HLE
-            // doesn't touch it).
-            //
-            // Engines-agree subset (witnessed by the strict bake
-            // `a855_a856_shieldcursor_obscurecursor_strict`):
-            //   - 8-byte arg-frame pop balanced across single + 5-call
-            //     StackSpace sandwiches; net A7 delta zero externally.
+            // `shield_cursor_pops_eight_bytes_and_preserves_cursor_state_in_hle`.
+            // The two engines diverge on the LowMem CrsrVis side effect
+            // (BII System 7.5.3 ROM writes CrsrVis; Systemless HLE doesn't
+            // touch it) but share the 8-byte arg-frame pop: A7 is balanced
+            // across single and 5-call sequences (net A7 delta zero).
             //
             // ShieldCursor ($A855): HLE no-op; pops 8 bytes per IM:I I-474 MPW C declaration ShieldCursor(const Rect *shieldRect, Point offsetPt) ONEWORDINLINE(0xA855)
             (true, 0x055) => {
@@ -11650,14 +11283,9 @@ impl super::TrapDispatcher {
             // semantic exactly. The high word of the return is forced to
             // zero per the spec.
             //
-            // Paired catalogue proof:
-            //   aa33_aa35_color2index_invertcolor_strict
-            //   (B1 single-call + B2 5-call composition witness the
-            //    engines-agree Pascal FUNCTION calling convention; the
-            //    absolute LONGINT index is engines-divergent because
-            //    BII walks the ROM inverse table while Systemless does a
-            //    linear scan, so the calling-convention conjunct is
-            //    the only engines-agree witness.)
+            // The Pascal FUNCTION calling convention matches BII, but the
+            // absolute LONGINT index differs: BII walks the ROM inverse
+            // table while Systemless does a linear scan.
             // Color2Index ($AA33): Linear-scan nearest match against device_clut, skips reserved entries, IM:V V-141
             (true, 0x233) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -11761,18 +11389,7 @@ impl super::TrapDispatcher {
             // temporary inverse table at the requested resolution and
             // calls Color2Index; absolute returned indices may diverge
             // from Systemless's for non-trivial CLUTs. The Pascal PROCEDURE
-            // pop-10 calling convention is engines-agree.
-            //
-            // Regression coverage:
-            //   getsubtable_writes_closest_match_indices_into_mycolors_value_fields
-            //   getsubtable_with_nil_target_uses_current_device_clut
-            //   getsubtable_processes_every_mycolors_entry
-            //
-            // Catalogue-proof witness:
-            //   aa37_getsubtable_strict witnesses the
-            //   engines-agree pop-10 calling convention via single-call
-            //   and 5-call composition StackSpace sandwiches (BasiliskII
-            //   PASS on first deterministic bake).
+            // pop-10 calling convention matches BII.
             //
             // GetSubTable ($AA37): Group Color2Index over a CTab; NIL targetTbl uses device_clut, IM:V V-142
             (true, 0x237) => {
@@ -11848,10 +11465,10 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0: searchProc(4). Pop 4. No FUNCTION result slot.
             //
-            // Engines-agree subset witnessed by the aa3a_aa3b_addsearch_addcomp_strict
-            // bake: the Tool-bit Pascal PROCEDURE pop-4 calling convention — A7
-            // unchanged across the call regardless of engines-divergent absolute
-            // search-chain mutation.
+            // The shared behaviour is the Tool-bit Pascal PROCEDURE pop-4
+            // calling convention — A7 unchanged across the call regardless
+            // of the absolute search-chain mutation, which differs between
+            // engines.
             (true, 0x23A) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -11877,8 +11494,8 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0: compProc(4). Pop 4. No FUNCTION result slot.
             //
-            // Engines-agree subset witnessed by the aa3a_aa3b_addsearch_addcomp_strict
-            // bake: the Tool-bit Pascal PROCEDURE pop-4 calling convention.
+            // The shared behaviour is the Tool-bit Pascal PROCEDURE pop-4
+            // calling convention.
             (true, 0x23B) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -11903,10 +11520,10 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0: id(2). Pop 2. No FUNCTION result slot.
             //
-            // Engines-agree subset witnessed by the aa3c_setclientid_strict
-            // bake: the Tool-bit Pascal PROCEDURE pop-2 calling convention —
-            // A7 unchanged across the call regardless of engines-divergent
-            // absolute gdID-field mutation.
+            // The shared behaviour is the Tool-bit Pascal PROCEDURE pop-2
+            // calling convention — A7 unchanged across the call regardless
+            // of the absolute gdID-field mutation, which differs between
+            // engines.
             (true, 0x23C) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 2);
@@ -11945,14 +11562,12 @@ impl super::TrapDispatcher {
             // set selection.reqLData[i] = colReqErr (-1) and leave
             // result[i] undefined.
             //
-            // Engines-agree subset: the Pascal PROCEDURE pop-12 calling
+            // The shared behaviour is the Pascal PROCEDURE pop-12 calling
             // convention. Absolute Color Manager state mutation diverges
             // between engines (BII walks gDevice CLUT per IM:V V-137..V-138,
             // Systemless walks dispatcher-internal device_clut and supplied
-            // CTab bytes). Witnessed PASS by the
-            // aa49_aa4a_saveentries_restoreentries_strict catalog fixture
-            // bands B1 + B2, and by
-            // tests::saveentries_restoreentries_pascal_procedure_preserves_stack_across_five_calls.
+            // CTab bytes). Contract-test coverage in this file (mod tests):
+            // saveentries_restoreentries_pascal_procedure_preserves_stack_across_five_calls.
             (true, 0x249) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selection_ptr = bus.read_long(sp);
@@ -12082,14 +11697,13 @@ impl super::TrapDispatcher {
             // packed result; RestoreEntries unpacks packed src into
             // scattered dst.
             //
-            // Engines-agree subset: the Pascal PROCEDURE pop-12 calling
+            // The shared behaviour is the Pascal PROCEDURE pop-12 calling
             // convention. Absolute Color Manager state mutation diverges
             // between engines (BII walks gDevice CLUT per IM:V V-137..V-138
             // and does NOT bump ctSeed; Systemless walks dispatcher-internal
-            // device_clut and supplied CTab bytes). Witnessed PASS by the
-            // aa49_aa4a_saveentries_restoreentries_strict catalog fixture
-            // bands B3 + B4, and by
-            // tests::saveentries_restoreentries_pascal_procedure_preserves_stack_across_five_calls.
+            // device_clut and supplied CTab bytes). Contract-test coverage
+            // in this file (mod tests):
+            // saveentries_restoreentries_pascal_procedure_preserves_stack_across_five_calls.
             (true, 0x24A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selection_ptr = bus.read_long(sp);
@@ -12166,8 +11780,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-147
             // Stack: SP+0: searchProc(4). Pop 4.
             // No-op stub: Systemless uses identity color matching and does not
-            // maintain a per-device search-procedure chain. Pop-4 calling
-            // convention proven by aa4c_aa4d_delsearch_delcomp_strict.
+            // maintain a per-device search-procedure chain. Pops 4 bytes.
             (true, 0x24C) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -12181,8 +11794,7 @@ impl super::TrapDispatcher {
             // Stack: SP+0: compProc(4). Pop 4.
             // No-op stub: Systemless uses the default 1's-complement procedure
             // and does not maintain a per-device complement-procedure chain.
-            // Pop-4 calling convention proven by
-            // aa4c_aa4d_delsearch_delcomp_strict.
+            // Pops 4 bytes.
             (true, 0x24D) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -12205,9 +11817,6 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0: pm_handle(4). Pop 4.
             //
-            // Regression coverage:
-            //   disposepixmap_frees_pixmap_and_color_table
-            //   disposepixmap_nil_handle_is_harmless
             // DisposPixMap ($AA04): Frees PixMap record and its color table (pmTable at +42); per IM:V V-57
             (true, 0x204) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -12302,7 +11911,7 @@ impl super::TrapDispatcher {
             //  +20  pat1Data  (Pattern, 8 bytes; documented to be
             //                  initialised to 50% gray)
             //
-            // Apple-vs-BasiliskII engines-agree subset:
+            // Behaviour shared with BasiliskII:
             //   (1) Pascal FUNCTION calling convention — A7
             //       unchanged across the C-level call sequence.
             //   (2) Non-NIL handle return — per IM:V V-72 the
@@ -12313,7 +11922,7 @@ impl super::TrapDispatcher {
             //       (BII heap address vs Systemless host allocator
             //       address) but each is valid on its own engine.
             //
-            // Engines-divergent (not witnessed by the strict bake):
+            // Behaviour that diverges from BasiliskII:
             //   The bytes inside the freshly-allocated PixPat
             //   record. BII Color QuickDraw writes patType=1,
             //   pat1Data=50% gray, and pre-allocates the embedded
@@ -12324,24 +11933,13 @@ impl super::TrapDispatcher {
             //   allocate the embedded handles since the host
             //   runtime renders only to 1bpp canvases and has no
             //   need for the embedded color table / expanded data
-            //   path. That remaining divergence is documented in
+            //   path. That remaining divergence is documented at
             //   the AA0D MakeRGBPat / AA0A PenPixPat / AA0B
-            //   BackPixPat catalogue proofs.
+            //   BackPixPat arms.
             //
-            // Catalogue proof:
-            //   aa07_newpixpat_strict/
-            //     band B1: A7 unchanged + handle != NIL across one
-            //              NewPixPat() call.
-            //     band B2: A7 unchanged + all 5 handles non-NIL
-            //              across a 5-call NewPixPat() composition.
-            //     band B3: PenPixPat(h1) copies the documented gray
-            //              pat1Data into the current pen state.
-            //
-            // Regression coverage:
-            //   newpixpat_writes_handle_pointing_at_full_pixpat_record
-            //   src/trap/quickdraw.rs mod tests
-            //     newpixpat_pascal_function_returns_nonnil_handle_and_preserves_stack_across_five_calls
-            //     newpixpat_initializes_gray_pattern_and_penpixpat_copies_it
+            // Contract-test coverage in this file (mod tests):
+            //   newpixpat_pascal_function_returns_nonnil_handle_and_preserves_stack_across_five_calls
+            //   newpixpat_initializes_gray_pattern_and_penpixpat_copies_it
             (true, 0x207) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rec = bus.alloc(28);
@@ -12374,8 +11972,7 @@ impl super::TrapDispatcher {
             //                                 PixPatHandle dstPP)
             //                                 ONEWORDINLINE(0xAA09);
             //
-            // Tool-bit Pascal PROCEDURE ABI (engines-agree calling
-            // convention pinned by aa08_aa09_dispose_copy_pixpat_strict):
+            // Tool-bit Pascal PROCEDURE ABI:
             //   Stack on entry:  [SP+0] = dstPP (4 bytes, second arg per
             //                              Pascal calling convention);
             //                    [SP+4] = srcPP (4 bytes, first arg).
@@ -12388,7 +11985,7 @@ impl super::TrapDispatcher {
             // Both src/dst handle dereferences are guarded behind non-NIL
             // checks.
             //
-            // Engines-divergent absolute behavior: BII System 7.5.3 ROM
+            // Absolute behavior differs from BII: BII System 7.5.3 ROM
             // Color QuickDraw walks the IM:V V-73 deep-copy chain
             // (record + patData + patXData + patMap + color table).
             // Systemless HLE here copies only the 28-byte PixPat record
@@ -12396,11 +11993,8 @@ impl super::TrapDispatcher {
             // records have no embedded handles to chase. The post-copy
             // record contents diverge between engines (BII honours the
             // documented full deep copy; Systemless matches its shallower
-            // NewPixPat record layout). The bakeable engines-agree
-            // subset is the Pascal PROCEDURE pop-8 calling convention
-            // itself (witnessed by the aa08_aa09_dispose_copy_pixpat_strict
-            // fixture bands B3 single-call + B4 5-call composition with
-            // NewPixPat-allocated handles).
+            // NewPixPat record layout). The shared, verifiable subset is
+            // the Pascal PROCEDURE pop-8 calling convention itself.
             //
             // ## TRAP-WORD SWAP FIX (historical)
             // This arm previously matched `(true, 0x208)` and was labeled
@@ -12408,10 +12002,6 @@ impl super::TrapDispatcher {
             // table line 20693, $AA09 is CopyPixPat. See the swap-fix
             // rationale block at the DisposPixPat ($AA08) arm above for
             // the full details — both arms were swapped.
-            //
-            // Regression coverage:
-            //   copypixpat_copies_28_byte_pixpat_record_into_dst
-            //   aa08_aa09_dispose_copy_pixpat_strict
             (true, 0x209) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_handle = bus.read_long(sp);
@@ -12787,23 +12377,18 @@ impl super::TrapDispatcher {
             // PixPatHandle argument, trap pops it, no FUNCTION result slot.
             // Stack: SP+0: deskPixPat(4). Pop 4.
             //
-            // Engines-divergent absolute side effect: BII System 7.5.3 ROM
-            // honours the documented contract and redraws the desktop pixel
-            // pattern in the WMgrCPort. Systemless runs as a kiosk and never
-            // renders desktop chrome, so this arm is a true no-op (pops 4
-            // bytes and returns). IM:V V-210 itself notes "This routine is
-            // not for use by applications, and its description is only
-            // included for informational purposes" — applications are not
-            // expected to depend on the visible desktop redraw.
+            // The absolute side effect differs from BII: BII System 7.5.3
+            // ROM honours the documented contract and redraws the desktop
+            // pixel pattern in the WMgrCPort. Systemless runs as a kiosk and
+            // never renders desktop chrome, so this arm is a true no-op
+            // (pops 4 bytes and returns). IM:V V-210 itself notes "This
+            // routine is not for use by applications, and its description is
+            // only included for informational purposes" — applications are
+            // not expected to depend on the visible desktop redraw.
             //
-            // Engines-agree subset (witnessed by aa47_setdeskcpat_strict):
-            //   AA47:setdeskcpat_pops_pixpathandle_argument — A7 unchanged
-            //     across a single SetDeskCPat(NIL) call wrapped in one
-            //     StackSpace sandwich.
-            //   AA47:setdeskcpat_pascal_procedure_preserves_stack_across_five_calls
-            //     — A7 unchanged across a 5-call SetDeskCPat(NIL) composition
-            //     wrapped in one StackSpace sandwich (5 missed 4-byte pops
-            //     would cumulate to 20 bytes A7 drift).
+            // The shared behaviour is the Pascal PROCEDURE pop-4 calling
+            // convention: A7 is unchanged across single and 5-call
+            // SetDeskCPat(NIL) sequences.
             (true, 0x247) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -12836,14 +12421,6 @@ impl super::TrapDispatcher {
             // pascal direct-push threshold and is passed by const-
             // pointer; the 4-byte Point fits and is passed by value.
             //
-            // Regression coverage:
-            //   pttoangle_compass_midpoints_of_rectangle
-            //   pttoangle_corners_are_at_45_degree_increments_for_non_square_rect
-            //   pttoangle_center_is_undefined_but_safe
-            //   pt_to_angle  (1bpp 480x80 BasiliskII golden;
-            //     5 indicator bands witness the four cardinal-direction
-            //     compass angles 0/90/180/270° plus a composite all-four-
-            //     match band per IM:I-175)
             // PtToAngle ($A8C3): Returns clockwise-from-up degrees (0-359) of the point relative to rect's center; aspect normalized so rect corners are 45/135/225/315° per IM:I I-194
             (true, 0x0C3) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -12902,7 +12479,6 @@ impl super::TrapDispatcher {
             //   slopefromangle_45_is_negative_one_fixed
             //   slopefromangle_135_is_positive_one_fixed
             //   slopefromangle_treats_angle_mod_180
-            //   slopefromangle_30_matches_neg_tan
             // SlopeFromAngle ($A8BC): Returns Fixed slope = -tan(angle MOD 180); 0°→0, 45°→-1.0 ($FFFF0000), 90°→saturates to $7FFFFFFF per IM:I I-192
             (true, 0x0BC) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -12999,9 +12575,9 @@ impl super::TrapDispatcher {
             //   4-byte PixPatHandle at SP+4), trap pops 8 bytes, no
             //   FUNCTION result slot. A7 net-balanced across the call.
             //
-            // Engines-agree subset: the documented Tool-bit Pascal
-            // PROCEDURE pop-8 calling convention. Absolute pixel-fill
-            // side effects are engines-divergent: BasiliskII System
+            // The shared behaviour is the documented Tool-bit Pascal
+            // PROCEDURE pop-8 calling convention. The absolute pixel-fill
+            // side effects differ from BII: BasiliskII System
             // 7.5.3 ROM Color QuickDraw expands the full PixPat record
             // per IM:V V-46 (patType / patMap / patData / patXData /
             // patXMap deep handle chain) and tiles the rectangle with
@@ -13012,11 +12588,8 @@ impl super::TrapDispatcher {
             // only to 1bpp canvases and has no Color QuickDraw
             // expansion pipeline.
             //
-            // Catalogue proof: aa0e_fillcrect_strict
-            // (BasiliskII System 7.5.3 ROM Color QuickDraw bake; uses
-            // NewPixPat()-allocated PixPatHandles because NIL handles
-            // are not safe on this ROM path) + contract test
-            // fillcrect_pascal_procedure_preserves_stack_across_five_calls.
+            // Contract-test coverage in this file (mod tests):
+            //   fillcrect_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x20E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pp_handle = bus.read_long(sp);
@@ -13092,22 +12665,17 @@ impl super::TrapDispatcher {
             //   4-byte PixPatHandle at SP+4), trap pops 8 bytes, no
             //   FUNCTION result slot. A7 net-balanced across the call.
             //
-            // Engines-agree subset: the documented Tool-bit Pascal
-            // PROCEDURE pop-8 calling convention. Absolute pixel-fill
-            // side effects are engines-divergent: BasiliskII System
+            // The shared behaviour is the documented Tool-bit Pascal
+            // PROCEDURE pop-8 calling convention. The absolute pixel-fill
+            // side effects differ from BII: BasiliskII System
             // 7.5.3 ROM Color QuickDraw expands the full PixPat record
             // per IM:V V-46 and tiles the oval with the expanded color
             // pattern. Systemless HLE reads pat1Data at offset +20 and
             // uses that 8-byte monochrome fallback to fill via
             // draw_oval(ShapeOp::Fill(pat)).
             //
-            // Catalogue proof:
-            //   aa0f_aa12_fillcoval_fillcrgn_strict
-            //   (BasiliskII System 7.5.3 ROM Color QuickDraw sibling-
-            //   pair bake; uses NewPixPat()-allocated PixPatHandles
-            //   because NIL handles are not safe on this ROM path) +
-            //   contract test
-            //   fillcoval_fillcrgn_pascal_procedure_preserves_stack_across_five_calls.
+            // Contract-test coverage in this file (mod tests):
+            //   fillcoval_fillcrgn_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x20F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pp_handle = bus.read_long(sp);
@@ -13140,20 +12708,17 @@ impl super::TrapDispatcher {
             //   the Rect pointer is pushed first), trap pops 12 bytes,
             //   no FUNCTION result slot. A7 net-balanced across the call.
             //
-            // Engines-agree subset: the documented Tool-bit Pascal
-            // PROCEDURE pop-12 calling convention. Absolute pixel-fill
-            // side effects are engines-divergent: BasiliskII System
+            // The shared behaviour is the documented Tool-bit Pascal
+            // PROCEDURE pop-12 calling convention. The absolute pixel-fill
+            // side effects differ from BII: BasiliskII System
             // 7.5.3 ROM Color QuickDraw expands the full PixPat record
             // per IM:V V-46 and tiles the rounded rectangle interior
             // with the expanded color pattern. Systemless HLE reads
             // pat1Data at offset +20 and uses that 8-byte monochrome
             // fallback to fill via draw_round_rect(ShapeOp::Fill(pat)).
             //
-            // Catalogue proof:
-            //   aa10_aa11_fillcroundrect_fillcarc_strict
-            //   (BasiliskII sibling-pair bake; uses NewPixPat-allocated
-            //   PixPatHandles and stack-allocated Rect records) + contract
-            //   test fillcroundrect_fillcarc_pascal_procedure_preserves_stack_across_five_calls.
+            // Contract-test coverage in this file (mod tests):
+            //   fillcroundrect_fillcarc_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x210) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pp_handle = bus.read_long(sp);
@@ -13190,20 +12755,17 @@ impl super::TrapDispatcher {
             //   trap pops 12 bytes, no FUNCTION result slot. A7
             //   net-balanced across the call.
             //
-            // Engines-agree subset: the documented Tool-bit Pascal
-            // PROCEDURE pop-12 calling convention. Absolute pixel-fill
-            // side effects are engines-divergent: BasiliskII System
+            // The shared behaviour is the documented Tool-bit Pascal
+            // PROCEDURE pop-12 calling convention. The absolute pixel-fill
+            // side effects differ from BII: BasiliskII System
             // 7.5.3 ROM Color QuickDraw expands the full PixPat record
             // per IM:V V-46 and tiles the arc wedge with the expanded
             // color pattern. Systemless HLE reads pat1Data at offset +20
             // and uses that 8-byte monochrome fallback to fill via
             // draw_arc(ShapeOp::Fill(pat)).
             //
-            // Catalogue proof:
-            //   aa10_aa11_fillcroundrect_fillcarc_strict
-            //   (BasiliskII sibling-pair bake; uses NewPixPat-allocated
-            //   PixPatHandles and stack-allocated Rect records) + contract
-            //   test fillcroundrect_fillcarc_pascal_procedure_preserves_stack_across_five_calls.
+            // Contract-test coverage in this file (mod tests):
+            //   fillcroundrect_fillcarc_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x211) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pp_handle = bus.read_long(sp);
@@ -13235,21 +12797,17 @@ impl super::TrapDispatcher {
             //   4-byte PixPatHandle at SP+4), trap pops 8 bytes, no
             //   FUNCTION result slot. A7 net-balanced across the call.
             //
-            // Engines-agree subset: the documented Tool-bit Pascal
-            // PROCEDURE pop-8 calling convention. Absolute pixel-fill
-            // side effects are engines-divergent: BasiliskII System
+            // The shared behaviour is the documented Tool-bit Pascal
+            // PROCEDURE pop-8 calling convention. The absolute pixel-fill
+            // side effects differ from BII: BasiliskII System
             // 7.5.3 ROM Color QuickDraw expands the full PixPat record
             // per IM:V V-46 and tiles the region with the expanded
             // color pattern. Systemless HLE reads pat1Data at offset +20
             // and uses that 8-byte monochrome fallback to fill via
             // draw_rgn(ShapeOp::Fill(pat)).
             //
-            // Catalogue proof:
-            //   aa0f_aa12_fillcoval_fillcrgn_strict
-            //   (BasiliskII System 7.5.3 ROM Color QuickDraw sibling-
-            //   pair bake; uses NewPixPat()-allocated PixPatHandles +
-            //   NewRgn/SetRectRgn-allocated RgnHandles) + contract test
-            //   fillcoval_fillcrgn_pascal_procedure_preserves_stack_across_five_calls.
+            // Contract-test coverage in this file (mod tests):
+            //   fillcoval_fillcrgn_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x212) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pp_handle = bus.read_long(sp);
@@ -13282,22 +12840,17 @@ impl super::TrapDispatcher {
             //   4-byte PixPatHandle at SP+4), trap pops 8 bytes, no
             //   FUNCTION result slot. A7 net-balanced across the call.
             //
-            // Engines-agree subset: the documented Tool-bit Pascal
-            // PROCEDURE pop-8 calling convention. Absolute pixel-fill
-            // side effects are engines-divergent: BasiliskII System
+            // The shared behaviour is the documented Tool-bit Pascal
+            // PROCEDURE pop-8 calling convention. The absolute pixel-fill
+            // side effects differ from BII: BasiliskII System
             // 7.5.3 ROM Color QuickDraw expands the full PixPat record
             // per IM:V V-46 and rasterises the polygon interior tiled
             // with the expanded color pattern. Systemless HLE reads
             // pat1Data at offset +20 and uses that 8-byte monochrome
             // fallback to fill via draw_poly(ShapeOp::Fill(pat)).
             //
-            // Catalogue proof:
-            //   aa13_fillcpoly_strict
-            //   (BasiliskII System 7.5.3 ROM Color QuickDraw solo bake;
-            //   uses NewPixPat()-allocated PixPatHandles +
-            //   OpenPoly/MoveTo/LineTo/ClosePoly-recorded PolyHandles)
-            //   + contract test
-            //   fillcpoly_pascal_procedure_preserves_stack_across_five_calls.
+            // Contract-test coverage in this file (mod tests):
+            //   fillcpoly_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x213) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pp_handle = bus.read_long(sp);
@@ -13329,28 +12882,18 @@ impl super::TrapDispatcher {
             // Tool-bit Pascal PROCEDURE ABI: caller pushes an 8-byte
             // arg frame consisting of 4-byte cPix pointer at SP+0,
             // 2-byte v INTEGER at SP+4, 2-byte h INTEGER at SP+6;
-            // trap pops 8 bytes, no FUNCTION result slot. The
-            // engines-agree subset (paired catalogue proof in
-            // aa16_aa17_setcpixel_getcpixel_strict)
-            // is the pop-8 calling convention itself: A7 unchanged
-            // across the call. Absolute pixel-set side effect
-            // diverges between engines — BII writes the best-match
+            // trap pops 8 bytes, no FUNCTION result slot. The shared
+            // behaviour is the pop-8 calling convention itself: A7
+            // unchanged across the call. The absolute pixel-set side
+            // effect differs from BII — BII writes the best-match
             // CLUT index into the screen pixMap byte via the device
             // CLUT, while Systemless HLE walks its own port pixMap +
             // device_clut (different default CLUT initialisation).
             // NIL cPix pointer exits early after the 8-byte pop;
             // out-of-bounds (h, v) coords clip silently.
             //
-            // Regression coverage:
-            //   setcpixel_pops_eight_bytes
-            //   setcpixel_writes_clut_index_255_for_black
-            //   setcpixel_writes_clut_index_0_for_white
-            //   setcpixel_touches_only_the_requested_pixel
-            //   setcpixel_uses_current_device_clut_not_a_fixed_palette
-            //   setcpixel_getcpixel_roundtrip_preserves_exact_clut_color
-            //   src/trap/quickdraw.rs mod tests
-            //     setcpixel_getcpixel_pascal_procedure_preserves_stack_across_five_calls
-            //   aa16_aa17_setcpixel_getcpixel_strict (B1, B2)
+            // Contract-test coverage in this file (mod tests):
+            //   setcpixel_getcpixel_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x216) => {
                 let sp = cpu.read_reg(Register::A7);
                 let cpix_ptr = bus.read_long(sp);
@@ -13410,27 +12953,17 @@ impl super::TrapDispatcher {
             // SP+0, 2-byte v INTEGER at SP+4, 2-byte h INTEGER at
             // SP+6; trap pops 8 bytes, no FUNCTION result slot. The
             // result RGBColor is written via the VAR pointer
-            // parameter. The engines-agree subset (paired catalogue
-            // proof in
-            // aa16_aa17_setcpixel_getcpixel_strict)
-            // is the pop-8 calling convention itself: A7 unchanged
-            // across the call. Absolute RGB-read return value
-            // diverges between engines — BII reads the screen
-            // pixMap byte through the device CLUT, while Systemless HLE
-            // reads its own port pixMap byte through device_clut
-            // (different default CLUT initialisation). NIL VAR
-            // pointer exits early after the 8-byte pop; out-of-bounds
-            // (h, v) returns black ([0, 0, 0]).
+            // parameter. The shared behaviour is the pop-8 calling
+            // convention itself: A7 unchanged across the call. The
+            // absolute RGB-read return value differs from BII — BII
+            // reads the screen pixMap byte through the device CLUT,
+            // while Systemless HLE reads its own port pixMap byte
+            // through device_clut (different default CLUT
+            // initialisation). NIL VAR pointer exits early after the
+            // 8-byte pop; out-of-bounds (h, v) returns black ([0, 0, 0]).
             //
-            // Regression coverage:
-            //   getcpixel_pops_eight_bytes
-            //   getcpixel_returns_canonical_rgb_for_index_zero
-            //   getcpixel_returns_canonical_rgb_for_index_255
-            //   getcpixel_uses_current_device_clut_not_a_fixed_palette
-            //   setcpixel_getcpixel_roundtrip_preserves_exact_clut_color
-            //   src/trap/quickdraw.rs mod tests
-            //     setcpixel_getcpixel_pascal_procedure_preserves_stack_across_five_calls
-            //   aa16_aa17_setcpixel_getcpixel_strict (B3, B4)
+            // Contract-test coverage in this file (mod tests):
+            //   setcpixel_getcpixel_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x217) => {
                 let sp = cpu.read_reg(Register::A7);
                 let cpix_ptr = bus.read_long(sp);
@@ -13495,21 +13028,18 @@ impl super::TrapDispatcher {
             // legacy tests and non-rendering callers still receive a non-NIL
             // present-resource result.
             //
-            // Apple-vs-BasiliskII engines-agree subset:
+            // Behaviour shared with BasiliskII:
             //   (1) Pascal FUNCTION calling convention — A7 unchanged
             //       across the C-level call sequence.
             //   (2) Miss-returns-NIL contract per IM:V V-74.
             //
-            // Engines-divergent (not witnessed by paired bake): the
-            // byte contents of the dereferenced CCrsr record on the
-            // present-resource path.
+            // Diverges from BII on the byte contents of the
+            // dereferenced CCrsr record on the present-resource path.
             //
-            // Regression coverage:
-            //   src/trap/quickdraw.rs mod tests
-            //     getccursor_returns_handle_for_present_crsr_resource
-            //     getccursor_missing_resource_returns_nil
-            //     getccursor_pascal_function_preserves_stack_across_five_missing_calls
-            //   aa1b_getccursor_strict (B1, B2)
+            // Contract-test coverage in this file (mod tests):
+            //   getccursor_returns_handle_for_present_crsr_resource
+            //   getccursor_missing_resource_returns_nil
+            //   getccursor_pascal_function_preserves_stack_across_five_missing_calls
             (true, 0x21B) => {
                 let sp = cpu.read_reg(Register::A7);
                 let crsr_id = bus.read_word(sp) as i16;
@@ -13946,11 +13476,6 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0=charLocs(4), SP+4=textAddr(4), SP+8=count(2).
             // Pops 10.
-            //
-            // Regression coverage:
-            //   measuretext_writes_count_plus_one_offsets_to_charlocs
-            //   measuretext_zero_count_writes_just_one_zero
-            //   measuretext_offsets_are_strictly_increasing_for_normal_text
             // MeasureText ($A837): Writes count+1 horizontal pixel offsets into charLocs (cumulative glyph advances scaled to current tx_size); first offset is 0 per IM:IV IV-32
             (true, 0x037) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -14002,20 +13527,14 @@ impl super::TrapDispatcher {
             // identical to $AA47 SetDeskCPat / $AA0A PenPixPat /
             // $AA0B BackPixPat / $AA21 OpColor / $AA22 HiliteColor.
             //
-            // Engines-divergent absolute side effect: BasiliskII System
+            // The absolute side effect differs from BII: BasiliskII System
             // 7.5.3 ROM Color QuickDraw honours the documented contract on
             // a CGrafPort (writes the Fixed value into the charExtra field
             // in compressed format based on txSize per IM:V V-77) and is a
             // documented pure no-op on a regular GrafPort. Systemless's HLE
             // stores the value in dispatcher-internal `char_extra` state
-            // regardless of port type — engines-divergent from BII as a
-            // side effect but engines-agree on the Pascal PROCEDURE pop-4
-            // calling convention itself.
-            //
-            // Catalogue proof: aa23_charextra_strict — witnesses 2 of 2
-            // engines-agree calling-convention assertions on the BII
-            // System 7.5.3 ROM strict bake (single CharExtra call + 5-call
-            // composition with distinct Fixed values).
+            // regardless of port type. The two engines still share the
+            // Pascal PROCEDURE pop-4 calling convention itself.
             //
             // Stack: SP+0=extra(Fixed, 4). Pops 4.
             //
@@ -14063,16 +13582,13 @@ impl super::TrapDispatcher {
             // populates wTabHandle with a real handle to the system's
             // global width table (allocated in the system heap per
             // IM:IV IV-33). Systemless does not model the global width
-            // table and writes NIL (0) verbatim. The engines-agree
-            // contract is "wTabHandle field is overwritten" (sentinel
-            // does not survive); the exact handle value is engine-
-            // specific and not part of the strict bake witness.
+            // table and writes NIL (0) verbatim. The shared contract is
+            // "wTabHandle field is overwritten" (the sentinel does not
+            // survive); the exact handle value is engine-specific.
             //
-            // Regression coverage:
+            // Contract-test coverage in this file (mod tests):
             //   tests::fontmetrics_writes_fixed_ascent_descent_leading_widmax
-            //   tests::fontmetrics_writes_wtabhandle_field_in_fmetricrec
             //   tests::fontmetrics_consumes_fmetricrecptr_argument_and_pops_four_bytes
-            //   a835_fontmetrics_strict/
             (true, 0x035) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rec_ptr = bus.read_long(sp);
@@ -14125,8 +13641,7 @@ impl super::TrapDispatcher {
             // the byte value 0x01 (not a normalised 0xFF) and FALSE becomes
             // 0x00. Systemless mirrors this exact byte by reading SP+0
             // directly (no normalisation). BasiliskII System 7.5.3 ROM
-            // follows the same convention, witnessed by
-            // `a834_setfscaledisable_strict`.
+            // follows the same convention.
             //
             // Note: per IM:IV IV-32 "setting the global variable
             // FScaleDisable is insufficient" — the real Font Manager also
@@ -14177,8 +13692,6 @@ impl super::TrapDispatcher {
             // Contract coverage:
             //   src/trap/quickdraw.rs::tests::getmasktable_writes_non_nil_pointer_to_a0_and_preserves_stack
             //   src/trap/quickdraw.rs::tests::getmasktable_table_contents_match_inside_macintosh_iv_layout
-            //
-            // Strict bake: a836_getmasktable_strict/
             (true, 0x036) => {
                 let addr = match self.mask_table_addr {
                     Some(a) => a,
@@ -14487,10 +14000,10 @@ impl super::TrapDispatcher {
                                 screen_base = bus.read_long(pm);
                                 self.screen_mode = (
                                     screen_base,
-                                    ORACLE_MACHINE_PROFILE.screen_row_bytes(),
-                                    ORACLE_MACHINE_PROFILE.screen_width,
-                                    ORACLE_MACHINE_PROFILE.screen_height,
-                                    ORACLE_MACHINE_PROFILE.screen_depth,
+                                    REFERENCE_MACHINE_PROFILE.screen_row_bytes(),
+                                    REFERENCE_MACHINE_PROFILE.screen_width,
+                                    REFERENCE_MACHINE_PROFILE.screen_height,
+                                    REFERENCE_MACHINE_PROFILE.screen_depth,
                                 );
                             }
                             bus.write_word(switch_info, current_mode as u16);
@@ -14520,9 +14033,8 @@ impl super::TrapDispatcher {
             // Default picture-opcode handler invoked during picture playback.
             // PROCEDURE StdOpcodeProc(dataPtr: Ptr; opcode: INTEGER);
             // Imaging With QuickDraw (1994), p. 7-82.
-            // BasiliskII-backed probe: payload unchanged, and Systemless's
-            // public call surface needs a 10-byte A7 unwind here to match the
-            // observed +4 StackSpace sandwich.
+            // Matching BasiliskII, the payload is left unchanged and the
+            // public call surface needs a 10-byte A7 unwind here.
             (true, 0x3F8) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 10);
@@ -14558,8 +14070,8 @@ impl super::TrapDispatcher {
 
             // UpdatePixMap ($AA38)
             // Updates a PixMap in place after the underlying ColorTable changes.
-            // The legacy ROM patch is effectively a no-op RTS; the fixture
-            // witnesses only the caller-observable wrapper behaviour.
+            // The legacy ROM patch is effectively a no-op RTS; only the
+            // caller-observable wrapper behaviour is modelled.
             // PROCEDURE UpdatePixMap(pmHandle: PixMapHandle);
             // Inside Macintosh Volume V, V-58
             // Stack: SP+0: pmHandle(4). Leave A7 unchanged.
@@ -14629,15 +14141,11 @@ impl super::TrapDispatcher {
             // width, height, depth)` and writes those values into the
             // caller-provided buffer.  BII reads the System 7.5
             // QuickDraw globals and writes its own baseAddr/rowBytes
-            // pair.  Both engines agree on bounds = (0, 0, 600, 800)
-            // for the FixtureRunner/InitFixtureScreen 800x600 screen.
+            // pair.  Both engines agree on the bounds and the 4-byte
+            // stack pop, and both overwrite the caller's baseAddr/rowBytes
+            // fields (they are not left at any sentinel value).
             //
-            // Engines-agree subset witnessed by the strict bake at
-            // a833_scrnbitmap_strict (8 bands; 2 of
-            // 2 golden assertions: bounds equality + non-sentinel
-            // overwrite of baseAddr/rowBytes; 4-byte stack pop).
-            //
-            // Regression coverage:
+            // Contract-test coverage in this file (mod tests):
             //   quickdraw::tests::scrnbitmap_writes_current_screen_bitmap_record_to_result_pointer
             //   quickdraw::tests::scrnbitmap_overwrites_pre_poisoned_sentinel_fields_with_screen_bitmap_record
             //   quickdraw::tests::scrnbitmap_consumes_result_pointer_argument_and_pops_4_bytes
@@ -14688,17 +14196,11 @@ impl super::TrapDispatcher {
             // IV-22.  Systemless HLE is a no-op stub because masks are not
             // modeled at the QuickDraw bottleneck-proc layer (high-level
             // CopyMask reads/writes the bitmap directly via Rust code).
-            // The strict bake at
-            // a838_a839_calcmask_seedfill_strict witnesses only the
-            // engines-agree subset (16-byte pop discipline) via empty
-            // StackSpace sandwich since IM:IV IV-22 explicitly disclaims
-            // clipping (the empty-clipRgn trick used by other bottleneck-
-            // proc bakes does not apply).
+            // The only shared, verifiable behaviour is the 16-byte pop
+            // discipline; IM:IV IV-22 explicitly disclaims clipping, so
+            // the src/dst mask contents are not comparable.
             //
-            // Runtime proof:
-            //   a838_a839_calcmask_seedfill_strict
-            //
-            // Contract coverage:
+            // Contract-test coverage in this file (mod tests):
             //   src/trap/quickdraw.rs::tests::calcmask_consumes_16_byte_argument_frame
             //   src/trap/quickdraw.rs::tests::calcmask_five_call_composition_pops_eighty_bytes_total
             (true, 0x038) => {
@@ -14745,10 +14247,7 @@ impl super::TrapDispatcher {
             // 1s in dst, with all other bits in the requested rectangle
             // cleared. The call is raw-bitmap based, not port clipped.
             //
-            // Runtime proof:
-            //   a838_a839_calcmask_seedfill_strict
-            //
-            // Contract coverage:
+            // Contract-test coverage in this file (mod tests):
             //   src/trap/quickdraw.rs::tests::seedfill_consumes_20_byte_argument_frame
             //   src/trap/quickdraw.rs::tests::seedfill_five_call_composition_pops_one_hundred_bytes_total
             //   src/trap/quickdraw.rs::tests::seedfill_writes_contiguous_matching_region_mask
@@ -14779,13 +14278,6 @@ impl super::TrapDispatcher {
             //                        srcRGB: RGBColor);
             // Inside Macintosh Volume V, V-159
             // Stack: SP+0: srcRGB_ptr(4), SP+4: dstEntry(2), SP+6: dstWindow(4). Pops 10.
-            //
-            // Regression coverage:
-            //   animateentry_pops_ten_bytes
-            //   animateentry_updates_palette_entry_rgb
-            //   animateentry_preserves_usage_and_tolerance
-            //   animateentry_out_of_range_entry_is_noop
-            //   animateentry_with_no_palette_is_noop
             // AnimateEntry ($AA99): Writes the supplied RGB to the window's palette ColorInfo (preserving usage/tolerance) then calls activate_palette_for_window; out-of-range or missing-palette is a no-op, IM:V V-159
             (true, 0x299) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -15370,12 +14862,12 @@ impl super::TrapDispatcher {
         bus.write_long(pixmap, screen_base); // baseAddr (+0)
         bus.write_word(
             pixmap + 4,
-            (ORACLE_MACHINE_PROFILE.screen_row_bytes() as u16) | 0x8000,
+            (REFERENCE_MACHINE_PROFILE.screen_row_bytes() as u16) | 0x8000,
         ); // rowBytes (+4) with pixmap flag
         bus.write_word(pixmap + 6, 0); // bounds.top (+6)
         bus.write_word(pixmap + 8, 0); // bounds.left (+8)
-        bus.write_word(pixmap + 10, ORACLE_MACHINE_PROFILE.screen_height); // bounds.bottom (+10)
-        bus.write_word(pixmap + 12, ORACLE_MACHINE_PROFILE.screen_width); // bounds.right (+12)
+        bus.write_word(pixmap + 10, REFERENCE_MACHINE_PROFILE.screen_height); // bounds.bottom (+10)
+        bus.write_word(pixmap + 12, REFERENCE_MACHINE_PROFILE.screen_width); // bounds.right (+12)
         bus.write_word(pixmap + 14, 0); // pmVersion (+14)
         bus.write_word(pixmap + 16, 0); // packType (+16)
         bus.write_long(pixmap + 18, 0); // packSize (+18)
@@ -15411,8 +14903,8 @@ impl super::TrapDispatcher {
         bus.write_long(gd + 30, 0); // gdNextGD = NULL (end of chain)
         bus.write_word(gd + 34, 0); // gdRect.top
         bus.write_word(gd + 36, 0); // gdRect.left
-        bus.write_word(gd + 38, ORACLE_MACHINE_PROFILE.screen_height); // gdRect.bottom
-        bus.write_word(gd + 40, ORACLE_MACHINE_PROFILE.screen_width); // gdRect.right
+        bus.write_word(gd + 38, REFERENCE_MACHINE_PROFILE.screen_height); // gdRect.bottom
+        bus.write_word(gd + 40, REFERENCE_MACHINE_PROFILE.screen_width); // gdRect.right
         bus.write_long(gd + 42, 0x0000_0085); // gdMode (current display mode token)
 
         let gd_handle = bus.alloc(4);
@@ -17097,11 +16589,11 @@ impl super::TrapDispatcher {
             }
             // Record per-port sync events so the trap-sequence diff sees the
             // same sync_offscreen_ctab events the reference recorder emits.
-            let _ = self.record_oracle_event(
+            let _ = self.record_trace_event(
                 bus,
                 0,
                 "sync_offscreen_ctab",
-                Self::oracle_field_map(&[
+                Self::trace_field_map(&[
                     ("port", format!("{:08X}", port)),
                     ("ctab", format!("{:08X}", ctab_handle)),
                     (
@@ -17705,8 +17197,8 @@ impl super::TrapDispatcher {
             cpu,
             bus,
             depth,
-            ORACLE_MACHINE_PROFILE.screen_width,
-            ORACLE_MACHINE_PROFILE.screen_height,
+            REFERENCE_MACHINE_PROFILE.screen_width,
+            REFERENCE_MACHINE_PROFILE.screen_height,
         );
     }
 
@@ -17725,8 +17217,8 @@ impl super::TrapDispatcher {
             0x0000_0080 => Some((640, 480)),
             // Default 800x600 8bpp mode token used by the single-screen HLE.
             0x0000_0085 => Some((
-                ORACLE_MACHINE_PROFILE.screen_width,
-                ORACLE_MACHINE_PROFILE.screen_height,
+                REFERENCE_MACHINE_PROFILE.screen_width,
+                REFERENCE_MACHINE_PROFILE.screen_height,
             )),
             _ => None,
         }
@@ -17738,8 +17230,8 @@ impl super::TrapDispatcher {
             (width, height)
         } else {
             (
-                ORACLE_MACHINE_PROFILE.screen_width,
-                ORACLE_MACHINE_PROFILE.screen_height,
+                REFERENCE_MACHINE_PROFILE.screen_width,
+                REFERENCE_MACHINE_PROFILE.screen_height,
             )
         }
     }
@@ -20655,8 +20147,6 @@ impl super::TrapDispatcher {
         // second-guess the caller with a "looks like a fade" bypass that
         // substitutes a scaled `color_manager_clut`.
         //
-        // Regression coverage:
-        //   setentries_replaces_custom_palette_with_canonical_table
         self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
 
         // Publish `device_clut → color_manager_clut` only on a full-replace
@@ -20674,12 +20164,6 @@ impl super::TrapDispatcher {
         // lock cm to a dimmed transient and produce washed-out color
         // matching.
         //
-        // Regression coverage:
-        //   setentries_partial_update_does_not_corrupt_color_manager_clut
-        //   setentries_many_partial_updates_do_not_publish_cm
-        //   setentries_full_replace_at_full_brightness_publishes_cm
-        //   setentries_dimmed_full_replace_does_not_publish_cm
-        //   palette_strict_mode_publishes_dimmed_full_replace
         let dimmed_scale_of_current = !strict_palette
             && is_full_replace
             && Self::table_uniform_scale_of_clut(bus, table_ptr, &self.color_manager_clut)
@@ -22076,17 +21560,14 @@ mod tests {
 
     #[test]
     fn scrnbitmap_overwrites_pre_poisoned_sentinel_fields_with_screen_bitmap_record() {
-        // Mirrors B1 of the a833_scrnbitmap_strict bake: pre-poison
-        // every BitMap field with a recognisable sentinel before
-        // dispatch, then assert each field is overwritten with a
+        // Pre-poison every BitMap field with a recognisable sentinel
+        // before dispatch, then assert each field is overwritten with a
         // sensible screen-mode value (baseAddr non-NIL and non-
         // sentinel, rowBytes positive and not the sentinel, bounds
-        // resolving to (0, 0, height, width)).  This is the cross-
-        // engine-agree witness pattern from the strict bake: BII and
-        // Systemless disagree on the exact baseAddr/rowBytes values
-        // because their screen bases differ, but BOTH overwrite the
-        // sentinels and BOTH produce bounds = (0, 0, 600, 800) on the
-        // FixtureRunner/InitFixtureScreen 800x600 screen.
+        // resolving to (0, 0, height, width)).  BII and Systemless
+        // disagree on the exact baseAddr/rowBytes values because their
+        // screen bases differ, but both overwrite the sentinels and both
+        // produce bounds = (0, 0, height, width).
         // Inside Macintosh Volume IV (1986), p. IV-21.
         let (mut d, mut cpu, mut bus) = setup();
         let screen_base = 0x00AB_C000u32;
@@ -22096,9 +21577,8 @@ mod tests {
         d.screen_mode = (screen_base, row_bytes, width, height, 1);
 
         let result_ptr = 0x300000u32;
-        // Pre-poison every field with the same sentinels the strict
-        // bake uses, so the test catches any stub that fails to
-        // write a particular slot.
+        // Pre-poison every field with a recognisable sentinel, so the
+        // test catches any stub that fails to write a particular slot.
         bus.write_long(result_ptr, 0xDEAD_BEEF);
         bus.write_word(result_ptr + 4, 0x3FFF);
         bus.write_word(result_ptr + 6, 0x7FFF);
@@ -22151,7 +21631,6 @@ mod tests {
 
     #[test]
     fn calcmask_five_call_composition_pops_eighty_bytes_total() {
-        // Mirrors B2 of the a838_a839_calcmask_seedfill_strict bake:
         // 5 successive CalcMask dispatches with varying metric args
         // (height, words) each advance A7 by 16 bytes, total 80 bytes.
         // Per IM:IV IV-22 the trap pops a fixed 16 bytes regardless
@@ -22294,7 +21773,6 @@ mod tests {
 
     #[test]
     fn seedfill_five_call_composition_pops_one_hundred_bytes_total() {
-        // Mirrors B4 of the a838_a839_calcmask_seedfill_strict bake:
         // 5 successive SeedFill dispatches with varying seedH/seedV
         // pairs (0,0)/(4,2)/(8,4)/(16,6)/(30,7) each advance A7 by 20
         // bytes, total 100 bytes. Per IM:IV IV-22 the trap pops a
@@ -22412,7 +21890,6 @@ mod tests {
 
     #[test]
     fn getccursor_pascal_function_preserves_stack_across_five_missing_calls() {
-        // Mirrors band B2 of aa1b_getccursor_strict.
         // Per IM:V 1986 p. V-74, each GetCCursor call obeys the Tool-
         // bit Pascal FUNCTION calling convention independently (caller
         // pre-pushes a 4-byte CCrsrHandle result slot + 2-byte crsrID
@@ -23082,8 +22559,7 @@ mod tests {
 
     #[test]
     fn shield_cursor_five_call_composition_pops_forty_bytes_total() {
-        // Mirrors B4 of the a855_a856_shieldcursor_obscurecursor_strict
-        // bake: 5 successive ShieldCursor dispatches with varying Rect
+        // 5 successive ShieldCursor dispatches with varying Rect
         // pointers and Point coords each advance A7 by 8 bytes, total
         // 40 bytes. Per IM:I I-474 the MPW Universal Headers C form
         // `ShieldCursor(const Rect *shieldRect, Point offsetPt)
@@ -24963,9 +24439,8 @@ mod tests {
     #[test]
     fn bitmaptoregion_empty_source_overwrites_preseeded_nonempty_bbox() {
         // Imaging With QuickDraw (1994), p. 2-49: "The old region
-        // contents are lost." Mirrors B3 of the
-        // a8d7_bitmaptoregion_strict fixture: pre-seed the destination
-        // region with a clearly non-empty bbox matching the bake setup
+        // contents are lost." Pre-seed the destination region with a
+        // clearly non-empty bbox
         // (SetRectRgn(rgn, 100, 200, 300, 400) → bbox (top=200,
         // left=100, bottom=400, right=300)), then invoke
         // BitMapToRegion with a 3x8 all-zero source bounded at
@@ -26177,11 +25652,11 @@ mod tests {
         // canonical declaration `EXTERN_API(void) FontMetrics(
         // FMetricRecPtr theMetrics) ONEWORDINLINE(0xA835)`. The caller
         // pushes a single 4-byte FMetricRecPtr; the trap pops 4 bytes
-        // and reserves no function-result slot. Mirrors B3 of the
-        // a835_fontmetrics_strict bake (Pascal PROCEDURE protocol).
+        // and reserves no function-result slot (Pascal PROCEDURE
+        // protocol).
         //
-        // Pre-poisons every FMetricRec field with the strict bake's
-        // distinct sentinels (0xCAFE000n + 0xDEADBEEF) and the slot
+        // Pre-poisons every FMetricRec field with distinct sentinels
+        // (0xCAFE000n + 0xDEADBEEF) and the slot
         // immediately above the arg frame (TEST_SP+4) with 0xCAFEBABE
         // so a stub that pops the wrong number of bytes or writes
         // through the wrong offset can be caught.
@@ -26635,10 +26110,10 @@ mod tests {
     fn stdline_five_call_composition_pops_twenty_bytes_total() {
         // Inside Macintosh Volume I (1985), p. I-197 + Imaging With QuickDraw
         // 1994 p. 3-132: StdLine(newPt: Point) pops a fixed 4-byte Point
-        // by-value frame regardless of the argument coordinates.  Mirrors B2
-        // of the strict bake a890_stdline_strict — five successive StdLine
-        // dispatches with varying Point coords each advance A7 by 4 bytes,
-        // total 20 bytes.  The varying values defeat any value-dependent pop.
+        // by-value frame regardless of the argument coordinates.  Five
+        // successive StdLine dispatches with varying Point coords each
+        // advance A7 by 4 bytes, total 20 bytes.  The varying values
+        // defeat any value-dependent pop.
         let (mut d, mut cpu, mut bus) = setup();
         let coords: [(u16, u16); 5] = [
             (10, 20),
@@ -26669,10 +26144,6 @@ mod tests {
         // `EXTERN_API(void) StdRRect(GrafVerb verb, const Rect *r,
         // short ovalWidth, short ovalHeight) ONEWORDINLINE(0xA8AF)` —
         // 10-byte pop, no result slot.
-        //
-        // Engines-agree contract pinned by the strict bake
-        // `a8af_a8bd_stdrrect_stdarc_strict` via empty-clipRgn + StackSpace
-        // sandwich.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300180u32;
         write_rect(&mut bus, rect_ptr, 10, 20, 40, 80);
@@ -26688,8 +26159,7 @@ mod tests {
 
     #[test]
     fn stdrrect_five_verb_composition_pops_fifty_bytes_total() {
-        // Mirrors B2 of the a8af_a8bd_stdrrect_stdarc_strict bake: 5
-        // successive StdRRect dispatches with frame/paint/erase/invert/fill
+        // 5 successive StdRRect dispatches with frame/paint/erase/invert/fill
         // verbs each pop their 10-byte frame, advancing A7 by 50 bytes total.
         // Varying ovalWidth/ovalHeight pairs across the verbs stresses that
         // the trap pops a fixed 10 bytes regardless of corner-diameter values.
@@ -26745,9 +26215,6 @@ mod tests {
         // the C form `EXTERN_API(void) StdOval(GrafVerb verb, const Rect *r)
         // ONEWORDINLINE(0xA8B6)` — same layout as StdRect (sp+0..3 rect_ptr,
         // sp+4..5 verb, 6-byte pop, no result).
-        //
-        // Engines-agree contract pinned by the strict bake
-        // `a8a0_a8b6_stdrect_stdoval_strict` via StackSpace sandwich.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x3001C0u32;
         write_rect(&mut bus, rect_ptr, 5, 6, 50, 60);
@@ -26761,8 +26228,7 @@ mod tests {
 
     #[test]
     fn stdoval_five_verb_composition_pops_thirty_bytes_total() {
-        // Mirrors B4 of the a8a0_a8b6_stdrect_stdoval_strict bake: 5
-        // successive StdOval dispatches with frame/paint/erase/invert/fill
+        // 5 successive StdOval dispatches with frame/paint/erase/invert/fill
         // verbs each pop their 6-byte frame, advancing A7 by 30 bytes total.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x3001D0u32;
@@ -26812,10 +26278,6 @@ mod tests {
         // `EXTERN_API(void) StdArc(GrafVerb verb, const Rect *r,
         // short startAngle, short arcAngle) ONEWORDINLINE(0xA8BD)` —
         // 10-byte pop, no result slot.
-        //
-        // Engines-agree contract pinned by the strict bake
-        // `a8af_a8bd_stdrrect_stdarc_strict` via empty-clipRgn + StackSpace
-        // sandwich.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300200u32;
         write_rect(&mut bus, rect_ptr, 0, 0, 100, 100);
@@ -26831,8 +26293,7 @@ mod tests {
 
     #[test]
     fn stdarc_five_verb_composition_pops_fifty_bytes_total() {
-        // Mirrors B4 of the a8af_a8bd_stdrrect_stdarc_strict bake: 5
-        // successive StdArc dispatches with frame/paint/erase/invert/fill
+        // 5 successive StdArc dispatches with frame/paint/erase/invert/fill
         // verbs each pop their 10-byte frame, advancing A7 by 50 bytes total.
         // Varying startAngle/arcAngle pairs across the verbs stresses that
         // the trap pops a fixed 10 bytes regardless of angle values.
@@ -26887,9 +26348,6 @@ mod tests {
         // declare the C form `EXTERN_API(void) StdPoly(GrafVerb verb,
         // PolyHandle poly) ONEWORDINLINE(0xA8C5)` — Pascal LR push leaves
         // sp+0..3 poly handle, sp+4..5 verb, 6-byte pop, no result.
-        //
-        // Engines-agree contract pinned by the strict bake
-        // `a8c5_a8d1_stdpoly_stdrgn_strict` via StackSpace sandwich.
         let (mut d, mut cpu, mut bus) = setup();
         let poly_ptr = 0x300240u32;
         let poly_handle = 0x300280u32;
@@ -26910,8 +26368,7 @@ mod tests {
 
     #[test]
     fn stdpoly_five_verb_composition_pops_thirty_bytes_total() {
-        // Mirrors B2 of the a8c5_a8d1_stdpoly_stdrgn_strict bake: 5
-        // successive StdPoly dispatches with frame/paint/erase/invert/fill
+        // 5 successive StdPoly dispatches with frame/paint/erase/invert/fill
         // verbs each pop their 6-byte frame, advancing A7 by 30 bytes total
         // (5 × 6).  Defeats stubs that pop only on verb=0 (frame) or that
         // hardcode the pop amount.
@@ -26941,11 +26398,9 @@ mod tests {
     #[test]
     fn stdpoly_stub_preserves_non_stack_registers_in_hle_compromise_path() {
         // Inside Macintosh Volume I (1985), pp. I-198..I-199:
-        // StdPoly compromise path preserves non-stack registers.  This is the
+        // StdPoly compromise path preserves non-stack registers.  This is a
         // Systemless-only contract — BasiliskII's real-ROM StdPoly mutates
-        // A0/A1/D0/D1 during polygon rasterisation, so the assertion in the
-        // catalog row carries witness_kind = "contract" and is not part of
-        // the strict-bake golden coverage.
+        // A0/A1/D0/D1 during polygon rasterisation.
         let (mut d, mut cpu, mut bus) = setup();
         let poly_ptr = 0x3002A0u32;
         let poly_handle = 0x3002E0u32;
@@ -27044,11 +26499,9 @@ mod tests {
         // the C form `EXTERN_API(void) StdRect(GrafVerb verb, const Rect *r)
         // ONEWORDINLINE(0xA8A0)` — sp+0..3 = rect_ptr (shallowest),
         // sp+4..5 = verb (deepest), 6-byte pop, no result slot.
-        //
-        // Engines-agree contract pinned by the strict bake
-        // `a8a0_a8b6_stdrect_stdoval_strict` via StackSpace sandwich
-        // (BasiliskII System 7.5 ROM advances A7 by exactly 6 bytes per
-        // StdRect dispatch regardless of GrafVerb code).
+        // BasiliskII System 7.5 ROM advances A7 by exactly 6 bytes per
+        // StdRect dispatch regardless of GrafVerb code, and Systemless
+        // matches.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300220u32;
         write_rect(&mut bus, rect_ptr, 10, 20, 30, 40);
@@ -27070,8 +26523,8 @@ mod tests {
         // StdRect itself is reachable only via SetStdProcs → JSR-through-
         // slot, a non-corpus pattern.  BasiliskII's real-ROM StdRect
         // mutates A0/A1/D0/D1 during rectangle rasterisation, so this
-        // assertion is `witness_kind = "contract"` in the catalog row —
-        // Systemless-HLE-only, pinned by this contract test.
+        // register-preservation contract is Systemless-HLE-only and is
+        // pinned by this contract test.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300220u32;
         write_rect(&mut bus, rect_ptr, 10, 20, 30, 40);
@@ -27093,8 +26546,7 @@ mod tests {
 
     #[test]
     fn stdrect_five_verb_composition_pops_thirty_bytes_total() {
-        // Mirrors B2 of the a8a0_a8b6_stdrect_stdoval_strict bake: 5
-        // successive StdRect dispatches with frame/paint/erase/invert/fill
+        // 5 successive StdRect dispatches with frame/paint/erase/invert/fill
         // verbs each pop their 6-byte frame, advancing A7 by 30 bytes total
         // (5 × 6).  Defeats stubs that pop only on verb=0 (frame) or that
         // hardcode the pop amount.
@@ -27122,9 +26574,6 @@ mod tests {
         // declare the C form `EXTERN_API(void) StdRgn(GrafVerb verb,
         // RgnHandle rgn) ONEWORDINLINE(0xA8D1)` — Pascal LR push leaves
         // sp+0..3 rgn handle, sp+4..5 verb, 6-byte pop, no result.
-        //
-        // Engines-agree contract pinned by the strict bake
-        // `a8c5_a8d1_stdpoly_stdrgn_strict` via StackSpace sandwich.
         let (mut d, mut cpu, mut bus) = setup();
         let rgn_ptr = 0x300260u32;
         let rgn_handle = 0x300280u32;
@@ -27140,7 +26589,7 @@ mod tests {
 
     #[test]
     fn stdrgn_five_verb_composition_pops_thirty_bytes_total() {
-        // Mirrors B4 of the a8c5_a8d1_stdpoly_stdrgn_strict bake: 5 successive
+        // 5 successive
         // StdRgn dispatches with frame/paint/erase/invert/fill verbs each pop
         // their 6-byte frame, advancing A7 by 30 bytes total (5 × 6).  Defeats
         // stubs that pop only on verb=0 (frame) or that hardcode the pop
@@ -27165,11 +26614,9 @@ mod tests {
     #[test]
     fn stdrgn_stub_preserves_non_stack_registers_in_hle_compromise_path() {
         // Inside Macintosh Volume I (1985), pp. I-197..I-198:
-        // StdRgn compromise path preserves non-stack registers.  This is the
+        // StdRgn compromise path preserves non-stack registers.  This is a
         // Systemless-only contract — BasiliskII's real-ROM StdRgn mutates
-        // A0/A1/D0/D1 during region rasterisation, so the assertion in the
-        // catalog row carries witness_kind = "contract" and is not part of
-        // the strict-bake golden coverage.
+        // A0/A1/D0/D1 during region rasterisation.
         let (mut d, mut cpu, mut bus) = setup();
         let rgn_ptr = 0x3002A0u32;
         let rgn_handle = 0x3002E0u32;
@@ -27757,8 +27204,7 @@ mod tests {
         // Pascal PROCEDURE. Each call pops 8 bytes (4-byte Rect pointer
         // + 4-byte PixPatHandle) and writes no FUNCTION result slot.
         // Five successive C-level calls (each pre-pushing 8 bytes and
-        // letting the trap pop them) must net-balance A7 (mirrors B2
-        // of the aa0e_fillcrect_strict catalog test bake).
+        // letting the trap pop them) must net-balance A7.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let sp_pre = cpu.read_reg(Register::A7);
         let rects = [
@@ -27812,8 +27258,6 @@ mod tests {
         // FillCRgn(rgn: RgnHandle; pp: PixPatHandle) are Pascal
         // PROCEDUREs. Each call pops 8 bytes (4-byte first arg pointer
         // + 4-byte PixPatHandle) and writes no FUNCTION result slot.
-        // This test mirrors B2 + B4 of the
-        // aa0f_aa12_fillcoval_fillcrgn_strict catalog test bake:
         // 5 successive FillCOval calls then 5 successive FillCRgn
         // calls each net-balance A7.
         let (mut d, mut cpu, mut bus) = setup_with_port();
@@ -27865,7 +27309,7 @@ mod tests {
         // Build five minimal RgnHandles: each handle points at a 10-byte
         // region record (size=10, empty bbox) — the trap only needs to
         // see a non-NIL handle and a valid first-long pointer to satisfy
-        // the calling convention witness.
+        // the calling convention check.
         let rgns: [u32; 5] = std::array::from_fn(|_| {
             let h = bus.alloc(4);
             let rec = bus.alloc(10);
@@ -27916,9 +27360,7 @@ mod tests {
         // INTEGER; pp: PixPatHandle) are Pascal PROCEDUREs. Each call
         // pops 12 bytes (4-byte PixPatHandle at SP+0, 2-byte second
         // INTEGER at SP+4, 2-byte first INTEGER at SP+6, 4-byte Rect
-        // pointer at SP+8) and writes no FUNCTION result slot. This
-        // test mirrors B2 + B4 of the
-        // aa10_aa11_fillcroundrect_fillcarc_strict catalog test bake.
+        // pointer at SP+8) and writes no FUNCTION result slot.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let sp_pre = cpu.read_reg(Register::A7);
 
@@ -28025,8 +27467,7 @@ mod tests {
         // are Pascal PROCEDUREs. Each call pops 12 bytes (4-byte
         // ReqListRec pointer at SP+0, 4-byte resultTable/dstTable handle
         // at SP+4, 4-byte srcTable handle at SP+8) and writes no
-        // FUNCTION result slot. This test mirrors B2 + B4 of the
-        // aa49_aa4a_saveentries_restoreentries_strict catalog test bake.
+        // FUNCTION result slot.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let sp_pre = cpu.read_reg(Register::A7);
 
@@ -28179,8 +27620,7 @@ mod tests {
         // is a Pascal PROCEDURE. Each call pops 10 bytes (4-byte
         // targetTbl handle at SP+0, 2-byte iTabRes INTEGER at SP+4,
         // 4-byte myColors handle at SP+6) and writes no FUNCTION
-        // result slot. This test mirrors B2 of the aa37_getsubtable_strict
-        // catalog test bake.
+        // result slot.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let sp_pre = cpu.read_reg(Register::A7);
 
@@ -28243,8 +27683,7 @@ mod tests {
         // Pascal pushes left-to-right so cTabH is pushed first and ends
         // up at the deepest slot — note this differs from AA37
         // GetSubTable which has the INTEGER in the middle slot SP+4).
-        // No FUNCTION result slot. This test mirrors B2 of the
-        // aa39_makeitable_strict catalog test bake.
+        // No FUNCTION result slot.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let sp_pre = cpu.read_reg(Register::A7);
 
@@ -28509,10 +27948,9 @@ mod tests {
         //   FUNCTION  RealColor(color: RGBColor): BOOLEAN — pop-4 + 2-byte
         //     result slot pre-pushed by caller; net A7 zero across the
         //     C-level call.
-        // Mirrors B2 + B4 of the aa34_aa36_index2color_realcolor_strict
-        // catalog test bake via 5 successive dispatch_quickdraw(true, 0x234)
-        // Index2Color calls then 5 successive dispatch_quickdraw(true, 0x236)
-        // RealColor calls.
+        // 5 successive dispatch_quickdraw(true, 0x234) Index2Color calls
+        // then 5 successive dispatch_quickdraw(true, 0x236) RealColor
+        // calls.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let gdh = d.ensure_main_gdevice(&mut bus);
         bus.write_long(0x0CC8, gdh); // TheGDevice
@@ -28896,9 +28334,8 @@ mod tests {
         // Operations — FillCPoly): Pascal PROCEDURE
         // FillCPoly(poly: PolyHandle; pp: PixPatHandle). Each call
         // pops 8 bytes (4-byte PolyHandle + 4-byte PixPatHandle) and
-        // writes no FUNCTION result slot. This test mirrors B2 of
-        // the aa13_fillcpoly_strict catalog test bake: 5 successive
-        // FillCPoly calls each net-balance A7.
+        // writes no FUNCTION result slot. 5 successive FillCPoly calls
+        // each net-balance A7.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let sp_pre = cpu.read_reg(Register::A7);
 
@@ -31019,7 +30456,6 @@ mod tests {
 
     #[test]
     fn getcicon_pascal_function_preserves_stack_across_five_missing_calls() {
-        // Mirrors band B2 of aa1e_getcicon_strict.
         // Per IM:V 1986 p. V-76, each GetCIcon call obeys the Tool-bit
         // Pascal FUNCTION calling convention independently (caller
         // pre-pushes a 4-byte CIconHandle result slot + 2-byte iconID
@@ -37317,7 +36753,6 @@ mod tests {
 
     #[test]
     fn getctseed_pascal_function_preserves_stack_across_five_calls() {
-        // Mirrors band B2 of aa28_getctseed_strict catalogue proof.
         // Per IM:V V-143 each GetCTSeed() call is a Pascal FUNCTION
         // pop-0 + 4-byte result slot — caller pre-pushes 4 bytes, trap
         // writes the LONGINT at [A7], caller pops 4 bytes. Five
@@ -37558,8 +36993,7 @@ mod tests {
         // Inside Macintosh Volume V (1986), p. V-147:
         //   PROCEDURE AddSearch(searchProc: ProcPtr);
         //   PROCEDURE AddComp  (compProc:   ProcPtr);
-        // Both pop 4 bytes (4-byte ProcPtr). Mirrors B2 and B4 of
-        // aa3a_aa3b_addsearch_addcomp_strict: five successive
+        // Both pop 4 bytes (4-byte ProcPtr). Five successive
         // distinct-arg calls preserve A7 net-balance.
         let (mut d, mut cpu, mut bus) = setup();
 
@@ -37595,8 +37029,7 @@ mod tests {
         // Inside Macintosh Volume V (1986), p. V-147:
         //   PROCEDURE DelSearch(searchProc: ProcPtr);
         //   PROCEDURE DelComp  (compProc:   ProcPtr);
-        // Both pop 4 bytes (4-byte ProcPtr). Mirrors B2 and B4 of
-        // aa4c_aa4d_delsearch_delcomp_strict: five successive
+        // Both pop 4 bytes (4-byte ProcPtr). Five successive
         // distinct-arg calls preserve A7 net-balance.
         let (mut d, mut cpu, mut bus) = setup();
 
@@ -37672,9 +37105,8 @@ mod tests {
     fn setclientid_pascal_procedure_preserves_stack_across_five_calls() {
         // Inside Macintosh Volume V (1986), p. V-147:
         //   PROCEDURE SetClientID(id: INTEGER);
-        // Pops 2 bytes (single 2-byte INTEGER id). Mirrors B2 of
-        // aa3c_setclientid_strict: five successive distinct-id calls
-        // preserve A7 net-balance.
+        // Pops 2 bytes (single 2-byte INTEGER id). Five successive
+        // distinct-id calls preserve A7 net-balance.
         let (mut d, mut cpu, mut bus) = setup();
 
         let ids: [u16; 5] = [0x1234, 0x5678, 0x4321, 0x7654, 0x0BAD];
@@ -37695,8 +37127,7 @@ mod tests {
         // Inside Macintosh Volume V (1986), p. V-143:
         //   PROCEDURE ProtectEntry(index: INTEGER; protect: BOOLEAN);
         //   PROCEDURE ReserveEntry(index: INTEGER; reserve: BOOLEAN);
-        // Both pop 4 bytes (2-byte INTEGER + 2-byte BOOLEAN). Mirrors B2
-        // and B4 of aa3d_aa3e_protectentry_reserveentry_strict: five
+        // Both pop 4 bytes (2-byte INTEGER + 2-byte BOOLEAN). Five
         // successive distinct-arg calls preserve A7 net-balance.
         let (mut d, mut cpu, mut bus) = setup();
 
@@ -37736,8 +37167,8 @@ mod tests {
         // Inside Macintosh Volume V (1986), p. V-143:
         //   PROCEDURE SetEntries(start, count: INTEGER; aTable: CSpecArray);
         // Pops 8 bytes (4-byte aTable pointer at SP+0, 2-byte count at SP+4,
-        // 2-byte start at SP+6). Mirrors B2 of aa3f_setentries_strict: five
-        // successive distinct-arg calls preserve A7 net-balance.
+        // 2-byte start at SP+6). Five successive distinct-arg calls
+        // preserve A7 net-balance.
         let (mut d, mut cpu, mut bus) = setup();
 
         let pre = cpu.read_reg(Register::A7);
@@ -37816,8 +37247,7 @@ mod tests {
         //   PROCEDURE GetForeColor (VAR color: RGBColor);
         //   PROCEDURE GetBackColor (VAR color: RGBColor);
         // Both pop 4 bytes (a single 4-byte VAR RGBColor pointer).
-        // Mirrors B2 and B4 of aa19_aa1a_getforecolor_getbackcolor_strict:
-        // five successive calls per trap with distinct RGBColor pointers
+        // Five successive calls per trap with distinct RGBColor pointers
         // preserve A7 net-balance.
         let (mut d, mut cpu, mut bus) = setup();
 
@@ -37868,8 +37298,7 @@ mod tests {
         // at [A7] without popping any arg frame, and the caller pops
         // the 4-byte slot afterwards. Net A7 zero across the C-level
         // call.
-        // Mirrors B2 and B4 of aa2a_aa32_getmaindevice_getgdevice_strict:
-        // five successive calls per trap with five distinct result
+        // Five successive calls per trap with five distinct result
         // slots preserve A7 net-balance AND all five returned
         // GDHandles are non-NIL.
         let (mut d, mut cpu, mut bus) = setup();
@@ -38170,7 +37599,6 @@ mod tests {
 
     #[test]
     fn qderror_pascal_function_preserves_stack_across_five_calls() {
-        // Mirrors band B2 of aa40_qderror_strict catalogue proof.
         // Per IM:V V-145 / IWQD 4-94..4-95 each QDError() call is a
         // Pascal FUNCTION pop-0 + 2-byte result slot — caller pre-pushes
         // 2 bytes, trap writes the INTEGER at [A7], caller pops 2 bytes.
@@ -38483,9 +37911,8 @@ mod tests {
     }
 
     // CharExtra ($AA23) — Color QuickDraw Tool-bit Pascal PROCEDURE
-    // per IM:V 1986 p. V-77. Mirrors B2 of the aa23_charextra_strict
-    // bake: five successive CharExtra dispatches with distinct Fixed
-    // values must each pop their 4-byte Fixed argument and
+    // per IM:V 1986 p. V-77. Five successive CharExtra dispatches with
+    // distinct Fixed values must each pop their 4-byte Fixed argument and
     // cumulatively leave A7 unchanged across the 5-call C-level
     // composition.
     #[test]
@@ -38505,10 +37932,10 @@ mod tests {
     }
 
     // SetDeskCPat ($AA47) — Window Manager Tool-bit Pascal PROCEDURE
-    // per IM:V 1986 p. V-210. Mirrors B2 of the aa47_setdeskcpat_strict
-    // bake: five successive SetDeskCPat(NIL) dispatches must each pop
-    // their 4-byte PixPatHandle argument and cumulatively leave A7
-    // unchanged across the 5-call C-level composition.
+    // per IM:V 1986 p. V-210. Five successive SetDeskCPat(NIL)
+    // dispatches must each pop their 4-byte PixPatHandle argument and
+    // cumulatively leave A7 unchanged across the 5-call C-level
+    // composition.
     #[test]
     fn setdeskcpat_pascal_procedure_preserves_stack_across_five_calls() {
         let (mut d, mut cpu, mut bus) = setup();
@@ -38524,11 +37951,11 @@ mod tests {
     }
 
     // PenPixPat ($AA0A) + BackPixPat ($AA0B) — Color QuickDraw Tool-bit
-    // Pascal PROCEDUREs per IM:V 1986 p. V-72. Mirrors B2 and B4 of the
-    // aa0a_aa0b_pen_back_pixpat_strict bake: five successive PenPixPat(NIL)
-    // calls followed by five successive BackPixPat(NIL) calls must each
-    // pop their 4-byte PixPatHandle argument and cumulatively leave A7
-    // unchanged across each 5-call C-level composition (B2/B4 of the bake).
+    // Pascal PROCEDUREs per IM:V 1986 p. V-72. Five successive
+    // PenPixPat(NIL) calls followed by five successive BackPixPat(NIL)
+    // calls must each pop their 4-byte PixPatHandle argument and
+    // cumulatively leave A7 unchanged across each 5-call C-level
+    // composition.
     #[test]
     fn pen_back_pixpat_pascal_procedure_preserves_stack_across_five_calls() {
         let (mut d, mut cpu, mut bus) = setup();
@@ -38552,12 +37979,11 @@ mod tests {
     }
 
     // OpColor ($AA21) + HiliteColor ($AA22) — Color QuickDraw Tool-bit
-    // Pascal PROCEDUREs per IM:V 1986 p. V-77. Mirrors B2 and B4 of the
-    // aa21_aa22_opcolor_hilitecolor_strict bake: five successive
+    // Pascal PROCEDUREs per IM:V 1986 p. V-77. Five successive
     // OpColor(NIL) calls followed by five successive HiliteColor(NIL)
     // calls must each pop their 4-byte RGBColor pointer argument and
     // cumulatively leave A7 unchanged across each 5-call C-level
-    // composition (B2/B4 of the bake).
+    // composition.
     #[test]
     fn opcolor_hilitecolor_pascal_procedure_preserves_stack_across_five_calls() {
         let (mut d, mut cpu, mut bus) = setup();
@@ -38581,11 +38007,10 @@ mod tests {
     }
 
     // MakeRGBPat ($AA0D) — Color QuickDraw Tool-bit Pascal PROCEDURE per
-    // IM:V 1986 p. V-73. Mirrors B2 of the aa0d_makergbpat_strict bake:
-    // five successive MakeRGBPat(pp, &color) calls must each pop their
-    // 8-byte arg frame (4-byte PixPatHandle + 4-byte RGBColor pointer)
-    // and cumulatively leave A7 unchanged across the 5-call C-level
-    // composition (B2 of the bake). The PixPatHandle and RGBColor
+    // IM:V 1986 p. V-73. Five successive MakeRGBPat(pp, &color) calls
+    // must each pop their 8-byte arg frame (4-byte PixPatHandle + 4-byte
+    // RGBColor pointer) and cumulatively leave A7 unchanged across the
+    // 5-call C-level composition. The PixPatHandle and RGBColor
     // pointer values are arbitrary 4-byte non-zero placeholders; the
     // Systemless HLE pops 8 bytes regardless of the argument values.
     #[test]
@@ -38604,18 +38029,16 @@ mod tests {
     }
 
     // NewPixPat ($AA07) — Color QuickDraw Tool-bit Pascal FUNCTION per
-    // IM:V 1986 p. V-72. Mirrors B2 of the aa07_newpixpat_strict bake:
-    // five successive NewPixPat() calls must each leave A7 unchanged
-    // across the C-level call sequence (caller pre-pushes a 4-byte
-    // PixPatHandle result slot at SP-4, trap writes [SP+0] without
-    // modifying A7, caller pops the slot afterwards) AND each call
-    // must return a non-NIL handle per IM:V V-72 "returns a handle to
-    // a new pixel pattern". The C-level idiom in the bake's main.c
-    // is `h = NewPixPat();` repeated 5 times inside one StackSpace
-    // sandwich; this contract test models that idiom at the trap-
-    // dispatch level by pre-pushing the result slot, dispatching the
-    // trap, reading the handle out, and popping the slot — for each
-    // of 5 iterations.
+    // IM:V 1986 p. V-72. Five successive NewPixPat() calls must each
+    // leave A7 unchanged across the C-level call sequence (caller
+    // pre-pushes a 4-byte PixPatHandle result slot at SP-4, trap writes
+    // [SP+0] without modifying A7, caller pops the slot afterwards) AND
+    // each call must return a non-NIL handle per IM:V V-72 "returns a
+    // handle to a new pixel pattern". The C-level idiom is
+    // `h = NewPixPat();` repeated 5 times; this contract test models
+    // that idiom at the trap-dispatch level by pre-pushing the result
+    // slot, dispatching the trap, reading the handle out, and popping
+    // the slot — for each of 5 iterations.
     #[test]
     fn newpixpat_pascal_function_returns_nonnil_handle_and_preserves_stack_across_five_calls() {
         let (mut d, mut cpu, mut bus) = setup();
@@ -38674,8 +38097,8 @@ mod tests {
 
     // GetPixPat ($AA0C) — Color QuickDraw Tool-bit Pascal FUNCTION
     // taking 2-byte INTEGER patID, returning 4-byte PixPatHandle per
-    // IM:V 1986 p. V-73. Mirrors B2 of the aa0c_getpixpat_strict bake:
-    // five successive GetPixPat(distinct_missing_patIDs) calls must
+    // IM:V 1986 p. V-73. Five successive
+    // GetPixPat(distinct_missing_patIDs) calls must
     // leave A7 unchanged across the 5-call C-level composition. Each
     // call pre-pushes a 4-byte result slot + 2-byte arg, trap pops
     // the 2-byte arg and writes the handle into the 4-byte result
@@ -38715,13 +38138,12 @@ mod tests {
     }
 
     // DisposPixPat ($AA08) + CopyPixPat ($AA09) — Color QuickDraw Tool-bit
-    // Pascal PROCEDUREs per IM:V 1986 p. V-73. Mirrors B2 and B4 of the
-    // aa08_aa09_dispose_copy_pixpat_strict bake: five successive
+    // Pascal PROCEDUREs per IM:V 1986 p. V-73. Five successive
     // DisposPixPat(pp) calls (each popping a 4-byte PixPatHandle)
     // followed by five successive CopyPixPat(src, dst) calls (each
     // popping an 8-byte two-handle frame) must cumulatively leave A7
-    // unchanged across each 5-call C-level composition (B2/B4 of the
-    // bake). The handle values are arbitrary 4-byte non-zero placeholders;
+    // unchanged across each 5-call C-level composition. The handle
+    // values are arbitrary 4-byte non-zero placeholders;
     // the Systemless HLE pops the documented arg count regardless of the
     // argument values (nested dereferences are guarded by non-NIL checks
     // on each level).
@@ -38751,20 +38173,18 @@ mod tests {
     }
 
     // SetCPixel ($AA16) + GetCPixel ($AA17) — Color QuickDraw Tool-bit
-    // Pascal PROCEDUREs per IM:V 1986 p. V-70 and p. V-69. Mirrors B2
-    // and B4 of the aa16_aa17_setcpixel_getcpixel_strict bake: five
+    // Pascal PROCEDUREs per IM:V 1986 p. V-70 and p. V-69. Five
     // successive SetCPixel calls (each popping an 8-byte arg frame:
     // 4-byte cPix pointer + 2-byte v + 2-byte h) followed by five
     // successive GetCPixel calls (same arg frame shape) must
     // cumulatively leave A7 unchanged across each 5-call C-level
-    // composition (B2/B4 of the bake). NIL cPix pointers exercise
+    // composition. NIL cPix pointers exercise
     // the Systemless HLE's documented NIL early-exit (per the cpix_ptr
     // == 0 guard at quickdraw.rs (true, 0x216) and (true, 0x217));
     // the trap still pops the full 8-byte arg frame before
     // returning.
     // Color2Index ($AA33) + InvertColor ($AA35) — Color Manager Tool-bit
-    // Pascal FUNCTION + PROCEDURE per IM:V 1986 p. V-141. Mirrors B2
-    // and B4 of the aa33_aa35_color2index_invertcolor_strict bake: five
+    // Pascal FUNCTION + PROCEDURE per IM:V 1986 p. V-141. Five
     // successive Color2Index calls (each pre-pushing a 4-byte LONGINT
     // result slot + 4-byte RGBColor pointer arg frame) followed by
     // five successive InvertColor calls (each pre-pushing a 4-byte

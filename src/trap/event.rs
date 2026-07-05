@@ -698,15 +698,13 @@ impl super::TrapDispatcher {
             // procedure is callable at interrupt time and disables
             // interrupts briefly while the queue header is updated.
             //
-            // Engines-agree on:
+            // Behavior:
             //   (1) Empty-queue insert sets qHead == qTail == element
-            //       AND element.qLink == NIL (witnessed by strict bake
-            //       a96e_a96f_dequeue_enqueue_strict
-            //       band B1).
+            //       AND element.qLink == NIL.
             //   (2) Non-empty-queue append: prior-tail.qLink points at
             //       new element, qTail becomes new element, new
             //       element.qLink == NIL, qHead unchanged, qFlags
-            //       unchanged (witnessed by band B2).
+            //       unchanged.
             //
             // Contract-test coverage in this file (mod tests):
             //   enqueue_on_empty_queue_sets_qhead_qtail_and_terminal_link
@@ -746,13 +744,11 @@ impl super::TrapDispatcher {
             // function is callable at interrupt time and disables
             // interrupts during the walk.
             //
-            // Engines-agree on:
+            // Behavior:
             //   (1) Present-entry removal: D0 == 0 AND qHead/qTail
-            //       repaired (witnessed by strict bake
-            //       a96e_a96f_dequeue_enqueue_strict
-            //       band B3).
+            //       repaired.
             //   (2) Missing-entry: D0 == qErr (-1) AND qHead/qTail
-            //       unchanged (witnessed by band B4).
+            //       unchanged.
             //
             // Contract-test coverage in this file (mod tests):
             //   dequeue_present_entry_unlinks_element_and_returns_noerr
@@ -836,13 +832,10 @@ impl super::TrapDispatcher {
             // apps) lose nothing observable since the driver routines
             // were never going to run anyway.
             //
-            // Engines-agree on:
+            // Behavior:
             //   (1) noErr return for the nominal-install path on an
-            //       empty unit-table slot (witnessed by strict bake
-            //       a03d_a03e_drvr_install_remove_strict
-            //       band B1).
-            //   (2) register-only ABI: A7 preserved across the call
-            //       (witnessed by band B2 via StackSpace sandwich).
+            //       empty unit-table slot.
+            //   (2) register-only ABI: A7 preserved across the call.
             (false, 0x3D) => {
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -876,11 +869,10 @@ impl super::TrapDispatcher {
             // Systemless HLE compromise: no DCE chain to dispose. Returns
             // D0=0 (noErr) unconditionally.
             //
-            // Engines-agree on:
+            // Behavior:
             //   (1) noErr return when called on a just-installed
-            //       (closed) slot (witnessed by band B3).
-            //   (2) register-only ABI: A7 preserved across the call
-            //       (witnessed by band B4).
+            //       (closed) slot.
+            //   (2) register-only ABI: A7 preserved across the call.
             (false, 0x3E) => {
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -935,13 +927,10 @@ impl super::TrapDispatcher {
             // no-op/noErr path, but the documented invalid-slot error
             // path is preserved.
             //
-            // Engines-agree subset: the documented register-only OS-bit
-            // FUNCTION calling convention itself (A7 unchanged, no Pascal
-            // stack frame consumed) plus the invalid-slot error path.
-            // Witnessed by a072_dovbltask_strict with
-            // a single-call StackSpace ($A065) sandwich, a 5-call
-            // composition cycling slot inputs 0/1/0/2/0, and an
-            // out-of-range slot=16 slotNumErr witness.
+            // The register-only OS-bit FUNCTION calling convention itself
+            // (A7 unchanged, no Pascal stack frame consumed) plus the
+            // invalid-slot error path (an out-of-range slot=16 returns
+            // slotNumErr).
             (false, 0x72) => {
                 let slot = cpu.read_reg(Register::D0) as u16 as i16;
                 if !(0..=15).contains(&slot) {
@@ -1246,9 +1235,8 @@ mod tests {
 
     #[test]
     fn drvrinstall_drvrremove_install_then_remove_composition_balances_stack() {
-        // Mirrors the strict bake a03d_a03e_drvr_install_remove_strict
-        // band B0 composite: dispatch _DrvrInstall + _DrvrRemove in
-        // sequence against the same refNum=-50 slot, with a poisoned
+        // Dispatch _DrvrInstall + _DrvrRemove in sequence against the
+        // same refNum=-50 slot, with a poisoned
         // sentinel above SP to verify neither trap walks past the
         // caller's stack window. Per IM:Devices 1994 pp. 1-83..1-86
         // both traps are register-only OS-bit FUNCTIONs with no Pascal
@@ -1328,8 +1316,7 @@ mod tests {
 
     #[test]
     fn dovbltask_register_only_calling_convention_preserves_stack_across_mixed_slots() {
-        // Mirrors B2 of a072_dovbltask_strict:
-        // a 5-call composition cycling slot inputs 0 → 1 → 0 → 2 → 0
+        // A 5-call composition cycling slot inputs 0 → 1 → 0 → 2 → 0
         // must leave A7 unchanged across each dispatch (register-only
         // OS-bit FUNCTION calling convention per IM:Processes 1994
         // p. 4-27 — no Pascal stack frame consumed).
@@ -1735,9 +1722,7 @@ mod tests {
 
     #[test]
     fn enqueue_dequeue_dispatcher_convention_preserves_register_only_abi() {
-        // Mirrors the strict bake
-        // a96e_a96f_dequeue_enqueue_strict bands
-        // B1+B2+B3+B4 as a single in-Rust sequence pinning the
+        // A single in-Rust sequence pinning the
         // Tool-bit Enqueue PROCEDURE / Dequeue FUNCTION register
         // calling convention (A0=qElement, A1=qHeader; D0=OSErr for
         // Dequeue). Per IM:OSUtils 1994 pp. 6-13..6-17 + IM:II 1985

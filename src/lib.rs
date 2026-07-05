@@ -44,10 +44,16 @@ pub mod loader;
 pub mod machine_profile;
 pub mod managers;
 pub mod memory;
-pub mod oracle;
 pub mod quickdraw;
 pub mod runner;
+/// Deterministic trap-interaction replays. This is internal test
+/// scaffolding, not part of the runtime API, so it is gated behind the
+/// off-by-default `test-support` feature and is absent from normal builds
+/// and docs.
+#[cfg(feature = "test-support")]
+pub mod scripted_traces;
 pub mod sound;
+pub mod trace;
 pub mod trap;
 pub mod ui_theme;
 

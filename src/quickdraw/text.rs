@@ -6,9 +6,9 @@
 //! is plain Rust glyph blitting, used by every QuickDraw text op
 //! after argument decode.
 //!
-//! Glyph data lives in [`crate::quickdraw::fonts`] (DejaVu strikes baked
-//! at compile time). Italic faces are synthesised by the runtime
-//! shear-blit at draw time (no pre-baked italic strikes).
+//! Glyph data lives in [`crate::quickdraw::fonts`] (original systemless
+//! bitmap art, `const fn`-decoded at compile time). Italic faces are
+//! synthesised by the runtime shear-blit at draw time.
 
 use crate::quickdraw::fonts::{
     get_font_face_or_default, get_italic_glyph as get_italic_glyph_fn, get_macroman_glyph,

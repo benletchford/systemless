@@ -22,10 +22,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///   instruction budget without halting. The carried `usize` is the
 ///   instruction-count cap that was hit.
 ///
-/// * [`Error::Oracle`] — recording-side error from the cross-runtime
-///   parity oracle (filesystem write, JSON serialisation, etc).
-///   Surfaces only when oracle recording is enabled via
-///   `enable_oracle_recording`.
+/// * [`Error::Trace`] — recording-side error from the cross-runtime
+///   parity trace sink (filesystem write, JSON serialisation, etc).
+///   Surfaces only when a trace sink is installed via
+///   `set_trace_sink`.
 #[derive(Debug, Error)]
 pub enum Error {
     /// The dispatcher reached an A-line trap word with no matching
@@ -44,8 +44,8 @@ pub enum Error {
     #[error("Execution timeout after {0} instructions")]
     Timeout(usize),
 
-    /// Cross-runtime parity oracle returned an error (filesystem
+    /// Cross-runtime parity trace sink returned an error (filesystem
     /// write, JSON serialisation, etc).
-    #[error("Oracle error: {0}")]
-    Oracle(String),
+    #[error("Trace error: {0}")]
+    Trace(String),
 }

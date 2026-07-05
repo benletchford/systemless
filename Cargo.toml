@@ -1,8 +1,10 @@
 [package]
 name = "systemless"
-version = "0.1.124"
+version = "0.1.125"
 edition = "2021"
-license = "GPL-3.0-or-later"
+# Emulator code is GPL-3.0-or-later; the bitmap font artwork in
+# src/quickdraw/fonts/pixel_font/ is additionally under OFL-1.1 (see OFL.txt).
+license = "GPL-3.0-or-later AND OFL-1.1"
 description = "High-Level Emulation for classic Macintosh applications"
 readme = "README.md"
 keywords = ["macintosh", "emulator", "68k", "hle", "quickdraw"]
@@ -34,6 +36,9 @@ libm = "0.2"
 [features]
 default = ["gui"]
 gui = ["winit", "softbuffer", "cpal"]
+# Exposes `scripted_traces`, deterministic trap-replay test scaffolding.
+# Off by default so it stays out of the published public API and docs.
+test-support = []
 
 [[bin]]
 name = "systemless"

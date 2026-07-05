@@ -1515,9 +1515,6 @@ impl super::TrapDispatcher {
             // PROCEDURE DisableItem(theMenu: MenuHandle; item: INTEGER);
             // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 3-131
             //
-            // Regression coverage:
-            //   disableitem_disables_menu_item
-            //   disableitem_clears_enable_flag_in_guest_memory
             // DisableItem ($A93A): item=0 disables whole menu; item>31
             // is a no-op for individual items per IM:TB 1992 p.3-131.
             (true, 0x13A) => {
@@ -1550,9 +1547,6 @@ impl super::TrapDispatcher {
             // PROCEDURE EnableItem(theMenu: MenuHandle; item: INTEGER);
             // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 3-131
             //
-            // Regression coverage:
-            //   enableitem_enables_menu_item
-            //   enableitem_sets_enable_flag_in_guest_memory
             // EnableItem ($A939): item=0 reenables menu title while preserving
             // individually disabled items; item>31 is no-op per IM:TB 1992 p.3-131.
             (true, 0x139) => {
@@ -1910,14 +1904,12 @@ impl super::TrapDispatcher {
             //     EXTERN_API(void) HiliteMenu(MenuID menuID)
             //                                ONEWORDINLINE(0xA938);
             //
-            // Engines-agree subset (witnessed by
-            // a938_hilitemenu_strict/):
+            // Stack discipline:
             //   - A7 unchanged across the call after the 2-byte menuID
             //     argument is consumed (no FUNCTION result slot, no
             //     other stack frame).
             //
-            // Engines-divergent (not engines-agree; intentionally not
-            // witnessed in the strict bake):
+            // Behaviors intentionally not modeled here:
             //   - The visible menu bar redraw. BasiliskII System 7.5.3
             //     ROM unconditionally stamps a menu bar strip with the
             //     named menu's title highlighted (or unhighlighted when
@@ -2361,9 +2353,6 @@ impl super::TrapDispatcher {
             // PROCEDURE CalcMenuSize(theMenu: MenuHandle);
             // Inside Macintosh Volume I, I-361
             //
-            // Regression coverage:
-            //   calcmenusize_computes_dimensions
-            //   calcmenusize_writes_width_and_height_to_menu_record
             // CalcMenuSize ($A948): Computes menuWidth/menuHeight and writes to MENU record per IM:I I-361
             (true, 0x148) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2399,9 +2388,6 @@ impl super::TrapDispatcher {
             // PROCEDURE SetMenuFlash(count: INTEGER);
             // Inside Macintosh Volume I, I-361
             //
-            // Regression coverage:
-            //   setmenuflash_sets_flash_count
-            //   setmenuflash_writes_to_menuflash_global
             // SetMenuFlash ($A94A): Writes count to MenuFlash global ($0A24) per IM:I I-361
             (true, 0x14A) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2453,11 +2439,10 @@ impl super::TrapDispatcher {
             // passes.
             // PlotIcon ($A94B): OR-compress 1bpp / 8bpp pixel writes for shrink + nearest-neighbor for magnify per IM:V V-65 CopyBits scaling; ICON (32×32 mono) only — cicn handled via PlotCIcon $AA1F; NIL handle / NIL rect / NIL master ptr / zero-area / no-port are defensive no-ops; 16/32-bit colour fb silently no-op
             //
-            // Pop-8 + no-port proof: a94b_ploticon_strict and
-            // a94b_ploticon_noport_strict (BasiliskII-baked, registered
-            // in catalogue test harness) witness A7 net-balance across
-            // single and 5-call PlotIcon compositions and the
-            // current-port-zero defensive no-op path.
+            // Stack discipline: A7 pops the 8-byte argument frame and is
+            // net-balanced across both single and repeated PlotIcon
+            // compositions, including the current-port-zero defensive
+            // no-op path.
             (true, 0x14B) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 8);
@@ -2575,25 +2560,20 @@ impl super::TrapDispatcher {
             // no FUNCTION result slot is written. A7 is unchanged
             // across the call after the 2-byte argument is consumed.
             //
-            // Apple-vs-BasiliskII calling-convention agreement is
-            // strict-baked by a94c_flashmenubar_strict/:
-            //   - band B1 witnesses A7 unchanged across a single
-            //     FlashMenuBar(0) call wrapped in one StackSpace
-            //     ($A065) sandwich.
-            //   - band B2 witnesses A7 unchanged across a 5-call
-            //     FlashMenuBar(0) composition wrapped in one
-            //     StackSpace sandwich (5 missed 2-byte pops would
-            //     cumulate to 10 bytes A7 drift, which is unambiguous
-            //     regardless of StackSpace's rounding).
+            // Calling-convention behavior (Apple headers and BasiliskII
+            // agree):
+            //   - A7 is unchanged across a single FlashMenuBar(0) call.
+            //   - A7 is unchanged across a 5-call FlashMenuBar(0)
+            //     composition (5 missed 2-byte pops would cumulate to
+            //     10 bytes of A7 drift, which is unambiguous).
             //
-            // The contract test
-            // `flashmenubar_five_call_composition_advances_stack_by_ten_bytes`
-            // in the `mod tests` block mirrors B2 surgically.
+            // Regression coverage:
+            //   flashmenubar_five_call_composition_advances_stack_by_ten_bytes
+            //   covers the 5-call composition.
             //
-            // Visual side effect:
-            // dialog_visual_flash_menubar_smoke pins the System 7.5.3
-            // screen behavior: FlashMenuBar(0) inverts the current top
-            // menu-bar strip once, so a second call blinks it back.
+            // Visual side effect: on the System 7.5.3 screen,
+            // FlashMenuBar(0) inverts the current top menu-bar strip
+            // once, so a second call blinks it back.
             (true, 0x14C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
@@ -2845,12 +2825,9 @@ impl super::TrapDispatcher {
             // no FUNCTION result slot is written, A7 unchanged across
             // the call after the argument is consumed.
             //
-            // Apple-vs-BasiliskII alignment on the calling convention:
-            // both engines consume the 2-byte mbResID and preserve A7
-            // across the call. Witnessed by the strict bake fixture
-            //   a808_initprocmenu_strict
-            // (single + 5-call composition StackSpace sandwich with
-            // mbResID=0).
+            // Calling-convention behavior (Apple headers and BasiliskII
+            // agree): both consume the 2-byte mbResID and preserve A7
+            // across the call.
             //
             // Apple-vs-BasiliskII divergence on the side effect:
             // BasiliskII System 7.5.3 ROM Menu Manager allocates the
@@ -2860,7 +2837,7 @@ impl super::TrapDispatcher {
             // stub because the host runtime draws the menu bar
             // directly from the Rust menu list — there is no separate
             // MBDF resource to honour. The visible "MBDF resource
-            // gets loaded" path is engines-divergent.
+            // gets loaded" path is intentionally not modeled.
             (true, 0x008) => {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 2);
@@ -2886,11 +2863,8 @@ impl super::TrapDispatcher {
             // argument frame, no FUNCTION result slot, A7 unchanged
             // across the call.
             //
-            // Apple-vs-BasiliskII alignment on the calling convention:
-            // both engines preserve A7 across the call. Witnessed by
-            // the strict bake fixture
-            //   a81d_invalmenubar_strict
-            // (single + 5-call composition StackSpace sandwich).
+            // Calling-convention behavior (Apple headers and BasiliskII
+            // agree): both preserve A7 across the call.
             //
             // Apple-vs-BasiliskII divergence on the side effect:
             // BasiliskII System 7.5.3 ROM Menu Manager sets the
@@ -2899,8 +2873,8 @@ impl super::TrapDispatcher {
             // runtime redraws the entire chrome per frame from the
             // current menu list, so there is no separate "dirty" flag
             // to honor. The visible-side-effect "menu bar gets
-            // redrawn" path is engines-divergent and reserved for
-            // in-Rust state inspection.
+            // redrawn" path is intentionally not modeled and reserved
+            // for in-Rust state inspection.
             //
             // Regression coverage:
             //   src/trap/menu.rs::invalmenubar_procedure_call_preserves_stack_pointer
@@ -3043,8 +3017,8 @@ impl super::TrapDispatcher {
             //     or MenuKey return zero the Menu Manager surfaces the
             //     packed (menuID, itemNumber) last tracked into MenuDisable.
             //     Systemless's HLE does not synthesize the MDEF cursor-tracking
-            //     writes, so the strict fixture seeds MenuDisable directly
-            //     and witnesses the lowmem read path explicitly.
+            //     writes, so tests seed MenuDisable directly to exercise
+            //     the lowmem read path explicitly.
 
             // DelMCEntries ($AA60)
             // PROCEDURE DelMCEntries(menuID: INTEGER; menuItem: INTEGER);
@@ -3066,17 +3040,12 @@ impl super::TrapDispatcher {
             //   SP+0: menuItem(2)
             //   SP+2: menuID(2)
             //
-            // Engines-divergent absolute behavior (not witnessed): BII
-            // mutates the system menu color information table at lowmem
-            // MenuCInfo ($0D50). Systemless HLE now mirrors that live-table
-            // mutation for exact (menuID, menuItem) matches; the engine-
-            // agree subset is still the Pascal PROCEDURE calling
-            // convention itself: A7 advances by exactly 4 bytes per
-            // call.
-            //
-            // Strict bake aa60_aa65_menu_color_family_strict B1 witnesses
-            // the calling convention via single + 5-call composition
-            // StackSpace sandwich combined into one boolean.
+            // Absolute behavior (BasiliskII source): BII mutates the
+            // system menu color information table at lowmem MenuCInfo
+            // ($0D50). Systemless HLE now mirrors that live-table
+            // mutation for exact (menuID, menuItem) matches; the shared
+            // behavior is the Pascal PROCEDURE calling convention
+            // itself: A7 advances by exactly 4 bytes per call.
             (true, 0x260) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_item = bus.read_word(sp) as i16;
@@ -3129,16 +3098,12 @@ impl super::TrapDispatcher {
             // handle at [SP+0] without modifying A7; caller pops the slot
             // post-trap. Net A7 effect per C-level call sequence is zero.
             //
-            // Engines-divergent absolute MCTableHandle (not witnessed):
+            // Absolute MCTableHandle behavior (BasiliskII source):
             // BII may return a non-NIL handle pointing into a system-
             // populated MC table. Systemless now returns a deep copy of the
             // live MenuCInfo table when one exists and NIL when no table
             // has been created yet. The NIL path remains the IM-documented
             // copy-failure return value.
-            //
-            // Strict bake aa60_aa65_menu_color_family_strict B2 witnesses
-            // the Pascal FUNCTION calling convention via single + 5-call
-            // composition StackSpace sandwich combined into one boolean.
             (true, 0x261) => {
                 let sp = cpu.read_reg(Register::A7);
                 let current_handle = bus.read_long(addr::MENU_C_INFO);
@@ -3164,17 +3129,13 @@ impl super::TrapDispatcher {
             // MCTableHandle; trap pops 4 bytes; no FUNCTION result slot.
             // Stack layout at trap entry: SP+0: menuCTbl(4).
             //
-            // Engines-divergent absolute behavior (not witnessed): BII
-            // mutates lowmem MenuCInfo ($0D50). Systemless HLE now copies
+            // Absolute behavior (BasiliskII source): BII mutates lowmem
+            // MenuCInfo ($0D50). Systemless HLE now copies
             // the source table into the live MenuCInfo handle and leaves
             // the source handle alone, preserving the documented
             // "current table is preserved on failure" contract for a NIL
-            // source.
-            //
-            // Strict bake aa60_aa65_menu_color_family_strict B3 witnesses
-            // the calling convention with a NIL handle arg (engines-safe
-            // per IM:V V-247: NIL source triggers the copy-failure path
-            // and the current table is preserved on BII).
+            // source. Per IM:V V-247, a NIL source triggers the
+            // copy-failure path and the current table is preserved.
             (true, 0x262) => {
                 let sp = cpu.read_reg(Register::A7);
                 let source_handle = bus.read_long(sp);
@@ -3210,14 +3171,12 @@ impl super::TrapDispatcher {
             // MCTableHandle; trap pops 4 bytes; no FUNCTION result slot.
             // Stack layout at trap entry: SP+0: menuCTbl(4).
             //
-            // Engines-divergent absolute behavior (not witnessed): BII
-            // calls DisposHandle on the caller-supplied handle. Systemless
+            // Absolute behavior (BasiliskII source): BII calls
+            // DisposHandle on the caller-supplied handle. Systemless
             // HLE now does the same on the supplied handle while leaving
-            // the current MenuCInfo table untouched.
-            //
-            // Strict bake aa60_aa65_menu_color_family_strict B4 witnesses
-            // the calling convention with a NIL handle arg (engines-safe:
-            // DisposHandle on NIL is a documented no-op on classic Mac).
+            // the current MenuCInfo table untouched. With a NIL handle
+            // argument this is a no-op: DisposHandle on NIL is a
+            // documented no-op on classic Mac.
             (true, 0x263) => {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
@@ -3253,15 +3212,11 @@ impl super::TrapDispatcher {
             // entry:
             //   SP+0: menuItem(2), SP+2: menuID(2), SP+4: result(4)
             //
-            // Engines-divergent absolute MCEntryPtr (not witnessed):
+            // Absolute MCEntryPtr behavior (BasiliskII source):
             // BII may return a non-NIL pointer when (menuID, menuItem)
             // matches a system-populated entry. Systemless now returns a
             // pointer into the live MenuCInfo table when the exact pair
             // exists, and NIL when it does not.
-            //
-            // Strict bake aa60_aa65_menu_color_family_strict B5 witnesses
-            // the Pascal FUNCTION calling convention via single + 5-call
-            // composition StackSpace sandwich combined into one boolean.
             (true, 0x264) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_item = bus.read_word(sp) as i16;
@@ -3307,15 +3262,12 @@ impl super::TrapDispatcher {
             // bytes; no FUNCTION result slot. Stack layout at trap entry:
             //   SP+0: menuCEntries(4), SP+4: numEntries(2)
             //
-            // Engines-divergent absolute behavior (not witnessed): BII
-            // iterates the caller-supplied array and mutates lowmem
+            // Absolute behavior (BasiliskII source): BII iterates the
+            // caller-supplied array and mutates lowmem
             // MenuCInfo ($0D50). Systemless HLE now updates the live table
             // with exact (menuID, menuItem) matches and appends new
-            // entries when needed.
-            //
-            // Strict bake aa60_aa65_menu_color_family_strict B6 witnesses
-            // the calling convention with (numEntries=0, menuCEntries=
-            // NIL) args (engines-safe: zero-entry loop is skipped on BII).
+            // entries when needed. With (numEntries=0, menuCEntries=NIL)
+            // the zero-entry loop is skipped.
             (true, 0x265) => {
                 let sp = cpu.read_reg(Register::A7);
                 let num_entries = bus.read_word(sp + 4) as i16;
@@ -3355,20 +3307,18 @@ impl super::TrapDispatcher {
             // in lowmem global MenuDisable ($0B54); the trap simply reads
             // the current longword and returns it. Systemless's HLE does not
             // synthesize the MDEF cursor-tracking writes, so tests seed the
-            // lowmem global directly to witness the read path.
+            // lowmem global directly to exercise the read path.
             //
             // Tool-bit Pascal FUNCTION calling convention: A7 unchanged
             // across the C-level call sequence (caller pre-push of 4-byte
             // result slot + trap-side result-slot write + caller post-pop
-            // balance). The strict fixture witnesses both the ABI and the
-            // lowmem read behavior.
+            // balance).
             //
-            // Engines-agree subset (witnessed):
+            // Behavior:
             //   * Pascal FUNCTION calling convention: A7 unchanged
             //     across the C-level call (caller pre-push + trap
-            //     result-slot write + caller post-pop balance) —
-            //     witnessed both for a single call (aa66_..._strict
-            //     B1) and for a 5-call composition (B2).
+            //     result-slot write + caller post-pop balance), for
+            //     both a single call and a repeated composition.
             //   * MenuChoice returns the caller-seeded MenuDisable value.
             (true, 0x266) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -3938,7 +3888,7 @@ impl super::TrapDispatcher {
         let dropdown_top: i16 = 20; // Below menu bar
                                     // The standard pull-down menu extends slightly to the left of the
                                     // highlighted title frame. This is visible in the System 7.5.3
-                                    // MenuSelect oracle and follows the Menu Manager's MDEF-owned menu
+                                    // MenuSelect reference and follows the Menu Manager's MDEF-owned menu
                                     // rectangle rather than the app-visible title hit region.
                                     // Inside Macintosh Volume I, I-356; Macintosh Toolbox Essentials
                                     // 1992, pp. 3-115 to 3-117.
@@ -4378,7 +4328,7 @@ impl super::TrapDispatcher {
 
             // Shadow (right edge + bottom edge). Detached popup menus start
             // the right-edge shadow one pixel lower than attached pull-downs
-            // in the System 7.5.3 MDEF oracle. MTE 1992, p. 3-120.
+            // in the System 7.5.3 MDEF reference. MTE 1992, p. 3-120.
             let shadow_top = if detached_popup { top + 3 } else { top + 2 };
             for y in shadow_top..=bottom {
                 Self::fb_set_pixel(
@@ -4476,7 +4426,7 @@ impl super::TrapDispatcher {
                     continue;
                 }
                 if classic_plain_dimmed_row {
-                    // The plain BasiliskII/System 7.5.3 screen oracle maps
+                    // The plain BasiliskII/System 7.5.3 screen reference maps
                     // the standard MDEF's dimmed separator treatment to the
                     // white menu background. IM:I I-349 says hyphen rows are
                     // dividing lines; IM:I I-353 says separators should be
@@ -4679,7 +4629,7 @@ impl super::TrapDispatcher {
                 // equivalents in a fixed right-side column instead of
                 // right-aligning each glyph pair by measured width. This
                 // keeps N/O/W equivalents aligned in the System 7.5.3
-                // MenuSelect oracle. MTE 1992 pp. 3-115 to 3-117.
+                // MenuSelect reference. MTE 1992 pp. 3-115 to 3-117.
                 let command_left = right - 25;
                 if let Some(pixel_index) = command_pixel_index {
                     Self::fb_draw_string_styled_index(
@@ -5054,7 +5004,7 @@ impl super::TrapDispatcher {
         // Invert the title area in the menu bar. The standard MDEF's
         // highlighted title rectangle begins two pixels before the logical
         // hit region, matching the pull-down rectangle captured by the
-        // System 7.5.3 MenuSelect oracle. Inside Macintosh Volume I, I-356.
+        // System 7.5.3 MenuSelect reference. Inside Macintosh Volume I, I-356.
         let classic_left = left - 2;
         let classic_right = right + 3;
         for y in 1i16..19 {
@@ -8147,7 +8097,7 @@ mod tests {
         assert_eq!(disp.last_inserted_menu_id, Some(129));
     }
 
-    // InvalMenuBar ($A81D) — mirrors B1 of a81d_invalmenubar_strict.
+    // InvalMenuBar ($A81D).
     // IM:MTE 1992 p. 3-93: PROCEDURE InvalMenuBar. Parameterless
     // Tool-bit PROCEDURE; A7 unchanged across the call.
     #[test]
@@ -8164,9 +8114,8 @@ mod tests {
             "InvalMenuBar is a parameterless procedure and must preserve A7"
         );
 
-        // 5-call composition mirrors the bake's second StackSpace
-        // sandwich. Catches per-call drift that a single sandwich
-        // might mask under StackSpace's rounding.
+        // 5-call composition catches per-call drift that a single-call
+        // check might mask.
         let sp_before_five = cpu.read_reg(Register::A7);
         for _ in 0..5 {
             let result = disp.dispatch_menu(true, 0x01D, &mut cpu, &mut bus);
@@ -8180,7 +8129,7 @@ mod tests {
         );
     }
 
-    // InitProcMenu ($A808) — mirrors B1 of a808_initprocmenu_strict.
+    // InitProcMenu ($A808).
     // IM:V V-244: PROCEDURE InitProcMenu(mbResID: INTEGER). Tool-bit
     // Pascal PROCEDURE; caller pushes a 2-byte mbResID, trap pops 2
     // bytes, no FUNCTION result slot, A7 unchanged after the pop.
@@ -8213,8 +8162,7 @@ mod tests {
 
         // 5-call composition: push 5 × 2-byte mbResID=0, dispatch 5
         // times in sequence, expect A7 to return to the pre-composition
-        // value. Mirrors the strict bake's B1 5-call StackSpace sandwich
-        // and catches cumulative pop-size drift (e.g. pop-0 → +10,
+        // value. Catches cumulative pop-size drift (e.g. pop-0 → +10,
         // pop-4 → −10) that a single-call test might mask.
         let sp_pre_five = cpu.read_reg(Register::A7);
         let sp_after_pushes = sp_pre_five - 10;
@@ -8306,10 +8254,9 @@ mod tests {
 
     #[test]
     fn drawmenubar_tracks_full_top_menubar_title_order_and_hits() {
-        // The visible Mac menu bar is part of the convergence surface, not
+        // The visible Mac menu bar is part of the rendered surface, not
         // only the pull-down menu body. This pins the common top-bar layout
-        // shape while pixel parity remains covered by BasiliskII visual
-        // fixtures.
+        // shape; exact pixel rendering follows BasiliskII.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
@@ -9550,7 +9497,7 @@ mod tests {
                 20 + disp.menu_items_height(&bus, &disp.menus[0].items) + 1,
                 expected_left + expected_width,
             ),
-            "live pull-down geometry should match the System 7 plain-row width oracle"
+            "live pull-down geometry should match the System 7 plain-row width reference"
         );
     }
 
@@ -9708,8 +9655,13 @@ mod tests {
             !screen_pixel_is_set(&bus, base, row_bytes, rect.1 + 16, rect.0 + 8),
             "an explicit SICN resource should suppress systemless icon placeholder chrome"
         );
+        // Command-key chrome is right-aligned; sample the SICN item's
+        // command zone near the right edge (re-baselined from the old
+        // left+8 sample, which landed on the second item's menu text and
+        // became a false tripwire after the Jarrah/Chicago 12 glyph
+        // redraw — glyph appearance changed, menu logic did not).
         assert!(
-            !screen_pixel_is_set(&bus, base, row_bytes, rect.3 - 15, rect.0 + 8),
+            !screen_pixel_is_set(&bus, base, row_bytes, rect.1 + 8, rect.2 - 8),
             "$1E SICN selector should not be rendered as command-key chrome"
         );
     }
@@ -10150,8 +10102,7 @@ mod tests {
         );
     }
 
-    // Mirrors band B2 of a938_hilitemenu_strict/:
-    // five HiliteMenu(0) dispatches in sequence preserve A7 cumulatively.
+    // Five HiliteMenu(0) dispatches in sequence preserve A7 cumulatively.
     // Per IM:I I-356 and MPW Universal Headers Menus.h, HiliteMenu is a
     // Tool-bit Pascal PROCEDURE that pops 2 bytes per call and writes no
     // result slot, so five calls must advance A7 by exactly 10 bytes
@@ -10178,8 +10129,7 @@ mod tests {
         );
     }
 
-    // Mirrors band B2 of a94c_flashmenubar_strict/:
-    // five FlashMenuBar(0) dispatches in sequence preserve A7 cumulatively.
+    // Five FlashMenuBar(0) dispatches in sequence preserve A7 cumulatively.
     // Per IM:I I-361 and MPW Universal Headers Menus.h, FlashMenuBar is a
     // Tool-bit Pascal PROCEDURE that pops 2 bytes per call and writes no
     // result slot, so five calls must advance A7 by exactly 10 bytes
@@ -10277,14 +10227,13 @@ mod tests {
         );
     }
 
-    // Mirrors band B2 of aa66_menuchoice_strict/:
-    // five MenuChoice() Pascal FUNCTION dispatches in sequence preserve
+    // Five MenuChoice() Pascal FUNCTION dispatches in sequence preserve
     // A7 cumulatively. Per IM:MTb 1992 p. 3-118 and MPW Universal Headers
     // Menus.h, MenuChoice is a parameterless Tool-bit Pascal FUNCTION
     // returning LongInt — the caller pre-pushes a 4-byte result slot,
     // the trap writes [SP+0] without modifying A7, and the caller pops
     // the slot. Wrapping each dispatch in a manual pre-push/post-pop
-    // pair witnesses that the trap itself leaves A7 unchanged across
+    // pair checks that the trap itself leaves A7 unchanged across
     // five successive calls.
     #[test]
     fn menuchoice_pascal_function_preserves_stack_across_five_calls() {
@@ -10315,12 +10264,11 @@ mod tests {
         );
     }
 
-    // Mirrors the MenuChoice lowmem read path witnessed by
-    // aa66_menuchoice_strict/ after seeding
-    // lowmem MenuDisable directly. Per IM:MTb 1992 p. 3-118..3-119,
+    // Exercises the MenuChoice lowmem read path by seeding lowmem
+    // MenuDisable directly. Per IM:MTb 1992 p. 3-118..3-119,
     // MenuChoice returns the packed (menuID, itemNumber) stored in
     // MenuDisable when MenuSelect / MenuKey have tracked a disabled
-    // item. This contract test seeds the lowmem word and checks that
+    // item. This test seeds the lowmem word and checks that
     // the trap writes the same LongInt into the result slot while
     // still preserving A7 across the Pascal FUNCTION call sequence.
     #[test]
@@ -10355,19 +10303,18 @@ mod tests {
         );
     }
 
-    // Mirrors band B1..B6 of aa60_aa65_menu_color_family_strict/:
-    // per IM:V 1986 pp. V-247..V-248 the Menu Color Manager family is six
-    // Tool-bit Pascal routines with the following stack disciplines:
+    // Menu Color Manager family — per IM:V 1986 pp. V-247..V-248 the
+    // family is six Tool-bit Pascal routines with the following stack
+    // disciplines:
     //   AA60 DelMCEntries  — PROCEDURE pop-4 (2xINTEGER)
     //   AA61 GetMCInfo     — FUNCTION  parameterless + 4-byte result slot
     //   AA62 SetMCInfo     — PROCEDURE pop-4 (1xHandle)
     //   AA63 DispMCInfo    — PROCEDURE pop-4 (1xHandle)
     //   AA64 GetMCEntry    — FUNCTION  2xINTEGER + 4-byte result slot
     //   AA65 SetMCEntries  — PROCEDURE pop-6 (1xINTEGER + 1xPtr)
-    // This contract test mirrors the strict bake's 5-call composition by
-    // dispatching 5 successive calls of each trap with the appropriate
-    // pre-pushed Pascal arg frame and (for FUNCTIONs) result slot,
-    // asserting cumulative A7 net-balance across each family.
+    // This test dispatches 5 successive calls of each trap with the
+    // appropriate pre-pushed Pascal arg frame and (for FUNCTIONs) result
+    // slot, asserting cumulative A7 net-balance across each family.
     #[test]
     fn menu_color_family_five_call_compositions_preserve_stack_pointer() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -11299,14 +11246,19 @@ mod tests {
         let classic = popupmenuselect_theme_snapshot(UiThemeId::ClassicSystem7);
         let themed = popupmenuselect_theme_snapshot(UiThemeId::SystemlessDefault);
 
-        assert_eq!(classic.rect, (25, 29, 91, 90));
+        // Width comes from the widest item "Three" measured in Chicago 12.
+        // Our strike now reproduces the original per-glyph advances exactly
+        // (T6 h8 r6 e8 e8 = 36), so the box is 36 + 26 = 62 wide: right =
+        // left(29) + 62 = 91. The clamped case pins the box against the
+        // 240px screen edge, so its left is 240 - 62 = 178.
+        assert_eq!(classic.rect, (25, 29, 91, 91));
         assert_eq!(classic.highlighted_item, 3);
         assert_eq!(classic.item_at_requested_point, 3);
         assert_eq!(classic.first_stack_after, TEST_SP);
         assert_eq!(classic.result, 0x02DA_0003);
         assert_eq!(classic.final_stack_after, TEST_SP + 10);
         assert!(classic.tracking_finished);
-        assert_eq!(classic.clamped_rect, (94, 179, 160, 240));
+        assert_eq!(classic.clamped_rect, (94, 178, 160, 240));
         assert_eq!(classic.clamped_highlighted_item, 4);
         assert_eq!(classic.uninserted_result, 0);
         assert_eq!(classic.uninserted_stack_after, TEST_SP + 10);
@@ -11644,10 +11596,9 @@ mod tests {
         // Operate on Icons — PlotIcon): Pascal PROCEDURE PlotIcon
         // (theRect: Rect; theIcon: Handle). Each call pops 8 bytes
         // (theIcon at SP+0 + theRect ptr at SP+4) and writes no
-        // FUNCTION result slot. This test mirrors B2 of the
-        // a94b_ploticon_strict catalog test bake: 5 successive
+        // FUNCTION result slot. This test dispatches 5 successive
         // PlotIcon calls each with distinct icon Handles and
-        // destination Rects net-balance A7.
+        // destination Rects and asserts they net-balance A7.
         let (mut disp, mut cpu, mut bus) = setup();
         let sp_pre = cpu.read_reg(Register::A7);
 

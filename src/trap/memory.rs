@@ -1,7 +1,7 @@
 //! Memory Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
-use crate::machine_profile::ORACLE_MACHINE_PROFILE;
+use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::{Error, Result};
 use std::collections::HashMap;
@@ -588,9 +588,7 @@ impl super::TrapDispatcher {
             //   noErr   (0)  — task added to the system VBL queue.
             //   vTypErr (-2) — qType field is not ORD(vType).
             //
-            // Strict bake witness: a033_a034_vinstall_vremove_strict
-            // (engines-agree on both noErr and vTypErr return paths).
-            // Contract tests: src/trap/memory.rs vinstall_consumes_a0_taskptr_...,
+            // Regression coverage: src/trap/memory.rs vinstall_consumes_a0_taskptr_...,
             // vinstall_invalid_qtype_returns_vtyperr,
             // vinstall_then_vremove_roundtrip_returns_noerr_on_both_and_qerr_on_second_remove.
             (false, 0x33) => {
@@ -623,9 +621,7 @@ impl super::TrapDispatcher {
             //   qErr    (-1) — task record isn't in the queue.
             //   vTypErr (-2) — qType field is not ORD(vType).
             //
-            // Strict bake witness: a033_a034_vinstall_vremove_strict
-            // (engines-agree on both noErr and qErr return paths).
-            // Contract tests: src/trap/memory.rs vremove_consumes_a0_taskptr_...,
+            // Regression coverage: src/trap/memory.rs vremove_consumes_a0_taskptr_...,
             // vremove_task_not_in_queue_returns_qerr,
             // vinstall_then_vremove_roundtrip_returns_noerr_on_both_and_qerr_on_second_remove.
             (false, 0x34) => {
@@ -1023,13 +1019,13 @@ impl super::TrapDispatcher {
 
                 let rec_ptr = a0;
                 bus.write_word(rec_ptr, 2); // environsVersion
-                bus.write_word(rec_ptr + 2, ORACLE_MACHINE_PROFILE.gestalt_machine_type);
-                bus.write_word(rec_ptr + 4, ORACLE_MACHINE_PROFILE.system_version_bcd);
+                bus.write_word(rec_ptr + 2, REFERENCE_MACHINE_PROFILE.gestalt_machine_type);
+                bus.write_word(rec_ptr + 4, REFERENCE_MACHINE_PROFILE.system_version_bcd);
                 bus.write_word(
                     rec_ptr + 6,
-                    ORACLE_MACHINE_PROFILE.gestalt_processor_type as u16,
+                    REFERENCE_MACHINE_PROFILE.gestalt_processor_type as u16,
                 );
-                bus.write_byte(rec_ptr + 8, u8::from(ORACLE_MACHINE_PROFILE.has_fpu()));
+                bus.write_byte(rec_ptr + 8, u8::from(REFERENCE_MACHINE_PROFILE.has_fpu()));
                 bus.write_byte(rec_ptr + 9, 1); // hasColorQD
                 bus.write_word(rec_ptr + 10, 0);
                 bus.write_word(rec_ptr + 12, 0);
@@ -1960,11 +1956,11 @@ impl super::TrapDispatcher {
                         }
                         // Apply palette BEFORE logging so screenshots see updated CLUT.
                         self.apply_set_entries(bus, cs_table, cs_start, safe_count);
-                        if let Err(err) = self.record_oracle_event(
+                        if let Err(err) = self.record_trace_event(
                             bus,
                             trap_pc,
                             "video_set_entries",
-                            Self::oracle_palette_field_map(bus, cs_table, cs_start, safe_count),
+                            Self::trace_palette_field_map(bus, cs_table, cs_start, safe_count),
                             true,
                         ) {
                             return Some(Err(err));
@@ -2097,14 +2093,9 @@ impl super::TrapDispatcher {
             // to return badUnitErr (-21) or unitEmptyErr (-22) for a refNum
             // that does not map to an installed driver. Both engines obey
             // the dispatcher convention writing the SAME value to BOTH D0
-            // and ioResult, so the engines-agree witness is "D0 == ioResult
-            // AND ioResult != pre-poison sentinel" (proved by the strict
-            // bake) rather than an absolute OSErr value.
-            //
-            // Strict bake: a005_pbstatus_strict
-            // witnesses:
-            //   * A005:pbstatus_writes_same_oserr_to_d0_and_ioresult
-            //   * A005:pbstatus_register_only_calling_convention_preserves_stack
+            // and ioResult, so the observable invariant is "D0 == ioResult
+            // AND ioResult != pre-poison sentinel" rather than an absolute
+            // OSErr value.
             //
             // Regression coverage:
             //   src/trap/memory.rs::status_writes_ioresult_and_returns_noerr_in_d0
@@ -2199,15 +2190,13 @@ impl super::TrapDispatcher {
             // fires every ~16ms and overwrites $020C with the host
             // clock. Even a sub-microsecond read of $020C immediately
             // after _SetDateTime returns the host clock value, not the
-            // value passed in. The Time-global write semantic is
-            // therefore engines-divergent and pinned via the in-Rust
-            // contract test
+            // value passed in. This Time-global write semantic is
+            // pinned via the in-Rust test
             // src/trap/memory.rs::setdatetime_updates_time_global_from_d0_seconds_argument.
             //
-            // The engines-agree subset — register-only OS-bit FUNCTION
-            // calling convention + noErr return on the nominal call
-            // path — is witnessed by the strict bake fixture
-            // a03a_setdatetime_strict.
+            // The register-only OS-bit FUNCTION calling convention plus
+            // noErr return on the nominal call path is the observable
+            // behavior.
             //
             // Regression coverage:
             //   src/trap/memory.rs::setdatetime_updates_time_global_from_d0_seconds_argument
@@ -2249,7 +2238,7 @@ impl super::TrapDispatcher {
             // exposed via InterfaceLib only with NO ONEWORDINLINE glue
             // published in the public header. Callers either link through
             // InterfaceLib (which performs the A0/D0 register setup) or use
-            // a fixture-local `#pragma parameter __D0 kx_WriteParam(__A0,
+            // a local `#pragma parameter __D0 kx_WriteParam(__A0,
             // __D0)` inline thunk that emits the trap word directly with
             // the documented register inputs.
             //
@@ -2265,8 +2254,7 @@ impl super::TrapDispatcher {
             // it compares against on the verify path; the trap never
             // modifies the low-memory copy.
             //
-            // Engines-agree subset (witnessed by strict bake
-            // a038_writeparam_strict band B1 + B2):
+            // Observable behavior (BasiliskII reference):
             //   - D0 = noErr (0) on nominal exit. BII's emulated clock
             //     chip and SysParam agree on a freshly-booted system, so
             //     the verify path succeeds.
@@ -2275,7 +2263,7 @@ impl super::TrapDispatcher {
             //     BII reads them on the write+verify path without writing
             //     back.
             //   - A7 unchanged across the call (register-only ABI; no
-            //     Pascal stack frame). Witnessed by in-Rust contract test
+            //     Pascal stack frame). Covered by in-Rust test
             //     `writeparam_returns_noerr_in_d0_for_nominal_call`.
             //
             // BII-vs-Systemless divergence: BII propagates the SysParam record
@@ -2284,8 +2272,6 @@ impl super::TrapDispatcher {
             // IM:II II-381 historical note, the low-memory SysParam copy
             // is the canonical store anyway).
             //
-            // Regression coverage:
-            //   writeparam_writes_parameter_ram
             //   src/trap/memory.rs:tests::writeparam_returns_noerr_in_d0_for_nominal_call
             //   src/trap/memory.rs:tests::writeparam_does_not_modify_low_memory_sysparam_copy
             //   src/trap/memory.rs:tests::writeparam_five_call_composition_preserves_stack_across_varying_minusone_register_state
@@ -2322,8 +2308,8 @@ impl super::TrapDispatcher {
             // MPW Universal Headers OSUtils.h declares InitUtil as
             //   EXTERN_API(OSErr) InitUtil(void)
             // exposed via InterfaceLib only; no ONEWORDINLINE glue is
-            // published in the public header. Strict-bake fixtures
-            // dispatch the trap via the inline thunk
+            // published in the public header. Callers dispatch the trap
+            // via an inline thunk such as
             //   #pragma parameter __D0 kx_InitUtil()
             //   pascal long kx_InitUtil(void) = {0xA03F};
             // mapping the FUNCTION result slot to D0.
@@ -2339,14 +2325,9 @@ impl super::TrapDispatcher {
             // 20-byte record into low memory before stamping SPValid.
             // Systemless HLE writes only the SPValid stamp (the rest of
             // SysParam is initialised by other paths or remains zero);
-            // the engines agree on the documented post-conditions
+            // both produce the documented post-conditions
             // (D0 = noErr and SPValid = $A8 on a freshly-booted
             // default-configuration system).
-            //
-            // Runtime proof: a03f_initutil_strict
-            //   B1: D0 lowbyte == 0 (noErr) for the nominal call.
-            //   B2: SPValid ($01F8) == $A8 after dispatch (pre-poisoned
-            //       to $5A to defeat no-op stubs).
             //
             // Regression coverage:
             //   src/trap/memory.rs:initutil_returns_noerr_in_d0_for_nominal_call
@@ -2369,9 +2350,6 @@ impl super::TrapDispatcher {
             //   On exit:  A0 = pointer to first character (unchanged)
             //   Bit 9 of trap word: if set, diacSens=FALSE (strip diacriticals)
             //
-            // Regression coverage:
-            //   uprstring_uppercases_pascal_string
-            //   uprstring_preserves_non_alpha
             // UprString ($A054): Converts lowercase→uppercase in place; bit 9=strip diacriticals; per IM:II II-377
             (false, 0x54) => {
                 let ptr = cpu.read_reg(Register::A0);
@@ -2410,23 +2388,12 @@ impl super::TrapDispatcher {
             //   pascal void StripText(Ptr textPtr, short len)        = { 0xA256 };
             //   pascal void UpperText(Ptr textPtr, short len)        = { 0xA456 };
             //   pascal void StripUpperText(Ptr textPtr, short len)   = { 0xA656 };
-            // The void return type elides D0 from the C side; the strict
-            // bake fixture uses inline `pascal short Do*Text` thunks that
-            // pop the args into A0/D0 and write D0.W back to the function
-            // result slot, but witnesses byte-output rather than D0 so the
-            // golden subset stays insensitive to the IM:VI 14-63
-            // "checking D0 is unreliable on System 7 PowerMacs" caveat.
+            // The void return type elides D0 from the C side. Checking the
+            // byte output rather than D0 keeps the checks insensitive to
+            // the IM:VI 14-63 "checking D0 is unreliable on System 7
+            // PowerMacs" caveat.
             //
-            // Strict runtime proof:
-            //   a056_text_conversion_variants_strict (5 of 6 assertions
-            //   witnessed on BasiliskII; the 6th `text_conversion_variants_
-            //   return_noerr_in_d0_for_nominal_calls` is contract-only).
-            //
-            // Contract coverage in this file:
-            //   lowertext_converts_to_lowercase
-            //   uppertext_converts_to_uppercase
-            //   striptext_strips_diacriticals
-            //   stripuppertext_strips_and_uppercases
+            // Coverage in this file:
             //   lowertext_family_returns_noerr_in_d0_for_each_trap_word_variant
             //
             // LowerText/UpperText/StripText/StripUpperText ($A056): text
@@ -2471,11 +2438,6 @@ impl super::TrapDispatcher {
             //   Bit 9: if set, diacSens=FALSE (strip diacriticals)
             //   Bit 10: if set, caseSens=TRUE
             //
-            // Regression coverage:
-            //   relstring_compares_equal_strings
-            //   relstring_compares_less_than
-            //   relstring_compares_greater_than
-            //   relstring_case_insensitive
             // RelString ($A050): Compares strings relationally: A0/A1=ptrs, D0=lengths; bit 9=strip marks, bit 10=case-sensitive; per IM:IV IV-234
             (false, 0x50) => {
                 let ptr_a = cpu.read_reg(Register::A0);
@@ -2575,7 +2537,7 @@ impl super::TrapDispatcher {
             // The MPW Universal Headers expose the trap word as the
             // `_ReadXPRam = 0xA051` constant in Traps.h only — there is
             // no public EXTERN_API declaration in OSUtils.h or Memory.h.
-            // Strict bake fixtures use a fixture-local inline thunk via
+            // Callers dispatch it via an inline thunk such as
             // `#pragma parameter __D0 kx_ReadXPRam(__D0, __A0)`.
             //
             // BII-vs-Systemless divergence: BasiliskII reads the actual
@@ -2584,14 +2546,6 @@ impl super::TrapDispatcher {
             // PRAM is modeled. Both engines agree on the documented
             // OS-bit register convention + noErr return on the
             // default-configuration nominal-call path.
-            //
-            // Strict bake fixture:
-            //   a051_a052_xpram_strict
-            // Engines-agree assertions witnessed:
-            //   A051:readxpram_returns_noerr_in_d0_for_nominal_call
-            //   A051:readxpram_uses_d0_count_offset_and_a0_destptr_register_calling_convention
-            // Systemless-only contract assertion:
-            //   A051:readxpram_zero_fills_requested_count_in_systemless_no_xpram_model
             //
             // In-Rust contract tests:
             //   readxpram_zero_fills_requested_count_and_returns_noerr
@@ -2632,12 +2586,6 @@ impl super::TrapDispatcher {
             // persistent extended PRAM is modeled. Both engines preserve
             // the caller's source buffer (read-only access) and agree on
             // the documented OS-bit register convention + noErr return.
-            //
-            // Strict bake fixture:
-            //   a051_a052_xpram_strict
-            // Engines-agree assertions witnessed:
-            //   A052:writexpram_returns_noerr_in_d0_for_nominal_call
-            //   A052:writexpram_uses_d0_count_offset_and_a0_srcptr_register_calling_convention
             //
             // In-Rust contract tests:
             //   writexpram_noop_returns_noerr_in_hle_without_persistent_xpram
@@ -2697,8 +2645,6 @@ impl super::TrapDispatcher {
             // A0 = pointer to DefVideoRec (sdSlot:1, sdSResource:1)
             // Returns the current Start Manager default video bytes.
             //
-            // Regression coverage:
-            //   getvideodefault_returns_default_video
             // GetVideoDefault ($A080): Writes DefVideoRec.sdSlot and
             // sdSResource at A0; per IM:V V-354.
             (false, 0x80) => {
@@ -2714,8 +2660,6 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-354 to V-355
             // A0 points to DefVideoRec.
             //
-            // Regression coverage:
-            //   setvideodefault_sets_default_video
             // SetVideoDefault ($A081): Updates in-session Start Manager
             // defaults from DefVideoRec; per IM:V V-354 to V-355.
             (false, 0x81) => {
@@ -2758,8 +2702,6 @@ impl super::TrapDispatcher {
             // A0 = pointer to DefOSRec (sdReserved:1, sdOSType:1).
             // sdReserved returns 0; sdOSType identifies default OS.
             //
-            // Regression coverage:
-            //   getosdefault_returns_default_os
             // GetOSDefault ($A084): Writes DefOSRec.sdReserved and
             // sdOSType at A0; per IM:V V-355.
             (false, 0x84) => {
@@ -2807,19 +2749,14 @@ impl super::TrapDispatcher {
             //   accepts the call but does not propagate sdOSType to the
             //   in-session default record. After Set(sdOSType=2) → Get
             //   returns sdOSType=1 (the BII Mac OS boot default).
-            //   This is engines-divergent and pinned via the in-Rust
-            //   contract test setosdefault_roundtrips_sdostype_and_
-            //   getosdefault_reports_reserved_zero
-            //   (witness_kind = "contract" in the catalogue row).
+            //   This behavior is pinned via the in-Rust test
+            //   setosdefault_roundtrips_sdostype_and_
+            //   getosdefault_reports_reserved_zero.
             //
-            //   The engines AGREE on the documented register-only PROCEDURE
+            //   Both engines match the documented register-only PROCEDURE
             //   calling convention (A0 input, void return, no stack frame)
-            //   and on the read-only treatment of the caller's DefOSRec
-            //   input buffer. The bake fixture
-            //   a083_setosdefault_strict witnesses only
-            //   that engines-agree subset:
-            //     A083:setosdefault_preserves_caller_defosrec_input_bytes
-            //     A083:setosdefault_register_only_calling_convention_preserves_stack
+            //   and the read-only treatment of the caller's DefOSRec
+            //   input buffer.
             //
             // Contract coverage:
             //   src/trap/memory.rs::tests::setosdefault_roundtrips_sdostype_and_getosdefault_reports_reserved_zero
@@ -2858,7 +2795,7 @@ impl super::TrapDispatcher {
             // declaration is `pascal OSErr DeferUserFn(ProcPtr, void *)`
             // exposed via InterfaceLib only; no ONEWORDINLINE glue is
             // published in the public header, so callers either link
-            // through InterfaceLib or use a fixture-local
+            // through InterfaceLib or use a local
             // `#pragma parameter __D0 fn(__A0, __D0)` thunk emitting
             // the trap word directly.
             //
@@ -2870,8 +2807,7 @@ impl super::TrapDispatcher {
             // safe no-op noErr. We do not model the VMM deferred
             // queue or the cannotDeferErr path.
             //
-            // Strict bake & contract coverage:
-            //   a08f_deferuserfn_strict (BII)
+            // Regression coverage:
             //   src/trap/memory.rs::tests::deferuserfn_uses_register_calling_convention_without_stack_arguments
             //   src/trap/memory.rs::tests::deferuserfn_callable_pointer_installs_trampoline_and_returns_noerr
             //   src/trap/memory.rs::tests::deferuserfn_two_call_composition_preserves_stack_across_varying_args
@@ -2922,9 +2858,8 @@ impl super::TrapDispatcher {
             // Systemless — both selectors are accepted as a no-op stub, and
             // the absolute D0 timeout value diverges between BasiliskII
             // (which surfaces a real ROM timeout register) and Systemless
-            // (which leaves D0 unchanged). The engines-agree subset is the
-            // register-only OS-bit-trap calling convention, witnessed via
-            // a07f_internalwait_strict.
+            // (which leaves D0 unchanged). Both share the register-only
+            // OS-bit-trap calling convention.
             //
             // MPW Universal Headers expose this trap via OSUtils.h as the
             // `GetTimeout`/`SetTimeout` glue — both compile to inline
@@ -2934,8 +2869,6 @@ impl super::TrapDispatcher {
             //   src/trap/memory.rs::tests::internalwait_routes_gettimeout_and_settimeout_selector_paths
             //   src/trap/memory.rs::tests::internalwait_stub_preserves_stack_pointer_in_noop_path
             //   src/trap/memory.rs::tests::internalwait_five_call_composition_preserves_stack_across_alternating_selectors
-            // Strict bake:
-            //   a07f_internalwait_strict
             (false, 0x7F) => Ok(()),
 
             // PMgrOp ($A085)
@@ -2946,8 +2879,6 @@ impl super::TrapDispatcher {
             //
             // Contract coverage:
             //   src/trap/memory.rs::tests::pmgrop_returns_noerr_and_preserves_stack_pointer_in_noop_path
-            // Strict bake:
-            //   a08a_sleepqinstall_strict
             // PMgrOp ($A085): Returns noErr; no hardware power management; per IM:V
             (false, 0x85) => return_noerr(cpu),
 
@@ -2977,8 +2908,6 @@ impl super::TrapDispatcher {
             // No-op; mirror noErr through the dispatcher CCR path
             // so 68K callers see a clean OSErr return.
             //
-            // Regression coverage:
-            //   iopmovedata_moves_iop_data
             // IOPMoveData ($A088): Returns noErr; per IM:VI
             (false, 0x88) => return_noerr(cpu),
 
@@ -2998,9 +2927,6 @@ impl super::TrapDispatcher {
             // No-op behavior in HLE — we don't have sleep/wake hardware.
             // Both variants take one SleepQRecPtr Pascal argument on stack.
             //
-            // Regression coverage:
-            //   sleepqinstall_installs_sleep_queue_entry
-            //   sleepqremove_removes_sleep_queue_entry
             // SleepQInstall/SleepQRemove ($A08A): Returns noErr; no sleep/wake hardware; per IM:VI
             (false, 0x8A) => {
                 // Variant trap words: $A28A (install), $A48A (remove).
@@ -3087,8 +3013,6 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume VI
             // No-op.
             //
-            // Regression coverage:
-            //   powerdispatch_routes_power_selectors
             // PowerDispatch ($A09F): Returns noErr; per IM:VI
             (false, 0x9F) => {
                 cpu.write_reg(Register::D0, 0);
@@ -3232,13 +3156,6 @@ impl super::TrapDispatcher {
             // that still preserve the register-only OS-bit-trap calling
             // convention (stack discipline).
             //
-            // Strict runtime proof:
-            //   a08d_debugutil_strict/
-            //     witnesses the engines-agree stack-discipline subset
-            //     across single and 5-call composed _DebugUtil($0000)
-            //     dispatches, and the selector $0000 return value
-            //     matches the documented max selector number.
-            //
             // Contract coverage:
             //   src/trap/memory.rs::tests::debugutil_debuggergetmax_returns_max_selector_and_preserves_stack_pointer
             //   src/trap/memory.rs::tests::debugutil_other_selectors_preserve_non_d0_registers
@@ -3299,8 +3216,6 @@ impl super::TrapDispatcher {
             //
             // Returns count in D0. We report 2 devices (keyboard + mouse).
             //
-            // Regression coverage:
-            //   countadbs_returns_device_count
             // CountADBs ($A077): Returns 2 (keyboard + mouse) per IM:V V-372
             (false, 0x77) => {
                 cpu.write_reg(Register::D0, 2); // keyboard + mouse
@@ -3338,7 +3253,7 @@ impl super::TrapDispatcher {
             //   GetIndADB(ADBDataBlock *info, short devTableIndex)
             //     ONEWORDINLINE(0xA078);
             //
-            // Engines-divergence note (engines-agree on the documented
+            // BasiliskII-vs-Systemless note (they agree on the documented
             // API surface; only the specific byte values written
             // through *info diverge): BasiliskII System 7.5.3 ROM
             // walks its real ADB device table populated by the boot
@@ -3352,16 +3267,9 @@ impl super::TrapDispatcher {
             //   * positive ADB-address return for valid indices
             //   * negative error return for out-of-range indices
             //   * caller's ADBDataBlock written through A0
-            // The catalogue row declares `hle_matches = "apple"` for
-            // this engines-agree subset; per-byte exact values are
-            // NOT engines-agree (kx_GetIndADB rec_b1 contents differ
-            // byte-for-byte between BII and Systemless).
-            //
-            // Strict witness:
-            //   a078_getindadb_strict (4-band
-            //   1bpp 520x50 canvas: valid-index-returns-positive +
-            //   out-of-range-returns-negative + ADBDataBlock-window-
-            //   overwritten-with-trailing-sentinel-preservation).
+            // The documented API-surface behavior matches Apple; the
+            // per-byte exact values do NOT (kx_GetIndADB rec_b1 contents
+            // differ byte-for-byte between BII and Systemless).
             //
             // Regression coverage (in-Rust):
             //   getindadb_returns_device_info
@@ -3399,8 +3307,6 @@ impl super::TrapDispatcher {
             // FUNCTION GetADBInfo(VAR info: ADBDataBlock; adbAddr: ADBAddress): OSErr;
             // Inside Macintosh Volume V, V-373
             //
-            // Regression coverage:
-            //   getadbinfo_returns_device_data
             // GetADBInfo ($A079): Zero-fills the 10-byte ADBDataBlock, returns noErr per IM:V V-373
             (false, 0x79) => {
                 let info_ptr = cpu.read_reg(Register::A0);
@@ -3419,8 +3325,6 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-374
             // No-op.
             //
-            // Regression coverage:
-            //   setadbinfo_sets_device_data
             // SetADBInfo ($A07A): Returns noErr per IM:V V-374
             (false, 0x7A) => {
                 cpu.write_reg(Register::D0, 0); // noErr
@@ -3433,8 +3337,6 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-371
             // No-op.
             //
-            // Regression coverage:
-            //   adbreinit_reinitializes_adb
             // ADBReInit ($A07B): Per IM:V V-371
             (false, 0x7B) => Ok(()),
 
@@ -3478,7 +3380,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V (1986), pp. V-367 to V-368
             // Inside Macintosh: Devices (1994), pp. 5-39 to 5-45
             //
-            // Engines divergence on D0 return value:
+            // BasiliskII-vs-Systemless divergence on D0 return value:
             //   BasiliskII System 7.5.3 ROM returns a non-zero result
             //   code in D0 for synthetic ADBOp calls with no completion
             //   routine wired (the emulated ADB Manager rejects calls
@@ -3491,20 +3393,17 @@ impl super::TrapDispatcher {
             //   The Apple-canonical "ADBOp returns noErr on queued
             //   accept" contract from IM:V V-368 is pinned in-Rust via
             //   the `adbop_returns_noerr_when_command_queue_accepts_request`
-            //   regression test below with `witness_kind = "contract"`
-            //   in the catalogue row, since the engines disagree on
+            //   regression test below, since the engines disagree on
             //   the absolute D0 value.
             //
-            //   The engines-agree subset is the register-only OS-bit-
-            //   trap calling convention (A0 + D0 inputs, D0 output, no
-            //   Pascal stack frame), witnessed by the strict bake
-            //   fixture a07c_adbop_strict.
+            //   Both share the register-only OS-bit-trap calling
+            //   convention (A0 + D0 inputs, D0 output, no Pascal stack
+            //   frame).
             //
             // Regression coverage:
             //   src/trap/memory.rs::tests::adbop_returns_noerr_when_command_queue_accepts_request
             //   src/trap/memory.rs::tests::adbop_uses_a0_parameter_block_and_d0_commandnum_without_stack_arguments
             //   src/trap/memory.rs::tests::adbop_repeated_calls_balance_stack_no_drift
-            //   a07c_adbop_strict
             (false, 0x7C) => {
                 cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
@@ -3518,7 +3417,6 @@ impl super::TrapDispatcher {
             //
             // Regression coverage:
             //   src/trap/memory.rs::tests::vadbproc_preserves_d0_and_stack_and_updates_ccr
-            //   a0ae_vadbproc_strict
             // VADBProc ($A0AE): Preserves caller D0/A7; per IM:Devices 5-39..5-40
             (false, 0xAE) => Ok(()),
 
@@ -3577,14 +3475,12 @@ impl super::TrapDispatcher {
             // SetZone -> GetZone roundtrip preserves the supplied
             // zone pointer.
             //
-            // Engines-agree subset (witnessed by strict bake
-            // a01b_setzone_strict bands B1 + B2):
+            // Observable behavior:
             //   - Low-memory TheZone ($0118) equals the supplied
             //     zone pointer after the call.
             //   - GetZone after SetZone(hz) returns A0=hz.
             //
             // Regression coverage:
-            //   a01b_setzone_strict (BII golden)
             //   src/trap/memory.rs::setzone_writes_thezone_and_getzone_roundtrips
             //   src/trap/memory.rs::setzone_roundtrip_with_saved_original_restores_thezone
             (false, 0x1B) => {
@@ -3627,11 +3523,6 @@ impl super::TrapDispatcher {
             // PROCEDURE EmptyHandle(h: Handle);
             // Inside Macintosh: Memory, 2-42
             //
-            // Regression coverage:
-            //   emptyhandle_sets_master_pointer_to_nil
-            //   emptyhandle_frees_data_block
-            //   emptyhandle_nil_handle_returns_error
-            //   emptyhandle_preserves_handle_state_bits
             // EmptyHandle ($A02B): Frees data block and sets master pointer to NIL; returns nilHandleErr for NIL handle; per IM:Memory 2-42. Resource-backed handles preserve Resource Manager metadata so LoadResource can revalidate them after purge (MMTB 1993 1-80; Memory 1992 2-52).
             (false, 0x2B) => {
                 let handle = cpu.read_reg(Register::A0);
@@ -3696,8 +3587,6 @@ impl super::TrapDispatcher {
             // Returns SP minus ApplLimit (heap top). In emulation, we estimate
             // generously since we don't track the real heap boundary.
             //
-            // Regression coverage:
-            //   stackspace_returns_positive_value
             // StackSpace ($A065): Returns SP minus ApplLimit ($0130); per IM:Memory 2-48
             (false, 0x65) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -3721,8 +3610,6 @@ impl super::TrapDispatcher {
             // In emulation, heap compaction isn't needed. This is a no-op that
             // always succeeds — the next NewHandle will allocate wherever it can.
             //
-            // Regression coverage:
-            //   resrvmem_succeeds
             // ResrvMem ($A040): No-op in emulation; per IM:Memory 2-52
             (false, 0x40) => {
                 cpu.write_reg(Register::D0, 0); // noErr
@@ -3754,14 +3641,14 @@ impl super::TrapDispatcher {
             // p. 2-73 "PurgeMem does not actually attempt to allocate
             // a block of cbNeeded bytes."
             //
-            // Why the absolute D0 result is NOT engines-agree:
+            // Why the absolute D0 result differs between BasiliskII and Systemless:
             //   BasiliskII System 7.5.3 ROM manages a real Mac heap
             //   with arbitrary purgeable blocks installed by the boot
             //   process; the absolute D0 result depends on the
             //   boot-time layout. Systemless HLE's host-backed allocator
             //   has no purgeable blocks at all, so PurgeMem is
             //   structurally a no-op that always returns noErr. The
-            //   only documented engines-agree post-condition is the
+            //   only documented shared post-condition is the
             //   register-only calling convention itself.
             //
             // Systemless HLE compromise: D0 (cbNeeded) is read and
@@ -3770,8 +3657,7 @@ impl super::TrapDispatcher {
             // contract — both engines preserve A7 and consume no
             // Pascal stack frame.
             //
-            // Engines-agree on (witnessed by strict bake
-            // a04d_purgemem_strict bands B1 + B2):
+            // Observable behavior:
             //   (1) register-only ABI: A7 preserved across a single
             //       PurgeMem(0) call.
             //   (2) cumulative pop discipline: a 5-call composition
@@ -3823,9 +3709,9 @@ impl super::TrapDispatcher {
             //   The system installs an opaque trampoline in `zone.gzProc`
             //   and stashes the caller-supplied pointer in a private slot,
             //   so the directly observable field is system-trampoline-
-            //   opaque and engines-divergent. The only documented engines-
-            //   agree post-condition is the register-only calling
-            //   convention itself.
+            //   opaque and differs between BasiliskII and Systemless. The
+            //   only documented shared post-condition is the register-only
+            //   calling convention itself.
             //
             // Systemless HLE compromise: no real heap-exhaustion path exists
             // (the host-backed allocator never triggers compaction, growth
@@ -3836,8 +3722,7 @@ impl super::TrapDispatcher {
             // — both engines preserve A7, accept any A0 (NIL or non-NIL),
             // and return noErr.
             //
-            // Engines-agree on (witnessed by strict bake
-            // a04b_setgrowzone_strict bands B1 + B2):
+            // Observable behavior:
             //   (1) register-only ABI: A7 preserved across a single
             //       SetGrowZone(NIL) call.
             //   (2) cumulative pop discipline: a 5-call composition
@@ -3889,12 +3774,11 @@ impl super::TrapDispatcher {
             // MPW Universal Headers (MacMemory.h):
             //   #pragma parameter HSetRBit(__A0)
             //   EXTERN_API(void) HSetRBit(Handle h) ONEWORDINLINE(0xA067);
-            // The void declaration elides D0 from C callers; a fixture
+            // The void declaration elides D0 from C callers; a caller
             // that needs to witness D0 (the nilHandleErr return) declares
             // an inline thunk like
             //   #pragma parameter __D0 kx_HSetRBit_D0(__A0)
             //   pascal short kx_HSetRBit_D0(Handle h) = { 0xA067 };
-            // (used by a067_a068_hresource_bit_strict).
             //
             // Systemless HLE: tracks resource-flag state in the dispatcher's
             // `handle_state_bits` HashMap rather than poking master
@@ -3905,10 +3789,7 @@ impl super::TrapDispatcher {
             // reads from it, so round-trip semantics match BII byte-for-
             // byte on the documented surface.
             //
-            // Witnessed by:
-            //   a067_a068_hresource_bit_strict
-            //     (BasiliskII bake + Systemless runtime; HGetState
-            //      round-trip + nilHandleErr + register convention)
+            // Regression coverage:
             //   src/trap/memory.rs::test_memorydispatch_hsetrbit_sets_resource_flag
             //   src/trap/memory.rs::test_memorydispatch_hsetrbit_nil_handle_returns_error
             //   src/trap/memory.rs::hsetrbit_then_hgetstate_round_trips_resource_bit
@@ -3955,21 +3836,18 @@ impl super::TrapDispatcher {
             //   #pragma parameter HClrRBit(__A0)
             //   EXTERN_API(void) HClrRBit(Handle h) ONEWORDINLINE(0xA068);
             // The void declaration elides D0 from C callers (mirrors
-            // HSetRBit); fixtures use the same inline-thunk pattern with
+            // HSetRBit); callers use the same inline-thunk pattern with
             //   #pragma parameter __D0 kx_HClrRBit_D0(__A0)
             //   pascal short kx_HClrRBit_D0(Handle h) = { 0xA068 };
-            // (see a067_a068_hresource_bit_strict).
             //
             // Systemless HLE: clears 0x20 in `handle_state_bits[handle]` and
             // removes the entry entirely when no flag bits remain. The
             // HashMap mirrors what HGetState ($A069) returns; BasiliskII
             // System 7.5.3 ROM updates the master pointer flag byte
             // directly. Both engines agree on the observable HGetState
-            // round-trip behavior — set → 0x20, clear → 0x00 — across
-            // a067_a068_hresource_bit_strict.
+            // round-trip behavior — set → 0x20, clear → 0x00.
             //
-            // Witnessed by:
-            //   a067_a068_hresource_bit_strict
+            // Regression coverage:
             //   src/trap/memory.rs::test_memorydispatch_hclrrbit_clears_resource_flag
             //   src/trap/memory.rs::test_memorydispatch_hclrrbit_nil_handle_returns_error
             //   src/trap/memory.rs::hclrrbit_after_hsetrbit_round_trips_resource_bit_to_zero
@@ -4279,8 +4157,6 @@ impl super::TrapDispatcher {
             // so callers that inspect condition codes see Z set for
             // the noErr path.
             //
-            // Regression coverage:
-            //   heapdispatch_returns_noerr
             (false, 0xA4) => {
                 cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
@@ -4331,22 +4207,12 @@ impl super::TrapDispatcher {
             //   Per IM:II II-29 the trap has a register-only ABI and
             //   should preserve A7. Systemless HLE preserves A7 byte-for-
             //   byte (only D0 is written). BII's System 7.5.3 ROM does
-            //   real heap-validation work during the trap, and the
-            //   kx_StackSpace probe in the fixture-runtime reports
-            //   sp_pre != sp_post even though the documented register
-            //   table guarantees no Pascal stack frame is consumed.
-            //   This stack-discipline divergence is engine-divergent
-            //   and is therefore witnessed only by the in-Rust
-            //   contract test setapplbase_uses_register_calling_
-            //   convention_without_stack_arguments below, not by the
-            //   BII strict bake.
-            //
-            // Witnessed by:
-            //   a057_setapplbase_strict/  (BII bake;
-            //     witnesses the engines-agree noErr-return path with
-            //     startPtr echoing the current ApplZone low-memory
-            //     pointer at $02AA)
-            //   catalogue trap A057_SetApplBase
+            //   real heap-validation work during the trap, so a stack-
+            //   pointer probe reports sp_pre != sp_post even though the
+            //   documented register table guarantees no Pascal stack
+            //   frame is consumed. This stack-discipline divergence is
+            //   pinned by the in-Rust test setapplbase_uses_register_
+            //   calling_convention_without_stack_arguments below.
             //
             // Regression coverage:
             //   src/trap/memory.rs::setapplbase_uses_a0_startptr_and_returns_noerr_in_d0
@@ -5186,7 +5052,6 @@ mod tests {
     #[test]
     fn hsetrbit_then_hgetstate_round_trips_resource_bit() {
         // Pins the documented HSetRBit ↔ HGetState round-trip contract
-        // witnessed by a067_a068_hresource_bit_strict
         // (BasiliskII System 7.5.3 ROM). Per IM:Memory 1992 p. 2-43, callers
         // observe handle state ONLY through HGetState ($A069); the master
         // pointer flag byte is not portable across 24/32-bit modes. This
@@ -5232,8 +5097,7 @@ mod tests {
     #[test]
     fn hclrrbit_after_hsetrbit_round_trips_resource_bit_to_zero() {
         // Symmetric counterpart to hsetrbit_then_hgetstate_round_trips_resource_bit:
-        // pins the HClrRBit ↔ HGetState round-trip from the same fixture
-        // (a067_a068_hresource_bit_strict). After HSetRBit then HClrRBit
+        // pins the HClrRBit ↔ HGetState round-trip. After HSetRBit then HClrRBit
         // on the same handle, HGetState must report the resource bit
         // cleared (0x00) — per IM:Memory 1992 p. 2-50 "HClrRBit clears
         // the resource flag of a relocatable block."
@@ -5350,8 +5214,8 @@ mod tests {
         // Inside Macintosh Volume II (1985), pp. II-378..II-379 + II-391:
         // _SetDateTime takes D0=secs and returns D0=OSErr; both engines
         // return noErr on the nominal write path for any LongInt input.
-        // Mirrors B1 of a03a_setdatetime_strict by sweeping multiple
-        // secs values and checking the noErr return + A7 preservation.
+        // Sweeps multiple secs values and checks the noErr return + A7
+        // preservation.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let secs_inputs = [
             0u32, // 1904-01-01 epoch
@@ -5435,9 +5299,8 @@ mod tests {
 
     #[test]
     fn writeparam_five_call_composition_preserves_stack_across_varying_minusone_register_state() {
-        // Mirrors band B0 composite of the strict bake
-        // a038_writeparam_strict: 5 successive _WriteParam
-        // dispatches inside one A7-snapshot sandwich with varying D0 entry
+        // 5 successive _WriteParam dispatches inside one A7-snapshot
+        // sandwich with varying D0 entry
         // values (always logical "MinusOne" but seeded with varying high-byte
         // stale state to stress D0 input handling). Per IM:II II-381 +
         // IM:OSUtils 1994 p. 7-13 the OS-bit FUNCTION consumes no Pascal
@@ -5521,8 +5384,7 @@ mod tests {
 
     #[test]
     fn initutil_rewrites_spvalid_when_pre_poisoned_to_invalid() {
-        // Mirrors band B2 of the strict bake
-        // a03f_initutil_strict: pre-poisons SPValid
+        // Pre-poisons SPValid
         // ($01F8) with $5A (canonical "invalid" per IM:II II-380 — any
         // byte other than $A8 means parameter RAM has not been validated
         // since the last reset), dispatches _InitUtil, and verifies that
@@ -5556,8 +5418,8 @@ mod tests {
 
     #[test]
     fn initutil_register_only_calling_convention_preserves_stack_pointer() {
-        // Mirrors band B3 of the strict bake: repeated register-only
-        // calls should not consume a stack frame or move A7.
+        // Repeated register-only calls should not consume a stack frame
+        // or move A7.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
 
@@ -5784,9 +5646,8 @@ mod tests {
         // SetApplBase returns noErr on the nominal path. Systemless HLE
         // does not model a relocatable application zone, so the trap
         // is a no-op that writes D0 = noErr regardless of startPtr.
-        // This mirrors B1 of the a057_setapplbase_strict bake, which
-        // dispatches the trap with startPtr echoing the current
-        // ApplZone low-memory pointer, but verifies that any other
+        // Dispatching the trap with startPtr echoing the current
+        // ApplZone low-memory pointer, this verifies that any other
         // startPtr value (NIL, sentinel, or arbitrary address) also
         // produces D0 = 0 in the HLE.
         let cases: [u32; 5] = [
@@ -6000,7 +5861,6 @@ mod tests {
 
     #[test]
     fn vinstall_then_vremove_roundtrip_returns_noerr_on_both_and_qerr_on_second_remove() {
-        // Mirrors B1+B2+B4 of the a033_a034_vinstall_vremove_strict bake:
         // VInstall(valid) → noErr; immediate VRemove → noErr; second VRemove
         // of the same now-empty slot → qErr. Per IM:Processes 1994 p. 4-26
         // a second remove of an already-removed task hits the queue-not-found
@@ -6834,13 +6694,13 @@ mod tests {
         assert_eq!(bus.read_word(buf), 2, "environsVersion should be 2");
         assert_eq!(
             bus.read_word(buf + 2),
-            crate::machine_profile::ORACLE_MACHINE_PROFILE.gestalt_machine_type,
-            "machineType should match the oracle machine profile"
+            crate::machine_profile::REFERENCE_MACHINE_PROFILE.gestalt_machine_type,
+            "machineType should match the reference machine profile"
         );
         assert_eq!(
             bus.read_word(buf + 4),
-            crate::machine_profile::ORACLE_MACHINE_PROFILE.system_version_bcd,
-            "systemVersion should match the oracle machine profile"
+            crate::machine_profile::REFERENCE_MACHINE_PROFILE.system_version_bcd,
+            "systemVersion should match the reference machine profile"
         );
         assert_eq!(bus.read_word(buf + 6), 5, "processor should be 5 (68040)");
         assert_eq!(
@@ -6933,12 +6793,12 @@ mod tests {
 
     #[test]
     fn internalwait_five_call_composition_preserves_stack_across_alternating_selectors() {
-        // Mirrors B2 of a07f_internalwait_strict: five
-        // successive _InternalWait dispatches with alternating A0 selectors
-        // ($0000/$0001) and varying D0 count inputs (0/1/15/20/31) preserve
-        // A7 in aggregate, with no per-call drift. Per IM:Operating_System_
-        // Utils 1994 pp. 9-27 to 9-28 the trap consumes no Pascal stack
-        // arguments regardless of selector or D0 input.
+        // Five successive _InternalWait dispatches with alternating A0
+        // selectors ($0000/$0001) and varying D0 count inputs
+        // (0/1/15/20/31) preserve A7 in aggregate, with no per-call drift.
+        // Per IM:Operating_System_Utils 1994 pp. 9-27 to 9-28 the trap
+        // consumes no Pascal stack arguments regardless of selector or D0
+        // input.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0xDEAD_BEEF);
@@ -7271,7 +7131,7 @@ mod tests {
     fn commtoolboxdispatch_countditl_returns_dialog_item_count_and_preserves_stack_pointer() {
         // Inside Macintosh Volume VI (1991), Appendix C table C-3 (p. C-4):
         // _CommToolboxDispatch ($A08B) dispatches CountDITL via selector
-        // $0403. The MPW C frame observed in the strict fixture places
+        // $0403. The MPW C frame places
         // the 4-byte result slot at SP+0..3, the selector word at SP+4..5,
         // and the DialogPtr argument at SP+6..9.
         let (mut dispatcher, mut cpu, mut bus) = setup();
@@ -7505,11 +7365,10 @@ mod tests {
     fn commtoolboxdispatch_selector_0403_returns_expected_counts_for_one_and_three_item_dialogs() {
         // Inside Macintosh Volume VI (1991), Appendix C table C-3 (p. C-4):
         // _CommToolboxDispatch ($A08B) dispatches CountDITL via selector
-        // $0403. The MPW frame used by the strict fixture places the
+        // $0403. The MPW frame places the
         // 4-byte result slot at SP+0..3, selector at SP+4..5, and the
-        // DialogPtr argument at SP+6..9. This test mirrors the strict
-        // fixture by checking both a one-item dialog and the existing
-        // three-item dialog.
+        // DialogPtr argument at SP+6..9. This test checks both a one-item
+        // dialog and the existing three-item dialog.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         dispatcher.current_trap_word = 0xA08B;
 
@@ -7755,7 +7614,7 @@ mod tests {
 
     #[test]
     fn debugutil_five_call_composition_preserves_stack_across_documented_selectors() {
-        // Mirrors B2 of the a08d_debugutil_strict bake: 5 successive
+        // 5 successive
         // _DebugUtil dispatches with varying D0 selector inputs spanning
         // the documented IM:VI 1991 Appendix C table C-3 (p. C-4) range
         // ($0000 DebuggerGetMax / $0001 DebuggerEnter / $0003 DebuggerPoll
@@ -7788,7 +7647,7 @@ mod tests {
     #[test]
     fn debugutil_debuggerpoll_five_call_composition_preserves_stack_across_repeated_selector_three_calls(
     ) {
-        // Mirrors B4 of the a08d_debugutil_strict bake: five successive
+        // Five successive
         // DebuggerPoll calls preserve A7 in aggregate and continue to
         // return noErr across the repeated selector-3 path.
         let (mut dispatcher, mut cpu, mut bus) = setup();
@@ -7883,8 +7742,7 @@ mod tests {
     fn deferuserfn_callable_pointer_installs_trampoline_and_returns_noerr() {
         // Valid callable-proc path: the trap should inject a trampoline,
         // pass the argument in A0, and return noErr in D0 before the
-        // trampoline executes. The actual callback run is covered by the
-        // BasiliskII strict fixture.
+        // trampoline executes.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         dispatcher.current_trap_word = 0xA08F;
 
@@ -7979,7 +7837,7 @@ mod tests {
 
     #[test]
     fn deferuserfn_five_call_composition_preserves_stack_across_varying_args() {
-        // Mirrors a08f_deferuserfn_strict B2: 5 successive _DeferUserFn
+        // 5 successive _DeferUserFn
         // dispatches with varying (A0=userFunction, D0=argument) inputs
         // span the IM:Memory 1992 p. 3-33 register convention. Per-call
         // pop-discipline errors accumulate; the 5-call composition
@@ -8019,9 +7877,8 @@ mod tests {
 
     #[test]
     fn deferuserfn_three_call_composition_preserves_stack_across_varying_args() {
-        // Mirrors the strict fixture's repeated-call witness: three
-        // successive DeferUserFn dispatches with varying A0/D0 inputs
-        // should still preserve the Pascal stack discipline.
+        // Three successive DeferUserFn dispatches with varying A0/D0
+        // inputs should still preserve the Pascal stack discipline.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         dispatcher.current_trap_word = 0xA08F;
         let sp_before = cpu.read_reg(Register::A7);
@@ -8298,16 +8155,11 @@ mod tests {
 
     #[test]
     fn lowertext_family_returns_noerr_in_d0_for_each_trap_word_variant() {
-        // Pins the catalog row assertion
-        // `A056:text_conversion_variants_return_noerr_in_d0_for_nominal_calls`.
-        // The strict bake fixture a056_text_conversion_variants_strict
-        // exercises the same four variants on the same input bytes
-        // {0x41, 0x61, 0x83, 0x8E} but witnesses the buffer outputs only —
-        // MPW Universal Headers declare the family as void-returning, so
-        // C-side fixtures cannot sample D0 without inline asm. This test
-        // pins D0=0 (noErr) on Systemless for each $A056/$A256/$A456/$A656
-        // dispatch over the same input, completing the round-trip contract
-        // alongside the bake's golden assertions.
+        // MPW Universal Headers declare the LowerText family as
+        // void-returning, so C-side callers cannot sample D0 without
+        // inline asm. This test pins D0=0 (noErr) on Systemless for each
+        // $A056/$A256/$A456/$A656 dispatch over the input bytes
+        // {0x41, 0x61, 0x83, 0x8E}, completing the round-trip contract.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         for trap_word in [0xA056u16, 0xA256, 0xA456, 0xA656] {
             let ptr = bus.alloc(4);
@@ -8333,10 +8185,8 @@ mod tests {
     }
 
     #[test]
-    fn lowertext_family_variants_match_strict_bake_input_byte_sequences() {
-        // Cross-reference for the strict bake's golden assertions.
-        // Input: {0x41 'A', 0x61 'a', 0x83 'É', 0x8E 'é'} — 4 bytes per
-        // fixture a056_text_conversion_variants_strict.
+    fn lowertext_family_variants_match_documented_output_byte_sequences() {
+        // Input: {0x41 'A', 0x61 'a', 0x83 'É', 0x8E 'é'} — 4 bytes.
         //
         // Documented outputs per IM:VI 14-62..14-63 and IM:IV IV-235:
         //   $A056 LowerText      → {0x61, 0x61, 0x8E, 0x8E}  "aa\x8E\x8E"
@@ -8487,7 +8337,7 @@ mod tests {
         // block direction arrows (`→` in both rows of the trap-macro summary)
         // document sdReserved + sdOSType as INPUTs supplied by the caller; the
         // trap copies them into the in-session default record without writing
-        // back to the caller's buffer. Mirrors B1 of a083_setosdefault_strict.
+        // back to the caller's buffer.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = bus.alloc(4);
         bus.write_byte(pb, 0x00);
@@ -9278,8 +9128,7 @@ mod tests {
 
     #[test]
     fn readxpram_five_call_composition_preserves_stack_across_varying_count_offset() {
-        // Mirrors band B2 of the a051_a052_xpram_strict bake fixture: 5
-        // successive _ReadXPRam dispatches with varying D0 packed
+        // 5 successive _ReadXPRam dispatches with varying D0 packed
         // (count << 16) | offset values must each preserve A7. Per
         // IM:V V-519 the register-only ABI takes A0 + D0 inputs and
         // returns OSErr in D0; no Pascal stack frame is consumed.
@@ -9364,7 +9213,6 @@ mod tests {
 
     #[test]
     fn writexpram_five_call_composition_preserves_stack_and_source_across_varying_count_offset() {
-        // Mirrors band B4 of the a051_a052_xpram_strict bake fixture:
         // 5 successive _WriteXPRam dispatches with varying D0 packed
         // (count << 16) | offset values must each preserve A7 AND
         // leave the caller's source bytes untouched. Per IM:V V-519
@@ -10503,8 +10351,7 @@ mod tests {
         // Per IM:V V-373: the ADBDataBlock is documented as 10 bytes
         // (devType + origADBAddr + dbServiceRtPtr + dbDataAreaAddr).
         // Pin that the HLE write loop does not clobber caller memory
-        // beyond the 10-byte window; mirrors the trailing-sentinel
-        // conjunct of B3 in a078_getindadb_strict.
+        // beyond the 10-byte window (trailing-sentinel preservation).
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let info = 0x320180u32;
         for i in 0..12u32 {
@@ -10713,8 +10560,7 @@ mod tests {
 
     #[test]
     fn adbop_repeated_calls_balance_stack_no_drift() {
-        // Mirrors B3 of a07c_adbop_strict: 8
-        // successive ADBOp dispatches with varied commandNum bytes
+        // 8 successive ADBOp dispatches with varied commandNum bytes
         // (Flush + Talk-register-0..2 + Listen-register-0..3) and
         // varied ADB device addresses (1..8) preserve A7 in aggregate.
         // Per IM:V V-368, ADBOp uses only A0+D0 inputs and returns its
@@ -10833,8 +10679,7 @@ mod tests {
 
     #[test]
     fn pbstatus_writes_same_oserr_to_d0_and_ioresult_preserving_stack() {
-        // Mirrors B1 + B2 of a005_pbstatus_strict:
-        // pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor
+        // Pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor
         // any documented OSErr), dispatches _Status with a clearly-bogus
         // ioRefNum 9999, witnesses that the trap overwrote the sentinel
         // AND that D0 == ioResult (per Device Manager dispatcher
@@ -10932,9 +10777,8 @@ mod tests {
 
     #[test]
     fn setapplimit_below_heap_extent_leaves_heapend_and_appllimit_unchanged() {
-        // Mirrors the regression fixture's lower-limit branch: a
-        // requested limit below HeapEnd must leave both HeapEnd and
-        // ApplLimit unchanged while still returning noErr.
+        // Lower-limit branch: a requested limit below HeapEnd must leave
+        // both HeapEnd and ApplLimit unchanged while still returning noErr.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let heap_end = 0x0038_0000u32;
         let appl_limit_before = 0x003C_0000u32;
@@ -11010,8 +10854,8 @@ mod tests {
     fn setzone_roundtrip_with_saved_original_restores_thezone() {
         // Inside Macintosh: Memory (1992), pp. 2-80..2-81:
         // GetZone reads TheZone; SetZone writes A0 to TheZone.
-        // Mirrors the a01b_setzone_strict bake's save/test/restore
-        // pattern: save the original TheZone via GetZone, switch to a
+        // Save/test/restore pattern: save the original TheZone via
+        // GetZone, switch to a
         // different zone via SetZone, witness both the TheZone write
         // and the GetZone roundtrip on the new value, then restore
         // the original via SetZone and confirm GetZone observes it.
@@ -11075,8 +10919,6 @@ mod tests {
 
     #[test]
     fn setgrowzone_register_only_calling_convention_preserves_stack() {
-        // Mirrors B1 + B2 of a04b_setgrowzone_strict.
-        //
         // Per IM:Memory 1992 p. 2-56 SetGrowZone is an OS-bit PROCEDURE
         // with a register-only ABI (A0 input, D0 result, no Pascal
         // stack frame). The test pins:
@@ -11130,8 +10972,6 @@ mod tests {
 
     #[test]
     fn purgemem_register_only_calling_convention_preserves_stack() {
-        // Mirrors B1 + B2 of a04d_purgemem_strict.
-        //
         // Per IM:Memory 1992 p. 2-73 PurgeMem is an OS-bit PROCEDURE
         // with a register-only ABI (D0 = cbNeeded input, D0 = result
         // code output, no Pascal stack frame). The test pins:

@@ -1,33 +1,36 @@
-//! Built-in DejaVu font baking + Mac font-family routing.
+//! Original systemless bitmap fonts + Mac font-family routing.
 //!
-//! Text renders by blitting pre-computed 8-bit coverage bitmaps out
-//! of the static `baked` module — no runtime rasterization, no
-//! hinting decisions, no threshold knobs, no CLUT-closest-match.
-//! Every glyph pixel in `baked::*_DATA` is exactly 0 or 255, so the
-//! downstream `ShapeOp::Glyph` partial-alpha branch never fires.
+//! Text renders by blitting pre-computed 8-bit coverage bitmaps out of
+//! the [`pixel_font`] modules — no runtime rasterization, no hinting
+//! decisions, no threshold knobs, no CLUT-closest-match. Every glyph
+//! pixel is exactly 0 or 255, so the downstream `ShapeOp::Glyph`
+//! partial-alpha branch never fires.
 //!
-//! The baker runs FreeType with TARGET_MONO + FORCE_AUTOHINT and emits
-//! `baked.rs`. All three DejaVu TTFs (Sans, Sans Mono, Serif) ship
-//! embedded bitmap strikes at 10-17 px, so text output at those sizes
-//! is pixel-perfect (strikes used directly). At sizes without a strike
-//! (9, 18, 24 px) FreeType falls back to autohinted vector rendering.
+//! Each face is authored as hand-editable ASCII art in a `pixel_font`
+//! module and lowered to static glyph tables by `const fn` at compile
+//! time — no offline baker, no external font asset. The systemless
+//! faces are named after Australian native plants and stand in for the
+//! classic Mac families, which survive only as internal compatibility
+//! identifiers:
 //!
-//! Face routing:
+//! | Mac font family (compat ID)                        | systemless face |
+//! |----------------------------------------------------|-----------------|
+//! | Chicago                                            | Jarrah          |
+//! | Geneva / Application / Helvetica                   | Kurrajong       |
+//! | Monaco / Courier                                   | Mallee        |
+//! | New York / Times                                   | Ironbark        |
+//! | Venice                                             | Wattle           |
+//! | London                                             | Karri           |
+//! | Cairo                                              | Grevillea          |
 //!
-//! | Mac font family                                    | Backing TTF      |
-//! |----------------------------------------------------|------------------|
-//! | Monaco, Courier                                    | DejaVuSansMono   |
-//! | New York, Times                                    | DejaVuSerif      |
-//! | Chicago, Geneva, Application, Venice, London, Cairo | DejaVuSans       |
-//!
-//! LICENSE: DejaVu fonts ship under the DejaVu free-font license
-//! (derivative of the Bitstream Vera license, essentially public-
-//! domain-equivalent). See `assets/fonts/LICENSE.DejaVu.txt` — the
-//! bitmap strikes in `baked.rs` are a derivative work.
+//! All glyphs are original artwork authored for systemless; no
+//! third-party font data is used. See the "Font Data" section of the
+//! crate README for the full mapping and trademark / non-affiliation
+//! notice.
 
-mod baked;
 pub mod heuristics;
 pub mod override_format;
+pub mod pixel_font;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -41,9 +44,10 @@ pub use self::heuristics::{
 };
 
 /// Single-character bitmap descriptor: dimensions + offset into the
-/// shared `data` byte buffer. Coverage bytes are 0 or 255 (mono) for
-/// strike-baked sizes; intermediate values appear when FreeType has
-/// to fall back to autohinted vector rendering at unbaked sizes.
+/// shared `data` byte buffer. Coverage bytes are always exactly 0 or
+/// 255 — the ASCII-art source is `const fn`-decoded to a binary mask,
+/// so the `ShapeOp::Glyph` partial-alpha branch never fires.
+#[derive(Clone, Copy)]
 pub struct Glyph {
     pub width: u8,
     pub height: u8,
@@ -75,16 +79,16 @@ pub struct FontFace {
 }
 
 /// Mac Roman extended glyph (code 0x80..=0xFF). Preserved for callers
-/// that expect the type; the Go-baked catalogue doesn't populate Mac
-/// Roman extended tables yet so `get_macroman_glyph` returns None.
+/// that expect the type; the built-in faces don't populate Mac Roman
+/// extended tables yet so `get_macroman_glyph` returns None.
 pub struct MacRomanGlyph {
     pub mac_code: u8,
     pub glyph: Glyph,
 }
 
 /// `FontFace` analogue covering Mac Roman extended characters
-/// (codes 0x80..=0xFF). Currently has no baked entries — the Go
-/// glyph baker doesn't populate these — but the type stays so the
+/// (codes 0x80..=0xFF). Currently has no entries — the built-in faces
+/// don't populate these yet — but the type stays so the
 /// `get_macroman_glyph` API surface is stable.
 pub struct MacRomanFace {
     pub font_id: i16,
@@ -126,146 +130,54 @@ const HELVETICA_12_FALLBACK_METRICS: FontMetrics = FontMetrics {
     leading: 1,
 };
 
+// Every face is sourced from hand-editable ASCII art in `pixel_font`,
+// decoded to these tables at compile time — no offline baker, no
+// external font asset. `pf!` maps a Mac-compat (font_id, size) onto its
+// `pixel_font` module.
+macro_rules! pf {
+    ($fid:expr, $size:expr, $module:ident) => {
+        PackedFace {
+            font_id: $fid,
+            size: $size,
+            metrics: pixel_font::$module::FACE.metrics,
+            glyphs: pixel_font::$module::FACE.glyphs,
+            data: pixel_font::$module::FACE.data,
+        }
+    };
+}
+
 const PACKED_FACES: &[PackedFace] = &[
-    PackedFace {
-        font_id: FONT_CHICAGO,
-        size: 9,
-        metrics: baked::CHICAGO_9_METRICS,
-        glyphs: &baked::CHICAGO_9_GLYPHS,
-        data: baked::CHICAGO_9_DATA,
-    },
-    PackedFace {
-        font_id: FONT_CHICAGO,
-        size: 12,
-        metrics: baked::CHICAGO_12_METRICS,
-        glyphs: &baked::CHICAGO_12_GLYPHS,
-        data: baked::CHICAGO_12_DATA,
-    },
-    PackedFace {
-        font_id: FONT_APPLICATION,
-        size: 12,
-        metrics: baked::APPLICATION_12_METRICS,
-        glyphs: &baked::APPLICATION_12_GLYPHS,
-        data: baked::APPLICATION_12_DATA,
-    },
-    PackedFace {
-        font_id: FONT_NEWYORK,
-        size: 12,
-        metrics: baked::NEWYORK_12_METRICS,
-        glyphs: &baked::NEWYORK_12_GLYPHS,
-        data: baked::NEWYORK_12_DATA,
-    },
-    PackedFace {
-        font_id: FONT_NEWYORK,
-        size: 14,
-        metrics: baked::NEWYORK_14_METRICS,
-        glyphs: &baked::NEWYORK_14_GLYPHS,
-        data: baked::NEWYORK_14_DATA,
-    },
-    PackedFace {
-        font_id: FONT_NEWYORK,
-        size: 18,
-        metrics: baked::NEWYORK_18_METRICS,
-        glyphs: &baked::NEWYORK_18_GLYPHS,
-        data: baked::NEWYORK_18_DATA,
-    },
-    PackedFace {
-        font_id: FONT_GENEVA,
-        size: 9,
-        metrics: baked::GENEVA_9_METRICS,
-        glyphs: &baked::GENEVA_9_GLYPHS,
-        data: baked::GENEVA_9_DATA,
-    },
-    PackedFace {
-        font_id: FONT_GENEVA,
-        size: 10,
-        metrics: baked::GENEVA_10_METRICS,
-        glyphs: &baked::GENEVA_10_GLYPHS,
-        data: baked::GENEVA_10_DATA,
-    },
+    pf!(FONT_CHICAGO, 9, chicago9),
+    pf!(FONT_CHICAGO, 12, chicago12),
+    pf!(FONT_APPLICATION, 12, application12),
+    pf!(FONT_NEWYORK, 12, newyork12),
+    pf!(FONT_NEWYORK, 14, newyork14),
+    pf!(FONT_NEWYORK, 18, newyork18),
+    pf!(FONT_GENEVA, 9, geneva9),
+    pf!(FONT_GENEVA, 10, geneva10),
     PackedFace {
         // Text 1993, pp. 1-61 and 3-65: font family 21 is Helvetica,
         // and QuickDraw measurements come from the current font/size.
-        // Systemless cannot ship Apple's Helvetica NFNTs, so the baked
-        // fallback uses the narrower open DejaVu/Geneva 10 strike for
-        // Helvetica 12 instead of same-size Geneva. That keeps classic
-        // app-owned Helvetica dialog text from overflowing fixed rects.
+        // Systemless cannot ship Apple's Helvetica NFNTs, so the
+        // fallback uses the narrower Geneva 10 strike for Helvetica 12
+        // instead of same-size Geneva. That keeps classic app-owned
+        // Helvetica dialog text from overflowing fixed rects.
         font_id: FONT_HELVETICA,
         size: 12,
         metrics: HELVETICA_12_FALLBACK_METRICS,
-        glyphs: &baked::GENEVA_10_GLYPHS,
-        data: baked::GENEVA_10_DATA,
+        glyphs: pixel_font::geneva10::FACE.glyphs,
+        data: pixel_font::geneva10::FACE.data,
     },
-    PackedFace {
-        font_id: FONT_GENEVA,
-        size: 12,
-        metrics: baked::GENEVA_12_METRICS,
-        glyphs: &baked::GENEVA_12_GLYPHS,
-        data: baked::GENEVA_12_DATA,
-    },
-    PackedFace {
-        font_id: FONT_GENEVA,
-        size: 14,
-        metrics: baked::GENEVA_14_METRICS,
-        glyphs: &baked::GENEVA_14_GLYPHS,
-        data: baked::GENEVA_14_DATA,
-    },
-    PackedFace {
-        font_id: FONT_GENEVA,
-        size: 18,
-        metrics: baked::GENEVA_18_METRICS,
-        glyphs: &baked::GENEVA_18_GLYPHS,
-        data: baked::GENEVA_18_DATA,
-    },
-    PackedFace {
-        font_id: FONT_GENEVA,
-        size: 24,
-        metrics: baked::GENEVA_24_METRICS,
-        glyphs: &baked::GENEVA_24_GLYPHS,
-        data: baked::GENEVA_24_DATA,
-    },
-    PackedFace {
-        font_id: FONT_MONACO,
-        size: 9,
-        metrics: baked::MONACO_9_METRICS,
-        glyphs: &baked::MONACO_9_GLYPHS,
-        data: baked::MONACO_9_DATA,
-    },
-    PackedFace {
-        font_id: FONT_MONACO,
-        size: 10,
-        metrics: baked::MONACO_10_METRICS,
-        glyphs: &baked::MONACO_10_GLYPHS,
-        data: baked::MONACO_10_DATA,
-    },
-    PackedFace {
-        font_id: FONT_MONACO,
-        size: 12,
-        metrics: baked::MONACO_12_METRICS,
-        glyphs: &baked::MONACO_12_GLYPHS,
-        data: baked::MONACO_12_DATA,
-    },
-    PackedFace {
-        font_id: FONT_VENICE,
-        size: 14,
-        metrics: baked::VENICE_14_METRICS,
-        glyphs: &baked::VENICE_14_GLYPHS,
-        data: baked::VENICE_14_DATA,
-    },
-    PackedFace {
-        font_id: FONT_LONDON,
-        size: 18,
-        metrics: baked::LONDON_18_METRICS,
-        glyphs: &baked::LONDON_18_GLYPHS,
-        data: baked::LONDON_18_DATA,
-    },
-    PackedFace {
-        font_id: FONT_CAIRO,
-        size: 18,
-        metrics: baked::CAIRO_18_METRICS,
-        glyphs: &baked::CAIRO_18_GLYPHS,
-        data: baked::CAIRO_18_DATA,
-    },
+    pf!(FONT_GENEVA, 12, geneva12),
+    pf!(FONT_GENEVA, 14, geneva14),
+    pf!(FONT_GENEVA, 18, geneva18),
+    pf!(FONT_GENEVA, 24, geneva24),
+    pf!(FONT_MONACO, 9, monaco9),
+    pf!(FONT_MONACO, 10, monaco10),
+    pf!(FONT_MONACO, 12, monaco12),
+    pf!(FONT_VENICE, 14, venice14),
+    pf!(FONT_LONDON, 18, london18),
+    pf!(FONT_CAIRO, 18, cairo18),
 ];
 
 pub static FONT_TABLE: LazyLock<&'static [FontFace]> = LazyLock::new(|| {
@@ -332,7 +244,7 @@ struct OverrideCache {
 }
 
 /// Optional runtime override map populated from `SYSTEMLESS_ORIGINAL_FONTS_DIR`.
-/// Entries here win over the baked DejaVu catalogue — the opt-in hook for
+/// Entries here win over the built-in systemless catalogue — the opt-in hook for
 /// substituting authentic Mac bitmap glyphs at runtime without committing
 /// Apple-copyrighted data into this repo.
 ///
@@ -431,6 +343,10 @@ pub fn get_font_face_or_default(font_id: i16, size: i16) -> &'static FontFace {
 }
 
 pub fn get_font_face_scaled(font_id: i16, size: i16) -> (&'static FontFace, i16) {
+    get_font_face_scaled_impl(font_id, size)
+}
+
+fn get_font_face_scaled_impl(font_id: i16, size: i16) -> (&'static FontFace, i16) {
     if let Some(face) = get_font_face(font_id, size) {
         return (face, 1);
     }
@@ -586,10 +502,10 @@ mod tests {
     #[test]
     fn space_has_advance_and_no_ink() {
         // ASCII 0x20 space: must carry a positive advance (otherwise
-        // strings collapse) and must render no ink. FreeType's mono
-        // path sometimes produces a minimal 1x1 empty bitmap rather
-        // than a strictly zero-sized one, so assert by scanning the
-        // data slice rather than the width/height fields.
+        // strings collapse) and must render no ink. Some faces encode
+        // space as a minimal empty bitmap rather than a strictly
+        // zero-sized one, so assert by scanning the data slice rather
+        // than the width/height fields.
         let face = get_font_face(FONT_GENEVA, 12).unwrap();
         let space = &face.glyphs[0];
         assert!(space.advance > 0, "space must advance");
@@ -602,9 +518,273 @@ mod tests {
     }
 
     #[test]
+    fn alphanumerics_rest_on_the_baseline() {
+        // Regression guard for the hand-authored faces: a glyph's bottom edge
+        // is `origin_y + height` (0 = the baseline; positive descends below
+        // it). Letters and digits must never *float above* the baseline — that
+        // is the "bouncing text" bug you get when redrawn art is shorter than
+        // the original but keeps the original (cap-height) origin_y. Digits and
+        // capitals rest exactly on the baseline; lowercase may descend, but no
+        // further than the face's descent.
+        for pf in PACKED_FACES {
+            for byte in (b'0'..=b'9').chain(b'A'..=b'Z').chain(b'a'..=b'z') {
+                let g = &pf.glyphs[(byte - b' ') as usize];
+                if g.height == 0 {
+                    continue;
+                }
+                let bottom = g.origin_y as i32 + g.height as i32;
+                assert!(
+                    bottom >= 0,
+                    "({}, {}) glyph {:?} floats {}px above the baseline",
+                    pf.font_id,
+                    pf.size,
+                    byte as char,
+                    -bottom
+                );
+                assert!(
+                    bottom <= pf.metrics.descent as i32,
+                    "({}, {}) glyph {:?} sinks {}px below the {}px descent",
+                    pf.font_id,
+                    pf.size,
+                    byte as char,
+                    bottom,
+                    pf.metrics.descent
+                );
+                // Digits, capitals and J/Q tails are only held to the
+                // >=0 / <=descent bounds above: the authentic originals give
+                // some digits a 1px rounded overshoot below the baseline (e.g.
+                // New York's '3'), so an exact rest-on-baseline rule would
+                // reject faithful metrics.
+            }
+        }
+    }
+
+    // --- generic font-family invariants ----------------------------------
+    // These run over every PACKED_FACE and derive their expectations from the
+    // face's own glyphs (no per-face magic numbers), so any hand-authored face
+    // is held to the same alignment/height contract.
+
+    /// Lowercase letters that occupy exactly the x-height band (no ascender,
+    /// no descender).
+    const PLAIN_X_HEIGHT: &[u8] = b"acemnorsuvwxz";
+    /// Lowercase letters whose stems rise to the ascender line (`f` and `t`
+    /// are intentionally excluded — their reach differs by design).
+    const ASCENDER_LETTERS: &[u8] = b"bdhkl";
+    /// Lowercase letters with a descender below the baseline.
+    const DESCENDER_LETTERS: &[u8] = b"gpqy";
+
+    fn packed_glyph(pf: &PackedFace, byte: u8) -> &'static Glyph {
+        &pf.glyphs[(byte - b' ') as usize]
+    }
+
+    /// Glyphs in `letters` must share a top line within `tol` px. A small
+    /// tolerance is required because the authentic strikes give round-topped
+    /// letters (b/d/h, the digit 6) a 1–2px optical overshoot above the flat
+    /// tops; the guard still catches a glyph drawn a whole band off (the
+    /// "bouncing text" / cap-height mistake).
+    fn assert_shared_top(group: &str, letters: &[u8], tol: i8) {
+        for pf in PACKED_FACES {
+            let tops: Vec<(u8, i8)> = letters
+                .iter()
+                .map(|&b| (b, packed_glyph(pf, b)))
+                .filter(|(_, g)| g.height != 0)
+                .map(|(b, g)| (b, g.origin_y))
+                .collect();
+            if let (Some(lo), Some(hi)) = (
+                tops.iter().map(|(_, t)| *t).min(),
+                tops.iter().map(|(_, t)| *t).max(),
+            ) {
+                assert!(
+                    hi - lo <= tol,
+                    "({}, {}) {group} letters span {}px of top-line variation (>{}px): {:?}",
+                    pf.font_id, pf.size, hi - lo, tol, tops
+                );
+            }
+        }
+    }
+
+    /// Glyphs in `letters` must share a bottom line within `tol` px. The
+    /// tolerance covers authentic descender depth differences (Geneva's g/y
+    /// reach 1–2px below p/q) while still catching a floating glyph.
+    fn assert_shared_bottom(group: &str, letters: &[u8], tol: i32) {
+        for pf in PACKED_FACES {
+            let bottoms: Vec<(u8, i32)> = letters
+                .iter()
+                .map(|&b| (b, packed_glyph(pf, b)))
+                .filter(|(_, g)| g.height != 0)
+                .map(|(b, g)| (b, g.origin_y as i32 + g.height as i32))
+                .collect();
+            if let (Some(lo), Some(hi)) = (
+                bottoms.iter().map(|(_, b)| *b).min(),
+                bottoms.iter().map(|(_, b)| *b).max(),
+            ) {
+                assert!(
+                    hi - lo <= tol,
+                    "({}, {}) {group} letters span {}px of bottom-line variation (>{}px): {:?}",
+                    pf.font_id, pf.size, hi - lo, tol, bottoms
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ascender_letters_share_one_top_line() {
+        assert_shared_top("ascender", ASCENDER_LETTERS, 1);
+    }
+
+    #[test]
+    fn descender_bowls_sit_on_the_x_height_line() {
+        // The bowl of g/p/q/y occupies the x-height band; its top (origin_y)
+        // must match the plain x-height letters. If a descender is drawn from
+        // the cap line instead, its bowl towers over its neighbours and reads
+        // like a capital (e.g. a monospace 'p' that looks like 'P').
+        for pf in PACKED_FACES {
+            let x_top = packed_glyph(pf, b'o').origin_y;
+            for &byte in DESCENDER_LETTERS {
+                let g = packed_glyph(pf, byte);
+                if g.height == 0 {
+                    continue;
+                }
+                // The bowl top must sit on the x-height line, give or take a
+                // 2px optical overshoot above it (New York's 'g' bowl rides
+                // 1px high). It must never drop below the x-height line, nor
+                // rise toward the cap line — that is the "'p' looks like 'P'"
+                // bug this guard exists to catch.
+                let above = x_top as i32 - g.origin_y as i32;
+                assert!(
+                    (0..=2).contains(&above),
+                    "({}, {}) descender {:?} bowl starts at row {} but x-height is at {}",
+                    pf.font_id, pf.size, byte as char, g.origin_y, x_top
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn descender_letters_share_one_bottom_line() {
+        assert_shared_bottom("descender", DESCENDER_LETTERS, 2);
+    }
+
+    /// Original per-glyph box metrics (advance, origin_x, origin_y, width,
+    /// height) for the classic families, keyed by `@ font_id size`. Test-only
+    /// compatibility data — see the file header.
+    const ORIGINAL_CELLS: &str = include_str!("original_cells.txt");
+
+    type Cell = (i32, i32, i32, i32, i32);
+
+    fn parse_original_cells() -> std::collections::HashMap<(i16, i16), Vec<Cell>> {
+        let mut map = std::collections::HashMap::new();
+        let mut cur: Option<(i16, i16)> = None;
+        for line in ORIGINAL_CELLS.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("@ ") {
+                let mut it = rest.split_whitespace();
+                let f = it.next().unwrap().parse().unwrap();
+                let s = it.next().unwrap().parse().unwrap();
+                cur = Some((f, s));
+                map.insert((f, s), Vec::new());
+            } else {
+                let v: Vec<i32> = line.split_whitespace().map(|x| x.parse().unwrap()).collect();
+                map.get_mut(&cur.unwrap())
+                    .unwrap()
+                    .push((v[0], v[1], v[2], v[3], v[4]));
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn advances_match_original_cells() {
+        // Every face that has a true original strike must reproduce that
+        // strike's per-glyph ADVANCE and left bearing (origin_x). Those two
+        // numbers are what govern text layout, so matching them makes classic
+        // app text lay out at the exact original width and never overflow the
+        // fixed rects it was designed for (e.g. Escape Velocity's status
+        // panel). Our bitmaps deliberately keep their own clean, hand-drawn
+        // width/height/origin_y rather than resizing to the originals' pixel
+        // boxes (which warps the letterforms), so those fields are reported
+        // informationally only.
+        let refs = parse_original_cells();
+        for pf in PACKED_FACES {
+            let Some(exp) = refs.get(&(pf.font_id, pf.size)) else {
+                continue;
+            };
+            let mut layout_off = Vec::new();
+            let mut box_off = 0;
+            for (i, g) in pf.glyphs.iter().enumerate() {
+                let (adv, ox, oy, w, h) = exp[i];
+                if g.advance as i32 != adv || (i != 0 && g.origin_x as i32 != ox) {
+                    layout_off.push((b' ' + i as u8) as char);
+                }
+                if i != 0 && (g.origin_y as i32 != oy || g.width as i32 != w || g.height as i32 != h)
+                {
+                    box_off += 1;
+                }
+            }
+            eprintln!(
+                "({:2},{:2}): advances {:2}/95 exact, {:2}/95 own bitmap box",
+                pf.font_id,
+                pf.size,
+                95 - layout_off.len(),
+                box_off
+            );
+            assert!(
+                layout_off.is_empty(),
+                "({}, {}) advance/bearing off original — text will misalign: {}",
+                pf.font_id,
+                pf.size,
+                layout_off.iter().collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    fn descender_letters_actually_descend() {
+        // A descender must drop below the baseline (bottom > 0) but no further
+        // than the face's declared descent.
+        for pf in PACKED_FACES {
+            for &byte in DESCENDER_LETTERS {
+                let g = packed_glyph(pf, byte);
+                if g.height == 0 {
+                    continue;
+                }
+                let bottom = g.origin_y as i32 + g.height as i32;
+                assert!(
+                    bottom > 0 && bottom <= pf.metrics.descent as i32,
+                    "({}, {}) descender {:?} bottom {} outside 1..={}",
+                    pf.font_id, pf.size, byte as char, bottom, pf.metrics.descent
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn digits_are_uniform_height() {
+        // All ten digits are drawn to one common top and bottom (they never
+        // ascend or descend), so a run of numbers never bounces.
+        // New York gives '6' a 1px taller hook and rounds '3'/'5'/'8' with a
+        // 1–2px overshoot below the baseline, so allow that optical slack.
+        assert_shared_top("digit", b"0123456789", 1);
+        assert_shared_bottom("digit", b"0123456789", 2);
+    }
+
+    #[test]
+    fn x_height_letters_share_one_top_line() {
+        // Regression guard: the plain x-height lowercase letters (no ascender,
+        // no descender) must all start at the same row (`origin_y`). If one is
+        // drawn a pixel taller than its siblings it pokes above the x-height
+        // line and the word visibly "bounces" — e.g. an `a` sitting higher than
+        // the surrounding `n o c e ...`.
+        assert_shared_top("x-height", PLAIN_X_HEIGHT, 0);
+    }
+
+    #[test]
     fn baked_data_is_binary() {
-        // The baker emits FreeType mono output — every pixel must be
-        // exactly 0 or 255. Enforces the invariant the `ShapeOp::Glyph`
+        // The `const fn` decoder emits a binary mask — every pixel must
+        // be exactly 0 or 255. Enforces the invariant the `ShapeOp::Glyph`
         // partial-alpha branch depends on to stay dormant.
         for pf in PACKED_FACES {
             for &b in pf.data {
@@ -645,7 +825,7 @@ mod tests {
             .expect("baked geneva 12 still there");
         assert_ne!(
             geneva.metrics.ascent, 99,
-            "non-overridden face must keep baked DejaVu metrics"
+            "non-overridden face must keep built-in systemless metrics"
         );
 
         fs::remove_dir_all(&dir).ok();

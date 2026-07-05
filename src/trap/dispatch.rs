@@ -7,10 +7,10 @@
 use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
-use crate::machine_profile::oracle_machine_profile;
+use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::oracle::{OracleEvent, OracleRecorder, OracleSource};
+use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
 use std::collections::BTreeMap;
@@ -1391,7 +1391,7 @@ pub struct TrapDispatcher {
     pub debug_scroll_rect_last_row_bytes: u16,
     pub debug_scroll_rect_last_port_bounds_top_left: (i16, i16),
     pub debug_scroll_rect_last_is_color: bool,
-    /// Per-fixture deterministic input trace. Catalogue tests opt in through
+    /// Deterministic input trace, enabled through
     /// `TrapDispatcher::enable_input_trace_capture`; normal execution leaves
     /// this off so dialog/menu/control hot paths do not allocate.
     pub(crate) input_trace_enabled: bool,
@@ -1472,17 +1472,17 @@ pub struct TrapDispatcher {
     pub copybits_screen_count: u64,
     /// Most recent sizeable CopyBits blit into the screen framebuffer.
     pub last_screen_copybits_rect: Option<ScreenCopyBitsRect>,
-    /// Count of all screen-affecting oracle events captured so far.
+    /// Count of all screen-affecting trace events captured so far.
     pub screen_event_count: u64,
     /// `screen_event_count` values where the recorded event was specifically
     /// a `copybits_screen` (framebuffer-mutating blit), in emission order.
-    /// Used by the oracle interpreter to rebind checkpoints away from
+    /// Used by the trace interpreter to rebind checkpoints away from
     /// non-CopyBits screen events (e.g. SetEntries CLUT updates) so the
     /// captured snapshot reflects a settled framebuffer rather than a
     /// transient mid-fade palette.
     pub copybits_screen_secs: Vec<u64>,
-    /// Optional oracle recorder for deterministic event/snapshot capture.
-    pub(crate) oracle_recorder: Option<OracleRecorder>,
+    /// Optional trace sink for deterministic event/snapshot capture.
+    pub(crate) trace_sink: Option<Box<dyn TraceSink>>,
     /// Main GDevice handle in guest memory (0 = not yet allocated)
     pub(crate) main_gdevice_handle: u32,
     /// Current GDevice handle
@@ -2139,42 +2139,37 @@ impl TrapDispatcher {
         data_ptr
     }
 
-    pub fn enable_oracle_recording(
-        &mut self,
-        output_dir: impl AsRef<std::path::Path>,
-        source: OracleSource,
-    ) -> Result<()> {
-        let recorder = OracleRecorder::create(output_dir, source).map_err(Error::Oracle)?;
-        self.oracle_recorder = Some(recorder);
+    /// Install a trace sink to receive runtime events and screen
+    /// snapshots. The sink (and where it persists output) is the host's
+    /// concern; see [`crate::trace::TraceSink`].
+    pub fn set_trace_sink(&mut self, sink: Box<dyn TraceSink>) {
+        self.trace_sink = Some(sink);
         self.screen_event_count = 0;
         self.copybits_screen_secs.clear();
-        Ok(())
     }
 
-    pub fn oracle_source(&self) -> Option<OracleSource> {
-        self.oracle_recorder
-            .as_ref()
-            .map(|recorder| recorder.source())
+    pub fn trace_source(&self) -> Option<TraceSource> {
+        self.trace_sink.as_ref().map(|sink| sink.source())
     }
 
-    pub(crate) fn oracle_field_map(pairs: &[(&str, String)]) -> BTreeMap<String, String> {
+    pub(crate) fn trace_field_map(pairs: &[(&str, String)]) -> BTreeMap<String, String> {
         pairs
             .iter()
             .map(|(key, value)| ((*key).to_string(), value.clone()))
             .collect()
     }
 
-    /// True when oracle event recording is active. Hot-path traps should
-    /// gate `record_oracle_event` callsites (which build a BTreeMap +
+    /// True when trace-event recording is active. Hot-path traps should
+    /// gate `record_trace_event` callsites (which build a BTreeMap +
     /// string-formatted field values) behind this check — otherwise every
     /// call allocates + constructs the map even when it will be discarded
-    /// by record_oracle_event's own recorder-is-none early-return.
+    /// by record_trace_event's own recorder-is-none early-return.
     #[inline]
-    pub(crate) fn is_oracle_recording(&self) -> bool {
-        self.oracle_recorder.is_some()
+    pub(crate) fn is_trace_recording(&self) -> bool {
+        self.trace_sink.is_some()
     }
 
-    pub(crate) fn oracle_palette_field_map(
+    pub(crate) fn trace_palette_field_map(
         bus: &MacMemoryBus,
         table_ptr: u32,
         start: i16,
@@ -2217,11 +2212,11 @@ impl TrapDispatcher {
         // touching BasiliskII's video.cpp. "-" is the out-of-range
         // sentinel (consumers skip it when walking the stream).
         let idx_245_rgb = if (normalized_start..=last_index).contains(&245) {
-            Self::oracle_palette_entry_rgb(bus, table_ptr, 245)
+            Self::trace_palette_entry_rgb(bus, table_ptr, 245)
         } else {
             "-".to_string()
         };
-        Self::oracle_field_map(&[
+        Self::trace_field_map(&[
             ("start", start.to_string()),
             ("count", safe_count.to_string()),
             ("first_index", normalized_start.to_string()),
@@ -2229,15 +2224,15 @@ impl TrapDispatcher {
             ("mid_index", mid_index.to_string()),
             (
                 "first_rgb",
-                Self::oracle_palette_entry_rgb(bus, table_ptr, normalized_start),
+                Self::trace_palette_entry_rgb(bus, table_ptr, normalized_start),
             ),
             (
                 "mid_rgb",
-                Self::oracle_palette_entry_rgb(bus, table_ptr, mid_index),
+                Self::trace_palette_entry_rgb(bus, table_ptr, mid_index),
             ),
             (
                 "last_rgb",
-                Self::oracle_palette_entry_rgb(bus, table_ptr, last_index),
+                Self::trace_palette_entry_rgb(bus, table_ptr, last_index),
             ),
             ("idx_245_rgb", idx_245_rgb),
             ("table_hash", format!("{hash:08X}")),
@@ -2245,7 +2240,7 @@ impl TrapDispatcher {
         ])
     }
 
-    fn oracle_palette_entry_rgb(bus: &MacMemoryBus, table_ptr: u32, index: usize) -> String {
+    fn trace_palette_entry_rgb(bus: &MacMemoryBus, table_ptr: u32, index: usize) -> String {
         let entry = table_ptr + (index as u32) * 8;
         format!(
             "{:04X},{:04X},{:04X}",
@@ -2255,7 +2250,7 @@ impl TrapDispatcher {
         )
     }
 
-    pub(crate) fn record_oracle_event(
+    pub(crate) fn record_trace_event(
         &mut self,
         bus: &MacMemoryBus,
         pc: u32,
@@ -2263,7 +2258,7 @@ impl TrapDispatcher {
         fields: BTreeMap<String, String>,
         screen_affecting: bool,
     ) -> Result<()> {
-        if self.oracle_recorder.is_none() {
+        if self.trace_sink.is_none() {
             return Ok(());
         }
         if screen_affecting {
@@ -2271,9 +2266,9 @@ impl TrapDispatcher {
             if event == "copybits_screen" {
                 self.copybits_screen_secs.push(self.screen_event_count);
             }
-            self.oracle_recorder
+            self.trace_sink
                 .as_mut()
-                .expect("oracle_recorder checked above")
+                .expect("trace_sink checked above")
                 .record_snapshot(
                     bus,
                     self.screen_mode,
@@ -2282,14 +2277,14 @@ impl TrapDispatcher {
                     self.tick_count,
                     self.instruction_count,
                 )
-                .map_err(Error::Oracle)?;
+                .map_err(Error::Trace)?;
         }
         let source = self
-            .oracle_recorder
+            .trace_sink
             .as_ref()
-            .expect("oracle_recorder checked above")
+            .expect("trace_sink checked above")
             .source();
-        let oracle_event = OracleEvent {
+        let trace_event = TraceEvent {
             source,
             tick: self.tick_count,
             instructions: self.instruction_count,
@@ -2300,11 +2295,11 @@ impl TrapDispatcher {
             event: event.to_string(),
             fields,
         };
-        self.oracle_recorder
+        self.trace_sink
             .as_mut()
-            .expect("oracle_recorder checked above")
-            .record_event(&oracle_event)
-            .map_err(Error::Oracle)?;
+            .expect("trace_sink checked above")
+            .record_event(&trace_event)
+            .map_err(Error::Trace)?;
         Ok(())
     }
 
@@ -2573,7 +2568,7 @@ impl TrapDispatcher {
             fg_color: (0, 0, 0),
             bg_color: (0xFFFF, 0xFFFF, 0xFFFF),
             // Default HiliteRGB used before an application calls HiliteColor.
-            // The System 7.5.3 BasiliskII oracle resolves this to EV's
+            // The System 7.5.3 BasiliskII reference resolves this to EV's
             // darker selected-list green rather than a saturated primary.
             hilite_color: (0x0000, 0x8000, 0x0000),
             op_color: (0x0000, 0x0000, 0x0000),
@@ -2611,8 +2606,8 @@ impl TrapDispatcher {
             fullscreen_locked: false,
             // Default to hiding the menu bar — the HLE is a game runtime,
             // not a Finder, and a leaking menu bar at `y < 20` is the
-            // single biggest source of "this screenshot doesn't match the
-            // BasiliskII reference" parity false positives. Frontends that
+            // single biggest source of visual glitches where the classic
+            // menu bar bleeds into the game's top rows. Frontends that
             // host a Mac app (rather than a game) can opt back in via
             // `SYSTEMLESS_SHOW_MENU_BAR=1`.
             menu_bar_hidden: std::env::var_os("SYSTEMLESS_SHOW_MENU_BAR").is_none(),
@@ -2683,7 +2678,7 @@ impl TrapDispatcher {
             last_screen_copybits_rect: None,
             screen_event_count: 0,
             copybits_screen_secs: Vec::new(),
-            oracle_recorder: None,
+            trace_sink: None,
             main_gdevice_handle: 0,
             current_gdevice: 0,
             current_port: 0,
@@ -2696,7 +2691,7 @@ impl TrapDispatcher {
             recording_polygon: None,
             recording_region: None,
             screen_mode: {
-                let profile = oracle_machine_profile();
+                let profile = reference_machine_profile();
                 (
                     0,
                     profile.screen_row_bytes(),

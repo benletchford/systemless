@@ -1382,9 +1382,9 @@ impl super::TrapDispatcher {
                             bus.write_byte(addr, new);
                         }
                         ShapeOp::Glyph(mode) => {
-                            // Baked Go bitmap strikes emit exclusively
-                            // {0, 255} coverage (FreeType TARGET_MONO
-                            // output). Any non-zero alpha is a fully-set
+                            // systemless bitmap glyphs emit exclusively
+                            // {0, 255} coverage (binary mask from the
+                            // const decoder). Any non-zero alpha is a fully-set
                             // pixel; route through the normal boolean
                             // transfer mode to keep srcCopy / srcOr /
                             // srcXor / srcBic semantics.

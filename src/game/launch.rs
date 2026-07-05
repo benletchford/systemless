@@ -14,7 +14,7 @@ const WEB_PACK_MAGIC: &[u8; 4] = b"KPK1";
 const WEB_PACK_INITIAL_FORK_RESERVE_BYTES: usize = 1024 * 1024;
 
 /// Standard RAM size for all frontends (32 MB).
-pub const RAM_SIZE: u32 = crate::machine_profile::ORACLE_MACHINE_PROFILE.ram_size_bytes;
+pub const RAM_SIZE: u32 = crate::machine_profile::REFERENCE_MACHINE_PROFILE.ram_size_bytes;
 
 /// Max instructions to execute per GUI/WASM frame.
 /// Must be large enough to complete a full PICT draw (~500K instructions)

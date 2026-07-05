@@ -3,7 +3,7 @@
 //! Frozen reference values for "what does the guest see when it asks
 //! about the host machine" — Gestalt selectors, screen geometry, RAM
 //! size, VBL rate, etc. There's exactly one shipped profile
-//! ([`BASILISK_II_PLAY_PROFILE`]); a const alias [`ORACLE_MACHINE_PROFILE`]
+//! ([`BASILISK_II_PLAY_PROFILE`]); a const alias [`REFERENCE_MACHINE_PROFILE`]
 //! exposes it under the role-name the trap dispatcher uses.
 //!
 //! Library consumers don't normally need to read this directly — the
@@ -112,12 +112,12 @@ pub const BASILISK_II_PLAY_PROFILE: MachineProfile = MachineProfile {
     realtime_cpu_mhz: 25.0,
 };
 
-pub const ORACLE_MACHINE_PROFILE: MachineProfile = BASILISK_II_PLAY_PROFILE;
+pub const REFERENCE_MACHINE_PROFILE: MachineProfile = BASILISK_II_PLAY_PROFILE;
 
-/// Returns the oracle machine profile, optionally overridden by
+/// Returns the reference machine profile, optionally overridden by
 /// `SYSTEMLESS_SCREEN_WIDTH` and `SYSTEMLESS_SCREEN_HEIGHT` environment variables.
-pub fn oracle_machine_profile() -> MachineProfile {
-    let mut p = ORACLE_MACHINE_PROFILE;
+pub fn reference_machine_profile() -> MachineProfile {
+    let mut p = REFERENCE_MACHINE_PROFILE;
     if let Ok(w) = std::env::var("SYSTEMLESS_SCREEN_WIDTH") {
         if let Ok(w) = w.parse::<u16>() {
             p.screen_width = w;

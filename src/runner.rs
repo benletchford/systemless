@@ -429,7 +429,7 @@ fn vfs_fork_hash(bytes: &[u8]) -> u64 {
 }
 /// Default emulated CPU speed for realtime frontends (Mac IIci-class 68030).
 pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
-    crate::machine_profile::ORACLE_MACHINE_PROFILE.realtime_cpu_mhz;
+    crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz;
 /// Shared default realtime CPU budget used by the GUI runner and scripted
 /// realtime mode so both frontends expose the same machine profile.
 pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_MHZ * 1_000_000.0;
@@ -1116,12 +1116,11 @@ impl FixtureRunner {
         self.application_partition_size
     }
 
-    pub fn enable_oracle_recording(
-        &mut self,
-        output_dir: impl AsRef<std::path::Path>,
-        source: crate::oracle::OracleSource,
-    ) -> Result<()> {
-        self.dispatcher.enable_oracle_recording(output_dir, source)
+    /// Install a trace sink to receive runtime events and screen
+    /// snapshots (see [`crate::trace::TraceSink`]). The host owns the sink
+    /// and decides how/where its output is persisted.
+    pub fn set_trace_sink(&mut self, sink: Box<dyn crate::trace::TraceSink>) {
+        self.dispatcher.set_trace_sink(sink)
     }
 
     /// Composite chrome/dialog overlays onto the framebuffer.
@@ -3304,8 +3303,8 @@ impl FixtureRunner {
 
     /// Run a GUI frame slice paced by wall-clock time.
     ///
-    /// Wall-clock GUI pacing works differently from the reference-runtime oracle:
-    /// in the oracle, ticks are driven purely by the instruction budget
+    /// Wall-clock GUI pacing works differently from the reference runtime:
+    /// in the reference runtime, ticks are driven purely by the instruction budget
     /// (deterministic, host-speed-independent). In the GUI, the user expects
     /// the game to run at real time regardless of how fast the emulator can
     /// execute instructions, so the caller computes a `deadline_tick` from

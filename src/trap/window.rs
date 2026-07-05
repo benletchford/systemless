@@ -2805,9 +2805,6 @@ impl super::TrapDispatcher {
             // PROCEDURE SetWTitle(theWindow: WindowPtr; title: Str255);
             // Inside Macintosh Volume I, I-284
             //
-            // Regression coverage:
-            //   setwintitle_updates_title
-            //   setwintitle_stores_title_in_window_record
             // SetWTitle ($A91A): Allocates StringHandle and writes Pascal string to window+134 per IM:I I-284
             (true, 0x11A) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2833,9 +2830,6 @@ impl super::TrapDispatcher {
             // PROCEDURE GetWTitle(theWindow: WindowPtr; VAR title: Str255);
             // Inside Macintosh Volume I, I-284
             //
-            // Regression coverage:
-            //   getwintitle_reads_title
-            //   getwintitle_returns_title_set_by_setwintitle
             // GetWTitle ($A919): Reads title from titleHandle StringHandle at window+134 per IM:I I-284
             (true, 0x119) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -3629,10 +3623,6 @@ impl super::TrapDispatcher {
             // PROCEDURE HiliteWindow(theWindow: WindowPtr; fHilite: BOOLEAN);
             // Inside Macintosh Volume I, I-286
             //
-            // Regression coverage:
-            //   hilitewindow_sets_highlight
-            //   hilitewindow_sets_hilited_field_true
-            //   hilitewindow_clears_hilited_field
             // HiliteWindow ($A91C): Sets/clears hilited byte at window+111 per IM:I I-286
             (true, 0x11C) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -3794,9 +3784,6 @@ impl super::TrapDispatcher {
             // PROCEDURE SetWindowPic(theWindow: WindowPtr; pic: PicHandle);
             // Inside Macintosh Volume I, I-293
             //
-            // Regression coverage:
-            //   setwindowpic_assigns_picture
-            //   setwindowpic_stores_pic_in_window_record
             // SetWindowPic ($A92E): Stores PicHandle at window+148 per IM:I I-293
             (true, 0x12E) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -3814,8 +3801,6 @@ impl super::TrapDispatcher {
             // FUNCTION GetWindowPic(theWindow: WindowPtr): PicHandle;
             // Inside Macintosh Volume I, I-293
             //
-            // Regression coverage:
-            //   getwindowpic_returns_stored_pic
             // GetWindowPic ($A92F): Reads PicHandle from window+148 per IM:I I-293
             (true, 0x12F) => {
                 let sp = cpu.read_reg(Register::A7);

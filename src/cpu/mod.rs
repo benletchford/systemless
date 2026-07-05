@@ -61,7 +61,7 @@ pub trait CpuOps {
 
 /// 68k CPU wrapper holding the [`m68k`] interpreter core. CPU type
 /// is fixed at construction to match the canonical machine profile
-/// ([`crate::machine_profile::ORACLE_MACHINE_PROFILE`]).
+/// ([`crate::machine_profile::REFERENCE_MACHINE_PROFILE`]).
 pub struct M68kCpu {
     /// Underlying [`m68k::CpuCore`] instance — registers, flags, PC.
     /// Exposed so callers can reach interpreter-specific APIs not
@@ -72,7 +72,7 @@ pub struct M68kCpu {
 impl M68kCpu {
     pub fn new() -> Self {
         let mut core = m68k::CpuCore::new();
-        core.set_cpu_type(crate::machine_profile::ORACLE_MACHINE_PROFILE.cpu_type());
+        core.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
         Self { core }
     }
 

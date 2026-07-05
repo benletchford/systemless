@@ -2051,9 +2051,6 @@ impl super::TrapDispatcher {
             // PROCEDURE DisposeControl(theControl: ControlHandle);
             // Inside Macintosh Volume I, I-332
             //
-            // Regression coverage:
-            //   disposecontrol_removes_from_window_list
-            //   disposecontrol_unlinks_middle_entry
             // DisposeControl ($A955): Reads contrlOwner at offset 4, unlinks handle from window chain, frees memory per IM:I I-332
             (true, 0x155) => {
                 let sp = cpu.read_reg(Register::A7);

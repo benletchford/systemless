@@ -1971,7 +1971,7 @@ impl super::TrapDispatcher {
                 // MTE 1992 p. 3-131: DisableItem(menu, 0) disables the
                 // whole menu title. On a plain classic screen dump, the
                 // standard MDEF's dimmed title treatment resolves to the
-                // menu-bar background, matching the System 7.5.3 oracle while
+                // menu-bar background, matching the System 7.5.3 reference while
                 // preserving title spacing and hit regions.
                 title_width
             } else if Self::is_apple_mark_title(title) {
@@ -2040,7 +2040,7 @@ impl super::TrapDispatcher {
     ) {
         // System 7's standard menu-bar appleMark title is MDEF-owned chrome,
         // not the raw Chicago $14 glyph. The mask below is the 11x14 title
-        // bitmap captured from the BasiliskII/System 7.5.3 oracle; it is drawn
+        // bitmap captured from the BasiliskII/System 7.5.3 reference; it is drawn
         // one pixel left of the title origin and with the same baseline as
         // Chicago 12 menu titles.
         const MASK: [&str; 14] = [
@@ -2858,7 +2858,7 @@ impl super::TrapDispatcher {
 
             // Draw close box if goAwayFlag is set.
             //
-            // Classic Mac System 7.5.3 close-box graphic per BasiliskII golden
+            // Classic Mac System 7.5.3 close-box graphic per BasiliskII reference
             // (window_goaway): NOT a clean FrameRect. The WDEF draws an 11×11
             // bounding region split into two shapes:
             //   * top-left  L-shape — top horizontal (11 wide) + left vertical
@@ -2944,7 +2944,7 @@ impl super::TrapDispatcher {
             // margin is for text-glyph hit-testing, not for stripes). The
             // active document WDEF paints pinstripe rows at title-bar offsets
             // 1, 3, and 5; this row placement is calibrated against the
-            // BasiliskII System 7.5.3 oracle.
+            // BasiliskII System 7.5.3 reference.
             // Inside Macintosh Volume V, V-188 figure 5-3.
             if active {
                 let stripe_left_edge = tb_left + 2;

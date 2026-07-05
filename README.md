@@ -8,11 +8,9 @@ crate and handles Mac OS A-line traps in native Rust. That lets packaged Mac
 applications run without a Mac ROM image, a full System install, or hardware
 emulation.
 
-| Marathon | Escape Velocity |
-| -------- | --------------- |
-| [![Marathon running in Systemless](assets/screenshots/marathon.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](assets/screenshots/escape-velocity.png)](https://systemless.org/escape-velocity) |
-
-Browser demos are available at <https://systemless.org/>.
+See it running in the browser: **[Marathon](https://systemless.org/marathon)**
+and **[Escape Velocity](https://systemless.org/escape-velocity)**. More demos
+are available at <https://systemless.org/>.
 
 ## Status
 
@@ -135,16 +133,21 @@ launched archive under `.systemless/saves/<archive-name>/`.
 | `display` | Host framebuffer and cursor rendering helpers. |
 | `sound` | Sound Manager state and PCM mixing engine. |
 | `loader` | 68k CODE resource loading and jump-table setup. |
-| `oracle` | Structured event logging for reference-runtime comparison. |
+| `trace` | Runtime trace hook (event/snapshot types + `TraceSink`) for cross-runtime parity comparison. |
 
 ## Build And Test
 
 ```sh
 cargo build --release
 cargo test --lib
+cargo test --lib --features test-support   # also covers scripted_traces
 cargo check --no-default-features
 cargo package
 ```
+
+The off-by-default `test-support` feature exposes `scripted_traces`, the
+deterministic trap-replay test scaffolding. It is kept out of the published
+public API; enable it only when running tests.
 
 The default `gui` feature enables the desktop runner dependencies: `winit`,
 `softbuffer`, and `cpal`. Disable default features for headless library builds.
@@ -161,14 +164,59 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 
 ## Font Data
 
-Systemless does not load TTF files at runtime. The built-in DejaVu-derived glyph
-bitmaps are generated into `src/quickdraw/fonts/baked.rs` and compiled into the
-crate, so an installed `systemless` binary can render text without external font
-files.
+Systemless ships its own original bitmap fonts. Every glyph is authored for this
+project — hand-drawn as ASCII art in `src/quickdraw/fonts/pixel_font/` and
+lowered to static glyph tables by `const fn` at compile time; there is no
+external font file, no offline baker, and no third-party font data in the crate.
 
-The TTF files under `assets/fonts/` are source assets for regenerating the baked
-catalogue. If `SYSTEMLESS_ORIGINAL_FONTS_DIR` is set, Systemless can also load
-locally generated bitmap override blobs ahead of the baked catalogue.
+The faces are named after Australian native plants. The classic Mac font names
+survive **only as internal compatibility identifiers** so that classic
+applications requesting a family by name or ID still resolve to a sensible face
+— this is nominative use, not branding.
+
+| systemless face | Kind                   | Stands in for (compat family, font ID) |
+|-----------------|------------------------|----------------------------------------|
+| **Jarrah**      | Heavy system / UI sans | Chicago (0) |
+| **Kurrajong**   | Humanist body sans     | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
+| **Mallee**    | Monospace              | Monaco (4), Courier (22) |
+| **Ironbark**    | Serif                  | New York (2), Times (20) |
+
+Sizes: Jarrah 9/12; Kurrajong 9/10/12/14/18/24 (+ Application 12, Helvetica 12);
+Mallee 9/10/12; Ironbark 12/14/18.
+
+Every face is hand-drawn glyph by glyph in a consistent house style, with
+advances, side-bearings and x-height / cap height conformed to the original Mac
+strike so classic text lays out identically. Kurrajong 24 and Ironbark 18 are
+heavy display cuts matching their originals' bold weight. Venice (5), London (6)
+and Cairo (11) render as Kurrajong — the reference System has no strike for
+those families and substitutes the application font, which Systemless mirrors.
+
+Render every face on white and black backgrounds for review with
+`cargo run --bin font_specimen` (output in `target/font_specimens/`).
+
+If `SYSTEMLESS_ORIGINAL_FONTS_DIR` is set, Systemless can also load locally
+generated bitmap override blobs ahead of the built-in catalogue.
+
+### Trademark / non-affiliation
+
+Systemless is not affiliated with, authorized by, or endorsed by Apple Inc.
+Macintosh, Mac OS, QuickDraw, and the classic font family names (Chicago,
+Geneva, Monaco, New York, Venice, London, Cairo, etc.) are trademarks of Apple
+Inc. "Times" / "Helvetica" / "Courier" are trademarks of their respective
+owners. These names appear here solely as compatibility identifiers to
+interoperate with classic Macintosh software; the systemless faces themselves
+are original works, distributed under their own botanical names.
+
+### Font license
+
+The systemless bitmap faces are original artwork and are licensed separately
+from the crate's GPL code. The glyph sources in
+`src/quickdraw/fonts/pixel_font/` are additionally available under the **SIL
+Open Font License 1.1** (see [OFL.txt](./OFL.txt)), with **"Systemless"** as
+the Reserved Font Name. This lets the faces be reused outside this project —
+including in software that is not GPL — while the emulator code itself stays
+GPL-3.0-or-later. Under the OFL, a modified font must not use the reserved
+name.
 
 ## Useful Environment Variables
 
@@ -181,15 +229,50 @@ locally generated bitmap override blobs ahead of the baked catalogue.
 | `SYSTEMLESS_TRACE_LOADSEG` | Logs Segment Loader jump-table patching. |
 | `SYSTEMLESS_TRACE_TRAP_COUNTS` | Prints trap dispatch frequency summaries. |
 
-## References
+## References & Documentation Conventions
 
-Trap implementations cite Inside Macintosh, BasiliskII observations, or fixture
-contracts where that context is useful. The implementation favors guest-visible
-behavior over cycle or hardware fidelity.
+Systemless reimplements guest-visible Toolbox / OS behavior, favoring what an
+application observes over cycle- or hardware-level fidelity. That behavior is a
+contract, so non-obvious decisions are documented **at the code that implements
+them** and cite the source that justifies them — a reader should be able to
+check the reasoning without leaving the file.
+
+**When to cite.** Add a citation whenever the "why" is not obvious from the
+code: trap semantics and edge cases, magic constants and error codes, on-disk or
+in-heap struct layouts, and any deliberate deviation from the books. Put it in
+the `///` doc comment of the trap/function, or an inline `//` comment on the
+exact line it explains.
+
+**Inside Macintosh** is the primary source. Cite the volume, year, and page,
+using `p.` for a page and `pp.` for a range:
+
+- Old series — roman-numeral volumes; the page carries the volume prefix:
+  `Inside Macintosh Volume I (1985), p. I-115`
+- New series — named volumes; the page is chapter-page:
+  `Inside Macintosh: Devices (1994), pp. 2-70`
+
+A short form without the year is fine for a repeated reference in the same area
+(`Inside Macintosh Volume I, I-189`). Multiple sources can back one line:
+`Inside Macintosh: Files (1992), p. 2-236; Technical Note #108`.
+
+**Other sources**, cited the same way (inline, next to the code):
+
+- **BasiliskII** / **Executor** — when the books are silent or ambiguous, cite
+  the observed behavior of an existing emulator that a matching guest relies on;
+  name the file/function where it helps (e.g. `BasiliskII's fpu_ieee.cpp`).
+- **Apple Technical Notes** — by number, e.g. `Technical Note #108`.
+
+Cite only the source, never the test that checks it: comments should not name
+tests, fixtures, or tooling that live outside this crate.
+
+Prefer the narrowest source that settles the question, and always note when
+Systemless intentionally diverges from it, and why.
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](./LICENSE).
+The emulator code is GPL-3.0-or-later. See [LICENSE](./LICENSE).
 
-Bundled DejaVu font assets are covered by their own license in
-[assets/fonts/LICENSE.DejaVu.txt](assets/fonts/LICENSE.DejaVu.txt).
+The systemless bitmap fonts are original artwork authored for this project and
+are additionally available under the SIL Open Font License 1.1 (see
+[OFL.txt](./OFL.txt)), Reserved Font Name "Systemless" — see
+[Font license](#font-license). No third-party font data is bundled.

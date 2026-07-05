@@ -14,7 +14,7 @@
 //! headless-only library and skip the `winit` / `softbuffer` / `cpal`
 //! link.
 
-#[path = "systemless/desktop_save_store.rs"]
+#[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
 
 use std::num::NonZeroU32;

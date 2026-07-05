@@ -2,7 +2,7 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::loader::CodeSegmentHeader;
-use crate::machine_profile::ORACLE_MACHINE_PROFILE;
+use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -1723,13 +1723,9 @@ impl super::TrapDispatcher {
                     0
                 };
 
-                // BasiliskII/System 7.5.3 and local catalogue evidence:
-                // misses return NIL and leave ResError at noErr. Callers must
-                // check the returned handle, not infer miss from ResError.
-                //
-                // Regression coverage:
-                //   get1resource_success_clears_reserror
-                //   get1resource_miss_returns_nil_with_noerr
+                // Per BasiliskII/System 7.5.3: misses return NIL and leave
+                // ResError at noErr. Callers must check the returned handle,
+                // not infer miss from ResError.
                 if handle != 0 {
                     cpu.write_reg(Register::A0, handle);
                     cpu.write_reg(Register::D0, 0);
@@ -1791,8 +1787,8 @@ impl super::TrapDispatcher {
                         bus.write_word(0x0A60, 0);
                     }
                 } else {
-                    // BasiliskII/System 7.5.3 fixture evidence: NIL and
-                    // other non-resource handles return resNotFound.
+                    // Per BasiliskII/System 7.5.3: NIL and other
+                    // non-resource handles return resNotFound.
                     bus.write_word(0x0A60, Self::RES_NOT_FOUND as u16);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -1943,8 +1939,6 @@ impl super::TrapDispatcher {
             // after an earlier failed Resource Manager call would see a
             // stale -192.
             //
-            // Regression coverage:
-            //   sizeresource_success_clears_reserror
             // SizeResource ($A9A5): Returns data size; clears ResErr on success per IM:I I-121
             (true, 0x1A5) => self.handle_resource_size_query(bus, cpu),
 
@@ -2013,13 +2007,6 @@ impl super::TrapDispatcher {
             //   pre:  SP -> [refNum(2)][result-slot(2)]
             //   post: SP -> [result(2)]; pop 2 leaves 2.
             //
-            // Regression coverage:
-            //   getresfileattrs_returns_default_attrs_for_open_file
-            //   getresfileattrs_invalid_refnum_sets_resfnotfound
-            //   setresfileattrs_then_get_roundtrips_per_im_i_126
-            //   setresfileattrs_mapchanged_survives_additional_resource_install
-            //   setresfileattrs_and_getresfileattrs_three_files_all_independent
-            //   setresfileattrs_uses_explicit_refnum_not_current_resource_file
             // GetResFileAttrs ($A9F6): Returns the documented resource-map
             // attribute bits (mapReadOnly/mapCompact/mapChanged) per IM:I-126;
             // resFNotFound on missing refnum, result slot untouched on error path.
@@ -2063,12 +2050,6 @@ impl super::TrapDispatcher {
             //   pre:  SP -> [attrs(2)][refNum(2)]
             //   post: SP -> (args popped, A7 = pre + 4)
             //
-            // Regression coverage:
-            //   setresfileattrs_then_get_roundtrips_per_im_i_126
-            //   setresfileattrs_invalid_refnum_returns_noerr
-            //   setresfileattrs_mapchanged_survives_additional_resource_install
-            //   setresfileattrs_and_getresfileattrs_three_files_all_independent
-            //   setresfileattrs_uses_explicit_refnum_not_current_resource_file
             // SetResFileAttrs ($A9F7): Stores only the documented
             // resource-map attribute bits (mapReadOnly/mapCompact/mapChanged)
             // per IM:I-126; missing refnum is a documented no-op that
@@ -2104,15 +2085,13 @@ impl super::TrapDispatcher {
             // every resource we know about is already resolved to a
             // guest-bus pointer (no offline-fork distinction), so the
             // disk-vs-map nuance collapses and the two traps share an
-            // implementation. If a future change introduces a real
-            // on-disk simulation, the test
-            // `maxsizersrc_matches_sizeresource_for_loaded_resource`
-            // is the gate that pins the in-memory equivalence.
+            // implementation. A future on-disk simulation would need to
+            // reintroduce the disk-vs-map distinction.
             //
             // Regression coverage:
-            //   maxsizersrc_returns_max_resource_size
-            //   maxsizersrc_nil_handle_sets_resnotfound
-            //   maxsizersrc_matches_sizeresource_for_loaded_resource
+            //   maxsizersrc_returns_resource_size_for_loaded_resource_handle
+            //   maxsizersrc_returns_minus_one_and_sets_resnotfound_for_non_resource_handle
+            //   maxsizersrc_consumes_handle_argument_and_writes_function_result_slot
             // MaxSizeRsrc ($A821): Returns resource size from map without disk read per IM:IV-16. In our memory-resident HLE this collapses to the same data path as SizeResource ($A9A5).
             (true, 0x021) => self.handle_resource_size_query(bus, cpu),
 
@@ -2156,22 +2135,6 @@ impl super::TrapDispatcher {
             // break callers that treat any non-zero ResErr as a
             // failure when the operation actually succeeded.
             //
-            // Regression coverage:
-            //   readpartialresource_copies_resource_subsection_to_buffer
-            //   readpartialresource_offset_out_of_bounds_sets_inputoutofbounds_err
-            //   readpartialresource_nil_handle_sets_resnotfound
-            //   readpartialresource_pops_sixteen_arg_bytes
-            //   writepartialresource_overwrites_resource_subsection_from_buffer
-            //   writepartialresource_past_end_extends_with_writingpastend_err
-            //   writepartialresource_nil_handle_sets_resnotfound
-            //   setresourcesize_grows_resource_visible_to_sizeresource
-            //   setresourcesize_shrinks_resource_visible_to_sizeresource
-            //   setresourcesize_nil_handle_sets_resnotfound
-            //   setresourcesize_pops_eight_arg_bytes
-            //   partial_resource_roundtrip_via_setresourcesize_and_writepartial
-            //   writepartialresource_then_readpartialresource_without_setresourcesize
-            //   setresourcesize_expand_preserves_original_content_at_prefix
-            //   readpartialresource_reads_entire_resource_from_zero_offset
             // ResourceDispatch ($A822): D0-low-byte selectors: 1=ReadPartialResource, 2=WritePartialResource, 3=SetResourceSize per MMTB 1-69..1-71. HLE is memory-resident so all three operate on the in-memory allocation directly; reports inputOutOfBounds/writingPastEnd/resNotFound per IM.
             (true, 0x022) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2252,11 +2215,6 @@ impl super::TrapDispatcher {
             // walks the full resource chain. Both must write ResErr per
             // IM:I I-119.
             //
-            // Regression coverage:
-            //   get1namedresource_miss_sets_resnotfound
-            //   get_named_resource_pair_returns_handle_for_named_resource_in_current_file_parametric
-            //   getnamedresource_walks_full_search_chain_while_get1namedresource_restricts_to_current_file_per_im_iv_15
-            //   getnamedresource_is_case_insensitive_while_get1namedresource_is_exact_match_only_per_impl_fallback
             // Get1NamedResource ($A820): Searches by Pascal name string; writes ResErr per IM:IV IV-15
             (true, 0x020) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2702,16 +2660,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume IV, p. IV-16
             //
             // Regression coverage:
-            //   setresinfo_sets_resource_id_and_name
-            //   setresinfo_nil_name_skips_name_change
-            //   setresinfo_invalid_handle_sets_reserr
             //   setresinfo_protected_resource_is_noop_with_resattrerr
-            //   setresinfo_pops_ten_bytes
-            //   setresinfo_then_getresinfo_round_trip_writes_new_id_and_name
-            //   setresinfo_does_not_mutate_other_resources_in_same_file
-            //   setresinfo_nil_name_preserves_named_lookup_while_updating_id
-            //   setresinfo_new_name_enables_new_getnamedresource_and_removes_old_name
-            //   setresinfo_does_not_mutate_other_registers_or_caller_stack
             // SetResInfo ($A9A9): Updates resource ID and name in memory map; resProtected returns resAttrErr per IM:IV IV-16 / MTB 1-82
             (true, 0x1A9) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2817,12 +2766,7 @@ impl super::TrapDispatcher {
             //   theID: INTEGER; name: Str255);
             // Inside Macintosh: More Macintosh Toolbox 1993, 1-90.
             //
-            // Regression coverage:
-            //   addresource_adds_resource_to_current_file
-            //   addresource_nil_handle_sets_reserr
-            //   addresource_existing_resource_handle_sets_reserr
-            //   addresource_pops_fourteen_bytes
-            // Golden coverage:
+            // Reference coverage:
             //   a9ab_addresource_reserror
             // AddResource ($A9AB): Adds data handle to current resource file with resChanged; validates NIL/existing handles per MMTB 1-90.
             (true, 0x1AB) => {
@@ -2935,12 +2879,6 @@ impl super::TrapDispatcher {
             // PROCEDURE WriteResource(theResource: Handle);
             // Inside Macintosh Volume I, I-124
             //
-            // Regression coverage:
-            //   writeresource_clears_changed_flag
-            //   writeresource_invalid_handle_sets_reserr
-            //   writeresource_protected_resource_is_noop
-            //   writeresource_unchanged_resource_is_noop
-            //   writeresource_pops_four_bytes
             // WriteResource ($A9B0): Respects resProtected/resChanged flags; clears resChanged after write per IM:I I-124
             (true, 0x1B0) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -3142,17 +3080,13 @@ impl super::TrapDispatcher {
                     // `gestaltUndefSelectorErr` because guest function
                     // pointers are not invokable from a trap handler.
                     //
-                    // BII-vs-Systemless divergence: the absolute OSErr is
-                    // engines-divergent (BII enforces system-heap residency
+                    // BII-vs-Systemless divergence: the absolute OSErr
+                    // differs (BII enforces system-heap residency
                     // with gestaltLocationErr; Systemless HLE accepts any
-                    // address). Both engines obey the documented register-
+                    // address). Both obey the documented register-
                     // only OS-bit FUNCTION calling convention.
                     //
-                    // Strict bake fixture:
-                    //   a3ad_a5ad_newgestalt_replacegestalt_strict
-                    // Engines-agree assertion witnessed:
-                    //   A3AD:newgestalt_register_only_calling_convention_preserves_stack
-                    // In-Rust contract test (mirrors B1 + B2 of the bake):
+                    // Regression coverage:
                     //   newgestalt_register_only_calling_convention_preserves_stack
                     0xA3AD => {
                         let already_known = is_builtin_gestalt_selector(&sel)
@@ -3218,11 +3152,7 @@ impl super::TrapDispatcher {
                     // to return so A0=0; unknown selectors yield
                     // gestaltUndefSelectorErr (-5551) with A0 preserved.
                     //
-                    // Strict bake fixture:
-                    //   a3ad_a5ad_newgestalt_replacegestalt_strict
-                    // Engines-agree assertion witnessed:
-                    //   A5AD:replacegestalt_register_only_calling_convention_preserves_stack
-                    // In-Rust contract test (mirrors B3 + B4 of the bake):
+                    // Regression coverage:
                     //   replacegestalt_register_only_calling_convention_preserves_stack
                     0xA5AD => {
                         let new_fn = cpu.read_reg(Register::A0);
@@ -3267,7 +3197,7 @@ impl super::TrapDispatcher {
                     b"sysv" => {
                         cpu.write_reg(
                             Register::A0,
-                            ORACLE_MACHINE_PROFILE.system_version_bcd as u32,
+                            REFERENCE_MACHINE_PROFILE.system_version_bcd as u32,
                         );
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -3311,12 +3241,12 @@ impl super::TrapDispatcher {
                     }
                     // gestaltNativeCPUtype ('cput') -> 68040
                     b"cput" => {
-                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.gestalt_native_cpu_type);
+                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_native_cpu_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltProcessorType ('proc') -> 68040
                     b"proc" => {
-                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.gestalt_processor_type);
+                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_processor_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltMachineType ('mach') -> Quadra 900
@@ -3324,7 +3254,7 @@ impl super::TrapDispatcher {
                     b"mach" => {
                         cpu.write_reg(
                             Register::A0,
-                            ORACLE_MACHINE_PROFILE.gestalt_machine_type as u32,
+                            REFERENCE_MACHINE_PROFILE.gestalt_machine_type as u32,
                         );
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -3358,7 +3288,7 @@ impl super::TrapDispatcher {
                     }
                     // gestaltPhysicalRAMSize ('ram ') -> emulated physical RAM
                     b"ram " => {
-                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.ram_size_bytes);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltLogicalRAMSize ('lram') -> logical memory.
@@ -3366,7 +3296,7 @@ impl super::TrapDispatcher {
                     // p. 1-19: when virtual memory is not installed, this is
                     // the same value as gestaltPhysicalRAMSize.
                     b"lram" => {
-                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.ram_size_bytes);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltLogicalPageSize ('pgsz') -> logical page size.
@@ -3381,12 +3311,12 @@ impl super::TrapDispatcher {
                     }
                     // gestaltFPUType ('fpu ') -> 68040 FPU
                     b"fpu " => {
-                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.gestalt_fpu_type);
+                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_fpu_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltMMUType ('mmu ') -> 68040 MMU
                     b"mmu " => {
-                        cpu.write_reg(Register::A0, ORACLE_MACHINE_PROFILE.gestalt_mmu_type);
+                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_mmu_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltSoundAttr ('snd ') -> advertise a full late-68k
@@ -3446,7 +3376,7 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltDisplayMgrVers ('dplv') -> Display Manager
-                    // 2.0.6, matching the BasiliskII System 7.5.3 oracle.
+                    // 2.0.6, matching the BasiliskII System 7.5.3 reference.
                     // Operating System Utilities 1994 lists 'dplv' as the
                     // Display Manager version selector. Abuse probes it before
                     // walking screen devices through DisplayDispatch.
@@ -3456,7 +3386,7 @@ impl super::TrapDispatcher {
                     }
                     // gestaltDisplayMgrAttr ('dply') -> Display Manager attrs.
                     // Bit 0 is gestaltDisplayMgrPresent; BasiliskII's System
-                    // 7.5.3 oracle returns bits 0..2 set for this profile.
+                    // 7.5.3 reference returns bits 0..2 set for this profile.
                     b"dply" => {
                         cpu.write_reg(Register::A0, 0x0000_0007);
                         cpu.write_reg(Register::D0, 0);
@@ -3928,12 +3858,6 @@ impl super::TrapDispatcher {
             // dispatcher masks `trap & 0x00FF`, so $A214 PBHGetVol and $A014
             // PBGetVol land on the same low byte and share this arm.
             //
-            // Regression coverage:
-            //   pb_vol               ($A014 non-H variant)
-            //   pbh_get_set_vol      ($A214 HFS variant — trace-mode
-            //                                      histogram bucket $214 pins
-            //                                      trap-word dispatch via
-            //                                      poisoned-ioResult indicator)
             // trap-doc: $A014 | PBGetVol | Partial | File Manager & Gestalt — OS Traps | Fills ioVRefNum (-1) and ioNamePtr from boot volume (IM:Files 1992, 2-162)
             // PBHGetVol ($A214): HFS variant aliased onto $A014
             (false, 0x14) => {
@@ -3963,14 +3887,8 @@ impl super::TrapDispatcher {
             // PBHGetVInfo and $A007 PBGetVInfo land on the same low
             // byte and share this arm.
             //
-            // Regression coverage:
-            //   pb_vinfo            ($A007 non-H variant)
-            //   pbh_get_vinfo       ($A207 HFS variant — trace-mode
-            //                                    histogram bucket $207 pins
-            //                                    trap-word dispatch via
-            //                                    poisoned-ioResult indicator)
             // PBGetVInfo ($A007): Returns boot volume info and nontrivial free-space figures
-            // PBHGetVInfo ($A207): HFS variant aliased onto $A007; BasiliskII-proven via pbh_get_vinfo
+            // PBHGetVInfo ($A207): HFS variant aliased onto $A007
             (false, 0x07) => {
                 let pb = cpu.read_reg(Register::A0);
                 let name_ptr = bus.read_long(pb + 18);
@@ -4162,8 +4080,8 @@ impl super::TrapDispatcher {
             // The $A20E variant is declared in MPW Universal Headers
             // Files.h as `PBUnmountVolImmed(ParmBlkPtr)` and is not
             // separately documented in IM:Files 1992. Its MPW Traps.h
-            // macro name is `_HUnmountVol` (the historical name used
-            // in the Systemless catalog row "PBHUnmountVol"). Both trap
+            // macro name is `_HUnmountVol` (also known historically as
+            // `PBHUnmountVol`). Both trap
             // words take ParmBlkPtr — not HParmBlkPtr — and reach this
             // arm via the OS-trap dispatcher's `trap & 0x00FF` mask.
             // The "Immed" variant differs from PBUnmountVol in that it
@@ -4209,20 +4127,13 @@ impl super::TrapDispatcher {
             // dispatches the real ROM PB trap and is expected to
             // return nsvErr (-35) or paramErr (-50) for an ioVRefNum
             // that does not appear in the VCB queue. The absolute
-            // OSErr value is therefore engines-divergent; the engines-
-            // agree subset is (a) the dispatcher convention writing
-            // the same OSErr into both D0 and ioResult, and (b) the
-            // register-only OS-bit FUNCTION calling convention
+            // OSErr value therefore differs between the two; the
+            // behavioral invariants are (a) the dispatcher convention
+            // writing the same OSErr into both D0 and ioResult, and
+            // (b) the register-only OS-bit FUNCTION calling convention
             // preserving A7.
             //
-            // Strict bake: `a00e_a20e_pbunmountvol_pbunmountvolimmed_strict`
-            // witnesses all four engines-agree assertions:
-            //   A00E:pbunmountvol_writes_same_oserr_to_d0_and_ioresult
-            //   A00E:pbunmountvol_register_only_calling_convention_preserves_stack
-            //   A20E:pbunmountvolimmed_writes_same_oserr_to_d0_and_ioresult
-            //   A20E:pbunmountvolimmed_register_only_calling_convention_preserves_stack
-            //
-            // Contract tests: src/trap/resource.rs mod tests
+            // Regression coverage:
             //   pbunmountvol_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             (false, 0x0E) => {
                 let pb = cpu.read_reg(Register::A0);
@@ -4300,16 +4211,15 @@ impl super::TrapDispatcher {
             // unit-table lookup produces for a refNum that does not map
             // to an installed driver (typically badUnitErr -21 or
             // unitEmptyErr -22) or whatever the driver's KillIO routine
-            // returns for a real one. The absolute return value is
-            // therefore engines-divergent; the engines-agree subset is
-            // (a) the dispatcher convention writing the same OSErr into
-            // both D0 and ioResult, and (b) the register-only OS-bit
-            // FUNCTION calling convention preserving A7.
+            // returns for a real one. The absolute return value
+            // therefore differs between the two; the behavioral
+            // invariants are (a) the dispatcher convention writing the
+            // same OSErr into both D0 and ioResult, and (b) the
+            // register-only OS-bit FUNCTION calling convention
+            // preserving A7.
             //
-            // Strict bake: `a006_pbkillio_strict` witnesses both engines-
-            // agree assertions:
-            //   A006:pbkillio_writes_same_oserr_to_d0_and_ioresult
-            //   A006:pbkillio_register_only_calling_convention_preserves_stack
+            // Regression coverage:
+            //   pbkillio_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             (false, 0x06) => {
                 let pb = cpu.read_reg(Register::A0);
                 bus.write_word(pb + 16, 0); // noErr → pb.ioResult
@@ -4359,16 +4269,14 @@ impl super::TrapDispatcher {
             // dispatches the real ROM PB trap and is expected to return
             // paramErr (-50) for a bogus drive number that does not map
             // to any installed drive queue entry. The absolute OSErr
-            // value (and the rewritten ioVRefNum) are therefore engines-
-            // divergent; the engines-agree subset is (a) the dispatcher
-            // convention writing the same OSErr into both D0 and ioResult,
-            // and (b) the register-only OS-bit FUNCTION calling convention
-            // preserving A7.
+            // value (and the rewritten ioVRefNum) therefore differ
+            // between the two; the behavioral invariants are (a) the
+            // dispatcher convention writing the same OSErr into both D0
+            // and ioResult, and (b) the register-only OS-bit FUNCTION
+            // calling convention preserving A7.
             //
-            // Strict bake: `a00f_pbmountvol_strict` witnesses both engines-
-            // agree assertions:
-            //   A00F:pbmountvol_writes_same_oserr_to_d0_and_ioresult
-            //   A00F:pbmountvol_register_only_calling_convention_preserves_stack
+            // Regression coverage:
+            //   pbmountvol_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             (false, 0x0F) => {
                 let pb = cpu.read_reg(Register::A0);
                 bus.write_word(pb + 22, super::TrapDispatcher::boot_volume_ref_num_u16());
@@ -4430,34 +4338,23 @@ impl super::TrapDispatcher {
             // return rfNumErr (-51) for ioRefNum 9999 since no such open
             // file exists in the BasiliskII session.
             //
-            // Engines-agree subset: regardless of the absolute OSErr value,
-            // both engines obey the File Manager dispatcher convention
-            // (IM:II 1985 p. II-114) writing the SAME value to BOTH D0
-            // and pb.ioResult at pb+16; both engines also preserve A7
-            // across the call since the OS-bit FUNCTION ABI takes no
-            // Pascal stack frame.
+            // Behavioral invariant: regardless of the absolute OSErr value,
+            // the File Manager dispatcher convention (IM:II 1985 p. II-114)
+            // writes the SAME value to BOTH D0 and pb.ioResult at pb+16;
+            // A7 is preserved across the call since the OS-bit FUNCTION ABI
+            // takes no Pascal stack frame. The contiguous-allocation variant
+            // ($A210) differs from PBAllocate only in that the real Apple ROM
+            // returns dskFulErr (-34) on contiguous-fit failure rather than
+            // performing a partial allocation, but both traps obey the same
+            // dispatcher convention.
             //
-            // Catalogue proofs:
-            //   a010_pballocate_strict witnesses both
-            //     engines-agree subset assertions for $A010 with a pre-
-            //     poisoned ioResult sentinel (0x3FFF) and a bogus ioRefNum
-            //     (9999): D0 == ioResult after the call AND ioResult !=
-            //     pre-poison sentinel; sp_pre == sp_post.
-            //   a210_pballoccontig_strict witnesses
-            //     the same engines-agree subset for $A210 PBAllocContig
-            //     against the shared HLE arm; the contiguous-allocation
-            //     variant differs from PBAllocate only in that the real
-            //     Apple ROM returns dskFulErr (-34) on contiguous-fit
-            //     failure rather than performing a partial allocation,
-            //     but both traps obey the same dispatcher convention so
-            //     the bakeable witnesses are identical.
-            // Contract tests: see `pballocate_nominal_call_returns_noerr_and_sets_ioactcount`,
-            //   `pballocate_writes_ioresult_noerr_when_paramblock_present`,
-            //   `pballocate_writes_same_oserr_to_d0_and_ioresult_preserving_stack`,
-            //   `pballoccontig_nominal_call_returns_noerr_and_sets_ioactcount`,
-            //   `pballoccontig_overwrites_ioresult_field_with_function_result`,
-            //   and `pballoccontig_writes_same_oserr_to_d0_and_ioresult_preserving_stack`
-            //   in this file's tests module for the in-Rust witnesses.
+            // Regression coverage:
+            //   pballocate_nominal_call_returns_noerr_and_sets_ioactcount
+            //   pballocate_writes_ioresult_noerr_when_paramblock_present
+            //   pballocate_writes_same_oserr_to_d0_and_ioresult_preserving_stack
+            //   pballoccontig_nominal_call_returns_noerr_and_sets_ioactcount
+            //   pballoccontig_overwrites_ioresult_field_with_function_result
+            //   pballoccontig_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             (false, 0x10) => {
                 let pb = cpu.read_reg(Register::A0);
                 let req_count = bus.read_long(pb + 36); // ioReqCount
@@ -4491,17 +4388,12 @@ impl super::TrapDispatcher {
             // dispatcher convention for OS-bit PROCEDUREs) and
             // returns without consuming any stack bytes.
             //
-            // Engines-agree subset: both BasiliskII System 7.5.3 ROM
-            // and Systemless HLE preserve A7 across the call (no Pascal
-            // stack frame is consumed) and leave the queue in an
+            // Behavioral invariant: A7 is preserved across the call (no
+            // Pascal stack frame is consumed) and the queue is left in an
             // empty state on exit.
             //
-            // Catalogue proof: a016_finitqueue_strict
-            //   witnesses sp_pre == sp_post for both a single call
-            //   and a 5-call composition (per-call pop discipline +
-            //   cumulative drift detection).
-            // Contract test: see `finitqueue_has_no_parameters_and_preserves_stack_pointer`
-            //   in this file's tests module for the in-Rust witness.
+            // Regression coverage:
+            //   finitqueue_has_no_parameters_and_preserves_stack_pointer
             (false, 0x16) => {
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -4545,7 +4437,7 @@ impl super::TrapDispatcher {
             // removable media to eject, so this stub returns noErr (0)
             // unconditionally and writes 0 to pb.ioResult.
             //
-            // Engines-agree subset (witnessed by a017_pbeject_strict):
+            // Behavioral invariant:
             //   • D0 == pb.ioResult (pb+16) after the call (dispatcher
             //     convention IM:II 1985 p. II-114) regardless of the
             //     absolute OSErr value;
@@ -4555,12 +4447,12 @@ impl super::TrapDispatcher {
             // Apple-vs-BasiliskII divergence on absolute OSErr: BII
             // System 7.5.3 ROM is expected to return nsvErr (-35) or a
             // related error for a bogus vRefNum (e.g. 9999), while
-            // Systemless returns noErr unconditionally. Both engines obey
+            // Systemless returns noErr unconditionally. Both obey
             // the dispatcher convention (D0 == ioResult).
             //
-            // Contract tests: see `pbeject_returns_noerr_when_hle_has_no_removable_media`
-            // and `pbeject_writes_same_oserr_to_d0_and_ioresult_preserving_stack`
-            // below.
+            // Regression coverage:
+            //   pbeject_returns_noerr_when_hle_has_no_removable_media
+            //   pbeject_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             (false, 0x17) => {
                 let pb = cpu.read_reg(Register::A0);
                 bus.write_word(pb + 16, 0); // noErr
@@ -4610,15 +4502,13 @@ impl super::TrapDispatcher {
             // into both D0 and pb.ioResult. BasiliskII dispatches the real
             // ROM PB trap and may return a non-zero OSErr (typically
             // nsvErr -35) for a bogus vRefNum. The absolute return value
-            // is therefore engines-divergent; the engines-agree subset is
-            // (a) the dispatcher convention writing the same OSErr into
+            // therefore differs between the two; the behavioral invariants
+            // are (a) the dispatcher convention writing the same OSErr into
             // both D0 and ioResult, and (b) the register-only OS-bit
             // FUNCTION calling convention preserving A7.
             //
-            // Strict bake: `a035_pboffline_strict` witnesses both engines-
-            // agree assertions:
-            //   A035:pboffline_writes_same_oserr_to_d0_and_ioresult
-            //   A035:pboffline_register_only_calling_convention_preserves_stack
+            // Regression coverage:
+            //   pboffline_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             (false, 0x35) => {
                 let pb = cpu.read_reg(Register::A0);
                 bus.write_word(pb + 16, 0); // noErr → pb.ioResult
@@ -4674,7 +4564,7 @@ impl super::TrapDispatcher {
             // We write 0 (noErr) to both pb.ioResult @ pb+16 and D0,
             // honoring the basic-PB dispatcher convention.
             //
-            // Engines-agree subset (witnessed by a043_pbsetfvers_strict):
+            // Behavioral invariant:
             //   1. Dispatcher convention: D0 == pb.ioResult after the call
             //      (both registers receive the same OSErr).
             //   2. Register-only ABI: A0 is the sole input, D0 the sole
@@ -4684,13 +4574,11 @@ impl super::TrapDispatcher {
             // real PB trap against an HFS volume mounted via extfs. Per
             // IM:IV 1986 p. IV-153 PBSetFVers is a documented no-op there,
             // so the absolute OSErr is expected to be noErr (0) as well.
-            // Even where engines diverge on the absolute OSErr value, both
-            // engines agree to mirror that value into both D0 and ioResult.
+            // Where the absolute OSErr diverges, that value is still
+            // mirrored into both D0 and ioResult.
             //
-            // Regression coverage (BasiliskII goldens):
-            //   - a043_pbsetfvers_strict — 2 bands:
-            //       A043:pbsetfvers_writes_same_oserr_to_d0_and_ioresult
-            //       A043:pbsetfvers_register_only_calling_convention_preserves_stack
+            // Regression coverage:
+            //   pbsetfvers_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             //
             // PBSetFVers ($A043): HFS no-op per IM:IV 1986 p. IV-153;
             // mirrors noErr to D0 and pb.ioResult per IM:II 1985 p. II-114
@@ -4758,13 +4646,9 @@ impl super::TrapDispatcher {
             //       ONEWORDINLINE(0xA20B);
             //   Sibling Async forms at $A40B and $A60B respectively.
             //
-            // Engines-agree subset (witnessed by strict bake
-            // a20b_pbhrename_strict):
-            //   - A20B:pbhrename_writes_same_oserr_to_d0_and_ioresult
-            //     (dispatcher convention D0 == ioResult @ pb+16 with
-            //     a 0x3FFF pre-poison sentinel).
-            //   - A20B:pbhrename_register_only_calling_convention_preserves_stack
-            //     (StackSpace() sandwich witnesses A7 preserved).
+            // Behavioral invariant:
+            //   - dispatcher convention: D0 == ioResult @ pb+16.
+            //   - register-only calling convention: A7 preserved.
             //
             // Systemless HLE: maintains VFS state in self.vfs / self.vfs_rsrc /
             // self.vfs_metadata / self.locked_files / self.open_files /
@@ -4773,8 +4657,8 @@ impl super::TrapDispatcher {
             // ioDirID field which Systemless does not branch on.
             //
             // Regression coverage:
-            //   - pbh_open_rf_rename            — $A20A + $A20B fnfErr paths
-            //   - a20b_pbhrename_strict — engines-agree dispatcher convention
+            //   pbhrename_writes_same_oserr_to_d0_and_ioresult_preserving_stack
+            //   pbhrename_path_new_name_stays_in_source_directory
             (false, 0x0B) => {
                 let pb = cpu.read_reg(Register::A0);
                 let old_name_ptr = bus.read_long(pb + 18);
@@ -4909,27 +4793,14 @@ impl super::TrapDispatcher {
             //
             // BasiliskII divergence note: real System 7.5.3 + extfs
             // returns noErr (0) from PBSetFLock / PBHSetFLock on a
-            // missing file, not fnfErr (-43) — pinned by the prior bake
-            // fixtures/file/A241_pbh_set_rst_flock. Systemless keeps the
-            // IM-documented absolute OSErr; both engines obey the
-            // dispatcher convention writing the same value to BOTH D0
-            // and pb.ioResult @ pb+16.
+            // missing file, not fnfErr (-43). Systemless keeps the
+            // IM-documented absolute OSErr; both obey the dispatcher
+            // convention writing the same value to BOTH D0 and
+            // pb.ioResult @ pb+16.
             //
-            // Catalogue-proof references (engines-agree subset):
-            //   a041_a042_pbsetflock_pbrstflock_strict
-            //     A041:pbsetflock_writes_same_oserr_to_d0_and_ioresult
-            //     A041:pbsetflock_register_only_calling_convention_preserves_stack
-            //     A042:pbrstflock_writes_same_oserr_to_d0_and_ioresult
-            //     A042:pbrstflock_register_only_calling_convention_preserves_stack
-            //   a241_a242_pbhsetflock_pbhrstflock_strict
-            //     A241:pbhsetflock_writes_same_oserr_to_d0_and_ioresult
-            //     A241:pbhsetflock_register_only_calling_convention_preserves_stack
-            //     A242:pbhrstflock_writes_same_oserr_to_d0_and_ioresult
-            //     A242:pbhrstflock_register_only_calling_convention_preserves_stack
-            // Contract tests in this file's `mod tests`:
+            // Regression coverage:
             //   pbsetflock_existing_file_returns_noerr_and_sets_ioflattrib_locked_bit
             //   pbsetflock_missing_file_returns_fnferr_in_d0_and_ioresult
-            //   pbsetflock_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             //   pbsetflock_pbrstflock_write_same_oserr_to_d0_and_ioresult_preserving_stack
             //   pbhsetflock_pbhrstflock_write_same_oserr_to_d0_and_ioresult_preserving_stack
             //   pbrstflock_existing_file_returns_noerr_and_clears_ioflattrib_locked_bit
@@ -4966,9 +4837,7 @@ impl super::TrapDispatcher {
             // PBSetFLock → PBRstFLock and ONEWORDINLINE(0xA041) →
             // ONEWORDINLINE(0xA042)).
             //
-            // Catalogue-proof reference: see the $A041 arm above —
-            // a041_a042_pbsetflock_pbrstflock_strict witnesses both
-            // sibling traps in a single combined fixture.
+            // Regression coverage: see the $A041 arm above.
             (false, 0x42) => {
                 let pb = cpu.read_reg(Register::A0);
                 let name_ptr = bus.read_long(pb + 18);
@@ -4994,16 +4863,12 @@ impl super::TrapDispatcher {
             // The OS-trap dispatcher masks `trap & 0x00FF`, so $A208
             // PBHCreate lands on the same low byte and shares this arm.
             //
-            // Regression coverage (BasiliskII golden):
-            //   pb_create   ← $A008 dispatch path
-            //   pbh_create  ← $A208 dispatch via poisoned-
-            //                              ioResult indicator with
-            //                              dirID=999999 (BasiliskII
-            //                              writes dirNFErr per IM:Files
-            //                              9743; Systemless writes noErr
-            //                              because impl doesn't
-            //                              validate dirID; trace
-            //                              bucket $208 pins dispatch)
+            // Behavioral note: for a $A208 PBHCreate with dirID=999999,
+            // BasiliskII writes dirNFErr per IM:Files 9743 while Systemless
+            // writes noErr because the impl does not validate dirID.
+            //
+            // Regression coverage:
+            //   pb_create
             // PBCreate ($A008): Creates file in VFS with metadata, writes to output_dir if set
             // PBHCreate ($A208): HFS variant aliased onto $A008
             (false, 0x08) => {
@@ -5106,13 +4971,12 @@ impl super::TrapDispatcher {
             // The HFS variant lands on the same low byte after
             // `trap & 0x00FF` masking and shares this arm.
             //
-            // Regression coverage (BasiliskII golden):
-            //   pb_delete   ← $A009 fnfErr/dispatch path
-            //   pbh_delete  ← $A209 dispatch via poisoned-
-            //                              ioResult indicator (real Mac
-            //                              extfs returns noErr for
-            //                              missing file; trace bucket
-            //                              $209 pins the dispatch)
+            // Behavioral note: real Mac extfs (BasiliskII) returns noErr for
+            // a missing file on the $A209 PBHDelete path.
+            //
+            // Regression coverage:
+            //   pb_delete
+            //   pb_delete_not_found
             // PBDelete ($A009): Deletes file from VFS, cleans up metadata and open file refs
             // PBHDelete ($A209): HFS variant aliased onto $A009
             (false, 0x09) => {
@@ -5170,9 +5034,6 @@ impl super::TrapDispatcher {
             // The HFS variant ($A20C) is aliased onto this arm via the OS-trap
             // `trap & 0x00FF` mask.
             //
-            // Regression coverage (BasiliskII golden):
-            //   pb_finfo               ← $A00C/$A00D fnfErr path
-            //   pbh_get_set_finfo      ← $A20C/$A20D fnfErr path
             // PBGetFInfo ($A00C): Returns catalog info with file type, creator, finder flags, and ioFlAttrib lock bit from VFS metadata
             // PBHGetFInfo ($A20C): HFS variant aliased onto $A00C
             (false, 0x0C) => {
@@ -5227,9 +5088,6 @@ impl super::TrapDispatcher {
             // silently returned noErr for missing files, masking bugs in
             // games that rely on this error to detect missing saves.
             //
-            // Regression coverage:
-            //   pbsetfinfo_missing_file_returns_fnferr
-            //   pbsetfinfo_existing_file_updates_finder_info
             //   pb_finfo               ← $A00C/$A00D fnfErr path
             //   pbh_get_set_finfo      ← $A20C/$A20D fnfErr path
             // PBSetFInfo ($A00D): Stores file type, creator, and Finder flags in VFS metadata
@@ -5308,42 +5166,24 @@ impl super::TrapDispatcher {
             //     File Manager basic-PB dispatcher convention, regardless
             //     of whether the absolute value is noErr or nsvErr.
             //
-            // Engines-agree subset (baked):
+            // Behavioral invariant:
             //   * Dispatcher convention: D0 == ioResult after the call,
-            //     and ioResult overwrites any pre-call sentinel. Both
-            //     engines obey this regardless of the absolute OSErr.
+            //     and ioResult overwrites any pre-call sentinel, regardless
+            //     of the absolute OSErr.
             //   * Register-only OS-bit FUNCTION calling convention:
             //     A0 input, D0 output, no Pascal stack frame consumed;
             //     A7 preserved across the call.
             //
-            // Engines-divergent absolute OSErr (Systemless pins via contract
-            // tests in this module):
-            //   * Systemless returns nsvErr (-35) on the unrecognised-volume
-            //     path; BasiliskII may return -35 or another OSErr
-            //     depending on its volume table state. The dispatcher-
-            //     convention witness holds for both engines.
+            // Absolute-OSErr divergence: Systemless returns nsvErr (-35)
+            // on the unrecognised-volume path; BasiliskII may return -35
+            // or another OSErr depending on its volume table state. The
+            // dispatcher-convention invariant holds either way.
             //
-            // Catalogue proof:
-            //   a215_pbhsetvol_strict — 544x40 pixmap
-            //     fixture witnessing:
-            //       A215:pbhsetvol_writes_same_oserr_to_d0_and_ioresult
-            //       A215:pbhsetvol_register_only_calling_convention_preserves_stack
-            //
-            // Contract tests (this module):
+            // Regression coverage:
             //   pbhsetvol_sets_default_directory_from_iowddirid_for_volume_refnum_calls
             //   pbhsetvol_invalid_vrefnum_returns_nsverr
             //   pbhsetvol_writes_same_oserr_to_d0_and_ioresult_preserving_stack
             //
-            // Regression coverage:
-            //   pb_vol               ($A015 non-H variant)
-            //   pbh_get_set_vol      ($A215 HFS variant — trace-mode
-            //                                      histogram bucket $215 pins
-            //                                      trap-word dispatch via
-            //                                      poisoned-ioResult indicator;
-            //                                      phantom ioVRefNum = -999
-            //                                      sidesteps default-volume
-            //                                      mutation per IM:Files 8376
-            //                                      nsvErr documented path)
             // trap-doc: $A015 | PBSetVol | Partial | File Manager & Gestalt — OS Traps | Updates default volume/directory; nsvErr for unrecognised vRefNum (IM:Files 1992, 2-162)
             // PBHSetVol ($A215): HFS variant aliased onto $A015
             (false, 0x15) => {
@@ -5437,11 +5277,6 @@ impl super::TrapDispatcher {
             // The MARKS / CASE trap-word bits 9 and 10 select different
             // sensitivities; Systemless currently handles only the default.
             //
-            // Regression coverage:
-            //   cmpstring_returns_zero_for_identical_ascii
-            //   cmpstring_returns_one_for_different_lengths
-            //   cmpstring_returns_one_for_different_chars_same_length
-            //   cmpstring_default_is_case_insensitive_for_ascii
             // EqualString / CmpString ($A03C): String comparison per IM:II II-377
             // Trap word bit 10 (0x0400): caseSens=TRUE → case-sensitive comparison.
             // Default $A03C (bit 10 clear): caseSens=FALSE → case-insensitive.
@@ -5787,7 +5622,7 @@ impl super::TrapDispatcher {
                         // FUNCTION GetFrontProcess(VAR PSN: ProcessSerialNumber): OSErr;
                         // Processes 1994, pp. 2-25 to 2-26
                         //
-                        // MPW glue (disassembled from fixture binary):
+                        // MPW glue (disassembled):
                         //   MOVEQ #-1, D0 / MOVE.L D0, -(SP)  ; 4-byte init slot ($FFFFFFFF)
                         //   PEA <psn>                          ; psn_ptr (4 bytes)
                         //   MOVE.W #$0039, -(SP)               ; selector
@@ -6063,21 +5898,15 @@ impl super::TrapDispatcher {
                         //   trap macro / routine selector at lines 2818..2823;
                         //   result codes 2369..2380 with fnfErr -43 at line 2376).
                         //
-                        // Regression coverage: fsp_open_df (the
-                        // BasiliskII-baked fnfErr golden — strong-assertion
-                        // pattern + refNum-poison band; trace-mode pinning
-                        // histogram bucket $A52). Real BasiliskII writes
-                        // to *refNum on the failure path while Systemless leaves
-                        // the VAR-out untouched. The strong-assertion err==-43
-                        // band is the load-bearing indicator (TRUE on both);
-                        // the refNum-poison band records the divergence.
+                        // Behavioral note: real BasiliskII writes to *refNum
+                        // on the fnfErr (-43) failure path while Systemless
+                        // leaves the VAR-out untouched.
                         let sp = cpu.read_reg(Register::A7);
                         let ref_num_ptr = bus.read_long(sp);
                         // `permission` is a SignedByte. MPW SC emits a
-                        // byte push for FSpOpenDF (see the checked-in
-                        // MPW-built AA52_fsp_lock_errors fixture), while
-                        // A7 still reserves a stack word; some callers leave
-                        // nonzero padding in the other byte.
+                        // byte push for FSpOpenDF, while A7 still reserves a
+                        // stack word; some callers leave nonzero padding in
+                        // the other byte.
                         let permission = file_permission_from_stack_word(bus.read_word(sp + 4));
                         let spec_ptr = bus.read_long(sp + 6);
 
@@ -6094,9 +5923,9 @@ impl super::TrapDispatcher {
                         {
                             // IM:Files 1992, 2-326: fsWrPerm=2,
                             // fsRdWrPerm=3, fsRdWrShPerm=4. Systemless keeps
-                            // the BasiliskII/extfs noErr open behavior pinned
-                            // by aa52_fsp_lock_errors, but still records
-                            // which access paths requested write permission.
+                            // the BasiliskII/extfs noErr open behavior, but
+                            // still records which access paths requested write
+                            // permission.
                             let wants_write = matches!(permission, 2 | 3 | 4);
 
                             let refnum = self.next_refnum;
@@ -6139,7 +5968,7 @@ impl super::TrapDispatcher {
                         // IM:Files 8529 documents dirNFErr (-120) for a missing parent
                         // directory; however BasiliskII (extfs over HFS) empirically
                         // returns -48 (dupFNErr) for phantom parIDs. BasiliskII is
-                        // ground truth per the golden gate.
+                        // ground truth per the reference gate.
                         // IM:Files 1992, lines 8510..8531
                         let filename = read_fsspec_name(bus, spec_ptr);
                         let vref = bus.read_word(spec_ptr) as i16;
@@ -6276,10 +6105,9 @@ impl super::TrapDispatcher {
                         // selector 8590..8594; result codes 8597..8610 with
                         // fnfErr at 8603, fBsyErr at 8607, dirNFErr at 8608).
                         //
-                        // Regression coverage: aa52_fsp_delete_busy (the
-                        // BasiliskII-baked golden exercises the delete-while-
-                        // open path — BasiliskII on Unix deletes the open file
-                        // with noErr, second FSpDelete returns fnfErr -43).
+                        // Behavioral note: on the delete-while-open path,
+                        // BasiliskII on Unix deletes the open file with noErr,
+                        // and a second FSpDelete returns fnfErr -43.
                         let sp = cpu.read_reg(Register::A7);
                         let spec_ptr = bus.read_long(sp);
 
@@ -6331,13 +6159,8 @@ impl super::TrapDispatcher {
                         // (function signature 8620; trap macro/selector 8630..8631; result
                         // codes 8643..8650 with fnfErr at 8645).
                         //
-                        // Regression coverage: fsp_get_finfo. Strengthened
-                        // from `legacy_smoke` (compare=trace, no asserts) to
-                        // `behavior_state` (compare=pixmap, 1bpp offscreen indicator
-                        // bands) per the catalogue gate. Two-band pixmap proves the
-                        // missing-file path returns fnfErr (-43) AND the companion
-                        // FSMakeFSSpec dispatch populated the spec — both bands non-
-                        // degenerate vs a no-op stub.
+                        // The missing-file path returns fnfErr (-43) and the
+                        // companion FSMakeFSSpec dispatch populates the spec.
                         //
                         // BasiliskII mutates the caller's `fndrInfo` buffer on the
                         // fnfErr branch instead of leaving the pre-poisoned bytes
@@ -6642,20 +6465,14 @@ impl super::TrapDispatcher {
                     // FUNCTION PBCloseWD(paramBlock: WDPBPtr; async: Boolean): OSErr;
                     // Files 1992, 2-202 to 2-203
                     //
-                    // Regression coverage:
-                    //   pb_close_wd — BasiliskII golden
-                    //     via dispatch-via-poisoned-ioResult indicator on
-                    //     phantom ioVRefNum=-999. Real Mac returns noErr (0)
-                    //     per IM:Files 10366 ("If you specify a volume
-                    //     reference number in the ioVRefNum field, PBCloseWD
-                    //     does nothing") — the close-side mirror of
-                    //     PBGetWDInfo's polymorphic-input divergence (where
-                    //     real Mac returned nsvErr -35 instead of rfNumErr
-                    //     -51). Systemless returns rfNumErr (-51) on the
-                    //     HashMap-miss fallback path below. The trace gate
-                    //     (histogram bucket $260) pins trap-word dispatch
-                    //     without forcing pixel-perfect match across the
-                    //     value-divergence.
+                    // Behavioral note: for a phantom ioVRefNum=-999, real
+                    // Mac returns noErr (0) per IM:Files 10366 ("If you
+                    // specify a volume reference number in the ioVRefNum
+                    // field, PBCloseWD does nothing") — the close-side mirror
+                    // of PBGetWDInfo's polymorphic-input divergence (where
+                    // real Mac returned nsvErr -35 instead of rfNumErr
+                    // -51). Systemless returns rfNumErr (-51) on the
+                    // HashMap-miss fallback path below.
                     let wd_ref_num = bus.read_word(pb + 22) as i16;
                     eprintln!("[TRAP] FSDispatch PBCloseWD wdRefNum={}", wd_ref_num);
                     let err = if wd_ref_num == super::TrapDispatcher::boot_volume_ref_num()
@@ -6676,14 +6493,10 @@ impl super::TrapDispatcher {
                     // FUNCTION PBGetWDInfo(paramBlock: WDPBPtr; async: Boolean): OSErr;
                     // Files 1992, 2-203 to 2-204
                     //
-                    // Regression coverage:
-                    //   pb_get_wd_info — BasiliskII golden via
-                    //     dispatch-via-poisoned-ioResult indicator on phantom
-                    //     ioVRefNum=-999 + ioWDIndex=0. Real Mac returns nsvErr (-35) —
-                    //     interprets -999 as a vRefNum (outside the wdRefNum range per
-                    //     IM:Files 6633) — Systemless returns rfNumErr (-51). The trace
-                    //     gate (histogram bucket $260) pins trap-word dispatch without
-                    //     forcing pixel-perfect match across the value-divergence.
+                    // Behavioral note: for a phantom ioVRefNum=-999 with
+                    // ioWDIndex=0, real Mac returns nsvErr (-35) — interpreting
+                    // -999 as a vRefNum (outside the wdRefNum range per
+                    // IM:Files 6633) — while Systemless returns rfNumErr (-51).
                     let name_ptr = bus.read_long(pb + 18);
                     let input_vref = bus.read_word(pb + 22) as i16;
                     let wd_index = bus.read_word(pb + 26) as i16;
@@ -6822,17 +6635,13 @@ impl super::TrapDispatcher {
                 // Output: ioNamePtr filled with filename, ioVRefNum, ioFCBParID, etc.
                 // Files 1992, 2-241 to 2-243
                 //
-                // Regression coverage:
-                //   pb_get_fcb_info — BasiliskII golden via
-                //     dispatch-via-poisoned-ioResult indicator on phantom
-                //     ioRefNum=-999 + ioFCBIndx=0. Real Mac returns rfNumErr (-51) —
-                //     treats -999 as a categorically-invalid refnum per IM:Files
-                //     11733..11736 — Systemless returns fnOpnErr (-38) per the
-                //     open_files HashMap miss at line ~4089. The trace gate
-                //     (histogram bucket $260) pins trap-word dispatch without
-                //     forcing pixel-perfect match across the value-divergence.
-                //     Same polymorphic-input divergence class as PBGetWDInfo
-                //     selector $0007 (rfNumErr-vs-nsvErr split).
+                // Behavioral note: for a phantom ioRefNum=-999 with
+                // ioFCBIndx=0, real Mac returns rfNumErr (-51) — treating
+                // -999 as a categorically-invalid refnum per IM:Files
+                // 11733..11736 — while Systemless returns fnOpnErr (-38) per
+                // the open_files HashMap miss. Same polymorphic-input
+                // divergence class as PBGetWDInfo selector $0007
+                // (rfNumErr-vs-nsvErr split).
                 if selector == 8 {
                     let ref_num = bus.read_word(pb + 24);
                     let fcb_index = bus.read_word(pb + 28) as i16;
@@ -6926,17 +6735,9 @@ impl super::TrapDispatcher {
                 // Supports indexed enumeration and directory IDs.
                 // Files 1992, 2-190 to 2-192
                 //
-                // Regression coverage:
-                //   pb_get_cat_info — BasiliskII-baked
-                //     missing-file failure path. Pre-poisons
-                //     ioResult = 0x3FFF, dispatches with a phantom
-                //     filename, asserts ioResult overwritten — pins
-                //     selector $0009 dispatch via the trace-mode
-                //     histogram bucket $260 = 1 alongside the visual
-                //     indicator. Per IM:Files 9944..9952 the
-                //     documented errors are noErr / nsvErr / ioErr /
-                //     bdNamErr / fnfErr / paramErr / dirNFErr; the
-                //     impl below writes -43 fnfErr on lookup miss.
+                // Per IM:Files 9944..9952 the documented errors are
+                // noErr / nsvErr / ioErr / bdNamErr / fnfErr / paramErr /
+                // dirNFErr; the impl below writes -43 fnfErr on lookup miss.
                 if selector == 9 {
                     let lookup = self
                         .lookup_catalog_entry_for_hfs_lookup(vref, dir_id, &filename, fdir_index);
@@ -6975,19 +6776,10 @@ impl super::TrapDispatcher {
                 // PBHOpenDF opens the data fork of a file specified by name, vRefNum, and dirID.
                 // Files 1992, 2-271
                 //
-                // Regression coverage:
-                //   pbh_open_df — BasiliskII-baked
-                //     missing-file failure path. Pairs the strong
-                //     err == -43 assertion with the strong
-                //     ioResult == -43 assertion (both render TRUE
-                //     under BasiliskII System 7.5.3 + extfs); pins
-                //     selector $001A dispatch via the trace-mode
-                //     histogram bucket $260 = 1 alongside the visual
-                //     indicator. Per IM:Files 9590..9598 the
-                //     documented errors are noErr / nsvErr / ioErr /
-                //     bdNamErr / tmfoErr / fnfErr (-43) / opWrErr /
-                //     permErr / dirNFErr / afpAccessDenied; the impl
-                //     below writes -43 fnfErr on lookup miss.
+                // Per IM:Files 9590..9598 the documented errors are
+                // noErr / nsvErr / ioErr / bdNamErr / tmfoErr / fnfErr (-43) /
+                // opWrErr / permErr / dirNFErr / afpAccessDenied; the impl
+                // below writes -43 fnfErr on lookup miss.
                 if selector == 26 {
                     // Clear ioRefNum upfront. Files 1992 leaves the output
                     // undefined on failure, but MPW's FSOpen glue writes
@@ -7059,9 +6851,7 @@ impl super::TrapDispatcher {
     /// MaxSizeRsrc reads from the map only) which collapses in our
     /// memory-resident HLE — every handle we know about points at a
     /// real guest-bus allocation. Both traps therefore return the
-    /// same byte count from `bus.get_alloc_size`. The contract test
-    /// `maxsizersrc_matches_sizeresource_for_loaded_resource` is the
-    /// gate that pins the equivalence.
+    /// same byte count from `bus.get_alloc_size`.
     fn handle_resource_size_query<C: CpuOps>(
         &self,
         bus: &mut MacMemoryBus,
@@ -8671,9 +8461,8 @@ mod tests {
         assert_eq!(bus.read_word(0x0A60) as i16, -192);
     }
 
-    // BasiliskII/System 7.5.3 catalogue fixture evidence:
-    // DetachResource(nil) returns resNotFound, matching the non-resource
-    // non-nil handle path.
+    // Per BasiliskII/System 7.5.3: DetachResource(nil) returns
+    // resNotFound, matching the non-resource non-nil handle path.
     #[test]
     fn detach_resource_nil_handle_returns_resnotfound() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -12299,7 +12088,7 @@ mod tests {
 
         assert_eq!(
             cpu.read_reg(Register::A0),
-            crate::machine_profile::ORACLE_MACHINE_PROFILE.system_version_bcd as u32
+            crate::machine_profile::REFERENCE_MACHINE_PROFILE.system_version_bcd as u32
         );
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
@@ -12342,7 +12131,7 @@ mod tests {
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
         assert_eq!(
             cpu.read_reg(Register::A0),
-            crate::machine_profile::ORACLE_MACHINE_PROFILE.ram_size_bytes
+            crate::machine_profile::REFERENCE_MACHINE_PROFILE.ram_size_bytes
         );
         assert_eq!(cpu.read_reg(Register::D0), 0);
 
@@ -12540,8 +12329,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0xFFFF_EA50);
     }
 
-    /// Mirrors B1 + B2 of a3ad_a5ad_newgestalt_replacegestalt_strict:
-    /// dispatches _NewGestalt with five distinct fictional selectors via
+    /// Dispatches _NewGestalt with five distinct fictional selectors via
     /// `call_trap_word(0xA3AD)` and witnesses that A7 is preserved across
     /// each call. Per IM:OSUtils 1994 p. 1-32 NewGestalt is an OS-bit
     /// FUNCTION with A0+D0 entry registers and D0 exit register; no Pascal
@@ -12565,8 +12353,7 @@ mod tests {
         }
     }
 
-    /// Mirrors B3 + B4 of a3ad_a5ad_newgestalt_replacegestalt_strict:
-    /// dispatches _ReplaceGestalt with five distinct fictional unknown
+    /// Dispatches _ReplaceGestalt with five distinct fictional unknown
     /// selectors via `call_trap_word(0xA5AD)` (all hit the
     /// gestaltUndefSelectorErr path per IM:OSUtils 1994 p. 1-35) and
     /// witnesses that A7 is preserved across each call. The bare trap
@@ -13700,8 +13487,7 @@ mod tests {
         assert_eq!(bus.read_word(pb + 16) as i16, 0);
     }
 
-    /// Mirrors bands B1+B2 of the `a010_pballocate_strict` BasiliskII bake:
-    /// pre-poisons pb.ioResult at pb+16 with a non-noErr, non-OSErr sentinel
+    /// Pre-poisons pb.ioResult at pb+16 with a non-noErr, non-OSErr sentinel
     /// (0x3FFF), sets ioRefNum to a clearly-bogus 9999, dispatches $A010,
     /// asserts the sentinel was overwritten AND D0 == ioResult per the
     /// File Manager dispatcher convention (Inside Macintosh Volume II 1985,
@@ -13766,8 +13552,7 @@ mod tests {
         assert_eq!(bus.read_word(pb + 16) as i16, 0);
     }
 
-    /// Mirrors bands B1+B2 of the `a210_pballoccontig_strict` BasiliskII
-    /// bake: pre-poisons pb.ioResult at pb+16 with a non-noErr, non-OSErr
+    /// Pre-poisons pb.ioResult at pb+16 with a non-noErr, non-OSErr
     /// sentinel (0x3FFF), sets ioRefNum to a clearly-bogus 9999, dispatches
     /// $A210, asserts the sentinel was overwritten AND D0 == ioResult per
     /// the File Manager dispatcher convention (Inside Macintosh Volume II
@@ -13830,7 +13615,7 @@ mod tests {
 
     #[test]
     fn pbkillio_writes_same_oserr_to_d0_and_ioresult_preserving_stack() {
-        // Mirrors a006_pbkillio_strict B1+B2: pre-poison ioResult with
+        // Pre-poison ioResult with
         // 0x3FFF (not noErr and not a documented OSErr), set ioRefNum to
         // a clearly-bogus value, dispatch _PBKillIO, witness that the
         // sentinel was overwritten AND D0 == ioResult per the Device
@@ -13877,8 +13662,7 @@ mod tests {
 
     #[test]
     fn finitqueue_five_call_composition_preserves_stack_and_returns_noerr_each_call() {
-        // Mirrors B2 of a016_finitqueue_strict: 5
-        // successive _FInitQueue dispatches inside one StackSpace
+        // 5 successive _FInitQueue dispatches inside one StackSpace
         // sandwich. Per-call pop discipline errors accumulate; this
         // pins cumulative drift even when each individual call's
         // drift would be small.
@@ -13921,8 +13705,8 @@ mod tests {
 
     #[test]
     fn adddrive_five_call_composition_preserves_stack_and_returns_noerr_each_call() {
-        // Mirrors the strict-bake AddDrive witness: 5 successive
-        // register-only dispatches inside one StackSpace sandwich.
+        // 5 successive register-only AddDrive dispatches inside one
+        // StackSpace sandwich.
         let (mut disp, mut cpu, mut bus) = setup();
         let qel = 0x320500u32;
         cpu.write_reg(Register::A0, qel);
@@ -13940,8 +13724,7 @@ mod tests {
 
     #[test]
     fn pboffline_writes_same_oserr_to_d0_and_ioresult_preserving_stack() {
-        // Mirrors B1 + B2 of a035_pboffline_strict:
-        // pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor
+        // Pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor
         // any documented OSErr), dispatches _PBOffLine with a clearly-
         // bogus ioVRefNum 9999, witnesses that the trap overwrote the
         // sentinel AND that D0 == ioResult (per File Manager dispatcher
@@ -14006,8 +13789,7 @@ mod tests {
 
     #[test]
     fn pbeject_writes_same_oserr_to_d0_and_ioresult_preserving_stack() {
-        // Mirrors B1 + B2 of a017_pbeject_strict:
-        // pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor
+        // Pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor
         // any documented OSErr), dispatches _PBEject with a clearly-
         // bogus ioVRefNum 9999, witnesses that the trap overwrote the
         // sentinel AND that D0 == ioResult (per File Manager dispatcher
@@ -14038,8 +13820,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp_before, "A7 preserved");
     }
 
-    /// Mirrors B1 + B2 of a00f_pbmountvol_strict:
-    /// pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor any
+    /// Pre-poisons pb.ioResult at pb+16 with 0x3FFF (neither noErr nor any
     /// documented OSErr), dispatches _PBMountVol with a clearly-bogus
     /// ioVRefNum=9999 drive number, witnesses that the trap overwrote the
     /// sentinel AND that D0 == ioResult (per File Manager dispatcher
@@ -14072,8 +13853,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp_before, "A7 preserved");
     }
 
-    /// Mirrors B1..B4 of a00e_a20e_pbunmountvol_pbunmountvolimmed_strict:
-    /// pre-poisons pb.ioResult at pb+16 with 0x3FFF on two separate parameter
+    /// Pre-poisons pb.ioResult at pb+16 with 0x3FFF on two separate parameter
     /// blocks, dispatches _PBUnmountVol ($A00E) then _PBUnmountVolImmed
     /// ($A20E) — which share the same low-byte arm — with a clearly-bogus
     /// ioVRefNum 9999, witnesses that each trap overwrote its sentinel AND
@@ -14120,8 +13900,7 @@ mod tests {
         );
     }
 
-    /// Mirrors B1 + B2 of a043_pbsetfvers_strict:
-    /// pre-poisons pb.ioResult at pb+16 with 0x3FFF, dispatches _PBSetFVers
+    /// Pre-poisons pb.ioResult at pb+16 with 0x3FFF, dispatches _PBSetFVers
     /// with a bogus ioVRefNum=9999 (no such volume), witnesses that the
     /// trap overwrote the sentinel AND that D0 == ioResult per File
     /// Manager dispatcher convention (IM:II 1985 p. II-114) AND that A7
@@ -14155,8 +13934,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp_before, "A7 preserved");
     }
 
-    /// Mirrors B1 + B2 of a20b_pbhrename_strict:
-    /// pre-poisons pb.ioResult at pb+16 with 0x3FFF, dispatches _PBHRename
+    /// Pre-poisons pb.ioResult at pb+16 with 0x3FFF, dispatches _PBHRename
     /// with bogus old/new filenames guaranteed not to exist in the VFS,
     /// witnesses that the trap overwrote the sentinel AND that D0 ==
     /// ioResult per File Manager dispatcher convention (IM:II 1985
@@ -14301,7 +14079,6 @@ mod tests {
 
     #[test]
     fn pbhsetvol_writes_same_oserr_to_d0_and_ioresult_preserving_stack() {
-        // Mirrors B1 + B2 of the a215_pbhsetvol_strict bake.
         // Pre-poisons pb.ioResult @ pb+16 with 0x3FFF and sets a phantom
         // ioVRefNum (-999); asserts the sentinel is overwritten AND
         // D0 == ioResult per the File Manager basic-PB dispatcher
@@ -14786,8 +14563,7 @@ mod tests {
         // Inside Macintosh: Files (1992), pp. 2-110 to 2-111 + Inside
         // Macintosh Volume II (1985), p. II-114.
         //
-        // Mirrors B1 + B2 + B3 + B4 of the strict bake fixture
-        // a041_a042_pbsetflock_pbrstflock_strict: pre-poisons
+        // Pre-poisons
         // pb.ioResult @ pb+16 with 0x3FFF, calls _PBSetFLock then
         // _PBRstFLock against bogus filenames not present in the VFS,
         // and asserts the dispatcher convention (D0 == ioResult,
@@ -14840,8 +14616,7 @@ mod tests {
         // Inside Macintosh: Files (1992), pp. 2-196 to 2-198 + Inside
         // Macintosh Volume II (1985), p. II-114.
         //
-        // Mirrors B1 + B2 + B3 + B4 of the strict bake fixture
-        // a241_a242_pbhsetflock_pbhrstflock_strict: pre-poisons
+        // Pre-poisons
         // ph.fileParam.ioResult @ pb+16 with 0x3FFF, calls _PBHSetFLock
         // then _PBHRstFLock against bogus filenames not present in the
         // VFS, and asserts the dispatcher convention (D0 == ioResult,
