@@ -6529,16 +6529,35 @@ impl super::TrapDispatcher {
         if !self.dialog_visible_snapshots.contains_key(&port) {
             return;
         }
+        // `port` is the port that was just drawn into (callers pass the
+        // current graphics port). Reaching here means it is a visible dialog
+        // window with a retained snapshot, so the drawing landed inside that
+        // dialog and is authoritative content — refresh the retained snapshot
+        // unconditionally. Applications often render dialog content directly
+        // into the window before entering ModalDialog (e.g. EV Override's Game
+        // Speed dialog blits an offscreen slider into a userItem rect via
+        // CopyBits), which happens before the Dialog Manager has begun modal
+        // tracking, so gating this on modal-entry lost that drawing.
+        // Inside Macintosh Volume I, I-405 (userItem contents are
+        // application-owned and must be preserved across dialog redraws).
         let modal_tracking_matches = self
             .dialog_tracking
             .as_ref()
             .is_some_and(|tracking| tracking.dialog_ptr == port);
-        let app_draw_proc_matches = self.active_modeless_dialog_draw_proc == Some(port);
-        if self.dialog_modal_entered.contains(&port)
-            || modal_tracking_matches
-            || app_draw_proc_matches
-        {
-            self.refresh_visible_dialog_snapshot_for_port(bus, port);
+        self.refresh_visible_dialog_snapshot_for_port(bus, port);
+        // ModalDialog's re-fire restores `rendered_pixels` over the dialog on
+        // every call, so when the drawing target is the active modal dialog,
+        // fold the fresh content into that snapshot too or the next re-fire
+        // immediately erases it.
+        if modal_tracking_matches {
+            let bounds = self.dialog_tracking.as_ref().map(|t| t.bounds);
+            if let Some(bounds) = bounds {
+                let rendered = self.save_dialog_pixels(bus, bounds);
+                if let Some(tracking) = self.dialog_tracking.as_mut() {
+                    tracking.rendered_pixels = rendered;
+                    tracking.rendered_pixels_final = true;
+                }
+            }
         }
     }
 
