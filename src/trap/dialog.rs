@@ -2,8 +2,7 @@
 
 use super::dispatch::{
     DialogItem, DialogPopupDraw, DialogPopupTrackingState, DialogTrackingState,
-    DialogUserItemTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
-    RetainedModalDialogClickState,
+    PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent, RetainedModalDialogClickState,
 };
 use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
@@ -11498,10 +11497,18 @@ impl super::TrapDispatcher {
                                                 cpu.write_reg(Register::A7, stack_ptr + 8);
                                             }
                                             // Plain userItems in standard dialogs are custom
-                                            // hit targets. Track the physical click until
-                                            // release so the application receives the item
-                                            // hit after the completed click, matching the
-                                            // standard control paths above.
+                                            // hit targets whose content and mouse tracking are
+                                            // application-owned (IM:I I-405). Some applications
+                                            // implement draggable custom controls (e.g. EV
+                                            // Override's Game Speed slider) by running their own
+                                            // StillDown()/GetMouse() tracking loop after
+                                            // ModalDialog returns the item on the initial press,
+                                            // so the hit must be returned while the button is
+                                            // still down — holding it until release leaves the
+                                            // application's tracking loop with nothing to follow.
+                                            // Return the hit immediately on mouse-down; the
+                                            // pending mouse-up stays queued so StillDown() and the
+                                            // application loop still observe the release.
                                             0 if self.dialog_tracking.as_ref().is_some_and(
                                                 |tracking| {
                                                     self.is_plain_modal_user_item(
@@ -11510,22 +11517,28 @@ impl super::TrapDispatcher {
                                                 },
                                             ) && self.mouse_button =>
                                             {
-                                                let active_rect = self
-                                                    .dialog_tracking
-                                                    .as_ref()
-                                                    .and_then(|tracking| {
-                                                        self.dialog_popup_original_rects
-                                                            .get(&(tracking.dialog_ptr, hit))
-                                                            .copied()
-                                                    })
-                                                    .unwrap_or(item.rect);
-                                                if let Some(t) = self.dialog_tracking.as_mut() {
-                                                    t.active_user_item =
-                                                        Some(DialogUserItemTrackingState {
-                                                            item_no: hit,
-                                                            rect: active_rect,
-                                                        });
+                                                let (dlg_ptr, edit_item, edit_text, items) = {
+                                                    let tracking =
+                                                        self.dialog_tracking.as_mut().unwrap();
+                                                    Self::sync_tracking_active_edit_item(tracking);
+                                                    (
+                                                        tracking.dialog_ptr,
+                                                        tracking.edit_item,
+                                                        tracking.edit_text.clone(),
+                                                        tracking.items.clone(),
+                                                    )
+                                                };
+                                                self.flush_dialog_edit_item_texts(
+                                                    bus, dlg_ptr, &items, edit_item, &edit_text,
+                                                );
+                                                let saved = self.dialog_tracking.take().unwrap();
+                                                self.persist_visible_dialog_snapshot(bus, &saved);
+                                                self.dialog_saved_pixels
+                                                    .insert(saved.dialog_ptr, saved.saved_pixels);
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(item_hit_ptr, hit as u16);
                                                 }
+                                                cpu.write_reg(Register::A7, stack_ptr + 8);
                                             }
                                             // Any other enabled item: return item number immediately.
                                             // Inside Macintosh Volume I, I-428
