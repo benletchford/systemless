@@ -24520,11 +24520,15 @@ mod tests {
     }
 
     #[test]
-    fn premodal_visible_dialog_snapshot_ignores_bulk_screen_blits() {
-        // Background windows may bulk-blit menu/title art after a visible
-        // dialog is already on screen. Until ModalDialog or a userItem draw
-        // proc owns the dialog, those bulk blits are not dialog content and
-        // must not replace the retained visible-dialog snapshot.
+    fn premodal_dialog_port_draw_refreshes_visible_snapshot() {
+        // Callers pass the port that was just drawn into (the current graphics
+        // port). When that port is a visible dialog with a retained snapshot,
+        // the drawing landed inside the dialog and is application-owned dialog
+        // content — even before ModalDialog has begun modal tracking. Games
+        // routinely render dialog content directly into the window before
+        // entering ModalDialog (EV Override blits its Game Speed slider into a
+        // userItem rect; Marathon draws custom controls the same way), so the
+        // retained snapshot must be refreshed to capture it.
         let (mut disp, _cpu, mut bus) = setup();
         let screen_base = bus.alloc((64 * 64) as u32);
         bus.write_bytes(screen_base, &vec![0x00; 64 * 64]);
@@ -24553,8 +24557,8 @@ mod tests {
         disp.restore_visible_dialog_snapshots(&mut bus);
         assert_eq!(
             bus.read_byte(probe),
-            0x11,
-            "pre-modal bulk blits must not replace a visible dialog snapshot"
+            0x77,
+            "drawing into the dialog's own port refreshes its retained snapshot"
         );
 
         disp.dialog_modal_entered.insert(dialog_ptr);
@@ -29123,7 +29127,13 @@ mod tests {
     }
 
     #[test]
-    fn modal_dialog_plain_user_item_waits_for_mouse_up_before_returning() {
+    fn modal_dialog_plain_user_item_returns_on_mouse_down() {
+        // A plain userItem's content and mouse tracking are application-owned
+        // (IM:I I-405). ModalDialog returns the item on the initial press so
+        // the application can run its own StillDown()/GetMouse() tracking loop
+        // (e.g. EV Override's draggable Game Speed slider). The pending
+        // mouse-up stays queued so that tracking loop still observes the
+        // release.
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;
         let item_hit_ptr = 0x300000u32;
@@ -29178,28 +29188,11 @@ mod tests {
 
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        assert_eq!(bus.read_word(item_hit_ptr), 0);
-        assert!(disp
-            .dialog_tracking
-            .as_ref()
-            .and_then(|tracking| tracking.active_user_item.as_ref())
-            .is_some());
-
-        disp.mouse_button = false;
-        disp.event_queue
-            .push_back(crate::trap::dispatch::QueuedEvent {
-                what: 2,
-                message: 0,
-                where_v: 130,
-                where_h: 240,
-                modifiers: 0x0080,
-            });
-        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
+        // The hit is returned immediately on mouse-down: stack popped and the
+        // item number written, with modal tracking released.
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
-        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+        assert!(disp.dialog_tracking.is_none());
     }
 
     #[test]
