@@ -15,7 +15,7 @@ documentation = "https://docs.rs/systemless"
 default-run = "systemless"
 
 [dependencies]
-m68k = "0.1.13"
+m68k = "0.1.16"
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }

@@ -135,6 +135,22 @@ impl M68kCpu {
         self.core.reset(bus);
     }
 
+    /// Execute up to `max_instructions` instructions inside the m68k
+    /// core's JIT-enabled batch loop, returning on the first event the
+    /// runner must handle (trap, stop, watched PC, or budget out).
+    /// See [`m68k::CpuCore::run_batch`] for the exit/accounting
+    /// contract; the trapping instruction is *not* included in
+    /// `instructions` and `core.ppc` holds its address.
+    #[inline]
+    pub fn run_batch(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        max_instructions: u32,
+        watch_pcs: &[u32],
+    ) -> m68k::BatchResult {
+        self.core.run_batch(bus, max_instructions, watch_pcs)
+    }
+
     /// `#[inline]` — called once per M68K instruction. The wrapper
     /// converts `m68k::StepResult` to `systemless::StepResult`; inlining
     /// lets LLVM fold the match into the caller's decision tree.

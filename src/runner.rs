@@ -1,6 +1,7 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::cpu::{M68kCpu, Register, StepResult};
+use m68k::BatchExit;
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::loader::{
     ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
@@ -197,6 +198,49 @@ fn trace_opcode_counts_enabled() -> bool {
 // overhead negligible while still giving high-confidence attribution
 // for any loop that takes more than ~0.1% of runtime.
 const PC_SAMPLE_INTERVAL: u64 = 1000;
+
+/// Upper bound on instructions handed to `m68k::run_batch` per call.
+///
+/// The run loop's per-iteration work (sound-callback polling, wait/delay
+/// service, PC validity checks) now runs once per batch instead of once
+/// per instruction, so this bounds the latency of those checks. 8192
+/// instructions is tens of microseconds at batch execution speeds —
+/// far below a guest tick (12k instructions) — while amortising the
+/// loop overhead to well under 0.1%.
+const BATCH_CHUNK: usize = 8192;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn trace_pc_range_active() -> bool {
+    trace_pc_range().is_some()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn trace_pc_range_active() -> bool {
+    false
+}
+
+/// True when any opt-in tracer needs to observe every instruction
+/// boundary. The run loop then falls back to single-instruction batches
+/// so per-step diagnostics (trace buffer, watchpoints, histograms,
+/// PC-range dumps) behave exactly as they did before batching. All the
+/// gates are `OnceLock`-cached env-var reads, so this costs a handful of
+/// branches per batch.
+fn per_instruction_diagnostics_active() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        if crate::memory::bus::watchpoint_armed() {
+            return true;
+        }
+    }
+    trace_buffer_enabled()
+        || trace_timer_enabled()
+        || trace_opcode_counts_enabled()
+        || trace_hot_pc_enabled()
+        || trace_pc_range_active()
+        || crate::memory::bus::fb_write_trace_active()
+        || crate::memory::bus::mem_read_trace_active()
+        || crate::memory::bus::mem_write_trace_active()
+}
 #[cfg(not(target_arch = "wasm32"))]
 static TRACE_HOT_PC: OnceLock<bool> = OnceLock::new();
 fn trace_hot_pc_enabled() -> bool {
@@ -2724,15 +2768,6 @@ impl FixtureRunner {
                 return (count, false);
             }
 
-            // Tick advancement: deduct 1 instruction; when the budget hits
-            // zero, advance $016A and refill from instructions_per_tick.
-            if !sound_work_only {
-                tick_cap_reached = self.charge_tick_budget(1, tick_cap);
-                if tick_cap_reached {
-                    break;
-                }
-            }
-
             // Update debug counters for watchpoint tracking (debug builds only)
             #[cfg(debug_assertions)]
             if crate::memory::bus::watchpoint_armed() {
@@ -2792,59 +2827,136 @@ impl FixtureRunner {
                     frame_arg,
                 );
             }
-            // Execute one instruction.
-            match self.cpu.step(&mut self.bus) {
-                StepResult::Ok => {
-                    count += 1;
-                    self.total_instructions = self.total_instructions.wrapping_add(1);
-                    // Populate opcode histogram if enabled. cpu.core.ir
-                    // holds the last-fetched opcode (set by step's
-                    // read_imm_16). Only counts successful non-trap
-                    // steps here; A-line opcodes go through the trap
-                    // histogram instead. Zero cost when disabled
-                    // (cached bool).
+            // Execute up to `batch_max` instructions inside the m68k core's
+            // JIT-enabled batch loop. Control returns here on the first
+            // A-line trap, STOP, watched PC, or when the budget runs out —
+            // so the per-iteration bookkeeping above amortises across the
+            // whole batch instead of running per instruction.
+            //
+            // Tick accounting: the old per-step loop charged the budget
+            // BEFORE each instruction, so tick-boundary side effects (a
+            // tick-cap break, timer/VBL callbacks that redirect PC) took
+            // effect before the boundary instruction executed. To keep
+            // those semantics, the boundary instruction is pre-charged
+            // here, and each batch is clamped to stop short of the next
+            // boundary; everything in between is charged in bulk after
+            // the batch retires (pre/post order is indistinguishable away
+            // from a boundary).
+            let charging = !sound_work_only
+                && self.active_interrupt_callback.is_none()
+                && self.frozen_ticks.is_none();
+            let mut precharged = false;
+            if charging && self.tick_budget <= 1 {
+                if self.charge_tick_budget(1, tick_cap) {
+                    break;
+                }
+                precharged = true;
+            }
+            let batch_max = if per_instruction_diagnostics_active() {
+                1
+            } else {
+                let mut n = (max_steps - count).min(BATCH_CHUNK);
+                if charging && self.active_interrupt_callback.is_none() {
+                    n = n.min((self.tick_budget - 1).max(1) as usize);
+                }
+                n as u32
+            };
+            // PC 0 is always watched: a deep RTS chain unwinding to 0 is
+            // the clean-exit signal handled at the top of this loop, and it
+            // must halt before low memory gets executed as code. While an
+            // interrupt callback is active (including one fired by the
+            // pre-charge above), its resume PC is watched so the resume
+            // PC+SP check above fires at the exact boundary.
+            let mut watch_buf = [0u32; 2];
+            let watch: &[u32] = if let Some(callback) = self.active_interrupt_callback {
+                watch_buf[1] = callback.resume_pc;
+                &watch_buf
+            } else {
+                &watch_buf[..1]
+            };
+            let batch = self.cpu.run_batch(&mut self.bus, batch_max, watch);
+            // Trap exits consumed their opcode word too; count it like the
+            // old per-step path did.
+            let executed = batch.instructions as usize
+                + usize::from(matches!(
+                    batch.exit,
+                    BatchExit::AlineTrap { .. } | BatchExit::FlineTrap { .. }
+                ));
+            if executed > 0 {
+                count += executed;
+                self.total_instructions =
+                    self.total_instructions.wrapping_add(executed as u64);
+                if !sound_work_only {
+                    let charge_units = executed as i32 - i32::from(precharged);
+                    if self.charge_tick_budget(charge_units, tick_cap) {
+                        tick_cap_reached = true;
+                    }
+                }
+                // Per-instruction histograms: any enabled tracer forces
+                // batch_max == 1 above, so these still see every retired
+                // instruction. A-line exits retire zero and keep going
+                // through the trap histogram instead, as before.
+                if batch.instructions > 0 {
                     if trace_opcode_counts_enabled() {
                         let opcode = self.cpu.core.ir as u16 as usize;
                         self.opcode_histogram[opcode] =
                             self.opcode_histogram[opcode].saturating_add(1);
                     }
-                    // Sampled PC histogram. 1/1000 sampling keeps the
-                    // HashMap cost bounded.
                     if trace_hot_pc_enabled()
                         && self.total_instructions.is_multiple_of(PC_SAMPLE_INTERVAL)
                     {
                         *self.pc_histogram.entry(pc).or_insert(0) += 1;
                     }
                 }
-                StepResult::Stopped => {
-                    let halted_pc = self.cpu.read_reg(Register::PC);
-                    eprintln!(
-                        "[RUN_STEPS] CPU stopped at count={} pc=${:08X} op=${:04X}",
-                        count,
-                        halted_pc,
-                        self.bus.read_word(halted_pc)
-                    );
-                    if let Some(hint) = decode_fakeptr_pc(halted_pc) {
-                        eprintln!("[RUN_STEPS]   {}", hint);
-                    } else if let Some((entry_pc, hint)) = self.trace_find_fakeptr_entry() {
-                        eprintln!(
-                            "[RUN_STEPS]   PC drifted ${:X} bytes from a fake-ptr entry at \
-                             ${:08X}. {}",
-                            halted_pc.wrapping_sub(entry_pc),
-                            entry_pc,
-                            hint
-                        );
-                    }
+            }
+            match batch.exit {
+                BatchExit::BudgetExhausted | BatchExit::WatchedPc { .. } => {
+                    // Nothing to do: the loop top re-reads PC and handles
+                    // watched addresses (interrupt-callback resume, clean
+                    // exit at PC 0) exactly like the old per-step checks.
+                }
+                BatchExit::FlineTrap { .. } => {
+                    // Preserved legacy behavior (see M68kCpu::step): F-line
+                    // opcodes execute as 2-byte no-ops. PC has already
+                    // advanced past the opcode word; accounting happened
+                    // via `executed` above.
+                }
+                BatchExit::Stopped => {
+                    // STOP retired mid-batch. Halt silently, matching the
+                    // old flow where the next loop iteration's is_stopped
+                    // check caught it.
                     self.halted = true;
-                    self.halted_pc = Some(halted_pc);
+                    self.halted_pc = Some(self.cpu.read_reg(Register::PC));
                     self.halted_sp = Some(self.cpu.read_reg(Register::A7));
                     self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
                     self.dump_trace();
                     return (count, false);
                 }
-                StepResult::Aline(opcode) => {
-                    count += 1;
-                    self.total_instructions = self.total_instructions.wrapping_add(1);
+                BatchExit::TrapInstruction { trap_num } => {
+                    eprintln!("[CPU] TrapInstruction: #{}", trap_num);
+                    self.halt_with_stop_diagnostics(count);
+                    return (count, false);
+                }
+                BatchExit::Breakpoint { bp_num } => {
+                    eprintln!("[CPU] Breakpoint: #{}", bp_num);
+                    self.halt_with_stop_diagnostics(count);
+                    return (count, false);
+                }
+                BatchExit::IllegalInstruction { opcode } => {
+                    eprintln!(
+                        "[CPU] IllegalInstruction: ${:04X} at PC=${:08X}",
+                        opcode, self.cpu.core.pc
+                    );
+                    self.halt_with_stop_diagnostics(count);
+                    return (count, false);
+                }
+                BatchExit::AlineTrap { opcode } => {
+                    // Accounting (count/ticks) happened via `executed`
+                    // above. The batch may have retired instructions before
+                    // the trap, so the loop-top `pc` is stale; the trap
+                    // word's own address is in `ppc` (PC already advanced
+                    // past it).
+                    let pc = self.cpu.core.ppc;
 
                     // --- Runner-inline fast paths for hot traps ---
                     //
@@ -3353,6 +3465,36 @@ impl FixtureRunner {
     /// accessors after this call returns.
     pub fn run_steps(&mut self, max_steps: usize, tick_override: Option<u32>) -> (usize, bool) {
         self.run_steps_internal(max_steps, tick_override, 0, false, false, true)
+    }
+
+    /// Halt at the CPU's current position with the standard crash
+    /// diagnostics (stop banner, fake-ptr hints, trace dump). Shared by
+    /// the batch-exit arms (TRAP #n / BKPT / illegal instruction) that
+    /// previously funneled through `StepResult::Stopped`.
+    fn halt_with_stop_diagnostics(&mut self, count: usize) {
+        let halted_pc = self.cpu.read_reg(Register::PC);
+        eprintln!(
+            "[RUN_STEPS] CPU stopped at count={} pc=${:08X} op=${:04X}",
+            count,
+            halted_pc,
+            self.bus.read_word(halted_pc)
+        );
+        if let Some(hint) = decode_fakeptr_pc(halted_pc) {
+            eprintln!("[RUN_STEPS]   {}", hint);
+        } else if let Some((entry_pc, hint)) = self.trace_find_fakeptr_entry() {
+            eprintln!(
+                "[RUN_STEPS]   PC drifted ${:X} bytes from a fake-ptr entry at \
+                 ${:08X}. {}",
+                halted_pc.wrapping_sub(entry_pc),
+                entry_pc,
+                hint
+            );
+        }
+        self.halted = true;
+        self.halted_pc = Some(halted_pc);
+        self.halted_sp = Some(self.cpu.read_reg(Register::A7));
+        self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+        self.dump_trace();
     }
 
     fn charge_tick_budget(&mut self, units: i32, tick_cap: Option<u32>) -> bool {
