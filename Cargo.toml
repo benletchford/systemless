@@ -1,6 +1,6 @@
 [package]
 name = "systemless"
-version = "0.1.128"
+version = "0.1.129"
 edition = "2021"
 # Emulator code is GPL-3.0-or-later; the bitmap font artwork in
 # src/quickdraw/fonts/pixel_font/ is additionally under OFL-1.1 (see OFL.txt).
@@ -15,7 +15,7 @@ documentation = "https://docs.rs/systemless"
 default-run = "systemless"
 
 [dependencies]
-m68k = "0.1.16"
+m68k = "0.1.17"
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }

@@ -1164,6 +1164,25 @@ impl MacMemoryBus {
         self.ram_size
     }
 
+    /// Raw window over guest RAM for the m68k fastmem path, or `None`
+    /// while any per-access diagnostic (framebuffer-write tracer, memory
+    /// read/write tracer, watchpoint) needs to observe individual bus
+    /// accesses — fastmem reads/writes bypass those hooks entirely.
+    pub(crate) fn fast_mem_window(&mut self) -> Option<(*mut u8, u32)> {
+        if fb_write_trace_range().is_some()
+            || mem_read_trace_active()
+            || mem_write_trace_active()
+            || watchpoint_armed()
+        {
+            return None;
+        }
+        let ptr = match &mut self.ram {
+            RamStorage::Owned(v) => v.as_mut_ptr(),
+            RamStorage::External(ptr, _) => *ptr,
+        };
+        Some((ptr, self.ram_size))
+    }
+
     /// Dump stack contents around the given SP for debugging
     pub fn dump_stack(&self, sp: u32, label: &str) {
         eprintln!("[STACK DUMP] {} (SP=${:08X})", label, sp);
