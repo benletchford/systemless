@@ -515,6 +515,9 @@ impl super::TrapDispatcher {
     const ST_ELEMENT_HEIGHT_OFFSET: u32 = 0x02;
     const ST_ELEMENT_ASCENT_OFFSET: u32 = 0x04;
     const ST_ELEMENT_FONT_OFFSET: u32 = 0x06;
+    // Style is a one-byte SET followed by one alignment byte in TextStyle,
+    // STElement, and ScrpSTElement records. Inside Macintosh: Text 1993,
+    // pp. 2-72, 2-78, and 2-80.
     const ST_ELEMENT_FACE_OFFSET: u32 = 0x08;
     const ST_ELEMENT_SIZE_OFFSET: u32 = 0x0A;
     const ST_ELEMENT_COLOR_OFFSET: u32 = 0x0C;
@@ -1481,7 +1484,7 @@ impl super::TrapDispatcher {
                 if style_table_ptr != 0 {
                     return (
                         bus.read_word(style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET) as i16,
-                        bus.read_word(style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET) as i16,
+                        i16::from(bus.read_byte(style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET)),
                         bus.read_word(style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET) as i16,
                         (
                             bus.read_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET),
@@ -1496,7 +1499,7 @@ impl super::TrapDispatcher {
         }
 
         let tx_font = bus.read_word(te_ptr + Self::TE_TX_FONT_OFFSET) as i16;
-        let tx_face = bus.read_word(te_ptr + Self::TE_TX_FACE_OFFSET) as i16;
+        let tx_face = i16::from(bus.read_byte(te_ptr + Self::TE_TX_FACE_OFFSET));
         let tx_size =
             Self::font_lookup_size(bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16);
         let metrics = get_font_metrics(tx_font, tx_size);
@@ -1543,7 +1546,7 @@ impl super::TrapDispatcher {
     fn te_style_from_table_element(bus: &MacMemoryBus, style_ptr: u32) -> TeResolvedStyle {
         Self::te_resolved_style_from_parts(
             bus.read_word(style_ptr + Self::ST_ELEMENT_FONT_OFFSET) as i16,
-            bus.read_word(style_ptr + Self::ST_ELEMENT_FACE_OFFSET) as i16,
+            i16::from(bus.read_byte(style_ptr + Self::ST_ELEMENT_FACE_OFFSET)),
             bus.read_word(style_ptr + Self::ST_ELEMENT_SIZE_OFFSET) as i16,
             (
                 bus.read_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET),
@@ -1558,7 +1561,7 @@ impl super::TrapDispatcher {
     fn te_style_from_scrap_element(bus: &MacMemoryBus, scrap_style_ptr: u32) -> TeResolvedStyle {
         Self::te_resolved_style_from_parts(
             bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_FONT_OFFSET) as i16,
-            bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_FACE_OFFSET) as i16,
+            i16::from(bus.read_byte(scrap_style_ptr + Self::SCRAP_STYLE_FACE_OFFSET)),
             bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_SIZE_OFFSET) as i16,
             (
                 bus.read_word(scrap_style_ptr + Self::SCRAP_STYLE_COLOR_OFFSET),
@@ -1585,11 +1588,118 @@ impl super::TrapDispatcher {
             style.ascent as u16,
         );
         bus.write_word(style_ptr + Self::ST_ELEMENT_FONT_OFFSET, style.font as u16);
-        bus.write_word(style_ptr + Self::ST_ELEMENT_FACE_OFFSET, style.face as u16);
+        bus.write_byte(style_ptr + Self::ST_ELEMENT_FACE_OFFSET, style.face as u8);
         bus.write_word(style_ptr + Self::ST_ELEMENT_SIZE_OFFSET, style.size as u16);
         bus.write_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET, style.color.0);
         bus.write_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2, style.color.1);
         bus.write_word(style_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4, style.color.2);
+    }
+
+    fn te_set_null_style(
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        mode: u16,
+        text_style_ptr: u32,
+    ) -> bool {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if !Self::te_is_styled_record(bus, te_ptr) || text_style_ptr == 0 {
+            return false;
+        }
+        let style_handle = Self::te_style_handle(bus, te_handle);
+        let style_ptr = if style_handle != 0 {
+            bus.read_long(style_handle)
+        } else {
+            0
+        };
+        let null_style_handle = if style_ptr != 0 {
+            bus.read_long(style_ptr + Self::TE_STYLE_NULL_STYLE_OFFSET)
+        } else {
+            0
+        };
+        let null_style_ptr = if null_style_handle != 0 {
+            bus.read_long(null_style_handle)
+        } else {
+            0
+        };
+        let null_scrap_handle = if null_style_ptr != 0 {
+            bus.read_long(null_style_ptr + Self::NULL_STYLE_SCRAP_OFFSET)
+        } else {
+            0
+        };
+        let scrap_ptr = if null_scrap_handle != 0 {
+            bus.read_long(null_scrap_handle)
+        } else {
+            0
+        };
+        if scrap_ptr == 0 {
+            return false;
+        }
+
+        let element = scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET;
+        bus.write_word(scrap_ptr + Self::SCRAP_N_STYLES_OFFSET, 1);
+        if (mode & 0x0001) != 0 {
+            bus.write_word(
+                element + Self::SCRAP_STYLE_FONT_OFFSET,
+                bus.read_word(text_style_ptr),
+            );
+        }
+        if (mode & 0x0002) != 0 {
+            bus.write_byte(
+                element + Self::SCRAP_STYLE_FACE_OFFSET,
+                bus.read_byte(text_style_ptr + 2),
+            );
+        }
+        if (mode & 0x0004) != 0 {
+            bus.write_word(
+                element + Self::SCRAP_STYLE_SIZE_OFFSET,
+                bus.read_word(text_style_ptr + 4),
+            );
+        }
+        if (mode & 0x0008) != 0 {
+            for offset in [0u32, 2, 4] {
+                bus.write_word(
+                    element + Self::SCRAP_STYLE_COLOR_OFFSET + offset,
+                    bus.read_word(text_style_ptr + 6 + offset),
+                );
+            }
+        }
+        let font = bus.read_word(element + Self::SCRAP_STYLE_FONT_OFFSET) as i16;
+        let size =
+            Self::font_lookup_size(bus.read_word(element + Self::SCRAP_STYLE_SIZE_OFFSET) as i16);
+        let metrics = get_font_metrics(font, size);
+        bus.write_word(
+            element + Self::SCRAP_STYLE_HEIGHT_OFFSET,
+            (metrics.ascent + metrics.descent + metrics.leading) as u16,
+        );
+        bus.write_word(
+            element + Self::SCRAP_STYLE_ASCENT_OFFSET,
+            metrics.ascent as u16,
+        );
+        true
+    }
+
+    fn te_null_style_scrap_handle(bus: &MacMemoryBus, te_handle: u32) -> u32 {
+        let style_handle = Self::te_style_handle(bus, te_handle);
+        let style_ptr = if style_handle != 0 {
+            bus.read_long(style_handle)
+        } else {
+            0
+        };
+        let null_style_handle = if style_ptr != 0 {
+            bus.read_long(style_ptr + Self::TE_STYLE_NULL_STYLE_OFFSET)
+        } else {
+            0
+        };
+        let null_style_ptr = if null_style_handle != 0 {
+            bus.read_long(null_style_handle)
+        } else {
+            0
+        };
+        if null_style_ptr != 0 {
+            bus.read_long(null_style_ptr + Self::NULL_STYLE_SCRAP_OFFSET)
+        } else {
+            0
+        }
     }
 
     fn te_style_runs(
@@ -2047,7 +2157,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
         bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
         bus.write_word(te_ptr + Self::TE_TX_FONT_OFFSET, self.tx_font as u16);
-        bus.write_word(te_ptr + Self::TE_TX_FACE_OFFSET, self.tx_face as u16);
+        bus.write_byte(te_ptr + Self::TE_TX_FACE_OFFSET, self.tx_face as u8);
         bus.write_word(te_ptr + Self::TE_TX_MODE_OFFSET, self.tx_mode as u16);
         bus.write_word(te_ptr + Self::TE_TX_SIZE_OFFSET, self.tx_size as u16);
         bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, self.current_port);
@@ -2096,9 +2206,9 @@ impl super::TrapDispatcher {
                 style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
                 self.tx_font as u16,
             );
-            bus.write_word(
+            bus.write_byte(
                 style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
-                self.tx_face as u16,
+                self.tx_face as u8,
             );
             bus.write_word(
                 style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
@@ -2157,9 +2267,9 @@ impl super::TrapDispatcher {
                 null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_FONT_OFFSET,
                 self.tx_font as u16,
             );
-            bus.write_word(
+            bus.write_byte(
                 null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_FACE_OFFSET,
-                self.tx_face as u16,
+                self.tx_face as u8,
             );
             bus.write_word(
                 null_scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET + Self::SCRAP_STYLE_SIZE_OFFSET,
@@ -2333,7 +2443,7 @@ impl super::TrapDispatcher {
                 ascent as u16,
             );
             bus.write_word(style_table_ptr + Self::ST_ELEMENT_FONT_OFFSET, font as u16);
-            bus.write_word(style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET, face as u16);
+            bus.write_byte(style_table_ptr + Self::ST_ELEMENT_FACE_OFFSET, face as u8);
             bus.write_word(style_table_ptr + Self::ST_ELEMENT_SIZE_OFFSET, size as u16);
             bus.write_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET, color.0);
             bus.write_word(style_table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2, color.1);
@@ -13099,10 +13209,13 @@ impl super::TrapDispatcher {
                                 te_handle, mode, redraw, style_ptr
                             );
                             if style_ptr != 0 {
+                                let te_ptr = Self::te_record_ptr(bus, te_handle);
                                 eprintln!(
-                                    "[TE] TESetStyle values font={} face=${:04X} size={} color=(${:04X},${:04X},${:04X})",
+                                    "[TE] TESetStyle values sel={}..{} font={} face=${:04X} size={} color=(${:04X},${:04X},${:04X})",
+                                    if te_ptr != 0 { bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) } else { 0 },
+                                    if te_ptr != 0 { bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) } else { 0 },
                                     bus.read_word(style_ptr) as i16,
-                                    bus.read_word(style_ptr + 2),
+                                    bus.read_byte(style_ptr + 2),
                                     bus.read_word(style_ptr + 4) as i16,
                                     bus.read_word(style_ptr + 6),
                                     bus.read_word(style_ptr + 8),
@@ -13113,129 +13226,146 @@ impl super::TrapDispatcher {
                         if style_ptr != 0 {
                             let te_ptr = Self::te_record_ptr(bus, te_handle);
                             if te_ptr != 0 {
-                                let style_handle = Self::te_style_handle(bus, te_handle);
-                                if style_handle != 0 {
-                                    let style_ptr_record = bus.read_long(style_handle);
-                                    if style_ptr_record != 0 {
-                                        let table_handle = bus.read_long(
-                                            style_ptr_record + Self::TE_STYLE_STYLE_TABLE_OFFSET,
-                                        );
-                                        let table_ptr = if table_handle != 0 {
-                                            bus.read_long(table_handle)
-                                        } else {
-                                            0
-                                        };
-                                        if table_ptr != 0 {
-                                            if (mode & 0x0001) != 0 {
-                                                bus.write_word(
-                                                    table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
-                                                    bus.read_word(style_ptr),
-                                                );
-                                            }
-                                            if (mode & 0x0002) != 0 {
-                                                bus.write_word(
-                                                    table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
-                                                    bus.read_word(style_ptr + 2),
-                                                );
-                                            }
-                                            if (mode & 0x0004) != 0 {
-                                                bus.write_word(
-                                                    table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
-                                                    bus.read_word(style_ptr + 4),
-                                                );
-                                            }
-                                            if (mode & 0x0008) != 0 {
-                                                bus.write_word(
-                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
-                                                    bus.read_word(style_ptr + 6),
-                                                );
-                                                bus.write_word(
-                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 2,
-                                                    bus.read_word(style_ptr + 8),
-                                                );
-                                                bus.write_word(
-                                                    table_ptr + Self::ST_ELEMENT_COLOR_OFFSET + 4,
-                                                    bus.read_word(style_ptr + 10),
-                                                );
-                                            }
-
-                                            let resolved_font = bus
-                                                .read_word(table_ptr + Self::ST_ELEMENT_FONT_OFFSET)
-                                                as i16;
-                                            let resolved_size = bus
-                                                .read_word(table_ptr + Self::ST_ELEMENT_SIZE_OFFSET)
-                                                as i16;
-                                            let metrics = get_font_metrics(
-                                                resolved_font,
-                                                Self::font_lookup_size(resolved_size),
+                                let insertion_point = bus
+                                    .read_word(te_ptr + Self::TE_SEL_START_OFFSET)
+                                    == bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET);
+                                if insertion_point && Self::te_is_styled_record(bus, te_ptr) {
+                                    Self::te_set_null_style(bus, te_handle, mode, style_ptr);
+                                } else {
+                                    let style_handle = Self::te_style_handle(bus, te_handle);
+                                    if style_handle != 0 {
+                                        let style_ptr_record = bus.read_long(style_handle);
+                                        if style_ptr_record != 0 {
+                                            let table_handle = bus.read_long(
+                                                style_ptr_record
+                                                    + Self::TE_STYLE_STYLE_TABLE_OFFSET,
                                             );
-                                            let line_height =
-                                                metrics.ascent + metrics.descent + metrics.leading;
-                                            bus.write_word(
-                                                table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
-                                                line_height as u16,
-                                            );
-                                            bus.write_word(
-                                                table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
-                                                metrics.ascent as u16,
-                                            );
-
-                                            let lh_handle = bus.read_long(
-                                                style_ptr_record + Self::TE_STYLE_LH_TABLE_OFFSET,
-                                            );
-                                            let lh_ptr = if lh_handle != 0 {
-                                                bus.read_long(lh_handle)
+                                            let table_ptr = if table_handle != 0 {
+                                                bus.read_long(table_handle)
                                             } else {
                                                 0
                                             };
-                                            if lh_ptr != 0 {
+                                            if table_ptr != 0 {
+                                                if (mode & 0x0001) != 0 {
+                                                    bus.write_word(
+                                                        table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
+                                                        bus.read_word(style_ptr),
+                                                    );
+                                                }
+                                                if (mode & 0x0002) != 0 {
+                                                    bus.write_byte(
+                                                        table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
+                                                        bus.read_byte(style_ptr + 2),
+                                                    );
+                                                }
+                                                if (mode & 0x0004) != 0 {
+                                                    bus.write_word(
+                                                        table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
+                                                        bus.read_word(style_ptr + 4),
+                                                    );
+                                                }
+                                                if (mode & 0x0008) != 0 {
+                                                    bus.write_word(
+                                                        table_ptr + Self::ST_ELEMENT_COLOR_OFFSET,
+                                                        bus.read_word(style_ptr + 6),
+                                                    );
+                                                    bus.write_word(
+                                                        table_ptr
+                                                            + Self::ST_ELEMENT_COLOR_OFFSET
+                                                            + 2,
+                                                        bus.read_word(style_ptr + 8),
+                                                    );
+                                                    bus.write_word(
+                                                        table_ptr
+                                                            + Self::ST_ELEMENT_COLOR_OFFSET
+                                                            + 4,
+                                                        bus.read_word(style_ptr + 10),
+                                                    );
+                                                }
+
+                                                let resolved_font = bus.read_word(
+                                                    table_ptr + Self::ST_ELEMENT_FONT_OFFSET,
+                                                )
+                                                    as i16;
+                                                let resolved_size = bus.read_word(
+                                                    table_ptr + Self::ST_ELEMENT_SIZE_OFFSET,
+                                                )
+                                                    as i16;
+                                                let metrics = get_font_metrics(
+                                                    resolved_font,
+                                                    Self::font_lookup_size(resolved_size),
+                                                );
+                                                let line_height = metrics.ascent
+                                                    + metrics.descent
+                                                    + metrics.leading;
                                                 bus.write_word(
-                                                    lh_ptr + Self::LH_ELEMENT_HEIGHT_OFFSET,
+                                                    table_ptr + Self::ST_ELEMENT_HEIGHT_OFFSET,
                                                     line_height as u16,
                                                 );
                                                 bus.write_word(
-                                                    lh_ptr + Self::LH_ELEMENT_ASCENT_OFFSET,
+                                                    table_ptr + Self::ST_ELEMENT_ASCENT_OFFSET,
                                                     metrics.ascent as u16,
                                                 );
+
+                                                let lh_handle = bus.read_long(
+                                                    style_ptr_record
+                                                        + Self::TE_STYLE_LH_TABLE_OFFSET,
+                                                );
+                                                let lh_ptr = if lh_handle != 0 {
+                                                    bus.read_long(lh_handle)
+                                                } else {
+                                                    0
+                                                };
+                                                if lh_ptr != 0 {
+                                                    bus.write_word(
+                                                        lh_ptr + Self::LH_ELEMENT_HEIGHT_OFFSET,
+                                                        line_height as u16,
+                                                    );
+                                                    bus.write_word(
+                                                        lh_ptr + Self::LH_ELEMENT_ASCENT_OFFSET,
+                                                        metrics.ascent as u16,
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                } else {
-                                    if (mode & 0x0001) != 0 {
-                                        bus.write_word(
-                                            te_ptr + Self::TE_TX_FONT_OFFSET,
-                                            bus.read_word(style_ptr),
-                                        );
-                                    }
-                                    if (mode & 0x0002) != 0 {
-                                        bus.write_word(
-                                            te_ptr + Self::TE_TX_FACE_OFFSET,
-                                            bus.read_word(style_ptr + 2),
-                                        );
-                                    }
-                                    if (mode & 0x0004) != 0 {
-                                        bus.write_word(
-                                            te_ptr + Self::TE_TX_SIZE_OFFSET,
-                                            bus.read_word(style_ptr + 4),
-                                        );
-                                    }
+                                    } else {
+                                        if (mode & 0x0001) != 0 {
+                                            bus.write_word(
+                                                te_ptr + Self::TE_TX_FONT_OFFSET,
+                                                bus.read_word(style_ptr),
+                                            );
+                                        }
+                                        if (mode & 0x0002) != 0 {
+                                            bus.write_byte(
+                                                te_ptr + Self::TE_TX_FACE_OFFSET,
+                                                bus.read_byte(style_ptr + 2),
+                                            );
+                                        }
+                                        if (mode & 0x0004) != 0 {
+                                            bus.write_word(
+                                                te_ptr + Self::TE_TX_SIZE_OFFSET,
+                                                bus.read_word(style_ptr + 4),
+                                            );
+                                        }
 
-                                    let resolved_font =
-                                        bus.read_word(te_ptr + Self::TE_TX_FONT_OFFSET) as i16;
-                                    let resolved_size =
-                                        bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16;
-                                    let metrics = get_font_metrics(
-                                        resolved_font,
-                                        Self::font_lookup_size(resolved_size),
-                                    );
-                                    bus.write_word(
-                                        te_ptr + Self::TE_LINE_HEIGHT_OFFSET,
-                                        (metrics.ascent + metrics.descent + metrics.leading) as u16,
-                                    );
-                                    bus.write_word(
-                                        te_ptr + Self::TE_FONT_ASCENT_OFFSET,
-                                        metrics.ascent as u16,
-                                    );
+                                        let resolved_font =
+                                            bus.read_word(te_ptr + Self::TE_TX_FONT_OFFSET) as i16;
+                                        let resolved_size =
+                                            bus.read_word(te_ptr + Self::TE_TX_SIZE_OFFSET) as i16;
+                                        let metrics = get_font_metrics(
+                                            resolved_font,
+                                            Self::font_lookup_size(resolved_size),
+                                        );
+                                        bus.write_word(
+                                            te_ptr + Self::TE_LINE_HEIGHT_OFFSET,
+                                            (metrics.ascent + metrics.descent + metrics.leading)
+                                                as u16,
+                                        );
+                                        bus.write_word(
+                                            te_ptr + Self::TE_FONT_ASCENT_OFFSET,
+                                            metrics.ascent as u16,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -13286,8 +13416,8 @@ impl super::TrapDispatcher {
                                         }
                                         if (mode & 0x0002) != 0
                                             && bus
-                                                .read_word(table_ptr + Self::ST_ELEMENT_FACE_OFFSET)
-                                                != bus.read_word(old_style_ptr + 2)
+                                                .read_byte(table_ptr + Self::ST_ELEMENT_FACE_OFFSET)
+                                                != bus.read_byte(old_style_ptr + 2)
                                         {
                                             matches_old = false;
                                         }
@@ -13319,9 +13449,9 @@ impl super::TrapDispatcher {
                                                 );
                                             }
                                             if (mode & 0x0002) != 0 {
-                                                bus.write_word(
+                                                bus.write_byte(
                                                     table_ptr + Self::ST_ELEMENT_FACE_OFFSET,
-                                                    bus.read_word(new_style_ptr + 2),
+                                                    bus.read_byte(new_style_ptr + 2),
                                                 );
                                             }
                                             if (mode & 0x0004) != 0 {
@@ -13458,10 +13588,20 @@ impl super::TrapDispatcher {
                                 );
                             }
                             self.te_insert_text(bus, te_handle, &text);
+                            // With NIL hST, TEStyleInsert follows TEInsert;
+                            // insertion-point attributes previously stored by
+                            // TESetStyle come from the null scrap. Inside
+                            // Macintosh Volume V, V-274; Inside Macintosh:
+                            // Text 1993, pp. 2-61 and 2-82.
+                            let effective_style_scrap = if style_scrap != 0 {
+                                style_scrap
+                            } else {
+                                Self::te_null_style_scrap_handle(bus, te_handle)
+                            };
                             if self.te_apply_style_scrap_to_range(
                                 bus,
                                 te_handle,
-                                style_scrap,
+                                effective_style_scrap,
                                 insert_start,
                                 text.len(),
                             ) {
@@ -13790,7 +13930,7 @@ impl super::TrapDispatcher {
                                 bus.write_word(style_ptr, tx_font as u16);
                             }
                             if (requested_mode & 0x0002) != 0 {
-                                bus.write_word(style_ptr + 2, tx_face as u16);
+                                bus.write_byte(style_ptr + 2, tx_face as u8);
                             }
                             if (requested_mode & 0x0004) != 0 {
                                 bus.write_word(style_ptr + 4, tx_size as u16);
@@ -15960,7 +16100,7 @@ mod tests {
                 *ascent as u16,
             );
             bus.write_word(base + TrapDispatcher::SCRAP_STYLE_FONT_OFFSET, *font as u16);
-            bus.write_word(base + TrapDispatcher::SCRAP_STYLE_FACE_OFFSET, *face as u16);
+            bus.write_byte(base + TrapDispatcher::SCRAP_STYLE_FACE_OFFSET, *face as u8);
             bus.write_word(base + TrapDispatcher::SCRAP_STYLE_SIZE_OFFSET, *size as u16);
             bus.write_word(base + TrapDispatcher::SCRAP_STYLE_COLOR_OFFSET, color.0);
             bus.write_word(base + TrapDispatcher::SCRAP_STYLE_COLOR_OFFSET + 2, color.1);
@@ -31840,7 +31980,7 @@ mod tests {
         let style_table = bus.read_long(style_ptr + TrapDispatcher::TE_STYLE_STYLE_TABLE_OFFSET);
         let style_table_ptr = bus.read_long(style_table);
         assert_eq!(
-            bus.read_word(style_table_ptr + TrapDispatcher::ST_ELEMENT_FACE_OFFSET),
+            bus.read_byte(style_table_ptr + TrapDispatcher::ST_ELEMENT_FACE_OFFSET),
             1,
             "first style run should preserve the bold face from the style scrap"
         );
@@ -31913,7 +32053,7 @@ mod tests {
         bus.write_word(first + 4, 10);
         bus.write_word(first + 6, 8);
         bus.write_word(first + 8, 0);
-        bus.write_word(first + 10, 1);
+        bus.write_byte(first + 10, 1);
         bus.write_word(first + 12, 9);
         bus.write_word(first + 14, 0);
         bus.write_word(first + 16, 0);
@@ -31924,7 +32064,7 @@ mod tests {
         bus.write_word(second + 4, 14);
         bus.write_word(second + 6, 11);
         bus.write_word(second + 8, 3);
-        bus.write_word(second + 10, 0);
+        bus.write_byte(second + 10, 0);
         bus.write_word(second + 12, 12);
         bus.write_word(second + 14, 0x1111);
         bus.write_word(second + 16, 0x2222);
@@ -32166,6 +32306,78 @@ mod tests {
     }
 
     #[test]
+    fn tesetstyle_reads_style_byte_without_treating_record_padding_as_face_bits() {
+        // TextStyle.tsFace is a one-byte Style followed by an alignment byte
+        // (Inside Macintosh: Text 1993, pp. 2-78..2-79). Marathon leaves the
+        // padding byte nonzero while repeatedly applying terminal text styles.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.tx_face = 1;
+        disp.tx_size = 12;
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 80, 200), (0, 0, 80, 200));
+        disp.te_set_text_contents(&mut bus, te_handle, b"A");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+        let text_style = bus.alloc(12);
+        bus.write_word(text_style, 22);
+        bus.write_byte(text_style + 2, 0); // plain
+        bus.write_byte(text_style + 3, 0x56); // unrelated alignment byte
+        bus.write_word(text_style + 4, 12);
+        bus.write_word(text_style + 6, 0);
+        bus.write_word(text_style + 8, 0xFFFF);
+        bus.write_word(text_style + 10, 0);
+        bus.write_word(TEST_SP, 0x0001);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_word(TEST_SP + 6, 0); // redraw = FALSE
+        bus.write_long(TEST_SP + 8, text_style);
+        bus.write_word(TEST_SP + 12, 0x000F); // doAll
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        let style_handle = bus.read_long(te_ptr + TrapDispatcher::TE_TX_FONT_OFFSET);
+        let style_record = bus.read_long(style_handle);
+        let table_handle =
+            bus.read_long(style_record + TrapDispatcher::TE_STYLE_STYLE_TABLE_OFFSET);
+        let table = bus.read_long(table_handle);
+        assert_eq!(
+            bus.read_byte(table + TrapDispatcher::ST_ELEMENT_FACE_OFFSET),
+            1,
+            "an insertion-point style change must not restyle existing text"
+        );
+        let null_style_handle =
+            bus.read_long(style_record + TrapDispatcher::TE_STYLE_NULL_STYLE_OFFSET);
+        let null_style = bus.read_long(null_style_handle);
+        let null_scrap_handle = bus.read_long(null_style + TrapDispatcher::NULL_STYLE_SCRAP_OFFSET);
+        let null_scrap = bus.read_long(null_scrap_handle);
+        assert_eq!(
+            bus.read_byte(
+                null_scrap
+                    + TrapDispatcher::SCRAP_STYLE_TAB_OFFSET
+                    + TrapDispatcher::SCRAP_STYLE_FACE_OFFSET
+            ),
+            0,
+            "the insertion-point style must be stored in TextEdit's null scrap"
+        );
+
+        let inserted = bus.alloc(1);
+        bus.write_byte(inserted, b'B');
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x0007);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, 0); // NIL means use the null style scrap
+        bus.write_long(TEST_SP + 10, 1);
+        bus.write_long(TEST_SP + 14, inserted);
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let runs = disp.te_style_runs(&bus, te_handle, 2);
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0].start, runs[0].style.face), (0, 1));
+        assert_eq!((runs[1].start, runs[1].style.face), (1, 0));
+    }
+
+    #[test]
     fn te_dispatch_continuous_style_returns_unstyled_record_style() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -32179,7 +32391,7 @@ mod tests {
 
         let te_ptr = bus.read_long(te_handle);
         bus.write_word(te_ptr + TrapDispatcher::TE_TX_FONT_OFFSET, 22);
-        bus.write_word(te_ptr + TrapDispatcher::TE_TX_FACE_OFFSET, 3);
+        bus.write_byte(te_ptr + TrapDispatcher::TE_TX_FACE_OFFSET, 3);
         bus.write_word(te_ptr + TrapDispatcher::TE_TX_SIZE_OFFSET, 18);
 
         let style_ptr = 0x300000u32;
@@ -32195,7 +32407,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
         assert_eq!(bus.read_word(TEST_SP + 14), 0xFFFF);
         assert_eq!(bus.read_word(style_ptr), 22);
-        assert_eq!(bus.read_word(style_ptr + 2), 3);
+        assert_eq!(bus.read_byte(style_ptr + 2), 3);
         assert_eq!(bus.read_word(style_ptr + 4), 18);
         assert_eq!(bus.read_word(style_ptr + 6), 0);
         assert_eq!(bus.read_word(style_ptr + 8), 0);
