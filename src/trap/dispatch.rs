@@ -1801,14 +1801,18 @@ impl TrapDispatcher {
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
     pub(crate) const AUTO_KEY_RATE_TICKS: u32 = 4;
 
-    pub(crate) fn key_generates_auto_key(key_code: u8) -> bool {
-        // Modifier keys are not auto-keying character keys. Inside Macintosh
-        // Volume I, I-246; include extended Control/right-side modifier key
-        // codes used by later System 7-era keyboards.
-        !matches!(
+    pub(crate) fn key_is_modifier(key_code: u8) -> bool {
+        // Command, Shift, Caps Lock, Option, and Control (including the
+        // right-side variants) update KeyMap/modifiers but generate no
+        // keyDown or keyUp events. Inside Macintosh Volume I, I-246.
+        matches!(
             key_code,
             0x37 | 0x38 | 0x39 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E
         )
+    }
+
+    pub(crate) fn key_generates_auto_key(key_code: u8) -> bool {
+        !Self::key_is_modifier(key_code)
     }
 
     pub(crate) fn add_hle_tick_cost(&mut self, cost: u32) {
@@ -3903,6 +3907,9 @@ impl TrapDispatcher {
                 char::from(char_code)
             );
         }
+        if Self::key_is_modifier(key_code) {
+            return;
+        }
         let message = ((key_code as u32) << 8) | (char_code as u32);
         self.event_queue.push_back(QueuedEvent {
             what: 3, // keyDown
@@ -3940,6 +3947,9 @@ impl TrapDispatcher {
                 char_code,
                 char::from(char_code)
             );
+        }
+        if Self::key_is_modifier(key_code) {
+            return;
         }
         let message = ((key_code as u32) << 8) | (char_code as u32);
         // The default per-process SysEvtMask excludes keyUp events. A key

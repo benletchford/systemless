@@ -1209,17 +1209,44 @@ mod tests {
     }
 
     #[test]
-    fn modifier_keys_do_not_generate_autokey() {
+    fn modifier_keys_update_keymap_without_generating_keyboard_events() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.sent_open_app_event = true;
 
         disp.push_key_down(0x38, 0); // Shift
         let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
-        assert!(has_event, "existing keyDown behavior is preserved");
+        assert!(disp.key_is_down(0x38), "Shift must update the KeyMap");
+        assert!(
+            !has_event,
+            "modifier keys must not generate standalone keyDown events"
+        );
 
-        disp.tick_count = 100;
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
-        assert!(!has_event, "modifier keys should not auto-key");
+        disp.push_key_up(0x38, 0);
+        assert!(
+            !disp.key_is_down(0x38),
+            "Shift release must clear the KeyMap"
+        );
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+        assert!(
+            !has_event,
+            "modifier keys must not generate standalone keyUp events"
+        );
+    }
+
+    #[test]
+    fn command_modifier_is_reported_on_following_character_event() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x37, 0); // Command
+        disp.push_key_down(0x01, b's');
+
+        let (what, message, _, _, modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event);
+        assert_eq!(what, 3, "only the character key should post keyDown");
+        assert_eq!(message, 0x0000_0173);
+        assert_ne!(modifiers & 0x0100, 0, "cmdKey must be set on Cmd-S");
     }
 
     // ---- Device/Interrupt no-op family ($A03D/$A03E/$A072/$A075/$A076) ----
