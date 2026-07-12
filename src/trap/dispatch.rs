@@ -3895,13 +3895,20 @@ impl TrapDispatcher {
             );
         }
         let message = ((key_code as u32) << 8) | (char_code as u32);
-        self.event_queue.push_back(QueuedEvent {
-            what: 4, // keyUp
-            message,
-            where_v: self.mouse_pos.0,
-            where_h: self.mouse_pos.1,
-            modifiers,
-        });
+        // The default per-process SysEvtMask excludes keyUp events. A key
+        // release always updates the physical KeyMap above, but it enters the
+        // OS event queue only when the application explicitly enables
+        // keyUpMask through SetEventMask. Inside Macintosh Volume I, I-254;
+        // Macintosh Toolbox Essentials 1992, pp. 2-28..2-29 and 2-99.
+        if self.posted_event_is_enabled(4) {
+            self.event_queue.push_back(QueuedEvent {
+                what: 4, // keyUp
+                message,
+                where_v: self.mouse_pos.0,
+                where_h: self.mouse_pos.1,
+                modifiers,
+            });
+        }
     }
 
     /// Get the current cursor data for rendering overlay.

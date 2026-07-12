@@ -67,7 +67,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn posted_event_is_enabled(&self, what: u16) -> bool {
+    pub(crate) fn posted_event_is_enabled(&self, what: u16) -> bool {
         // The system event mask (SysEvtMask) gates OS-level events.
         // Per IM:II-67 table 2-2, bits 0..15 correspond to specific
         // event types (mDown, keyDown, activate, etc.); bit 10 is
@@ -1120,6 +1120,7 @@ mod tests {
         assert_eq!(what, 5);
         assert_eq!(message, 0x0000_7D1F);
 
+        disp.system_event_mask |= 1 << 4;
         disp.push_key_up(0x7D, 31);
         let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
         assert!(has_event, "keyUp should be delivered");
@@ -1128,6 +1129,27 @@ mod tests {
         disp.tick_count = 100;
         let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(!has_event, "released key should not keep auto-keying");
+    }
+
+    #[test]
+    fn default_system_event_mask_suppresses_keyup_but_clears_keymap() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x24, 13);
+        let (_, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event, "keyDown should use the default system event mask");
+        assert!(disp.key_is_down(0x24));
+
+        disp.push_key_up(0x24, 13);
+        assert!(!disp.key_is_down(0x24), "keyUp must clear physical state");
+        let (_, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+        assert!(
+            !has_event,
+            "the default SysEvtMask must not post keyUp events"
+        );
     }
 
     #[test]
