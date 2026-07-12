@@ -1603,14 +1603,14 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-355
             // MenuSelect ($A93D): Full mouse tracking with dropdown, highlighting, flashing
             (true, 0x13D) => {
-                if let Some(ref tracking) = self.menu_tracking {
+                if self.menu_tracking.is_some() {
                     // Re-fire: we're in tracking mode
-                    if tracking.flash_remaining > 0 {
+                    if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
                         // Flashing phase: hold each toggle for 3 frames (~50ms),
                         // matching the real Mac's ~3-tick delay per phase.
                         // redraw_chrome handles the visual state based on
                         // whether flash_remaining is even or odd.
-                        let result = tracking.flash_result;
+                        let result = self.menu_tracking.as_ref().unwrap().flash_result;
                         let t = self.menu_tracking.as_mut().unwrap();
                         if t.flash_delay > 0 {
                             t.flash_delay -= 1;
@@ -1651,6 +1651,13 @@ impl super::TrapDispatcher {
                         // else: stay on trap, re-fire next frame
                     } else if !self.menu_tracking_button_down(bus) {
                         // Button released — start flash or complete immediately
+                        // Mouse-up may be the first event whose coordinates are
+                        // inside a menu item. Update the highlight from that
+                        // final point before deriving the selection result.
+                        // Inside Macintosh Volume I, I-355: MenuSelect tracks
+                        // the pointer until mouse-up and returns that item.
+                        let (mv, mh) = self.menu_tracking_mouse_pos(bus);
+                        self.update_menu_tracking_for_point(bus, mh, mv);
                         let result = self.menu_tracking_selection_result();
                         if result != 0 {
                             let (active_menu, item_idx) = self
@@ -1685,8 +1692,11 @@ impl super::TrapDispatcher {
                             );
                         } else {
                             // No item selected — return 0 immediately
-                            let sp = tracking.stack_ptr;
-                            let active_menu = tracking.active_menu;
+                            let (sp, active_menu) = self
+                                .menu_tracking
+                                .as_ref()
+                                .map(|tracking| (tracking.stack_ptr, tracking.active_menu))
+                                .unwrap();
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.draw_menu_bar_to_fb(bus);
@@ -1816,10 +1826,10 @@ impl super::TrapDispatcher {
             // Macintosh Toolbox Essentials 1992, 3-120
             // PopUpMenuSelect ($A80B): Full re-fire tracking with dropdown display, item highlighting, flash animation; uses MenuTrackingState
             (true, 0x00B) => {
-                if let Some(ref tracking) = self.menu_tracking {
+                if self.menu_tracking.is_some() {
                     // Re-fire: popup tracking is active
-                    if tracking.flash_remaining > 0 {
-                        let result = tracking.flash_result;
+                    if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
+                        let result = self.menu_tracking.as_ref().unwrap().flash_result;
                         let t = self.menu_tracking.as_mut().unwrap();
                         if t.flash_delay > 0 {
                             t.flash_delay -= 1;
@@ -1839,6 +1849,11 @@ impl super::TrapDispatcher {
                             cpu.write_reg(Register::A7, sp + 10);
                         }
                     } else if !self.menu_tracking_button_down(bus) {
+                        // As with MenuSelect, the release point itself is a
+                        // valid final item hit even without an earlier
+                        // held-button tracking refire. IM:I I-355.
+                        let (mv, mh) = self.menu_tracking_mouse_pos(bus);
+                        self.update_menu_tracking_for_point(bus, mh, mv);
                         let result = self.menu_tracking_selection_result();
                         if result != 0 {
                             let tracking = self.menu_tracking.as_mut().unwrap();
@@ -1846,7 +1861,7 @@ impl super::TrapDispatcher {
                             tracking.flash_delay = 3;
                             tracking.flash_result = result;
                         } else {
-                            let sp = tracking.stack_ptr;
+                            let sp = self.menu_tracking.as_ref().unwrap().stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
@@ -10948,6 +10963,55 @@ mod tests {
         assert!(trace.contains("A93D action=finish"));
         assert!(trace.contains("tracking=menu:idle dialog:idle control:idle"));
         assert!(trace.contains("highlighted_item=2 result=$02080002 outcome=enabled_item_selected"));
+    }
+
+    #[test]
+    fn menuselect_release_over_item_selects_without_prior_tracking_refire() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 521, 0x30BA00, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            0x30BA40,
+            "Open/O;Save/S",
+        );
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        disp.mouse_pos = (top + 17, left + 8);
+        disp.mouse_button = false;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .map(|tracking| tracking.flash_result),
+            Some(0x0209_0002),
+            "mouse-up over Save must select it even without a separate held-button refire"
+        );
     }
 
     struct MenuKeyThemeSnapshot {
