@@ -3838,6 +3838,14 @@ impl TrapDispatcher {
 
     /// Push a key-down event into the event queue.
     pub fn push_key_down(&mut self, key_code: u8, char_code: u8) {
+        // A physical key remains down until keyUp. Host browsers/windowing
+        // systems may emit repeated keydown callbacks while it is held, but
+        // classic Event Manager represents those repeats as autoKey events.
+        // Inside Macintosh Volume I, I-246. Ignore duplicate host callbacks
+        // so they cannot enqueue extra keyDown records or restart autoKey.
+        if self.key_is_down(key_code) {
+            return;
+        }
         set_key_map_key(&mut self.key_map, key_code, true);
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {

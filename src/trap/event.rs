@@ -1131,6 +1131,33 @@ mod tests {
     }
 
     #[test]
+    fn repeated_host_keydown_does_not_duplicate_keydown_or_restart_autokey() {
+        // Browsers emit repeated keydown callbacks for a held key. Classic
+        // Event Manager emits one keyDown followed by timed autoKey records.
+        // Inside Macintosh Volume I, I-246.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x30, 9); // Tab
+        let first_repeat_tick = disp.key_repeat.expect("Tab should arm autoKey").next_tick;
+        disp.tick_count = disp.tick_count.wrapping_add(5);
+        disp.push_key_down(0x30, 9); // host repeat while still held
+
+        assert_eq!(disp.event_queue.len(), 1, "only one keyDown may be queued");
+        assert_eq!(
+            disp.key_repeat
+                .expect("autoKey should remain armed")
+                .next_tick,
+            first_repeat_tick,
+            "a repeated host callback must not postpone autoKey"
+        );
+        let (what, message, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event);
+        assert_eq!((what, message), (3, 0x0000_3009));
+    }
+
+    #[test]
     fn event_avail_peeks_autokey_without_duplicating_it() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.sent_open_app_event = true;
