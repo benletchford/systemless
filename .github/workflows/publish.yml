@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Publish and update systemless-web even if Cargo.toml version did not change in this event"
+        description: "Publish even if Cargo.toml version did not change in this event"
         required: false
         default: false
         type: boolean
