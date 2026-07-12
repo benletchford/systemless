@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "a18e2a12bbc42085dac5015cd0c5c50c1335b39e",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "systemless",
+      "include-component-in-tag": false
+    }
+  }
+}
