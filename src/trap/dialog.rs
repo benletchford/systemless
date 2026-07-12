@@ -13608,6 +13608,13 @@ impl super::TrapDispatcher {
                                 self.te_recalculate_layout(bus, te_handle);
                             }
                             self.draw_te_contents(cpu, bus, te_handle);
+                        } else if text_ptr != 0 && bus.read_byte(text_ptr) == 0 {
+                            // The ROM styled-TextEdit path leaves an exhausted
+                            // NUL-terminated insertion with no continuation.
+                            // Marathon keeps that continuation in A3; retaining
+                            // its stale pointer makes the guest retry this
+                            // zero-length insertion forever.
+                            cpu.write_reg(Register::A3, 0);
                         }
                         cpu.write_reg(Register::A7, sp + 18);
                     }
@@ -31910,6 +31917,25 @@ mod tests {
             0xCAFEBABE,
             "TEStyleNew must not write past the 4-byte function-result slot"
         );
+    }
+
+    #[test]
+    fn testyleinsert_clears_exhausted_nul_continuation() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let text_ptr = bus.alloc(1);
+        bus.write_byte(text_ptr, 0);
+        cpu.write_reg(Register::A3, text_ptr);
+
+        bus.write_word(TEST_SP, 0x0007);
+        bus.write_long(TEST_SP + 2, 0);
+        bus.write_long(TEST_SP + 6, 0);
+        bus.write_long(TEST_SP + 10, 0);
+        bus.write_long(TEST_SP + 14, text_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A3), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 18);
     }
 
     #[test]
