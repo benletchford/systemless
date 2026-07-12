@@ -328,6 +328,27 @@ fn sync_enable_flags(bus: &mut MacMemoryBus, menu: &Menu) {
     bus.write_long(menu_ptr + 10, flags);
 }
 
+/// Refresh the cached menu state from the guest-owned MenuInfo enableFlags
+/// field before an HLE mutation. Applications and menu definition procedures
+/// can inspect and change this field directly, so writing a cached copy back
+/// without first observing it loses guest-visible state.
+/// Inside Macintosh Volume I, I-345: enableFlags bit 0 controls the menu and
+/// bits 1 through 31 control the corresponding items.
+fn refresh_enable_flags_from_memory(bus: &MacMemoryBus, menu: &mut Menu) {
+    if menu.handle == 0 {
+        return;
+    }
+    let menu_ptr = bus.read_long(menu.handle);
+    if menu_ptr == 0 {
+        return;
+    }
+    let flags = bus.read_long(menu_ptr + 10);
+    menu.enabled = (flags & 1) != 0;
+    for (index, item) in menu.items.iter_mut().take(31).enumerate() {
+        item.enabled = (flags & (1u32 << (index + 1))) != 0;
+    }
+}
+
 /// Serialise a Menu's items into the guest-memory MENU record.
 /// Per IM:I I-355: menuData starts at `menu_ptr + 14` and contains the
 /// title (Pascal string) followed by items. Each item is a Pascal
@@ -1524,6 +1545,7 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 6);
 
                 if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+                    refresh_enable_flags_from_memory(bus, menu);
                     if item == 0 {
                         menu.enabled = false;
                     } else if (1..=31).contains(&item) {
@@ -1556,6 +1578,7 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 6);
 
                 if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+                    refresh_enable_flags_from_memory(bus, menu);
                     if item == 0 {
                         menu.enabled = true;
                     } else if (1..=31).contains(&item) {
@@ -7770,6 +7793,58 @@ mod tests {
             menu_key_result(&mut disp, &mut cpu, &mut bus, b'S'),
             0,
             "MenuKey should return 0 for whole-menu-disabled Save shortcut"
+        );
+    }
+
+    #[test]
+    fn enableitem_preserves_guest_enableflags_changes_before_mutating_item() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 145, 0x305C00, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x305D00,
+            "Open/O;Save/S",
+        );
+        insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, menu);
+        assert!(disp
+            .dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        // MenuInfo is guest-owned memory. A menu definition procedure may
+        // restore bit 0 directly before asking the Menu Manager to adjust a
+        // particular item's bit.
+        let menu_ptr = bus.read_long(menu);
+        bus.write_long(menu_ptr + 10, bus.read_long(menu_ptr + 10) | 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2);
+        bus.write_long(TEST_SP + 2, menu);
+        assert!(disp
+            .dispatch_menu(true, 0x139, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let state = disp.menus.iter().find(|m| m.handle == menu).unwrap();
+        assert!(
+            state.enabled,
+            "guest-restored menu bit must survive EnableItem"
+        );
+        assert!(
+            state.items[1].enabled,
+            "the requested item should also be enabled"
+        );
+        assert_eq!(
+            menu_key_result(&mut disp, &mut cpu, &mut bus, b'S'),
+            (145u32 << 16) | 2,
+            "MenuKey must observe the guest-restored menu enable bit"
         );
     }
 
