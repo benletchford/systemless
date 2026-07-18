@@ -92,17 +92,17 @@ jobs:
       - name: Validate crates.io token
         if: steps.version.outputs.should_release == 'true'
         env:
-          SYSTEMLESS_CRATES_TOKEN: ${{ secrets.SYSTEMLESS_CRATES_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          if [ -z "$SYSTEMLESS_CRATES_TOKEN" ]; then
-            echo "SYSTEMLESS_CRATES_TOKEN must contain the crates.io API token" >&2
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN must contain the crates.io API token" >&2
             exit 1
           fi
 
       - name: Publish crate
         if: steps.version.outputs.should_release == 'true'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.SYSTEMLESS_CRATES_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set +e
           output=$(cargo publish --locked 2>&1)
