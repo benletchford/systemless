@@ -55,6 +55,7 @@ pub mod scripted_traces;
 pub mod sound;
 pub mod trace;
 pub mod trap;
+mod ui_art;
 pub mod ui_theme;
 
 pub use error::{Error, Result};

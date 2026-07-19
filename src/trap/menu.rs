@@ -8343,6 +8343,120 @@ mod tests {
     }
 
     #[test]
+    fn drawmenubar_uses_retro_computer_art_for_the_system_mark_without_layout_drift() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let system = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 128, 0x302300, "\u{14}");
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 129, 0x302400, "File");
+        insert_menu(&mut disp, &mut cpu, &mut bus, system);
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+
+        let system_title_width = super::super::TrapDispatcher::fb_measure_string("\u{14}", 0, 12);
+        let regions = disp.menu_title_regions();
+        assert_eq!(regions[0], (11, 18 + system_title_width + 6));
+        assert_eq!(regions[1].0, 18 + system_title_width + 6);
+
+        disp.draw_menu_bar_to_fb(&mut bus);
+
+        const PIXELS: [[u8; 10]; 12] = [
+            [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+            [1, 2, 2, 2, 2, 2, 2, 2, 2, 1],
+            [1, 2, 3, 3, 3, 3, 3, 3, 2, 1],
+            [1, 2, 3, 4, 3, 3, 3, 3, 2, 1],
+            [1, 2, 3, 1, 3, 3, 1, 3, 2, 1],
+            [1, 2, 3, 3, 3, 3, 3, 3, 2, 1],
+            [1, 2, 3, 1, 3, 3, 1, 3, 2, 1],
+            [1, 2, 3, 3, 1, 1, 3, 3, 2, 1],
+            [1, 2, 2, 2, 2, 2, 2, 2, 2, 1],
+            [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+            [0, 0, 0, 1, 2, 2, 1, 0, 0, 0],
+            [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
+        ];
+        const PALETTE: [[u16; 3]; 4] = [
+            [0x2222, 0x2222, 0x2222],
+            [0xCCCC, 0xBBBB, 0x8888],
+            [0x2222, 0x9999, 0xCCCC],
+            [0xDDDD, 0xFFFF, 0xFFFF],
+        ];
+        let palette_indices = PALETTE.map(|rgb| {
+            super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, rgb)
+                .expect("8bpp test screen should expose a device color table")
+        });
+        let background =
+            super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0xFFFF, 0xFFFF, 0xFFFF])
+                .unwrap();
+
+        for (row, pixels) in PIXELS.into_iter().enumerate() {
+            for (col, palette_index) in pixels.into_iter().enumerate() {
+                let expected = if palette_index == 0 {
+                    background
+                } else {
+                    palette_indices[usize::from(palette_index - 1)]
+                };
+                assert_eq!(
+                    screen_pixel_index(
+                        &bus,
+                        screen_base,
+                        row_bytes,
+                        18 + col as i16,
+                        3 + row as i16,
+                    ),
+                    expected,
+                    "system menu mark pixel ({col}, {row})"
+                );
+            }
+        }
+
+        assert_eq!(disp.menu_title_regions(), regions);
+        let file_midpoint = (regions[1].0 + regions[1].1) / 2;
+        assert_eq!(disp.menu_title_hit_test(file_midpoint), Some(1));
+    }
+
+    #[test]
+    fn drawmenubar_keeps_the_retro_computer_mark_legible_in_monochrome() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 16;
+        let screen_base = bus.alloc(row_bytes * 64);
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 64, 1);
+        clear_1bpp_screen(&mut bus, screen_base, row_bytes, 64);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, screen_base);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let system = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 128, 0x302300, "\u{14}");
+        insert_menu(&mut disp, &mut cpu, &mut bus, system);
+
+        disp.draw_menu_bar_to_fb(&mut bus);
+
+        for &(x, y) in &[
+            (1, 0),
+            (0, 1),
+            (9, 1),
+            (3, 4),
+            (6, 4),
+            (3, 6),
+            (6, 6),
+            (4, 7),
+            (5, 7),
+            (2, 11),
+            (7, 11),
+        ] {
+            assert!(
+                screen_pixel_is_set(&bus, screen_base, row_bytes, 18 + x, 3 + y),
+                "dark mark pixel ({x}, {y})"
+            );
+        }
+        for &(x, y) in &[(0, 0), (1, 1), (3, 3), (5, 10)] {
+            assert!(
+                !screen_pixel_is_set(&bus, screen_base, row_bytes, 18 + x, 3 + y),
+                "light mark pixel ({x}, {y})"
+            );
+        }
+    }
+
+    #[test]
     fn drawmenubar_tracks_full_top_menubar_title_order_and_hits() {
         // The visible Mac menu bar is part of the rendered surface, not
         // only the pull-down menu body. This pins the common top-bar layout

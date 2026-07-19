@@ -1974,8 +1974,8 @@ impl super::TrapDispatcher {
                 // menu-bar background, matching the System 7.5.3 reference while
                 // preserving title spacing and hit regions.
                 title_width
-            } else if Self::is_apple_mark_title(title) {
-                Self::fb_draw_classic_apple_mark_title(
+            } else if Self::is_system_menu_mark_title(title) {
+                self.fb_draw_retro_computer_menu_mark(
                     bus,
                     screen_base,
                     row_bytes,
@@ -1983,8 +1983,6 @@ impl super::TrapDispatcher {
                     screen_width,
                     screen_height,
                     x,
-                    text_y,
-                    title_index,
                 );
                 title_width
             } else if let Some(pixel_index) = title_index {
@@ -2022,12 +2020,13 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn is_apple_mark_title(title: &str) -> bool {
+    fn is_system_menu_mark_title(title: &str) -> bool {
         let mut chars = title.chars();
         matches!(chars.next(), Some('\u{14}' | '\u{F8FF}')) && chars.next().is_none()
     }
 
-    fn fb_draw_classic_apple_mark_title(
+    fn fb_draw_retro_computer_menu_mark(
+        &self,
         bus: &mut MacMemoryBus,
         screen_base: u32,
         row_bytes: u32,
@@ -2035,41 +2034,29 @@ impl super::TrapDispatcher {
         screen_width: i16,
         screen_height: i16,
         x: i16,
-        baseline_y: i16,
-        pixel_index_override: Option<u8>,
     ) {
-        // System 7's standard menu-bar appleMark title is MDEF-owned chrome,
-        // not the raw Chicago $14 glyph. The mask below is the 11x14 title
-        // bitmap captured from the BasiliskII/System 7.5.3 reference; it is drawn
-        // one pixel left of the title origin and with the same baseline as
-        // Chicago 12 menu titles.
-        const MASK: [&str; 14] = [
-            ".......##..",
-            "......##...",
-            "......#....",
-            "..###..###.",
-            ".##########",
-            "...........",
-            "...........",
-            "...........",
-            "...........",
-            "###########",
-            ".##########",
-            ".##########",
-            "..########.",
-            "...##..##..",
-        ];
+        // appleMark ($14) identifies the system menu title. Preserve its
+        // measured advance while substituting original Systemless artwork.
+        // Inside Macintosh Volume I, I-354
+        let palette_indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+            Self::fb_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
+                super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+            })
+        });
 
-        let left = x - 1;
-        let top = baseline_y - 12;
-        for (dy, row) in MASK.iter().enumerate() {
-            for (dx, byte) in row.as_bytes().iter().enumerate() {
-                if *byte != b'#' {
+        let left = x;
+        let top = 3;
+        for (dy, row) in crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS
+            .into_iter()
+            .enumerate()
+        {
+            for (dx, palette_index) in row.into_iter().enumerate() {
+                if palette_index == 0 {
                     continue;
                 }
                 let dst_x = left + dx as i16;
                 let dst_y = top + dy as i16;
-                if let Some(pixel_index) = pixel_index_override {
+                if pixel_size == 8 {
                     Self::fb_set_pixel_index(
                         bus,
                         screen_base,
@@ -2079,9 +2066,11 @@ impl super::TrapDispatcher {
                         screen_height,
                         dst_x,
                         dst_y,
-                        pixel_index,
+                        palette_indices[usize::from(palette_index - 1)],
                     );
-                } else {
+                } else if palette_index == 1 {
+                    // In monochrome, retain the dark outline and face while
+                    // the light case and screen use the menu-bar background.
                     Self::fb_set_pixel(
                         bus,
                         screen_base,
