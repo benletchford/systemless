@@ -252,12 +252,10 @@ fn trace_hot_pc_enabled() -> bool {
     *TRACE_HOT_PC.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_HOT_PC").is_some())
 }
 
-// Generic TickCount spin-wait fast-forward. Tri-state default:
-// headless callers (scripted harnesses, no real-time pacing) get the fast-
-// forward by default — they gain the spin-elimination win. GUI
-// callers (`yield_for_ui = true`) get the fast-forward OFF by default
-// because tick-driven animations look wrong when ticks advance in
-// batches. Two env vars override:
+// Generic TickCount spin-wait fast-forward. Both headless and GUI callers use
+// it by default. GUI execution supplies a per-frame tick cap, so a detected
+// delay loop can advance only to the current VBL boundary; it cannot batch
+// visible animation ticks ahead of the host. Two env vars override:
 //   SYSTEMLESS_SPIN_WAIT_FASTFWD=1     force on (any mode)
 //   SYSTEMLESS_DISABLE_SPIN_FASTFWD=1  force off (any mode)
 static SPIN_WAIT_FASTFWD_FORCE_ON: OnceLock<bool> = OnceLock::new();
@@ -273,32 +271,38 @@ fn spin_wait_fastfwd_force_off() -> bool {
 }
 
 /// Resolve the fast-forward gate for the current run-loop call.
-/// Tri-state precedence:
+/// Override precedence:
 ///   1. force-off env wins.
 ///   2. force-on env wins next.
-///   3. default = headless (yield_for_ui = false) gets it on,
-///      GUI (yield_for_ui = true) gets it off.
-fn spin_wait_fastfwd_enabled_for(yield_for_ui: bool) -> bool {
+///   3. default = on for headless or tick-capped GUI execution; an uncapped
+///      GUI caller stays off because it could otherwise batch visible ticks.
+fn spin_wait_fastfwd_enabled_for(yield_for_ui: bool, tick_cap: Option<u32>) -> bool {
     spin_wait_fastfwd_gate(
         spin_wait_fastfwd_force_on(),
         spin_wait_fastfwd_force_off(),
         yield_for_ui,
+        tick_cap.is_some(),
     )
 }
 
-/// Pure decision function for the tri-state gate. Split out from
+/// Pure decision function for the override gate. Split out from
 /// `spin_wait_fastfwd_enabled_for` so the env-var reads can be mocked
 /// in unit tests (the `OnceLock`-based env caches initialise once per
 /// process and would prevent testing all three modes in one test
 /// run).
-fn spin_wait_fastfwd_gate(force_on: bool, force_off: bool, yield_for_ui: bool) -> bool {
+fn spin_wait_fastfwd_gate(
+    force_on: bool,
+    force_off: bool,
+    yield_for_ui: bool,
+    has_tick_cap: bool,
+) -> bool {
     if force_off {
         return false;
     }
     if force_on {
         return true;
     }
-    !yield_for_ui
+    !yield_for_ui || has_tick_cap
 }
 
 /// Pure decision function for the ModalDialog noop-refire skip. ALL
@@ -2308,8 +2312,17 @@ impl FixtureRunner {
         tick_cap: Option<u32>,
         count: &mut usize,
     ) -> bool {
-        // Step 1: MOVE.L (A7)+, Dn (shared by all templates).
         let w0 = self.bus.read_word(pc_after_trap);
+
+        // Template D consumes TickCount directly from its stack result slot:
+        //   CLR.L -(A7); _TickCount; CMP.L (A7)+,Dn; BCC.S <back-to-CLR>
+        // Lemmings uses this form for its frame delay loop.
+        if (w0 & 0xF1FF) == 0xB09F {
+            let dn = ((w0 >> 9) & 7) as usize;
+            return self.try_spin_template_d(pc_after_trap, dn, tick_cap);
+        }
+
+        // Step 1: MOVE.L (A7)+, Dn (shared by templates A-C).
         if (w0 & 0xF1FF) != 0x201F {
             return false;
         }
@@ -2333,6 +2346,54 @@ impl FixtureRunner {
         }
 
         false
+    }
+
+    /// Template D: stack-result compare variant used by Lemmings.
+    ///   CLR.L  -(A7)
+    ///   _TickCount
+    ///   CMP.L  (A7)+, Dn
+    ///   BCC.S  <back-to-CLR.L>
+    ///
+    /// BCC repeats while `Dn >= TickCount()`, so the first fall-through tick
+    /// is `Dn + 1`. Leave CMP/BCC for the CPU to execute once after advancing;
+    /// that preserves their exact flags, stack update, and instruction count.
+    fn try_spin_template_d(
+        &mut self,
+        pc_after_trap: u32,
+        dn: usize,
+        tick_cap: Option<u32>,
+    ) -> bool {
+        let w_branch = self.bus.read_word(pc_after_trap.wrapping_add(2));
+        if (w_branch & 0xFF00) != 0x6400 {
+            return false;
+        }
+        let displacement = (w_branch & 0xFF) as i8 as i32;
+        if displacement == 0 {
+            return false;
+        }
+        let branch_pc = pc_after_trap.wrapping_add(2);
+        let target = (branch_pc.wrapping_add(2) as i32).wrapping_add(displacement) as u32;
+        if target != pc_after_trap.wrapping_sub(4) || self.bus.read_word(target) != 0x42A7 {
+            return false;
+        }
+
+        let target_tick = self.cpu.core.d(dn).wrapping_add(1);
+        match self.advance_until_tick(target_tick, tick_cap) {
+            AdvanceResult::CapHit => {
+                // The trap's result was captured before the synthetic VBLs.
+                // Refresh it so the resumed comparison observes the same tick
+                // that a real busy loop would obtain on its next iteration.
+                let sp = self.cpu.core.a(7);
+                self.bus.write_long(sp, self.dispatcher.tick_count);
+                true
+            }
+            AdvanceResult::Advanced => {
+                let sp = self.cpu.core.a(7);
+                self.bus.write_long(sp, self.dispatcher.tick_count);
+                false
+            }
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
+        }
     }
 
     /// Template A: classic pre-System-7 SUBQ-compare spin.
@@ -3000,13 +3061,13 @@ impl FixtureRunner {
                         self.dispatcher.inline_skipped[idx] =
                             self.dispatcher.inline_skipped[idx].saturating_add(1);
 
-                        // Generic TickCount spin-wait fast-forward (opt-in).
+                        // Generic TickCount spin-wait fast-forward.
                         // Check post-trap bytes against the spin-wait
                         // template; if matched, skip straight past the
                         // loop. m68k's step() advances PC past the A-trap
                         // (read_imm_16 does pc += 2), so the post-trap
                         // PC is already at pc + 2.
-                        if spin_wait_fastfwd_enabled_for(yield_for_ui) {
+                        if spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap) {
                             let post_trap_pc = pc.wrapping_add(2);
                             let hit_cap =
                                 self.try_tickcount_spin_fastfwd(post_trap_pc, tick_cap, &mut count);
@@ -8630,6 +8691,75 @@ mod tests {
     }
 
     #[test]
+    fn spin_fastfwd_template_d_lemmings_stack_compare_variant() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+
+        // Exact loop emitted by Lemmings 1.5.2:
+        //   CLR.L -(A7); _TickCount; CMP.L (A7)+,D7; BCC.S *-8
+        runner.bus.write_word(base, 0x42A7);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0xBE9F);
+        runner.bus.write_word(base + 6, 0x64F8);
+        runner.bus.write_word(base + 8, 0x4E71);
+
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::D7, 500);
+        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.bus.write_long(sp - 4, 100);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 501);
+        assert_eq!(runner.bus.read_long(sp - 4), 501);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(count, 0, "CMP/BCC remain for exact CPU execution");
+
+        assert!(matches!(
+            runner.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+        assert!(matches!(
+            runner.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 8);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn spin_fastfwd_template_d_honors_gui_tick_cap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        runner.bus.write_word(base, 0x42A7);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0xBE9F);
+        runner.bus.write_word(base + 6, 0x64F8);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::D7, 500);
+        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.bus.write_long(sp - 4, 100);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, Some(102), &mut count);
+
+        assert!(hit_cap);
+        assert_eq!(runner.guest_tick(), 102);
+        assert_eq!(runner.bus.read_long(sp - 4), 102);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+    }
+
+    #[test]
     fn spin_fastfwd_leaves_interrupt_callback_state_unsynthesized() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
@@ -8686,33 +8816,37 @@ mod tests {
         assert_eq!(active.resume_sp, sp);
     }
 
-    /// Regression gates for the tri-state spin-fastfwd gate. Tests the
+    /// Regression gates for the spin-fastfwd override. Tests the
     /// pure decision function so `OnceLock`-cached env vars don't
     /// interfere across tests.
     #[test]
-    fn spin_fastfwd_gate_default_headless_on_gui_off() {
+    fn spin_fastfwd_gate_defaults_on_with_gui_cadence_guarded_by_tick_cap() {
         // Neither force_on nor force_off → default behaviour:
         //   headless (yield_for_ui = false) → enabled
-        //   GUI     (yield_for_ui = true)  → disabled
-        assert!(spin_wait_fastfwd_gate(false, false, false));
-        assert!(!spin_wait_fastfwd_gate(false, false, true));
+        //   capped GUI → enabled; tick_cap preserves visible cadence
+        //   uncapped GUI → disabled; it could otherwise batch visible ticks
+        assert!(spin_wait_fastfwd_gate(false, false, false, false));
+        assert!(spin_wait_fastfwd_gate(false, false, false, true));
+        assert!(spin_wait_fastfwd_gate(false, false, true, true));
+        assert!(!spin_wait_fastfwd_gate(false, false, true, false));
     }
 
     #[test]
     fn spin_fastfwd_gate_force_off_wins() {
         // force_off must dominate force_on and override the default in
         // either mode.
-        assert!(!spin_wait_fastfwd_gate(false, true, false));
-        assert!(!spin_wait_fastfwd_gate(false, true, true));
-        assert!(!spin_wait_fastfwd_gate(true, true, false));
-        assert!(!spin_wait_fastfwd_gate(true, true, true));
+        assert!(!spin_wait_fastfwd_gate(false, true, false, false));
+        assert!(!spin_wait_fastfwd_gate(false, true, true, true));
+        assert!(!spin_wait_fastfwd_gate(true, true, false, true));
+        assert!(!spin_wait_fastfwd_gate(true, true, true, false));
     }
 
     #[test]
-    fn spin_fastfwd_gate_force_on_overrides_gui_default() {
-        // force_on (without force_off) flips GUI from off → on.
-        assert!(spin_wait_fastfwd_gate(true, false, false));
-        assert!(spin_wait_fastfwd_gate(true, false, true));
+    fn spin_fastfwd_gate_force_on_remains_enabled() {
+        // The legacy force-on override remains accepted, including for an
+        // uncapped GUI caller that defaults to disabled.
+        assert!(spin_wait_fastfwd_gate(true, false, false, false));
+        assert!(spin_wait_fastfwd_gate(true, false, true, false));
     }
 
     /// Regression gates for the ModalDialog noop-refire skip. The GUI
