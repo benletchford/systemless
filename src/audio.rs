@@ -265,11 +265,25 @@ impl SharedAudioState {
             return [0.0, 0.0];
         }
 
-        if self.underrun_samples > 0 && trace_audio_enabled() {
-            eprintln!(
-                "[AUDIO] underrun ended after {} samples",
-                self.underrun_samples
-            );
+        // Once the stream underruns, consuming the first small refill
+        // immediately leaves it permanently balanced on empty: the GUI and
+        // device produce/consume at the same average rate, so ordinary timer
+        // jitter becomes a train of audible gaps. Hold silence until the
+        // original safety lead has been rebuilt, then resume continuously.
+        if self.underrun_samples > 0 && self.buffer.len() < host_audio_prefill_samples() {
+            self.underrun_samples = self.underrun_samples.saturating_add(1);
+            self.source_phase = 0.0;
+            self.last_frame = [0.0, 0.0];
+            return [0.0, 0.0];
+        }
+
+        if self.underrun_samples > 0 {
+            if trace_audio_enabled() {
+                eprintln!(
+                    "[AUDIO] underrun ended after {} samples",
+                    self.underrun_samples
+                );
+            }
             self.underrun_samples = 0;
         }
 
@@ -734,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn host_audio_resume_after_underrun_starts_at_next_queued_frame() {
+    fn host_audio_resume_after_underrun_rebuilds_lead_then_starts_at_next_frame() {
         let mut state = SharedAudioState {
             buffer: std::collections::VecDeque::new(),
             source_phase: 0.75,
@@ -745,6 +759,13 @@ mod tests {
 
         assert_eq!(state.next_frame(44_100), [0.0, 0.0]);
         state.queue_frames(&[[0x90, 0x91], [0xA0, 0xA1]], 2);
+        assert_eq!(
+            state.next_frame(44_100),
+            [0.0, 0.0],
+            "a short refill must be held instead of immediately underrunning again"
+        );
+        let remaining = host_audio_prefill_samples() - 2;
+        state.queue_frames(&vec![[0x80, 0x80]; remaining], remaining);
 
         let first = state.next_frame(crate::sound::OUTPUT_RATE * 2);
         assert_eq!(
@@ -753,7 +774,11 @@ mod tests {
                 SharedAudioState::u8_to_f32(0x90),
                 SharedAudioState::u8_to_f32(0x91)
             ],
-            "after a starvation gap, host playback should restart on the first queued effect sample"
+            "after rebuilding its safety lead, playback should restart on the first queued effect sample"
+        );
+        assert_eq!(
+            state.underrun_samples, 0,
+            "successful playback must leave underrun recovery mode"
         );
     }
 }
