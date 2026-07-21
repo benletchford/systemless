@@ -17,20 +17,54 @@ use objc2::runtime::{NSObject, ProtocolObject};
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{ns_string, CGRect, MainThreadMarker};
 use objc2_metal::{
-    MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice,
-    MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRegion,
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice,
+    MTLDevice, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRegion,
     MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
-    MTLRenderPipelineState, MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor,
-    MTLTextureUsage, MTLViewport,
+    MTLRenderPipelineState, MTLResourceOptions, MTLStorageMode, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
 use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
+use systemless::display::CursorImage;
+
 // Double buffering prevents the CPU from overwriting the texture used by the
 // in-flight GPU frame without allowing a third drawable to queue and add input
 // latency. The 800x600 upload is far below the GPU throughput limit.
 const FRAME_RESOURCE_COUNT: usize = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct GuestFrameUniforms {
+    row_bytes: u32,
+    width: u32,
+    height: u32,
+    pixel_size: u32,
+    cursor_kind: u32,
+    cursor_width: u32,
+    cursor_height: u32,
+    cursor_left: i32,
+    cursor_top: i32,
+}
+
+#[repr(C)]
+#[derive(Clone)]
+struct GuestCursorData {
+    data_rows: [u32; 16],
+    mask_rows: [u32; 16],
+    color_pixels: [u32; 256],
+}
+
+impl Default for GuestCursorData {
+    fn default() -> Self {
+        Self {
+            data_rows: [0; 16],
+            mask_rows: [0; 16],
+            color_pixels: [0; 256],
+        }
+    }
+}
 
 pub struct MetalPresenter {
     _window: Rc<Window>,
@@ -39,6 +73,10 @@ pub struct MetalPresenter {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    guest_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    guest_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    guest_buffer_size: usize,
+    next_guest_buffer: usize,
     upload_textures: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
     upload_size: (u32, u32),
     drawable_size: (u32, u32),
@@ -99,6 +137,9 @@ impl MetalPresenter {
         let fragment = library
             .newFunctionWithName(ns_string!("raster_fragment"))
             .ok_or_else(|| "Metal fragment function was not found".to_string())?;
+        let guest_fragment = library
+            .newFunctionWithName(ns_string!("guest_raster_fragment"))
+            .ok_or_else(|| "Metal guest framebuffer function was not found".to_string())?;
 
         let descriptor = MTLRenderPipelineDescriptor::new();
         descriptor.setVertexFunction(Some(&vertex));
@@ -113,6 +154,11 @@ impl MetalPresenter {
             .newRenderPipelineStateWithDescriptor_error(&descriptor)
             .map_err(|error| format!("Metal pipeline creation failed: {error}"))?;
 
+        descriptor.setFragmentFunction(Some(&guest_fragment));
+        let guest_pipeline = device
+            .newRenderPipelineStateWithDescriptor_error(&descriptor)
+            .map_err(|error| format!("Metal guest pipeline creation failed: {error}"))?;
+
         Ok(Self {
             _window: window,
             root_layer,
@@ -120,6 +166,10 @@ impl MetalPresenter {
             device,
             command_queue,
             pipeline,
+            guest_pipeline,
+            guest_buffers: Vec::new(),
+            guest_buffer_size: 0,
+            next_guest_buffer: 0,
             upload_textures: Vec::new(),
             upload_size: (0, 0),
             drawable_size: (0, 0),
@@ -218,6 +268,145 @@ impl MetalPresenter {
         Ok(())
     }
 
+    /// Snapshot and present a native Classic Macintosh framebuffer. The GPU
+    /// expands indexed/monochrome pixels and composites the guest cursor, so
+    /// the CPU copies only the packed source bytes. Two staging buffers keep
+    /// each submitted frame immutable until Metal has consumed it.
+    pub fn present_guest_frame(
+        &mut self,
+        framebuffer: &[u8],
+        screen_mode: (u32, u32, u16, u16, u16),
+        palette: &[u32; 256],
+        cursor: Option<(&CursorImage, (i16, i16))>,
+        drawable_size: (u32, u32),
+    ) -> Result<bool, String> {
+        let (_, row_bytes, width, height, pixel_size) = screen_mode;
+        let width = u32::from(width);
+        let height = u32::from(height);
+        let (drawable_width, drawable_height) = drawable_size;
+        if !matches!(pixel_size, 1 | 8) {
+            return Ok(false);
+        }
+        if width == 0 || height == 0 || drawable_width == 0 || drawable_height == 0 {
+            return Ok(true);
+        }
+        let frame_bytes = usize::try_from(row_bytes)
+            .ok()
+            .and_then(|stride| stride.checked_mul(height as usize))
+            .ok_or_else(|| "guest framebuffer dimensions overflow host size".to_string())?;
+        if framebuffer.len() < frame_bytes {
+            return Err("guest framebuffer dimensions do not match its pixel data".to_string());
+        }
+
+        self.ensure_guest_buffers(frame_bytes)?;
+        self.resize_drawable(drawable_width, drawable_height);
+
+        // Acquiring the next drawable bounds the command queue to two frames.
+        // The matching alternating staging buffer is therefore no longer in
+        // use when the CPU overwrites it.
+        let Some(drawable) = (unsafe { self.layer.nextDrawable() }) else {
+            return Ok(true);
+        };
+        let buffer_index = self.next_guest_buffer;
+        self.next_guest_buffer = (buffer_index + 1) % self.guest_buffers.len();
+        let guest_buffer = &self.guest_buffers[buffer_index];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                framebuffer.as_ptr(),
+                guest_buffer.contents().as_ptr().cast::<u8>(),
+                frame_bytes,
+            );
+        }
+
+        let (mut uniforms, cursor_data) = cursor
+            .map(|(image, position)| guest_cursor_data(Some(image), position))
+            .unwrap_or_else(|| guest_cursor_data(None, (0, 0)));
+        uniforms.row_bytes = row_bytes;
+        uniforms.width = width;
+        uniforms.height = height;
+        uniforms.pixel_size = u32::from(pixel_size);
+
+        let drawable_texture = unsafe { drawable.texture() };
+        let pass = unsafe { MTLRenderPassDescriptor::new() };
+        let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+        color.setTexture(Some(&drawable_texture));
+        color.setLoadAction(MTLLoadAction::Clear);
+        color.setStoreAction(MTLStoreAction::Store);
+        color.setClearColor(objc2_metal::MTLClearColor {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+            alpha: 1.0,
+        });
+
+        let command_buffer = self
+            .command_queue
+            .commandBuffer()
+            .ok_or_else(|| "Metal failed to create a command buffer".to_string())?;
+        let encoder = command_buffer
+            .renderCommandEncoderWithDescriptor(&pass)
+            .ok_or_else(|| "Metal failed to create a render encoder".to_string())?;
+        encoder.setRenderPipelineState(&self.guest_pipeline);
+        unsafe {
+            encoder.setFragmentBuffer_offset_atIndex(Some(guest_buffer), 0, 0);
+            encoder.setFragmentBytes_length_atIndex(
+                non_null_bytes(palette),
+                size_of::<[u32; 256]>(),
+                1,
+            );
+            encoder.setFragmentBytes_length_atIndex(
+                non_null_bytes(&uniforms),
+                size_of::<GuestFrameUniforms>(),
+                2,
+            );
+            encoder.setFragmentBytes_length_atIndex(
+                non_null_bytes(&cursor_data),
+                size_of::<GuestCursorData>(),
+                3,
+            );
+        }
+
+        let viewport = integer_scaled_viewport(width, height, drawable_width, drawable_height);
+        encoder.setViewport(MTLViewport {
+            originX: viewport.0,
+            originY: viewport.1,
+            width: viewport.2,
+            height: viewport.3,
+            znear: 0.0,
+            zfar: 1.0,
+        });
+        unsafe {
+            encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4)
+        };
+        encoder.endEncoding();
+
+        command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
+        command_buffer.commit();
+        Ok(true)
+    }
+
+    fn ensure_guest_buffers(&mut self, frame_bytes: usize) -> Result<(), String> {
+        if self.guest_buffer_size == frame_bytes {
+            return Ok(());
+        }
+
+        let mut buffers = Vec::with_capacity(FRAME_RESOURCE_COUNT);
+        for _ in 0..FRAME_RESOURCE_COUNT {
+            buffers.push(
+                self.device
+                    .newBufferWithLength_options(
+                        frame_bytes,
+                        MTLResourceOptions::MTLResourceStorageModeShared,
+                    )
+                    .ok_or_else(|| "Metal failed to allocate a guest framebuffer".to_string())?,
+            );
+        }
+        self.guest_buffers = buffers;
+        self.guest_buffer_size = frame_bytes;
+        self.next_guest_buffer = 0;
+        Ok(())
+    }
+
     fn ensure_upload_textures(&mut self, width: u32, height: u32) -> Result<(), String> {
         if self.upload_size == (width, height) {
             return Ok(());
@@ -266,6 +455,75 @@ impl MetalPresenter {
     }
 }
 
+fn non_null_bytes<T>(value: &T) -> NonNull<c_void> {
+    NonNull::from(value).cast::<c_void>()
+}
+
+fn guest_cursor_data(
+    cursor: Option<&CursorImage>,
+    mouse_pos: (i16, i16),
+) -> (GuestFrameUniforms, GuestCursorData) {
+    let mut uniforms = GuestFrameUniforms::default();
+    let mut gpu = GuestCursorData::default();
+    let Some(cursor) = cursor else {
+        return (uniforms, gpu);
+    };
+
+    let (mouse_v, mouse_h) = mouse_pos;
+    match cursor {
+        CursorImage::Mono {
+            data,
+            mask,
+            hot_v,
+            hot_h,
+        } => {
+            uniforms.cursor_kind = 1;
+            uniforms.cursor_width = 16;
+            uniforms.cursor_height = 16;
+            uniforms.cursor_left = i32::from(mouse_h) - i32::from(*hot_h);
+            uniforms.cursor_top = i32::from(mouse_v) - i32::from(*hot_v);
+            for row in 0..16 {
+                gpu.data_rows[row] =
+                    u32::from(u16::from_be_bytes([data[row * 2], data[row * 2 + 1]]));
+                gpu.mask_rows[row] =
+                    u32::from(u16::from_be_bytes([mask[row * 2], mask[row * 2 + 1]]));
+            }
+        }
+        CursorImage::Color {
+            width,
+            height,
+            pixels_argb,
+            mask,
+            hot_v,
+            hot_h,
+            ..
+        } => {
+            let source_width = *width;
+            let width = source_width.min(16);
+            let height = (*height).min(16);
+            uniforms.cursor_kind = 2;
+            uniforms.cursor_width = u32::from(width);
+            uniforms.cursor_height = u32::from(height);
+            uniforms.cursor_left = i32::from(mouse_h) - i32::from(*hot_h);
+            uniforms.cursor_top = i32::from(mouse_v) - i32::from(*hot_v);
+            for row in 0..16 {
+                gpu.mask_rows[row] =
+                    u32::from(u16::from_be_bytes([mask[row * 2], mask[row * 2 + 1]]));
+            }
+            for row in 0..usize::from(height) {
+                let source_start = row * usize::from(source_width);
+                let source_end = source_start + usize::from(width);
+                let destination_start = row * usize::from(width);
+                if source_end <= pixels_argb.len() {
+                    gpu.color_pixels[destination_start..destination_start + usize::from(width)]
+                        .copy_from_slice(&pixels_argb[source_start..source_end]);
+                }
+            }
+        }
+    }
+    (uniforms, gpu)
+}
+
 fn integer_scaled_viewport(
     source_width: u32,
     source_height: u32,
@@ -285,7 +543,8 @@ fn integer_scaled_viewport(
 
 #[cfg(test)]
 mod tests {
-    use super::integer_scaled_viewport;
+    use super::{guest_cursor_data, integer_scaled_viewport};
+    use systemless::display::CursorImage;
 
     #[test]
     fn integer_viewport_matches_software_presenter_scaling() {
@@ -297,5 +556,26 @@ mod tests {
             integer_scaled_viewport(512, 342, 1200, 800),
             (0.0, 0.0, 1024.0, 684.0)
         );
+    }
+
+    #[test]
+    fn monochrome_cursor_is_packed_for_metal_without_bit_reversal() {
+        let mut data = [0u8; 32];
+        let mut mask = [0u8; 32];
+        data[0..2].copy_from_slice(&0x8001u16.to_be_bytes());
+        mask[0..2].copy_from_slice(&0xC003u16.to_be_bytes());
+        let cursor = CursorImage::Mono {
+            data,
+            mask,
+            hot_v: 3,
+            hot_h: 4,
+        };
+
+        let (uniforms, gpu) = guest_cursor_data(Some(&cursor), (20, 30));
+
+        assert_eq!(uniforms.cursor_kind, 1);
+        assert_eq!((uniforms.cursor_left, uniforms.cursor_top), (26, 17));
+        assert_eq!(gpu.data_rows[0], 0x8001);
+        assert_eq!(gpu.mask_rows[0], 0xC003);
     }
 }

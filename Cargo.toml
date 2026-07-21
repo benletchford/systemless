@@ -52,6 +52,7 @@ test-support = []
 objc2 = { version = "0.5.2", optional = true }
 objc2-foundation = { version = "0.2.2", optional = true, features = ["NSGeometry", "NSObject", "NSString"] }
 objc2-metal = { version = "0.2.2", optional = true, features = [
+    "MTLBuffer",
     "MTLCommandBuffer",
     "MTLCommandEncoder",
     "MTLCommandQueue",
