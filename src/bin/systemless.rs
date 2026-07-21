@@ -25,6 +25,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use desktop_save_store::DesktopSaveStore;
+#[cfg(target_os = "macos")]
+use objc2::{msg_send, runtime::NSObject};
+#[cfg(target_os = "macos")]
+use objc2_quartz_core::CATransaction;
 use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
@@ -39,6 +43,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowAttributesExtMacOS;
+#[cfg(target_os = "macos")]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 use winit::window::WindowAttributes;
 use winit::window::WindowId;
@@ -192,6 +198,43 @@ fn service_pending_sound_work(
     Some(steps)
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct TransientWindowGeometry {
+    inner_size: winit::dpi::PhysicalSize<u32>,
+    outer_position: Option<winit::dpi::PhysicalPosition<i32>>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct PendingWindowTransition {
+    content: ContentRect,
+    target_size: winit::dpi::PhysicalSize<u32>,
+    required_resize_event: u64,
+}
+
+#[cfg(target_os = "macos")]
+struct CoreAnimationTransaction;
+
+#[cfg(target_os = "macos")]
+impl CoreAnimationTransaction {
+    fn begin() -> Self {
+        // SAFETY: GUI rendering and AppKit window mutation both happen on the
+        // main thread. The guard guarantees a matching commit on every path.
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        Self
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for CoreAnimationTransaction {
+    fn drop(&mut self) {
+        // SAFETY: paired with begin above on the same main thread.
+        CATransaction::commit();
+    }
+}
+
 struct App {
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
@@ -213,6 +256,21 @@ struct App {
     content_rect_previous_frame: Vec<u8>,
     #[cfg(target_os = "macos")]
     content_rect_screen_mode: Option<(u16, u16, u16)>,
+    /// Stable presentation rectangle for which the native window was last
+    /// sized. Transient dialogs may expand it without replacing the cached
+    /// gameplay crop.
+    #[cfg(target_os = "macos")]
+    window_sized_content_rect: Option<ContentRect>,
+    /// Native size and position to restore after a transient dialog closes.
+    #[cfg(target_os = "macos")]
+    transient_window_restore_geometry: Option<TransientWindowGeometry>,
+    /// Automatic dialog geometry waits for AppKit's resize callback before
+    /// exposing the new crop. Until then Metal retains the prior complete
+    /// drawable, avoiding a clipped or moving intermediate frame.
+    #[cfg(target_os = "macos")]
+    pending_window_transition: Option<PendingWindowTransition>,
+    #[cfg(target_os = "macos")]
+    window_resize_events: u64,
     #[cfg(not(target_os = "macos"))]
     scaled_row: Vec<u32>,
     runner: Option<FixtureRunner>,
@@ -299,6 +357,14 @@ impl App {
             content_rect_screen_mode: cached_content.as_ref().map(|cache| {
                 (cache.screen_width, cache.screen_height, cache.pixel_size)
             }),
+            #[cfg(target_os = "macos")]
+            window_sized_content_rect: cached_content.as_ref().map(|cache| cache.content),
+            #[cfg(target_os = "macos")]
+            transient_window_restore_geometry: None,
+            #[cfg(target_os = "macos")]
+            pending_window_transition: None,
+            #[cfg(target_os = "macos")]
+            window_resize_events: 0,
             #[cfg(not(target_os = "macos"))]
             scaled_row: Vec::new(),
             runner: None,
@@ -339,12 +405,21 @@ impl App {
             .unwrap_or(winit::dpi::PhysicalSize::new(sw, sh));
 
         #[cfg(target_os = "macos")]
-        let content = self.content_rect.unwrap_or(ContentRect {
-            left: 0,
-            top: 0,
-            width: sw,
-            height: sh,
-        });
+        let content = presentation_content_rect(
+            self.content_rect.unwrap_or(ContentRect {
+                left: 0,
+                top: 0,
+                width: sw,
+                height: sh,
+            }),
+            self.runner.as_ref().and_then(|runner| {
+                runner
+                    .dispatcher()
+                    .visible_dialog_structure_bounds(runner.bus())
+            }),
+            sw,
+            sh,
+        );
         #[cfg(not(target_os = "macos"))]
         let content = ContentRect {
             left: 0,
@@ -742,8 +817,11 @@ impl App {
         let (_, _, scrn_right, scrn_bottom, _) = runner.dispatcher().screen_mode;
         let game_w = scrn_right as u32;
         let game_h = scrn_bottom as u32;
-        let buf_w = size.width;
-        let buf_h = size.height;
+        let mut buf_w = size.width;
+        let mut buf_h = size.height;
+
+        #[cfg(target_os = "macos")]
+        let mut core_animation_transaction: Option<CoreAnimationTransaction> = None;
 
         if buf_w == 0 || buf_h == 0 || game_w == 0 || game_h == 0 {
             return;
@@ -841,15 +919,128 @@ impl App {
                             rect.height.saturating_mul(integer_scale),
                         ));
                     }
+                    self.window_sized_content_rect = Some(rect);
                 }
             }
 
-            let content = self.content_rect.unwrap_or(ContentRect {
+            let stable_content = self.content_rect.unwrap_or(ContentRect {
                 left: 0,
                 top: 0,
                 width: game_w,
                 height: game_h,
             });
+            let desired_content = presentation_content_rect(
+                stable_content,
+                runner
+                    .dispatcher()
+                    .visible_dialog_structure_bounds(runner.bus()),
+                game_w,
+                game_h,
+            );
+            if let Some(pending) = self.pending_window_transition {
+                if pending.content != desired_content {
+                    // The dialog changed or closed before AppKit delivered the
+                    // prior resize. Replace that transition below.
+                    self.pending_window_transition = None;
+                } else if self.window_resize_events >= pending.required_resize_event
+                    && size == pending.target_size
+                {
+                    self.window_sized_content_rect = Some(pending.content);
+                    self.pending_window_transition = None;
+                    if pending.content == stable_content {
+                        self.transient_window_restore_geometry = None;
+                    }
+                } else {
+                    // Retain the last complete drawable. Presenting the live
+                    // guest framebuffer here would expose the dialog through
+                    // the old crop for one or two display frames.
+                    self.force_next_render = true;
+                    return;
+                }
+            }
+
+            let transition_needed = self.window_sized_content_rect != Some(desired_content)
+                || (desired_content == stable_content
+                    && self.transient_window_restore_geometry.is_some());
+            if transition_needed {
+                let (target_size, target_position) = if desired_content != stable_content {
+                    if self.transient_window_restore_geometry.is_none() {
+                        self.transient_window_restore_geometry = Some(TransientWindowGeometry {
+                            inner_size: size,
+                            outer_position: self
+                                .window
+                                .as_ref()
+                                .and_then(|window| window.outer_position().ok()),
+                        });
+                    }
+                    let original = self
+                        .transient_window_restore_geometry
+                        .expect("transient geometry was initialized");
+                    let target_size = native_size_preserving_guest_scale(
+                        stable_content,
+                        desired_content,
+                        original.inner_size,
+                    );
+                    let target_position = original.outer_position.map(|original_position| {
+                        native_position_preserving_guest_anchor(
+                            stable_content,
+                            desired_content,
+                            original.inner_size,
+                            target_size,
+                            original_position,
+                        )
+                    });
+                    (target_size, target_position)
+                } else {
+                    let restore = self
+                        .transient_window_restore_geometry
+                        .expect("stable transition has geometry to restore");
+                    (restore.inner_size, restore.outer_position)
+                };
+
+                // AppKit changes the layer bounds synchronously. Present the
+                // correctly sized replacement drawable in the same Core
+                // Animation transaction so the compositor never exposes the
+                // old drawable re-centered in the new window for one frame.
+                let transaction = CoreAnimationTransaction::begin();
+                if let Some(surface) = self.surface.as_ref() {
+                    surface.set_transactional_presentation(true);
+                }
+                let changed_atomically = self.window.as_ref().is_some_and(|window| {
+                    target_position.is_some_and(|position| {
+                        set_macos_window_geometry(window, target_size, position)
+                    })
+                });
+                if changed_atomically {
+                    self.window_sized_content_rect = Some(desired_content);
+                    self.pending_window_transition = None;
+                    if desired_content == stable_content {
+                        self.transient_window_restore_geometry = None;
+                    }
+                    buf_w = target_size.width;
+                    buf_h = target_size.height;
+                    core_animation_transaction = Some(transaction);
+                } else {
+                    drop(transaction);
+                    if let Some(surface) = self.surface.as_ref() {
+                        surface.set_transactional_presentation(false);
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        let _ = window.request_inner_size(target_size);
+                        if let Some(position) = target_position {
+                            window.set_outer_position(position);
+                        }
+                    }
+                    self.pending_window_transition = Some(PendingWindowTransition {
+                        content: desired_content,
+                        target_size,
+                        required_resize_event: self.window_resize_events.saturating_add(1),
+                    });
+                    self.force_next_render = true;
+                    return;
+                }
+            }
+            let content = self.window_sized_content_rect.unwrap_or(stable_content);
             let palette = display::argb_palette_from_clut(&device_clut);
             if let Some(surface) = self.surface.as_mut() {
                 let presented_directly = surface
@@ -862,6 +1053,10 @@ impl App {
                         (buf_w, buf_h),
                     )
                     .expect("Failed to present native guest framebuffer");
+                if let Some(transaction) = core_animation_transaction.take() {
+                    drop(transaction);
+                    surface.set_transactional_presentation(false);
+                }
                 if presented_directly {
                     self.last_presented_guest_tick = Some(presented_tick);
                     self.force_next_render = false;
@@ -991,6 +1186,161 @@ fn physical_to_mac_in_viewport(
             (content.left + content.width - 1) as i32,
         ) as i16,
     )
+}
+
+/// Extend a stable gameplay crop just enough to include transient system UI.
+/// The learned/cached rectangle remains unchanged, so dismissing a dialog
+/// restores the normal viewport without relearning it or resizing the native
+/// window.
+#[cfg(target_os = "macos")]
+fn presentation_content_rect(
+    base: ContentRect,
+    transient_bounds: Option<(i16, i16, i16, i16)>,
+    screen_width: u32,
+    screen_height: u32,
+) -> ContentRect {
+    let Some((top, left, bottom, right)) = transient_bounds else {
+        return base;
+    };
+    let transient_left = i32::from(left).clamp(0, screen_width as i32) as u32;
+    let transient_top = i32::from(top).clamp(0, screen_height as i32) as u32;
+    let transient_right = i32::from(right).clamp(0, screen_width as i32) as u32;
+    let transient_bottom = i32::from(bottom).clamp(0, screen_height as i32) as u32;
+    if transient_right <= transient_left || transient_bottom <= transient_top {
+        return base;
+    }
+
+    let left = base.left.min(transient_left);
+    let top = base.top.min(transient_top);
+    let right = base
+        .left
+        .saturating_add(base.width)
+        .max(transient_right)
+        .min(screen_width);
+    let bottom = base
+        .top
+        .saturating_add(base.height)
+        .max(transient_bottom)
+        .min(screen_height);
+    ContentRect {
+        left,
+        top,
+        width: right.saturating_sub(left),
+        height: bottom.saturating_sub(top),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn native_size_preserving_guest_scale(
+    stable_content: ContentRect,
+    presentation_content: ContentRect,
+    original_size: winit::dpi::PhysicalSize<u32>,
+) -> winit::dpi::PhysicalSize<u32> {
+    if stable_content.width == 0 || stable_content.height == 0 {
+        return original_size;
+    }
+    let scale = (original_size.width as f64 / stable_content.width as f64)
+        .min(original_size.height as f64 / stable_content.height as f64);
+    winit::dpi::PhysicalSize::new(
+        original_size
+            .width
+            .max((presentation_content.width as f64 * scale).ceil() as u32),
+        original_size
+            .height
+            .max((presentation_content.height as f64 * scale).ceil() as u32),
+    )
+}
+
+/// Move a transiently enlarged window so the stable gameplay crop remains at
+/// the same desktop coordinates. Without this adjustment, adding guest pixels
+/// above or to the left of the crop makes macOS keep the outer top-left fixed
+/// and visibly pushes the gameplay down or right.
+#[cfg(target_os = "macos")]
+fn native_position_preserving_guest_anchor(
+    stable_content: ContentRect,
+    presentation_content: ContentRect,
+    original_size: winit::dpi::PhysicalSize<u32>,
+    target_size: winit::dpi::PhysicalSize<u32>,
+    original_position: winit::dpi::PhysicalPosition<i32>,
+) -> winit::dpi::PhysicalPosition<i32> {
+    let guest_anchor = |content: ContentRect, size: winit::dpi::PhysicalSize<u32>| {
+        if content.width == 0 || content.height == 0 {
+            return (0.0, 0.0);
+        }
+        let scale = (size.width as f64 / content.width as f64)
+            .min(size.height as f64 / content.height as f64);
+        let viewport_width = content.width as f64 * scale;
+        let viewport_height = content.height as f64 * scale;
+        let viewport_left = (size.width as f64 - viewport_width) * 0.5;
+        let viewport_top = (size.height as f64 - viewport_height) * 0.5;
+        (
+            viewport_left
+                + stable_content.left.saturating_sub(content.left) as f64 * scale,
+            viewport_top + stable_content.top.saturating_sub(content.top) as f64 * scale,
+        )
+    };
+    let original_anchor = guest_anchor(stable_content, original_size);
+    let transient_anchor = guest_anchor(presentation_content, target_size);
+    winit::dpi::PhysicalPosition::new(
+        original_position.x + (original_anchor.0 - transient_anchor.0).round() as i32,
+        original_position.y + (original_anchor.1 - transient_anchor.1).round() as i32,
+    )
+}
+
+/// Apply the native content size and desktop position in one NSWindow frame
+/// mutation. Calling winit's size and position setters separately exposes an
+/// intermediate window geometry to the compositor, making the old drawable
+/// jump before its correctly cropped replacement is ready.
+#[cfg(target_os = "macos")]
+fn set_macos_window_geometry(
+    window: &Window,
+    target_inner_size: winit::dpi::PhysicalSize<u32>,
+    target_outer_position: winit::dpi::PhysicalPosition<i32>,
+) -> bool {
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return false;
+    };
+    let Ok(current_outer_position) = window.outer_position() else {
+        return false;
+    };
+    let scale = window.scale_factor();
+    if scale <= 0.0 {
+        return false;
+    }
+
+    // SAFETY: winit owns the NSView and its NSWindow for the duration of this
+    // call. The GUI runner invokes this only on AppKit's main thread. CGRect
+    // is ABI-compatible with NSRect on 64-bit macOS.
+    unsafe {
+        let view: &NSObject = handle.ns_view.cast().as_ref();
+        let native_window: *mut NSObject = msg_send![view, window];
+        let Some(native_window) = native_window.as_ref() else {
+            return false;
+        };
+        let current_frame: objc2_foundation::CGRect = msg_send![native_window, frame];
+        let content_rect = objc2_foundation::CGRect::new(
+            objc2_foundation::CGPoint::new(0.0, 0.0),
+            objc2_foundation::CGSize::new(
+                target_inner_size.width as f64 / scale,
+                target_inner_size.height as f64 / scale,
+            ),
+        );
+        let mut target_frame: objc2_foundation::CGRect =
+            msg_send![native_window, frameRectForContentRect: content_rect];
+        let delta_x =
+            f64::from(target_outer_position.x - current_outer_position.x) / scale;
+        let delta_y =
+            f64::from(target_outer_position.y - current_outer_position.y) / scale;
+        target_frame.origin.x = current_frame.origin.x + delta_x;
+        target_frame.origin.y = current_frame.origin.y + current_frame.size.height
+            - target_frame.size.height
+            - delta_y;
+        let _: () = msg_send![native_window, setFrame: target_frame display: false animate: false];
+    }
+    true
 }
 
 fn detect_centered_content_rect_8bpp(
@@ -1233,6 +1583,10 @@ impl ApplicationHandler for App {
 
             WindowEvent::Resized(size) => {
                 self.force_next_render = true;
+                #[cfg(target_os = "macos")]
+                {
+                    self.window_resize_events = self.window_resize_events.saturating_add(1);
+                }
                 // Live resizing runs independently of the guest VBL. Present
                 // the latest complete guest image at the new drawable size
                 // immediately instead of stretching a stale drawable.
@@ -2607,6 +2961,104 @@ mod tests {
             physical_to_mac_in_viewport(160.0, 0.0, content, 1280, 720),
             (60, 80),
             "left letterbox pixels clamp to the cropped guest edge"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn visible_dialog_temporarily_extends_cached_gameplay_crop() {
+        let gameplay = ContentRect {
+            left: 80,
+            top: 104,
+            width: 640,
+            height: 392,
+        };
+        assert_eq!(
+            presentation_content_rect(gameplay, Some((85, 228, 233, 572)), 800, 600),
+            ContentRect {
+                left: 80,
+                top: 85,
+                width: 640,
+                height: 411,
+            }
+        );
+        assert_eq!(
+            presentation_content_rect(gameplay, None, 800, 600),
+            gameplay,
+            "dismissing the dialog must restore the cached gameplay crop"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dialog_expands_native_window_without_reducing_guest_pixel_scale() {
+        let gameplay = ContentRect {
+            left: 80,
+            top: 104,
+            width: 640,
+            height: 392,
+        };
+        let dialog = ContentRect {
+            left: 80,
+            top: 85,
+            width: 640,
+            height: 411,
+        };
+        assert_eq!(
+            native_size_preserving_guest_scale(
+                gameplay,
+                dialog,
+                winit::dpi::PhysicalSize::new(640, 392)
+            ),
+            winit::dpi::PhysicalSize::new(640, 411)
+        );
+        assert_eq!(
+            native_size_preserving_guest_scale(
+                gameplay,
+                dialog,
+                winit::dpi::PhysicalSize::new(1280, 784)
+            ),
+            winit::dpi::PhysicalSize::new(1280, 822)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dialog_growth_keeps_gameplay_fixed_on_the_desktop() {
+        let gameplay = ContentRect {
+            left: 80,
+            top: 104,
+            width: 640,
+            height: 392,
+        };
+        let dialog = ContentRect {
+            left: 80,
+            top: 85,
+            width: 640,
+            height: 411,
+        };
+        let original_position = winit::dpi::PhysicalPosition::new(300, 200);
+        assert_eq!(
+            native_position_preserving_guest_anchor(
+                gameplay,
+                dialog,
+                winit::dpi::PhysicalSize::new(640, 392),
+                winit::dpi::PhysicalSize::new(640, 411),
+                original_position,
+            ),
+            winit::dpi::PhysicalPosition::new(300, 181),
+            "adding 19 guest pixels above the crop should grow the window upward"
+        );
+        assert_eq!(
+            native_position_preserving_guest_anchor(
+                gameplay,
+                dialog,
+                winit::dpi::PhysicalSize::new(1280, 784),
+                winit::dpi::PhysicalSize::new(1280, 822),
+                original_position,
+            ),
+            winit::dpi::PhysicalPosition::new(300, 162),
+            "the desktop adjustment should scale with the native pixel multiple"
         );
     }
 }

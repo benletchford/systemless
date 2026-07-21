@@ -1887,6 +1887,12 @@ impl TrapDispatcher {
 
     /// Bounds of a retained visible dialog, if one is currently drawn.
     pub fn visible_dialog_bounds(&self) -> Option<(i16, i16, i16, i16)> {
+        if let Some(tracking) = self.dialog_tracking.as_ref() {
+            return Some(tracking.bounds);
+        }
+        if self.front_window != 0 && self.dialog_items.contains_key(&self.front_window) {
+            return Some(self.window_bounds);
+        }
         if let Some(snapshot) = self.dialog_visible_snapshots.get(&self.front_window) {
             return Some(snapshot.bounds);
         }
@@ -1894,6 +1900,47 @@ impl TrapDispatcher {
             .values()
             .next()
             .map(|snapshot| snapshot.bounds)
+    }
+
+    /// Structure bounds of a retained visible dialog, including its WDEF
+    /// frame. Frontends use this to keep transient dialogs visible when the
+    /// application's normal presentation viewport is smaller than the guest
+    /// screen.
+    pub fn visible_dialog_structure_bounds(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<(i16, i16, i16, i16)> {
+        let dialog_ptr = if let Some(tracking) = self.dialog_tracking.as_ref() {
+            tracking.dialog_ptr
+        } else if self.front_window != 0
+            && self.dialog_items.contains_key(&self.front_window)
+            && self.window_visible(bus, self.front_window)
+        {
+            self.front_window
+        } else if self
+            .dialog_visible_snapshots
+            .contains_key(&self.front_window)
+        {
+            self.front_window
+        } else {
+            *self.dialog_visible_snapshots.keys().next()?
+        };
+        self.window_structure_rect(bus, dialog_ptr).or_else(|| {
+            self.dialog_tracking
+                .as_ref()
+                .filter(|tracking| tracking.dialog_ptr == dialog_ptr)
+                .map(|tracking| tracking.bounds)
+                .or_else(|| {
+                    self.dialog_visible_snapshots
+                        .get(&dialog_ptr)
+                        .map(|snapshot| snapshot.bounds)
+                })
+                .or_else(|| {
+                    (dialog_ptr == self.front_window
+                        && self.dialog_items.contains_key(&dialog_ptr))
+                    .then_some(self.window_bounds)
+                })
+        })
     }
 
     /// Number of windows currently tracked by the Window Manager list.
@@ -5944,5 +5991,49 @@ mod tests {
                 id
             );
         }
+    }
+
+    #[test]
+    fn active_modal_dialog_is_visible_to_frontends_before_snapshot_retention() {
+        let mut disp = TrapDispatcher::new();
+        let bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let bounds = (93, 236, 225, 564);
+        disp.dialog_tracking = Some(DialogTrackingState {
+            dialog_ptr: 0x0010_0000,
+            bounds,
+            proc_id: 1,
+            ..DialogTrackingState::default()
+        });
+
+        assert_eq!(disp.visible_dialog_bounds(), Some(bounds));
+        assert_eq!(disp.visible_dialog_structure_bounds(&bus), Some(bounds));
+    }
+
+    #[test]
+    fn app_managed_front_dialog_is_visible_without_modal_tracking_or_snapshot() {
+        let mut disp = TrapDispatcher::new();
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let dialog_ptr = 0x0010_0000;
+        let bounds = (93, 236, 225, 564);
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.window_proc_ids.insert(dialog_ptr, 1);
+        bus.write_byte(dialog_ptr + 110, 1);
+        bus.write_long(dialog_ptr + 2, 0x0010_1000);
+        bus.write_word(dialog_ptr + 6, 0);
+        bus.write_word(dialog_ptr + 8, (-bounds.0) as u16);
+        bus.write_word(dialog_ptr + 10, (-bounds.1) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, (bounds.2 - bounds.0) as u16);
+        bus.write_word(dialog_ptr + 22, (bounds.3 - bounds.1) as u16);
+
+        assert_eq!(disp.visible_dialog_bounds(), Some(bounds));
+        assert_eq!(
+            disp.visible_dialog_structure_bounds(&bus),
+            Some(bounds),
+            "synthetic records without Window Manager regions fall back to content bounds"
+        );
     }
 }
