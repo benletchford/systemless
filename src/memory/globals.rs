@@ -28,6 +28,12 @@ pub mod addr {
     /// MemErr: current value of MemError (word).
     /// Inside Macintosh Volume IV, IV-80; low-memory table IV-246.
     pub const MEM_ERR: u32 = 0x0220;
+    /// DoubleTime: maximum TickCount interval recognized as a double-click.
+    /// Classic applications commonly read this long directly instead of
+    /// calling through the Event Manager.
+    /// Inside Macintosh Volume I, I-260 documents the value and global name;
+    /// MPW SysEqu.h defines `DoubleTime` at $02F0.
+    pub const DOUBLE_TIME: u32 = 0x02F0;
     pub const ROM85: u32 = 0x028E; // Version number of ROM (word) - Inside Macintosh V, V-578
 
     /// SdVolume: current speaker volume (1 byte, low-order three bits).
@@ -350,6 +356,11 @@ mod tests {
         // Other heavily-load-bearing globals; a regression in any
         // of these has been historically catastrophic.
         assert_eq!(addr::TICKS, 0x016A, "Ticks per IM:II II-387");
+        assert_eq!(
+            addr::DOUBLE_TIME,
+            0x02F0,
+            "DoubleTime at $02F0 per MPW SysEqu.h; semantics documented in IM:I I-260"
+        );
         assert_eq!(
             addr::RND_SEED,
             0x0156,
