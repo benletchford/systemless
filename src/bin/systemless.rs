@@ -71,6 +71,7 @@ const AUDIO_CALLBACK_CHUNK_SAMPLES: usize = 32;
 const CONTENT_RECT_CONFIRMATIONS: u16 = 5;
 #[cfg(target_os = "macos")]
 const VIEWPORT_CACHE_FILE: &str = "viewport.json";
+const MAX_AUDIO_MIX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 const DEFAULT_GUI_ARROWS_AS_NUMPAD: bool = false;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -290,6 +291,10 @@ struct App {
     cpu_instruction_credit: f64,
     /// Fractional host samples carried between GUI slices to preserve rate.
     audio_sample_remainder: f64,
+    /// Wall-clock instant represented by the most recently queued audio.
+    /// Unlike video, audio cannot simply drop a late host frame without
+    /// starving the device ring buffer.
+    last_audio_mix_time: Option<std::time::Instant>,
     /// Current mouse position in physical window pixels
     mouse_physical: (f64, f64),
     /// Current game screen dimensions (tracks screen_mode changes)
@@ -382,6 +387,7 @@ impl App {
             next_cpu_budget_time: None,
             cpu_instruction_credit: 0.0,
             audio_sample_remainder: 0.0,
+            last_audio_mix_time: None,
             mouse_physical: (0.0, 0.0),
             current_screen_width: INITIAL_SCREEN_WIDTH,
             current_screen_height: INITIAL_SCREEN_HEIGHT,
@@ -649,8 +655,23 @@ impl App {
             self.next_cpu_budget_time = Some(cpu_deadline);
             game::MAX_INSTRUCTIONS_PER_FRAME
         };
+        let audio_interval = self
+            .last_audio_mix_time
+            .replace(now)
+            .map(|previous| now.saturating_duration_since(previous))
+            .unwrap_or(FRAME_DURATION)
+            .min(MAX_AUDIO_MIX_INTERVAL);
         let audio_samples =
-            Self::audio_samples_for_duration(FRAME_DURATION, &mut self.audio_sample_remainder);
+            Self::audio_samples_for_duration(audio_interval, &mut self.audio_sample_remainder);
+        if std::env::var_os("SYSTEMLESS_TRACE_AUDIO").is_some()
+            && audio_interval > FRAME_DURATION + FRAME_DURATION / 2
+        {
+            eprintln!(
+                "[AUDIO] recovering {:.1} ms of host time ({} source samples)",
+                audio_interval.as_secs_f64() * 1000.0,
+                audio_samples
+            );
+        }
 
         let runner = self.runner.as_mut().expect("runner checked above");
 
@@ -2716,6 +2737,26 @@ mod tests {
             first_refill_frame <= AUDIO_CALLBACK_CHUNK_SAMPLES + 1,
             "doubleback refill should be serviced between late-audio chunks, not after a long silence tail; first refill frame={}",
             first_refill_frame
+        );
+    }
+
+    #[test]
+    fn step_frame_recovers_audio_elapsed_during_a_dropped_video_frame() {
+        let now = std::time::Instant::now();
+        let (runner, queued) = gui_runner_with_counting_audio();
+        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        app.runner = Some(runner);
+        app.start_time = Some(now);
+        app.next_frame_time = Some(now);
+        app.last_audio_mix_time =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
+
+        app.step_frame();
+
+        assert!(
+            (4_400..=4_600).contains(&*queued.borrow()),
+            "100 ms of elapsed host time should queue about 2,205 stereo frames, got {} bytes",
+            *queued.borrow()
         );
     }
 
