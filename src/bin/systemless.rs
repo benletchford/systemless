@@ -29,6 +29,7 @@ use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
+use systemless::trap::dispatch::ScreenCopyBitsRect;
 
 #[cfg(not(target_os = "macos"))]
 use softbuffer::Surface;
@@ -58,7 +59,91 @@ const CPU_BATCH_INSTRUCTIONS: usize = 10_000;
 const SOUND_CALLBACK_SLICE_INSTRUCTIONS: usize = CPU_BATCH_INSTRUCTIONS;
 const SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME: usize = 25_000;
 const AUDIO_CALLBACK_CHUNK_SAMPLES: usize = 32;
+/// Pixel or CopyBits inference must agree across distinct guest drawing
+/// updates before it can crop the presentation. Geometry from the manual
+/// CPort already selected by the HLE is authoritative immediately.
+const CONTENT_RECT_CONFIRMATIONS: u16 = 5;
+#[cfg(target_os = "macos")]
+const VIEWPORT_CACHE_FILE: &str = "viewport.json";
 const DEFAULT_GUI_ARROWS_AS_NUMPAD: bool = false;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+struct ContentRect {
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize, serde::Serialize)]
+struct CachedContentRect {
+    version: u8,
+    screen_width: u16,
+    screen_height: u16,
+    pixel_size: u16,
+    content: ContentRect,
+}
+
+#[cfg(target_os = "macos")]
+fn viewport_cache_path(game_path: &std::path::Path) -> PathBuf {
+    DesktopSaveStore::root_for_game_path(game_path).join(VIEWPORT_CACHE_FILE)
+}
+
+#[cfg(target_os = "macos")]
+fn valid_cached_content_rect(cache: &CachedContentRect) -> bool {
+    let content = cache.content;
+    cache.version == 1
+        && cache.screen_width != 0
+        && cache.screen_height != 0
+        && content.width != 0
+        && content.height != 0
+        && content.left.saturating_add(content.width) <= u32::from(cache.screen_width)
+        && content.top.saturating_add(content.height) <= u32::from(cache.screen_height)
+        && content.left
+            == (u32::from(cache.screen_width).saturating_sub(content.width)) / 2
+        && content.top
+            == (u32::from(cache.screen_height).saturating_sub(content.height)) / 2
+}
+
+#[cfg(target_os = "macos")]
+fn load_cached_content_rect(game_path: &std::path::Path) -> Option<CachedContentRect> {
+    let path = viewport_cache_path(game_path);
+    let bytes = std::fs::read(&path).ok()?;
+    let cache: CachedContentRect = serde_json::from_slice(&bytes).ok()?;
+    valid_cached_content_rect(&cache).then_some(cache)
+}
+
+#[cfg(target_os = "macos")]
+fn persist_content_rect(
+    game_path: &std::path::Path,
+    screen_mode: (u32, u32, u16, u16, u16),
+    content: ContentRect,
+) {
+    let cache = CachedContentRect {
+        version: 1,
+        screen_width: screen_mode.2,
+        screen_height: screen_mode.3,
+        pixel_size: screen_mode.4,
+        content,
+    };
+    let path = viewport_cache_path(game_path);
+    let result = (|| -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(&cache)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        std::fs::write(&path, bytes)
+    })();
+    if let Err(err) = result {
+        eprintln!(
+            "[SYSTEMLESS] Could not cache guest viewport at {}: {}",
+            path.display(),
+            err
+        );
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
@@ -116,6 +201,18 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
+    #[cfg(target_os = "macos")]
+    content_rect: Option<ContentRect>,
+    #[cfg(target_os = "macos")]
+    content_rect_candidate: Option<(ContentRect, u16)>,
+    #[cfg(target_os = "macos")]
+    content_rect_copybits_count: u64,
+    /// Previous raw guest frame used only while learning the pixel-content
+    /// fallback. Repeated host presentations of one image do not confirm it.
+    #[cfg(target_os = "macos")]
+    content_rect_previous_frame: Vec<u8>,
+    #[cfg(target_os = "macos")]
+    content_rect_screen_mode: Option<(u16, u16, u16)>,
     #[cfg(not(target_os = "macos"))]
     scaled_row: Vec<u32>,
     runner: Option<FixtureRunner>,
@@ -170,12 +267,38 @@ impl App {
         cpu_mhz: Option<f64>,
         show_menu_bar: bool,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        let cached_content = load_cached_content_rect(&game_path);
+        #[cfg(target_os = "macos")]
+        if let Some(cache) = cached_content.as_ref() {
+            eprintln!(
+                "[SYSTEMLESS] Cached guest content: {}x{} at ({},{}) inside {}x{}",
+                cache.content.width,
+                cache.content.height,
+                cache.content.left,
+                cache.content.top,
+                cache.screen_width,
+                cache.screen_height
+            );
+        }
         Self {
             window: None,
             surface: None,
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
             frame_argb: Vec::new(),
+            #[cfg(target_os = "macos")]
+            content_rect: cached_content.as_ref().map(|cache| cache.content),
+            #[cfg(target_os = "macos")]
+            content_rect_candidate: None,
+            #[cfg(target_os = "macos")]
+            content_rect_copybits_count: 0,
+            #[cfg(target_os = "macos")]
+            content_rect_previous_frame: Vec::new(),
+            #[cfg(target_os = "macos")]
+            content_rect_screen_mode: cached_content.as_ref().map(|cache| {
+                (cache.screen_width, cache.screen_height, cache.pixel_size)
+            }),
             #[cfg(not(target_os = "macos"))]
             scaled_row: Vec::new(),
             runner: None,
@@ -215,13 +338,22 @@ impl App {
             .map(|w| w.inner_size())
             .unwrap_or(winit::dpi::PhysicalSize::new(sw, sh));
 
-        let scale_x = size.width as f64 / sw as f64;
-        let scale_y = size.height as f64 / sh as f64;
-        let scale = scale_x.min(scale_y).max(1.0);
+        #[cfg(target_os = "macos")]
+        let content = self.content_rect.unwrap_or(ContentRect {
+            left: 0,
+            top: 0,
+            width: sw,
+            height: sh,
+        });
+        #[cfg(not(target_os = "macos"))]
+        let content = ContentRect {
+            left: 0,
+            top: 0,
+            width: sw,
+            height: sh,
+        };
 
-        let mac_x = (px / scale) as i16;
-        let mac_y = (py / scale) as i16;
-        (mac_y.clamp(0, sh as i16 - 1), mac_x.clamp(0, sw as i16 - 1))
+        physical_to_mac_in_viewport(px, py, content, size.width, size.height)
     }
 
     fn init_game(&mut self) {
@@ -624,14 +756,107 @@ impl App {
 
         #[cfg(target_os = "macos")]
         if !self.debug_overlay_visible {
-            let palette = display::argb_palette_from_clut(&device_clut);
+            let screen_signature = (screen_mode.2, screen_mode.3, screen_mode.4);
+            if self.content_rect_screen_mode != Some(screen_signature) {
+                self.content_rect_screen_mode = Some(screen_signature);
+                self.content_rect = None;
+                self.content_rect_candidate = None;
+                self.content_rect_copybits_count = 0;
+                self.content_rect_previous_frame.clear();
+            }
+
+            let authoritative_rect = (self.content_rect.is_none())
+                .then(|| {
+                    let dispatcher = runner.dispatcher();
+                    dispatcher
+                        .declared_centered_presentation_rect(runner.bus())
+                        .or_else(|| dispatcher.manual_cport_presentation_rect(runner.bus()))
+                })
+                .flatten()
+                .and_then(|rect| centered_content_rect_from_copybits(rect, game_w, game_h));
+
             let framebuffer_len = screen_mode.1.saturating_mul(u32::from(screen_mode.3));
             let framebuffer = runner.bus().ram_slice(screen_mode.0, framebuffer_len);
+            let mut accepted_rect = authoritative_rect;
+            if self.content_rect.is_none() && accepted_rect.is_none() {
+                let copybits_count = runner.dispatcher().copybits_screen_count;
+                let mut detected = None;
+                if copybits_count != self.content_rect_copybits_count {
+                    let confirmations = copybits_count
+                        .saturating_sub(self.content_rect_copybits_count)
+                        .min(u64::from(u16::MAX)) as u16;
+                    self.content_rect_copybits_count = copybits_count;
+                    detected = runner
+                        .dispatcher()
+                        .last_screen_copybits_rect
+                        .and_then(|rect| {
+                            centered_content_rect_from_copybits(rect, game_w, game_h)
+                        })
+                        .map(|rect| (rect, confirmations));
+                }
+                if detected.is_none()
+                    && screen_mode.4 == 8
+                    && self.content_rect_previous_frame.as_slice() != framebuffer
+                {
+                    detected = detect_centered_content_rect_8bpp(
+                        framebuffer,
+                        screen_mode.1 as usize,
+                        usize::from(screen_mode.2),
+                        usize::from(screen_mode.3),
+                    )
+                    .map(|rect| (rect, 1));
+                    self.content_rect_previous_frame.clear();
+                    self.content_rect_previous_frame
+                        .extend_from_slice(framebuffer);
+                }
+                if let Some((candidate, confirmations)) = detected {
+                    self.content_rect_candidate = match self.content_rect_candidate {
+                        Some((previous, count)) if previous == candidate => {
+                            Some((candidate, count.saturating_add(confirmations)))
+                        }
+                        _ => Some((candidate, confirmations)),
+                    };
+                    accepted_rect = self
+                        .content_rect_candidate
+                        .filter(|(_, count)| *count >= CONTENT_RECT_CONFIRMATIONS)
+                        .map(|(rect, _)| rect);
+                }
+            }
+
+            if self.content_rect.is_none() {
+                if let Some(rect) = accepted_rect {
+                    eprintln!(
+                        "[SYSTEMLESS] Guest content: {}x{} at ({},{}) inside {}x{}",
+                        rect.width, rect.height, rect.left, rect.top, game_w, game_h
+                    );
+                    self.content_rect = Some(rect);
+                    persist_content_rect(&self.game_path, screen_mode, rect);
+                    if let Some(window) = self.window.as_ref() {
+                        let current = window.inner_size();
+                        let integer_scale = (current.width / rect.width)
+                            .min(current.height / rect.height)
+                            .max(1);
+                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
+                            rect.width.saturating_mul(integer_scale),
+                            rect.height.saturating_mul(integer_scale),
+                        ));
+                    }
+                }
+            }
+
+            let content = self.content_rect.unwrap_or(ContentRect {
+                left: 0,
+                top: 0,
+                width: game_w,
+                height: game_h,
+            });
+            let palette = display::argb_palette_from_clut(&device_clut);
             if let Some(surface) = self.surface.as_mut() {
                 let presented_directly = surface
                     .present_guest_frame(
                         framebuffer,
                         screen_mode,
+                        (content.left, content.top, content.width, content.height),
                         &palette,
                         cursor.as_ref().map(|image| (image, mouse_pos)),
                         (buf_w, buf_h),
@@ -738,14 +963,164 @@ impl App {
     }
 }
 
+fn physical_to_mac_in_viewport(
+    px: f64,
+    py: f64,
+    content: ContentRect,
+    drawable_width: u32,
+    drawable_height: u32,
+) -> (i16, i16) {
+    if content.width == 0 || content.height == 0 || drawable_width == 0 || drawable_height == 0 {
+        return (0, 0);
+    }
+    let scale = (drawable_width as f64 / content.width as f64)
+        .min(drawable_height as f64 / content.height as f64);
+    let viewport_width = content.width as f64 * scale;
+    let viewport_height = content.height as f64 * scale;
+    let origin_x = (drawable_width as f64 - viewport_width) * 0.5;
+    let origin_y = (drawable_height as f64 - viewport_height) * 0.5;
+    let mac_x = content.left as i32 + ((px - origin_x) / scale).floor() as i32;
+    let mac_y = content.top as i32 + ((py - origin_y) / scale).floor() as i32;
+    (
+        mac_y.clamp(
+            content.top as i32,
+            (content.top + content.height - 1) as i32,
+        ) as i16,
+        mac_x.clamp(
+            content.left as i32,
+            (content.left + content.width - 1) as i32,
+        ) as i16,
+    )
+}
+
+fn detect_centered_content_rect_8bpp(
+    framebuffer: &[u8],
+    row_bytes: usize,
+    width: usize,
+    height: usize,
+) -> Option<ContentRect> {
+    if width < 32 || height < 32 || row_bytes < width || framebuffer.len() < row_bytes * height {
+        return None;
+    }
+
+    let corners = [
+        framebuffer[0],
+        framebuffer[width - 1],
+        framebuffer[(height - 1) * row_bytes],
+        framebuffer[(height - 1) * row_bytes + width - 1],
+    ];
+    let background = corners
+        .iter()
+        .copied()
+        .find(|candidate| corners.iter().filter(|value| *value == candidate).count() >= 3)?;
+    let row_threshold = (width / 64).max(8);
+    let row_has_content = |row: usize| {
+        framebuffer[row * row_bytes..row * row_bytes + width]
+            .iter()
+            .filter(|&&pixel| pixel != background)
+            .take(row_threshold)
+            .count()
+            >= row_threshold
+    };
+    let top = (0..height).find(|&row| row_has_content(row))?;
+    let bottom = (0..height)
+        .rev()
+        .find(|&row| row_has_content(row))?
+        .saturating_add(1);
+
+    let column_threshold = ((bottom - top) / 64).max(8);
+    let column_has_content = |column: usize| {
+        (top..bottom)
+            .filter(|&row| framebuffer[row * row_bytes + column] != background)
+            .take(column_threshold)
+            .count()
+            >= column_threshold
+    };
+    let left = (0..width).find(|&column| column_has_content(column))?;
+    let right = (0..width)
+        .rev()
+        .find(|&column| column_has_content(column))?
+        .saturating_add(1);
+
+    let right_margin = width - right;
+    let bottom_margin = height - bottom;
+    let horizontal_tolerance = (width / 100).max(4);
+    let vertical_tolerance = (height / 100).max(4);
+    let content_width = right - left;
+    let content_height = bottom - top;
+    if left < 4
+        || right_margin < 4
+        || top < 4
+        || bottom_margin < 4
+        || left.abs_diff(right_margin) > horizontal_tolerance
+        || top.abs_diff(bottom_margin) > vertical_tolerance
+        || content_width < width / 2
+        || content_height < height / 2
+    {
+        return None;
+    }
+
+    Some(ContentRect {
+        left: left as u32,
+        top: top as u32,
+        width: content_width as u32,
+        height: content_height as u32,
+    })
+}
+
+fn centered_content_rect_from_copybits(
+    rect: ScreenCopyBitsRect,
+    screen_width: u32,
+    screen_height: u32,
+) -> Option<ContentRect> {
+    if screen_width < 32 || screen_height < 32 {
+        return None;
+    }
+    let left = u32::try_from(rect.dst_left).ok()?;
+    let top = u32::try_from(rect.dst_top).ok()?;
+    let right = u32::try_from(rect.dst_right).ok()?;
+    let bottom = u32::try_from(rect.dst_bottom).ok()?;
+    if right <= left || bottom <= top || right > screen_width || bottom > screen_height {
+        return None;
+    }
+    let content_width = right - left;
+    let content_height = bottom - top;
+    let right_margin = screen_width - right;
+    let bottom_margin = screen_height - bottom;
+    let horizontal_tolerance = (screen_width / 100).max(4);
+    let vertical_tolerance = (screen_height / 100).max(4);
+    let has_border = left >= 4 || right_margin >= 4 || top >= 4 || bottom_margin >= 4;
+    if !has_border
+        || left.abs_diff(right_margin) > horizontal_tolerance
+        || top.abs_diff(bottom_margin) > vertical_tolerance
+        || content_width < screen_width / 2
+        || content_height < screen_height / 2
+    {
+        return None;
+    }
+    Some(ContentRect {
+        left,
+        top,
+        width: content_width,
+        height: content_height,
+    })
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
+            #[cfg(target_os = "macos")]
+            let initial_size = self
+                .content_rect
+                .map(|content| (content.width, content.height))
+                .unwrap_or((INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT));
+            #[cfg(not(target_os = "macos"))]
+            let initial_size = (INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT);
             let window_attrs = Window::default_attributes()
                 .with_title("Systemless - Macintosh Emulator")
                 .with_inner_size(winit::dpi::LogicalSize::new(
-                    INITIAL_SCREEN_WIDTH * SCALE,
-                    INITIAL_SCREEN_HEIGHT * SCALE,
+                    initial_size.0 * SCALE,
+                    initial_size.1 * SCALE,
                 ))
                 .with_resizable(true);
             let window_attrs = platform_window_attrs(window_attrs);
@@ -856,11 +1231,19 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::Resized(_) => {
+            WindowEvent::Resized(size) => {
                 self.force_next_render = true;
+                // Live resizing runs independently of the guest VBL. Present
+                // the latest complete guest image at the new drawable size
+                // immediately instead of stretching a stale drawable.
+                if size.width != 0 && size.height != 0 && self.runner.is_some() {
+                    self.render_frame();
+                }
             }
 
-            WindowEvent::RedrawRequested => {}
+            WindowEvent::RedrawRequested => {
+                self.force_next_render = true;
+            }
             _ => {}
         }
     }
@@ -2107,6 +2490,123 @@ mod tests {
         assert!(
             app.should_render_frame(),
             "a new guest tick is a fresh VBL presentation point"
+        );
+    }
+
+    #[test]
+    fn centered_copybits_detection_rejects_fullscreen_and_off_center_blits() {
+        let centered = ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: 60,
+            dst_left: 80,
+            dst_bottom: 540,
+            dst_right: 720,
+        };
+        assert_eq!(
+            centered_content_rect_from_copybits(centered, 800, 600),
+            Some(ContentRect {
+                left: 80,
+                top: 60,
+                width: 640,
+                height: 480,
+            })
+        );
+
+        let fullscreen = ScreenCopyBitsRect {
+            src_bottom: 600,
+            src_right: 800,
+            dst_top: 0,
+            dst_left: 0,
+            dst_bottom: 600,
+            dst_right: 800,
+            ..centered
+        };
+        assert_eq!(centered_content_rect_from_copybits(fullscreen, 800, 600), None);
+
+        let off_center = ScreenCopyBitsRect {
+            dst_left: 10,
+            dst_right: 650,
+            ..centered
+        };
+        assert_eq!(centered_content_rect_from_copybits(off_center, 800, 600), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cached_viewport_must_match_centered_guest_screen_geometry() {
+        let valid = CachedContentRect {
+            version: 1,
+            screen_width: 800,
+            screen_height: 600,
+            pixel_size: 8,
+            content: ContentRect {
+                left: 80,
+                top: 104,
+                width: 640,
+                height: 392,
+            },
+        };
+        assert!(valid_cached_content_rect(&valid));
+
+        let off_center = CachedContentRect {
+            content: ContentRect {
+                left: 79,
+                ..valid.content
+            },
+            ..valid
+        };
+        assert!(!valid_cached_content_rect(&off_center));
+    }
+
+    #[test]
+    fn centered_pixel_fallback_finds_content_without_game_identity() {
+        let width = 800usize;
+        let height = 600usize;
+        let mut framebuffer = vec![0u8; width * height];
+        for row in 104..496 {
+            framebuffer[row * width + 96..row * width + 709].fill(7);
+        }
+        assert_eq!(
+            detect_centered_content_rect_8bpp(&framebuffer, width, width, height),
+            Some(ContentRect {
+                left: 96,
+                top: 104,
+                width: 613,
+                height: 392,
+            })
+        );
+
+        framebuffer.fill(7);
+        assert_eq!(
+            detect_centered_content_rect_8bpp(&framebuffer, width, width, height),
+            None,
+            "a full-screen image must not be cropped"
+        );
+    }
+
+    #[test]
+    fn cropped_aspect_fit_mouse_mapping_inverts_the_presenter_viewport() {
+        let content = ContentRect {
+            left: 80,
+            top: 60,
+            width: 640,
+            height: 480,
+        };
+        assert_eq!(
+            physical_to_mac_in_viewport(0.0, 0.0, content, 1280, 960),
+            (60, 80)
+        );
+        assert_eq!(
+            physical_to_mac_in_viewport(1279.0, 959.0, content, 1280, 960),
+            (539, 719)
+        );
+        assert_eq!(
+            physical_to_mac_in_viewport(160.0, 0.0, content, 1280, 720),
+            (60, 80),
+            "left letterbox pixels clamp to the cropped guest edge"
         );
     }
 }

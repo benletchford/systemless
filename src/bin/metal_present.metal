@@ -43,6 +43,8 @@ struct GuestFrameUniforms {
     uint width;
     uint height;
     uint pixel_size;
+    uint content_left;
+    uint content_top;
     uint cursor_kind;
     uint cursor_width;
     uint cursor_height;
@@ -71,8 +73,10 @@ fragment float4 guest_raster_fragment(
     constant GuestFrameUniforms& frame [[buffer(2)]],
     constant GuestCursorData& cursor [[buffer(3)]])
 {
-    uint x = min(uint(in.tex_coord.x * float(frame.width)), frame.width - 1);
-    uint y = min(uint(in.tex_coord.y * float(frame.height)), frame.height - 1);
+    uint x = frame.content_left
+        + min(uint(in.tex_coord.x * float(frame.width)), frame.width - 1);
+    uint y = frame.content_top
+        + min(uint(in.tex_coord.y * float(frame.height)), frame.height - 1);
     uint argb;
 
     if (frame.pixel_size == 8) {

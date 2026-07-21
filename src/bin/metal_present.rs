@@ -23,7 +23,7 @@ use objc2_metal::{
     MTLRenderPipelineState, MTLResourceOptions, MTLStorageMode, MTLStoreAction, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
-use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CAAutoresizingMask, CALayer, CAMetalDrawable, CAMetalLayer};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
@@ -41,6 +41,8 @@ struct GuestFrameUniforms {
     width: u32,
     height: u32,
     pixel_size: u32,
+    content_left: u32,
+    content_top: u32,
     cursor_kind: u32,
     cursor_width: u32,
     cursor_height: u32,
@@ -122,6 +124,9 @@ impl MetalPresenter {
         }
         layer.setOpaque(true);
         layer.setFrame(root_layer.bounds());
+        layer.setAutoresizingMask(
+            CAAutoresizingMask::kCALayerWidthSizable | CAAutoresizingMask::kCALayerHeightSizable,
+        );
         layer.setContentsScale(root_layer.contentsScale());
         root_layer.addSublayer(&layer);
 
@@ -249,7 +254,7 @@ impl MetalPresenter {
         unsafe { encoder.setFragmentTexture_atIndex(Some(upload), 0) };
 
         let viewport =
-            integer_scaled_viewport(source_width, source_height, drawable_width, drawable_height);
+            aspect_fit_viewport(source_width, source_height, drawable_width, drawable_height);
         encoder.setViewport(MTLViewport {
             originX: viewport.0,
             originY: viewport.1,
@@ -276,23 +281,28 @@ impl MetalPresenter {
         &mut self,
         framebuffer: &[u8],
         screen_mode: (u32, u32, u16, u16, u16),
+        content_rect: (u32, u32, u32, u32),
         palette: &[u32; 256],
         cursor: Option<(&CursorImage, (i16, i16))>,
         drawable_size: (u32, u32),
     ) -> Result<bool, String> {
         let (_, row_bytes, width, height, pixel_size) = screen_mode;
-        let width = u32::from(width);
-        let height = u32::from(height);
+        let screen_width = u32::from(width);
+        let screen_height = u32::from(height);
+        let (content_left, content_top, width, height) = content_rect;
         let (drawable_width, drawable_height) = drawable_size;
         if !matches!(pixel_size, 1 | 8) {
             return Ok(false);
         }
+        if content_left.saturating_add(width) > screen_width
+            || content_top.saturating_add(height) > screen_height
+        {
+            return Err("detected content rectangle lies outside the guest screen".to_string());
+        }
         if width == 0 || height == 0 || drawable_width == 0 || drawable_height == 0 {
             return Ok(true);
         }
-        let frame_bytes = usize::try_from(row_bytes)
-            .ok()
-            .and_then(|stride| stride.checked_mul(height as usize))
+        let frame_bytes = guest_frame_byte_len(row_bytes, screen_height)
             .ok_or_else(|| "guest framebuffer dimensions overflow host size".to_string())?;
         if framebuffer.len() < frame_bytes {
             return Err("guest framebuffer dimensions do not match its pixel data".to_string());
@@ -325,6 +335,8 @@ impl MetalPresenter {
         uniforms.width = width;
         uniforms.height = height;
         uniforms.pixel_size = u32::from(pixel_size);
+        uniforms.content_left = content_left;
+        uniforms.content_top = content_top;
 
         let drawable_texture = unsafe { drawable.texture() };
         let pass = unsafe { MTLRenderPassDescriptor::new() };
@@ -366,7 +378,7 @@ impl MetalPresenter {
             );
         }
 
-        let viewport = integer_scaled_viewport(width, height, drawable_width, drawable_height);
+        let viewport = aspect_fit_viewport(width, height, drawable_width, drawable_height);
         encoder.setViewport(MTLViewport {
             originX: viewport.0,
             originY: viewport.1,
@@ -524,38 +536,52 @@ fn guest_cursor_data(
     (uniforms, gpu)
 }
 
-fn integer_scaled_viewport(
+fn aspect_fit_viewport(
     source_width: u32,
     source_height: u32,
     drawable_width: u32,
     drawable_height: u32,
 ) -> (f64, f64, f64, f64) {
-    let scale = (drawable_width / source_width)
-        .min(drawable_height / source_height)
-        .max(1);
+    let scale = (drawable_width as f64 / source_width as f64)
+        .min(drawable_height as f64 / source_height as f64);
+    let width = source_width as f64 * scale;
+    let height = source_height as f64 * scale;
     (
-        0.0,
-        0.0,
-        (source_width * scale) as f64,
-        (source_height * scale) as f64,
+        (drawable_width as f64 - width) * 0.5,
+        (drawable_height as f64 - height) * 0.5,
+        width,
+        height,
     )
+}
+
+fn guest_frame_byte_len(row_bytes: u32, screen_height: u32) -> Option<usize> {
+    usize::try_from(row_bytes)
+        .ok()?
+        .checked_mul(screen_height as usize)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{guest_cursor_data, integer_scaled_viewport};
+    use super::{aspect_fit_viewport, guest_cursor_data, guest_frame_byte_len};
     use systemless::display::CursorImage;
 
     #[test]
-    fn integer_viewport_matches_software_presenter_scaling() {
+    fn viewport_scales_continuously_and_centers_letterboxing() {
         assert_eq!(
-            integer_scaled_viewport(800, 600, 1920, 1080),
-            (0.0, 0.0, 800.0, 600.0)
+            aspect_fit_viewport(800, 600, 1920, 1080),
+            (240.0, 0.0, 1440.0, 1080.0)
         );
         assert_eq!(
-            integer_scaled_viewport(512, 342, 1200, 800),
-            (0.0, 0.0, 1024.0, 684.0)
+            aspect_fit_viewport(800, 600, 1200, 900),
+            (0.0, 0.0, 1200.0, 900.0)
         );
+    }
+
+    #[test]
+    fn cropped_presentation_still_uploads_the_full_guest_framebuffer() {
+        // A 640x392 crop within an 800x600 screen may sample source rows well
+        // below row 392, so the staging buffer must retain all 600 rows.
+        assert_eq!(guest_frame_byte_len(800, 600), Some(480_000));
     }
 
     #[test]

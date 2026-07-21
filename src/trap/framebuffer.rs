@@ -2368,6 +2368,109 @@ impl super::TrapDispatcher {
     /// directly while their front window remains screen-backed. Without a
     /// Window Manager or video driver layer to observe that buffer, screenshots
     /// stay black even though the scene exists in guest memory.
+    /// Geometry declared by a large app-managed color port behind a visible,
+    /// screen-backed fullscreen window. Games commonly create this port before
+    /// drawing their first useful frame, so the frontend can size itself
+    /// without waiting for pixel-based border detection.
+    pub fn declared_centered_presentation_rect(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<super::dispatch::ScreenCopyBitsRect> {
+        let (screen_base, _, screen_width, screen_height, screen_depth) = self.screen_mode;
+        let screen_width = u32::from(screen_width);
+        let screen_height = u32::from(screen_height);
+        if self.front_window == 0
+            || screen_width == 0
+            || screen_height == 0
+            || !self.window_visible(bus, self.front_window)
+        {
+            return None;
+        }
+
+        // Only trust offscreen geometry when the visible front window itself
+        // is the fullscreen, screen-backed presentation surface.
+        let front = self.front_window;
+        if (bus.read_word(front + 6) & 0xC000) != 0xC000 {
+            return None;
+        }
+        let front_pixmap_handle = bus.read_long(front + 2);
+        let front_pixmap = (front_pixmap_handle != 0)
+            .then(|| bus.read_long(front_pixmap_handle))
+            .unwrap_or(0);
+        if front_pixmap == 0 || (bus.read_long(front_pixmap) & 0x3FFF_FFFF) != screen_base {
+            return None;
+        }
+        let port_covers_screen = (bus.read_word(front + 16) as i16) <= 0
+            && (bus.read_word(front + 18) as i16) <= 0
+            && (bus.read_word(front + 20) as i16) >= screen_height as i16
+            && (bus.read_word(front + 22) as i16) >= screen_width as i16;
+        let (top, left, bottom, right) = self.window_bounds;
+        let window_covers_screen = top <= 0
+            && left <= 0
+            && bottom >= screen_height as i16
+            && right >= screen_width as i16;
+        if !port_covers_screen && !window_covers_screen {
+            return None;
+        }
+
+        // Prefer the largest substantial non-screen color port. Dialog and
+        // sprite scratch ports are excluded by the half-screen area threshold.
+        let min_area = u64::from(screen_width) * u64::from(screen_height) / 2;
+        let mut best: Option<(u64, i16, i16, i16, i16)> = None;
+        for &port in &self.cport_ports {
+            if port == front
+                || self.window_list.contains(&port)
+                || self.gworld_devices.contains_key(&port)
+                || (bus.read_word(port + 6) & 0xC000) != 0xC000
+            {
+                continue;
+            }
+            let pixmap_handle = bus.read_long(port + 2);
+            let pixmap = (pixmap_handle != 0)
+                .then(|| bus.read_long(pixmap_handle))
+                .unwrap_or(0);
+            if pixmap == 0 || bus.read_word(pixmap + 32) != screen_depth {
+                continue;
+            }
+            let src_top = bus.read_word(pixmap + 6) as i16;
+            let src_left = bus.read_word(pixmap + 8) as i16;
+            let src_bottom = bus.read_word(pixmap + 10) as i16;
+            let src_right = bus.read_word(pixmap + 12) as i16;
+            if src_bottom <= src_top || src_right <= src_left {
+                continue;
+            }
+            let width = (src_right - src_left) as u32;
+            let height = (src_bottom - src_top) as u32;
+            let area = u64::from(width) * u64::from(height);
+            if width > screen_width
+                || height > screen_height
+                || (width == screen_width && height == screen_height)
+                || area < min_area
+            {
+                continue;
+            }
+            if best.map(|current| area > current.0).unwrap_or(true) {
+                best = Some((area, src_top, src_left, src_bottom, src_right));
+            }
+        }
+
+        let (_, src_top, src_left, src_bottom, src_right) = best?;
+        let width = (src_right - src_left) as u32;
+        let height = (src_bottom - src_top) as u32;
+        let dst_left = ((screen_width - width) / 2) as i16;
+        let dst_top = ((screen_height - height) / 2) as i16;
+        Some(super::dispatch::ScreenCopyBitsRect {
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            dst_top,
+            dst_left,
+            dst_bottom: dst_top.saturating_add(height as i16),
+            dst_right: dst_left.saturating_add(width as i16),
+        })
+    }
+
     pub(crate) fn blit_large_manual_cport_to_screen(&mut self, bus: &mut MacMemoryBus) {
         let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = self.screen_mode;
         let screen_w_u32 = u32::from(screen_w);
@@ -2635,6 +2738,56 @@ impl super::TrapDispatcher {
             let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
             bus.block_move(src_addr, dst_addr, col_count);
         }
+    }
+
+    /// Geometry of the app-managed CGrafPort that the HLE has actually
+    /// selected and centered on the guest screen. Exposing only the latched
+    /// presentation port keeps frontends from mistaking large scratch ports
+    /// for the visible game viewport.
+    pub fn manual_cport_presentation_rect(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<super::dispatch::ScreenCopyBitsRect> {
+        let port = self.manual_cport_presented_port;
+        if port == 0 || (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+            return None;
+        }
+        let pixmap_handle = bus.read_long(port + 2);
+        let pixmap = (pixmap_handle != 0)
+            .then(|| bus.read_long(pixmap_handle))
+            .unwrap_or(0);
+        if pixmap == 0 {
+            return None;
+        }
+
+        let (_, _, screen_width, screen_height, screen_depth) = self.screen_mode;
+        if bus.read_word(pixmap + 32) != screen_depth {
+            return None;
+        }
+        let src_top = bus.read_word(pixmap + 6) as i16;
+        let src_left = bus.read_word(pixmap + 8) as i16;
+        let src_bottom = bus.read_word(pixmap + 10) as i16;
+        let src_right = bus.read_word(pixmap + 12) as i16;
+        let width = u32::from(src_right.saturating_sub(src_left) as u16);
+        let height = u32::from(src_bottom.saturating_sub(src_top) as u16);
+        let screen_width = u32::from(screen_width);
+        let screen_height = u32::from(screen_height);
+        if width == 0 || height == 0 || width > screen_width || height > screen_height {
+            return None;
+        }
+
+        let dst_left = ((screen_width - width) / 2) as i16;
+        let dst_top = ((screen_height - height) / 2) as i16;
+        Some(super::dispatch::ScreenCopyBitsRect {
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            dst_top,
+            dst_left,
+            dst_bottom: dst_top.saturating_add(height as i16),
+            dst_right: dst_left.saturating_add(width as i16),
+        })
     }
 
     fn manual_cport_visible_sample_count(
@@ -5060,7 +5213,37 @@ mod redraw_chrome_tests {
         bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
         bus.write_byte(screen_base + 509 * 800 + 719, 0xAA);
 
+        assert_eq!(
+            disp.declared_centered_presentation_rect(&bus),
+            Some(crate::trap::dispatch::ScreenCopyBitsRect {
+                src_top: 0,
+                src_left: 0,
+                src_bottom: 420,
+                src_right: 640,
+                dst_top: 90,
+                dst_left: 80,
+                dst_bottom: 510,
+                dst_right: 720,
+            }),
+            "the frontend should learn the declared viewport before the first scene is presented"
+        );
+
         disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            disp.manual_cport_presentation_rect(&bus),
+            Some(crate::trap::dispatch::ScreenCopyBitsRect {
+                src_top: 0,
+                src_left: 0,
+                src_bottom: 420,
+                src_right: 640,
+                dst_top: 90,
+                dst_left: 80,
+                dst_bottom: 510,
+                dst_right: 720,
+            }),
+            "only the manual CPort actually selected for presentation should become a frontend viewport"
+        );
 
         assert_eq!(
             bus.read_byte(screen_base + 90 * 800 + 80),

@@ -75,9 +75,13 @@ struct StoredSaveMetadata {
 }
 
 impl DesktopSaveStore {
+    pub fn root_for_game_path(game_path: &Path) -> PathBuf {
+        save_root_for_game_path(game_path)
+    }
+
     pub fn for_loaded_archive(game_path: &Path, runner: &mut FixtureRunner) -> Self {
         Self {
-            root: save_root_for_game_path(game_path),
+            root: Self::root_for_game_path(game_path),
             archive_vfs_stats: vfs_stats(runner),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
