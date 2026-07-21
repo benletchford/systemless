@@ -243,6 +243,10 @@ struct App {
     last_presented_guest_tick: Option<u32>,
     /// Force the next host present even if the guest tick has not advanced.
     force_next_render: bool,
+    /// Force a Metal submission even if all visible guest inputs are
+    /// unchanged, for native expose/resize events that need a fresh drawable.
+    #[cfg(target_os = "macos")]
+    force_gpu_present: bool,
     /// Show the Systemless debug overlay on top of the game framebuffer.
     debug_overlay_visible: bool,
     debug_last_frame_at: Option<std::time::Instant>,
@@ -318,6 +322,8 @@ impl App {
             frame_count: 0,
             last_presented_guest_tick: None,
             force_next_render: true,
+            #[cfg(target_os = "macos")]
+            force_gpu_present: true,
             debug_overlay_visible: false,
             debug_last_frame_at: None,
             debug_host_fps: None,
@@ -723,6 +729,8 @@ impl App {
 
     fn render_frame(&mut self) {
         let render_start = std::time::Instant::now();
+        #[cfg(target_os = "macos")]
+        let force_gpu_present = self.force_gpu_present;
         self.update_debug_frame_stats(render_start);
         let size = {
             let Some(window) = self.window.as_ref() else {
@@ -860,11 +868,13 @@ impl App {
                         &palette,
                         cursor.as_ref().map(|image| (image, mouse_pos)),
                         (buf_w, buf_h),
+                        force_gpu_present,
                     )
                     .expect("Failed to present native guest framebuffer");
                 if presented_directly {
                     self.last_presented_guest_tick = Some(presented_tick);
                     self.force_next_render = false;
+                    self.force_gpu_present = false;
                     self.render_headroom = Self::next_render_headroom(render_start.elapsed());
                     return;
                 }
@@ -1233,6 +1243,10 @@ impl ApplicationHandler for App {
 
             WindowEvent::Resized(size) => {
                 self.force_next_render = true;
+                #[cfg(target_os = "macos")]
+                {
+                    self.force_gpu_present = true;
+                }
                 // Live resizing runs independently of the guest VBL. Present
                 // the latest complete guest image at the new drawable size
                 // immediately instead of stretching a stale drawable.
@@ -1243,6 +1257,10 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 self.force_next_render = true;
+                #[cfg(target_os = "macos")]
+                {
+                    self.force_gpu_present = true;
+                }
             }
             _ => {}
         }
