@@ -852,7 +852,8 @@ impl super::TrapDispatcher {
         // global coordinate system. Visible windows keep normal SetOrigin
         // scrolling semantics.
         let global_content = self.window_local_rect_to_global(bus, window_ptr, content_local);
-        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
+        let global_structure =
+            self.window_structure_global_rect_for_window(bus, window_ptr, global_content);
         Self::write_region_handle_rect(
             bus,
             bus.read_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET),
@@ -892,6 +893,48 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn window_structure_global_rect_for_proc(
+        &self,
+        bus: &MacMemoryBus,
+        content_rect: (i16, i16, i16, i16),
+        proc_id: i16,
+    ) -> (i16, i16, i16, i16) {
+        match proc_id {
+            // Match the standard WDEF chrome drawn by the HLE paths. A
+            // dBoxProc must not transiently inherit the 19-pixel title area
+            // of a document window while a frontend is sizing its viewport.
+            1 => (
+                content_rect.0.saturating_sub(8),
+                content_rect.1.saturating_sub(8),
+                content_rect.2.saturating_add(8),
+                content_rect.3.saturating_add(8),
+            ),
+            2 => (
+                content_rect.0.saturating_sub(1),
+                content_rect.1.saturating_sub(1),
+                content_rect.2.saturating_add(1),
+                content_rect.3.saturating_add(1),
+            ),
+            3 => (
+                content_rect.0.saturating_sub(1),
+                content_rect.1.saturating_sub(1),
+                content_rect.2.saturating_add(3),
+                content_rect.3.saturating_add(3),
+            ),
+            _ => self.window_structure_global_rect_for_content(bus, content_rect),
+        }
+    }
+
+    fn window_structure_global_rect_for_window(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+        content_rect: (i16, i16, i16, i16),
+    ) -> (i16, i16, i16, i16) {
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        self.window_structure_global_rect_for_proc(bus, content_rect, proc_id)
+    }
+
     pub(super) fn window_structure_rect(
         &self,
         bus: &MacMemoryBus,
@@ -907,7 +950,9 @@ impl super::TrapDispatcher {
             return Some(rect);
         }
         self.window_content_global_rect(bus, window_ptr)
-            .map(|content| self.window_structure_global_rect_for_content(bus, content))
+            .map(|content| {
+                self.window_structure_global_rect_for_window(bus, window_ptr, content)
+            })
     }
 
     fn erase_exposed_desktop_rect(
@@ -1159,7 +1204,8 @@ impl super::TrapDispatcher {
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
         let global_content = self.window_local_rect_to_global(bus, the_window, local_content_rect);
-        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
+        let global_structure =
+            self.window_structure_global_rect_for_window(bus, the_window, global_content);
         Self::write_region_handle_rect(
             bus,
             bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
@@ -1320,7 +1366,8 @@ impl super::TrapDispatcher {
         let local_vis_top = source_rect.0.max(local_mbar_bottom);
         let local_rect = (local_vis_top, source_rect.1, source_rect.2, source_rect.3);
         let global_content = self.window_local_rect_to_global(bus, window_ptr, local_rect);
-        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
+        let global_structure =
+            self.window_structure_global_rect_for_window(bus, window_ptr, global_content);
 
         Self::write_region_handle_rect(
             bus,
@@ -1346,6 +1393,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         window_ptr: u32,
         content_rect: (i16, i16, i16, i16),
+        proc_id: i16,
         visible: bool,
         go_away_flag: bool,
         ref_con: u32,
@@ -1367,7 +1415,8 @@ impl super::TrapDispatcher {
         // WindowRecord strucRgn, contRgn, and updateRgn are maintained in
         // global coordinates. Inside Macintosh Volume I, p. I-278.
         let global_content = self.window_local_rect_to_global(bus, window_ptr, content_rect);
-        let global_structure = self.window_structure_global_rect_for_content(bus, global_content);
+        let global_structure =
+            self.window_structure_global_rect_for_proc(bus, global_content, proc_id);
         let struc_rgn = Self::alloc_rect_region_handle(bus, Some(global_structure));
         let cont_rgn = Self::alloc_rect_region_handle(bus, Some(global_content));
         let update_rgn = Self::alloc_rect_region_handle(bus, visible.then_some(global_content));
@@ -2005,6 +2054,7 @@ impl super::TrapDispatcher {
             bus,
             window_ptr,
             content_rect,
+            wind_proc_id,
             visible,
             go_away_flag,
             ref_con,
@@ -3029,8 +3079,11 @@ impl super::TrapDispatcher {
                     let content_rect = (content_top, 0, h, w);
                     let global_content =
                         self.window_local_rect_to_global(bus, the_window, content_rect);
-                    let global_structure =
-                        self.window_structure_global_rect_for_content(bus, global_content);
+                    let global_structure = self.window_structure_global_rect_for_window(
+                        bus,
+                        the_window,
+                        global_content,
+                    );
                     Self::write_region_handle_rect(
                         bus,
                         bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
@@ -3940,8 +3993,11 @@ impl super::TrapDispatcher {
                             // WindowRecord manager regions are in global coords.
                             let global_content =
                                 (v_global, h_global, v_global + new_h, h_global + new_w);
-                            let global_structure =
-                                self.window_structure_global_rect_for_content(bus, global_content);
+                            let global_structure = self.window_structure_global_rect_for_window(
+                                bus,
+                                the_window,
+                                global_content,
+                            );
                             Self::write_region_handle_rect(
                                 bus,
                                 bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
@@ -4316,8 +4372,8 @@ mod tests {
                 window_addr,
                 super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET
             ),
-            (81, 199, 302, 502),
-            "strucRgn is stored in global coordinates"
+            (99, 199, 301, 501),
+            "plainDBox strucRgn uses its one-pixel WDEF frame in global coordinates"
         );
         assert_eq!(
             read_window_region_rect(
@@ -4327,6 +4383,41 @@ mod tests {
             ),
             (100, 200, 300, 500),
             "updateRgn is stored in global coordinates"
+        );
+    }
+
+    #[test]
+    fn init_cgraf_window_seeds_dbox_structure_region_with_drawn_frame_margin() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            93,
+            236,
+            225,
+            564,
+            "",
+            1,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET
+            ),
+            (85, 228, 233, 572),
+            "dBoxProc strucRgn must match the eight-pixel frame drawn by DrawDialog"
         );
     }
 
@@ -4412,8 +4503,8 @@ mod tests {
                 window_addr,
                 super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET
             ),
-            (1581, 1799, 1802, 2102),
-            "strucRgn should move with the window in global coordinates"
+            (1599, 1799, 1801, 2101),
+            "plainDBox strucRgn should move with the window in global coordinates"
         );
         assert_eq!(
             read_window_region_rect(

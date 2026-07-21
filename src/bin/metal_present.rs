@@ -22,12 +22,14 @@ use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{ns_string, CGRect, MainThreadMarker};
 use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice,
-    MTLDevice, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRegion,
+    MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType, MTLRegion,
     MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
     MTLRenderPipelineState, MTLResourceOptions, MTLStorageMode, MTLStoreAction, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
-use objc2_quartz_core::{CAAutoresizingMask, CALayer, CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{
+    kCAGravityBottom, CAAutoresizingMask, CALayer, CAMetalDrawable, CAMetalLayer,
+};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
@@ -427,6 +429,14 @@ impl MetalPresenter {
             layer.setDisplaySyncEnabled(true);
         }
         layer.setOpaque(true);
+        // If AppKit changes the view bounds before the replacement Metal
+        // drawable is committed, preserve the previous drawable's pixel size
+        // instead of stretching it to the transient layer bounds.
+        // Automatic dialog crops grow the native window upward while keeping
+        // its bottom edge fixed. Pin the retained drawable to that edge so the
+        // complete pre-dialog frame remains stationary until the resize
+        // callback submits its replacement.
+        layer.setContentsGravity(unsafe { kCAGravityBottom });
         layer.setFrame(root_layer.bounds());
         layer.setAutoresizingMask(
             CAAutoresizingMask::kCALayerWidthSizable | CAAutoresizingMask::kCALayerHeightSizable,
@@ -502,6 +512,35 @@ impl MetalPresenter {
             guest_frame_profile: GuestFrameProfile::default(),
             async_guest_presenter,
         })
+    }
+
+    /// Couple the next drawable presentation to the current Core Animation
+    /// transaction. This is used only while an AppKit window-frame mutation
+    /// is in flight; normal gameplay keeps the lower-latency asynchronous
+    /// Metal presentation path.
+    pub fn set_transactional_presentation(&self, enabled: bool) {
+        unsafe { self.layer.setPresentsWithTransaction(enabled) };
+    }
+
+    fn finish_presentation(
+        &self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+        drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    ) {
+        if unsafe { self.layer.presentsWithTransaction() } {
+            // Apple requires the render work to be scheduled before the
+            // drawable itself is presented into the current CA transaction.
+            // Using commandBuffer.presentDrawable here would bypass that
+            // transaction and recreate the one-frame resize bounce.
+            command_buffer.commit();
+            command_buffer.waitUntilScheduled();
+            let drawable: &ProtocolObject<dyn objc2_metal::MTLDrawable> =
+                ProtocolObject::from_ref(drawable);
+            drawable.present();
+        } else {
+            command_buffer.presentDrawable(ProtocolObject::from_ref(drawable));
+            command_buffer.commit();
+        }
     }
 
     pub fn present(
@@ -591,8 +630,7 @@ impl MetalPresenter {
         };
         encoder.endEncoding();
 
-        command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
-        command_buffer.commit();
+        self.finish_presentation(&command_buffer, &drawable);
         Ok(())
     }
 

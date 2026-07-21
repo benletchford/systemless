@@ -68,6 +68,7 @@ objc2-metal = { version = "0.2.2", optional = true, features = [
     "MTLTypes",
 ] }
 objc2-quartz-core = { version = "0.2.2", optional = true, features = [
+    "CATransaction",
     "CALayer",
     "CAMetalLayer",
     "objc2-metal",
