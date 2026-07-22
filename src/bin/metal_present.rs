@@ -3,14 +3,17 @@
 //! `softbuffer`'s AppKit backend creates a new `CGImage` for every present.
 //! Core Animation then copies and color-converts that image on the CPU.  A
 //! continuously animating 800x600 game can spend most of a host core in that
-//! conversion path.  This presenter keeps a `CAMetalLayer`, command queue,
+//! conversion path. This presenter keeps a `CAMetalLayer`, command queue,
 //! render pipeline, and two upload textures alive for the window lifetime.
-//! Each frame is one CPU-to-texture upload and a four-vertex nearest-neighbor
-//! GPU draw.
+//! Native guest frames go through a one-slot latest-frame mailbox to a Metal
+//! worker paced by drawable availability. Thus a full drawable queue never
+//! blocks AppKit input handling or 68k execution.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -72,11 +75,59 @@ struct GuestFrameMetadata {
 #[derive(Default)]
 struct GuestFrameProfile {
     attempts: u64,
-    submitted: u64,
     unchanged: u64,
     forced: u64,
     comparison_time: Duration,
     presentation_time: Duration,
+}
+
+struct GuestFrameSubmission {
+    framebuffer: Vec<u8>,
+    metadata: GuestFrameMetadata,
+}
+
+#[derive(Default)]
+struct GuestFrameMailboxState {
+    pending: Option<GuestFrameSubmission>,
+    recycled: Vec<Vec<u8>>,
+    paused: bool,
+    active: bool,
+    drawable_in_use: bool,
+    shutdown: bool,
+    error: Option<String>,
+    submitted: u64,
+    coalesced: u64,
+    drawable_wait_time: Duration,
+    render_time: Duration,
+}
+
+#[derive(Default)]
+struct GuestFrameMailbox {
+    state: Mutex<GuestFrameMailboxState>,
+    changed: Condvar,
+}
+
+struct GuestRenderWorker {
+    layer: Retained<CAMetalLayer>,
+    device: Retained<ProtocolObject<dyn MTLDevice>>,
+    command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    guest_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    guest_buffer_size: usize,
+    next_guest_buffer: usize,
+}
+
+// Metal devices, queues, immutable pipeline states, and CAMetalLayer drawable
+// acquisition are explicitly usable from background rendering threads. Layer
+// geometry is still changed only by `MetalPresenter` on AppKit's main thread;
+// the worker only calls `nextDrawable` and encodes commands for that drawable.
+// objc2 0.5 predates the framework sendability annotations, so it cannot infer
+// those guarantees for the retained Objective-C objects.
+unsafe impl Send for GuestRenderWorker {}
+
+struct AsyncGuestPresenter {
+    mailbox: Arc<GuestFrameMailbox>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Default for GuestCursorData {
@@ -89,6 +140,236 @@ impl Default for GuestCursorData {
     }
 }
 
+fn replace_pending_guest_frame(
+    state: &mut GuestFrameMailboxState,
+    framebuffer: &[u8],
+    metadata: GuestFrameMetadata,
+) {
+    let mut pixels = if let Some(previous) = state.pending.take() {
+        state.coalesced = state.coalesced.saturating_add(1);
+        previous.framebuffer
+    } else {
+        state.recycled.pop().unwrap_or_default()
+    };
+    pixels.clear();
+    pixels.extend_from_slice(framebuffer);
+    state.pending = Some(GuestFrameSubmission {
+        framebuffer: pixels,
+        metadata,
+    });
+}
+
+impl AsyncGuestPresenter {
+    fn new(worker: GuestRenderWorker) -> Result<Self, String> {
+        let mailbox = Arc::new(GuestFrameMailbox::default());
+        let worker_mailbox = Arc::clone(&mailbox);
+        let thread = std::thread::Builder::new()
+            .name("systemless-metal-present".to_string())
+            .spawn(move || worker.run(worker_mailbox))
+            .map_err(|error| format!("failed to start Metal presenter thread: {error}"))?;
+        Ok(Self {
+            mailbox,
+            thread: Some(thread),
+        })
+    }
+
+    fn enqueue(&self, framebuffer: &[u8], metadata: GuestFrameMetadata) -> Result<(), String> {
+        let mut state = self
+            .mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(error) = state.error.as_ref() {
+            return Err(error.clone());
+        }
+
+        state.paused = false;
+        replace_pending_guest_frame(&mut state, framebuffer, metadata);
+        self.mailbox.changed.notify_one();
+        Ok(())
+    }
+
+    /// Stop accepting asynchronous work and wait until no command is being
+    /// encoded. Pending work is discarded so a later mode switch cannot flash
+    /// a stale guest frame over the synchronous fallback presentation.
+    fn pause_and_wait(&self) {
+        let mut state = self
+            .mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.paused = true;
+        if let Some(pending) = state.pending.take() {
+            state.recycled.push(pending.framebuffer);
+        }
+        self.mailbox.changed.notify_all();
+        while state.active || state.drawable_in_use {
+            state = self
+                .mailbox
+                .changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    fn snapshot(&self) -> (u64, u64, Duration, Duration) {
+        let state = self
+            .mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (
+            state.submitted,
+            state.coalesced,
+            state.drawable_wait_time,
+            state.render_time,
+        )
+    }
+}
+
+impl Drop for AsyncGuestPresenter {
+    fn drop(&mut self) {
+        {
+            let mut state = self
+                .mailbox
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.shutdown = true;
+            state.pending = None;
+            self.mailbox.changed.notify_all();
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl GuestRenderWorker {
+    fn run(mut self, mailbox: Arc<GuestFrameMailbox>) {
+        loop {
+            let mut state = mailbox
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            while !state.shutdown && (state.paused || state.pending.is_none()) {
+                state = mailbox
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            if state.shutdown {
+                break;
+            }
+            state.drawable_in_use = true;
+            drop(state);
+
+            let wait_start = Instant::now();
+            let drawable = unsafe { self.layer.nextDrawable() };
+            let drawable_wait = wait_start.elapsed();
+
+            let mut state = mailbox
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.drawable_wait_time += drawable_wait;
+            if state.shutdown {
+                state.drawable_in_use = false;
+                mailbox.changed.notify_all();
+                break;
+            }
+            if state.paused {
+                state.drawable_in_use = false;
+                mailbox.changed.notify_all();
+                drop(state);
+                drop(drawable);
+                continue;
+            }
+            let Some(submission) = state.pending.take() else {
+                state.drawable_in_use = false;
+                mailbox.changed.notify_all();
+                drop(state);
+                drop(drawable);
+                continue;
+            };
+            state.active = true;
+            drop(state);
+
+            let render_start = Instant::now();
+            let result = match drawable {
+                Some(drawable) => self.submit(&submission, &drawable),
+                None => Ok(()),
+            };
+            let render_time = render_start.elapsed();
+
+            let mut state = mailbox
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.active = false;
+            state.drawable_in_use = false;
+            state.render_time += render_time;
+            if result.is_ok() {
+                state.submitted = state.submitted.saturating_add(1);
+            } else if state.error.is_none() {
+                state.error = result.err();
+            }
+            state.recycled.push(submission.framebuffer);
+            mailbox.changed.notify_all();
+        }
+    }
+
+    fn submit(
+        &mut self,
+        submission: &GuestFrameSubmission,
+        drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    ) -> Result<(), String> {
+        let framebuffer = &submission.framebuffer;
+        let metadata = &submission.metadata;
+        self.ensure_guest_buffers(framebuffer.len())?;
+
+        let buffer_index = self.next_guest_buffer;
+        self.next_guest_buffer = (buffer_index + 1) % self.guest_buffers.len();
+        let guest_buffer = &self.guest_buffers[buffer_index];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                framebuffer.as_ptr(),
+                guest_buffer.contents().as_ptr().cast::<u8>(),
+                framebuffer.len(),
+            );
+        }
+
+        encode_guest_frame(
+            &self.command_queue,
+            &self.pipeline,
+            guest_buffer,
+            drawable,
+            metadata,
+        )
+    }
+
+    fn ensure_guest_buffers(&mut self, frame_bytes: usize) -> Result<(), String> {
+        if self.guest_buffer_size == frame_bytes {
+            return Ok(());
+        }
+        let mut buffers = Vec::with_capacity(FRAME_RESOURCE_COUNT);
+        for _ in 0..FRAME_RESOURCE_COUNT {
+            buffers.push(
+                self.device
+                    .newBufferWithLength_options(
+                        frame_bytes,
+                        MTLResourceOptions::MTLResourceStorageModeShared,
+                    )
+                    .ok_or_else(|| "Metal failed to allocate a guest framebuffer".to_string())?,
+            );
+        }
+        self.guest_buffers = buffers;
+        self.guest_buffer_size = frame_bytes;
+        self.next_guest_buffer = 0;
+        Ok(())
+    }
+}
+
 pub struct MetalPresenter {
     _window: Rc<Window>,
     root_layer: Retained<CALayer>,
@@ -96,10 +377,6 @@ pub struct MetalPresenter {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
-    guest_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
-    guest_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
-    guest_buffer_size: usize,
-    next_guest_buffer: usize,
     upload_textures: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
     upload_size: (u32, u32),
     drawable_size: (u32, u32),
@@ -109,6 +386,7 @@ pub struct MetalPresenter {
     skip_unchanged_guest_frames: bool,
     profile_guest_frames: bool,
     guest_frame_profile: GuestFrameProfile,
+    async_guest_presenter: AsyncGuestPresenter,
 }
 
 impl MetalPresenter {
@@ -190,6 +468,19 @@ impl MetalPresenter {
             .newRenderPipelineStateWithDescriptor_error(&descriptor)
             .map_err(|error| format!("Metal guest pipeline creation failed: {error}"))?;
 
+        let async_command_queue = device
+            .newCommandQueue()
+            .ok_or_else(|| "Metal failed to create the presenter command queue".to_string())?;
+        let async_guest_presenter = AsyncGuestPresenter::new(GuestRenderWorker {
+            layer: layer.clone(),
+            device: device.clone(),
+            command_queue: async_command_queue,
+            pipeline: guest_pipeline.clone(),
+            guest_buffers: Vec::new(),
+            guest_buffer_size: 0,
+            next_guest_buffer: 0,
+        })?;
+
         Ok(Self {
             _window: window,
             root_layer,
@@ -197,10 +488,6 @@ impl MetalPresenter {
             device,
             command_queue,
             pipeline,
-            guest_pipeline,
-            guest_buffers: Vec::new(),
-            guest_buffer_size: 0,
-            next_guest_buffer: 0,
             upload_textures: Vec::new(),
             upload_size: (0, 0),
             drawable_size: (0, 0),
@@ -213,6 +500,7 @@ impl MetalPresenter {
             .is_none(),
             profile_guest_frames: std::env::var_os("SYSTEMLESS_PROFILE_METAL_FRAMES").is_some(),
             guest_frame_profile: GuestFrameProfile::default(),
+            async_guest_presenter,
         })
     }
 
@@ -224,6 +512,7 @@ impl MetalPresenter {
         drawable_width: u32,
         drawable_height: u32,
     ) -> Result<(), String> {
+        self.async_guest_presenter.pause_and_wait();
         let expected_pixels = source_width as usize * source_height as usize;
         if pixels.len() < expected_pixels || expected_pixels == 0 {
             return Err("framebuffer dimensions do not match its pixel data".to_string());
@@ -393,83 +682,9 @@ impl MetalPresenter {
             return Ok(true);
         }
 
-        self.ensure_guest_buffers(frame_bytes)?;
         self.resize_drawable(drawable_width, drawable_height);
-
-        // Acquiring the next drawable bounds the command queue to two frames.
-        // The matching alternating staging buffer is therefore no longer in
-        // use when the CPU overwrites it.
-        let Some(drawable) = (unsafe { self.layer.nextDrawable() }) else {
-            return Ok(true);
-        };
-        let buffer_index = self.next_guest_buffer;
-        self.next_guest_buffer = (buffer_index + 1) % self.guest_buffers.len();
-        let guest_buffer = &self.guest_buffers[buffer_index];
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                framebuffer.as_ptr(),
-                guest_buffer.contents().as_ptr().cast::<u8>(),
-                frame_bytes,
-            );
-        }
-
-        let drawable_texture = unsafe { drawable.texture() };
-        let pass = unsafe { MTLRenderPassDescriptor::new() };
-        let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
-        color.setTexture(Some(&drawable_texture));
-        color.setLoadAction(MTLLoadAction::Clear);
-        color.setStoreAction(MTLStoreAction::Store);
-        color.setClearColor(objc2_metal::MTLClearColor {
-            red: 0.0,
-            green: 0.0,
-            blue: 0.0,
-            alpha: 1.0,
-        });
-
-        let command_buffer = self
-            .command_queue
-            .commandBuffer()
-            .ok_or_else(|| "Metal failed to create a command buffer".to_string())?;
-        let encoder = command_buffer
-            .renderCommandEncoderWithDescriptor(&pass)
-            .ok_or_else(|| "Metal failed to create a render encoder".to_string())?;
-        encoder.setRenderPipelineState(&self.guest_pipeline);
-        unsafe {
-            encoder.setFragmentBuffer_offset_atIndex(Some(guest_buffer), 0, 0);
-            encoder.setFragmentBytes_length_atIndex(
-                non_null_bytes(palette),
-                size_of::<[u32; 256]>(),
-                1,
-            );
-            encoder.setFragmentBytes_length_atIndex(
-                non_null_bytes(&metadata.uniforms),
-                size_of::<GuestFrameUniforms>(),
-                2,
-            );
-            encoder.setFragmentBytes_length_atIndex(
-                non_null_bytes(&metadata.cursor),
-                size_of::<GuestCursorData>(),
-                3,
-            );
-        }
-
-        let viewport = aspect_fit_viewport(width, height, drawable_width, drawable_height);
-        encoder.setViewport(MTLViewport {
-            originX: viewport.0,
-            originY: viewport.1,
-            width: viewport.2,
-            height: viewport.3,
-            znear: 0.0,
-            zfar: 1.0,
-        });
-        unsafe {
-            encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4)
-        };
-        encoder.endEncoding();
-
-        command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
-        command_buffer.commit();
-        self.guest_frame_profile.submitted += 1;
+        self.async_guest_presenter
+            .enqueue(&framebuffer[..frame_bytes], metadata.clone())?;
         if self.skip_unchanged_guest_frames {
             copy_guest_visible_pixels(
                 &mut self.last_guest_visible_pixels,
@@ -492,42 +707,36 @@ impl MetalPresenter {
             return;
         }
         let skipped_percent = profile.unchanged as f64 * 100.0 / profile.attempts as f64;
-        let compare_us = profile.comparison_time.as_secs_f64() * 1_000_000.0
-            / profile.attempts as f64;
-        let presentation_us = profile.presentation_time.as_secs_f64() * 1_000_000.0
-            / profile.attempts as f64;
+        let compare_us =
+            profile.comparison_time.as_secs_f64() * 1_000_000.0 / profile.attempts as f64;
+        let presentation_us =
+            profile.presentation_time.as_secs_f64() * 1_000_000.0 / profile.attempts as f64;
+        let (async_submitted, coalesced, drawable_wait, render_time) =
+            self.async_guest_presenter.snapshot();
+        let submitted = async_submitted;
+        let drawable_wait_us = if async_submitted == 0 {
+            0.0
+        } else {
+            drawable_wait.as_secs_f64() * 1_000_000.0 / async_submitted as f64
+        };
+        let render_us = if async_submitted == 0 {
+            0.0
+        } else {
+            render_time.as_secs_f64() * 1_000_000.0 / async_submitted as f64
+        };
         eprintln!(
-            "[METAL-PROFILE] attempts={} submitted={} unchanged_skipped={} forced={} skipped={:.1}% compare={:.1}us/frame present={:.1}us/frame",
+            "[METAL-PROFILE] attempts={} submitted={} coalesced={} unchanged_skipped={} forced={} skipped={:.1}% compare={:.1}us/frame enqueue={:.1}us/frame drawable_wait={:.1}us/submission render={:.1}us/submission",
             profile.attempts,
-            profile.submitted,
+            submitted,
+            coalesced,
             profile.unchanged,
             profile.forced,
             skipped_percent,
             compare_us,
-            presentation_us
+            presentation_us,
+            drawable_wait_us,
+            render_us,
         );
-    }
-
-    fn ensure_guest_buffers(&mut self, frame_bytes: usize) -> Result<(), String> {
-        if self.guest_buffer_size == frame_bytes {
-            return Ok(());
-        }
-
-        let mut buffers = Vec::with_capacity(FRAME_RESOURCE_COUNT);
-        for _ in 0..FRAME_RESOURCE_COUNT {
-            buffers.push(
-                self.device
-                    .newBufferWithLength_options(
-                        frame_bytes,
-                        MTLResourceOptions::MTLResourceStorageModeShared,
-                    )
-                    .ok_or_else(|| "Metal failed to allocate a guest framebuffer".to_string())?,
-            );
-        }
-        self.guest_buffers = buffers;
-        self.guest_buffer_size = frame_bytes;
-        self.next_guest_buffer = 0;
-        Ok(())
     }
 
     fn ensure_upload_textures(&mut self, width: u32, height: u32) -> Result<(), String> {
@@ -561,9 +770,13 @@ impl MetalPresenter {
     }
 
     fn resize_drawable(&mut self, width: u32, height: u32) {
-        self.layer.setFrame(self.root_layer.bounds());
-        self.layer.setContentsScale(self.root_layer.contentsScale());
         if self.drawable_size != (width, height) {
+            // CALayer property assignments participate in Core Animation
+            // transactions even when the value is unchanged. Reasserting
+            // frame and scale at the guest VBL rate can make an otherwise
+            // trivial Metal layer miss physical-display deadlines.
+            self.layer.setFrame(self.root_layer.bounds());
+            self.layer.setContentsScale(self.root_layer.contentsScale());
             unsafe {
                 self.layer.setDrawableSize(
                     CGRect::new(
@@ -576,6 +789,73 @@ impl MetalPresenter {
             self.drawable_size = (width, height);
         }
     }
+}
+
+fn encode_guest_frame(
+    command_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    pipeline: &ProtocolObject<dyn MTLRenderPipelineState>,
+    guest_buffer: &ProtocolObject<dyn MTLBuffer>,
+    drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    metadata: &GuestFrameMetadata,
+) -> Result<(), String> {
+    let drawable_texture = unsafe { drawable.texture() };
+    let pass = unsafe { MTLRenderPassDescriptor::new() };
+    let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+    color.setTexture(Some(&drawable_texture));
+    color.setLoadAction(MTLLoadAction::Clear);
+    color.setStoreAction(MTLStoreAction::Store);
+    color.setClearColor(objc2_metal::MTLClearColor {
+        red: 0.0,
+        green: 0.0,
+        blue: 0.0,
+        alpha: 1.0,
+    });
+
+    let command_buffer = command_queue
+        .commandBuffer()
+        .ok_or_else(|| "Metal failed to create a command buffer".to_string())?;
+    let encoder = command_buffer
+        .renderCommandEncoderWithDescriptor(&pass)
+        .ok_or_else(|| "Metal failed to create a render encoder".to_string())?;
+    encoder.setRenderPipelineState(pipeline);
+    unsafe {
+        encoder.setFragmentBuffer_offset_atIndex(Some(guest_buffer), 0, 0);
+        encoder.setFragmentBytes_length_atIndex(
+            non_null_bytes(&metadata.palette),
+            size_of::<[u32; 256]>(),
+            1,
+        );
+        encoder.setFragmentBytes_length_atIndex(
+            non_null_bytes(&metadata.uniforms),
+            size_of::<GuestFrameUniforms>(),
+            2,
+        );
+        encoder.setFragmentBytes_length_atIndex(
+            non_null_bytes(&metadata.cursor),
+            size_of::<GuestCursorData>(),
+            3,
+        );
+    }
+
+    let (_, _, width, height) = metadata.content_rect;
+    let (drawable_width, drawable_height) = metadata.drawable_size;
+    let viewport = aspect_fit_viewport(width, height, drawable_width, drawable_height);
+    encoder.setViewport(MTLViewport {
+        originX: viewport.0,
+        originY: viewport.1,
+        width: viewport.2,
+        height: viewport.3,
+        znear: 0.0,
+        zfar: 1.0,
+    });
+    unsafe {
+        encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4)
+    };
+    encoder.endEncoding();
+
+    command_buffer.presentDrawable(ProtocolObject::from_ref(drawable));
+    command_buffer.commit();
+    Ok(())
 }
 
 fn non_null_bytes<T>(value: &T) -> NonNull<c_void> {
@@ -766,7 +1046,8 @@ fn copy_guest_visible_pixels(
 mod tests {
     use super::{
         aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data, guest_frame_byte_len,
-        guest_visible_byte_layout, guest_visible_pixels_equal,
+        guest_visible_byte_layout, guest_visible_pixels_equal, replace_pending_guest_frame,
+        GuestCursorData, GuestFrameMailboxState, GuestFrameMetadata, GuestFrameUniforms,
     };
     use systemless::display::CursorImage;
 
@@ -790,16 +1071,33 @@ mod tests {
     }
 
     #[test]
+    fn busy_presenter_mailbox_keeps_only_the_latest_complete_frame() {
+        let metadata = GuestFrameMetadata {
+            screen_layout: (4, 4, 2, 8),
+            content_rect: (0, 0, 4, 2),
+            palette: [0; 256],
+            uniforms: GuestFrameUniforms::default(),
+            cursor: GuestCursorData::default(),
+            drawable_size: (8, 4),
+        };
+        let mut state = GuestFrameMailboxState::default();
+
+        replace_pending_guest_frame(&mut state, &[1, 2, 3, 4], metadata.clone());
+        replace_pending_guest_frame(&mut state, &[5, 6, 7, 8], metadata.clone());
+
+        assert_eq!(state.coalesced, 1);
+        let pending = state.pending.as_ref().unwrap();
+        assert_eq!(pending.framebuffer, [5, 6, 7, 8]);
+        assert!(pending.metadata == metadata);
+    }
+
+    #[test]
     fn unchanged_detection_compares_only_cropped_visible_rows() {
         let mut framebuffer = vec![0u8; 8 * 6];
         let layout = guest_visible_byte_layout(8, 8, 2, 1, 4, 3).unwrap();
         let mut snapshot = Vec::new();
         copy_guest_visible_pixels(&mut snapshot, &framebuffer, layout);
-        assert!(guest_visible_pixels_equal(
-            &snapshot,
-            &framebuffer,
-            layout
-        ));
+        assert!(guest_visible_pixels_equal(&snapshot, &framebuffer, layout));
 
         framebuffer[0] = 1;
         assert!(
@@ -807,11 +1105,7 @@ mod tests {
             "pixels outside the crop must not trigger a GPU submission"
         );
         framebuffer[2 * 8 + 4] = 1;
-        assert!(!guest_visible_pixels_equal(
-            &snapshot,
-            &framebuffer,
-            layout
-        ));
+        assert!(!guest_visible_pixels_equal(&snapshot, &framebuffer, layout));
     }
 
     #[test]
@@ -823,11 +1117,7 @@ mod tests {
         assert_eq!(snapshot.len(), 3);
 
         framebuffer[4 + 2] = 0x80;
-        assert!(!guest_visible_pixels_equal(
-            &snapshot,
-            &framebuffer,
-            layout
-        ));
+        assert!(!guest_visible_pixels_equal(&snapshot, &framebuffer, layout));
     }
 
     #[test]
