@@ -967,9 +967,15 @@ impl App {
                 }
             }
 
-            let transition_needed = self.window_sized_content_rect != Some(desired_content)
-                || (desired_content == stable_content
-                    && self.transient_window_restore_geometry.is_some());
+            // Stable crop changes are sized by the detector above. During
+            // startup that detector may temporarily clear `content_rect` while
+            // the native window still has the cached crop; that is not a
+            // transient-dialog restore and has no saved geometry to restore.
+            let transition_needed = if desired_content == stable_content {
+                self.transient_window_restore_geometry.is_some()
+            } else {
+                self.window_sized_content_rect != Some(desired_content)
+            };
             if transition_needed {
                 let (target_size, target_position) = if desired_content != stable_content {
                     if self.transient_window_restore_geometry.is_none() {
