@@ -16,7 +16,10 @@
 
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
+#[cfg(target_os = "macos")]
+mod metal_present;
 
+#[cfg(not(target_os = "macos"))]
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -27,6 +30,7 @@ use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
 
+#[cfg(not(target_os = "macos"))]
 use softbuffer::Surface;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -105,9 +109,14 @@ fn service_pending_sound_work(
 
 struct App {
     window: Option<Rc<Window>>,
+    #[cfg(target_os = "macos")]
+    surface: Option<metal_present::MetalPresenter>,
+    #[cfg(not(target_os = "macos"))]
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
+    #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
+    #[cfg(not(target_os = "macos"))]
     scaled_row: Vec<u32>,
     runner: Option<FixtureRunner>,
     save_store: Option<DesktopSaveStore>,
@@ -164,8 +173,10 @@ impl App {
         Self {
             window: None,
             surface: None,
+            #[cfg(not(target_os = "macos"))]
             surface_size: None,
             frame_argb: Vec::new(),
+            #[cfg(not(target_os = "macos"))]
             scaled_row: Vec::new(),
             runner: None,
             save_store: None,
@@ -627,57 +638,76 @@ impl App {
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
 
-        let scale = (buf_w / game_w).min(buf_h / game_h).max(1) as usize;
-        let draw_w = game_w as usize * scale;
-        let draw_h = game_h as usize * scale;
-        let mut scaled_row = std::mem::take(&mut self.scaled_row);
-
-        let Some(surface) = self.surface.as_mut() else {
-            self.frame_argb = frame_argb;
-            self.scaled_row = scaled_row;
-            return;
-        };
-
-        if self.surface_size != Some((buf_w, buf_h)) {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(surface) = self.surface.as_mut() else {
+                self.frame_argb = frame_argb;
+                return;
+            };
             surface
-                .resize(
-                    NonZeroU32::new(buf_w).unwrap(),
-                    NonZeroU32::new(buf_h).unwrap(),
-                )
-                .expect("Failed to resize surface");
-            self.surface_size = Some((buf_w, buf_h));
+                .present(&frame_argb, game_w, game_h, buf_w, buf_h)
+                .expect("Failed to present Metal framebuffer");
         }
 
-        let mut buffer = surface.buffer_mut().expect("Failed to get buffer");
+        #[cfg(not(target_os = "macos"))]
+        {
+            let scale = (buf_w / game_w).min(buf_h / game_h).max(1) as usize;
+            let draw_w = game_w as usize * scale;
+            let draw_h = game_h as usize * scale;
+            let mut scaled_row = std::mem::take(&mut self.scaled_row);
 
-        if draw_w != buf_w as usize || draw_h != buf_h as usize {
-            buffer.fill(0xFF000000);
-        }
+            let Some(surface) = self.surface.as_mut() else {
+                self.frame_argb = frame_argb;
+                self.scaled_row = scaled_row;
+                return;
+            };
 
-        if scale == 1 {
-            for row in 0..game_h as usize {
-                let src_row = &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
-                let dst_offset = row * buf_w as usize;
-                buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
+            if self.surface_size != Some((buf_w, buf_h)) {
+                surface
+                    .resize(
+                        NonZeroU32::new(buf_w).unwrap(),
+                        NonZeroU32::new(buf_h).unwrap(),
+                    )
+                    .expect("Failed to resize surface");
+                self.surface_size = Some((buf_w, buf_h));
             }
-        } else {
-            scaled_row.resize(draw_w, 0xFF000000);
-            for row in 0..game_h as usize {
-                let src_row = &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
-                for (dst_chunk, &pixel) in scaled_row.chunks_exact_mut(scale).zip(src_row.iter()) {
-                    dst_chunk.fill(pixel);
+
+            let mut buffer = surface.buffer_mut().expect("Failed to get buffer");
+
+            if draw_w != buf_w as usize || draw_h != buf_h as usize {
+                buffer.fill(0xFF000000);
+            }
+
+            if scale == 1 {
+                for row in 0..game_h as usize {
+                    let src_row =
+                        &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
+                    let dst_offset = row * buf_w as usize;
+                    buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
                 }
-                let dst_row_start = row * scale * buf_w as usize;
-                for repeat in 0..scale {
-                    let dst_offset = dst_row_start + repeat * buf_w as usize;
-                    buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
+            } else {
+                scaled_row.resize(draw_w, 0xFF000000);
+                for row in 0..game_h as usize {
+                    let src_row =
+                        &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
+                    for (dst_chunk, &pixel) in
+                        scaled_row.chunks_exact_mut(scale).zip(src_row.iter())
+                    {
+                        dst_chunk.fill(pixel);
+                    }
+                    let dst_row_start = row * scale * buf_w as usize;
+                    for repeat in 0..scale {
+                        let dst_offset = dst_row_start + repeat * buf_w as usize;
+                        buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
+                    }
                 }
             }
+
+            self.scaled_row = scaled_row;
+            buffer.present().expect("Failed to present buffer");
         }
 
         self.frame_argb = frame_argb;
-        self.scaled_row = scaled_row;
-        buffer.present().expect("Failed to present buffer");
         self.last_presented_guest_tick = Some(presented_tick);
         self.force_next_render = false;
         self.render_headroom = Self::next_render_headroom(render_start.elapsed());
@@ -701,9 +731,15 @@ impl ApplicationHandler for App {
                     .create_window(window_attrs)
                     .expect("Failed to create window"),
             );
+            window.set_cursor_visible(false);
 
+            #[cfg(target_os = "macos")]
+            let surface = metal_present::MetalPresenter::new(window.clone())
+                .expect("Failed to create Metal presenter");
+            #[cfg(not(target_os = "macos"))]
             let context =
                 softbuffer::Context::new(window.clone()).expect("Failed to create context");
+            #[cfg(not(target_os = "macos"))]
             let surface = Surface::new(&context, window.clone()).expect("Failed to create surface");
 
             self.window = Some(window);

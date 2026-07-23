@@ -35,10 +35,42 @@ libm = "0.2"
 
 [features]
 default = ["gui"]
-gui = ["winit", "softbuffer", "cpal"]
+gui = [
+    "winit",
+    "softbuffer",
+    "cpal",
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-metal",
+    "dep:objc2-quartz-core",
+]
 # Exposes `scripted_traces`, deterministic trap-replay test scaffolding.
 # Off by default so it stays out of the published public API and docs.
 test-support = []
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.5.2", optional = true }
+objc2-foundation = { version = "0.2.2", optional = true, features = ["NSGeometry", "NSObject", "NSString"] }
+objc2-metal = { version = "0.2.2", optional = true, features = [
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLDrawable",
+    "MTLLibrary",
+    "MTLPixelFormat",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPass",
+    "MTLRenderPipeline",
+    "MTLResource",
+    "MTLTexture",
+    "MTLTypes",
+] }
+objc2-quartz-core = { version = "0.2.2", optional = true, features = [
+    "CALayer",
+    "CAMetalLayer",
+    "objc2-metal",
+] }
 
 [[bin]]
 name = "systemless"
