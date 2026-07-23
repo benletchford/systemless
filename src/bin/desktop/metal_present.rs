@@ -347,6 +347,7 @@ impl GuestRenderWorker {
             guest_buffer,
             drawable,
             metadata,
+            false,
         )
     }
 
@@ -379,6 +380,10 @@ pub struct MetalPresenter {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    guest_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    guest_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    guest_buffer_size: usize,
+    next_guest_buffer: usize,
     upload_textures: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
     upload_size: (u32, u32),
     drawable_size: (u32, u32),
@@ -498,6 +503,10 @@ impl MetalPresenter {
             device,
             command_queue,
             pipeline,
+            guest_pipeline,
+            guest_buffers: Vec::new(),
+            guest_buffer_size: 0,
+            next_guest_buffer: 0,
             upload_textures: Vec::new(),
             upload_size: (0, 0),
             drawable_size: (0, 0),
@@ -519,6 +528,9 @@ impl MetalPresenter {
     /// is in flight; normal gameplay keeps the lower-latency asynchronous
     /// Metal presentation path.
     pub fn set_transactional_presentation(&self, enabled: bool) {
+        if enabled {
+            self.async_guest_presenter.pause_and_wait();
+        }
         unsafe { self.layer.setPresentsWithTransaction(enabled) };
     }
 
@@ -721,8 +733,33 @@ impl MetalPresenter {
         }
 
         self.resize_drawable(drawable_width, drawable_height);
-        self.async_guest_presenter
-            .enqueue(&framebuffer[..frame_bytes], metadata.clone())?;
+        if unsafe { self.layer.presentsWithTransaction() } {
+            self.ensure_guest_buffers(frame_bytes)?;
+            let Some(drawable) = (unsafe { self.layer.nextDrawable() }) else {
+                return Ok(true);
+            };
+            let buffer_index = self.next_guest_buffer;
+            self.next_guest_buffer = (buffer_index + 1) % self.guest_buffers.len();
+            let guest_buffer = &self.guest_buffers[buffer_index];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    framebuffer.as_ptr(),
+                    guest_buffer.contents().as_ptr().cast::<u8>(),
+                    frame_bytes,
+                );
+            }
+            encode_guest_frame(
+                &self.command_queue,
+                &self.guest_pipeline,
+                guest_buffer,
+                &drawable,
+                &metadata,
+                true,
+            )?;
+        } else {
+            self.async_guest_presenter
+                .enqueue(&framebuffer[..frame_bytes], metadata.clone())?;
+        }
         if self.skip_unchanged_guest_frames {
             copy_guest_visible_pixels(
                 &mut self.last_guest_visible_pixels,
@@ -807,6 +844,27 @@ impl MetalPresenter {
         Ok(())
     }
 
+    fn ensure_guest_buffers(&mut self, frame_bytes: usize) -> Result<(), String> {
+        if self.guest_buffer_size == frame_bytes {
+            return Ok(());
+        }
+        let mut buffers = Vec::with_capacity(FRAME_RESOURCE_COUNT);
+        for _ in 0..FRAME_RESOURCE_COUNT {
+            buffers.push(
+                self.device
+                    .newBufferWithLength_options(
+                        frame_bytes,
+                        MTLResourceOptions::MTLResourceStorageModeShared,
+                    )
+                    .ok_or_else(|| "Metal failed to allocate a guest framebuffer".to_string())?,
+            );
+        }
+        self.guest_buffers = buffers;
+        self.guest_buffer_size = frame_bytes;
+        self.next_guest_buffer = 0;
+        Ok(())
+    }
+
     fn resize_drawable(&mut self, width: u32, height: u32) {
         if self.drawable_size != (width, height) {
             // CALayer property assignments participate in Core Animation
@@ -835,6 +893,7 @@ fn encode_guest_frame(
     guest_buffer: &ProtocolObject<dyn MTLBuffer>,
     drawable: &ProtocolObject<dyn CAMetalDrawable>,
     metadata: &GuestFrameMetadata,
+    transactional: bool,
 ) -> Result<(), String> {
     let drawable_texture = unsafe { drawable.texture() };
     let pass = unsafe { MTLRenderPassDescriptor::new() };
@@ -891,8 +950,16 @@ fn encode_guest_frame(
     };
     encoder.endEncoding();
 
-    command_buffer.presentDrawable(ProtocolObject::from_ref(drawable));
-    command_buffer.commit();
+    if transactional {
+        command_buffer.commit();
+        command_buffer.waitUntilScheduled();
+        let drawable: &ProtocolObject<dyn objc2_metal::MTLDrawable> =
+            ProtocolObject::from_ref(drawable);
+        drawable.present();
+    } else {
+        command_buffer.presentDrawable(ProtocolObject::from_ref(drawable));
+        command_buffer.commit();
+    }
     Ok(())
 }
 
