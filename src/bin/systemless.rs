@@ -17,6 +17,7 @@
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
 #[cfg(target_os = "macos")]
+#[path = "desktop/metal_present.rs"]
 mod metal_present;
 
 #[cfg(not(target_os = "macos"))]
