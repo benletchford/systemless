@@ -2325,8 +2325,8 @@ impl FixtureRunner {
         let w0 = self.bus.read_word(pc_after_trap);
 
         // Template D consumes TickCount directly from its stack result slot:
-        //   CLR.L -(A7); _TickCount; CMP.L (A7)+,Dn; BCC.S <back-to-CLR>
-        // Lemmings uses this form for its frame delay loop.
+        //   CLR.L -(A7); _TickCount; CMP.L (A7)+,Dn; Bcc.S <back-to-CLR>
+        // Lemmings uses the BEQ form for its frame delay loop.
         if (w0 & 0xF1FF) == 0xB09F {
             let dn = ((w0 >> 9) & 7) as usize;
             return self.try_spin_template_d(pc_after_trap, dn, tick_cap);
@@ -2362,11 +2362,13 @@ impl FixtureRunner {
     ///   CLR.L  -(A7)
     ///   _TickCount
     ///   CMP.L  (A7)+, Dn
-    ///   BCC.S  <back-to-CLR.L>
+    ///   BCC.S/BEQ.S <back-to-CLR.L>
     ///
-    /// BCC repeats while `Dn >= TickCount()`, so the first fall-through tick
-    /// is `Dn + 1`. Leave CMP/BCC for the CPU to execute once after advancing;
-    /// that preserves their exact flags, stack update, and instruction count.
+    /// BCC repeats while `Dn >= TickCount()`, so its first fall-through tick is
+    /// `Dn + 1`. BEQ repeats while `Dn == TickCount()`; only accelerate it when
+    /// the just-captured tick equals Dn, and advance by exactly one tick. Leave
+    /// CMP/Bcc for the CPU to execute once after advancing; that preserves its
+    /// exact flags, stack update, and instruction count.
     fn try_spin_template_d(
         &mut self,
         pc_after_trap: u32,
@@ -2374,7 +2376,8 @@ impl FixtureRunner {
         tick_cap: Option<u32>,
     ) -> bool {
         let w_branch = self.bus.read_word(pc_after_trap.wrapping_add(2));
-        if (w_branch & 0xFF00) != 0x6400 {
+        let branch_condition = w_branch & 0xFF00;
+        if branch_condition != 0x6400 && branch_condition != 0x6700 {
             return false;
         }
         let displacement = (w_branch & 0xFF) as i8 as i32;
@@ -2387,7 +2390,13 @@ impl FixtureRunner {
             return false;
         }
 
-        let target_tick = self.cpu.core.d(dn).wrapping_add(1);
+        let dn_value = self.cpu.core.d(dn);
+        let captured_tick = self.bus.read_long(self.cpu.core.a(7));
+        if branch_condition == 0x6700 && captured_tick != dn_value {
+            // BEQ would already fall through, so there is no wait to skip.
+            return false;
+        }
+        let target_tick = dn_value.wrapping_add(1);
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => {
                 // The trap's result was captured before the synthetic VBLs.
@@ -8720,12 +8729,12 @@ mod tests {
     }
 
     #[test]
-    fn spin_fastfwd_template_d_lemmings_stack_compare_variant() {
+    fn spin_fastfwd_template_d_bcc_stack_compare_variant() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         let sp = 0x0010_0000u32;
 
-        // Exact loop emitted by Lemmings 1.5.2:
+        // Stack-result BCC variant:
         //   CLR.L -(A7); _TickCount; CMP.L (A7)+,D7; BCC.S *-8
         runner.bus.write_word(base, 0x42A7);
         runner.bus.write_word(base + 2, 0xA975);
@@ -8760,6 +8769,77 @@ mod tests {
         ));
         assert_eq!(runner.cpu.read_reg(Register::PC), base + 8);
         assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn spin_fastfwd_template_d_lemmings_beq_variant() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+
+        // Exact loop emitted by Lemmings 1.5.2:
+        //   CLR.L -(A7); _TickCount; CMP.L (A7)+,D7; BEQ.S *-8
+        runner.bus.write_word(base, 0x42A7);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0xBE9F);
+        runner.bus.write_word(base + 6, 0x67F8);
+        runner.bus.write_word(base + 8, 0x4E71);
+
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::D7, 100);
+        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.bus.write_long(sp - 4, 100);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 101);
+        assert_eq!(runner.bus.read_long(sp - 4), 101);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(count, 0, "CMP/BEQ remain for exact CPU execution");
+
+        assert!(matches!(
+            runner.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+        assert!(matches!(
+            runner.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 8);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn spin_fastfwd_template_d_beq_does_not_advance_after_tick_changed() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        runner.bus.write_word(base, 0x42A7);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0xBE9F);
+        runner.bus.write_word(base + 6, 0x67F8);
+
+        runner.bus.write_long(0x016A, 101);
+        runner.dispatcher.tick_count = 101;
+        runner.cpu.write_reg(Register::D7, 100);
+        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.bus.write_long(sp - 4, 101);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 101);
+        assert_eq!(runner.bus.read_long(sp - 4), 101);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(count, 0);
     }
 
     #[test]
