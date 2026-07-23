@@ -11395,6 +11395,10 @@ mod tests {
         let highlighted_item = tracking.highlighted_item;
         let first_stack_after = cpu.read_reg(Register::A7);
         let item_at_requested_point = disp.dropdown_item_at_point(&bus, 35, 58);
+        // PopUpMenuSelect re-evaluates the live mouse position on release.
+        // Keep the synthetic release over the requested third item rather
+        // than inheriting setup_with_port's default position at (0, 0).
+        disp.mouse_pos = (58, 35);
         let (result, final_stack_after, tracking_finished) =
             finish_popupmenuselect(&mut disp, &mut cpu, &mut bus);
 
