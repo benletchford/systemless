@@ -622,6 +622,30 @@ impl App {
         let cursor = runner.dispatcher().cursor().cloned();
         let mouse_pos = runner.dispatcher().mouse_position();
 
+        #[cfg(target_os = "macos")]
+        if !self.debug_overlay_visible {
+            let palette = display::argb_palette_from_clut(&device_clut);
+            let framebuffer_len = screen_mode.1.saturating_mul(u32::from(screen_mode.3));
+            let framebuffer = runner.bus().ram_slice(screen_mode.0, framebuffer_len);
+            if let Some(surface) = self.surface.as_mut() {
+                let presented_directly = surface
+                    .present_guest_frame(
+                        framebuffer,
+                        screen_mode,
+                        &palette,
+                        cursor.as_ref().map(|image| (image, mouse_pos)),
+                        (buf_w, buf_h),
+                    )
+                    .expect("Failed to present native guest framebuffer");
+                if presented_directly {
+                    self.last_presented_guest_tick = Some(presented_tick);
+                    self.force_next_render = false;
+                    self.render_headroom = Self::next_render_headroom(render_start.elapsed());
+                    return;
+                }
+            }
+        }
+
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
         display::render_screen_argb(runner.bus(), screen_mode, &device_clut, &mut frame_argb);
         if let Some(cursor) = cursor.as_ref() {

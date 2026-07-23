@@ -492,14 +492,7 @@ pub fn render_screen_argb(
     let fb = bus.ram_slice(scrn_base, row_bytes * scrn_h as u32);
 
     if is_8bpp {
-        let mut palette = [0u32; 256];
-        for (dst, rgb) in palette.iter_mut().zip(device_clut.iter()) {
-            let [r, g, b] = *rgb;
-            *dst = 0xFF000000
-                | (u32::from(clut_component_to_u8(r)) << 16)
-                | (u32::from(clut_component_to_u8(g)) << 8)
-                | u32::from(clut_component_to_u8(b));
-        }
+        let palette = argb_palette_from_clut(device_clut);
 
         for gy in 0..h {
             let row_start = gy * row_bytes as usize;
@@ -523,6 +516,21 @@ pub fn render_screen_argb(
             }
         }
     }
+}
+
+/// Convert the guest Color LookUp Table to host ARGB words. Native GPU
+/// presenters use this same conversion so their palette output is bit-for-bit
+/// identical to the software renderer.
+pub fn argb_palette_from_clut(device_clut: &[[u16; 3]; 256]) -> [u32; 256] {
+    let mut palette = [0u32; 256];
+    for (dst, rgb) in palette.iter_mut().zip(device_clut.iter()) {
+        let [r, g, b] = *rgb;
+        *dst = 0xFF000000
+            | (u32::from(clut_component_to_u8(r)) << 16)
+            | (u32::from(clut_component_to_u8(g)) << 8)
+            | u32::from(clut_component_to_u8(b));
+    }
+    palette
 }
 
 /// Overlay the cursor onto an RGBA pixel buffer.
@@ -1281,8 +1289,9 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 #[cfg(test)]
 mod tests {
     use super::{
-        clut_component_to_u8, clut_to_argb, normalize_centered_compact_mac_viewport_margins_rgba,
-        render_cursor, render_cursor_argb, render_screen_into,
+        argb_palette_from_clut, clut_component_to_u8, clut_to_argb,
+        normalize_centered_compact_mac_viewport_margins_rgba, render_cursor, render_cursor_argb,
+        render_screen_into,
         render_screen_with_rgba_palette_into, rgba_palette_from_clut, screen_pixel_rgb,
         CursorImage,
     };
@@ -1307,6 +1316,7 @@ mod tests {
         clut[7] = [0x4444, 0x8888, 0xCCCC];
         let argb = clut_to_argb(&clut, 7);
         assert_eq!(argb, 0xFF66A5DA);
+        assert_eq!(argb_palette_from_clut(&clut)[7], argb);
     }
 
     #[test]
