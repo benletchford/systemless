@@ -11,6 +11,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, ProtocolObject};
@@ -23,7 +24,7 @@ use objc2_metal::{
     MTLRenderPipelineState, MTLResourceOptions, MTLStorageMode, MTLStoreAction, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
-use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CAAutoresizingMask, CALayer, CAMetalDrawable, CAMetalLayer};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
@@ -35,12 +36,14 @@ use systemless::display::CursorImage;
 const FRAME_RESOURCE_COUNT: usize = 2;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 struct GuestFrameUniforms {
     row_bytes: u32,
     width: u32,
     height: u32,
     pixel_size: u32,
+    content_left: u32,
+    content_top: u32,
     cursor_kind: u32,
     cursor_width: u32,
     cursor_height: u32,
@@ -49,11 +52,31 @@ struct GuestFrameUniforms {
 }
 
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 struct GuestCursorData {
     data_rows: [u32; 16],
     mask_rows: [u32; 16],
     color_pixels: [u32; 256],
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct GuestFrameMetadata {
+    screen_layout: (u32, u16, u16, u16),
+    content_rect: (u32, u32, u32, u32),
+    palette: [u32; 256],
+    uniforms: GuestFrameUniforms,
+    cursor: GuestCursorData,
+    drawable_size: (u32, u32),
+}
+
+#[derive(Default)]
+struct GuestFrameProfile {
+    attempts: u64,
+    submitted: u64,
+    unchanged: u64,
+    forced: u64,
+    comparison_time: Duration,
+    presentation_time: Duration,
 }
 
 impl Default for GuestCursorData {
@@ -81,6 +104,11 @@ pub struct MetalPresenter {
     upload_size: (u32, u32),
     drawable_size: (u32, u32),
     next_upload_texture: usize,
+    last_guest_metadata: Option<GuestFrameMetadata>,
+    last_guest_visible_pixels: Vec<u8>,
+    skip_unchanged_guest_frames: bool,
+    profile_guest_frames: bool,
+    guest_frame_profile: GuestFrameProfile,
 }
 
 impl MetalPresenter {
@@ -122,6 +150,9 @@ impl MetalPresenter {
         }
         layer.setOpaque(true);
         layer.setFrame(root_layer.bounds());
+        layer.setAutoresizingMask(
+            CAAutoresizingMask::kCALayerWidthSizable | CAAutoresizingMask::kCALayerHeightSizable,
+        );
         layer.setContentsScale(root_layer.contentsScale());
         root_layer.addSublayer(&layer);
 
@@ -174,6 +205,14 @@ impl MetalPresenter {
             upload_size: (0, 0),
             drawable_size: (0, 0),
             next_upload_texture: 0,
+            last_guest_metadata: None,
+            last_guest_visible_pixels: Vec::new(),
+            skip_unchanged_guest_frames: std::env::var_os(
+                "SYSTEMLESS_DISABLE_UNCHANGED_FRAME_SKIP",
+            )
+            .is_none(),
+            profile_guest_frames: std::env::var_os("SYSTEMLESS_PROFILE_METAL_FRAMES").is_some(),
+            guest_frame_profile: GuestFrameProfile::default(),
         })
     }
 
@@ -249,7 +288,7 @@ impl MetalPresenter {
         unsafe { encoder.setFragmentTexture_atIndex(Some(upload), 0) };
 
         let viewport =
-            integer_scaled_viewport(source_width, source_height, drawable_width, drawable_height);
+            aspect_fit_viewport(source_width, source_height, drawable_width, drawable_height);
         encoder.setViewport(MTLViewport {
             originX: viewport.0,
             originY: viewport.1,
@@ -276,26 +315,82 @@ impl MetalPresenter {
         &mut self,
         framebuffer: &[u8],
         screen_mode: (u32, u32, u16, u16, u16),
+        content_rect: (u32, u32, u32, u32),
         palette: &[u32; 256],
         cursor: Option<(&CursorImage, (i16, i16))>,
         drawable_size: (u32, u32),
+        force_present: bool,
     ) -> Result<bool, String> {
         let (_, row_bytes, width, height, pixel_size) = screen_mode;
-        let width = u32::from(width);
-        let height = u32::from(height);
+        let screen_width = u32::from(width);
+        let screen_height = u32::from(height);
+        let (content_left, content_top, width, height) = content_rect;
         let (drawable_width, drawable_height) = drawable_size;
         if !matches!(pixel_size, 1 | 8) {
             return Ok(false);
         }
+        if content_left.saturating_add(width) > screen_width
+            || content_top.saturating_add(height) > screen_height
+        {
+            return Err("detected content rectangle lies outside the guest screen".to_string());
+        }
         if width == 0 || height == 0 || drawable_width == 0 || drawable_height == 0 {
             return Ok(true);
         }
-        let frame_bytes = usize::try_from(row_bytes)
-            .ok()
-            .and_then(|stride| stride.checked_mul(height as usize))
+        let frame_bytes = guest_frame_byte_len(row_bytes, screen_height)
             .ok_or_else(|| "guest framebuffer dimensions overflow host size".to_string())?;
         if framebuffer.len() < frame_bytes {
             return Err("guest framebuffer dimensions do not match its pixel data".to_string());
+        }
+
+        let visible_layout = guest_visible_byte_layout(
+            row_bytes,
+            pixel_size,
+            content_left,
+            content_top,
+            width,
+            height,
+        )
+        .ok_or_else(|| "visible guest framebuffer rows are invalid".to_string())?;
+        let (mut uniforms, cursor_data) = cursor
+            .map(|(image, position)| guest_cursor_data(Some(image), position))
+            .unwrap_or_else(|| guest_cursor_data(None, (0, 0)));
+        uniforms.row_bytes = row_bytes;
+        uniforms.width = width;
+        uniforms.height = height;
+        uniforms.pixel_size = u32::from(pixel_size);
+        uniforms.content_left = content_left;
+        uniforms.content_top = content_top;
+        let metadata = GuestFrameMetadata {
+            screen_layout: (row_bytes, screen_mode.2, screen_mode.3, pixel_size),
+            content_rect,
+            palette: *palette,
+            uniforms,
+            cursor: cursor_data,
+            drawable_size,
+        };
+
+        let presentation_start = Instant::now();
+        self.guest_frame_profile.attempts += 1;
+        if force_present {
+            self.guest_frame_profile.forced += 1;
+        }
+        let compare_start = Instant::now();
+        let unchanged = self.skip_unchanged_guest_frames
+            && self.last_guest_metadata.as_ref() == Some(&metadata)
+            && guest_visible_pixels_equal(
+                &self.last_guest_visible_pixels,
+                framebuffer,
+                visible_layout,
+            );
+        if self.skip_unchanged_guest_frames {
+            self.guest_frame_profile.comparison_time += compare_start.elapsed();
+        }
+        if unchanged && !force_present {
+            self.guest_frame_profile.unchanged += 1;
+            self.guest_frame_profile.presentation_time += presentation_start.elapsed();
+            self.maybe_log_guest_frame_profile();
+            return Ok(true);
         }
 
         self.ensure_guest_buffers(frame_bytes)?;
@@ -317,14 +412,6 @@ impl MetalPresenter {
                 frame_bytes,
             );
         }
-
-        let (mut uniforms, cursor_data) = cursor
-            .map(|(image, position)| guest_cursor_data(Some(image), position))
-            .unwrap_or_else(|| guest_cursor_data(None, (0, 0)));
-        uniforms.row_bytes = row_bytes;
-        uniforms.width = width;
-        uniforms.height = height;
-        uniforms.pixel_size = u32::from(pixel_size);
 
         let drawable_texture = unsafe { drawable.texture() };
         let pass = unsafe { MTLRenderPassDescriptor::new() };
@@ -355,18 +442,18 @@ impl MetalPresenter {
                 1,
             );
             encoder.setFragmentBytes_length_atIndex(
-                non_null_bytes(&uniforms),
+                non_null_bytes(&metadata.uniforms),
                 size_of::<GuestFrameUniforms>(),
                 2,
             );
             encoder.setFragmentBytes_length_atIndex(
-                non_null_bytes(&cursor_data),
+                non_null_bytes(&metadata.cursor),
                 size_of::<GuestCursorData>(),
                 3,
             );
         }
 
-        let viewport = integer_scaled_viewport(width, height, drawable_width, drawable_height);
+        let viewport = aspect_fit_viewport(width, height, drawable_width, drawable_height);
         encoder.setViewport(MTLViewport {
             originX: viewport.0,
             originY: viewport.1,
@@ -382,7 +469,43 @@ impl MetalPresenter {
 
         command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
         command_buffer.commit();
+        self.guest_frame_profile.submitted += 1;
+        if self.skip_unchanged_guest_frames {
+            copy_guest_visible_pixels(
+                &mut self.last_guest_visible_pixels,
+                framebuffer,
+                visible_layout,
+            );
+            self.last_guest_metadata = Some(metadata);
+        }
+        self.guest_frame_profile.presentation_time += presentation_start.elapsed();
+        self.maybe_log_guest_frame_profile();
         Ok(true)
+    }
+
+    fn maybe_log_guest_frame_profile(&self) {
+        let profile = &self.guest_frame_profile;
+        if !self.profile_guest_frames
+            || profile.attempts == 0
+            || !profile.attempts.is_multiple_of(600)
+        {
+            return;
+        }
+        let skipped_percent = profile.unchanged as f64 * 100.0 / profile.attempts as f64;
+        let compare_us = profile.comparison_time.as_secs_f64() * 1_000_000.0
+            / profile.attempts as f64;
+        let presentation_us = profile.presentation_time.as_secs_f64() * 1_000_000.0
+            / profile.attempts as f64;
+        eprintln!(
+            "[METAL-PROFILE] attempts={} submitted={} unchanged_skipped={} forced={} skipped={:.1}% compare={:.1}us/frame present={:.1}us/frame",
+            profile.attempts,
+            profile.submitted,
+            profile.unchanged,
+            profile.forced,
+            skipped_percent,
+            compare_us,
+            presentation_us
+        );
     }
 
     fn ensure_guest_buffers(&mut self, frame_bytes: usize) -> Result<(), String> {
@@ -524,38 +647,187 @@ fn guest_cursor_data(
     (uniforms, gpu)
 }
 
-fn integer_scaled_viewport(
+fn aspect_fit_viewport(
     source_width: u32,
     source_height: u32,
     drawable_width: u32,
     drawable_height: u32,
 ) -> (f64, f64, f64, f64) {
-    let scale = (drawable_width / source_width)
-        .min(drawable_height / source_height)
-        .max(1);
+    let scale = (drawable_width as f64 / source_width as f64)
+        .min(drawable_height as f64 / source_height as f64);
+    let width = source_width as f64 * scale;
+    let height = source_height as f64 * scale;
     (
-        0.0,
-        0.0,
-        (source_width * scale) as f64,
-        (source_height * scale) as f64,
+        (drawable_width as f64 - width) * 0.5,
+        (drawable_height as f64 - height) * 0.5,
+        width,
+        height,
     )
+}
+
+fn guest_frame_byte_len(row_bytes: u32, screen_height: u32) -> Option<usize> {
+    usize::try_from(row_bytes)
+        .ok()?
+        .checked_mul(screen_height as usize)
+}
+
+#[derive(Clone, Copy)]
+struct GuestVisibleByteLayout {
+    first_row_offset: usize,
+    row_stride: usize,
+    visible_row_bytes: usize,
+    row_count: usize,
+}
+
+fn guest_visible_byte_layout(
+    row_bytes: u32,
+    pixel_size: u16,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+) -> Option<GuestVisibleByteLayout> {
+    let row_stride = usize::try_from(row_bytes).ok()?;
+    let (first_byte, byte_end) = match pixel_size {
+        1 => (
+            usize::try_from(left / 8).ok()?,
+            usize::try_from(left.checked_add(width)?.checked_add(7)? / 8).ok()?,
+        ),
+        8 => (
+            usize::try_from(left).ok()?,
+            usize::try_from(left.checked_add(width)?).ok()?,
+        ),
+        _ => return None,
+    };
+    if byte_end > row_stride || byte_end <= first_byte || height == 0 {
+        return None;
+    }
+    Some(GuestVisibleByteLayout {
+        first_row_offset: usize::try_from(top)
+            .ok()?
+            .checked_mul(row_stride)?
+            .checked_add(first_byte)?,
+        row_stride,
+        visible_row_bytes: byte_end - first_byte,
+        row_count: usize::try_from(height).ok()?,
+    })
+}
+
+fn guest_visible_pixels_equal(
+    snapshot: &[u8],
+    framebuffer: &[u8],
+    layout: GuestVisibleByteLayout,
+) -> bool {
+    let Some(snapshot_len) = layout.visible_row_bytes.checked_mul(layout.row_count) else {
+        return false;
+    };
+    if snapshot.len() != snapshot_len {
+        return false;
+    }
+    for row in 0..layout.row_count {
+        let Some(source_start) = row
+            .checked_mul(layout.row_stride)
+            .and_then(|offset| layout.first_row_offset.checked_add(offset))
+        else {
+            return false;
+        };
+        let Some(source_end) = source_start.checked_add(layout.visible_row_bytes) else {
+            return false;
+        };
+        let snapshot_start = row * layout.visible_row_bytes;
+        if framebuffer.get(source_start..source_end)
+            != snapshot.get(snapshot_start..snapshot_start + layout.visible_row_bytes)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn copy_guest_visible_pixels(
+    snapshot: &mut Vec<u8>,
+    framebuffer: &[u8],
+    layout: GuestVisibleByteLayout,
+) {
+    snapshot.clear();
+    let capacity = layout
+        .visible_row_bytes
+        .checked_mul(layout.row_count)
+        .unwrap_or(0);
+    snapshot.reserve(capacity);
+    for row in 0..layout.row_count {
+        let source_start = layout.first_row_offset + row * layout.row_stride;
+        let source_end = source_start + layout.visible_row_bytes;
+        snapshot.extend_from_slice(&framebuffer[source_start..source_end]);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{guest_cursor_data, integer_scaled_viewport};
+    use super::{
+        aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data, guest_frame_byte_len,
+        guest_visible_byte_layout, guest_visible_pixels_equal,
+    };
     use systemless::display::CursorImage;
 
     #[test]
-    fn integer_viewport_matches_software_presenter_scaling() {
+    fn viewport_scales_continuously_and_centers_letterboxing() {
         assert_eq!(
-            integer_scaled_viewport(800, 600, 1920, 1080),
-            (0.0, 0.0, 800.0, 600.0)
+            aspect_fit_viewport(800, 600, 1920, 1080),
+            (240.0, 0.0, 1440.0, 1080.0)
         );
         assert_eq!(
-            integer_scaled_viewport(512, 342, 1200, 800),
-            (0.0, 0.0, 1024.0, 684.0)
+            aspect_fit_viewport(800, 600, 1200, 900),
+            (0.0, 0.0, 1200.0, 900.0)
         );
+    }
+
+    #[test]
+    fn cropped_presentation_still_uploads_the_full_guest_framebuffer() {
+        // A 640x392 crop within an 800x600 screen may sample source rows well
+        // below row 392, so the staging buffer must retain all 600 rows.
+        assert_eq!(guest_frame_byte_len(800, 600), Some(480_000));
+    }
+
+    #[test]
+    fn unchanged_detection_compares_only_cropped_visible_rows() {
+        let mut framebuffer = vec![0u8; 8 * 6];
+        let layout = guest_visible_byte_layout(8, 8, 2, 1, 4, 3).unwrap();
+        let mut snapshot = Vec::new();
+        copy_guest_visible_pixels(&mut snapshot, &framebuffer, layout);
+        assert!(guest_visible_pixels_equal(
+            &snapshot,
+            &framebuffer,
+            layout
+        ));
+
+        framebuffer[0] = 1;
+        assert!(
+            guest_visible_pixels_equal(&snapshot, &framebuffer, layout),
+            "pixels outside the crop must not trigger a GPU submission"
+        );
+        framebuffer[2 * 8 + 4] = 1;
+        assert!(!guest_visible_pixels_equal(
+            &snapshot,
+            &framebuffer,
+            layout
+        ));
+    }
+
+    #[test]
+    fn monochrome_visible_comparison_includes_boundary_bytes() {
+        let mut framebuffer = vec![0u8; 4 * 3];
+        let layout = guest_visible_byte_layout(4, 1, 7, 1, 10, 1).unwrap();
+        let mut snapshot = Vec::new();
+        copy_guest_visible_pixels(&mut snapshot, &framebuffer, layout);
+        assert_eq!(snapshot.len(), 3);
+
+        framebuffer[4 + 2] = 0x80;
+        assert!(!guest_visible_pixels_equal(
+            &snapshot,
+            &framebuffer,
+            layout
+        ));
     }
 
     #[test]
