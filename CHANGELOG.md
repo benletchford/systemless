@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/benletchford/systemless/compare/v0.1.133...v0.2.0) (2026-07-23)
+
+
+### Features
+
+* show the retro computer menu mark in 68k games ([e96d4a5](https://github.com/benletchford/systemless/commit/e96d4a5691324cf7d1a62d4a0433b554f2ca5677))
+
+
+### Bug Fixes
+
+* preserve guest menu enable flags in MORE ([04370de](https://github.com/benletchford/systemless/commit/04370de9f5575c043d21303ae5b73e0c3d81dbcc))
+* select menu item at mouse release ([c2177b1](https://github.com/benletchford/systemless/commit/c2177b12f12a5c18681328bb1b9a0b48e4f1cc19))
+* suppress standalone modifier key events ([f286228](https://github.com/benletchford/systemless/commit/f2862283ad72c1e654d4cf3a08364d95f4a07b65))
+
 ## [0.1.133](https://github.com/benletchford/systemless/compare/v0.1.132...v0.1.133) (2026-07-23)
 
 
