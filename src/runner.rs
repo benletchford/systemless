@@ -483,6 +483,10 @@ pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_M
 // This lower value lets scripted harnesses run quickly without being wall-clock-paced.
 const INSTRUCTIONS_PER_TICK: u32 = 12_000;
 const DEFAULT_LAUNCH_TICKS: u32 = 600;
+/// Default double-click interval: 20 VBL ticks, approximately one third of a
+/// second. This is the conventional classic Mac OS setting exposed through
+/// the low-memory `DoubleTime` global.
+const DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 const MAC_EPOCH_OFFSET_FROM_UNIX: u64 = 2_082_844_800;
 const CURSOR_TASK_NOOP_ADDR: u32 = 0x0000_0060;
 
@@ -1959,6 +1963,12 @@ impl FixtureRunner {
             .app_start_time
             .unwrap_or_else(current_mac_epoch_seconds);
         self.bus.write_long(addr::TIME, time);
+        // DoubleTime ($02F0): maximum interval between mouseDown events that
+        // constitutes a double-click. RAM starts zeroed, but zero makes the
+        // canonical unsigned comparison `(thisClick - lastClick) < DoubleTime`
+        // impossible. Lemmings uses that exact sequence for its nuke control.
+        self.bus
+            .write_long(addr::DOUBLE_TIME, DEFAULT_DOUBLE_TIME_TICKS);
         // RndSeed ($0156): system random seed initialized during boot.
         // On a real Mac, the boot code seeds this from the real-time clock
         // so that programs that read it directly (without calling Random)
@@ -6108,6 +6118,25 @@ mod tests {
         assert_eq!(
             runner.dispatcher.tick_count, DEFAULT_LAUNCH_TICKS,
             "TickCount fast path must stay in sync with low-memory Ticks"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_classic_double_click_interval() {
+        use crate::memory::globals::addr;
+
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.bus.read_long(addr::DOUBLE_TIME),
+            DEFAULT_DOUBLE_TIME_TICKS,
+            "a zero DoubleTime makes every application-level double-click test fail"
         );
     }
 
