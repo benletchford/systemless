@@ -1519,13 +1519,43 @@ impl super::TrapDispatcher {
             // FUNCTION RecoverHandle (p: Ptr): Handle;
             // Inside Macintosh Volume V, V-579
             //
-            // Scans all master pointer slots including freed ones. ptr_to_handle
-            // retains stale entries after DisposeHandle (freed slots still hold
-            // the old data address in ROM), so this correctly returns the stale
-            // freed handle rather than nil — matching real Mac OS behavior.
+            // Classic Mac OS relocatable memory has one extra level of
+            // indirection that modern allocators usually do not expose. A
+            // `Handle` is not the address of an allocation's bytes; it is the
+            // stable address of a four-byte *master pointer*. The Memory Manager
+            // may move the relocatable data block and update that master pointer
+            // while callers continue to retain the same Handle:
+            //
+            //     Handle ----> master-pointer slot ----> movable data block
+            //
+            // RecoverHandle performs the reverse operation. Given the data-block
+            // pointer, the original Memory Manager scans its master-pointer slots
+            // for one whose four-byte contents equal that pointer. Systemless's
+            // `ptr_to_handle` map is an index that avoids repeatedly scanning
+            // guest memory, but it must preserve the scan's observable semantics.
+            //
+            // DisposeHandle releases both the data block and its master-pointer
+            // slot without immediately clearing the slot's four bytes. Until the
+            // slot is reused, RecoverHandle can therefore still find the disposed
+            // Handle by its stale contents. Once NewHandle reuses that same slot,
+            // however, it overwrites the four bytes with a different data-block
+            // pointer. A real scan can no longer find the old pointer. Keeping the
+            // old map entry without checking the slot would alias the old pointer
+            // to an unrelated, live Handle; code cleaning up the old allocation
+            // could then resize or dispose the new allocation. Validate the slot
+            // contents here so the cached reverse lookup behaves like the real
+            // master-pointer-table scan.
             (false, 0x28) => {
                 let ptr = cpu.read_reg(Register::A0);
-                let handle = self.ptr_to_handle.get(&ptr).copied().unwrap_or(0);
+                let handle = self
+                    .ptr_to_handle
+                    .get(&ptr)
+                    .copied()
+                    .filter(|&handle| bus.read_long(handle) == ptr)
+                    .unwrap_or(0);
+                if handle == 0 {
+                    self.ptr_to_handle.remove(&ptr);
+                }
                 cpu.write_reg(Register::A0, handle);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -8742,6 +8772,48 @@ mod tests {
             cpu.read_reg(Register::A0),
             0,
             "RecoverHandle after DisposeHandle must return stale freed handle (not nil), per IM:V V-579 scan-all-slots behavior"
+        );
+    }
+
+    #[test]
+    fn recover_handle_rejects_stale_mapping_after_master_pointer_reuse() {
+        // A disposed slot remains discoverable only until the Memory Manager
+        // reuses it. Once NewHandle overwrites the slot with a new data pointer,
+        // a table scan can no longer recover the old pointer from that slot.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 100);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let old_handle = cpu.read_reg(Register::A0);
+        let old_ptr = bus.read_long(old_handle);
+
+        cpu.write_reg(Register::A0, old_handle);
+        dispatcher
+            .dispatch_memory(false, 0x23, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::D0, 200);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let new_handle = cpu.read_reg(Register::A0);
+        assert_eq!(new_handle, old_handle, "the freed handle slot should be reused");
+        assert_ne!(bus.read_long(new_handle), old_ptr);
+
+        cpu.write_reg(Register::A0, old_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x28, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            0,
+            "RecoverHandle must not alias an old pointer to the handle now occupying its former slot"
         );
     }
 
