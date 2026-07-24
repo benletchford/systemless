@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.1](https://github.com/benletchford/systemless/compare/v0.2.0...v0.2.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **macos:** drain Metal worker autoreleases ([e98664d](https://github.com/benletchford/systemless/commit/e98664d97390136bc5e79d5c16d8d3086a1681de))
+* **macos:** drain Metal worker autoreleases ([a8e0f1b](https://github.com/benletchford/systemless/commit/a8e0f1b459e5732be0632dbe68e1658a97ac892f))
+
+
+### Performance Improvements
+
+* **runner:** fast-forward TickCount BEQ waits ([6dc03b4](https://github.com/benletchford/systemless/commit/6dc03b430dc11ffd13c19c18ef583767c3abe6e6))
+* **runner:** fast-forward TickCount BEQ waits ([22231e0](https://github.com/benletchford/systemless/commit/22231e0803c1b67f7fddca559f514a9cd359995c))
+
 ## [0.2.0](https://github.com/benletchford/systemless/compare/v0.1.133...v0.2.0) (2026-07-23)
 
 
