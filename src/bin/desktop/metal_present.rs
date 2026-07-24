@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use objc2::rc::Retained;
+use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::{NSObject, ProtocolObject};
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{ns_string, CGRect, MainThreadMarker};
@@ -267,7 +267,10 @@ impl GuestRenderWorker {
             drop(state);
 
             let wait_start = Instant::now();
-            let drawable = unsafe { self.layer.nextDrawable() };
+            // This is a raw Rust worker rather than an AppKit-created thread,
+            // so it has no ambient Objective-C autorelease pool. Drain the
+            // temporary QuartzCore objects created while acquiring a drawable.
+            let drawable = autoreleasepool(|_| unsafe { self.layer.nextDrawable() });
             let drawable_wait = wait_start.elapsed();
 
             let mut state = mailbox
@@ -298,10 +301,12 @@ impl GuestRenderWorker {
             drop(state);
 
             let render_start = Instant::now();
-            let result = match drawable {
+            // Command buffers, pass descriptors, and driver bookkeeping may
+            // also autorelease objects while encoding the frame.
+            let result = autoreleasepool(|_| match drawable {
                 Some(drawable) => self.submit(&submission, &drawable),
                 None => Ok(()),
-            };
+            });
             let render_time = render_start.elapsed();
 
             let mut state = mailbox
