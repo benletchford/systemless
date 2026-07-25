@@ -46,7 +46,7 @@ pub(super) struct RegionMembershipCache {
 }
 
 #[derive(Clone, Copy)]
-enum RegionBooleanOp {
+pub(super) enum RegionBooleanOp {
     Intersection,
     Union,
     Difference,
@@ -19158,7 +19158,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn write_region_boolean_op(
+    pub(super) fn write_region_boolean_op(
         bus: &mut MacMemoryBus,
         dst_handle: u32,
         src_a: u32,
@@ -19208,7 +19208,7 @@ impl super::TrapDispatcher {
         Self::write_region_from_rows(bus, dst_handle, top, &rows)
     }
 
-    fn offset_region(bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
+    pub(super) fn offset_region(bus: &mut MacMemoryBus, rgn_handle: u32, dh: i16, dv: i16) {
         let Some((rgn_ptr, rgn_size)) = Self::region_ptr_and_size(bus, rgn_handle) else {
             return;
         };

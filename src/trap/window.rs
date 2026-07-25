@@ -3,6 +3,7 @@
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
+use crate::trap::quickdraw::RegionBooleanOp;
 use crate::Result;
 use std::sync::OnceLock;
 
@@ -1337,12 +1338,43 @@ impl super::TrapDispatcher {
         if let Some(saved_vis) = Self::region_handle_rect(bus, bus.read_long(window + 24)) {
             self.saved_vis_regions.insert(window, saved_vis);
         }
-        let update_rect = self.global_rect_to_window_local(bus, window, update_rect);
-        let new_vis = Self::rect_intersection(
-            Self::region_handle_rect(bus, bus.read_long(window + 24)).unwrap_or((0, 0, 0, 0)),
-            update_rect,
-        );
-        Self::write_region_handle_rect(bus, bus.read_long(window + 24), new_vis);
+        let vis_handle = bus.read_long(window + 24);
+        let update_handle = bus.read_long(window + Self::WINDOW_UPDATE_RGN_OFFSET);
+        // BeginUpdate sets visRgn to the intersection of visRgn and updateRgn,
+        // so drawing during the update is confined to the parts that actually
+        // need repainting.
+        // BeginUpdate ($A922)
+        // PROCEDURE BeginUpdate (theWindow: WindowPtr);
+        // Inside Macintosh Volume I, I-292
+        //
+        // This has to be a true region intersection, not a bounding-box one:
+        // visRgn already excludes any window sitting in front (CalcVis), and a
+        // bounding-box intersection would hand those pixels back to the window
+        // underneath, letting it paint over a modal dialog.
+        if vis_handle != 0 && update_handle != 0 {
+            // updateRgn is kept in global coordinates, visRgn in the window's
+            // local ones. IM:I I-278. Shift the update region into local space
+            // for the intersection; BeginUpdate empties it immediately after,
+            // so the in-place offset is not observable.
+            let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, window);
+            if bounds_top != 0 || bounds_left != 0 {
+                Self::offset_region(bus, update_handle, bounds_left, bounds_top);
+            }
+            Self::write_region_boolean_op(
+                bus,
+                vis_handle,
+                vis_handle,
+                update_handle,
+                RegionBooleanOp::Intersection,
+            );
+        } else {
+            let update_rect = self.global_rect_to_window_local(bus, window, update_rect);
+            let new_vis = Self::rect_intersection(
+                Self::region_handle_rect(bus, vis_handle).unwrap_or((0, 0, 0, 0)),
+                update_rect,
+            );
+            Self::write_region_handle_rect(bus, vis_handle, new_vis);
+        }
         Self::write_region_handle_rect(
             bus,
             bus.read_long(window + Self::WINDOW_UPDATE_RGN_OFFSET),
@@ -1353,7 +1385,17 @@ impl super::TrapDispatcher {
 
     pub(crate) fn end_update_window(&mut self, bus: &mut MacMemoryBus, window: u32) {
         if let Some(saved_vis) = self.saved_vis_regions.remove(&window) {
-            Self::write_region_handle_rect(bus, bus.read_long(window + 24), Some(saved_vis));
+            // EndUpdate restores the window's normal visRgn.
+            // EndUpdate ($A923)
+            // PROCEDURE EndUpdate (theWindow: WindowPtr);
+            // Inside Macintosh Volume I, I-292
+            //
+            // Recompute it from the window list rather than replaying the
+            // bounding box saved at BeginUpdate — the real visRgn can have
+            // holes where other windows overlap, which a rect cannot carry.
+            if !self.calc_window_vis_region(bus, window) {
+                Self::write_region_handle_rect(bus, bus.read_long(window + 24), Some(saved_vis));
+            }
         }
     }
 
@@ -1364,6 +1406,98 @@ impl super::TrapDispatcher {
             None
         };
         Self::write_region_handle_rect(bus, bus.read_long(window_ptr + 24), rect);
+        self.recalculate_window_vis_regions(bus);
+    }
+
+    /// Recompute one window's visRgn: its content region minus the structure
+    /// regions of every visible window in front of it.
+    ///
+    /// CalcVis ($A909)
+    /// Calculates the visRgn of theWindow by subtracting the structure regions
+    /// of all windows in front of it from its content region.
+    /// PROCEDURE CalcVis (theWindow: WindowPeek);
+    /// Inside Macintosh Volume I, I-297
+    ///
+    /// Without this, a background window's drawing is clipped only to its own
+    /// content rect, so a full-window PaintRect from behind erases whatever a
+    /// modal dialog (or any front window) has already painted on top of it.
+    /// Returns `false` when the window carries no usable content region, so
+    /// callers that need a definite visRgn can fall back.
+    fn calc_window_vis_region(&self, bus: &mut MacMemoryBus, window_ptr: u32) -> bool {
+        let vis_handle = bus.read_long(window_ptr + 24);
+        if vis_handle == 0 {
+            return false;
+        }
+        // CalcVis only ever runs on visible windows; ShowWindow/HideWindow own
+        // the empty-visRgn case for hidden ones. IM:I I-283.
+        if !self.window_visible(bus, window_ptr) {
+            return false;
+        }
+        let cont_handle = bus.read_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET);
+        if cont_handle == 0 || Self::region_handle_rect(bus, cont_handle).is_none() {
+            return false;
+        }
+
+        // Start from a copy of the content region in global coordinates.
+        Self::write_region_boolean_op(
+            bus,
+            vis_handle,
+            cont_handle,
+            cont_handle,
+            RegionBooleanOp::Union,
+        );
+
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        for &front in &self.window_list {
+            if front == window_ptr {
+                break;
+            }
+            if front == ghost_window || !self.window_visible(bus, front) {
+                continue;
+            }
+            // Windows parked wholly off-screen never occlude anything on the
+            // real screen, and their structure regions are far outside it.
+            if self.windows_placed_offscreen.contains(&front) {
+                continue;
+            }
+            let struc_handle = bus.read_long(front + Self::WINDOW_STRUC_RGN_OFFSET);
+            if struc_handle == 0 || Self::region_handle_rect(bus, struc_handle).is_none() {
+                continue;
+            }
+            Self::write_region_boolean_op(
+                bus,
+                vis_handle,
+                vis_handle,
+                struc_handle,
+                RegionBooleanOp::Difference,
+            );
+        }
+
+        // visRgn is kept in the window's local coordinates.
+        let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, window_ptr);
+        if bounds_top != 0 || bounds_left != 0 {
+            Self::offset_region(bus, vis_handle, bounds_left, bounds_top);
+        }
+        true
+    }
+
+    /// Apply [`Self::calc_window_vis_region`] to every tracked window.
+    ///
+    /// CalcVisBehind ($A90A)
+    /// Recalculates the visible regions of startWindow and the windows behind
+    /// it.
+    /// PROCEDURE CalcVisBehind (startWindow: WindowPeek; clobberedRgn: RgnHandle);
+    /// Inside Macintosh Volume I, I-297
+    pub(crate) fn recalculate_window_vis_regions(&self, bus: &mut MacMemoryBus) {
+        for &window_ptr in &self.window_list {
+            // A window inside BeginUpdate/EndUpdate has a temporarily narrowed
+            // visRgn that EndUpdate restores; recomputing it here would drop
+            // the update clip. IM:I I-292.
+            if self.saved_vis_regions.contains_key(&window_ptr) {
+                continue;
+            }
+            let _ = self.calc_window_vis_region(bus, window_ptr);
+        }
     }
 
     fn recalculate_window_regions_from_rect(
@@ -1533,6 +1667,9 @@ impl super::TrapDispatcher {
             Self::LOWMEM_WINDOW_LIST,
             self.window_list.first().copied().unwrap_or(0),
         );
+        // Reordering the window list changes who occludes whom, so every
+        // tracked window's visRgn has to be recalculated. IM:I I-297.
+        self.recalculate_window_vis_regions(bus);
     }
 
     pub(crate) fn track_window_front(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
@@ -8248,6 +8385,146 @@ mod tests {
             assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
             assert_eq!(bus.read_word(rgn_data + 8) as i16, 210, "{}.right", label);
         }
+    }
+
+    #[test]
+    fn calc_vis_subtracts_front_window_structure_from_window_behind() {
+        // CalcVis builds a window's visRgn from its content region minus the
+        // structure regions of the windows in front of it, so drawing in the
+        // back window cannot paint over the front one.
+        // Inside Macintosh Volume I (1985), p. I-297.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let back = bus.alloc(256);
+        let front = bus.alloc(256);
+        disp.menu_bar_hidden = true;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            disp.screen_mode.0,
+            0,
+            0,
+            200,
+            300,
+            "",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            disp.screen_mode.0,
+            50,
+            60,
+            90,
+            160,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        assert_eq!(
+            disp.window_list.first().copied(),
+            Some(front),
+            "the newly created window should be frontmost"
+        );
+
+        let back_vis = bus.read_long(back + 24);
+        assert!(
+            super::super::TrapDispatcher::region_is_complex(&bus, back_vis),
+            "the back window's visRgn should have a hole where the front window sits"
+        );
+        assert!(
+            !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 70, 100),
+            "a point under the front window must be outside the back window's visRgn"
+        );
+        assert!(
+            super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 150, 250),
+            "a point clear of the front window must stay inside the back window's visRgn"
+        );
+    }
+
+    #[test]
+    fn begin_update_keeps_front_window_hole_out_of_the_update_clip() {
+        // BeginUpdate intersects visRgn with updateRgn. The intersection has to
+        // be a real region operation: visRgn already excludes windows in front,
+        // and a bounding-box intersection would hand those pixels back and let
+        // the window underneath repaint over a modal dialog.
+        // Inside Macintosh Volume I (1985), p. I-292.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let back = bus.alloc(256);
+        let front = bus.alloc(256);
+        disp.menu_bar_hidden = true;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            disp.screen_mode.0,
+            0,
+            0,
+            200,
+            300,
+            "",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            disp.screen_mode.0,
+            50,
+            60,
+            90,
+            160,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        let back_update =
+            bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
+        super::super::TrapDispatcher::write_region_handle_rect(
+            &mut bus,
+            back_update,
+            Some((0, 0, 200, 300)),
+        );
+        disp.begin_update_window(&mut bus, back);
+
+        let back_vis = bus.read_long(back + 24);
+        assert!(
+            !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 70, 100),
+            "BeginUpdate must not restore pixels the front window covers"
+        );
+        assert!(
+            super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 150, 250),
+            "BeginUpdate should keep the rest of the update area drawable"
+        );
+
+        disp.end_update_window(&mut bus, back);
+        assert!(
+            !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 70, 100),
+            "EndUpdate should recompute visRgn via CalcVis, hole included"
+        );
+        assert!(
+            super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 150, 250),
+            "EndUpdate should restore the rest of the content region"
+        );
     }
 
     #[test]
