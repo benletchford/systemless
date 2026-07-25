@@ -5625,6 +5625,41 @@ fn load_app_generic<M: MemoryBus>(
         bus.write_word(addr, 0x4E75); // RTS
     }
 
+    // Populate the 68k exception vector table the way a booted Mac leaves
+    // it. Vector 0 holds the initial interrupt stack pointer and vector 1 the
+    // initial program counter; vectors 2-63 hold the handler addresses the
+    // ROM installs during startup, nearly all of them inside the ROM image.
+    // Inside Macintosh Volume I, I-103 (Exception Vector Table);
+    // M68000PRM, section 6.2 ("Exception Vectors").
+    //
+    // Leaving the table zeroed is not a neutral choice. Applications that
+    // dereference an uninitialised pointer read address $0000, and a zero
+    // there turns a stray write into low-memory corruption — SimCity 2000's
+    // splash-screen colour animator runs before its CTabHandle is set and
+    // writes through `*(long *)0`, which lands on `Ticks` ($016A) and stops
+    // the clock. On real hardware the same write lands in ROM and is
+    // discarded, which is why the bug stays latent there. Addresses past the
+    // end of RAM are dropped by the bus, so the values below reproduce that.
+    //
+    // Ground truth: systemless-play/fixgen/fixtures/lowmem_vectors, captured
+    // from BasiliskII (System 7.5.3, Quadra 650 ROM) — the four RAM-resident
+    // entries are that ROM's RAM handlers, the rest live at $4080xxxx.
+    const BOOT_EXCEPTION_VECTORS: [u32; 64] = [
+        0x40810000, 0x40810000, 0x0001EAD6, 0x0001EAD8, 0x0001EADA, 0x0001EADC, 0x408026F8,
+        0x408026FA, 0x408026FC, 0x408026FE, 0x408099B0, 0x4088D9FE, 0x40802704, 0x40802704,
+        0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704,
+        0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x00083C16, 0x40809B40, 0x4080A1B0,
+        0x00006436, 0x40809B00, 0x40809B00, 0x000737D6, 0x40802704, 0x40802704, 0x40802704,
+        0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704,
+        0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x4088D252,
+        0x40802704, 0x40802704, 0x4088D856, 0x4088D28C, 0x4088D544, 0x4088D68E, 0x4088DAB0,
+        0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704, 0x40802704,
+        0x40802704,
+    ];
+    for (vector, &handler) in BOOT_EXCEPTION_VECTORS.iter().enumerate() {
+        bus.write_long((vector as u32) * 4, handler);
+    }
+
     // Install default RTE stubs for the "post-instruction" exception
     // vectors that real Mac OS would route to SysError. Because these
     // exceptions all stack the PC of the *next* instruction (per
