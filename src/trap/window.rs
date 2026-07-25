@@ -377,14 +377,29 @@ impl super::TrapDispatcher {
     }
 
     fn window_def_proc_handle(&mut self, bus: &mut MacMemoryBus, proc_id: i16) -> u32 {
-        if !Self::is_application_window_def_proc_id(proc_id) {
-            return 0;
+        let wdef_id = Self::window_def_resource_id(proc_id);
+        if Self::is_application_window_def_proc_id(proc_id) {
+            return self
+                .find_resource_any(*b"WDEF", wdef_id)
+                .map(|(_, ptr)| ptr)
+                .map(|ptr| self.get_or_create_resource_handle(bus, *b"WDEF", wdef_id, ptr))
+                .unwrap_or(0);
         }
 
-        let wdef_id = Self::window_def_resource_id(proc_id);
-        self.find_resource_any(*b"WDEF", wdef_id)
-            .map(|(_, ptr)| ptr)
-            .map(|ptr| self.get_or_create_resource_handle(bus, *b"WDEF", wdef_id, ptr))
+        // WindowRecord.windowDefProc is guest-visible state, including for
+        // the standard ROM-backed definitions. Macintosh Toolbox Essentials
+        // (1992), pp. 4-66 and 4-145, says the Window Manager resolves the
+        // WDEF and stores its handle in this field when creating a window.
+        self.synthesize_system_wdef(bus, wdef_id)
+            .map(|ptr| {
+                self.get_or_create_resource_handle_in_file(
+                    bus,
+                    *b"WDEF",
+                    wdef_id,
+                    ptr,
+                    0,
+                )
+            })
             .unwrap_or(0)
     }
 
@@ -950,9 +965,7 @@ impl super::TrapDispatcher {
             return Some(rect);
         }
         self.window_content_global_rect(bus, window_ptr)
-            .map(|content| {
-                self.window_structure_global_rect_for_window(bus, window_ptr, content)
-            })
+            .map(|content| self.window_structure_global_rect_for_window(bus, window_ptr, content))
     }
 
     fn erase_exposed_desktop_rect(
@@ -1679,11 +1692,88 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Resizes a tracked window port's visRgn to match its current `portRect`.
+    /// No-op when it already matches, or when the port is not a window we track.
+    ///
+    /// `PortChanged` ($AB1D selector 9) is how an application tells QuickDraw
+    /// that it edited a port's fields behind its back (Imaging With QuickDraw
+    /// 1994, 4-103). HyperCard resizes its card window exactly that way — it
+    /// writes `portRect` directly and calls `PortChanged` instead of
+    /// `SizeWindow` — and the visRgn QuickDraw clips against has to follow, or
+    /// the card is cut down to whatever rect `NewWindow` was given. Myst
+    /// Preview's 544x332 card was being clipped to 512x342 that way.
+    ///
+    /// The content and structure regions are re-derived from the port as well,
+    /// so compositing, hit-testing and the cached front-window bounds all agree
+    /// with the rect the application is actually drawing into.
+    pub(crate) fn resync_window_geometry_from_port_rect(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        the_window: u32,
+    ) {
+        if the_window == 0 || !self.window_list.contains(&the_window) {
+            return;
+        }
+        let h = bus.read_word(the_window + 20) as i16;
+        let w = bus.read_word(the_window + 22) as i16;
+        if h <= 0 || w <= 0 {
+            return;
+        }
+
+        let vis_rgn_handle = bus.read_long(the_window + 24);
+        let vis_rgn = if vis_rgn_handle != 0 {
+            bus.read_long(vis_rgn_handle)
+        } else {
+            0
+        };
+        if vis_rgn != 0
+            && bus.read_word(vis_rgn + 6) as i16 == h
+            && bus.read_word(vis_rgn + 8) as i16 == w
+        {
+            return;
+        }
+
+        if vis_rgn != 0 {
+            // Keep a positive existing top, which is the menu bar clipping the
+            // window; clamp a negative one away. A visRgn starting above the
+            // port's own origin is left over from geometry the port no longer
+            // has, and it would let the application draw outside its portRect.
+            let vis_top = (bus.read_word(vis_rgn + 2) as i16).max(0);
+            bus.write_word(vis_rgn + 2, vis_top as u16);
+            bus.write_word(vis_rgn + 4, 0u16);
+            bus.write_word(vis_rgn + 6, h as u16);
+            bus.write_word(vis_rgn + 8, w as u16);
+        }
+
+        // Anchor the content region on the port's own origin. Carrying over the
+        // previous local top would keep the window's content region offset from
+        // the rect the port actually addresses, and everything derived from it —
+        // the visRgn ShowHide recomputes included — would inherit the skew.
+        let content_rect = (0, 0, h, w);
+        let global_content = self.window_local_rect_to_global(bus, the_window, content_rect);
+        let global_structure =
+            self.window_structure_global_rect_for_window(bus, the_window, global_content);
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
+            Some(global_content),
+        );
+        Self::write_region_handle_rect(
+            bus,
+            bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
+            Some(global_structure),
+        );
+        if the_window == self.front_window {
+            self.window_bounds = global_content;
+        }
+    }
+
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
         self.window_list.retain(|&tracked| tracked != window_ptr);
         self.sync_window_list_links(bus);
         self.saved_vis_regions.remove(&window_ptr);
         self.window_proc_ids.remove(&window_ptr);
+        self.windows_placed_offscreen.remove(&window_ptr);
         self.window_aux_records.remove(&window_ptr);
         self.window_original_pixmaps.remove(&window_ptr);
         self.window_saved_under_pixels.remove(&window_ptr);
@@ -2085,6 +2175,16 @@ impl super::TrapDispatcher {
             self.draw_window_chrome(bus, false);
         }
 
+        if wind_top >= screen_h as i16
+            || wind_left >= screen_w as i16
+            || wind_bottom <= 0
+            || wind_right <= 0
+        {
+            self.windows_placed_offscreen.insert(window_ptr);
+        } else {
+            self.windows_placed_offscreen.remove(&window_ptr);
+        }
+
         self.front_window = window_ptr;
         self.window_title = wind_title.to_string();
         self.window_bounds = (wind_top, wind_left, wind_bottom, wind_right);
@@ -2160,6 +2260,59 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Initialise an old-style WindowRecord whose first field is a GrafPort.
+    ///
+    /// NewWindow and GetNewWindow call OpenPort and expose an embedded BitMap
+    /// at offsets 2..15. NewCWindow/GetNewCWindow instead expose a
+    /// PixMapHandle at offset 2. The records have the same total size, but
+    /// callers such as HyperCard legitimately inspect the embedded portBits.
+    fn init_graf_window<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window_ptr: u32,
+        screen_base: u32,
+        wind_top: i16,
+        wind_left: i16,
+        wind_bottom: i16,
+        wind_right: i16,
+        wind_title: &str,
+        wind_proc_id: i16,
+        visible: bool,
+        draw_initial_frame: bool,
+        go_away_flag: bool,
+        ref_con: u32,
+    ) {
+        self.init_cgraf_window(
+            bus,
+            cpu,
+            window_ptr,
+            screen_base,
+            wind_top,
+            wind_left,
+            wind_bottom,
+            wind_right,
+            wind_title,
+            wind_proc_id,
+            visible,
+            draw_initial_frame,
+            go_away_flag,
+            ref_con,
+        );
+
+        // Preserve the private PixMap used by the host renderer in
+        // window_original_pixmaps, while publishing the documented GrafPort
+        // layout to guest code. BitMap.rowBytes does not carry PixMap's high
+        // flag bit.
+        let pixmap_handle = self.window_original_pixmaps[&window_ptr];
+        let pixmap = bus.read_long(pixmap_handle);
+        bus.write_long(window_ptr + 2, bus.read_long(pixmap));
+        bus.write_word(window_ptr + 6, bus.read_word(pixmap + 4) & 0x3FFF);
+        for offset in 0..8 {
+            bus.write_byte(window_ptr + 8 + offset, bus.read_byte(pixmap + 6 + offset));
+        }
+    }
+
     pub(crate) fn dispatch_window<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -2168,6 +2321,23 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
         Some(match (is_tool, trap_num) {
+            // LayerDispatch ($A829), selector 2: IsLayer.
+            //
+            // LayerDispatch is a private Window/Layer Manager interface rather
+            // than a documented Toolbox API. Myst's 68K call sites establish
+            // the Pascal ABI used here: D0 selects IsLayer, the caller pushes a
+            // four-byte WindowPtr after reserving a Boolean result word, and
+            // the dispatcher consumes the pointer while leaving the result.
+            // System 7.5.3 returns FALSE for ordinary WindowPtrs; this also
+            // matches the clean-room compatibility behavior reported by MACE.
+            (true, 0x029) if cpu.read_reg(Register::D0) as u16 == 2 => {
+                let sp = cpu.read_reg(Register::A7);
+                let _window_or_layer = bus.read_long(sp);
+                bus.write_word(sp + 4, 0);
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
             // InitWindows ($A912)
             // PROCEDURE InitWindows;
             // Inside Macintosh Volume I (1985), p. I-281:
@@ -2254,14 +2424,10 @@ impl super::TrapDispatcher {
                     scr_h,
                 );
 
-                // Keep NewWindow backed by the same CGrafPort setup the
-                // color play corpus already relies on; the System 7.5.3
-                // behavior needed here is current-port preservation for
-                // hidden/backmost creations.
                 let old_front = self.front_window;
                 let old_current_port = self.current_port;
                 let old_current_gdevice = self.current_gdevice;
-                self.init_cgraf_window(
+                self.init_graf_window(
                     bus,
                     cpu,
                     window_ptr,
@@ -2344,12 +2510,8 @@ impl super::TrapDispatcher {
                 let screen_base: u32 = bus.read_long(0x0824);
                 bus.write_word(window_ptr, 0);
 
-                // Route GetNewWindow through the same CGrafPort setup
-                // NewCWindow uses. On a real color Mac, GetNewWindow
-                // returns a CWindow with a CGrafPort matching the screen
-                // depth — Inside Macintosh V, V-122 (Window Color Tables).
                 let old_front = self.front_window;
-                self.init_cgraf_window(
+                self.init_graf_window(
                     bus,
                     cpu,
                     window_ptr,
@@ -4125,6 +4287,22 @@ mod tests {
         disp.dispatch_window(true, trap_num, cpu, bus)
     }
 
+    #[test]
+    fn layer_dispatch_is_layer_returns_false_and_consumes_its_pointer() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 2);
+        bus.write_long(sp, 0x003F_119E);
+        bus.write_word(sp + 4, 0xFFFF);
+
+        let result = dispatch(&mut disp, 0x029, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0);
+    }
+
     fn install_wind_resource(
         disp: &mut super::super::TrapDispatcher,
         bus: &mut crate::memory::MacMemoryBus,
@@ -4674,6 +4852,49 @@ mod tests {
         assert!(
             disp.window_uses_custom_def_proc(&bus, window_addr),
             "custom WDEF window should be classified from procID + windowDefProc"
+        );
+    }
+
+    #[test]
+    fn init_cgraf_window_standard_wdef_installs_window_def_proc_handle() {
+        // The Window Manager stores the resolved WDEF handle in the public
+        // WindowRecord even for standard procIDs. Macintosh Toolbox
+        // Essentials (1992), pp. 4-66 and 4-145.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            34,
+            2,
+            114,
+            473,
+            "",
+            12,
+            false,
+            true,
+            false,
+            0,
+        );
+
+        let def_handle =
+            bus.read_long(window_addr + super::super::TrapDispatcher::WINDOW_DEF_PROC_OFFSET);
+        assert_ne!(
+            def_handle, 0,
+            "standard WDEF should remain guest-visible through windowDefProc"
+        );
+        assert_ne!(
+            bus.read_long(def_handle),
+            0,
+            "standard WDEF handle should be loaded"
+        );
+        assert_eq!(
+            disp.resource_handle_files.get(&def_handle).copied(),
+            Some(0),
+            "standard WDEF should belong to the system resource file"
         );
     }
 
@@ -5643,12 +5864,12 @@ mod tests {
         assert_eq!(disp.front_window, window_ptr);
     }
 
-    /// GetNewWindow on an 8bpp color screen MUST create a CGrafPort
-    /// whose PixMap matches the screen depth and row_bytes. Routed
-    /// through init_cgraf_window so port_version=0xC000 (CGrafPort flag)
-    /// and the PixMap has pixelSize=8 + rowBytes=screen.row_bytes.
+    /// GetNewWindow creates an old-style GrafPort even when Color QuickDraw
+    /// and an 8bpp screen are available. Macintosh Toolbox Essentials (1992),
+    /// pp. 4-78..4-79, distinguishes it from GetNewCWindow on exactly this
+    /// contract.
     #[test]
-    fn test_get_new_window_creates_cgraf_port_matching_screen() {
+    fn get_new_window_exposes_embedded_grafport_bitmap_on_color_screen() {
         let (mut disp, mut cpu, mut bus) = setup();
         install_wind_resource(
             &mut disp,
@@ -5683,33 +5904,16 @@ mod tests {
         let window_ptr = bus.read_long(new_sp);
         assert_ne!(window_ptr, 0);
 
-        // CGrafPort flag.
-        let port_version = bus.read_word(window_ptr + 6);
-        assert_eq!(
-            port_version & 0xC000,
-            0xC000,
-            "GetNewWindow must create a CGrafPort (port_version & 0xC000 == 0xC000), got {:04X}",
-            port_version
-        );
+        assert_eq!(bus.read_long(window_ptr + 2), screen_base);
+        assert_eq!(bus.read_word(window_ptr + 6), 800);
+        assert_eq!(bus.read_word(window_ptr + 8), 0);
+        assert_eq!(bus.read_word(window_ptr + 10), 0);
+        assert_eq!(bus.read_word(window_ptr + 12), 600);
+        assert_eq!(bus.read_word(window_ptr + 14), 800);
 
-        // PixMap handle at +2; PixMap.pixelSize at +32; PixMap.rowBytes
-        // at +4 (with the high flag bit masked off).
-        let pm_handle = bus.read_long(window_ptr + 2);
-        assert_ne!(pm_handle, 0, "CGrafPort must have a non-zero PixMap handle");
-        let pm_ptr = bus.read_long(pm_handle);
-        assert_ne!(pm_ptr, 0, "PixMap handle must point at a non-zero PixMap");
-        let pm_pixel_size = bus.read_word(pm_ptr + 32);
-        assert_eq!(
-            pm_pixel_size, 8,
-            "PixMap.pixelSize must match the 8bpp screen, got {}",
-            pm_pixel_size
-        );
-        let pm_row_bytes = bus.read_word(pm_ptr + 4) & 0x3FFF;
-        assert_eq!(
-            pm_row_bytes, 800,
-            "PixMap.rowBytes must match screen.row_bytes (800), got {}",
-            pm_row_bytes
-        );
+        let private_pm_handle = disp.window_original_pixmaps[&window_ptr];
+        let private_pm = bus.read_long(private_pm_handle);
+        assert_eq!(bus.read_word(private_pm + 32), 8);
     }
 
     // ---------------------------------------------------------------
@@ -8967,6 +9171,136 @@ mod tests {
                 "document window procID {proc_id} should still draw title-bar chrome"
             );
         }
+    }
+
+    #[test]
+    fn port_changed_resync_follows_a_port_rect_the_application_rewrote_itself() {
+        // HyperCard resizes its card window by writing portRect directly and
+        // calling PortChanged ($AB1D selector 9) rather than SizeWindow, so the
+        // regions QuickDraw and the Window Manager clip against have to be
+        // re-derived from the port. Myst Preview's card is 544x332 inside a
+        // window NewWindow was told was 512x342.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let window_addr = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            screen_base,
+            134,
+            128,
+            476,
+            640,
+            "Card",
+            4,
+            true,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(bus.read_word(window_addr + 20) as i16, 342);
+        assert_eq!(bus.read_word(window_addr + 22) as i16, 512);
+
+        // The application rewrites portRect behind our back, then announces it.
+        bus.write_word(window_addr + 20, 332);
+        bus.write_word(window_addr + 22, 544);
+        disp.resync_window_geometry_from_port_rect(&mut bus, window_addr);
+
+        let vis_rgn = bus.read_long(bus.read_long(window_addr + 24));
+        assert_eq!(bus.read_word(vis_rgn + 6) as i16, 332, "visRgn.bottom");
+        assert_eq!(bus.read_word(vis_rgn + 8) as i16, 544, "visRgn.right");
+
+        let cont_rect = super::super::TrapDispatcher::region_handle_rect(
+            &bus,
+            bus.read_long(window_addr + super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET),
+        )
+        .expect("content region");
+        assert_eq!(
+            (cont_rect.2 - cont_rect.0, cont_rect.3 - cont_rect.1),
+            (332, 544),
+            "content region should take the port's size"
+        );
+        assert_eq!(
+            disp.window_bounds, cont_rect,
+            "cached front-window bounds should track the content region"
+        );
+
+        // Idempotent: a second announcement with nothing changed is a no-op.
+        let before = disp.window_bounds;
+        disp.resync_window_geometry_from_port_rect(&mut bus, window_addr);
+        assert_eq!(disp.window_bounds, before);
+    }
+
+    #[test]
+    fn windows_created_wholly_off_screen_get_no_synthesised_chrome() {
+        // An application that parks a window off-screen intends to drive its
+        // content itself; real hardware draws that window's frame where it was
+        // asked to, out of sight. HyperCard does this with its card window (its
+        // NewWindow rect is at 16513,16528) and then blits the card straight
+        // into the screen bitmap.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let parked = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            parked,
+            screen_base,
+            16513,
+            16528,
+            16855,
+            17040,
+            "Card",
+            4,
+            true,
+            false,
+            false,
+            0,
+        );
+        assert!(
+            disp.windows_placed_offscreen.contains(&parked),
+            "a window created entirely off-screen should be recorded as parked"
+        );
+
+        let on_screen = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            on_screen,
+            screen_base,
+            60,
+            40,
+            300,
+            400,
+            "Normal",
+            4,
+            true,
+            false,
+            false,
+            0,
+        );
+        assert!(!disp.windows_placed_offscreen.contains(&on_screen));
+
+        disp.untrack_window(&mut bus, parked);
+        assert!(!disp.windows_placed_offscreen.contains(&parked));
+    }
+
+    #[test]
+    fn port_changed_resync_ignores_ports_that_are_not_tracked_windows() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let port = bus.alloc(256);
+        bus.write_word(port + 20, 332);
+        bus.write_word(port + 22, 544);
+        let before = disp.window_bounds;
+        disp.resync_window_geometry_from_port_rect(&mut bus, port);
+        assert_eq!(disp.window_bounds, before);
     }
 
     fn write_drag_region_frame(

@@ -1401,7 +1401,6 @@ fn scripted_menu_title_regions(dispatcher: &TrapDispatcher) -> Vec<(usize, i16, 
     regions
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

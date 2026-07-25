@@ -1629,6 +1629,20 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"WDEF" {
+                    if let Some(ptr) = self.synthesize_system_wdef(bus, res_id) {
+                        let handle = self.get_or_create_resource_handle_in_file(
+                            bus, res_type, res_id, ptr, 0,
+                        );
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"KCHR" {
                     if let Some(ptr) = self.synthesize_system_kchr(bus, res_id) {
                         if trace_getresource_enabled() {
@@ -3241,12 +3255,18 @@ impl super::TrapDispatcher {
                     }
                     // gestaltNativeCPUtype ('cput') -> 68040
                     b"cput" => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_native_cpu_type);
+                        cpu.write_reg(
+                            Register::A0,
+                            REFERENCE_MACHINE_PROFILE.gestalt_native_cpu_type,
+                        );
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltProcessorType ('proc') -> 68040
                     b"proc" => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_processor_type);
+                        cpu.write_reg(
+                            Register::A0,
+                            REFERENCE_MACHINE_PROFILE.gestalt_processor_type,
+                        );
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltMachineType ('mach') -> Quadra 900
@@ -3585,12 +3605,15 @@ impl super::TrapDispatcher {
             // ========== File Manager ==========
 
             // PBOpen / HOpen ($A000 / $A200)
-            // PBOpen ($A000): Opens files from VFS, assigns refnum
+            // Opens a file data fork with the access mode in ioPermssn.
+            // FUNCTION PBOpen (paramBlock: ParmBlkPtr; async: BOOLEAN): OSErr;
+            // Inside Macintosh: Files (1992), pp. 2-7 to 2-8, 2-185 to 2-186.
             (false, 0x00) => {
                 let pb = cpu.read_reg(Register::A0);
                 let name_ptr = bus.read_long(pb + 18);
                 let filename = Self::read_pb_filename(bus, name_ptr);
-                eprintln!("[TRAP] PBOpen(\"{}\")", filename);
+                let permission = bus.read_byte(pb + 27);
+                eprintln!("[TRAP] PBOpen(\"{}\", perm={})", filename, permission);
 
                 // Clear ioRefNum upfront so the failure path produces a
                 // deterministic *refNum = 0 (IM:II-92 leaves this undefined
@@ -3603,6 +3626,14 @@ impl super::TrapDispatcher {
                     let refnum = self.next_refnum;
                     self.next_refnum += 1;
                     self.open_files.insert(refnum, vfs_name.clone());
+                    // Files 1992, 2-8: fsCurPerm (0) grants read/write when
+                    // write access is available; fsWrPerm (2), fsRdWrPerm
+                    // (3), and fsRdWrShPerm (4) explicitly request it.
+                    // PBGetFCBInfo exposes the granted mode through bit 8 of
+                    // ioFCBFlags (Files 1992, 2-108).
+                    if matches!(permission, 0 | 2 | 3 | 4) {
+                        self.write_refnums.insert(refnum);
+                    }
                     self.file_positions.insert(refnum, 0);
                     bus.write_word(pb + 24, refnum);
                     bus.write_word(pb + 16, 0); // noErr
@@ -5413,7 +5444,7 @@ impl super::TrapDispatcher {
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp, selector_from_stack) = match stack_sel {
-                    0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D => {
+                    0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D | 0x0045 => {
                         // Pop the selector word pushed by MOVE.W #sel,-(SP).
                         cpu.write_reg(Register::A7, sp_entry + 2);
                         (stack_sel, sp_entry + 2, true)
@@ -5761,6 +5792,29 @@ impl super::TrapDispatcher {
                             bus.write_byte(result_ptr, if same { 1 } else { 0 });
                         }
                         bus.write_word(sp + 12, 0);
+                        cpu.write_reg(Register::A7, sp + 12);
+                        Ok(())
+                    }
+                    0x0045 => {
+                        // GetSpecificHighLevelEvent (0xA88F selector $0045)
+                        // Searches the application's high-level-event queue with a
+                        // caller filter and returns FALSE when no event is selected.
+                        // FUNCTION GetSpecificHighLevelEvent
+                        //   (aFilter: GetSpecificFilterProcPtr; yourDataPtr: UNIV Ptr;
+                        //    VAR err: OSErr): Boolean;
+                        // Macintosh Toolbox Essentials 1992, pp. 2-92 to 2-93.
+                        //
+                        // MPW 3.5 EPPC.h emits THREEWORDINLINE($3F3C,$0045,$A88F).
+                        // Its 68k caller frame is filter(4), context(4), err*(4),
+                        // Boolean result(1). Systemless has no registered PPC/HLE
+                        // port, matching BasiliskII's noPortErr branch for a direct
+                        // app without the high-level-event SIZE flag.
+                        let err_ptr = bus.read_long(sp + 8);
+                        if err_ptr != 0 {
+                            bus.write_word(err_ptr, NO_PORT_ERR as u16);
+                        }
+                        bus.write_byte(sp + 12, 0);
+                        cpu.write_reg(Register::D0, 0);
                         cpu.write_reg(Register::A7, sp + 12);
                         Ok(())
                     }
@@ -6745,7 +6799,7 @@ impl super::TrapDispatcher {
                     if let Some(entry) = lookup {
                         if entry.is_directory {
                             if let Some(directory) = self.vfs_directories.get(&entry.path) {
-                                Self::fill_directory_catalog_info(bus, pb, directory);
+                                self.fill_directory_catalog_info(bus, pb, directory);
                                 eprintln!(
                                     "[TRAP] FSDispatch PBGetCatInfo dir \"{}\" -> dirID={} parentDirID={}",
                                     entry.name, directory.dir_id, directory.parent_dir_id
@@ -7176,6 +7230,7 @@ impl super::TrapDispatcher {
     }
 
     fn fill_directory_catalog_info(
+        &self,
         bus: &mut MacMemoryBus,
         pb: u32,
         directory: &super::dispatch::VfsDirectory,
@@ -7190,6 +7245,22 @@ impl super::TrapDispatcher {
             0,
         );
         bus.write_long(pb + 48, directory.dir_id);
+        let child_directory_count = self
+            .vfs_directories
+            .values()
+            .filter(|child| {
+                child.dir_id != directory.dir_id && child.parent_dir_id == directory.dir_id
+            })
+            .count();
+        let child_file_count = self
+            .vfs_metadata
+            .values()
+            .filter(|metadata| metadata.parent_dir_id == directory.dir_id)
+            .count();
+        let entry_count = child_directory_count
+            .saturating_add(child_file_count)
+            .min(u16::MAX as usize) as u16;
+        bus.write_word(pb + 52, entry_count); // ioDrNmFls
         bus.write_long(pb + 72, 0);
         bus.write_long(pb + 76, 0);
         // ioDrParID: parent directory ID.
@@ -7954,6 +8025,45 @@ mod tests {
         assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
         assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
         assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
+    }
+
+    #[test]
+    fn get_resource_synthesizes_standard_wdef_zero() {
+        // Inside Macintosh Volume V, V-32 lists WDEF 0 as the default
+        // document-window definition function stored in the Macintosh ROM.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let sp = TEST_SP;
+        bus.write_word(sp, 0u16);
+        bus.write_long(sp + 2, u32::from_be_bytes(*b"WDEF"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 6, "SP should advance by 6");
+        let handle = bus.read_long(new_sp);
+        assert_ne!(handle, 0, "synthetic WDEF 0 must return a handle");
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(0x0A60), 0, "ResErr should be noErr");
+
+        let wdef = bus.read_long(handle);
+        assert_ne!(wdef, 0, "synthetic WDEF handle must be loaded");
+        assert_eq!(
+            bus.read_word(wdef),
+            0x205F,
+            "standard WDEF shim should first recover the JSR return address"
+        );
+        assert_eq!(
+            bus.read_word(wdef + 2),
+            0xDEFC,
+            "standard WDEF shim should discard its 12-byte Pascal parameter block"
+        );
+        assert_eq!(
+            bus.read_word(wdef + 8),
+            0x4ED0,
+            "standard WDEF shim should return through the recovered address"
+        );
     }
 
     #[test]
@@ -12412,6 +12522,68 @@ mod tests {
         let refnum = bus.read_word(pb + 24);
         assert!(refnum >= 100);
         assert!(disp.open_files.contains_key(&refnum));
+        assert!(
+            disp.write_refnums.contains(&refnum),
+            "fsCurPerm should grant write access when it is available"
+        );
+    }
+
+    #[test]
+    fn pbopen_permission_is_visible_through_pbgetfcbinfo_write_flag() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("Writable Stack".to_string(), vec![1, 2, 3, 4]);
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Writable Stack");
+        bus.write_byte(pb + 27, 3); // fsRdWrPerm
+
+        call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+
+        let refnum = bus.read_word(pb + 24);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(disp.write_refnums.contains(&refnum));
+
+        bus.write_word(pb + 24, refnum);
+        bus.write_word(pb + 28, 0);
+        cpu.write_reg(Register::D0, 8); // PBGetFCBInfo
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            bus.read_word(pb + 36) & 0x0100,
+            0x0100,
+            "ioFCBFlags bit 8 reports that the data fork is writable"
+        );
+    }
+
+    #[test]
+    fn pbopen_read_permission_keeps_pbgetfcbinfo_write_flag_clear() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("Read Only Stack".to_string(), vec![1, 2, 3, 4]);
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Read Only Stack");
+        bus.write_byte(pb + 27, 1); // fsRdPerm
+
+        call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+
+        let refnum = bus.read_word(pb + 24);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(!disp.write_refnums.contains(&refnum));
+
+        bus.write_word(pb + 24, refnum);
+        bus.write_word(pb + 28, 0);
+        cpu.write_reg(Register::D0, 8); // PBGetFCBInfo
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            bus.read_word(pb + 36) & 0x0100,
+            0,
+            "ioFCBFlags bit 8 stays clear for a read-only access path"
+        );
     }
 
     #[test]
@@ -13264,6 +13436,11 @@ mod tests {
         assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"fold"));
         assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
         assert_eq!(bus.read_long(pb + 48), pilots_dir_id);
+        assert_eq!(
+            bus.read_word(pb + 52),
+            1,
+            "ioDrNmFls counts the Ben file in the Pilots directory"
+        );
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
     }
 
@@ -13298,6 +13475,36 @@ mod tests {
         assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
         assert_eq!(bus.read_long(pb + 48), app_dir_id);
         assert_eq!(bus.read_long(pb + 100), 2);
+    }
+
+    #[test]
+    fn fsdispatch_pbgetcatinfo_root_directory_returns_volume_name() {
+        // Files 1992, 2-27 and 2-85: the root directory has dirID 2,
+        // parent dirID 1, and the same name as its volume.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"poison");
+        bus.write_word(pb + 16, 0x3FFF);
+        bus.write_word(
+            pb + 22,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+        );
+        bus.write_word(pb + 28, (-1i16) as u16);
+        bus.write_long(pb + 48, 2);
+        cpu.write_reg(Register::D0, 9);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(
+            bus.read_pstring(name_ptr),
+            super::super::dispatch::BOOT_VOLUME_NAME.as_bytes()
+        );
+        assert_eq!(bus.read_byte(pb + 30), 0x10);
+        assert_eq!(bus.read_long(pb + 48), 2);
+        assert_eq!(bus.read_long(pb + 100), 1);
     }
 
     #[test]
@@ -15092,6 +15299,36 @@ mod tests {
         assert_eq!(bus.read_long(msg_refcon_ptr), 0xBBBB_BBBB);
         assert_eq!(bus.read_long(msg_len_ptr), 128);
         assert_eq!(bus.read_byte(msg_buff_ptr), 0);
+    }
+
+    #[test]
+    fn osdispatch_getspecifichighlevelevent_selector_0045_without_port_returns_false() {
+        // MPW 3.5 EPPC.h emits filter, context, err pointer, then a one-byte
+        // Boolean result slot around selector $0045. A direct application with
+        // no registered high-level-event port follows BasiliskII's noPortErr
+        // branch without invoking the filter.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let filter_ptr = 0x0003_4000u32;
+        let context_ptr = 0x2A_7000u32;
+        let err_ptr = 0x2A_7100u32;
+        bus.write_word(err_ptr, 0x7777);
+        bus.write_word(TEST_SP, 0x0045);
+        bus.write_long(TEST_SP + 2, filter_ptr);
+        bus.write_long(TEST_SP + 6, context_ptr);
+        bus.write_long(TEST_SP + 10, err_ptr);
+        bus.write_byte(TEST_SP + 14, 0xFF);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(err_ptr) as i16, -903, "noPortErr");
+        assert_eq!(bus.read_byte(TEST_SP + 14), 0, "FALSE result");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            TEST_SP + 14,
+            "OSDispatch should pop selector and three pointer arguments"
+        );
     }
 
     #[test]

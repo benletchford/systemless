@@ -245,6 +245,7 @@ fn scan_quicktime_atoms(
     depth: u8,
     bounds: &mut Option<(i16, i16, i16, i16)>,
     duration: &mut Option<i32>,
+    time_scale: &mut Option<i32>,
 ) {
     if depth > 8 {
         return;
@@ -283,18 +284,31 @@ fn scan_quicktime_atoms(
         let payload = &data[offset + header_len..offset + atom_len];
         match atom_type {
             b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" => {
-                scan_quicktime_atoms(payload, depth + 1, bounds, duration);
+                scan_quicktime_atoms(payload, depth + 1, bounds, duration, time_scale);
             }
             b"mvhd" => {
                 if duration.is_none() && payload.len() >= 20 {
                     let version = payload[0];
-                    let parsed_duration = if version == 0 {
-                        read_quicktime_u32(payload, 16).map(|value| value.min(i32::MAX as u32))
+                    let (parsed_time_scale, parsed_duration) = if version == 0 {
+                        (
+                            read_quicktime_u32(payload, 12),
+                            read_quicktime_u32(payload, 16)
+                                .map(|value| value.min(i32::MAX as u32)),
+                        )
                     } else if payload.len() >= 32 {
-                        read_quicktime_u32(payload, 28).map(|value| value.min(i32::MAX as u32))
+                        (
+                            read_quicktime_u32(payload, 20),
+                            read_quicktime_u32(payload, 28)
+                                .map(|value| value.min(i32::MAX as u32)),
+                        )
                     } else {
-                        None
+                        (None, None)
                     };
+                    if let Some(value) = parsed_time_scale
+                        .filter(|value| *value > 0 && *value <= i32::MAX as u32)
+                    {
+                        *time_scale = Some(value as i32);
+                    }
                     if let Some(value) = parsed_duration.filter(|value| *value > 0) {
                         *duration = Some(value as i32);
                     }
@@ -324,11 +338,22 @@ fn scan_quicktime_atoms(
     }
 }
 
-fn quicktime_movie_metadata(data: &[u8]) -> ((i16, i16, i16, i16), i32) {
+fn quicktime_movie_metadata(data: &[u8]) -> ((i16, i16, i16, i16), i32, i32) {
     let mut bounds = None;
     let mut duration = None;
-    scan_quicktime_atoms(data, 0, &mut bounds, &mut duration);
-    (bounds.unwrap_or((0, 0, 120, 160)), duration.unwrap_or(1))
+    let mut time_scale = None;
+    scan_quicktime_atoms(
+        data,
+        0,
+        &mut bounds,
+        &mut duration,
+        &mut time_scale,
+    );
+    (
+        bounds.unwrap_or((0, 0, 120, 160)),
+        duration.unwrap_or(1),
+        time_scale.unwrap_or(600),
+    )
 }
 
 fn write_movie_box(bus: &mut MacMemoryBus, rect_ptr: u32, rect: (i16, i16, i16, i16)) {
@@ -368,6 +393,66 @@ fn record_movie_error(dispatcher: &mut super::TrapDispatcher, err: i16) {
     if err != 0 && dispatcher.movie_sticky_error == 0 {
         dispatcher.movie_sticky_error = err;
     }
+    if super::dispatch::trace_quicktime_enabled() {
+        eprintln!(
+            "[QUICKTIME] result={} sticky={}",
+            dispatcher.movie_error, dispatcher.movie_sticky_error
+        );
+    }
+}
+
+/// Read a QuickDraw ColorTable (via its CTabHandle) into a 256-entry RGB
+/// palette for nearest-colour matching. Missing/short tables fall back to the
+/// standard Macintosh 8-bit CLUT. ColorTable layout: ctSeed(4) ctFlags(2)
+/// ctSize(2) then (ctSize+1) ColorSpec entries of value(2) r(2) g(2) b(2).
+fn read_color_table(bus: &MacMemoryBus, ctab_handle: u32) -> Vec<[u8; 3]> {
+    let mut palette: Vec<[u8; 3]> = super::TrapDispatcher::standard_mac_8bpp_clut()
+        .iter()
+        .map(|c| [(c[0] >> 8) as u8, (c[1] >> 8) as u8, (c[2] >> 8) as u8])
+        .collect();
+    if ctab_handle == 0 {
+        return palette;
+    }
+    let ctab = bus.read_long(ctab_handle);
+    if ctab == 0 {
+        return palette;
+    }
+    let ct_size = bus.read_word(ctab + 6) as i16;
+    if ct_size < 0 {
+        return palette;
+    }
+    let count = (ct_size as usize + 1).min(256);
+    for i in 0..count {
+        let entry = ctab + 8 + (i as u32) * 8;
+        let value = bus.read_word(entry) as usize;
+        let r = (bus.read_word(entry + 2) >> 8) as u8;
+        let g = (bus.read_word(entry + 4) >> 8) as u8;
+        let b = (bus.read_word(entry + 6) >> 8) as u8;
+        // ColorSpec.value is the palette index for indexed device tables.
+        let idx = if value < 256 { value } else { i };
+        palette[idx] = [r, g, b];
+    }
+    palette
+}
+
+/// Nearest palette index by squared Euclidean distance in RGB.
+fn nearest_color_index(palette: &[[u8; 3]], r: u8, g: u8, b: u8) -> u8 {
+    let mut best = 0usize;
+    let mut best_dist = i32::MAX;
+    for (i, c) in palette.iter().enumerate().take(256) {
+        let dr = c[0] as i32 - r as i32;
+        let dg = c[1] as i32 - g as i32;
+        let db = c[2] as i32 - b as i32;
+        let dist = dr * dr + dg * dg + db * db;
+        if dist < best_dist {
+            best_dist = dist;
+            best = i;
+            if dist == 0 {
+                break;
+            }
+        }
+    }
+    best as u8
 }
 
 /// Returns true if `year` is a leap year in the Gregorian calendar.
@@ -3405,6 +3490,292 @@ impl super::TrapDispatcher {
             0
         } else {
             -51
+        }
+    }
+
+    /// Advance the clock of every active, playing movie by the real guest
+    /// time elapsed since it was last serviced, then decode and blit the frame
+    /// due at the new movie time. Called from MoviesTask and the movie
+    /// controller's MCIdle so playback is timeline-driven rather than jumping
+    /// straight to the movie's end.
+    fn advance_and_render_active_movies(&mut self, bus: &mut MacMemoryBus) {
+        let now = self.tick_count;
+        let movie_ptrs: Vec<u32> = self.movie_states.keys().copied().collect();
+        for movie in movie_ptrs {
+            let (finished, target_time, has_video) = {
+                let Some(state) = self.movie_states.get_mut(&movie) else {
+                    continue;
+                };
+                if !state.active || state.rate == 0 {
+                    // Not playing: reset the service clock so the next Start
+                    // measures elapsed time from resume, not from load.
+                    state.last_service_tick = Some(now);
+                    continue;
+                }
+                let last = state.last_service_tick.unwrap_or(now);
+                let elapsed_ticks = now.saturating_sub(last);
+                state.last_service_tick = Some(now);
+                // Guest ticks run at 60 Hz; the movie time scale is units per
+                // second. rate is a Fixed (16.16) multiplier on real time.
+                let units_per_tick =
+                    (state.time_scale as i64 * state.rate as i64) / (60 * 65536);
+                let advance = units_per_tick.saturating_mul(elapsed_ticks as i64);
+                let mut new_time = state.current_time as i64 + advance;
+                let mut finished = false;
+                if new_time >= state.duration as i64 {
+                    new_time = state.duration as i64;
+                    finished = true;
+                }
+                state.current_time = new_time.clamp(0, state.duration as i64) as i32;
+                let has_video = state.media.as_ref().is_some_and(|m| {
+                    (&m.codec == b"cvid" || &m.codec == b"rle ") && !m.samples.is_empty()
+                });
+                (finished, state.current_time, has_video)
+            };
+
+            if has_video {
+                self.render_movie_frame(bus, movie, target_time);
+            }
+
+            if finished {
+                if let Some(state) = self.movie_states.get_mut(&movie) {
+                    state.rate = 0;
+                    state.active = false;
+                }
+            }
+        }
+    }
+
+    /// Decode the Cinepak video sample due at `movie_time` (in the movie's
+    /// time scale) and blit it into the movie's destination GWorld pixmap.
+    /// Inter-coded frames are decoded forward from the nearest preceding sync
+    /// sample so the reconstructed frame is correct after a seek.
+    fn render_movie_frame(&mut self, bus: &mut MacMemoryBus, movie: u32, movie_time: i32) {
+        let Some(state) = self.movie_states.get_mut(&movie) else {
+            return;
+        };
+        let Some(media) = state.media.as_ref() else {
+            return;
+        };
+        if media.samples.is_empty() {
+            return;
+        }
+        // Map movie time to this track's media time scale.
+        let media_time = if state.time_scale > 0 {
+            ((movie_time as i64 * media.time_scale as i64) / state.time_scale as i64) as u32
+        } else {
+            movie_time.max(0) as u32
+        };
+        let Some(target) = media.sample_for_time(media_time) else {
+            return;
+        };
+        if state.rendered_sample == Some(target) {
+            return;
+        }
+
+        let (width, height) = (media.width as usize, media.height as usize);
+        // Nearest preceding sync sample <= target.
+        let mut keyframe = 0usize;
+        for (i, s) in media.samples.iter().enumerate() {
+            if i > target {
+                break;
+            }
+            if s.sync {
+                keyframe = i;
+            }
+        }
+        // Decode from where we left off if it keeps the reference chain intact,
+        // otherwise from the keyframe.
+        let start = match state.rendered_sample {
+            Some(prev) if prev < target && prev + 1 >= keyframe => prev + 1,
+            _ => keyframe,
+        };
+
+        let is_rle = &media.codec == b"rle ";
+        // The rle path maps indices through the track's embedded CLUT.
+        let clut = media.clut.clone();
+
+        // Decode the reference chain; keep the final RGB frame to blit.
+        let mut frame_rgb: Option<Vec<u8>> = None;
+        if is_rle {
+            if state.rle_decoder.is_none() {
+                state.rle_decoder = Some(super::qtrle::QtRleDecoder::new(width, height));
+            }
+            for i in start..=target {
+                let sample = &media.samples[i];
+                let end = sample.offset.saturating_add(sample.size);
+                if end > state.data_fork.len() {
+                    break;
+                }
+                let bytes = state.data_fork[sample.offset..end].to_vec();
+                let decoder = state.rle_decoder.as_mut().unwrap();
+                match decoder.decode(&bytes) {
+                    Ok(indices) => {
+                        if i == target {
+                            // Map palette indices to RGB via the embedded CLUT.
+                            let mut rgb = vec![0u8; width * height * 3];
+                            for (px, &idx) in indices.iter().enumerate() {
+                                let c = clut
+                                    .as_ref()
+                                    .and_then(|p| p.get(idx as usize))
+                                    .copied()
+                                    .unwrap_or([0, 0, 0]);
+                                rgb[px * 3] = c[0];
+                                rgb[px * 3 + 1] = c[1];
+                                rgb[px * 3 + 2] = c[2];
+                            }
+                            frame_rgb = Some(rgb);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        } else {
+            if state.decoder.is_none() {
+                state.decoder = Some(super::cinepak::CinepakDecoder::new(width, height));
+            }
+            for i in start..=target {
+                let sample = &media.samples[i];
+                let end = sample.offset.saturating_add(sample.size);
+                if end > state.data_fork.len() {
+                    break;
+                }
+                let bytes = state.data_fork[sample.offset..end].to_vec();
+                let decoder = state.decoder.as_mut().unwrap();
+                match decoder.decode(&bytes) {
+                    Ok(rgb) => {
+                        if i == target {
+                            frame_rgb = Some(rgb.to_vec());
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+
+        let Some(rgb) = frame_rgb else {
+            return;
+        };
+        let (port, box_rect) = (state.gworld_port, state.box_rect);
+        state.rendered_sample = Some(target);
+
+        if super::dispatch::trace_quicktime_enabled() {
+            eprintln!(
+                "[QUICKTIME] render movie=${:08X} sample={}/{} time={} -> port=${:08X} box={:?}",
+                movie,
+                target,
+                media_time,
+                movie_time,
+                port,
+                box_rect
+            );
+        }
+
+        Self::blit_rgb_into_port(bus, port, box_rect, width, height, &rgb);
+    }
+
+    /// Blit a `width`×`height` RGB frame into a QuickDraw port's pixmap,
+    /// positioned at the movie box origin. Handles 8-bit (nearest CLUT match),
+    /// 16-bit (RGB555), and 32-bit destinations.
+    fn blit_rgb_into_port(
+        bus: &mut MacMemoryBus,
+        port: u32,
+        box_rect: (i16, i16, i16, i16),
+        width: usize,
+        height: usize,
+        rgb: &[u8],
+    ) {
+        if port == 0 {
+            return;
+        }
+        let port_version = bus.read_word(port + 6);
+        let is_cgraf = (port_version & 0xC000) == 0xC000;
+        let (base, rowbytes, pixel_size, bounds_top, bounds_left, ctab) = if is_cgraf {
+            let pm_handle = bus.read_long(port + 2);
+            if pm_handle == 0 {
+                return;
+            }
+            let pm = bus.read_long(pm_handle);
+            if pm == 0 {
+                return;
+            }
+            let base = bus.read_long(pm) & 0x3FFF_FFFF;
+            let rb = (bus.read_word(pm + 4) & 0x3FFF) as u32;
+            let btop = bus.read_word(pm + 6) as i16;
+            let bleft = bus.read_word(pm + 8) as i16;
+            let ps = bus.read_word(pm + 32) as u32;
+            let ctab = bus.read_long(pm + 42);
+            (base, rb, ps, btop, bleft, ctab)
+        } else {
+            let base = bus.read_long(port + 2);
+            let rb = (bus.read_word(port + 6) & 0x3FFF) as u32;
+            let btop = bus.read_word(port + 8) as i16;
+            let bleft = bus.read_word(port + 10) as i16;
+            (base, rb, 1u32, btop, bleft, 0)
+        };
+        if base == 0 || rowbytes == 0 {
+            return;
+        }
+
+        if super::dispatch::trace_quicktime_enabled() {
+            eprintln!(
+                "[QUICKTIME] blit port=${:08X} cgraf={} base=${:08X} rb={} pixelSize={} pmBounds=({},{}) frame={}x{}",
+                port, is_cgraf, base, rowbytes, pixel_size, bounds_top, bounds_left, width, height
+            );
+        }
+
+        // Destination origin within the pixmap: box top-left minus the pixmap
+        // bounds origin (QuickDraw local → pixmap-relative).
+        let dst_x0 = (box_rect.1 - bounds_left).max(0) as u32;
+        let dst_y0 = (box_rect.0 - bounds_top).max(0) as u32;
+
+        // For 8-bit destinations, load the pixmap's colour table for matching.
+        // Cache RGB→index results across the frame: movie palettes are small,
+        // so this collapses the per-pixel 256-way nearest search to a hash hit.
+        let palette: Option<Vec<[u8; 3]>> = if pixel_size == 8 {
+            Some(read_color_table(bus, ctab))
+        } else {
+            None
+        };
+        let mut color_cache: std::collections::HashMap<u32, u8> = std::collections::HashMap::new();
+
+        for y in 0..height {
+            let dy = dst_y0 + y as u32;
+            for x in 0..width {
+                let dx = dst_x0 + x as u32;
+                let si = (y * width + x) * 3;
+                let (r, g, b) = (rgb[si], rgb[si + 1], rgb[si + 2]);
+                match pixel_size {
+                    8 => {
+                        let idx = match palette.as_ref() {
+                            Some(p) => {
+                                let key = (r as u32) << 16 | (g as u32) << 8 | b as u32;
+                                *color_cache
+                                    .entry(key)
+                                    .or_insert_with(|| nearest_color_index(p, r, g, b))
+                            }
+                            None => 0,
+                        };
+                        let addr = base + dy * rowbytes + dx;
+                        bus.write_byte(addr, idx);
+                    }
+                    16 => {
+                        let v: u16 = (((r as u16) >> 3) << 10)
+                            | (((g as u16) >> 3) << 5)
+                            | ((b as u16) >> 3);
+                        let addr = base + dy * rowbytes + dx * 2;
+                        bus.write_word(addr, v);
+                    }
+                    32 => {
+                        let addr = base + dy * rowbytes + dx * 4;
+                        bus.write_byte(addr, 0);
+                        bus.write_byte(addr + 1, r);
+                        bus.write_byte(addr + 2, g);
+                        bus.write_byte(addr + 3, b);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -8063,24 +8434,19 @@ impl super::TrapDispatcher {
             // =========================================================
 
             // FMSwapFont ($A901)
-            // FUNCTION FMSwapFont (inRec: FMInput): FMOutPtr;
+            // FUNCTION FMSwapFont (CONST VAR inRec: FMInput): FMOutPtr;
             // Inside Macintosh Volume I, I-223..I-225 (lines 7321,
             // 7340..7349 FMInput layout, 7401..7423 FMOutput layout).
             // Inside Macintosh Volume IV, IV-32..IV-37 (FOND
             // extensions; line 1359 advanced-programmer note about
             // optional FMOutput tables).
+            // MPW Universal Interfaces Fonts.p declares `CONST VAR inRec`,
+            // while Fonts.h exposes the same ABI as `const FMInput *`.
             //
-            // Pascal stack frame (FMInput is PACKED RECORD pushed
-            // BY VALUE per IM:I-225 explicit PACKED RECORD spec):
-            //   sp+0..sp+1   family   INTEGER  (font number)
-            //   sp+2..sp+3   size     INTEGER  (font size)
-            //   sp+4         face     Style    (1 byte, packed)
-            //   sp+5         needBits BOOLEAN  (1 byte, packed)
-            //   sp+6..sp+7   device   INTEGER
-            //   sp+8..sp+11  numer    Point    (2-byte v, 2-byte h)
-            //   sp+12..sp+15 denom    Point
-            //   sp+16..sp+19 result slot       FMOutPtr (Ptr)
-            // Pop = 16 bytes; A7 lands at original SP+16 = result slot.
+            // Pascal stack frame:
+            //   sp+0..sp+3  pointer to the 16-byte FMInput record
+            //   sp+4..sp+7  result slot (FMOutPtr)
+            // Pop = 4 bytes; A7 lands at original SP+4 = result slot.
             //
             // FMOutput layout (26 bytes per IM:I-225 PACKED RECORD,
             // lines 7403..7421):
@@ -8101,10 +8467,11 @@ impl super::TrapDispatcher {
             //
             // Regression coverage:
             //   fmswapfont_*
-            // FMSwapFont ($A901): Pops 16-byte FMInput, returns 32-byte FMOutPtr at sp+16 per IM:I-225. Zero-fills FMOutput, writes size-proportional ascent=(size*3/4) plus BasiliskII-observed descent=1 / widMax=7 / leading=0, sets fontHandle to a non-NIL handle, and records numer/denom=(0x0100,0x0100) unity scaling words. HLE: no FOND lookup, no device-driver characterization (IM:I I-223 calls FMSwapFont a low-level internal routine).
+            // FMSwapFont ($A901): Pops the 4-byte CONST VAR FMInput pointer and returns a 32-byte FMOutPtr at sp+4 per MPW Fonts.h/Fonts.p. Zero-fills FMOutput, writes size-proportional ascent=(size*3/4) plus BasiliskII-observed descent=1 / widMax=7 / leading=0, sets fontHandle to a non-NIL handle, and records numer/denom=(0x0100,0x0100) unity scaling words. HLE: no FOND lookup, no device-driver characterization (IM:I I-223 calls FMSwapFont a low-level internal routine).
             (true, 0x101) => {
                 let sp = cpu.read_reg(Register::A7);
-                let size = bus.read_word(sp + 2);
+                let in_rec = bus.read_long(sp);
+                let size = bus.read_word(in_rec + 2);
                 let fm_out = bus.alloc(32);
                 if fm_out != 0 {
                     // Zero-initialise the entire 32-byte block (covers
@@ -8127,8 +8494,8 @@ impl super::TrapDispatcher {
                         // auxiliary word so later font-manager code can
                         // distinguish identical output blocks by input
                         // family/size without re-reading caller stack.
-                        let font_sig =
-                            (u32::from(bus.read_word(sp)) << 16) | u32::from(bus.read_word(sp + 2));
+                        let font_sig = (u32::from(bus.read_word(in_rec)) << 16)
+                            | u32::from(bus.read_word(in_rec + 2));
                         bus.write_long(font_handle + 4, font_sig);
                     }
                     // bytes 2..5 fontHandle set to a non-NIL master
@@ -8146,8 +8513,8 @@ impl super::TrapDispatcher {
                     bus.write_word(fm_out + 22, 0x0100);
                     bus.write_word(fm_out + 24, 0x0100);
                 }
-                bus.write_long(sp + 16, fm_out);
-                cpu.write_reg(Register::A7, sp + 16);
+                bus.write_long(sp + 4, fm_out);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -10939,9 +11306,10 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // Pack7 ($A9EE) — Binary/Decimal Conversion Package
-            // Selector 0: NumToString — converts D0.L to decimal Pascal string at A0.
-            // Selector 1: StringToNum — converts Pascal string at A0 to D0.L.
+            // Pack7 / DecStr68K ($A9EE) — integer and SANE decimal scanners.
+            // Selectors 0/1 are the Binary-Decimal Conversion Package.
+            // Selector 2 is the SANE FPSTR2DEC scanner published by Apple's
+            // MPW SANEMacs.a interface.
             // PROCEDURE NumToString(theNumber: LONGINT; VAR theString: Str255);
             // PROCEDURE StringToNum(theString: Str255; VAR theNumber: LONGINT);
             // Inside Macintosh Volume I, I-489
@@ -10966,8 +11334,122 @@ impl super::TrapDispatcher {
                         let num: i32 = s.trim().parse().unwrap_or(0);
                         cpu.write_reg(Register::D0, num as u32);
                     }
+                    2 => {
+                        // FPSTR2DEC: scan a Pascal string into the 68K SANE
+                        // decimal record. SANEMacs.a pushes four operand
+                        // addresses before the selector:
+                        //   SP+2  index*, SP+6 decimal*, SP+10 validPrefix*,
+                        //   SP+14 Pascal string*.
+                        // SANE.h defines decimal as sign byte, unused byte,
+                        // signed exponent word, and a 22-byte significand
+                        // record (length, 20 digits, unused).
+                        let index_ptr = bus.read_long(sp + 2);
+                        let decimal_ptr = bus.read_long(sp + 6);
+                        let valid_prefix_ptr = bus.read_long(sp + 10);
+                        let string_ptr = bus.read_long(sp + 14);
+                        let bytes = bus.read_pstring(string_ptr);
+                        let start = usize::from(bus.read_word(index_ptr)).min(bytes.len());
+
+                        let mut cursor = start;
+                        let mut negative = false;
+                        if let Some(sign) = bytes.get(cursor) {
+                            if *sign == b'+' || *sign == b'-' {
+                                negative = *sign == b'-';
+                                cursor += 1;
+                            }
+                        }
+
+                        let mut digits = Vec::new();
+                        let mut fraction_digits = 0i32;
+                        let mut saw_digit = false;
+                        while let Some(ch) = bytes.get(cursor) {
+                            if ch.is_ascii_digit() {
+                                digits.push(*ch);
+                                saw_digit = true;
+                                cursor += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if bytes.get(cursor) == Some(&b'.') {
+                            cursor += 1;
+                            while let Some(ch) = bytes.get(cursor) {
+                                if ch.is_ascii_digit() {
+                                    digits.push(*ch);
+                                    fraction_digits += 1;
+                                    saw_digit = true;
+                                    cursor += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        let exponent_start = cursor;
+                        let mut explicit_exponent = 0i32;
+                        if saw_digit && matches!(bytes.get(cursor), Some(b'e' | b'E')) {
+                            cursor += 1;
+                            let mut exponent_negative = false;
+                            if let Some(sign) = bytes.get(cursor) {
+                                if *sign == b'+' || *sign == b'-' {
+                                    exponent_negative = *sign == b'-';
+                                    cursor += 1;
+                                }
+                            }
+                            let exponent_digits_start = cursor;
+                            while let Some(ch) = bytes.get(cursor) {
+                                if ch.is_ascii_digit() {
+                                    explicit_exponent = explicit_exponent
+                                        .saturating_mul(10)
+                                        .saturating_add(i32::from(*ch - b'0'));
+                                    cursor += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            if cursor == exponent_digits_start {
+                                cursor = exponent_start;
+                                explicit_exponent = 0;
+                            } else if exponent_negative {
+                                explicit_exponent = -explicit_exponent;
+                            }
+                        }
+
+                        if saw_digit {
+                            let first_nonzero =
+                                digits.iter().position(|digit| *digit != b'0');
+                            let significant = first_nonzero
+                                .map(|offset| &digits[offset..])
+                                .unwrap_or(&b"0"[..]);
+                            let significant_len = significant.len().min(20);
+                            let exponent = explicit_exponent.saturating_sub(fraction_digits);
+
+                            bus.write_byte(decimal_ptr, u8::from(negative));
+                            bus.write_byte(decimal_ptr + 1, 0);
+                            bus.write_word(
+                                decimal_ptr + 2,
+                                exponent.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16,
+                            );
+                            bus.write_byte(decimal_ptr + 4, significant_len as u8);
+                            for index in 0..20u32 {
+                                bus.write_byte(
+                                    decimal_ptr + 5 + index,
+                                    significant.get(index as usize).copied().unwrap_or(0),
+                                );
+                            }
+                            bus.write_byte(decimal_ptr + 25, 0);
+                            bus.write_word(index_ptr, cursor as u16);
+                        }
+                        let valid_prefix = saw_digit && cursor == bytes.len();
+                        bus.write_word(valid_prefix_ptr, if valid_prefix { 0xFFFF } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 18);
+                    }
                     _ => {
-                        eprintln!("[TRAP] Pack7: unknown selector {}", selector);
+                        eprintln!(
+                            "[TRAP] Pack7: unknown selector {} pc=${:08X}",
+                            selector,
+                            cpu.read_reg(Register::PC).wrapping_sub(2),
+                        );
                     }
                 }
                 Ok(())
@@ -11305,11 +11787,39 @@ impl super::TrapDispatcher {
                         let name = crate::trap::types::read_fsspec_name(bus, spec_ptr);
                         eprintln!("[ALIAS] ResolveAliasFile spec='{}'", name);
 
-                        // Not an alias, not a folder
+                        let vref = bus.read_word(spec_ptr) as i16;
+                        let dir_id = bus.read_long(spec_ptr + 2);
+                        let mut found = false;
+                        let mut target_is_folder = false;
+                        for candidate_dir_id in self.hfs_lookup_directory_ids(vref, dir_id) {
+                            if self
+                                .find_vfs_file_in_directory(candidate_dir_id, &name)
+                                .is_some()
+                                || self
+                                    .find_vfs_rsrc_file_in_directory(candidate_dir_id, &name)
+                                    .is_some()
+                            {
+                                found = true;
+                                break;
+                            }
+                            if self
+                                .find_vfs_directory_in_directory(candidate_dir_id, &name)
+                                .is_some()
+                            {
+                                found = true;
+                                target_is_folder = true;
+                                break;
+                            }
+                        }
+
+                        // A regular file is preserved and reported as not
+                        // aliased. A nonexistent input spec returns fnfErr;
+                        // callers use that distinction to try their own
+                        // relative-location fallback.
                         bus.write_byte(was_aliased_ptr, 0);
-                        bus.write_byte(target_is_folder_ptr, 0);
+                        bus.write_byte(target_is_folder_ptr, u8::from(target_is_folder));
                         // Pop 14 bytes params, leave 2-byte result
-                        bus.write_word(sp + 14, 0); // noErr
+                        bus.write_word(sp + 14, if found { 0 } else { (-43i16) as u16 });
                         cpu.write_reg(Register::A7, sp + 14);
                     }
                     _ => {
@@ -11377,11 +11887,15 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_quicktime_enabled() {
                     static QT_LOG_COUNT: std::sync::atomic::AtomicU32 =
                         std::sync::atomic::AtomicU32::new(0);
-                    if QT_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 20 {
+                    if QT_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 100 {
                         eprintln!(
-                            "[QUICKTIME] MovieToolboxDispatch selector_in_d0=${:04X} sp=${:08X} d1=${:08X} a0=${:08X} a1=${:08X}",
+                            "[QUICKTIME] MovieToolboxDispatch selector_in_d0=${:04X} sp=${:08X} stack=${:08X}/${:08X}/${:08X}/${:08X} d1=${:08X} a0=${:08X} a1=${:08X}",
                             selector,
                             cpu.read_reg(Register::A7),
+                            bus.read_long(cpu.read_reg(Register::A7)),
+                            bus.read_long(cpu.read_reg(Register::A7) + 4),
+                            bus.read_long(cpu.read_reg(Register::A7) + 8),
+                            bus.read_long(cpu.read_reg(Register::A7) + 12),
                             cpu.read_reg(Register::D1),
                             cpu.read_reg(Register::A0),
                             cpu.read_reg(Register::A1)
@@ -11478,6 +11992,12 @@ impl super::TrapDispatcher {
 
                         if ref_num_ptr != 0 {
                             bus.write_word(ref_num_ptr, refnum);
+                        }
+                        if super::dispatch::trace_quicktime_enabled() {
+                            eprintln!(
+                                "[QUICKTIME] OpenMovieFile '{}' dirID={} -> refNum={}",
+                                filename, dir_id, refnum
+                            );
                         }
                         bus.write_word(sp + 10, 0);
                         cpu.write_reg(Register::A7, sp + 10);
@@ -11578,22 +12098,53 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         };
 
-                        let (box_rect, duration) = quicktime_movie_metadata(&movie_data);
+                        let (box_rect, duration, time_scale) =
+                            quicktime_movie_metadata(&movie_data);
+
+                        // Parse the movie's video sample tables. When the moov
+                        // came from a resource (selected_id != -1) the sample
+                        // bytes live in the file's data fork; when it came from
+                        // the data fork directly (-1) the samples index into
+                        // that same buffer.
+                        let media = super::movie_media::parse_video_track(&movie_data);
+                        let data_fork = if selected_id == -1 {
+                            movie_data.clone()
+                        } else {
+                            file_name
+                                .as_ref()
+                                .and_then(|name| self.vfs_data_fork_bytes(name))
+                                .unwrap_or_default()
+                        };
+                        if super::dispatch::trace_quicktime_enabled() {
+                            if let Some(ref vt) = media {
+                                eprintln!(
+                                    "[QUICKTIME] parsed video track codec={:?} {}x{} depth={} samples={} dataFork={}B",
+                                    std::str::from_utf8(&vt.codec).unwrap_or("?"),
+                                    vt.width,
+                                    vt.height,
+                                    vt.depth,
+                                    vt.samples.len(),
+                                    data_fork.len(),
+                                );
+                            }
+                        }
+
                         let movie = bus.alloc(16);
                         bus.write_long(movie, u32::from_be_bytes(*b"MooV"));
                         bus.write_word(movie + 4, res_refnum);
                         bus.write_word(movie + 6, selected_id as u16);
                         bus.write_word(movie + 8, new_movie_flags);
-                        self.movie_states.insert(
-                            movie,
-                            MovieState::new(
-                                res_refnum,
-                                selected_id,
-                                new_movie_flags,
-                                box_rect,
-                                duration,
-                            ),
+                        let mut movie_state = MovieState::new(
+                            res_refnum,
+                            selected_id,
+                            new_movie_flags,
+                            box_rect,
+                            duration,
+                            time_scale,
                         );
+                        movie_state.media = media;
+                        movie_state.data_fork = data_fork;
+                        self.movie_states.insert(movie, movie_state);
                         if movie_ptr != 0 {
                             bus.write_long(movie_ptr, movie);
                         }
@@ -11605,6 +12156,19 @@ impl super::TrapDispatcher {
                         }
                         if data_ref_changed_ptr != 0 {
                             bus.write_byte(data_ref_changed_ptr, 0);
+                        }
+                        if super::dispatch::trace_quicktime_enabled() {
+                            eprintln!(
+                                "[QUICKTIME] NewMovieFromFile refNum={} requestedID={} selectedID={} bytes={} box={:?} duration={} timeScale={} -> movie=${:08X}",
+                                res_refnum,
+                                requested_id,
+                                selected_id,
+                                movie_data.len(),
+                                box_rect,
+                                duration,
+                                time_scale,
+                                movie
+                            );
                         }
                         bus.write_word(sp + 20, 0);
                         cpu.write_reg(Register::A7, sp + 20);
@@ -11624,7 +12188,8 @@ impl super::TrapDispatcher {
                         bus.write_long(movie + 4, flags);
                         bus.write_long(movie + 8, self.current_port);
                         bus.write_long(movie + 12, self.current_gdevice);
-                        let mut state = MovieState::new(0, -1, flags as u16, (0, 0, 120, 160), 1);
+                        let mut state =
+                            MovieState::new(0, -1, flags as u16, (0, 0, 120, 160), 1, 600);
                         state.gworld_port = self.current_port;
                         state.gworld_gdh = self.current_gdevice;
                         state.active = false;
@@ -11673,33 +12238,11 @@ impl super::TrapDispatcher {
                         // Inside Macintosh: QuickTime 1993, pp. 2-124 to 2-125.
                         let sp = cpu.read_reg(Register::A7);
                         let movie = bus.read_long(sp + 4);
-                        let ok = if movie == 0 {
-                            for state in self.movie_states.values_mut() {
-                                if state.active && state.rate != 0 {
-                                    if state.rate < 0 {
-                                        state.current_time = 0;
-                                    } else {
-                                        state.current_time = state.duration;
-                                    }
-                                    state.rate = 0;
-                                    state.active = false;
-                                }
-                            }
-                            true
-                        } else if let Some(state) = self.movie_states.get_mut(&movie) {
-                            if state.active && state.rate != 0 {
-                                if state.rate < 0 {
-                                    state.current_time = 0;
-                                } else {
-                                    state.current_time = state.duration;
-                                }
-                                state.rate = 0;
-                                state.active = false;
-                            }
-                            true
-                        } else {
-                            false
-                        };
+                        // Advance the timeline of active movies by real elapsed
+                        // guest time and render the frames now due, rather than
+                        // jumping straight to each movie's end.
+                        self.advance_and_render_active_movies(bus);
+                        let ok = movie == 0 || self.movie_states.contains_key(&movie);
                         cpu.write_reg(Register::A7, sp + 8);
                         let err = if ok { 0 } else { QUICKTIME_INVALID_MOVIE };
                         cpu.write_reg(Register::D0, err as u32);
@@ -11750,6 +12293,26 @@ impl super::TrapDispatcher {
                         record_movie_error(self, err);
                         Ok(())
                     }
+                    0x0009 => {
+                        // SetMovieActive ($AAAA selector $0009)
+                        // Enables or disables a movie's participation in
+                        // MoviesTask processing.
+                        // pascal void SetMovieActive(Movie theMovie, Boolean active);
+                        // Inside Macintosh: QuickTime 1993, p. 2-122.
+                        let sp = cpu.read_reg(Register::A7);
+                        let active = bus.read_word(sp) != 0;
+                        let movie = bus.read_long(sp + 2);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.active = active;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 6);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
                     0x000B => {
                         // StartMovie ($AAAA selector $000B)
                         // Starts playback from the current movie time at the preferred rate.
@@ -11757,9 +12320,13 @@ impl super::TrapDispatcher {
                         // Inside Macintosh: QuickTime 1993, pp. 2-111 to 2-112.
                         let sp = cpu.read_reg(Register::A7);
                         let movie = bus.read_long(sp);
+                        let now = self.tick_count;
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.active = true;
                             state.rate = state.preferred_rate;
+                            // Begin the playback clock now so MoviesTask advances
+                            // by real elapsed time from this point.
+                            state.last_service_tick = Some(now);
                             0
                         } else {
                             QUICKTIME_INVALID_MOVIE
@@ -11823,6 +12390,12 @@ impl super::TrapDispatcher {
                         } else {
                             QUICKTIME_INVALID_MOVIE
                         };
+                        if super::dispatch::trace_quicktime_enabled() {
+                            eprintln!(
+                                "[QUICKTIME] SetMovieGWorld movie=${:08X} port=${:08X} gdh=${:08X}",
+                                movie, port, gdh
+                            );
+                        }
                         cpu.write_reg(Register::A7, sp + 12);
                         cpu.write_reg(Register::D0, err as u32);
                         record_movie_error(self, err);
@@ -11876,6 +12449,22 @@ impl super::TrapDispatcher {
                         record_movie_error(self, err);
                         Ok(())
                     }
+                    0x018B => {
+                        // DisposeMovieController ($AAAA selector $018B)
+                        // Disposes a movie controller component instance.
+                        // pascal void DisposeMovieController(MovieController mc);
+                        // Inside Macintosh: QuickTime Components 1993, p. 2-32.
+                        //
+                        // Systemless does not allocate controller component
+                        // state, but the Pascal procedure still consumes its
+                        // four-byte ComponentInstance argument. MPW Movies.h
+                        // publishes selector $018B for this glue.
+                        let sp = cpu.read_reg(Register::A7);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, 0);
+                        record_movie_error(self, 0);
+                        Ok(())
+                    }
                     0x002B => {
                         // GetMovieDuration ($AAAA selector $002B)
                         // Returns the calculated duration of a movie.
@@ -11893,7 +12482,36 @@ impl super::TrapDispatcher {
                         } else {
                             0
                         };
+                        if super::dispatch::trace_quicktime_enabled() {
+                            eprintln!(
+                                "[QUICKTIME] GetMovieDuration movie=${:08X} -> {}",
+                                movie, duration
+                            );
+                        }
                         bus.write_long(sp + 4, duration as u32);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
+                    0x0029 => {
+                        // GetMovieTimeScale ($AAAA selector $0029)
+                        // Returns the movie time scale in units per second.
+                        // pascal TimeScale GetMovieTimeScale(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-183.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let time_scale = self
+                            .movie_states
+                            .get(&movie)
+                            .map(|state| state.time_scale)
+                            .unwrap_or(0);
+                        let err = if time_scale == 0 {
+                            QUICKTIME_INVALID_MOVIE
+                        } else {
+                            0
+                        };
+                        bus.write_long(sp + 4, time_scale as u32);
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, err as u32);
                         record_movie_error(self, err);
@@ -12080,6 +12698,38 @@ impl super::TrapDispatcher {
                         record_movie_error(self, err);
                         Ok(())
                     }
+                    0x0039 => {
+                        // GetMovieTime ($AAAA selector $0039)
+                        // Returns the current movie time and optionally fills
+                        // the corresponding TimeRecord.
+                        // pascal TimeValue GetMovieTime(Movie theMovie,
+                        //   TimeRecord *currentTime);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-183 to 2-184.
+                        let sp = cpu.read_reg(Register::A7);
+                        let time_record_ptr = bus.read_long(sp);
+                        let movie = bus.read_long(sp + 4);
+                        let state = self.movie_states.get(&movie);
+                        let current_time = state.map(|value| value.current_time).unwrap_or(0);
+                        let err = if let Some(state) = state {
+                            if time_record_ptr != 0 {
+                                bus.write_long(
+                                    time_record_ptr,
+                                    if current_time < 0 { u32::MAX } else { 0 },
+                                );
+                                bus.write_long(time_record_ptr + 4, current_time as u32);
+                                bus.write_long(time_record_ptr + 8, state.time_scale as u32);
+                                bus.write_long(time_record_ptr + 12, 0);
+                            }
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        bus.write_long(sp + 8, current_time as u32);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
                     0x00D5 => {
                         // CloseMovieFile ($AAAA selector $00D5)
                         // Closes an open movie file reference number.
@@ -12152,6 +12802,12 @@ impl super::TrapDispatcher {
                         } else {
                             QUICKTIME_INVALID_MOVIE
                         };
+                        if super::dispatch::trace_quicktime_enabled() {
+                            eprintln!(
+                                "[QUICKTIME] GetMovieBox movie=${:08X} -> {:?}",
+                                movie, rect
+                            );
+                        }
                         cpu.write_reg(Register::A7, sp + 8);
                         cpu.write_reg(Register::D0, err as u32);
                         record_movie_error(self, err);
@@ -12174,6 +12830,13 @@ impl super::TrapDispatcher {
                         } else {
                             QUICKTIME_INVALID_MOVIE
                         };
+                        if super::dispatch::trace_quicktime_enabled() {
+                            eprintln!(
+                                "[QUICKTIME] SetMovieBox movie=${:08X} rect={:?}",
+                                movie,
+                                read_movie_box(bus, box_ptr)
+                            );
+                        }
                         cpu.write_reg(Register::A7, sp + 8);
                         cpu.write_reg(Register::D0, err as u32);
                         record_movie_error(self, err);
@@ -13274,25 +13937,193 @@ impl super::TrapDispatcher {
             // version (>=3 supports automatic version control,
             // unregister, icon families).
             //
-            // HLE behaviour: D0=0 (noErr). For component calls
-            // (D0 == 0), read `param_size = read_word(sp + 0)` from
-            // the selector long and pop `4 + 4 + param_size` bytes
-            // (selector + ComponentInstance + routine args) so the
-            // inline glue stays balanced. Internal manager requests
-            // (D0 != 0) still return noErr and leave the caller stack
-            // untouched. All non-D0 registers are preserved.
+            // HLE behaviour: provides one synthetic QuickTime movie
+            // controller component (`'play'`) and opaque instances for
+            // FindNextComponent/OpenComponent/CloseComponent. Component
+            // calls consume selector + instance + arguments and return a
+            // zero ComponentResult in the caller's four-byte result slot.
             //
             // Regression coverage:
             //   src/trap/toolbox.rs::tests::componentdispatch_*
-            // ComponentDispatch ($A82A): MMTB 1993 ch.6 17215. Stack-pushed [paramSize:callNum] selector at SP+0; D0=0 = call component, D0!=0 = CM internal. Gestalt 'cpnt'. HLE: D0=0, registers + stack preserved.
+            // ComponentDispatch ($A82A): MMTB 1993 ch.6 17215. Stack-pushed
+            // [paramSize:callNum] selector at SP+0; D0=0 = call component,
+            // D0!=0 = CM internal. Gestalt 'cpnt'. HLE supplies the movie
+            // controller component and stateful open/close calls described above.
             (true, 0x02A) => {
+                const MOVIE_CONTROLLER_COMPONENT: u32 = u32::from_be_bytes(*b"play");
+                const SYNTHETIC_MOVIE_CONTROLLER: u32 = 0x00C0_0001;
+
                 let d0 = cpu.read_reg(Register::D0);
                 if d0 == 0 {
                     let sp = cpu.read_reg(Register::A7);
                     let param_size = u32::from(bus.read_word(sp));
-                    cpu.write_reg(Register::A7, sp + 8 + param_size);
+                    // Selector long = [paramSize:callNum]; callNum is the low word.
+                    let call_num = bus.read_word(sp + 2);
+                    if super::dispatch::trace_quicktime_enabled() {
+                        let selector = bus.read_long(sp);
+                        let instance = bus.read_long(sp + 4 + param_size);
+                        eprintln!(
+                            "[QUICKTIME] ComponentDispatch selector=${:08X} paramSize={} callNum=${:04X} instance=${:08X}",
+                            selector,
+                            param_size,
+                            selector as u16,
+                            instance
+                        );
+                    }
+                    let instance = bus.read_long(sp + 4 + param_size);
+                    match call_num {
+                        // MCNewAttachedController(mc, theMovie, window, where):
+                        // associate the controller instance with its movie so
+                        // MCDoAction can drive the right one. The parameter
+                        // block holds theMovie among its longs; find it by
+                        // matching a known movie handle.
+                        0x0017 => {
+                            for off in (4..4 + param_size).step_by(4) {
+                                let candidate = bus.read_long(sp + off);
+                                if self.movie_states.contains_key(&candidate) {
+                                    self.movie_by_controller.insert(instance, candidate);
+                                    if let Some(state) = self.movie_states.get_mut(&candidate) {
+                                        state.active = true;
+                                        state.last_service_tick = Some(self.tick_count);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        // MCDoAction(mc, action, params). Pascal push order puts
+                        // params(long) at sp+4 and action(word) at sp+8.
+                        0x0009 => {
+                            let action = bus.read_word(sp + 8);
+                            let param = bus.read_long(sp + 4);
+                            if let Some(&movie) = self.movie_by_controller.get(&instance) {
+                                if let Some(state) = self.movie_states.get_mut(&movie) {
+                                    match action {
+                                        // mcActionPlay(8): param is a Fixed rate.
+                                        8 => {
+                                            let rate = param as i32;
+                                            state.rate = if rate != 0 { rate } else { 0x0001_0000 };
+                                            state.active = true;
+                                            state.last_service_tick = Some(self.tick_count);
+                                        }
+                                        // mcActionStop(2)/mcActionSetPlayRate not
+                                        // separately tracked; stop clears the rate.
+                                        2 => {
+                                            state.rate = 0;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    // MCIdle ($1A): service the movie controller — advance
+                    // playback clocks and render the frames now due.
+                    if call_num == 0x001A {
+                        self.advance_and_render_active_movies(bus);
+                    }
+                    let result_sp = sp + 8 + param_size;
+                    bus.write_long(result_sp, 0);
+                    cpu.write_reg(Register::A7, result_sp);
+                    cpu.write_reg(Register::D0, 0);
+                    return Some(Ok(()));
                 }
-                cpu.write_reg(Register::D0, 0);
+
+                let sp = cpu.read_reg(Register::A7);
+                if super::dispatch::trace_quicktime_enabled() {
+                    eprintln!(
+                        "[QUICKTIME] ComponentDispatch internal D0=${:08X} sp=${:08X}",
+                        d0, sp
+                    );
+                }
+                match d0 as u16 {
+                    0x0003 => {
+                        // CountComponents(ComponentDescription *looking): long
+                        let description = bus.read_long(sp);
+                        let component_type = if description == 0 {
+                            0
+                        } else {
+                            bus.read_long(description)
+                        };
+                        let count = u32::from(
+                            component_type == 0
+                                || component_type == MOVIE_CONTROLLER_COMPONENT,
+                        );
+                        bus.write_long(sp + 4, count);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, count);
+                    }
+                    0x0004 => {
+                        // FindNextComponent(Component, ComponentDescription *): Component
+                        let description = bus.read_long(sp);
+                        let previous = bus.read_long(sp + 4);
+                        let component_type = if description == 0 {
+                            0
+                        } else {
+                            bus.read_long(description)
+                        };
+                        let component = if previous == 0
+                            && (component_type == 0
+                                || component_type == MOVIE_CONTROLLER_COMPONENT)
+                        {
+                            SYNTHETIC_MOVIE_CONTROLLER
+                        } else {
+                            0
+                        };
+                        bus.write_long(sp + 8, component);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, component);
+                    }
+                    0x0007 => {
+                        // OpenComponent(Component): ComponentInstance
+                        let component = bus.read_long(sp);
+                        let instance = if component == SYNTHETIC_MOVIE_CONTROLLER {
+                            let instance = self.next_synthetic_component_instance;
+                            self.next_synthetic_component_instance =
+                                self.next_synthetic_component_instance.saturating_add(1);
+                            self.synthetic_component_instances.insert(instance);
+                            instance
+                        } else {
+                            0
+                        };
+                        bus.write_long(sp + 4, instance);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, instance);
+                    }
+                    0x0008 => {
+                        // CloseComponent(ComponentInstance): OSErr
+                        let instance = bus.read_long(sp);
+                        self.synthetic_component_instances.remove(&instance);
+                        bus.write_word(sp + 4, 0);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    0x000A => {
+                        // GetComponentInstanceError(ComponentInstance): OSErr
+                        bus.write_word(sp + 4, 0);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    0x0021 => {
+                        // OpenDefaultComponent(OSType, OSType): ComponentInstance
+                        let component_type = bus.read_long(sp + 4);
+                        let instance = if component_type == MOVIE_CONTROLLER_COMPONENT {
+                            let instance = self.next_synthetic_component_instance;
+                            self.next_synthetic_component_instance =
+                                self.next_synthetic_component_instance.saturating_add(1);
+                            self.synthetic_component_instances.insert(instance);
+                            instance
+                        } else {
+                            0
+                        };
+                        bus.write_long(sp + 8, instance);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, instance);
+                    }
+                    _ => {
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                }
                 Ok(())
             }
 
@@ -13852,6 +14683,22 @@ mod tests {
         let len = name.len().min(63) as u8;
         bus.write_byte(spec_ptr + 6, len);
         bus.write_bytes(spec_ptr + 7, &name[..usize::from(len)]);
+    }
+
+    fn write_test_fmswapfont_frame(bus: &mut MacMemoryBus, sp: u32) -> u32 {
+        let in_rec = sp - 0x100;
+        bus.write_word(in_rec, 3); // family
+        bus.write_word(in_rec + 2, 12); // size
+        bus.write_byte(in_rec + 4, 0); // face
+        bus.write_byte(in_rec + 5, 1); // needBits
+        bus.write_word(in_rec + 6, 0); // device
+        bus.write_word(in_rec + 8, 1); // numer.v
+        bus.write_word(in_rec + 10, 1); // numer.h
+        bus.write_word(in_rec + 12, 1); // denom.v
+        bus.write_word(in_rec + 14, 1); // denom.h
+        bus.write_long(sp, in_rec); // CONST VAR inRec
+        bus.write_long(sp + 4, 0); // result slot
+        in_rec
     }
 
     impl Drop for StandardFileEnvGuard {
@@ -21150,8 +21997,9 @@ mod tests {
 
         // Inline component-call glue pushes [paramSize:callNum] at SP.
         bus.write_long(sp, 0x0004_0000);
-        bus.write_long(sp + 4, 0x00C0_FFEE); // ComponentInstance
-        bus.write_long(sp + 8, 0xA5A5_5A5A); // sentinel argument data
+        bus.write_long(sp + 4, 0xA5A5_5A5A); // sentinel argument data
+        bus.write_long(sp + 8, 0x00C0_FFEE); // ComponentInstance
+        bus.write_long(sp + 12, 0xDEAD_BEEF); // ComponentResult poison
 
         let result = disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus);
         assert!(result.is_some(), "ComponentDispatch should be handled");
@@ -21163,8 +22011,52 @@ mod tests {
             "component call path should consume selector + instance + args"
         );
         assert_eq!(bus.read_long(sp), 0x0004_0000);
-        assert_eq!(bus.read_long(sp + 4), 0x00C0_FFEE);
-        assert_eq!(bus.read_long(sp + 8), 0xA5A5_5A5A);
+        assert_eq!(bus.read_long(sp + 4), 0xA5A5_5A5A);
+        assert_eq!(bus.read_long(sp + 8), 0x00C0_FFEE);
+        assert_eq!(bus.read_long(sp + 12), 0);
+    }
+
+    #[test]
+    fn componentdispatch_opens_and_closes_movie_controller_instance() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let description = 0x342800u32;
+        bus.write_long(description, u32::from_be_bytes(*b"play"));
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 4); // FindNextComponent
+        bus.write_long(sp, description);
+        bus.write_long(sp + 4, 0);
+        bus.write_long(sp + 8, 0xDEAD_BEEF);
+        disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let component = bus.read_long(sp + 8);
+        assert_ne!(component, 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 7); // OpenComponent
+        bus.write_long(sp, component);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let instance = bus.read_long(sp + 4);
+        assert_ne!(instance, 0);
+        assert!(disp.synthetic_component_instances.contains(&instance));
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 8); // CloseComponent
+        bus.write_long(sp, instance);
+        bus.write_word(sp + 4, 0xBEEF);
+        disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert!(!disp.synthetic_component_instances.contains(&instance));
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     #[test]
@@ -23029,6 +23921,7 @@ mod tests {
         let was_aliased_ptr = 0x342000u32;
         let target_is_folder_ptr = 0x342100u32;
         let spec_ptr = 0x342200u32;
+        disp.vfs.insert("ReadMe!!".to_string(), b"hello".to_vec());
 
         // FSSpec input for a regular file path.
         bus.write_word(spec_ptr, (-1i16) as u16);
@@ -23056,6 +23949,42 @@ mod tests {
         assert_eq!(bus.read_byte(was_aliased_ptr), 0);
         assert_eq!(bus.read_byte(target_is_folder_ptr), 0);
         assert_eq!(bus.read_bytes(spec_ptr, 32), spec_before);
+    }
+
+    // AliasDispatch ($A823) / selector $000C ResolveAliasFile
+    // IM:Files 1992 p. 4-21: ResolveAliasFile returns fnfErr when the input
+    // FSSpec does not identify an existing file or directory.
+    #[test]
+    fn aliasdispatch_resolvealiasfile_missing_spec_returns_fnferr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let was_aliased_ptr = 0x342300u32;
+        let target_is_folder_ptr = 0x342400u32;
+        let spec_ptr = 0x342500u32;
+
+        bus.write_word(spec_ptr, (-1i16) as u16);
+        bus.write_long(spec_ptr + 2, 2);
+        bus.write_byte(spec_ptr + 6, 7);
+        bus.write_bytes(spec_ptr + 7, b"Missing");
+
+        bus.write_byte(was_aliased_ptr, 0xFF);
+        bus.write_byte(target_is_folder_ptr, 0xFF);
+
+        cpu.write_reg(Register::D0, 0x000C);
+        bus.write_long(sp, was_aliased_ptr);
+        bus.write_long(sp + 4, target_is_folder_ptr);
+        bus.write_word(sp + 8, 1);
+        bus.write_long(sp + 10, spec_ptr);
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 14) as i16, -43);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(bus.read_byte(was_aliased_ptr), 0);
+        assert_eq!(bus.read_byte(target_is_folder_ptr), 0);
     }
 
     // Pack8 / Apple Events ($A816)
@@ -25200,29 +26129,19 @@ mod tests {
     // FMSwapFont ($A901)
     // IM:I 1985 pp. I-223 and I-225.
     #[test]
-    fn fmswapfont_returns_fmoutptr_and_pops_fminput_frame() {
+    fn fmswapfont_returns_fmoutptr_and_pops_fminput_pointer() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        // FMInput PACKED RECORD by value (16 bytes).
-        bus.write_word(sp, 3); // family
-        bus.write_word(sp + 2, 12); // size
-        bus.write_byte(sp + 4, 0); // face
-        bus.write_byte(sp + 5, 1); // needBits
-        bus.write_word(sp + 6, 0); // device
-        bus.write_word(sp + 8, 1); // numer.v
-        bus.write_word(sp + 10, 1); // numer.h
-        bus.write_word(sp + 12, 1); // denom.v
-        bus.write_word(sp + 14, 1); // denom.h
-        bus.write_long(sp + 16, 0); // result slot
+        write_test_fmswapfont_frame(&mut bus, sp);
 
         let result = disp.dispatch_toolbox(true, 0x101, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        let fm_out_ptr = bus.read_long(sp + 16);
+        let fm_out_ptr = bus.read_long(sp + 4);
         assert_ne!(fm_out_ptr, 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     // FMSwapFont ($A901)
@@ -25233,22 +26152,13 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        bus.write_word(sp, 3); // family
-        bus.write_word(sp + 2, 12); // size
-        bus.write_byte(sp + 4, 0); // face
-        bus.write_byte(sp + 5, 1); // needBits
-        bus.write_word(sp + 6, 0); // device
-        bus.write_word(sp + 8, 1); // numer.v
-        bus.write_word(sp + 10, 1); // numer.h
-        bus.write_word(sp + 12, 1); // denom.v
-        bus.write_word(sp + 14, 1); // denom.h
-        bus.write_long(sp + 16, 0); // result slot
+        write_test_fmswapfont_frame(&mut bus, sp);
 
         let result = disp.dispatch_toolbox(true, 0x101, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        let fm_out_ptr = bus.read_long(sp + 16);
+        let fm_out_ptr = bus.read_long(sp + 4);
         assert_ne!(fm_out_ptr, 0);
         assert_eq!(bus.read_word(fm_out_ptr), 0); // errNum
         assert_ne!(bus.read_long(fm_out_ptr + 2), 0); // fontHandle is non-NIL
@@ -25270,22 +26180,13 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        bus.write_word(sp, 3); // family
-        bus.write_word(sp + 2, 12); // size
-        bus.write_byte(sp + 4, 0); // face
-        bus.write_byte(sp + 5, 1); // needBits
-        bus.write_word(sp + 6, 0); // device
-        bus.write_word(sp + 8, 1); // numer.v
-        bus.write_word(sp + 10, 1); // numer.h
-        bus.write_word(sp + 12, 1); // denom.v
-        bus.write_word(sp + 14, 1); // denom.h
-        bus.write_long(sp + 16, 0); // result slot
+        write_test_fmswapfont_frame(&mut bus, sp);
 
         let result = disp.dispatch_toolbox(true, 0x101, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        let fm_out_ptr = bus.read_long(sp + 16);
+        let fm_out_ptr = bus.read_long(sp + 4);
         assert_ne!(fm_out_ptr, 0);
         let font_handle = bus.read_long(fm_out_ptr + 2);
         assert_ne!(font_handle, 0);
@@ -25304,22 +26205,13 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        bus.write_word(sp, 3); // family
-        bus.write_word(sp + 2, 12); // size
-        bus.write_byte(sp + 4, 0); // face
-        bus.write_byte(sp + 5, 1); // needBits
-        bus.write_word(sp + 6, 0); // device
-        bus.write_word(sp + 8, 1); // numer.v
-        bus.write_word(sp + 10, 1); // numer.h
-        bus.write_word(sp + 12, 1); // denom.v
-        bus.write_word(sp + 14, 1); // denom.h
-        bus.write_long(sp + 16, 0); // result slot
+        write_test_fmswapfont_frame(&mut bus, sp);
 
         let result = disp.dispatch_toolbox(true, 0x101, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        let fm_out_ptr = bus.read_long(sp + 16);
+        let fm_out_ptr = bus.read_long(sp + 4);
         let font_handle = bus.read_long(fm_out_ptr + 2);
         assert_eq!(bus.read_long(font_handle + 4), 0x0003_000C);
     }
@@ -26210,6 +27102,7 @@ mod tests {
     #[test]
     fn quicktime_movie_metadata_reads_mvhd_duration_and_tkhd_bounds() {
         let mut mvhd = vec![0; 20];
+        mvhd[12..16].copy_from_slice(&600u32.to_be_bytes());
         mvhd[16..20].copy_from_slice(&240u32.to_be_bytes());
 
         let mut tkhd = vec![0; 84];
@@ -26221,9 +27114,10 @@ mod tests {
         moov_payload.extend_from_slice(&trak);
         let moov = quicktime_atom(*b"moov", &moov_payload);
 
-        let (bounds, duration) = quicktime_movie_metadata(&moov);
+        let (bounds, duration, time_scale) = quicktime_movie_metadata(&moov);
         assert_eq!(bounds, (0, 0, 200, 320));
         assert_eq!(duration, 240);
+        assert_eq!(time_scale, 600);
     }
 
     fn create_test_movie_from_file(
@@ -26318,6 +27212,8 @@ mod tests {
         let sp = TEST_SP;
         let movie = create_test_movie_from_file(&mut disp, &mut cpu, &mut bus, sp);
 
+        // Begin playback at tick 0.
+        disp.set_tick_count_for_test(0);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x000B); // StartMovie
         bus.write_long(sp, movie);
@@ -26326,6 +27222,10 @@ mod tests {
         assert!(result.unwrap().is_ok(), "StartMovie should return");
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
+        // Advance the guest clock well past the movie duration, then service:
+        // MoviesTask is timeline-driven, so the movie completes only after real
+        // elapsed time covers its duration.
+        disp.set_tick_count_for_test(100_000);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0005); // MoviesTask
         bus.write_long(sp, 0); // maxMilliSecToUse: service once
@@ -26469,6 +27369,23 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert!(!disp.movie_states.contains_key(&movie));
+    }
+
+    #[test]
+    fn movietoolboxdispatch_dispose_movie_controller_consumes_component_instance() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x018B);
+        bus.write_long(sp, 0x1234_5678);
+
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+
+        assert!(result.is_some(), "DisposeMovieController should be handled");
+        assert!(result.unwrap().is_ok(), "DisposeMovieController should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
     #[test]

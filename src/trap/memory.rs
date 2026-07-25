@@ -8802,7 +8802,10 @@ mod tests {
             .unwrap()
             .unwrap();
         let new_handle = cpu.read_reg(Register::A0);
-        assert_eq!(new_handle, old_handle, "the freed handle slot should be reused");
+        assert_eq!(
+            new_handle, old_handle,
+            "the freed handle slot should be reused"
+        );
         assert_ne!(bus.read_long(new_handle), old_ptr);
 
         cpu.write_reg(Register::A0, old_ptr);

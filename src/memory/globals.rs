@@ -110,6 +110,12 @@ pub mod addr {
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
     pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
     pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
+    /// JSwapFont: address of the Font Manager's FMSwapFont routine (ProcPtr).
+    ///
+    /// This private vector is called directly by QuickDraw text code. Executor's
+    /// clean-room low-memory table identifies `$08E0` as `JSwapFont`, and its
+    /// startup path initializes the vector from the `$A901` FMSwapFont routine.
+    pub const J_SWAP_FONT: u32 = 0x08E0;
     /// JCrsrTask: address of the cursor VBL task routine (ProcPtr).
     /// MPW Interfaces/AIncludes/LowMemEqu.a lists `JCrsrTask EQU $8EE`
     /// immediately after `CrsrThresh` and before the interrupt mouse globals.

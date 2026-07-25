@@ -2864,6 +2864,9 @@ impl super::TrapDispatcher {
     /// Draw window chrome (title bar, close box, border) into the framebuffer
     /// WIND bounds are the CONTENT RECT; title bar is drawn ABOVE it.
     pub(crate) fn draw_window_chrome(&self, bus: &mut MacMemoryBus, active: bool) {
+        if self.windows_placed_offscreen.contains(&self.front_window) {
+            return;
+        }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let (wind_top, wind_left, wind_bottom, wind_right) = self.window_bounds;
@@ -3489,6 +3492,9 @@ impl super::TrapDispatcher {
         if bus.read_byte(window_ptr + 110u32) == 0 {
             return; // not visible
         }
+        if self.windows_placed_offscreen.contains(&window_ptr) {
+            return;
+        }
         if self.window_uses_custom_def_proc(bus, window_ptr) {
             return;
         }
@@ -3553,6 +3559,9 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn draw_window_frame(&self, bus: &mut MacMemoryBus) {
+        if self.windows_placed_offscreen.contains(&self.front_window) {
+            return;
+        }
         let (wind_top, wind_left, wind_bottom, wind_right) = self.window_bounds;
         if matches!(self.window_proc_id, 1 | 2 | 3 | 5) {
             let frame = match self.window_proc_id {

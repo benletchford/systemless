@@ -62,6 +62,12 @@ const C_NO_MEM_ERR: u32 = (-152i32) as u32;
 const PM_COURTEOUS: i16 = 0x0000;
 const PM_TOLERANT: i16 = 0x0002;
 const PM_EXPLICIT: i16 = 0x0008;
+
+/// `dstWindow` value that addresses the default palette rather than a window.
+/// `SetPalette`/`NSetPalette` take a WindowPtr, and `(WindowPtr)-1` is the
+/// long-standing idiom for "the palette to use when no window supplies one" —
+/// i.e. the screen's colour environment (Inside Macintosh Volume V, V-166).
+const DEFAULT_PALETTE_WINDOW: u32 = 0xFFFF_FFFF;
 const PM_ALL_UPDATES: i16 = -0x2000;
 const DM_SET_DISPLAY_MODE_REJECT_ERR: i16 = -330;
 const SEEDFILL_MAX_PIXELS: usize = 4 * 1024 * 1024;
@@ -2783,6 +2789,38 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                // CopyBits is a bottleneck caller: it hands the transfer to the
+                // current port's grafProcs.bitsProc, which is StdBits unless the
+                // app replaced it (IM:I I-176 and I-197). Applications that
+                // colourise an otherwise black-and-white drawing pipeline do
+                // exactly that — Myst Preview's HyperTint XCMD installs a
+                // bitsProc on the HyperCard card port, and BasiliskII shows
+                // HyperCard's 1-bit card blit detouring through it from the
+                // moment the colour card comes up. Ignoring the slot repaints
+                // the black-and-white card straight over the colour layer.
+                //
+                // Tail-call the guest proc with StdBits' Pascal frame
+                // (srcBits, srcRect, dstRect, mode, maskRgn — no dstBits, since
+                // the destination is the port) and let it drive the blit.
+                if let Some(bits_proc) = self.custom_bits_proc(bus, cpu) {
+                    let return_pc = cpu.read_reg(Register::PC);
+                    let mut frame_sp = cpu.read_reg(Register::A7);
+                    for arg in [src_bits_ptr, src_rect_ptr, dst_rect_ptr] {
+                        frame_sp = frame_sp.wrapping_sub(4);
+                        bus.write_long(frame_sp, arg);
+                    }
+                    frame_sp = frame_sp.wrapping_sub(2);
+                    bus.write_word(frame_sp, mode as u16);
+                    frame_sp = frame_sp.wrapping_sub(4);
+                    bus.write_long(frame_sp, mask_rgn);
+                    self.bits_proc_reentry = Some((bits_proc, frame_sp));
+                    frame_sp = frame_sp.wrapping_sub(4);
+                    bus.write_long(frame_sp, return_pc);
+                    cpu.write_reg(Register::A7, frame_sp);
+                    cpu.write_reg(Register::PC, bits_proc);
+                    return Some(Ok(()));
+                }
+
                 let mut src_info = self.resolve_copy_bitmap(bus, src_bits_ptr);
                 let mut dst_info = self.resolve_copy_bitmap(bus, dst_bits_ptr);
 
@@ -4625,7 +4663,26 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 self.set_window_palette_association(window, palette, updates);
-                self.activate_associated_palette_for_window(bus, window);
+                if window == DEFAULT_PALETTE_WINDOW {
+                    // A dstWindow of (WindowPtr)-1 does not name a window: it
+                    // addresses the default palette, the colour environment
+                    // used when no window supplies one. There is no window
+                    // whose activation could later apply it, so it takes
+                    // effect on the device now. Myst Preview's HyperTint XCMD
+                    // sets the screen palette exactly this way and then draws
+                    // its colour layer before any ActivatePalette; matching
+                    // the drawing against a stale device table collapsed the
+                    // island's 254 colours down to 40.
+                    self.apply_palette_to_active_device(
+                        bus,
+                        window,
+                        palette,
+                        " default",
+                        "nsetpalette_default_palette",
+                    );
+                } else {
+                    self.activate_associated_palette_for_window(bus, window);
+                }
                 cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
             }
@@ -6898,7 +6955,14 @@ impl super::TrapDispatcher {
                     // PortChanged ($00040009)
                     // PROCEDURE PortChanged(port: GrafPtr);
                     // Imaging With QuickDraw 1994, 4-103
+                    //
+                    // The app is telling QuickDraw it edited the port's fields
+                    // itself. When the port is a window we track, re-derive the
+                    // window geometry we cache from it — HyperCard resizes its
+                    // card window this way rather than through SizeWindow.
                     0x0009 => {
+                        let port = bus.read_long(sp);
+                        self.resync_window_geometry_from_port_rect(bus, port);
                         cpu.write_reg(Register::A7, sp + 4);
                     }
                     // GDeviceChanged ($0004000A)
@@ -18205,6 +18269,39 @@ impl super::TrapDispatcher {
         });
     }
 
+    /// Address of a replacement `grafProcs.bitsProc` on the current port, or
+    /// `None` when the standard StdBits bottleneck is in force.
+    ///
+    /// `grafProcs` is the last field of both GrafPort and CGrafPort, at offset
+    /// 104 (IM:I I-155; IM:V V-77), and `bitsProc` is the ninth of the thirteen
+    /// QDProcs slots, at offset 32 within the record (IM:I I-197). SetStdProcs
+    /// and SetStdCProcs fill that slot with the synthesized `$00F0A8EB` marker,
+    /// which means "the standard proc" and must not be called back into.
+    ///
+    /// Returns `None` while we are nested inside a previous tail call, so a
+    /// custom proc that completes its work by calling CopyBits again gets the
+    /// real blit instead of being handed back to itself.
+    fn custom_bits_proc<C: CpuOps>(&self, bus: &MacMemoryBus, cpu: &C) -> Option<u32> {
+        let port = self.current_port;
+        if port == 0 || !Self::guest_range_in_ram(bus, port, 108) {
+            return None;
+        }
+        let graf_procs = bus.read_long(port + 104);
+        if graf_procs == 0 || !Self::guest_range_in_ram(bus, graf_procs, 36) {
+            return None;
+        }
+        let bits_proc = bus.read_long(graf_procs + 32);
+        if bits_proc == 0 || (bits_proc & 0xFFFF_0000) == 0x00F0_0000 {
+            return None;
+        }
+        if let Some((active_proc, active_sp)) = self.bits_proc_reentry {
+            if active_proc == bits_proc && cpu.read_reg(Register::A7) <= active_sp {
+                return None;
+            }
+        }
+        Some(bits_proc)
+    }
+
     pub(super) fn resolve_copy_bitmap(&self, bus: &MacMemoryBus, bits_ptr: u32) -> CopyBitmapInfo {
         if bits_ptr == 0 || !Self::guest_range_in_ram(bus, bits_ptr, 14) {
             return Self::inert_copy_bitmap_info();
@@ -26491,6 +26588,145 @@ mod tests {
         assert_eq!(bus.read_byte(dst_base), 0x80);
     }
 
+    /// Lays out a one-pixel CopyBits call whose destination is the current
+    /// port's bitmap, and points the port's `grafProcs.bitsProc` at
+    /// `bits_proc`. Returns `(src_bits_ptr, src_rect_ptr, dst_rect_ptr)`.
+    fn setup_copybits_through_port_bottleneck(
+        bus: &mut MacMemoryBus,
+        bits_proc: u32,
+    ) -> (u32, u32, u32) {
+        const PORT_PTR: u32 = 0x181000;
+        let dst_base = 0x300480u32;
+        bus.write_byte(dst_base, 0x00);
+        bus.write_long(PORT_PTR + 2, dst_base);
+        bus.write_word(PORT_PTR + 6, 1); // 1 byte per row
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, 0);
+        bus.write_word(PORT_PTR + 12, 1);
+        bus.write_word(PORT_PTR + 14, 8);
+
+        // grafProcs is the last GrafPort field, at offset 104; bitsProc is the
+        // ninth of the thirteen QDProcs slots, at offset 32 in the record.
+        let procs_ptr = 0x300500u32;
+        bus.write_long(PORT_PTR + 104, procs_ptr);
+        bus.write_long(procs_ptr + 32, bits_proc);
+
+        let src_base = 0x3004A0u32;
+        bus.write_byte(src_base, 0x80); // leftmost source pixel = black
+        let src_bits_ptr = 0x3004C0u32;
+        write_bitmap_record(bus, src_bits_ptr, src_base, 1, 0, 0, 1, 8);
+        let dst_bits_ptr = PORT_PTR + 2;
+
+        let src_rect_ptr = 0x3004E0u32;
+        let dst_rect_ptr = 0x300560u32;
+        write_rect(bus, src_rect_ptr, 0, 0, 1, 1);
+        write_rect(bus, dst_rect_ptr, 0, 0, 1, 1);
+
+        bus.write_long(TEST_SP, 0); // maskRgn
+        bus.write_word(TEST_SP + 4, 0); // mode = srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect_ptr);
+        bus.write_long(TEST_SP + 10, src_rect_ptr);
+        bus.write_long(TEST_SP + 14, dst_bits_ptr);
+        bus.write_long(TEST_SP + 18, src_bits_ptr);
+
+        (src_bits_ptr, src_rect_ptr, dst_rect_ptr)
+    }
+
+    #[test]
+    fn copybits_tail_calls_a_replacement_bitsproc_with_the_stdbits_frame() {
+        // Inside Macintosh Volume I (1985), pp. I-176 and I-197: CopyBits
+        // dispatches through grafProcs.bitsProc, and the bottleneck takes
+        // StdBits' argument list — srcBits, srcRect, dstRect, mode, maskRgn,
+        // with no dstBits because the destination is the port. Myst Preview's
+        // HyperTint XCMD colourises HyperCard's black-and-white card blit this
+        // way.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.current_port = 0x181000;
+        const BITS_PROC: u32 = 0x0006_F123;
+        const RETURN_PC: u32 = 0x0004_5678;
+        let (src_bits_ptr, src_rect_ptr, dst_rect_ptr) =
+            setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
+        cpu.write_reg(Register::PC, RETURN_PC);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        // Control transfers to the guest proc rather than blitting.
+        assert_eq!(cpu.read_reg(Register::PC), BITS_PROC);
+        assert_eq!(bus.read_byte(0x300480), 0x00, "the blit must not have run");
+
+        // CopyBits' own 22-byte frame is popped and StdBits' 18-byte frame plus
+        // a 4-byte return address is pushed in its place.
+        let sp = cpu.read_reg(Register::A7);
+        assert_eq!(sp, TEST_SP + 22 - 22);
+        assert_eq!(bus.read_long(sp), RETURN_PC);
+        assert_eq!(bus.read_long(sp + 4), 0, "maskRgn");
+        assert_eq!(bus.read_word(sp + 8), 0, "mode");
+        assert_eq!(bus.read_long(sp + 10), dst_rect_ptr);
+        assert_eq!(bus.read_long(sp + 14), src_rect_ptr);
+        assert_eq!(bus.read_long(sp + 18), src_bits_ptr);
+    }
+
+    #[test]
+    fn copybits_ignores_the_synthesized_standard_bitsproc_marker() {
+        // SetStdProcs writes $00F0A8EB into the bitsProc slot to mean "the
+        // standard proc" (IM:I I-197). Calling back into that marker address
+        // would jump into nothing, so CopyBits must do the transfer itself.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.current_port = 0x181000;
+        let _ = setup_copybits_through_port_bottleneck(&mut bus, 0x00F0_A8EB);
+        cpu.write_reg(Register::PC, 0x0004_5678);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::PC), 0x0004_5678);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 22);
+        assert_eq!(bus.read_byte(0x300480), 0x80, "the blit should have run");
+    }
+
+    #[test]
+    fn copybits_inside_a_bitsproc_tail_call_performs_the_transfer_itself() {
+        // A replacement bitsProc finishes its work by calling CopyBits again.
+        // Handing that nested call back to the same proc would never terminate,
+        // so while the stack is still inside the tail call CopyBits blits.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.current_port = 0x181000;
+        const BITS_PROC: u32 = 0x0006_F123;
+        let _ = setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
+        cpu.write_reg(Register::PC, 0x0004_5678);
+
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::PC), BITS_PROC);
+
+        // Re-arm the same call one frame deeper, as the proc itself would.
+        let nested_sp = cpu.read_reg(Register::A7).wrapping_sub(0x40);
+        cpu.write_reg(Register::A7, nested_sp);
+        let (src_bits_ptr, src_rect_ptr, dst_rect_ptr) =
+            setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
+        bus.write_long(nested_sp, 0); // maskRgn
+        bus.write_word(nested_sp + 4, 0); // mode = srcCopy
+        bus.write_long(nested_sp + 6, dst_rect_ptr);
+        bus.write_long(nested_sp + 10, src_rect_ptr);
+        bus.write_long(nested_sp + 14, 0x181000 + 2);
+        bus.write_long(nested_sp + 18, src_bits_ptr);
+        cpu.write_reg(Register::PC, 0x0004_9ABC);
+
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::PC),
+            0x0004_9ABC,
+            "no second tail call"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), nested_sp + 22);
+        assert_eq!(bus.read_byte(0x300480), 0x80, "the blit should have run");
+    }
+
     #[test]
     fn stdrect_consumes_verb_and_rect_pointer_arguments() {
         // Inside Macintosh Volume I (1985), p. I-197 + Imaging With QuickDraw
@@ -31549,6 +31785,45 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(d.window_palette_handle_exact(0), 0);
+    }
+
+    #[test]
+    fn nsetpalette_default_palette_window_installs_the_palette_on_the_device_immediately() {
+        // A dstWindow of (WindowPtr)-1 addresses the default palette — the
+        // colour environment used when no window supplies one — rather than any
+        // window, so there is no window activation that could apply it later.
+        // Myst Preview's HyperTint XCMD sets the screen palette this way and
+        // then draws its colour layer before calling ActivatePalette.
+        let (mut d, mut cpu, mut bus) = setup();
+        let palette_handle = bus.alloc(4);
+        let palette_ptr = bus.alloc(
+            crate::trap::quickdraw::PALETTE_HEADER_SIZE
+                + crate::trap::quickdraw::PALETTE_COLOR_INFO_SIZE * 2,
+        );
+        bus.write_long(palette_handle, palette_ptr);
+        bus.write_word(palette_ptr, 2); // pmEntries
+        let entry0 = crate::trap::TrapDispatcher::palette_color_info_ptr(palette_ptr, 0);
+        bus.write_word(entry0, 0x1111);
+        bus.write_word(entry0 + 2, 0x2222);
+        bus.write_word(entry0 + 4, 0x3333);
+        let entry1 = crate::trap::TrapDispatcher::palette_color_info_ptr(palette_ptr, 1);
+        bus.write_word(entry1, 0x4444);
+        bus.write_word(entry1 + 2, 0x5555);
+        bus.write_word(entry1 + 4, 0x6666);
+
+        // No window association and no ActivatePalette call: the front window is
+        // something else entirely.
+        d.front_window = 0x0020_6000;
+        bus.write_word(TEST_SP, 0x0100); // cUpdates = TRUE in the high byte
+        bus.write_long(TEST_SP + 2, palette_handle);
+        bus.write_long(TEST_SP + 6, 0xFFFF_FFFF); // dstWindow = (WindowPtr)-1
+
+        let result = d.dispatch_quickdraw(true, 0x295, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(d.device_clut[0], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(d.device_clut[1], [0x4444, 0x5555, 0x6666]);
+        assert_eq!(d.color_manager_clut[0], [0x1111, 0x2222, 0x3333]);
     }
 
     #[test]

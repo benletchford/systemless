@@ -1283,6 +1283,36 @@ pub fn draw_picture(
                 // Version (v2, 2 bytes)
                 pos += 2;
             }
+            0x8200 => {
+                // CompressedQuickTime. QuickTime 1993, Table 3-1:
+                // fixed opcode header, optional matte/mask data, an
+                // ImageDescription, then the compressed image bytes.
+                let (new_pos, clut) = parse_compressed_quicktime(
+                    bus,
+                    pos,
+                    dst_top,
+                    dst_left,
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    screen_mode,
+                    device_clut,
+                    clip_region.as_ref(),
+                    dst_clip,
+                );
+                pos = new_pos;
+                if let Some(ct) = clut {
+                    if preferred_clut.is_none()
+                        || preferred_clut
+                            .as_ref()
+                            .is_some_and(|existing| clut_resembles_canonical_8bpp(existing))
+                    {
+                        preferred_clut = Some(ct.clone());
+                    }
+                    last_clut = Some(ct);
+                }
+            }
             _ => {
                 if is_v2 {
                     // v2 reserved opcode skip rules
@@ -1328,6 +1358,173 @@ pub fn draw_picture(
     // one (scene palette); fall back to the last CTab seen otherwise.
     let returned_clut = preferred_clut.or(last_clut);
     (true, returned_clut)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_compressed_quicktime(
+    bus: &mut MacMemoryBus,
+    pos: u32,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    clip_region: Option<&PictureRegion>,
+    dst_clip: Option<&DstClip>,
+) -> (u32, Option<Vec<[u16; 3]>>) {
+    let payload_size = bus.read_long(pos);
+    let end = align_pict_pos(pos.saturating_add(4).saturating_add(payload_size));
+    let mut cursor = pos + 4;
+    if payload_size < 68 {
+        return (end, None);
+    }
+
+    let _version = bus.read_word(cursor);
+    cursor += 2;
+    cursor += 36; // MatrixRecord
+    let matte_size = bus.read_long(cursor);
+    cursor += 4;
+    cursor += 8; // matteRect
+    let _mode = bus.read_word(cursor);
+    cursor += 2;
+    let src_top = bus.read_word(cursor) as i16;
+    let src_left = bus.read_word(cursor + 2) as i16;
+    let src_bottom = bus.read_word(cursor + 4) as i16;
+    let src_right = bus.read_word(cursor + 6) as i16;
+    cursor += 8;
+    cursor += 4; // accuracy
+    let mask_size = bus.read_long(cursor);
+    cursor += 4;
+
+    if matte_size != 0 {
+        let matte_description_size = bus.read_long(cursor);
+        cursor = cursor
+            .saturating_add(matte_description_size)
+            .saturating_add(matte_size);
+    }
+    cursor = cursor.saturating_add(mask_size);
+    if cursor.saturating_add(86) > end {
+        return (end, None);
+    }
+
+    let description_size = bus.read_long(cursor);
+    let codec = bus.read_long(cursor + 4);
+    let width = usize::from(bus.read_word(cursor + 32));
+    let height = usize::from(bus.read_word(cursor + 34));
+    let data_size = bus.read_long(cursor + 44);
+    let depth = bus.read_word(cursor + 82);
+
+    let mut source_clut = vec![[0u16; 3]; 256];
+    if depth <= 8 && description_size >= 94 {
+        let mut table = cursor + 86;
+        let _seed = bus.read_long(table);
+        table += 4;
+        let flags = bus.read_word(table);
+        table += 2;
+        let size = usize::from(bus.read_word(table));
+        table += 2;
+        for index in 0..=size.min(255) {
+            let value = usize::from(bus.read_word(table));
+            let destination = if flags & 0x8000 != 0 { index } else { value };
+            if destination < source_clut.len() {
+                source_clut[destination] = [
+                    bus.read_word(table + 2),
+                    bus.read_word(table + 4),
+                    bus.read_word(table + 6),
+                ];
+            }
+            table += 8;
+        }
+    }
+
+    if trace_pict_enabled() {
+        let codec_bytes = codec.to_be_bytes();
+        eprintln!(
+            "[PICT] CompressedQuickTime codec='{}' size={}x{} depth={} data={} src=({},{}..{},{})",
+            String::from_utf8_lossy(&codec_bytes),
+            width,
+            height,
+            depth,
+            data_size,
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+        );
+    }
+
+    if codec != u32::from_be_bytes(*b"smc ") || width == 0 || height == 0 {
+        return (end, Some(source_clut));
+    }
+    let data_start = cursor.saturating_add(description_size);
+    if data_start.saturating_add(data_size) > end {
+        return (end, Some(source_clut));
+    }
+    let compressed = bus.read_bytes(data_start, data_size as usize);
+    let mut decoder = super::smc::SmcDecoder::new(width, height);
+    let Ok(pixels) = decoder.decode(&compressed) else {
+        return (end, Some(source_clut));
+    };
+    let color_map = build_src_to_dst_table(&source_clut, device_clut);
+    let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = (
+        screen_mode.0,
+        screen_mode.1,
+        i32::from(screen_mode.2),
+        i32::from(screen_mode.3),
+        screen_mode.4,
+    );
+
+    let crop_top = i32::from(src_top).max(0).min(height as i32);
+    let crop_left = i32::from(src_left).max(0).min(width as i32);
+    let crop_bottom = i32::from(src_bottom).max(crop_top).min(height as i32);
+    let crop_right = i32::from(src_right).max(crop_left).min(width as i32);
+    for source_y in crop_top..crop_bottom {
+        for source_x in crop_left..crop_right {
+            if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
+                continue;
+            }
+            let x = ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32
+                + i32::from(dst_left);
+            let y = ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32
+                + i32::from(dst_top);
+            let source_index = pixels[source_y as usize * width + source_x as usize];
+            write_pixel_clipped(
+                bus,
+                screen_base,
+                screen_rb,
+                x,
+                y,
+                color_map[usize::from(source_index)],
+                screen_w,
+                screen_h,
+                pixel_size,
+                dst_clip,
+            );
+        }
+    }
+
+    // QuickTime appends a QuickDraw-only warning after compressed image
+    // data so systems without the Image Compression Manager can explain
+    // why the picture was not drawn. The installed ICM suppresses that
+    // fallback after a successful decode. Its stream begins with a
+    // deliberately bogus PnSize opcode whose vertical value is $00AE and
+    // whose horizontal value gives the byte count to skip.
+    //
+    // QuickTime 1993, pp. 3-25 to 3-26 documents the warning and the
+    // $8200 payload. Apple DTS's August 1992 Macintosh Q&A additionally
+    // confirms that QuickTime ignores the following fallback after it has
+    // displayed the compressed image.
+    let final_pos = if bus.read_long(end) == 0x0007_00AE {
+        end.saturating_add(6)
+            .saturating_add(u32::from(bus.read_word(end + 4)))
+    } else {
+        end
+    };
+
+    (final_pos, Some(source_clut))
 }
 
 pub(crate) fn peek_initial_packbits_clut(

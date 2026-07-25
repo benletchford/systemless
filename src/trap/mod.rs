@@ -15,17 +15,21 @@
 
 mod control;
 mod dialog;
+mod cinepak;
 pub mod dispatch;
 mod event;
 pub(crate) mod extended80;
 mod framebuffer;
 mod memory;
 mod menu;
+mod movie_media;
 mod pict;
+mod qtrle;
 mod quickdraw;
 mod resource;
 mod sane;
 mod shapes;
+mod smc;
 mod sound;
 mod text_render;
 mod toolbox;

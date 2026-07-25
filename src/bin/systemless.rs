@@ -108,10 +108,8 @@ fn valid_cached_content_rect(cache: &CachedContentRect) -> bool {
         && content.height != 0
         && content.left.saturating_add(content.width) <= u32::from(cache.screen_width)
         && content.top.saturating_add(content.height) <= u32::from(cache.screen_height)
-        && content.left
-            == (u32::from(cache.screen_width).saturating_sub(content.width)) / 2
-        && content.top
-            == (u32::from(cache.screen_height).saturating_sub(content.height)) / 2
+        && content.left == (u32::from(cache.screen_width).saturating_sub(content.width)) / 2
+        && content.top == (u32::from(cache.screen_height).saturating_sub(content.height)) / 2
 }
 
 #[cfg(target_os = "macos")]
@@ -364,9 +362,9 @@ impl App {
             #[cfg(target_os = "macos")]
             content_rect_previous_frame: Vec::new(),
             #[cfg(target_os = "macos")]
-            content_rect_screen_mode: cached_content.as_ref().map(|cache| {
-                (cache.screen_width, cache.screen_height, cache.pixel_size)
-            }),
+            content_rect_screen_mode: cached_content
+                .as_ref()
+                .map(|cache| (cache.screen_width, cache.screen_height, cache.pixel_size)),
             #[cfg(target_os = "macos")]
             window_sized_content_rect: cached_content.as_ref().map(|cache| cache.content),
             #[cfg(target_os = "macos")]
@@ -608,9 +606,9 @@ impl App {
         // `ticks_behind` saturating to 0, the CPU loop would advance no work for
         // ~10 real seconds until the wall clock caught up — a launch stall. See
         // wall_clock_origin_for_guest_tick in systemless.org/src/emulator.rs.
-        let start = *self
-            .start_time
-            .get_or_insert_with(|| Self::wall_clock_origin_for_guest_tick(now, runner.guest_tick()));
+        let start = *self.start_time.get_or_insert_with(|| {
+            Self::wall_clock_origin_for_guest_tick(now, runner.guest_tick())
+        });
         let scheduled_frame_end = self.next_frame_time.unwrap_or(now + FRAME_DURATION);
 
         // Wall-clock tick target: where the game clock should be right now.
@@ -897,9 +895,7 @@ impl App {
                     detected = runner
                         .dispatcher()
                         .last_screen_copybits_rect
-                        .and_then(|rect| {
-                            centered_content_rect_from_copybits(rect, game_w, game_h)
-                        })
+                        .and_then(|rect| centered_content_rect_from_copybits(rect, game_w, game_h))
                         .map(|rect| (rect, confirmations));
                 }
                 if detected.is_none()
@@ -1162,16 +1158,14 @@ impl App {
 
             if scale == 1 {
                 for row in 0..game_h as usize {
-                    let src_row =
-                        &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
+                    let src_row = &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
                     let dst_offset = row * buf_w as usize;
                     buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
                 }
             } else {
                 scaled_row.resize(draw_w, 0xFF000000);
                 for row in 0..game_h as usize {
-                    let src_row =
-                        &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
+                    let src_row = &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
                     for (dst_chunk, &pixel) in
                         scaled_row.chunks_exact_mut(scale).zip(src_row.iter())
                     {
@@ -1312,8 +1306,7 @@ fn native_position_preserving_guest_anchor(
         let viewport_left = (size.width as f64 - viewport_width) * 0.5;
         let viewport_top = (size.height as f64 - viewport_height) * 0.5;
         (
-            viewport_left
-                + stable_content.left.saturating_sub(content.left) as f64 * scale,
+            viewport_left + stable_content.left.saturating_sub(content.left) as f64 * scale,
             viewport_top + stable_content.top.saturating_sub(content.top) as f64 * scale,
         )
     };
@@ -1368,14 +1361,11 @@ fn set_macos_window_geometry(
         );
         let mut target_frame: objc2_foundation::CGRect =
             msg_send![native_window, frameRectForContentRect: content_rect];
-        let delta_x =
-            f64::from(target_outer_position.x - current_outer_position.x) / scale;
-        let delta_y =
-            f64::from(target_outer_position.y - current_outer_position.y) / scale;
+        let delta_x = f64::from(target_outer_position.x - current_outer_position.x) / scale;
+        let delta_y = f64::from(target_outer_position.y - current_outer_position.y) / scale;
         target_frame.origin.x = current_frame.origin.x + delta_x;
-        target_frame.origin.y = current_frame.origin.y + current_frame.size.height
-            - target_frame.size.height
-            - delta_y;
+        target_frame.origin.y =
+            current_frame.origin.y + current_frame.size.height - target_frame.size.height - delta_y;
         let _: () = msg_send![native_window, setFrame: target_frame display: false animate: false];
     }
     true
@@ -2941,14 +2931,20 @@ mod tests {
             dst_right: 800,
             ..centered
         };
-        assert_eq!(centered_content_rect_from_copybits(fullscreen, 800, 600), None);
+        assert_eq!(
+            centered_content_rect_from_copybits(fullscreen, 800, 600),
+            None
+        );
 
         let off_center = ScreenCopyBitsRect {
             dst_left: 10,
             dst_right: 650,
             ..centered
         };
-        assert_eq!(centered_content_rect_from_copybits(off_center, 800, 600), None);
+        assert_eq!(
+            centered_content_rect_from_copybits(off_center, 800, 600),
+            None
+        );
     }
 
     #[cfg(target_os = "macos")]

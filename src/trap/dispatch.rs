@@ -270,11 +270,10 @@ pub(crate) fn trace_resfile_enabled() -> bool {
     *TRACE_RESFILE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_RESFILE").is_some())
 }
 
-/// `SYSTEMLESS_TRACE_QUICKTIME=1` enables logging of the first 20
+/// `SYSTEMLESS_TRACE_QUICKTIME=1` enables logging of the first 100
 /// Movie Toolbox dispatch (`$AAAA`) selectors fired by the guest.
-/// Off by default — the stub itself has no semantic side effects,
-/// so the trace is purely diagnostic for "which QuickTime calls
-/// does this app actually make?".
+/// Off by default; the trace is diagnostic for identifying the
+/// QuickTime calls a title makes.
 pub(crate) fn trace_quicktime_enabled() -> bool {
     *TRACE_QUICKTIME.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_QUICKTIME").is_some())
 }
@@ -968,6 +967,9 @@ pub struct TrapDispatcher {
     pub(crate) resource_backing_data: HashMap<(u16, [u8; 4], i16), Vec<u8>>,
     /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
     pub(crate) movie_states: HashMap<u32, MovieState>,
+    /// Maps a movie-controller component instance to the Movie it drives, set
+    /// by MCNewAttachedController so MCDoAction can start the right movie.
+    pub(crate) movie_by_controller: HashMap<u32, u32>,
     /// Movie Toolbox current error value for GetMoviesError.
     pub(crate) movie_error: i16,
     /// Movie Toolbox sticky error value for GetMoviesStickyError.
@@ -1078,6 +1080,11 @@ pub struct TrapDispatcher {
     /// HLE on one host thread, so Thread Manager critical sections collapse
     /// to a single dispatcher-wide counter.
     pub(crate) thread_critical_nesting: u32,
+    /// Synthetic Component Manager instances opened for HLE-provided
+    /// components such as the QuickTime movie controller.
+    pub(crate) synthetic_component_instances: HashSet<u32>,
+    /// Next opaque ComponentInstance value returned by OpenComponent.
+    pub(crate) next_synthetic_component_instance: u32,
     /// Saved old structure/content regions keyed by window pointer.
     /// SaveOld snapshots this state and DrawNew consumes it.
     pub(crate) saved_draw_old_regions: HashMap<u32, DrawOldState>,
@@ -1117,6 +1124,11 @@ pub struct TrapDispatcher {
     /// U.S. Roman keyboard-layout resource ID 0 is present in every
     /// System file and is used directly by apps that call KeyTranslate.
     pub(crate) system_kchr_cache: HashMap<i16, u32>,
+    /// Cache of synthetic ROM `'WDEF'` resource pointers. WDEF IDs 0 and 1
+    /// are the standard document and rounded-window definition functions.
+    /// Their behavior is implemented by the Window Manager HLE, but callers
+    /// may still fetch the resources directly through GetResource.
+    pub(crate) system_wdef_cache: HashMap<i16, u32>,
     /// Cache of allocated tool-trap trampolines for GetTrapAddress.
     /// Each entry is a 2-byte allocation containing the auto-pop
     /// variant of the canonical tool-trap word. When the guest does
@@ -1277,6 +1289,15 @@ pub struct TrapDispatcher {
     /// front-window one — otherwise plainDBox (procID=2) windows get a
     /// document-style title bar. Inside Macintosh Volume I, I-274 / I-299.
     pub(crate) window_proc_ids: HashMap<u32, i16>,
+    /// Windows whose `NewWindow` bounds lay entirely outside the screen.
+    ///
+    /// Real hardware draws such a window's frame where the application asked
+    /// for it — off-screen, where it is never seen. Applications park a window
+    /// there on purpose when they intend to drive its content themselves rather
+    /// than let the Window Manager place it; synthesising chrome for one at a
+    /// position the application never requested invents pixels the Mac would
+    /// not have shown.
+    pub(crate) windows_placed_offscreen: std::collections::HashSet<u32>,
     /// Aux-window handles keyed by WindowPtr. BasiliskII/System 7.5.3 gives
     /// each freshly created window a non-NIL AuxWin record, and SetWinColor
     /// mutates that record in place instead of allocating the first one on
@@ -1578,6 +1599,13 @@ pub struct TrapDispatcher {
     /// instead of running HLE code. This allows CRT-installed handlers (LoadSeg,
     /// UnloadSeg, ExitToShell) to run natively with proper code relocation.
     pub(crate) native_trap_table: HashMap<u16, u32>,
+    /// Re-entrancy guard for the CopyBits `grafProcs.bitsProc` bottleneck:
+    /// `(bitsProc address, stack pointer at the tail call)`. A custom bitsProc
+    /// normally reaches the real transfer by calling CopyBits again; without
+    /// this guard that second call would be handed back to the same proc
+    /// forever. While the stack pointer is still at or below the recorded value
+    /// we are nested inside the proc, so CopyBits performs the blit itself.
+    pub(crate) bits_proc_reentry: Option<(u32, u32)>,
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: Vec<TimerTask>,
@@ -1761,7 +1789,24 @@ pub(crate) struct MovieState {
     pub rate: i32,
     pub current_time: i32,
     pub duration: i32,
+    pub time_scale: i32,
     pub active: bool,
+    /// Parsed video track (sample tables + codec), if the movie carries one.
+    pub media: Option<super::movie_media::VideoTrack>,
+    /// The movie's data-fork bytes; `media` sample offsets index into this.
+    pub data_fork: Vec<u8>,
+    /// Lazily-created Cinepak decoder, retained so inter frames composite on
+    /// the prior reconstructed frame.
+    pub decoder: Option<super::cinepak::CinepakDecoder>,
+    /// Lazily-created QuickTime Animation (`rle `) decoder, retained across
+    /// frames for the same reason.
+    pub rle_decoder: Option<super::qtrle::QtRleDecoder>,
+    /// Index of the sample most recently decoded and blitted, to avoid
+    /// redundant re-decodes while the timeline sits on one frame.
+    pub rendered_sample: Option<usize>,
+    /// Guest tick at which playback was last serviced, used to advance the
+    /// movie clock by real elapsed time rather than jumping to the end.
+    pub last_service_tick: Option<u32>,
 }
 
 impl MovieState {
@@ -1771,6 +1816,7 @@ impl MovieState {
         _flags: u16,
         box_rect: (i16, i16, i16, i16),
         duration: i32,
+        time_scale: i32,
     ) -> Self {
         Self {
             box_rect,
@@ -1781,7 +1827,14 @@ impl MovieState {
             rate: 0,
             current_time: 0,
             duration: duration.max(1),
+            time_scale: time_scale.max(1),
             active: true,
+            media: None,
+            data_fork: Vec::new(),
+            decoder: None,
+            rle_decoder: None,
+            rendered_sample: None,
+            last_service_tick: None,
         }
     }
 }
@@ -1940,9 +1993,8 @@ impl TrapDispatcher {
                         .map(|snapshot| snapshot.bounds)
                 })
                 .or_else(|| {
-                    (dialog_ptr == self.front_window
-                        && self.dialog_items.contains_key(&dialog_ptr))
-                    .then_some(self.window_bounds)
+                    (dialog_ptr == self.front_window && self.dialog_items.contains_key(&dialog_ptr))
+                        .then_some(self.window_bounds)
                 })
         })
     }
@@ -2533,7 +2585,9 @@ impl TrapDispatcher {
             VfsDirectory {
                 dir_id: 2,
                 parent_dir_id: 1,
-                name: String::new(),
+                // The root directory's catalog name is the volume name.
+                // Files 1992, 2-27 and 2-85.
+                name: BOOT_VOLUME_NAME.to_string(),
             },
         );
         vfs_directory_paths.insert(2, String::new());
@@ -2554,6 +2608,7 @@ impl TrapDispatcher {
             resources: None,
             resource_backing_data: HashMap::new(),
             movie_states: HashMap::new(),
+            movie_by_controller: HashMap::new(),
             movie_error: 0,
             movie_sticky_error: 0,
             segment_map: HashMap::new(),
@@ -2581,12 +2636,15 @@ impl TrapDispatcher {
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
             thread_critical_nesting: 0,
+            synthetic_component_instances: HashSet::new(),
+            next_synthetic_component_instance: 0x00C1_0001,
             saved_draw_old_regions: HashMap::new(),
             fired_oapp_handler: false,
             system_str_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
             system_kchr_cache: HashMap::new(),
+            system_wdef_cache: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -2647,6 +2705,7 @@ impl TrapDispatcher {
             window_bounds: (0, 0, 342, 512),
             window_proc_id: 0,
             window_proc_ids: HashMap::new(),
+            windows_placed_offscreen: std::collections::HashSet::new(),
             window_aux_records: HashMap::new(),
             window_original_pixmaps: HashMap::new(),
             window_saved_under_pixels: HashMap::new(),
@@ -2766,6 +2825,7 @@ impl TrapDispatcher {
             fill_black_override: None,
             recording_picture: None,
             native_trap_table: HashMap::new(),
+            bits_proc_reentry: None,
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             primary_vbl_slot: 0,
@@ -3009,6 +3069,17 @@ impl TrapDispatcher {
 
     pub(crate) fn boot_volume_name() -> &'static str {
         BOOT_VOLUME_NAME
+    }
+
+    /// Fetch a file's data-fork bytes from the VFS, matching by normalized,
+    /// case-insensitive path (the same rule OpenMovieFile uses). Used to feed
+    /// QuickTime movie sample data that lives in the data fork.
+    pub(crate) fn vfs_data_fork_bytes(&self, name: &str) -> Option<Vec<u8>> {
+        let target = Self::normalize_vfs_path(name);
+        self.vfs
+            .iter()
+            .find(|(key, _)| Self::normalize_vfs_path(key).eq_ignore_ascii_case(&target))
+            .map(|(_, bytes)| bytes.clone())
     }
 
     pub(crate) fn boot_volume_ref_num() -> i16 {
@@ -4557,6 +4628,37 @@ impl TrapDispatcher {
             bus.write_word(entry + 6, b);
         }
         self.system_clut_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate (and cache) a callable resource shim for the standard ROM
+    /// window definition functions. The Window Manager HLE implements their
+    /// drawing and hit-testing behavior for built-in procIDs. A direct guest
+    /// call still has to honor the Pascal WDEF ABI, however: four parameters
+    /// occupy 12 bytes and the caller reserves a 4-byte result. The shim
+    /// discards those parameters, clears the result to the documented default
+    /// of zero, and returns through the saved JSR address. Macintosh Toolbox
+    /// Essentials (1992), pp. 4-145..4-146; Inside Macintosh Volume V,
+    /// V-31..V-32.
+    pub(crate) fn synthesize_system_wdef(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_wdef_cache.get(&res_id) {
+            return Some(ptr);
+        }
+        if !matches!(res_id, 0 | 1) {
+            return None;
+        }
+
+        let ptr = bus.alloc(10);
+        bus.write_word(ptr, 0x205F); // MOVEA.L (SP)+,A0 — recover JSR return PC.
+        bus.write_word(ptr + 2, 0xDEFC); // ADDA.W #12,SP — discard WDEF parameters.
+        bus.write_word(ptr + 4, 12);
+        bus.write_word(ptr + 6, 0x4297); // CLR.L (SP) — LongInt function result.
+        bus.write_word(ptr + 8, 0x4ED0); // JMP (A0).
+        self.system_wdef_cache.insert(res_id, ptr);
         Some(ptr)
     }
 

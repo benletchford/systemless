@@ -213,6 +213,22 @@ fn normalize_centered_compact_mac_viewport_margins_rgba(
         return false;
     }
 
+    // The 512x342 seed is a guess. A title whose logical viewport is a little
+    // wider or taller than a compact Mac's — Myst Preview's HyperCard card is
+    // 544x332 — would have real pixels blacked out, so grow the rect back over
+    // any adjacent line that is not part of the surrounding flood before
+    // trimming the ones that are.
+    let (content_left, content_top, content_right, content_bottom) = expand_content_edges_rgba(
+        pixels,
+        width,
+        height,
+        flood,
+        content_left,
+        content_top,
+        content_right,
+        content_bottom,
+    );
+
     let (content_left, content_top, content_right, content_bottom) = trim_flood_edges_rgba(
         pixels,
         width,
@@ -233,6 +249,54 @@ fn normalize_centered_compact_mac_viewport_margins_rgba(
         content_bottom,
     );
     true
+}
+
+/// Grows a candidate viewport rect outward while the line just outside each
+/// edge is not part of the surrounding flood, so content that extends past the
+/// assumed compact-Mac viewport is not blacked out. Bounded by the same edge
+/// budget as the inward trim, and never past the screen edge.
+#[allow(clippy::too_many_arguments)]
+fn expand_content_edges_rgba(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    flood: [u8; 3],
+    mut left: usize,
+    mut top: usize,
+    mut right: usize,
+    mut bottom: usize,
+) -> (usize, usize, usize, usize) {
+    let min_top = top.saturating_sub(LETTERBOX_EDGE_TRIM_LIMIT);
+    while top > min_top
+        && top > 0
+        && !row_or_column_is_mostly_flood(pixels, width, flood, left, top - 1, right, top)
+    {
+        top -= 1;
+    }
+
+    let max_bottom = bottom.saturating_add(LETTERBOX_EDGE_TRIM_LIMIT).min(height);
+    while bottom < max_bottom
+        && !row_or_column_is_mostly_flood(pixels, width, flood, left, bottom, right, bottom + 1)
+    {
+        bottom += 1;
+    }
+
+    let min_left = left.saturating_sub(LETTERBOX_EDGE_TRIM_LIMIT);
+    while left > min_left
+        && left > 0
+        && !row_or_column_is_mostly_flood(pixels, width, flood, left - 1, top, left, bottom)
+    {
+        left -= 1;
+    }
+
+    let max_right = right.saturating_add(LETTERBOX_EDGE_TRIM_LIMIT).min(width);
+    while right < max_right
+        && !row_or_column_is_mostly_flood(pixels, width, flood, right, top, right + 1, bottom)
+    {
+        right += 1;
+    }
+
+    (left, top, right, bottom)
 }
 
 fn trim_flood_edges_rgba(
@@ -1291,9 +1355,8 @@ mod tests {
     use super::{
         argb_palette_from_clut, clut_component_to_u8, clut_to_argb,
         normalize_centered_compact_mac_viewport_margins_rgba, render_cursor, render_cursor_argb,
-        render_screen_into,
-        render_screen_with_rgba_palette_into, rgba_palette_from_clut, screen_pixel_rgb,
-        CursorImage,
+        render_screen_into, render_screen_with_rgba_palette_into, rgba_palette_from_clut,
+        screen_pixel_rgb, CursorImage,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
 
@@ -1412,6 +1475,50 @@ mod tests {
             &pixels[lower_margin_idx..lower_margin_idx + 4],
             &[0, 0, 0, 0xFF]
         );
+    }
+
+    #[test]
+    fn compact_viewport_normalizer_keeps_content_wider_than_a_compact_mac_screen() {
+        // Myst Preview's HyperCard card is 544x332, not the 512x342 the
+        // normalizer seeds with. The extra 16 columns on each side are real
+        // pixels and must survive.
+        let width = 800usize;
+        let height = 600usize;
+        let mut pixels = vec![0u8; width * height * 4];
+        // The surround is the uniform desktop fill the normalizer blacks out;
+        // Myst's is index 255 of its palette, an off-white.
+        for px in pixels.chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 255, 222, 0xFF]);
+        }
+        let (left, top, right, bottom) = (128usize, 134usize, 672usize, 466usize);
+        for y in top..bottom {
+            for x in left..right {
+                let idx = (y * width + x) * 4;
+                pixels[idx..idx + 4].copy_from_slice(&[
+                    (x & 0xFF) as u8,
+                    200,
+                    (y & 0xFF) as u8,
+                    0xFF,
+                ]);
+            }
+        }
+
+        assert!(normalize_centered_compact_mac_viewport_margins_rgba(
+            &mut pixels,
+            width,
+            height
+        ));
+
+        for x in [left, left + 8, right - 9, right - 1] {
+            let idx = (300 * width + x) * 4;
+            assert_eq!(
+                &pixels[idx..idx + 4],
+                &[(x & 0xFF) as u8, 200, (300 & 0xFF) as u8, 0xFF],
+                "column {x} is inside the 544-wide viewport and must not be blacked out"
+            );
+        }
+        let outside_idx = (300 * width + (left - 1)) * 4;
+        assert_eq!(&pixels[outside_idx..outside_idx + 4], &[0, 0, 0, 0xFF]);
     }
 
     #[test]

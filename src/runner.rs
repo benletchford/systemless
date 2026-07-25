@@ -1,7 +1,6 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::cpu::{M68kCpu, Register, StepResult};
-use m68k::BatchExit;
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::loader::{
     ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
@@ -12,6 +11,7 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 use crate::{Error, Result};
+use m68k::BatchExit;
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -2196,6 +2196,25 @@ impl FixtureRunner {
             );
         }
 
+        // JSwapFont ($08E0): private Font Manager vector used by QuickDraw to
+        // call FMSwapFont directly. Executor's clean-room low-memory table
+        // identifies the address and initializes it from the $A901 routine.
+        //
+        // A JSR has placed its return address above the four-byte pointer to
+        // the caller's FMInput record. Pop that return address before entering
+        // the HLE trap so A7 points at the documented argument, then jump back
+        // after the trap
+        // leaves A7 on the four-byte FMOutPtr result slot. Allocate this only
+        // after reserving the application zone header so it remains live.
+        let swap_font_trampoline = self.bus.alloc(6);
+        self.bus
+            .write_word(swap_font_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus
+            .write_word(swap_font_trampoline + 2, 0xA901); // FMSwapFont
+        self.bus
+            .write_word(swap_font_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus.write_long(addr::J_SWAP_FONT, swap_font_trampoline);
+
         // Set CPU state
         self.cpu.write_reg(Register::A5, app.a5_base);
         // Push the exit trampoline as the return address on the stack
@@ -2964,8 +2983,7 @@ impl FixtureRunner {
                 ));
             if executed > 0 {
                 count += executed;
-                self.total_instructions =
-                    self.total_instructions.wrapping_add(executed as u64);
+                self.total_instructions = self.total_instructions.wrapping_add(executed as u64);
                 if !sound_work_only {
                     let charge_units = executed as i32 - i32::from(precharged);
                     if self.charge_tick_budget(charge_units, tick_cap) {
@@ -7265,6 +7283,70 @@ mod tests {
                 .read_long(crate::memory::globals::addr::J_CRSR_TASK),
             CURSOR_TASK_NOOP_ADDR,
             "JCrsrTask ($08EE) should boot to a callable no-op vector"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_callable_swap_font_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let swap_font_trampoline = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_SWAP_FONT);
+        assert_ne!(swap_font_trampoline, 0);
+        assert_eq!(
+            [
+                runner.bus.read_word(swap_font_trampoline),
+                runner.bus.read_word(swap_font_trampoline + 2),
+                runner.bus.read_word(swap_font_trampoline + 4),
+            ],
+            [0x205F, 0xA901, 0x4ED0]
+        );
+
+        let fm_input_sp = 0x007F_FE00u32;
+        let fm_input = 0x0002_1000u32;
+        let return_pc = 0x0002_0000u32;
+        runner.bus.write_word(fm_input, 3); // family
+        runner.bus.write_word(fm_input + 2, 12); // size
+        runner.bus.write_byte(fm_input + 4, 0); // face
+        runner.bus.write_byte(fm_input + 5, 1); // needBits
+        runner.bus.write_word(fm_input + 6, 0); // device
+        runner.bus.write_word(fm_input + 8, 1); // numer.v
+        runner.bus.write_word(fm_input + 10, 1); // numer.h
+        runner.bus.write_word(fm_input + 12, 1); // denom.v
+        runner.bus.write_word(fm_input + 14, 1); // denom.h
+        runner.bus.write_long(fm_input_sp, fm_input); // CONST VAR inRec
+        runner.bus.write_long(fm_input_sp + 4, 0); // result slot
+        runner.bus.write_long(fm_input_sp - 4, return_pc);
+        runner.bus.write_word(return_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, swap_font_trampoline);
+        runner.cpu.write_reg(Register::A7, fm_input_sp - 4);
+
+        let (steps, running) = runner.run_steps(3, None);
+
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), fm_input_sp + 4);
+        assert_ne!(
+            runner.bus.read_long(fm_input_sp + 4),
+            0,
+            "JSwapFont should return a non-NIL FMOutPtr through the Pascal result slot"
         );
     }
 

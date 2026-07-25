@@ -1137,15 +1137,16 @@ mod tests {
         disp.sent_open_app_event = true;
 
         disp.push_key_down(0x24, 13);
-        let (_, _, _, _, _, has_event) =
-            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
-        assert!(has_event, "keyDown should use the default system event mask");
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(
+            has_event,
+            "keyDown should use the default system event mask"
+        );
         assert!(disp.key_is_down(0x24));
 
         disp.push_key_up(0x24, 13);
         assert!(!disp.key_is_down(0x24), "keyUp must clear physical state");
-        let (_, _, _, _, _, has_event) =
-            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
         assert!(
             !has_event,
             "the default SysEvtMask must not post keyUp events"
