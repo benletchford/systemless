@@ -1968,12 +1968,60 @@ impl super::TrapDispatcher {
                 && title_index.is_none()
                 && !menu.enabled;
             let width = if classic_plain_dimmed_title {
-                // MTE 1992 p. 3-131: DisableItem(menu, 0) disables the
-                // whole menu title. On a plain classic screen dump, the
-                // standard MDEF's dimmed title treatment resolves to the
-                // menu-bar background, matching the System 7.5.3 reference while
-                // preserving title spacing and hit regions.
-                title_width
+                // MTE 1992 p. 3-131: DisableItem(menu, 0) disables the whole
+                // menu title, and HIG 1992 p. 54 says an unavailable title
+                // stays visible but dimmed. The standard MDEF dims by drawing
+                // the title and then knocking it back with the 50% gray
+                // pattern, so the text reads as grey rather than vanishing —
+                // System 7.5.3 under BasiliskII renders SimCity 2000's
+                // disabled File title exactly that way.
+                let drawn = Self::fb_draw_string(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    text_y,
+                    title,
+                    font_id,
+                    font_size,
+                );
+                let dim_top = (text_y - metrics.ascent).max(0);
+                let dim_bottom = (text_y + metrics.descent).min(menu_bar_height - 1);
+                for py in dim_top..dim_bottom {
+                    for px in x..x.saturating_add(drawn) {
+                        if (px as i32 + py as i32) % 2 != 0 {
+                            continue;
+                        }
+                        match menu_bar_bg_index {
+                            Some(bg_index) => Self::fb_set_pixel_index(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                px,
+                                py,
+                                bg_index,
+                            ),
+                            None => Self::fb_set_pixel(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                px,
+                                py,
+                                false,
+                            ),
+                        }
+                    }
+                }
+                drawn
             } else if Self::is_system_menu_mark_title(title) {
                 self.fb_draw_retro_computer_menu_mark(
                     bus,
