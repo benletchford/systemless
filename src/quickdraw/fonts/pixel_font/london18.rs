@@ -16,8 +16,12 @@ use crate::quickdraw::fonts::{FontMetrics, Glyph};
 
 pub use super::geneva18::GENEVA_18_SRC as LONDON_18_SRC;
 
-pub const LONDON_18_METRICS: FontMetrics =
-    FontMetrics { ascent: 18, descent: 4, wid_max: 18, leading: 1 };
+pub const LONDON_18_METRICS: FontMetrics = FontMetrics {
+    ascent: 18,
+    descent: 4,
+    wid_max: 18,
+    leading: 1,
+};
 
 const LEN: usize = data_len(LONDON_18_SRC);
 pub const LONDON_18_GLYPHS: [Glyph; 95] = decode_glyphs(LONDON_18_SRC);

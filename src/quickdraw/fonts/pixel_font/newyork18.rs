@@ -13,11 +13,15 @@ use super::{data_len, decode_data, decode_glyphs, DecodedFace, GlyphSrc};
 use crate::g;
 use crate::quickdraw::fonts::{FontMetrics, Glyph};
 
-pub const NEWYORK_18_METRICS: FontMetrics =
-    FontMetrics { ascent: 17, descent: 4, wid_max: 20, leading: 2 };
+pub const NEWYORK_18_METRICS: FontMetrics = FontMetrics {
+    ascent: 17,
+    descent: 4,
+    wid_max: 20,
+    leading: 2,
+};
 
 pub const NEWYORK_18_SRC: &[GlyphSrc] = &[
-    g!(6, (6, -1), ), // ' '
+    g!(6, (6, -1),), // ' '
     g!(6, (2, -14), // '!'
         "##" "##" "##" "##" "##" "##" "##" "##" "##" "##" ".." ".." "##"
     ),

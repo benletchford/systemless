@@ -15,11 +15,15 @@ use super::{data_len, decode_data, decode_glyphs, DecodedFace, GlyphSrc};
 use crate::g;
 use crate::quickdraw::fonts::{FontMetrics, Glyph};
 
-pub const GENEVA_24_METRICS: FontMetrics =
-    FontMetrics { ascent: 22, descent: 6, wid_max: 30, leading: 1 };
+pub const GENEVA_24_METRICS: FontMetrics = FontMetrics {
+    ascent: 22,
+    descent: 6,
+    wid_max: 30,
+    leading: 1,
+};
 
 pub const GENEVA_24_SRC: &[GlyphSrc] = &[
-    g!(8, (0, -1), ), // ' '
+    g!(8, (0, -1),), // ' '
     g!(6, (3, -18), // '!'
         "##" "##" "##" "##" "##" "##" "##" "##" "##" "##" "##" "##" ".." ".." "##"
     ),

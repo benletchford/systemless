@@ -16,8 +16,12 @@ use crate::quickdraw::fonts::{FontMetrics, Glyph};
 
 pub use super::geneva14::GENEVA_14_SRC as VENICE_14_SRC;
 
-pub const VENICE_14_METRICS: FontMetrics =
-    FontMetrics { ascent: 14, descent: 4, wid_max: 15, leading: 1 };
+pub const VENICE_14_METRICS: FontMetrics = FontMetrics {
+    ascent: 14,
+    descent: 4,
+    wid_max: 15,
+    leading: 1,
+};
 
 const LEN: usize = data_len(VENICE_14_SRC);
 pub const VENICE_14_GLYPHS: [Glyph; 95] = decode_glyphs(VENICE_14_SRC);

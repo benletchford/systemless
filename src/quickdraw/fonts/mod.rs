@@ -597,7 +597,11 @@ mod tests {
                 assert!(
                     hi - lo <= tol,
                     "({}, {}) {group} letters span {}px of top-line variation (>{}px): {:?}",
-                    pf.font_id, pf.size, hi - lo, tol, tops
+                    pf.font_id,
+                    pf.size,
+                    hi - lo,
+                    tol,
+                    tops
                 );
             }
         }
@@ -621,7 +625,11 @@ mod tests {
                 assert!(
                     hi - lo <= tol,
                     "({}, {}) {group} letters span {}px of bottom-line variation (>{}px): {:?}",
-                    pf.font_id, pf.size, hi - lo, tol, bottoms
+                    pf.font_id,
+                    pf.size,
+                    hi - lo,
+                    tol,
+                    bottoms
                 );
             }
         }
@@ -654,7 +662,11 @@ mod tests {
                 assert!(
                     (0..=2).contains(&above),
                     "({}, {}) descender {:?} bowl starts at row {} but x-height is at {}",
-                    pf.font_id, pf.size, byte as char, g.origin_y, x_top
+                    pf.font_id,
+                    pf.size,
+                    byte as char,
+                    g.origin_y,
+                    x_top
                 );
             }
         }
@@ -687,7 +699,10 @@ mod tests {
                 cur = Some((f, s));
                 map.insert((f, s), Vec::new());
             } else {
-                let v: Vec<i32> = line.split_whitespace().map(|x| x.parse().unwrap()).collect();
+                let v: Vec<i32> = line
+                    .split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect();
                 map.get_mut(&cur.unwrap())
                     .unwrap()
                     .push((v[0], v[1], v[2], v[3], v[4]));
@@ -719,7 +734,8 @@ mod tests {
                 if g.advance as i32 != adv || (i != 0 && g.origin_x as i32 != ox) {
                     layout_off.push((b' ' + i as u8) as char);
                 }
-                if i != 0 && (g.origin_y as i32 != oy || g.width as i32 != w || g.height as i32 != h)
+                if i != 0
+                    && (g.origin_y as i32 != oy || g.width as i32 != w || g.height as i32 != h)
                 {
                     box_off += 1;
                 }
@@ -755,7 +771,11 @@ mod tests {
                 assert!(
                     bottom > 0 && bottom <= pf.metrics.descent as i32,
                     "({}, {}) descender {:?} bottom {} outside 1..={}",
-                    pf.font_id, pf.size, byte as char, bottom, pf.metrics.descent
+                    pf.font_id,
+                    pf.size,
+                    byte as char,
+                    bottom,
+                    pf.metrics.descent
                 );
             }
         }

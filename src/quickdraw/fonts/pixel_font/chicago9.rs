@@ -14,11 +14,15 @@ use super::{data_len, decode_data, decode_glyphs, DecodedFace, GlyphSrc};
 use crate::g;
 use crate::quickdraw::fonts::{FontMetrics, Glyph};
 
-pub const CHICAGO_9_METRICS: FontMetrics =
-    FontMetrics { ascent: 9, descent: 3, wid_max: 11, leading: 0 };
+pub const CHICAGO_9_METRICS: FontMetrics = FontMetrics {
+    ascent: 9,
+    descent: 3,
+    wid_max: 11,
+    leading: 0,
+};
 
 pub const CHICAGO_9_SRC: &[GlyphSrc] = &[
-    g!(3, (3, -1), ), // ' '
+    g!(3, (3, -1),), // ' '
     g!(3, (2, -7), // '!'
         "#" "#" "#" "#" "#" "." "#"
     ),
@@ -55,7 +59,9 @@ pub const CHICAGO_9_SRC: &[GlyphSrc] = &[
     g!(3, (1, -1), // ','
         "##" "##" "#."
     ),
-    g!(3, (0, -3), // '-'
+    g!(
+        3,
+        (0, -3), // '-'
         "###"
     ),
     g!(3, (1, -1), // '.'
@@ -205,7 +211,9 @@ pub const CHICAGO_9_SRC: &[GlyphSrc] = &[
     g!(8, (2, -7), // '^'
         "..#.." ".#.#." "#...#"
     ),
-    g!(5, (0, 1), // '_'
+    g!(
+        5,
+        (0, 1), // '_'
         "#####"
     ),
     g!(5, (2, -8), // '`'

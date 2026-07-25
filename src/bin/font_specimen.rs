@@ -37,7 +37,11 @@ struct Canvas {
 
 impl Canvas {
     fn new(w: i32, h: i32) -> Self {
-        Canvas { w, h, px: vec![0; (w * h) as usize] }
+        Canvas {
+            w,
+            h,
+            px: vec![0; (w * h) as usize],
+        }
     }
     fn set(&mut self, x: i32, y: i32) {
         if x >= 0 && x < self.w && y >= 0 && y < self.h {
@@ -48,7 +52,14 @@ impl Canvas {
 
 /// Blit `text` in face (font_id,size) with its baseline at `baseline_y`,
 /// pen starting at `x`. Returns the pen x after the last glyph.
-fn draw_text(canvas: &mut Canvas, x: i32, baseline_y: i32, font_id: i16, size: i16, text: &str) -> i32 {
+fn draw_text(
+    canvas: &mut Canvas,
+    x: i32,
+    baseline_y: i32,
+    font_id: i16,
+    size: i16,
+    text: &str,
+) -> i32 {
     let mut pen = x;
     for ch in text.chars() {
         if let Some((glyph, data)) = get_glyph(font_id, size, ch) {
@@ -72,7 +83,11 @@ fn draw_text(canvas: &mut Canvas, x: i32, baseline_y: i32, font_id: i16, size: i
 
 fn text_width(font_id: i16, size: i16, text: &str) -> i32 {
     text.chars()
-        .map(|ch| get_glyph(font_id, size, ch).map(|(g, _)| g.advance as i32).unwrap_or(6))
+        .map(|ch| {
+            get_glyph(font_id, size, ch)
+                .map(|(g, _)| g.advance as i32)
+                .unwrap_or(6)
+        })
         .sum()
 }
 
@@ -108,15 +123,42 @@ fn main() {
         let name = font_name_for_id(f.font_id).unwrap_or("?");
         let label = format!("{} {}", name, f.size);
         draw_text(&mut canvas, PAD, baseline, LABEL_FONT, LABEL_SIZE, &label);
-        draw_text(&mut canvas, PAD + LABEL_W, baseline, f.font_id, f.size, SPECIMEN);
+        draw_text(
+            &mut canvas,
+            PAD + LABEL_W,
+            baseline,
+            f.font_id,
+            f.size,
+            SPECIMEN,
+        );
         y += rh + ROW_GAP;
     }
 
     std::fs::create_dir_all("target/font_specimens").expect("mkdir");
-    save(&canvas, false, "target/font_specimens/specimen_white@1x.png", 1);
-    save(&canvas, true, "target/font_specimens/specimen_black@1x.png", 1);
-    save(&canvas, false, "target/font_specimens/specimen_white.png", SCALE);
-    save(&canvas, true, "target/font_specimens/specimen_black.png", SCALE);
+    save(
+        &canvas,
+        false,
+        "target/font_specimens/specimen_white@1x.png",
+        1,
+    );
+    save(
+        &canvas,
+        true,
+        "target/font_specimens/specimen_black@1x.png",
+        1,
+    );
+    save(
+        &canvas,
+        false,
+        "target/font_specimens/specimen_white.png",
+        SCALE,
+    );
+    save(
+        &canvas,
+        true,
+        "target/font_specimens/specimen_black.png",
+        SCALE,
+    );
     println!(
         "wrote {} faces to target/font_specimens/ ({}x{} @1x, {}x scaled)",
         faces.len(),

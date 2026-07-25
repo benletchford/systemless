@@ -9,12 +9,16 @@
 //! carries its own metrics constant. Not derived from any third-party
 //! font.
 
+pub use super::geneva12::GENEVA_12_SRC as APPLICATION_12_SRC;
 use super::{data_len, decode_data, decode_glyphs, DecodedFace};
 use crate::quickdraw::fonts::{FontMetrics, Glyph};
-pub use super::geneva12::GENEVA_12_SRC as APPLICATION_12_SRC;
 
-pub const APPLICATION_12_METRICS: FontMetrics =
-    FontMetrics { ascent: 12, descent: 3, wid_max: 12, leading: 0 };
+pub const APPLICATION_12_METRICS: FontMetrics = FontMetrics {
+    ascent: 12,
+    descent: 3,
+    wid_max: 12,
+    leading: 0,
+};
 
 const LEN: usize = data_len(APPLICATION_12_SRC);
 pub const APPLICATION_12_GLYPHS: [Glyph; 95] = decode_glyphs(APPLICATION_12_SRC);

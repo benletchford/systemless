@@ -13,11 +13,15 @@ use super::{data_len, decode_data, decode_glyphs, DecodedFace, GlyphSrc};
 use crate::g;
 use crate::quickdraw::fonts::{FontMetrics, Glyph};
 
-pub const NEWYORK_14_METRICS: FontMetrics =
-    FontMetrics { ascent: 14, descent: 3, wid_max: 16, leading: 2 };
+pub const NEWYORK_14_METRICS: FontMetrics = FontMetrics {
+    ascent: 14,
+    descent: 3,
+    wid_max: 16,
+    leading: 2,
+};
 
 pub const NEWYORK_14_SRC: &[GlyphSrc] = &[
-    g!(4, (4, -1), ), // ' '
+    g!(4, (4, -1),), // ' '
     g!(5, (2, -11), // '!'
         "#" "#" "#" "#" "#" "#" "#" "." "." "#"
     ),
@@ -54,10 +58,14 @@ pub const NEWYORK_14_SRC: &[GlyphSrc] = &[
     g!(4, (1, -2), // ','
         ".#" ".#" "#."
     ),
-    g!(8, (1, -5), // '-'
+    g!(
+        8,
+        (1, -5), // '-'
         "######"
     ),
-    g!(3, (1, -1), // '.'
+    g!(
+        3,
+        (1, -1), // '.'
         "#"
     ),
     g!(8, (2, -11), // '/'
@@ -204,7 +212,9 @@ pub const NEWYORK_14_SRC: &[GlyphSrc] = &[
     g!(7, (1, -11), // '^'
         "..#.." ".#.#." "#...#"
     ),
-    g!(7, (0, 2), // '_'
+    g!(
+        7,
+        (0, 2), // '_'
         "#######"
     ),
     g!(5, (1, -12), // '`'

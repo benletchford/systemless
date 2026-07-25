@@ -13,11 +13,15 @@ use super::{data_len, decode_data, decode_glyphs, DecodedFace, GlyphSrc};
 use crate::g;
 use crate::quickdraw::fonts::{FontMetrics, Glyph};
 
-pub const MONACO_10_METRICS: FontMetrics =
-    FontMetrics { ascent: 10, descent: 3, wid_max: 6, leading: 1 };
+pub const MONACO_10_METRICS: FontMetrics = FontMetrics {
+    ascent: 10,
+    descent: 3,
+    wid_max: 6,
+    leading: 1,
+};
 
 pub const MONACO_10_SRC: &[GlyphSrc] = &[
-    g!(6, (0, -1), ), // ' '
+    g!(6, (0, -1),), // ' '
     g!(6, (2, -8), // '!'
         "#" "#" "#" "#" "#" "#" "." "#"
     ),
@@ -54,7 +58,9 @@ pub const MONACO_10_SRC: &[GlyphSrc] = &[
     g!(6, (2, -2), // ','
         ".#" ".#" "#."
     ),
-    g!(6, (1, -4), // '-'
+    g!(
+        6,
+        (1, -4), // '-'
         "####"
     ),
     g!(6, (2, -2), // '.'
@@ -204,7 +210,9 @@ pub const MONACO_10_SRC: &[GlyphSrc] = &[
     g!(6, (0, -8), // '^'
         "..#.." ".#.#." "#...#"
     ),
-    g!(6, (0, 1), // '_'
+    g!(
+        6,
+        (0, 1), // '_'
         "######"
     ),
     g!(6, (1, -9), // '`'
