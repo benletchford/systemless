@@ -44,6 +44,7 @@ pub mod loader;
 pub mod machine_profile;
 pub mod managers;
 pub mod memory;
+pub mod menu_model;
 pub mod quickdraw;
 pub mod runner;
 /// Deterministic trap-interaction replays. This is internal test
