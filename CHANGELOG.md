@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/benletchford/systemless/compare/v0.3.0...v0.4.0) (2026-07-25)
+
+
+### Features
+
+* play QuickTime movies on a timeline with cvid, rle and smc image decoders ([37b62a7](https://github.com/benletchford/systemless/commit/37b62a76b7ebaede548b281ecc83ee1a027e6d7b))
+
 ## [0.3.0](https://github.com/benletchford/systemless/compare/v0.2.5...v0.3.0) (2026-07-25)
 
 
