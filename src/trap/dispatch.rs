@@ -974,6 +974,12 @@ pub struct TrapDispatcher {
     pub(crate) movie_error: i16,
     /// Movie Toolbox sticky error value for GetMoviesStickyError.
     pub(crate) movie_sticky_error: i16,
+    /// Dialogs the application has already painted itself with DrawDialog.
+    /// ModalDialog gets and handles events; it does not repaint the dialog on
+    /// entry. Inside Macintosh Volume I, I-415 (ModalDialog) and I-411
+    /// (DrawDialog). Repainting would erase whatever the application drew
+    /// into the dialog between its own DrawDialog and the ModalDialog call.
+    pub(crate) dialogs_drawn_by_app: std::collections::HashSet<u32>,
     /// Map of Segment ID -> Loaded Address (for LoadSeg)
     pub(crate) segment_map: HashMap<i16, u32>,
     /// AppleEvent handlers registered by the guest via Pack8 routine 31
@@ -2611,6 +2617,7 @@ impl TrapDispatcher {
             movie_by_controller: HashMap::new(),
             movie_error: 0,
             movie_sticky_error: 0,
+            dialogs_drawn_by_app: std::collections::HashSet::new(),
             segment_map: HashMap::new(),
             ae_handlers: HashMap::new(),
             ae_events: HashMap::new(),

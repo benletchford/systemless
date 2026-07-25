@@ -4433,6 +4433,7 @@ impl super::TrapDispatcher {
     }
 
     fn clear_dialog_scoped_item_state(&mut self, dialog_ptr: u32) {
+        self.dialogs_drawn_by_app.remove(&dialog_ptr);
         self.dialog_items.remove(&dialog_ptr);
         self.dialog_item_handles
             .retain(|_, (dlg, _)| *dlg != dialog_ptr);
@@ -10549,6 +10550,11 @@ impl super::TrapDispatcher {
                         false,
                     );
                     self.dialog_items.insert(dialog_ptr, items);
+                    // Record that the application painted this dialog itself.
+                    // ModalDialog must not repaint it on entry, or anything the
+                    // app draws into the dialog after this call is erased.
+                    // Inside Macintosh Volume I, I-415.
+                    self.dialogs_drawn_by_app.insert(dialog_ptr);
                     // MTE 1992 p. 6-142: DrawDialog calls
                     // application-defined item draw procs for userItem
                     // records. Queue them after the HLE redraw so the
@@ -12143,7 +12149,15 @@ impl super::TrapDispatcher {
                         if let Some(snapshot) = preserved_visible_snapshot {
                             self.restore_dialog_pixels(bus, snapshot.bounds, &snapshot.pixels);
                         }
-                        if !game_managed && !is_reentry {
+                        // ModalDialog gets and handles events; it does not
+                        // repaint the dialog. When the application already
+                        // called DrawDialog itself, anything it drew into the
+                        // dialog afterwards — Civilization's demo notice text
+                        // sits in the dialog body, outside any DITL item — is
+                        // still on screen, and repainting here would erase it.
+                        // Inside Macintosh Volume I, I-415.
+                        let app_painted = self.dialogs_drawn_by_app.contains(&dialog_ptr);
+                        if !game_managed && !is_reentry && !app_painted {
                             // First entry: draw the dialog chrome and controls.
                             // Before draw_dialog fills the dialog area white, save the
                             // pixel content of every userItem rect when those pixels
