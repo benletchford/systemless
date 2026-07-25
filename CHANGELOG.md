@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1](https://github.com/benletchford/systemless/compare/v0.4.0...v0.4.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* dim a disabled menu title with the gray pattern instead of hiding it ([92d9246](https://github.com/benletchford/systemless/commit/92d92466037b45d703e6045ad09dad25e03909d4))
+* keep the menu-bar exclusion out of a window's content region so moved windows do not lose their top rows ([3ba5c08](https://github.com/benletchford/systemless/commit/3ba5c083b51c5e72e0cc7ea34880c32e10a241e5))
+* populate the 68k exception vector table so a stray deref of address 0 lands in ROM space ([b764613](https://github.com/benletchford/systemless/commit/b7646136281e71bc02879327047a9ce70fbef60f))
+* report a loaded resource handle's exact byte count from GetHandleSize ([e85894e](https://github.com/benletchford/systemless/commit/e85894e88544f84fca84d50c417aec361af3cab0))
+* subtract front windows from visRgn so a background repaint cannot erase a modal dialog ([2420fb0](https://github.com/benletchford/systemless/commit/2420fb06c5a1b5b64f2872096afba568c99635e7))
+
 ## [0.4.0](https://github.com/benletchford/systemless/compare/v0.3.0...v0.4.0) (2026-07-25)
 
 
