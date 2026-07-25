@@ -145,6 +145,7 @@ impl Default for GuestCursorData {
 fn replace_pending_guest_frame(
     state: &mut GuestFrameMailboxState,
     framebuffer: &[u8],
+    layout: GuestVisibleByteLayout,
     metadata: GuestFrameMetadata,
 ) {
     let mut pixels = if let Some(previous) = state.pending.take() {
@@ -153,8 +154,7 @@ fn replace_pending_guest_frame(
     } else {
         state.recycled.pop().unwrap_or_default()
     };
-    pixels.clear();
-    pixels.extend_from_slice(framebuffer);
+    copy_guest_visible_pixels(&mut pixels, framebuffer, layout);
     state.pending = Some(GuestFrameSubmission {
         framebuffer: pixels,
         metadata,
@@ -175,7 +175,12 @@ impl AsyncGuestPresenter {
         })
     }
 
-    fn enqueue(&self, framebuffer: &[u8], metadata: GuestFrameMetadata) -> Result<(), String> {
+    fn enqueue(
+        &self,
+        framebuffer: &[u8],
+        layout: GuestVisibleByteLayout,
+        metadata: GuestFrameMetadata,
+    ) -> Result<(), String> {
         let mut state = self
             .mailbox
             .state
@@ -186,7 +191,7 @@ impl AsyncGuestPresenter {
         }
 
         state.paused = false;
-        replace_pending_guest_frame(&mut state, framebuffer, metadata);
+        replace_pending_guest_frame(&mut state, framebuffer, layout, metadata);
         self.mailbox.changed.notify_one();
         Ok(())
     }
@@ -699,12 +704,19 @@ impl MetalPresenter {
         let (mut uniforms, cursor_data) = cursor
             .map(|(image, position)| guest_cursor_data(Some(image), position))
             .unwrap_or_else(|| guest_cursor_data(None, (0, 0)));
-        uniforms.row_bytes = row_bytes;
+        let packed_content_left = if pixel_size == 1 { content_left & 7 } else { 0 };
+        let packed_origin_left = content_left - packed_content_left;
+        uniforms.row_bytes = u32::try_from(visible_layout.visible_row_bytes)
+            .map_err(|_| "visible guest row stride exceeds Metal's limit".to_string())?;
         uniforms.width = width;
         uniforms.height = height;
         uniforms.pixel_size = u32::from(pixel_size);
-        uniforms.content_left = content_left;
-        uniforms.content_top = content_top;
+        uniforms.content_left = packed_content_left;
+        uniforms.content_top = 0;
+        uniforms.cursor_left -= i32::try_from(packed_origin_left)
+            .map_err(|_| "guest crop origin exceeds Metal's limit".to_string())?;
+        uniforms.cursor_top -= i32::try_from(content_top)
+            .map_err(|_| "guest crop origin exceeds Metal's limit".to_string())?;
         let metadata = GuestFrameMetadata {
             screen_layout: (row_bytes, screen_mode.2, screen_mode.3, pixel_size),
             content_rect,
@@ -739,20 +751,24 @@ impl MetalPresenter {
 
         self.resize_drawable(drawable_width, drawable_height);
         if unsafe { self.layer.presentsWithTransaction() } {
-            self.ensure_guest_buffers(frame_bytes)?;
+            let visible_bytes = visible_layout
+                .visible_row_bytes
+                .checked_mul(visible_layout.row_count)
+                .ok_or_else(|| {
+                    "visible guest framebuffer dimensions overflow host size".to_string()
+                })?;
+            self.ensure_guest_buffers(visible_bytes)?;
             let Some(drawable) = (unsafe { self.layer.nextDrawable() }) else {
                 return Ok(true);
             };
             let buffer_index = self.next_guest_buffer;
             self.next_guest_buffer = (buffer_index + 1) % self.guest_buffers.len();
             let guest_buffer = &self.guest_buffers[buffer_index];
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    framebuffer.as_ptr(),
-                    guest_buffer.contents().as_ptr().cast::<u8>(),
-                    frame_bytes,
-                );
-            }
+            copy_guest_visible_pixels_to_ptr(
+                guest_buffer.contents().as_ptr().cast::<u8>(),
+                framebuffer,
+                visible_layout,
+            );
             encode_guest_frame(
                 &self.command_queue,
                 &self.guest_pipeline,
@@ -763,7 +779,7 @@ impl MetalPresenter {
             )?;
         } else {
             self.async_guest_presenter
-                .enqueue(&framebuffer[..frame_bytes], metadata.clone())?;
+                .enqueue(framebuffer, visible_layout, metadata.clone())?;
         }
         if self.skip_unchanged_guest_frames {
             copy_guest_visible_pixels(
@@ -1152,10 +1168,30 @@ fn copy_guest_visible_pixels(
     }
 }
 
+fn copy_guest_visible_pixels_to_ptr(
+    destination: *mut u8,
+    framebuffer: &[u8],
+    layout: GuestVisibleByteLayout,
+) {
+    for row in 0..layout.row_count {
+        let source_start = layout.first_row_offset + row * layout.row_stride;
+        let destination_start = row * layout.visible_row_bytes;
+        // SAFETY: `guest_visible_byte_layout` validated every source row,
+        // while the caller allocated visible_row_bytes * row_count bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                framebuffer.as_ptr().add(source_start),
+                destination.add(destination_start),
+                layout.visible_row_bytes,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data, guest_frame_byte_len,
+        aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data,
         guest_visible_byte_layout, guest_visible_pixels_equal, replace_pending_guest_frame,
         GuestCursorData, GuestFrameMailboxState, GuestFrameMetadata, GuestFrameUniforms,
     };
@@ -1174,10 +1210,9 @@ mod tests {
     }
 
     #[test]
-    fn cropped_presentation_still_uploads_the_full_guest_framebuffer() {
-        // A 640x392 crop within an 800x600 screen may sample source rows well
-        // below row 392, so the staging buffer must retain all 600 rows.
-        assert_eq!(guest_frame_byte_len(800, 600), Some(480_000));
+    fn cropped_presentation_packs_only_visible_guest_rows() {
+        let layout = guest_visible_byte_layout(800, 8, 80, 104, 640, 392).unwrap();
+        assert_eq!(layout.visible_row_bytes * layout.row_count, 250_880);
     }
 
     #[test]
@@ -1192,13 +1227,37 @@ mod tests {
         };
         let mut state = GuestFrameMailboxState::default();
 
-        replace_pending_guest_frame(&mut state, &[1, 2, 3, 4], metadata.clone());
-        replace_pending_guest_frame(&mut state, &[5, 6, 7, 8], metadata.clone());
+        let layout = guest_visible_byte_layout(4, 8, 0, 0, 4, 1).unwrap();
+        replace_pending_guest_frame(&mut state, &[1, 2, 3, 4], layout, metadata.clone());
+        replace_pending_guest_frame(&mut state, &[5, 6, 7, 8], layout, metadata.clone());
 
         assert_eq!(state.coalesced, 1);
         let pending = state.pending.as_ref().unwrap();
         assert_eq!(pending.framebuffer, [5, 6, 7, 8]);
         assert!(pending.metadata == metadata);
+    }
+
+    #[test]
+    fn presenter_mailbox_packs_cropped_rows_without_surrounding_pixels() {
+        let metadata = GuestFrameMetadata {
+            screen_layout: (6, 6, 3, 8),
+            content_rect: (2, 1, 3, 2),
+            palette: [0; 256],
+            uniforms: GuestFrameUniforms::default(),
+            cursor: GuestCursorData::default(),
+            drawable_size: (6, 4),
+        };
+        let framebuffer = [
+            0, 1, 2, 3, 4, 5, // outside the crop
+            6, 7, 8, 9, 10, 11, // visible bytes 8..=10
+            12, 13, 14, 15, 16, 17, // visible bytes 14..=16
+        ];
+        let layout = guest_visible_byte_layout(6, 8, 2, 1, 3, 2).unwrap();
+        let mut state = GuestFrameMailboxState::default();
+
+        replace_pending_guest_frame(&mut state, &framebuffer, layout, metadata);
+
+        assert_eq!(state.pending.unwrap().framebuffer, [8, 9, 10, 14, 15, 16]);
     }
 
     #[test]
