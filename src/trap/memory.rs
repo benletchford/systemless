@@ -6094,12 +6094,18 @@ mod tests {
     }
 
     #[test]
-    fn get_handle_size_rounds_loaded_resource_handle_to_longword_size() {
-        // IM:Sound 1994 p. 2-58 demonstrates applications computing a
-        // sampled sound buffer length from GetHandleSize(sndH) minus the
-        // parsed sound-header offset. Classic Resource Manager-loaded
-        // handles expose the longword-rounded loaded block size there,
-        // while SizeResource remains the exact resource-map byte count.
+    fn get_handle_size_reports_loaded_resource_handle_logical_size() {
+        // GetHandleSize reports a block's LOGICAL size, not the padded
+        // physical one, and the Resource Manager allocates a loaded
+        // resource's handle at the resource's exact byte count.
+        // GetHandleSize ($A025)
+        // FUNCTION GetHandleSize (h: Handle): Size;
+        // Inside Macintosh Volume II, II-31; Memory 1992, 2-32.
+        //
+        // Rounding up to a longword hands callers that treat a resource as
+        // an array one element too many. SimCity 2000 sizes its CREL
+        // relocation table as GetHandleSize/2, and the phantom entry
+        // relocated the CODE segment header, wedging its segment loader.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let bytes = vec![0x80; 50];
         let data_ptr = bus.alloc(bytes.len() as u32);
@@ -6114,8 +6120,8 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetHandleSize should succeed");
         assert_eq!(
             cpu.read_reg(Register::D0),
-            52,
-            "loaded resource handles should expose longword-rounded size"
+            50,
+            "loaded resource handles should expose the resource's exact byte count"
         );
     }
 
