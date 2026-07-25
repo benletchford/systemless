@@ -1473,6 +1473,27 @@ impl super::TrapDispatcher {
             );
         }
 
+        // The Window Manager keeps the menu bar out of every window's visRgn.
+        // Inside Macintosh Volume V, V-245. Apply it in global coordinates so
+        // it tracks the window rather than following it around as a fixed
+        // local inset.
+        let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        if mbar_h > 0 && !self.menu_bar_hidden {
+            if let Some((top, left, bottom, right)) = Self::region_handle_rect(bus, vis_handle) {
+                if top < mbar_h {
+                    let clipped = (top.max(mbar_h), left, bottom, right);
+                    let menu_bar_rgn = Self::alloc_rect_region_handle(bus, Some(clipped));
+                    Self::write_region_boolean_op(
+                        bus,
+                        vis_handle,
+                        vis_handle,
+                        menu_bar_rgn,
+                        RegionBooleanOp::Intersection,
+                    );
+                }
+            }
+        }
+
         // visRgn is kept in the window's local coordinates.
         let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, window_ptr);
         if bounds_top != 0 || bounds_left != 0 {
@@ -2229,6 +2250,12 @@ impl super::TrapDispatcher {
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         let vis_top_local = (mbar_h - wind_top).max(0);
         let mut content_rect = (vis_top_local, 0, port_height, port_width);
+        // The menu-bar exclusion is a property of visRgn, not of the window's
+        // content region, so the Window-Manager regions start from the whole
+        // content area. CalcVis re-applies the exclusion in global
+        // coordinates every time the window list changes, which keeps it
+        // correct after the window moves.
+        let mut region_content_rect = (0, 0, port_height, port_width);
         if self.menu_bar_hidden
             && matches!(wind_proc_id, 1 | 2 | 3 | 5)
             && wind_top <= mbar_h.saturating_add(2)
@@ -2236,7 +2263,10 @@ impl super::TrapDispatcher {
             && wind_bottom >= screen_h as i16 - 2
             && wind_right >= screen_w as i16 - 2
         {
+            // Kiosk-mode expansion genuinely enlarges the content area to the
+            // screen-backed PixMap, so it applies to the regions too.
             content_rect = (bounds_top, bounds_left, bounds_bottom, bounds_right);
+            region_content_rect = content_rect;
         }
         eprintln!(
             "[WINDOW-INIT] init_cgraf_window: window=${:08X} bounds=({},{},{},{}) MBarHeight={} → visRgn.top={}",
@@ -2277,10 +2307,19 @@ impl super::TrapDispatcher {
         bus.write_word(window_ptr + 54, 1); // pnSize.h
         bus.write_word(window_ptr + 56, 8); // pnMode (patCopy)
         self.init_cgraf_port_defaults(window_ptr, bus);
+        // The WindowRecord's contRgn is the window's whole content area. The
+        // menu-bar exclusion belongs to visRgn alone (CalcVis re-derives it,
+        // and re-derives it again whenever the window moves) — baking it into
+        // contRgn would follow the window around in local coordinates and
+        // permanently blank its top rows. SimCity 2000 opens its budget and
+        // palette windows at the top of the screen and then moves them down,
+        // which lost the first row of every one of them.
+        // Inside Macintosh Volume I, I-273 (content region);
+        // Inside Macintosh Volume V, V-245 (visRgn excludes the menu bar).
         self.init_window_manager_fields(
             bus,
             window_ptr,
-            content_rect,
+            region_content_rect,
             wind_proc_id,
             visible,
             go_away_flag,
