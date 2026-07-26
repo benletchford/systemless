@@ -670,6 +670,16 @@ impl super::TrapDispatcher {
         (1008..=1023).contains(&proc_id)
     }
 
+    fn menu_def_proc_handle(&mut self, bus: &mut MacMemoryBus, mdef_id: i16) -> u32 {
+        if let Some((refnum, ptr)) = self.find_or_load_resource_any(bus, *b"MDEF", mdef_id) {
+            return self.get_or_create_resource_handle_in_file(bus, *b"MDEF", mdef_id, ptr, refnum);
+        }
+
+        self.synthesize_system_mdef(bus, mdef_id)
+            .map(|ptr| self.get_or_create_resource_handle_in_file(bus, *b"MDEF", mdef_id, ptr, 0))
+            .unwrap_or(0)
+    }
+
     pub(crate) fn popup_menu_item_title(
         &self,
         bus: &MacMemoryBus,
@@ -1267,7 +1277,8 @@ impl super::TrapDispatcher {
                 bus.write_word(menu_ptr, menu_id as u16);
                 bus.write_word(menu_ptr + 2, 0);
                 bus.write_word(menu_ptr + 4, 0);
-                bus.write_long(menu_ptr + 6, 0);
+                let menu_proc = self.menu_def_proc_handle(bus, 0);
+                bus.write_long(menu_ptr + 6, menu_proc);
                 bus.write_long(menu_ptr + 10, 0xFFFFFFFF); // enable all items
                 let mut title = String::new();
                 if title_ptr != 0 {
@@ -1334,6 +1345,19 @@ impl super::TrapDispatcher {
                                     if resized != 0 {
                                         menu_ptr = resized;
                                     }
+                                }
+                                let menu_proc_placeholder = bus.read_long(menu_ptr + 6);
+                                if !self.loaded_handles.contains_key(&menu_proc_placeholder) {
+                                    let mdef_id = (menu_proc_placeholder >> 16) as u16 as i16;
+                                    let menu_proc = self.menu_def_proc_handle(bus, mdef_id);
+                                    if menu_proc == 0 {
+                                        bus.write_word(0x0A60, (-192i16) as u16);
+                                        cpu.write_reg(Register::D0, -192i32 as u32);
+                                        bus.write_long(sp + 2, 0);
+                                        cpu.write_reg(Register::A7, sp + 2);
+                                        return Some(Ok(()));
+                                    }
+                                    bus.write_long(menu_ptr + 6, menu_proc);
                                 }
                                 let mut parsed = parse_menu_resource(bus, menu_ptr, handle);
                                 if let Some(existing) =
@@ -6848,6 +6872,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn newmenu_installs_callable_standard_mdef_handle() {
+        // Inside Macintosh Volume I, I-352: NewMenu stores a handle to the
+        // standard menu definition procedure in MenuInfo.menuProc.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 232, 0x30B300, "Window");
+        let menu_ptr = bus.read_long(handle);
+        let mdef_handle = bus.read_long(menu_ptr + 6);
+
+        assert_ne!(
+            mdef_handle, 0,
+            "NewMenu must not leave the menuProc field NIL"
+        );
+        let mdef_ptr = bus.read_long(mdef_handle);
+        assert_ne!(mdef_ptr, 0, "standard MDEF handle must be loaded");
+        assert_eq!(
+            bus.read_word(mdef_ptr),
+            0x205F,
+            "standard MDEF shim should begin by recovering the JSR return address"
+        );
+    }
+
     // MTE 1992 p. 3-105: NewMenu does not insert into the current menu list;
     // InsertMenu is required before GetMHandle can find the menu by ID.
     #[test]
@@ -6925,6 +6971,97 @@ mod tests {
             bus.read_word(0x0A60),
             0,
             "GetMenu hit must clear stale resource errors"
+        );
+    }
+
+    #[test]
+    fn getmenu_replaces_standard_mdef_id_placeholder_with_callable_handle() {
+        // Inside Macintosh Volume I, I-127 and I-352: an on-disk MENU stores
+        // its MDEF resource ID followed by a zero word. GetMenu replaces that
+        // four-byte placeholder with the loaded procedure handle.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let menu_ptr = seed_menu_resource(&mut bus, 128, "Game");
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([((*b"MENU", 128), menu_ptr)]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        bus.write_word(TEST_SP, 128);
+
+        disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let menu_handle = bus.read_long(cpu.read_reg(Register::A7));
+        let live_menu_ptr = bus.read_long(menu_handle);
+        let mdef_handle = bus.read_long(live_menu_ptr + 6);
+        assert_ne!(
+            mdef_handle, 0,
+            "GetMenu must replace the standard MDEF ID placeholder"
+        );
+        let mdef_ptr = bus.read_long(mdef_handle);
+        assert_ne!(mdef_ptr, 0, "standard MDEF handle must be loaded");
+        assert_eq!(
+            bus.read_word(mdef_ptr),
+            0x205F,
+            "standard MDEF shim should be directly callable by 68k code"
+        );
+    }
+
+    #[test]
+    fn getmenu_resolves_custom_mdef_from_the_resource_chain() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let menu_ptr = seed_menu_resource(&mut bus, 129, "Custom");
+        let mdef_ptr = bus.alloc(2);
+        bus.write_word(menu_ptr + 6, 256);
+        bus.write_word(menu_ptr + 8, 0);
+        bus.write_word(mdef_ptr, 0x4E75); // RTS: sufficient callable test body.
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([
+                        ((*b"MENU", 129), menu_ptr),
+                        ((*b"MDEF", 256), mdef_ptr),
+                    ]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        bus.write_word(TEST_SP, 129);
+
+        disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let menu_handle = bus.read_long(cpu.read_reg(Register::A7));
+        let live_menu_ptr = bus.read_long(menu_handle);
+        let mdef_handle = bus.read_long(live_menu_ptr + 6);
+        assert_ne!(
+            mdef_handle,
+            u32::from(256u16) << 16,
+            "GetMenu must replace the raw ID-plus-zero placeholder"
+        );
+        assert_eq!(
+            bus.read_long(mdef_handle),
+            mdef_ptr,
+            "custom MDEF handle should dereference to the loaded resource"
         );
     }
 

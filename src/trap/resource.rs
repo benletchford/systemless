@@ -1644,6 +1644,19 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"MDEF" {
+                    if let Some(ptr) = self.synthesize_system_mdef(bus, res_id) {
+                        let handle = self
+                            .get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, 0);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"KCHR" {
                     if let Some(ptr) = self.synthesize_system_kchr(bus, res_id) {
                         if trace_getresource_enabled() {
