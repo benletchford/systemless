@@ -2787,7 +2787,7 @@ impl super::TrapDispatcher {
             // Copies a bit or pixel image between graphics ports, scaling and clipping to visRgn, clipRgn, and maskRgn.
             // PROCEDURE CopyBits (srcBits,dstBits: BitMap; srcRect,dstRect: Rect; mode: INTEGER; maskRgn: RgnHandle);
             // Imaging With QuickDraw 1994, 3-112
-            // CopyBits ($A8EC): Supports 1bpp/8bpp BitMap and PixMap sources, nearest-neighbor scaling, palette translation, transparent mode, and bbox clipping to visRgn/clipRgn/maskRgn; complex transfer modes and non-rectangular region semantics remain incomplete
+            // CopyBits ($A8EC): Supports packed 1/2/4/8bpp BitMap and PixMap sources, nearest-neighbor scaling, palette translation, transparent mode, and bbox clipping to visRgn/clipRgn/maskRgn; complex transfer modes and non-rectangular region semantics remain incomplete
             (true, 0x0EC) => {
                 self.debug_copy_bits_count = self.debug_copy_bits_count.saturating_add(1);
                 let sp = cpu.read_reg(Register::A7);
@@ -3127,7 +3127,7 @@ impl super::TrapDispatcher {
                 };
 
                 let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
-                let src_clut = (src_info.pixel_size == 8)
+                let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
                 let dst_clut =
                     (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
@@ -3260,8 +3260,13 @@ impl super::TrapDispatcher {
                     && src_clut
                         .as_ref()
                         .is_some_and(Self::uses_canonical_system_8bpp_clut);
-                let skip_hardware_palette_to_screen = hardware_palette_active;
-                let palette_translation = if src_info.pixel_size == 8
+                // A same-depth 8-bit screen blit already carries indices for
+                // the installed hardware palette. Packed 2/4-bit sources do
+                // not: their small source CTable must still be expanded into
+                // the active 8-bit destination palette.
+                let skip_hardware_palette_to_screen =
+                    hardware_palette_active && src_info.pixel_size == 8;
+                let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && dst_info.pixel_size == 8
                     && src_info.ctab_handle != dst_info.ctab_handle
                     && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
@@ -3613,6 +3618,45 @@ impl super::TrapDispatcher {
                         let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                         match (src_info.pixel_size, dst_info.pixel_size) {
+                            (src_bits @ (2 | 4), 8) => {
+                                // Indexed PixMap pixels are packed high bit first:
+                                // four 2-bit pixels or two 4-bit pixels per byte.
+                                // Imaging With QuickDraw (1994), pp. 4-5–4-9,
+                                // defines these indexed depths and CopyBits
+                                // performs the source CTable conversion when
+                                // copying into a deeper indexed destination.
+                                let pixels_per_byte = 8 / src_bits;
+                                let src_byte_offset =
+                                    src_y_off * src_info.row_bytes + src_x_off / pixels_per_byte;
+                                let shift = 8 - src_bits - (src_x_off % pixels_per_byte) * src_bits;
+                                let mask = (1u8 << src_bits) - 1;
+                                let src_pixel =
+                                    (read_src_byte(bus, src_info.base + src_byte_offset) >> shift)
+                                        & mask;
+                                if mode_base == 36
+                                    && transparent_src_indices
+                                        .as_ref()
+                                        .is_some_and(|indices| indices[src_pixel as usize])
+                                {
+                                    continue;
+                                }
+                                let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
+                                let Some(dst_pixel) = self.copy_bits_color_source_mode_pixel(
+                                    bus,
+                                    dst_ctab_handle,
+                                    src_clut,
+                                    dst_clut,
+                                    palette_translation,
+                                    mode_base,
+                                    src_pixel,
+                                    bus.read_byte(dst_addr),
+                                    copy_fg_rgb,
+                                    copy_bg_rgb,
+                                ) else {
+                                    continue;
+                                };
+                                bus.write_byte(dst_addr, dst_pixel);
+                            }
                             (8, 8) => {
                                 let src_addr =
                                     src_info.base + src_y_off * src_info.row_bytes + src_x_off;
@@ -17946,20 +17990,20 @@ impl super::TrapDispatcher {
         };
 
         let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
-        let src_clut =
-            (src_info.pixel_size == 8).then(|| self.read_port_clut(bus, src_info.ctab_handle));
+        let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
+            .then(|| self.read_port_clut(bus, src_info.ctab_handle));
         let dst_clut =
             (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
         let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
         let dst_ctab_seed = Self::ctab_seed(bus, dst_ctab_handle);
         let hardware_palette_active =
             dst_ctab_handle == 0 && self.device_clut != self.color_manager_clut;
-        let palette_translation = if src_info.pixel_size == 8
+        let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
             && dst_info.pixel_size == 8
             && src_info.ctab_handle != dst_info.ctab_handle
             && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
             && src_ctab_seed != dst_ctab_seed
-            && !hardware_palette_active
+            && !(hardware_palette_active && src_info.pixel_size == 8)
         {
             match (src_clut.as_ref(), dst_clut.as_ref()) {
                 (Some(src_clut), Some(dst_clut)) => {
@@ -18171,6 +18215,38 @@ impl super::TrapDispatcher {
                 let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                 match (src_info.pixel_size, dst_info.pixel_size) {
+                    (src_bits @ (2 | 4), 8) => {
+                        let pixels_per_byte = 8 / src_bits;
+                        let src_byte_offset =
+                            src_y_off * src_info.row_bytes + src_x_off / pixels_per_byte;
+                        let shift = 8 - src_bits - (src_x_off % pixels_per_byte) * src_bits;
+                        let mask = (1u8 << src_bits) - 1;
+                        let src_pixel =
+                            (read_src_byte(bus, src_info.base + src_byte_offset) >> shift) & mask;
+                        if mode_base == 36
+                            && transparent_src_indices
+                                .as_ref()
+                                .is_some_and(|indices| indices[src_pixel as usize])
+                        {
+                            continue;
+                        }
+                        let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
+                        let Some(dst_pixel) = self.copy_bits_color_source_mode_pixel(
+                            bus,
+                            dst_ctab_handle,
+                            src_clut,
+                            dst_clut,
+                            palette_translation,
+                            mode_base,
+                            src_pixel,
+                            bus.read_byte(dst_addr),
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        ) else {
+                            continue;
+                        };
+                        bus.write_byte(dst_addr, dst_pixel);
+                    }
                     (8, 8) => {
                         let src_addr = src_info.base + src_y_off * src_info.row_bytes + src_x_off;
                         let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
@@ -18511,6 +18587,12 @@ impl super::TrapDispatcher {
         let col = (x - info.bounds_left) as u32;
         match info.pixel_size {
             8 => Some(bus.read_byte(info.base + row * info.row_bytes + col)),
+            bits @ (2 | 4) => {
+                let pixels_per_byte = 8 / bits;
+                let byte = bus.read_byte(info.base + row * info.row_bytes + col / pixels_per_byte);
+                let shift = 8 - bits - (col % pixels_per_byte) * bits;
+                Some((byte >> shift) & ((1u8 << bits) - 1))
+            }
             1 => {
                 let addr = info.base + row * info.row_bytes + (col / 8);
                 let bit = 7 - (col % 8);
@@ -29891,6 +29973,29 @@ mod tests {
         bus.write_long(pixmap_ptr + 42, ctab_handle);
     }
 
+    fn write_pixmap_indexed(
+        bus: &mut crate::memory::MacMemoryBus,
+        pixmap_ptr: u32,
+        base_addr: u32,
+        row_bytes: u16,
+        width: u16,
+        height: u16,
+        pixel_size: u16,
+        ctab_handle: u32,
+    ) {
+        bus.write_long(pixmap_ptr, base_addr);
+        bus.write_word(pixmap_ptr + 4, 0x8000 | row_bytes);
+        bus.write_word(pixmap_ptr + 6, 0);
+        bus.write_word(pixmap_ptr + 8, 0);
+        bus.write_word(pixmap_ptr + 10, height);
+        bus.write_word(pixmap_ptr + 12, width);
+        bus.write_word(pixmap_ptr + 30, 0);
+        bus.write_word(pixmap_ptr + 32, pixel_size);
+        bus.write_word(pixmap_ptr + 34, 1);
+        bus.write_word(pixmap_ptr + 36, pixel_size);
+        bus.write_long(pixmap_ptr + 42, ctab_handle);
+    }
+
     fn write_color_table(
         bus: &mut crate::memory::MacMemoryBus,
         handle: u32,
@@ -29909,6 +30014,120 @@ mod tests {
             bus.write_word(entry_ptr + 4, *green);
             bus.write_word(entry_ptr + 6, *blue);
         }
+    }
+
+    #[test]
+    fn copy_bits_4bpp_to_8bpp_reads_high_nibbles_and_translates_palette() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x320100u32;
+        let dst_pixmap = 0x320200u32;
+        let src_base = 0x321000u32;
+        let dst_base = 0x322000u32;
+        let src_ctab_handle = 0x323000u32;
+        let dst_ctab_handle = 0x324000u32;
+        let src_rect = 0x325000u32;
+        let dst_rect = 0x325010u32;
+        let colors = [
+            (0x1111, 0x0202, 0x0303),
+            (0x2222, 0x1313, 0x0505),
+            (0x3333, 0x2424, 0x0707),
+            (0x4444, 0x3535, 0x0909),
+            (0x5555, 0x4646, 0x0B0B),
+            (0x6666, 0x5757, 0x0D0D),
+        ];
+        let src_entries = colors
+            .iter()
+            .enumerate()
+            .map(|(index, &(red, green, blue))| ((index + 1) as u16, red, green, blue))
+            .collect::<Vec<_>>();
+        let dst_entries = colors
+            .iter()
+            .enumerate()
+            .map(|(index, &(red, green, blue))| ((index + 41) as u16, red, green, blue))
+            .collect::<Vec<_>>();
+        write_color_table(&mut bus, src_ctab_handle, 0x1111_1111, &src_entries);
+        write_color_table(&mut bus, dst_ctab_handle, 0x2222_2222, &dst_entries);
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 2, 3, 2, 4, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 6, 2, dst_ctab_handle);
+        // Three pixels per row. The unused low nibble is deliberately a
+        // different value so an odd-width implementation cannot consume it.
+        bus.write_bytes(src_base, &[0x12, 0x3E, 0x45, 0x6D]);
+        bus.write_bytes(dst_base, &[0; 12]);
+        write_rect(&mut bus, src_rect, 0, 0, 2, 3);
+        write_rect(&mut bus, dst_rect, 0, 0, 2, 6);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_bytes(dst_base, 12),
+            vec![41, 41, 42, 42, 43, 43, 44, 44, 45, 45, 46, 46]
+        );
+    }
+
+    #[test]
+    fn copy_bits_2bpp_to_8bpp_honors_transparent_mode_and_row_padding() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x326100u32;
+        let dst_pixmap = 0x326200u32;
+        let src_base = 0x327000u32;
+        let dst_base = 0x328000u32;
+        let src_ctab_handle = 0x329000u32;
+        let dst_ctab_handle = 0x32A000u32;
+        let src_rect = 0x32B000u32;
+        let dst_rect = 0x32B010u32;
+        let white = (0xFFFF, 0xFFFF, 0xFFFF);
+        let red = (0xF111, 0x0202, 0x0303);
+        let green = (0x0404, 0xE222, 0x0505);
+        let blue = (0x0606, 0x0707, 0xD333);
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x3333_3333,
+            &[
+                (0, white.0, white.1, white.2),
+                (1, red.0, red.1, red.2),
+                (2, green.0, green.1, green.2),
+                (3, blue.0, blue.1, blue.2),
+            ],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x4444_4444,
+            &[
+                (7, 0x1111, 0x1111, 0x1111),
+                (51, red.0, red.1, red.2),
+                (52, green.0, green.1, green.2),
+                (53, blue.0, blue.1, blue.2),
+                (99, white.0, white.1, white.2),
+            ],
+        );
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 2, 5, 1, 2, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 5, 1, dst_ctab_handle);
+        // Pixels 0,1,2,3,1. The final six bits are row padding.
+        bus.write_bytes(src_base, &[0b00_01_10_11, 0b01_11_10_00]);
+        bus.write_bytes(dst_base, &[7; 5]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 5);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 5);
+        d.bg_color = white;
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 36);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 5), vec![7, 51, 52, 53, 51]);
     }
 
     fn compiled_crsr_resource_2bpp() -> Vec<u8> {
