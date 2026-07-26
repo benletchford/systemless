@@ -165,6 +165,17 @@ fn count_menu_items_from_memory(bus: &MacMemoryBus, menu_handle: u32) -> u16 {
     count
 }
 
+/// Decode a guest menu string payload as Mac Roman text.
+///
+/// Menu titles and item text are Mac Roman byte strings (IM:I I-247), and
+/// the glyph lookup treats a `char` in 0x80..=0xFF as the Mac Roman code
+/// for that byte. Decoding is therefore a per-byte cast: interpreting the
+/// payload as UTF-8 would fold every accent, ellipsis, bullet and symbol
+/// byte into U+FFFD, which has no glyph, and drop it from the menu.
+fn macroman_to_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|&byte| byte as char).collect()
+}
+
 /// Parse a MENU resource from guest memory into a Menu struct.
 fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
     let menu_id = bus.read_word(res_ptr) as i16;
@@ -175,7 +186,7 @@ fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
     for i in 0..title_len {
         title_bytes.push(bus.read_byte(res_ptr + 15 + i as u32));
     }
-    let title = String::from_utf8_lossy(&title_bytes).into_owned();
+    let title = macroman_to_string(&title_bytes);
 
     // Items start after the title Pascal string
     let mut offset = res_ptr + 15 + title_len as u32;
@@ -190,7 +201,7 @@ fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
         for i in 0..item_len {
             text_bytes.push(bus.read_byte(offset + 1 + i as u32));
         }
-        let text = String::from_utf8_lossy(&text_bytes).into_owned();
+        let text = macroman_to_string(&text_bytes);
         offset += 1 + item_len as u32;
 
         let icon = bus.read_byte(offset);
@@ -291,7 +302,7 @@ fn parse_appendmenu_items(bytes: &[u8]) -> Vec<MenuItem> {
                 }
             }
         }
-        item.text = String::from_utf8_lossy(&text).into_owned();
+        item.text = macroman_to_string(&text);
         items.push(item);
     }
     items
@@ -576,7 +587,7 @@ impl super::TrapDispatcher {
             nth += 1;
             if nth == selected {
                 let bytes = bus.read_bytes(offset + 1, item_len);
-                return Some(String::from_utf8_lossy(&bytes).into_owned());
+                return Some(macroman_to_string(&bytes));
             }
             offset += 1 + item_len as u32 + 4;
         }
@@ -1121,7 +1132,7 @@ impl super::TrapDispatcher {
                     // Terminate the menuData area with an empty item string
                     // so AppendMenu's scan knows where to append.
                     bus.write_byte(menu_ptr + 15 + title_len, 0);
-                    title = String::from_utf8_lossy(&title_bytes).into_owned();
+                    title = macroman_to_string(&title_bytes);
                 }
                 // Track the menu in self.menus immediately so AppendMenu
                 // (which often runs BEFORE InsertMenu in typical Mac app
@@ -1308,7 +1319,7 @@ impl super::TrapDispatcher {
                                     for i in 0..title_len {
                                         title_bytes.push(bus.read_byte(menu_ptr + 15 + i as u32));
                                     }
-                                    let title = String::from_utf8_lossy(&title_bytes).into_owned();
+                                    let title = macroman_to_string(&title_bytes);
                                     if !title.is_empty() {
                                         eprintln!(
                                             "[MENU] InsertMenu: title=\"{}\" (no resource)",
@@ -2107,7 +2118,7 @@ impl super::TrapDispatcher {
                     for i in 0..text_len {
                         text_bytes.push(bus.read_byte(text_ptr + 1 + i as u32));
                     }
-                    let text = String::from_utf8_lossy(&text_bytes).into_owned();
+                    let text = macroman_to_string(&text_bytes);
                     if !self.menus.iter().any(|m| m.handle == menu_handle) {
                         let menu_ptr = bus.read_long(menu_handle);
                         if menu_ptr != 0 {
