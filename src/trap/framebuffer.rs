@@ -2735,6 +2735,38 @@ impl super::TrapDispatcher {
         if row_count == 0 || col_count == 0 {
             return;
         }
+
+        let current_screen_witness = Self::manual_cport_screen_witness(
+            bus,
+            screen_base,
+            screen_rb,
+            dst_x,
+            dst_y,
+            col_count,
+            row_count,
+        );
+        if latched_port == candidate.port && !self.manual_cport_screen_witness.is_empty() {
+            let changed_samples = current_screen_witness
+                .iter()
+                .zip(&self.manual_cport_screen_witness)
+                .filter(|(current, previous)| current != previous)
+                .count();
+            // A few changed samples can be cursor or Window Manager activity.
+            // Broad changes mean the application is now drawing to the
+            // physical framebuffer itself, so replaying an earlier offscreen
+            // compatibility surface would overwrite authoritative pixels.
+            if changed_samples >= 8 {
+                if trace {
+                    eprintln!(
+                        "[BLIT-CPORT] releasing port=${:08X}: screen changed at {} witness samples",
+                        candidate.port, changed_samples
+                    );
+                }
+                self.manual_cport_presented_port = 0;
+                self.manual_cport_screen_witness.clear();
+                return;
+            }
+        }
         self.manual_cport_presented_port = candidate.port;
 
         if trace {
@@ -2767,6 +2799,15 @@ impl super::TrapDispatcher {
                     bus.write_byte(dst_addr + col, translation[src_idx as usize]);
                 }
             }
+            self.manual_cport_screen_witness = Self::manual_cport_screen_witness(
+                bus,
+                screen_base,
+                screen_rb,
+                dst_x,
+                dst_y,
+                col_count,
+                row_count,
+            );
             return;
         }
 
@@ -2775,6 +2816,39 @@ impl super::TrapDispatcher {
             let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
             bus.block_move(src_addr, dst_addr, col_count);
         }
+        self.manual_cport_screen_witness = Self::manual_cport_screen_witness(
+            bus,
+            screen_base,
+            screen_rb,
+            dst_x,
+            dst_y,
+            col_count,
+            row_count,
+        );
+    }
+
+    fn manual_cport_screen_witness(
+        bus: &MacMemoryBus,
+        screen_base: u32,
+        screen_row_bytes: u32,
+        left: u32,
+        top: u32,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let step_x = (width / 16).max(1);
+        let step_y = (height / 12).max(1);
+        let mut witness = Vec::with_capacity(16 * 12);
+        let mut y = step_y / 2;
+        while y < height {
+            let mut x = step_x / 2;
+            while x < width {
+                witness.push(bus.read_byte(screen_base + (top + y) * screen_row_bytes + left + x));
+                x += step_x;
+            }
+            y += step_y;
+        }
+        witness
     }
 
     /// Geometry of the app-managed CGrafPort that the HLE has actually
@@ -5617,6 +5691,47 @@ mod redraw_chrome_tests {
             bus.read_byte(dst),
             0x66,
             "a manual CPort selected before a later CopyBits should keep presenting"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_releases_latched_manual_cport_after_direct_framebuffer_draw() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[0] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        let dst = screen_base + 90 * 800 + 80;
+        bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+        assert_eq!(bus.read_byte(dst), 0x44);
+
+        for row in 0..420 {
+            bus.fill_bytes(dst + row * 800, 640, 0xAA);
+        }
+        bus.fill_bytes(manual_base, 640 * 420, 0x66);
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(dst),
+            0xAA,
+            "direct framebuffer rendering must remain authoritative over the fallback CPort"
+        );
+        assert_eq!(
+            disp.manual_cport_presented_port, 0,
+            "substantial direct framebuffer rendering should release the compatibility latch"
         );
     }
 }

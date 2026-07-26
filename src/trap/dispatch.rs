@@ -1535,6 +1535,11 @@ pub struct TrapDispatcher {
     pub(crate) cport_ports: HashSet<u32>,
     /// Non-window CGrafPort selected for HLE fallback presentation.
     pub(crate) manual_cport_presented_port: u32,
+    /// Sparse snapshot of the screen immediately after presenting the manual
+    /// CPort. If the guest substantially changes those pixels before the next
+    /// redraw, the physical framebuffer has become the authoritative display
+    /// surface and the fallback presentation latch must yield.
+    pub(crate) manual_cport_screen_witness: Vec<u8>,
     /// Polygon recording state. When `Some`, LineTo/MoveTo calls append
     /// vertices. Set by OpenPoly, consumed by ClosePoly.
     pub(crate) recording_polygon: Option<PolygonRecording>,
@@ -2805,6 +2810,7 @@ impl TrapDispatcher {
             gworld_pixel_states: HashMap::new(),
             cport_ports: HashSet::new(),
             manual_cport_presented_port: 0,
+            manual_cport_screen_witness: Vec::new(),
             recording_polygon: None,
             recording_region: None,
             screen_mode: {

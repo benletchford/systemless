@@ -16997,6 +16997,7 @@ impl super::TrapDispatcher {
         self.cport_ports.remove(&port);
         if self.manual_cport_presented_port == port {
             self.manual_cport_presented_port = 0;
+            self.manual_cport_screen_witness.clear();
         }
         self.port_draw_states.remove(&port);
     }
