@@ -442,8 +442,8 @@ pub struct MacMemoryBus {
     globals: LowMemGlobals,
     /// Heap allocation pointer (grows upward from 0x200000)
     heap_ptr: u32,
-    /// Upper limit for heap allocations (screen buffer start)
-    heap_limit: u32,
+    /// Systemless-owned executable/data stubs grow downward outside the guest heap.
+    synthetic_ptr: u32,
     /// Free list: maps aligned_size → stack of recycled addresses
     free_blocks: HashMap<u32, Vec<u32>>,
     /// Tracks the aligned size of each allocation (address → aligned_size)
@@ -799,7 +799,7 @@ impl MacMemoryBus {
             ram_size: ram_size as u32,
             globals: LowMemGlobals::new(),
             heap_ptr: 0x200000, // Start heap at 2MB
-            heap_limit: screen_buffer_start,
+            synthetic_ptr: screen_buffer_start,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -874,7 +874,7 @@ impl MacMemoryBus {
             ram_size: ram_size as u32,
             globals,
             heap_ptr: 0x200000,
-            heap_limit: screen_buffer_start,
+            synthetic_ptr: screen_buffer_start,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -953,10 +953,10 @@ impl MacMemoryBus {
         let ptr = self.heap_ptr;
         let new_ptr = ptr + aligned;
 
-        if new_ptr >= self.heap_limit {
+        if new_ptr >= self.synthetic_ptr {
             eprintln!(
                 "[ALLOC] Out of memory: requesting {} bytes, heap at ${:08X}, limit ${:08X}",
-                size, ptr, self.heap_limit
+                size, ptr, self.synthetic_ptr
             );
             return 0; // Return NULL; callers must check and set memFullErr
         }
@@ -964,6 +964,27 @@ impl MacMemoryBus {
         self.heap_ptr = new_ptr;
         self.alloc_sizes.insert(ptr, size);
         trace_alloc_event("bump", ptr, size, aligned);
+        ptr
+    }
+
+    /// Allocate Systemless-owned memory without consuming or perturbing the
+    /// guest Memory Manager heap. Synthetic callbacks and queue anchors live
+    /// here because classic applications can depend on consecutive NewPtr
+    /// results when building or relocating executable stubs.
+    pub(crate) fn alloc_synthetic(&mut self, size: u32) -> u32 {
+        let aligned = Self::allocation_bucket_size(size);
+        let Some(ptr) = self.synthetic_ptr.checked_sub(aligned) else {
+            return 0;
+        };
+        if ptr <= self.heap_ptr {
+            eprintln!(
+                "[ALLOC] Out of synthetic memory: requesting {} bytes, heap at ${:08X}, synthetic at ${:08X}",
+                size, self.heap_ptr, self.synthetic_ptr
+            );
+            return 0;
+        }
+        self.synthetic_ptr = ptr;
+        self.fill_bytes(ptr, aligned, 0);
         ptr
     }
 
@@ -1018,10 +1039,10 @@ impl MacMemoryBus {
         let ptr = (self.heap_ptr + alignment - 1) & !(alignment - 1);
         let new_ptr = ptr + aligned;
 
-        if new_ptr >= self.heap_limit {
+        if new_ptr >= self.synthetic_ptr {
             eprintln!(
                 "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
-                size, alignment, self.heap_ptr, self.heap_limit
+                size, alignment, self.heap_ptr, self.synthetic_ptr
             );
             return 0;
         }
@@ -1595,6 +1616,20 @@ mod tests {
             reused, zero,
             "the minimum bucket for a freed zero-size allocation should be reusable"
         );
+    }
+
+    #[test]
+    fn synthetic_allocations_do_not_perturb_guest_heap_addresses() {
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+
+        let first_guest = bus.alloc(64);
+        let synthetic = bus.alloc_synthetic(22);
+        let second_guest = bus.alloc(64);
+
+        assert_eq!(second_guest, first_guest + 64);
+        assert!(synthetic > second_guest);
+        assert_eq!(bus.read_bytes(synthetic, 24), vec![0; 24]);
+        assert_eq!(bus.get_alloc_size(synthetic), None);
     }
 
     #[test]

@@ -4717,7 +4717,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let entry = bus.read_word(sp) as i16;
                 if let Some((rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry) {
-                    self.fg_color = if (usage & PM_EXPLICIT) != 0 {
+                    let explicit = (usage & PM_EXPLICIT) != 0;
+                    self.fg_color = if explicit {
                         let index = (entry as usize) & 0xFF;
                         let [r, g, b] = self.device_clut[index];
                         (r, g, b)
@@ -4725,6 +4726,15 @@ impl super::TrapDispatcher {
                         (rgb[0], rgb[1], rgb[2])
                     };
                     self.sync_current_port_draw_state(bus);
+                    if explicit
+                        && self.current_port != 0
+                        && (bus.read_word(self.current_port + 6) & 0xC000) == 0xC000
+                    {
+                        // Explicit palette entries name a device index, even
+                        // when another CLUT slot contains the same RGB value.
+                        // IM:V V-163 specifies dstEntry modulo MaxIndex+1.
+                        bus.write_long(self.current_port + 80, (entry as u16 & 0x00FF) as u32);
+                    }
                     if trace_qd_colors_enabled() {
                         eprintln!(
                             "[QD-COLOR] PmForeColor port=${:08X} entry={} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -4750,7 +4760,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let entry = bus.read_word(sp) as i16;
                 if let Some((rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry) {
-                    self.bg_color = if (usage & PM_EXPLICIT) != 0 {
+                    let explicit = (usage & PM_EXPLICIT) != 0;
+                    self.bg_color = if explicit {
                         let index = (entry as usize) & 0xFF;
                         let [r, g, b] = self.device_clut[index];
                         (r, g, b)
@@ -4758,6 +4769,12 @@ impl super::TrapDispatcher {
                         (rgb[0], rgb[1], rgb[2])
                     };
                     self.sync_current_port_draw_state(bus);
+                    if explicit
+                        && self.current_port != 0
+                        && (bus.read_word(self.current_port + 6) & 0xC000) == 0xC000
+                    {
+                        bus.write_long(self.current_port + 84, (entry as u16 & 0x00FF) as u32);
+                    }
                     if trace_qd_colors_enabled() {
                         eprintln!(
                             "[QD-COLOR] PmBackColor port=${:08X} entry={} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -17455,22 +17472,42 @@ impl super::TrapDispatcher {
         bus.write_word(port + 70, encode_text_face_style(self.tx_face));
         bus.write_word(port + 72, self.tx_mode as u16);
         bus.write_word(port + 74, self.tx_size as u16);
-        let fg_legacy = if self.fg_color == (0, 0, 0) {
-            0x00000021
-        } else if self.fg_color == (0xFFFF, 0xFFFF, 0xFFFF) {
-            0x0000001E
+        let (fg_pixel, bg_pixel) = if is_cgrafport {
+            // A CGrafPort's fgColor/bkColor fields contain the pixel values
+            // supplied by the Color Manager, while rgbFgColor/rgbBkColor
+            // retain the requested colors.  Inside Macintosh Volume V,
+            // pp. V-48 and V-163.  Keeping the old QuickDraw constants here
+            // made every non-black/white PmForeColor selection look like
+            // pixel zero to software that inspects the port record.
+            (
+                u32::from(Self::nearest_palette_index(
+                    &self.device_clut,
+                    [self.fg_color.0, self.fg_color.1, self.fg_color.2],
+                )),
+                u32::from(Self::nearest_palette_index(
+                    &self.device_clut,
+                    [self.bg_color.0, self.bg_color.1, self.bg_color.2],
+                )),
+            )
         } else {
-            0
+            let fg_legacy = if self.fg_color == (0, 0, 0) {
+                0x00000021
+            } else if self.fg_color == (0xFFFF, 0xFFFF, 0xFFFF) {
+                0x0000001E
+            } else {
+                0
+            };
+            let bg_legacy = if self.bg_color == (0, 0, 0) {
+                0x00000021
+            } else if self.bg_color == (0xFFFF, 0xFFFF, 0xFFFF) {
+                0x0000001E
+            } else {
+                0
+            };
+            (fg_legacy, bg_legacy)
         };
-        let bg_legacy = if self.bg_color == (0, 0, 0) {
-            0x00000021
-        } else if self.bg_color == (0xFFFF, 0xFFFF, 0xFFFF) {
-            0x0000001E
-        } else {
-            0
-        };
-        bus.write_long(port + 80, fg_legacy);
-        bus.write_long(port + 84, bg_legacy);
+        bus.write_long(port + 80, fg_pixel);
+        bus.write_long(port + 84, bg_pixel);
     }
 
     fn known_port(&self, port: u32) -> bool {
@@ -31737,6 +31774,7 @@ mod tests {
             0,
         );
         d.set_window_palette_association(port, palette, 0);
+        d.device_clut[73] = [0x1234, 0x5678, 0x9ABC];
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 1);
@@ -31747,12 +31785,42 @@ mod tests {
         assert_eq!(bus.read_word(port + 36), 0x1234);
         assert_eq!(bus.read_word(port + 38), 0x5678);
         assert_eq!(bus.read_word(port + 40), 0x9ABC);
+        assert_eq!(bus.read_long(port + 80), 73);
 
         d.set_current_port_state(&mut bus, &mut cpu, 0, None);
         d.fg_color = (0, 0, 0);
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
 
         assert_eq!(d.fg_color, (0x1234, 0x5678, 0x9ABC));
+    }
+
+    #[test]
+    fn pm_colors_preserve_explicit_clut_indices_with_duplicate_rgb_values() {
+        // Inside Macintosh Volume V (1986), p. V-163: pmExplicit uses
+        // dstEntry modulo MaxIndex+1 as the device-table index. Preserve that
+        // exact index in the CGrafPort even when another CLUT entry has the
+        // same RGB value and a nearest-colour search would choose it first.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        bus.write_word(port + 6, 0xC000);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+
+        let palette = d.create_palette_from_ctab(&mut bus, 2, 0, super::PM_EXPLICIT, 0);
+        d.set_window_palette_association(port, palette, 0);
+        d.device_clut[0] = [0x1111, 0x2222, 0x3333];
+        d.device_clut[1] = [0x1111, 0x2222, 0x3333];
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        let fore_result = d.dispatch_quickdraw(true, 0x297, &mut cpu, &mut bus);
+        assert!(fore_result.unwrap().is_ok());
+        assert_eq!(bus.read_long(port + 80), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        let back_result = d.dispatch_quickdraw(true, 0x298, &mut cpu, &mut bus);
+        assert!(back_result.unwrap().is_ok());
+        assert_eq!(bus.read_long(port + 84), 1);
     }
 
     #[test]

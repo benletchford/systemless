@@ -1623,6 +1623,8 @@ pub struct TrapDispatcher {
     /// Installed Vertical Retrace Manager tasks.
     /// Processes 1994, 4-6 to 4-7
     pub(crate) vbl_tasks: Vec<VblTask>,
+    /// Dormant system-owned queue element kept ahead of application VBL tasks.
+    pub(crate) system_vbl_queue_anchor: u32,
     /// Slot number of the primary video monitor for AttachVBL / VBL cursor routing.
     pub(crate) primary_vbl_slot: i16,
     /// Active dialog tracking state (non-None while ModalDialog is tracking input)
@@ -2841,6 +2843,7 @@ impl TrapDispatcher {
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
+            system_vbl_queue_anchor: 0,
             primary_vbl_slot: 0,
             dialog_tracking: None,
             standard_file_put_tracking: None,

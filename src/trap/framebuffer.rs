@@ -2684,18 +2684,23 @@ impl super::TrapDispatcher {
             return;
         };
         if latched_port != candidate.port {
-            let visible_samples = self.manual_cport_visible_sample_count(
+            let (visible_samples, distinct_indices) = self.manual_cport_sample_content(
                 bus,
                 candidate.base,
                 candidate.row_bytes,
                 candidate.width,
                 candidate.height,
             );
-            if visible_samples < 8 {
+            if visible_samples < 8 || distinct_indices < 2 {
                 if trace {
                     eprintln!(
-                        "[BLIT-CPORT] skip: candidate port=${:08X} base=${:08X} {}x{} has too little sampled content ({})",
-                        candidate.port, candidate.base, candidate.width, candidate.height, visible_samples
+                        "[BLIT-CPORT] skip: candidate port=${:08X} base=${:08X} {}x{} has too little sampled content (visible={}, distinct={})",
+                        candidate.port,
+                        candidate.base,
+                        candidate.width,
+                        candidate.height,
+                        visible_samples,
+                        distinct_indices
                     );
                 }
                 return;
@@ -2901,29 +2906,30 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn manual_cport_visible_sample_count(
+    fn manual_cport_sample_content(
         &self,
         bus: &MacMemoryBus,
         base: u32,
         row_bytes: u32,
         width: u32,
         height: u32,
-    ) -> u32 {
+    ) -> (u32, u32) {
         if base == 0 || width == 0 || height == 0 || row_bytes < width {
-            return 0;
+            return (0, 0);
         }
         let visible = |idx: u8| {
             let rgb = self.device_clut[idx as usize];
             rgb[0] > 0x1111 || rgb[1] > 0x1111 || rgb[2] > 0x1111
         };
-        let sample = |x: u32, y: u32| -> bool {
+        let sample = |x: u32, y: u32| -> Option<u8> {
             if x >= width || y >= height {
-                return false;
+                return None;
             }
-            visible(bus.read_byte(base + y * row_bytes + x))
+            Some(bus.read_byte(base + y * row_bytes + x))
         };
 
         let mut visible_samples = 0u32;
+        let mut sampled_indices = [false; 256];
         for (x, y) in [
             (0, 0),
             (width - 1, 0),
@@ -2931,8 +2937,11 @@ impl super::TrapDispatcher {
             (width - 1, height - 1),
             (width / 2, height / 2),
         ] {
-            if sample(x, y) {
-                visible_samples += 1;
+            if let Some(index) = sample(x, y) {
+                sampled_indices[index as usize] = true;
+                if visible(index) {
+                    visible_samples += 1;
+                }
             }
         }
 
@@ -2942,14 +2951,20 @@ impl super::TrapDispatcher {
         while y < height {
             let mut x = step_x / 2;
             while x < width {
-                if sample(x, y) {
-                    visible_samples += 1;
+                if let Some(index) = sample(x, y) {
+                    sampled_indices[index as usize] = true;
+                    if visible(index) {
+                        visible_samples += 1;
+                    }
                 }
                 x += step_x;
             }
             y += step_y;
         }
-        visible_samples
+        (
+            visible_samples,
+            sampled_indices.into_iter().filter(|present| *present).count() as u32,
+        )
     }
 
     fn screen_is_dark_for_manual_cport(
@@ -5455,6 +5470,7 @@ mod redraw_chrome_tests {
         disp.cport_ports.insert(manual_port);
 
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
         bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
 
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -5493,6 +5509,7 @@ mod redraw_chrome_tests {
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
         bus.write_byte(dst, 0xFF);
 
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -5679,6 +5696,7 @@ mod redraw_chrome_tests {
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
         disp.blit_large_manual_cport_to_screen(&mut bus);
         assert_eq!(bus.read_byte(dst), 0x44);
 
@@ -5715,6 +5733,7 @@ mod redraw_chrome_tests {
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
         disp.blit_large_manual_cport_to_screen(&mut bus);
         assert_eq!(bus.read_byte(dst), 0x44);
 

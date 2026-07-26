@@ -4082,7 +4082,7 @@ impl FixtureRunner {
         }
 
         if self.vbl_trampoline == 0 {
-            let tramp = self.bus.alloc(22);
+            let tramp = self.bus.alloc_synthetic(22);
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
             self.bus.write_word(tramp + 2, 0xF0F0);
             self.bus.write_word(tramp + 4, 0x207C); // MOVEA.L #imm,A0
