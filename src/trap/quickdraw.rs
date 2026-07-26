@@ -1255,6 +1255,7 @@ impl super::TrapDispatcher {
                 // No-op for plain GrafPorts (HashMap::remove returns
                 // None silently); cleans up CGrafPort tracking.
                 self.cport_ports.remove(&port_ptr);
+                self.cport_original_pixmaps.remove(&port_ptr);
                 Ok(())
             }
 
@@ -4309,6 +4310,8 @@ impl super::TrapDispatcher {
                 self.allocate_cport_storage(port_ptr, bus);
                 let _ = self.init_cport(port_ptr, bus, true);
                 self.cport_ports.insert(port_ptr);
+                self.cport_original_pixmaps
+                    .insert(port_ptr, bus.read_long(port_ptr + 2));
 
                 // Set as current port on the active GDevice that seeded the
                 // port's PixMap. Offscreen code can select a freshly-created
@@ -4336,6 +4339,8 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 4);
                 if self.init_cport(port_ptr, bus, false) {
                     self.cport_ports.insert(port_ptr);
+                    self.cport_original_pixmaps
+                        .insert(port_ptr, bus.read_long(port_ptr + 2));
                 }
                 if trace_dialog_ports_enabled() {
                     eprintln!("[DIALOG-PORT] InitCPort port=${:08X}", port_ptr);
@@ -16995,6 +17000,7 @@ impl super::TrapDispatcher {
         }
         bus.free(port);
         self.cport_ports.remove(&port);
+        self.cport_original_pixmaps.remove(&port);
         if self.manual_cport_presented_port == port {
             self.manual_cport_presented_port = 0;
             self.manual_cport_screen_witness.clear();

@@ -2397,14 +2397,70 @@ impl super::TrapDispatcher {
         }
     }
 
-    /// Present a large app-managed CGrafPort when CopyBits did not present it.
-    ///
-    /// This is an HLE compatibility bridge, not a QuickDraw rule: real apps
-    /// are responsible for copying offscreen ports to the screen. Some games
-    /// keep a full-scene PixMap behind an OpenCPort/InitCPort and update it
-    /// directly while their front window remains screen-backed. Without a
-    /// Window Manager or video driver layer to observe that buffer, screenshots
-    /// stay black even though the scene exists in guest memory.
+    /// Explicit screen frame that narrowly encloses a retained app-managed
+    /// CPort PixMap. This correlates guest QuickDraw geometry without assuming
+    /// that the offscreen buffer is centered.
+    pub fn framed_manual_cport_presentation_rect(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<super::dispatch::ScreenCopyBitsRect> {
+        let frame = self.last_screen_frame_rect?;
+        let (_, _, screen_width, screen_height, screen_depth) = self.screen_mode;
+        let frame_width = frame.dst_right.saturating_sub(frame.dst_left);
+        let frame_height = frame.dst_bottom.saturating_sub(frame.dst_top);
+        if frame.dst_top < 0
+            || frame.dst_left < 0
+            || frame.dst_bottom > screen_height as i16
+            || frame.dst_right > screen_width as i16
+            || frame_width <= 0
+            || frame_height <= 0
+        {
+            return None;
+        }
+
+        for &port in &self.cport_ports {
+            if self.window_list.contains(&port)
+                || self.gworld_devices.contains_key(&port)
+                || (bus.read_word(port + 6) & 0xC000) != 0xC000
+            {
+                continue;
+            }
+            let pixmap_handle = bus.read_long(port + 2);
+            let pixmap = (pixmap_handle != 0)
+                .then(|| bus.read_long(pixmap_handle))
+                .unwrap_or(0);
+            if pixmap == 0
+                || (bus.read_long(pixmap) & 0x3FFF_FFFF) == self.screen_mode.0
+                || bus.read_word(pixmap + 32) != screen_depth
+            {
+                continue;
+            }
+            let pixmap_height = (bus.read_word(pixmap + 10) as i16)
+                .saturating_sub(bus.read_word(pixmap + 6) as i16);
+            let pixmap_width = (bus.read_word(pixmap + 12) as i16)
+                .saturating_sub(bus.read_word(pixmap + 8) as i16);
+            let horizontal_frame = frame_width.saturating_sub(pixmap_width);
+            let vertical_frame = frame_height.saturating_sub(pixmap_height);
+
+            // SetPortPix alone does not make this image visible: Imaging With
+            // QuickDraw (1994), pp. 4-86..4-87 explicitly describes it as a
+            // way to draw into a buffer other than the screen. Here the image
+            // dimensions are used only to interpret a narrow FrameRect that
+            // the guest separately drew into the screen framebuffer. The HLE
+            // presentation path still refuses to copy an attached scratch
+            // PixMap merely because its dimensions look plausible.
+            if pixmap_width > 0
+                && pixmap_height > 0
+                && horizontal_frame == vertical_frame
+                && (2..=16).contains(&horizontal_frame)
+                && horizontal_frame % 2 == 0
+            {
+                return Some(frame);
+            }
+        }
+        None
+    }
+
     /// Geometry declared by a large app-managed color port behind a visible,
     /// screen-backed fullscreen window. Games commonly create this port before
     /// drawing their first useful frame, so the frontend can size itself
@@ -2442,10 +2498,8 @@ impl super::TrapDispatcher {
             && (bus.read_word(front + 20) as i16) >= screen_height as i16
             && (bus.read_word(front + 22) as i16) >= screen_width as i16;
         let (top, left, bottom, right) = self.window_bounds;
-        let window_covers_screen = top <= 0
-            && left <= 0
-            && bottom >= screen_height as i16
-            && right >= screen_width as i16;
+        let window_covers_screen =
+            top <= 0 && left <= 0 && bottom >= screen_height as i16 && right >= screen_width as i16;
         if !port_covers_screen && !window_covers_screen {
             return None;
         }
@@ -2463,6 +2517,19 @@ impl super::TrapDispatcher {
                 continue;
             }
             let pixmap_handle = bus.read_long(port + 2);
+            // Imaging With QuickDraw 1994, pp. 4-86..4-87: SetPortPix
+            // replaces the current CGrafPort's portPixMap. It is commonly
+            // used to draw into an offscreen image that the application later
+            // transfers explicitly. Do not infer visibility from a PixMap
+            // attached this way merely because its dimensions look like a
+            // scene buffer.
+            if self
+                .cport_original_pixmaps
+                .get(&port)
+                .is_none_or(|&original| original != pixmap_handle)
+            {
+                continue;
+            }
             let pixmap = (pixmap_handle != 0)
                 .then(|| bus.read_long(pixmap_handle))
                 .unwrap_or(0);
@@ -2599,6 +2666,7 @@ impl super::TrapDispatcher {
         let mut best: Option<Candidate> = None;
         let mut considered_ports = 0u32;
         let mut rejected_shape = 0u32;
+        let mut rejected_replaced_pixmap = 0u32;
         let mut rejected_area = 0u32;
         for &port in &self.cport_ports {
             if port == front_port
@@ -2616,6 +2684,18 @@ impl super::TrapDispatcher {
             let pm_handle = bus.read_long(port + 2);
             if pm_handle == 0 {
                 rejected_shape += 1;
+                continue;
+            }
+            // SetPortPix changes the drawing target; it does not publish that
+            // target to the screen. The manual compatibility bridge is only
+            // allowed to consider the PixMap originally installed by
+            // OpenCPort/InitCPort. IWQD 1994, pp. 4-86..4-87.
+            if self
+                .cport_original_pixmaps
+                .get(&port)
+                .is_none_or(|&original| original != pm_handle)
+            {
+                rejected_replaced_pixmap += 1;
                 continue;
             }
             let pm_ptr = bus.read_long(pm_handle);
@@ -2673,10 +2753,11 @@ impl super::TrapDispatcher {
         let Some(candidate) = best else {
             if trace {
                 eprintln!(
-                    "[BLIT-CPORT] skip: no candidate (tracked={}, considered={}, shape_rejects={}, area_rejects={}, min_area={})",
+                    "[BLIT-CPORT] skip: no candidate (tracked={}, considered={}, shape_rejects={}, replaced_pixmap_rejects={}, area_rejects={}, min_area={})",
                     self.cport_ports.len(),
                     considered_ports,
                     rejected_shape,
+                    rejected_replaced_pixmap,
                     rejected_area,
                     min_area
                 );
@@ -4216,6 +4297,12 @@ mod redraw_chrome_tests {
     const CLIP_RGN: u32 = 0x182200;
     const WINDOW_VISIBLE_OFFSET: u32 = 110;
 
+    fn track_manual_cport(disp: &mut TrapDispatcher, bus: &crate::memory::MacMemoryBus, port: u32) {
+        disp.cport_ports.insert(port);
+        disp.cport_original_pixmaps
+            .insert(port, bus.read_long(port + 2));
+    }
+
     #[test]
     fn fb_fill_pattern_rect_tiles_standard_gray_pattern() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
@@ -5352,6 +5439,34 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn framed_manual_cport_uses_explicit_off_center_guest_geometry() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(512 * 322);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 512, 512, 322, 0);
+        track_manual_cport(&mut disp, &bus, manual_port);
+        disp.last_screen_frame_rect = Some(crate::trap::dispatch::ScreenCopyBitsRect {
+            src_top: 85,
+            src_left: 141,
+            src_bottom: 413,
+            src_right: 659,
+            dst_top: 85,
+            dst_left: 141,
+            dst_bottom: 413,
+            dst_right: 659,
+        });
+
+        assert_eq!(
+            disp.framed_manual_cport_presentation_rect(&bus),
+            disp.last_screen_frame_rect,
+            "a guest-drawn 518x328 frame should locate its 512x322 retained image without centering it"
+        );
+    }
+
+    #[test]
     fn redraw_chrome_blits_large_manual_cport_centered_when_front_window_is_screen_backed() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
 
@@ -5369,7 +5484,7 @@ mod redraw_chrome_tests {
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
         bus.write_byte(manual_base + 419 * 640 + 639, 0x55);
@@ -5452,7 +5567,7 @@ mod redraw_chrome_tests {
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
         bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
@@ -5489,7 +5604,7 @@ mod redraw_chrome_tests {
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
@@ -5529,7 +5644,7 @@ mod redraw_chrome_tests {
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         let dst = screen_base + 90 * 800 + 80;
         bus.write_byte(manual_base, 0x44);
@@ -5564,7 +5679,7 @@ mod redraw_chrome_tests {
         let manual_base = bus.alloc(656 * 600);
         bus.fill_bytes(manual_base, 656 * 600, 0xFF);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 656, 656, 600, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         let covered_probe = screen_base + 300 * 800 + 400;
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -5610,7 +5725,7 @@ mod redraw_chrome_tests {
         let manual_base = bus.alloc(656 * 600);
         bus.fill_bytes(manual_base, 656 * 600, 0x44);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 656, 656, 600, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         let covered_probe = screen_base + 300 * 800 + 400;
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -5644,7 +5759,7 @@ mod redraw_chrome_tests {
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         bus.write_byte(manual_base, 0x44);
         bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
@@ -5655,6 +5770,54 @@ mod redraw_chrome_tests {
             bus.read_byte(screen_base + 90 * 800 + 80),
             0xAA,
             "apps already presenting through CopyBits should not be overwritten by the fallback"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_does_not_present_a_setportpix_scratch_buffer() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[0] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+
+        let manual_port = bus.alloc(200);
+        let original_base = bus.alloc(800 * 600);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, original_base, 800, 800, 600, 0);
+        track_manual_cport(&mut disp, &bus, manual_port);
+
+        // SetPortPix replaces the original handle with a scratch PixMap. The
+        // game may draw a complete-looking image there, but Apple documents
+        // it as a different drawing target, not an implicit screen update.
+        let manual_base = bus.alloc(512 * 322);
+        bus.fill_bytes(manual_base, 512 * 322, 0x44);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 512, 512, 322, 0);
+        disp.last_screen_frame_rect = Some(crate::trap::dispatch::ScreenCopyBitsRect {
+            src_top: 85,
+            src_left: 141,
+            src_bottom: 413,
+            src_right: 659,
+            dst_top: 85,
+            dst_left: 141,
+            dst_bottom: 413,
+            dst_right: 659,
+        });
+
+        let centered_probe = screen_base + 139 * 800 + 144;
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+        assert_eq!(bus.read_byte(centered_probe), 0);
+        assert_eq!(disp.manual_cport_presented_port, 0);
+        assert_eq!(disp.declared_centered_presentation_rect(&bus), None);
+        assert_eq!(
+            disp.framed_manual_cport_presentation_rect(&bus),
+            disp.last_screen_frame_rect,
+            "the explicit screen frame may locate the viewport without presenting the attached scratch PixMap"
         );
     }
 
@@ -5675,7 +5838,7 @@ mod redraw_chrome_tests {
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
@@ -5711,7 +5874,7 @@ mod redraw_chrome_tests {
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
         install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
-        disp.cport_ports.insert(manual_port);
+        track_manual_cport(&mut disp, &bus, manual_port);
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);

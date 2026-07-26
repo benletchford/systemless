@@ -1499,6 +1499,12 @@ pub struct TrapDispatcher {
     pub copybits_screen_count: u64,
     /// Most recent sizeable CopyBits blit into the screen framebuffer.
     pub last_screen_copybits_rect: Option<ScreenCopyBitsRect>,
+    /// Largest non-fullscreen FrameRect drawn into the screen framebuffer in
+    /// the most recent guest tick that drew one. A matching retained CPort can
+    /// use this explicit guest geometry to locate its framed presentation
+    /// without assuming it is centered.
+    pub(crate) last_screen_frame_rect: Option<ScreenCopyBitsRect>,
+    pub(crate) last_screen_frame_rect_tick: u32,
     /// Count of all screen-affecting trace events captured so far.
     pub screen_event_count: u64,
     /// `screen_event_count` values where the recorded event was specifically
@@ -1533,6 +1539,10 @@ pub struct TrapDispatcher {
     /// Non-GWorld CGrafPorts opened via OpenCPort/InitCPort, tracked so
     /// sync_canonical_offscreen_ctabs_to_clut can reach their pixmaps.
     pub(crate) cport_ports: HashSet<u32>,
+    /// PixMapHandle installed when OpenCPort/InitCPort initialized each
+    /// app-managed CGrafPort. SetPortPix can replace that handle with an
+    /// offscreen scratch image; such a replacement is not an onscreen port.
+    pub(crate) cport_original_pixmaps: HashMap<u32, u32>,
     /// Non-window CGrafPort selected for HLE fallback presentation.
     pub(crate) manual_cport_presented_port: u32,
     /// Sparse snapshot of the screen immediately after presenting the manual
@@ -2798,6 +2808,8 @@ impl TrapDispatcher {
             inline_skipped: Box::new([0u64; 4096]),
             copybits_screen_count: 0,
             last_screen_copybits_rect: None,
+            last_screen_frame_rect: None,
+            last_screen_frame_rect_tick: 0,
             screen_event_count: 0,
             copybits_screen_secs: Vec::new(),
             trace_sink: None,
@@ -2809,6 +2821,7 @@ impl TrapDispatcher {
             disposed_gworld_portbits: HashMap::new(),
             gworld_pixel_states: HashMap::new(),
             cport_ports: HashSet::new(),
+            cport_original_pixmaps: HashMap::new(),
             manual_cport_presented_port: 0,
             manual_cport_screen_witness: Vec::new(),
             recording_polygon: None,
