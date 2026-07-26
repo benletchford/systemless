@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/benletchford/systemless/compare/v0.6.0...v0.7.0) (2026-07-26)
+
+
+### Features
+
+* add cooperative Thread Manager support ([04348cd](https://github.com/benletchford/systemless/commit/04348cde025509160b5becbec81061b7dff3262f))
+
+
+### Bug Fixes
+
+* terminate indexed volume enumeration ([40bd9a3](https://github.com/benletchford/systemless/commit/40bd9a3124a4dc297b039a0fba8c67dac84c27d8))
+
 ## [0.6.0](https://github.com/benletchford/systemless/compare/v0.5.0...v0.6.0) (2026-07-26)
 
 
