@@ -2219,6 +2219,17 @@ impl FixtureRunner {
             );
         }
 
+        // JShowCursor ($0804): QuickDraw glue vector for ShowCursor.
+        // On Macintosh Programming: Advanced Techniques (1990) identifies
+        // the vector address; MPW Quickdraw.h declares ShowCursor as the
+        // argument-free $A853 trap. A direct JSR therefore needs only the
+        // trap instruction followed by RTS.
+        let show_cursor_trampoline = self.bus.alloc(4);
+        self.bus.write_word(show_cursor_trampoline, 0xA853); // ShowCursor
+        self.bus.write_word(show_cursor_trampoline + 2, 0x4E75); // RTS
+        self.bus
+            .write_long(addr::J_SHOW_CURSOR, show_cursor_trampoline);
+
         // JSwapFont ($08E0): private Font Manager vector used by QuickDraw to
         // call FMSwapFont directly. Executor's clean-room low-memory table
         // identifies the address and initializes it from the $A901 routine.
@@ -7355,6 +7366,59 @@ mod tests {
             CURSOR_TASK_NOOP_ADDR,
             "JCrsrTask ($08EE) should boot to a callable no-op vector"
         );
+    }
+
+    #[test]
+    fn init_app_seeds_callable_show_cursor_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let entry = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_SHOW_CURSOR);
+        assert_ne!(entry, 0);
+        assert_eq!(
+            [
+                runner.bus.read_word(entry),
+                runner.bus.read_word(entry + 2),
+            ],
+            [0xA853, 0x4E75],
+            "JShowCursor should target ShowCursor followed by RTS"
+        );
+
+        let call_site = 0x0002_0000u32;
+        let initial_sp = 0x007F_FE00u32;
+        runner.bus.write_word(call_site, 0x2078); // MOVEA.L ($0804).W,A0
+        runner.bus.write_word(call_site + 2, 0x0804);
+        runner.bus.write_word(call_site + 4, 0x4E90); // JSR (A0)
+        runner.bus.write_word(call_site + 6, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, call_site);
+        runner.cpu.write_reg(Register::A7, initial_sp);
+        runner.dispatcher.cursor_level = -1;
+        runner.dispatcher.cursor_visible = false;
+
+        let (steps, running) = runner.run_steps(4, None);
+
+        assert!(running);
+        assert_eq!(steps, 4);
+        assert_eq!(runner.cpu.read_reg(Register::PC), call_site + 6);
+        assert_eq!(runner.cpu.read_reg(Register::A7), initial_sp);
+        assert_eq!(runner.dispatcher.cursor_level(), 0);
+        assert!(runner.dispatcher.cursor_visible());
     }
 
     #[test]
