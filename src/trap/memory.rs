@@ -1677,6 +1677,7 @@ impl super::TrapDispatcher {
                     active: false,
                     fire_at_tick: 0,
                     fire_at_subtick: 0,
+                    last_fired_tick: None,
                 });
                 // InsTime clears the qType high-order bit (task inactive until PrimeTime).
                 // Processes 1994, 3-12: "InsTime procedure initially clears this bit."

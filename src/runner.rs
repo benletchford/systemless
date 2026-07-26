@@ -4230,12 +4230,18 @@ impl FixtureRunner {
             return;
         }
 
+        const SUBTICKS_PER_TICK: u64 = 1_000_000;
+        let current_tick = (current_subtick / SUBTICKS_PER_TICK) as u32;
         // Fire at most one task at a time to avoid nested callbacks.
         if let Some(task) = self
             .dispatcher
             .timer_tasks
             .iter_mut()
-            .filter(|task| task.active && current_subtick >= task.fire_at_subtick)
+            .filter(|task| {
+                task.active
+                    && current_subtick >= task.fire_at_subtick
+                    && task.last_fired_tick != Some(current_tick)
+            })
             .min_by_key(|task| task.fire_at_subtick)
         {
             let task_ptr = task.task_ptr;
@@ -4244,6 +4250,13 @@ impl FixtureRunner {
             // Mark only the task being delivered as fired. Other tasks that
             // expire on the same tick must remain active for a later interrupt.
             task.active = false;
+            task.last_fired_tick = Some(current_tick);
+            // The revised Time Manager clears the qType active bit when the
+            // delay expires, before invoking tmAddr. A callback can therefore
+            // observe that its task is inactive and safely PrimeTime it again.
+            // Inside Macintosh: Processes (1994), pp. 3-6 and 3-20.
+            let q_type = self.bus.read_word(task_ptr + 4);
+            self.bus.write_word(task_ptr + 4, q_type & 0x7FFF);
 
             if tm_addr == 0 {
                 return;
@@ -7570,6 +7583,7 @@ mod tests {
         runner.cpu.write_reg(Register::A6, 0xCCCC_0000);
         runner.cpu.write_reg(Register::A7, interrupted_sp);
         runner.cpu.core.set_ccr(0x1F);
+        runner.bus.write_word(0x0039_38C8 + 4, 0x8001);
 
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
@@ -7577,6 +7591,7 @@ mod tests {
             active: true,
             fire_at_tick: 10,
             fire_at_subtick: 10_000_000,
+            last_fired_tick: None,
         });
 
         runner.fire_timer_tasks(10);
@@ -7597,6 +7612,11 @@ mod tests {
         assert_eq!(active.d_regs[7], 0x7777_7777);
         assert_eq!(active.sr & 0x001F, 0x001F);
         assert_eq!(active.ccr, 0x1F);
+        assert_eq!(
+            runner.bus.read_word(0x0039_38C8 + 4),
+            1,
+            "an expired Time Manager task must be inactive before tmAddr runs"
+        );
 
         assert_ne!(runner.timer_trampoline, 0);
         assert_eq!(runner.cpu.read_reg(Register::PC), runner.timer_trampoline);
@@ -7623,6 +7643,7 @@ mod tests {
             active: true,
             fire_at_tick: 101,
             fire_at_subtick: 101_000_000,
+            last_fired_tick: None,
         });
 
         let (steps, running) = runner.run_steps(1, Some(101));
@@ -7661,6 +7682,7 @@ mod tests {
             active: true,
             fire_at_tick: 101,
             fire_at_subtick: 100_200_000,
+            last_fired_tick: None,
         });
 
         let steps = runner.instructions_per_tick as usize / 4;
@@ -7705,6 +7727,7 @@ mod tests {
             active: true,
             fire_at_tick: 102,
             fire_at_subtick: 102_000_000,
+            last_fired_tick: None,
         });
 
         let (steps, running) = runner.run_steps(1, None);
@@ -7743,6 +7766,7 @@ mod tests {
                 active: true,
                 fire_at_tick: 10,
                 fire_at_subtick: 10_000_000,
+                last_fired_tick: None,
             },
             TimerTask {
                 task_ptr: 0x0039_3900,
@@ -7750,6 +7774,7 @@ mod tests {
                 active: true,
                 fire_at_tick: 10,
                 fire_at_subtick: 10_000_000,
+                last_fired_tick: None,
             },
         ]);
 
@@ -7781,6 +7806,51 @@ mod tests {
             runner.bus.read_long(runner.timer_trampoline + 6),
             0x0039_3900
         );
+    }
+
+    #[test]
+    fn self_reprimed_timer_waits_for_the_next_vbl_service() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let task_ptr = 0x0039_38C8;
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.dispatcher.timer_tasks.push(TimerTask {
+            task_ptr,
+            tm_addr: 0x0002_0000,
+            active: true,
+            fire_at_tick: 10,
+            fire_at_subtick: 10_100_000,
+            last_fired_tick: None,
+        });
+
+        runner.fire_timer_tasks_at(10_100_000);
+        assert_eq!(runner.dispatcher.timer_tasks[0].last_fired_tick, Some(10));
+
+        // Model the callback returning and re-priming itself for another
+        // revised Time Manager deadline inside the same VBL.
+        runner.active_interrupt_callback = None;
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.dispatcher.timer_tasks[0].active = true;
+        runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
+        runner.dispatcher.timer_tasks[0].fire_at_subtick = 10_300_000;
+
+        runner.fire_timer_tasks_at(10_300_000);
+        assert!(
+            runner.active_interrupt_callback.is_none(),
+            "one queue element must not monopolize the same VBL"
+        );
+        assert!(runner.dispatcher.timer_tasks[0].active);
+
+        runner.fire_timer_tasks_at(11_000_000);
+        assert!(
+            runner.active_interrupt_callback.is_some(),
+            "the re-primed element becomes eligible at the next VBL service"
+        );
+        assert_eq!(runner.dispatcher.timer_tasks[0].last_fired_tick, Some(11));
     }
 
     #[test]

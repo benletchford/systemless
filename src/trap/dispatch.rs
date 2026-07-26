@@ -669,6 +669,13 @@ pub struct TimerTask {
     /// Revised Time Manager deadline in millionths of a 60 Hz guest tick.
     /// This preserves negative PrimeTime microsecond delays below one VBL.
     pub fire_at_subtick: u64,
+    /// VBL tick in which this task was most recently dispatched.
+    ///
+    /// BasiliskII's Time Manager services an individual queue element at
+    /// most once per VBL even when its revised/extended delay is shorter.
+    /// Retaining the sub-tick deadline still orders concurrent tasks without
+    /// allowing one self-repriming task to monopolize the interrupt queue.
+    pub last_fired_tick: Option<u32>,
 }
 
 /// An installed Vertical Retrace Manager task.
