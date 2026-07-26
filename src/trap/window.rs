@@ -3274,7 +3274,8 @@ impl super::TrapDispatcher {
                 // top of the screen then fall through to window hit-testing instead.
                 // Inside Macintosh Volume I, I-287; Inside Macintosh Volume V, V-245
                 let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-                let (part, window_ptr) = if mbar_h > 0 && pt_v < mbar_h {
+                let native_menu_click = self.pending_native_menu_selection.is_some();
+                let (part, window_ptr) = if native_menu_click || (mbar_h > 0 && pt_v < mbar_h) {
                     (1, 0) // inMenuBar
                 } else {
                     self.find_window_at_point(bus, pt_v, pt_h, mbar_h)

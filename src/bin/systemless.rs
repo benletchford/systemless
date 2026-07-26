@@ -19,6 +19,9 @@ mod desktop_save_store;
 #[cfg(target_os = "macos")]
 #[path = "desktop/metal_present.rs"]
 mod metal_present;
+#[cfg(target_os = "macos")]
+#[path = "desktop/native_menu.rs"]
+mod native_menu;
 
 #[cfg(not(target_os = "macos"))]
 use std::num::NonZeroU32;
@@ -324,6 +327,8 @@ struct App {
     /// `runner.dispatcher_mut().menu_bar_hidden = false` at runner
     /// construction.
     show_menu_bar: bool,
+    #[cfg(target_os = "macos")]
+    native_menu: native_menu::NativeMenuBridge,
 }
 
 impl App {
@@ -333,6 +338,12 @@ impl App {
         cpu_mhz: Option<f64>,
         show_menu_bar: bool,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        let native_menu_app_name = game_path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Systemless")
+            .to_owned();
         #[cfg(target_os = "macos")]
         let cached_content = load_cached_content_rect(&game_path);
         #[cfg(target_os = "macos")]
@@ -402,6 +413,8 @@ impl App {
             arrows_as_numpad,
             emulated_ips: cpu_mhz.map(|mhz| mhz * 1_000_000.0),
             show_menu_bar,
+            #[cfg(target_os = "macos")]
+            native_menu: native_menu::NativeMenuBridge::new(native_menu_app_name),
         }
     }
 
@@ -453,6 +466,15 @@ impl App {
         }
         let app =
             game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
+        #[cfg(target_os = "macos")]
+        if let Some(executable_name) = runner
+            .dispatcher()
+            .launched_app_path()
+            .and_then(|path| path.rsplit('/').next())
+            .filter(|name| !name.is_empty())
+        {
+            self.native_menu.set_app_name(executable_name.to_owned());
+        }
         let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner);
         eprintln!(
             "[SYSTEMLESS] Desktop save dir: {}",
@@ -1655,9 +1677,21 @@ impl ApplicationHandler for App {
         self.next_frame_time = Some(next_target);
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_target));
 
+        #[cfg(target_os = "macos")]
+        if let Some(runner) = self.runner.as_mut() {
+            for (menu_id, item_number) in self.native_menu.drain_commands() {
+                runner.select_guest_menu_item(menu_id, item_number);
+            }
+        }
+
         // Step emulation, then render
         self.step_frame();
         self.sync_save_files(false);
+
+        #[cfg(target_os = "macos")]
+        if let Some(snapshot) = self.runner.as_mut().map(FixtureRunner::guest_menu_snapshot) {
+            self.native_menu.sync(snapshot);
+        }
 
         // Check if screen mode changed
         if let Some(runner) = &self.runner {

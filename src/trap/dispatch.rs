@@ -1358,6 +1358,20 @@ pub struct TrapDispatcher {
     pub(crate) saved_menu_bars: HashMap<u32, Vec<super::menu::Menu>>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
     pub(crate) menu_tracking: Option<super::menu::MenuTrackingState>,
+    /// A host-native menu selection waiting for the guest's normal
+    /// FindWindow -> MenuSelect event path.  It is consumed only by
+    /// MenuSelect and revalidated against the live menu list there.
+    pub(crate) pending_native_menu_selection: Option<(i16, i16)>,
+    /// Latched menu-bar mouseDown corresponding to
+    /// `pending_native_menu_selection`. Unlike an ordinary queued event, this
+    /// survives an Event Manager consumer that fetches but ignores menu-bar
+    /// clicks during an animation. It is cleared only when MenuSelect accepts
+    /// or invalidates the native command.
+    pub(crate) pending_native_menu_event: Option<QueuedEvent>,
+    /// Guest tick on which the latched native event was most recently
+    /// returned. Limit redelivery to once per tick so an animation loop that
+    /// ignores mouseDown events can still make forward progress.
+    pub(crate) pending_native_menu_event_tick: Option<u32>,
     /// Active control tracking state (currently popup-menu TrackControl).
     pub(crate) control_tracking: Option<ControlTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
@@ -2739,6 +2753,9 @@ impl TrapDispatcher {
             menus: Vec::new(),
             saved_menu_bars: HashMap::new(),
             menu_tracking: None,
+            pending_native_menu_selection: None,
+            pending_native_menu_event: None,
+            pending_native_menu_event_tick: None,
             control_tracking: None,
             underline_info: None,
             mouse_pos: (0, 0),

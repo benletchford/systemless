@@ -2204,6 +2204,7 @@ dependencies = [
  "libm",
  "m68k",
  "objc2 0.5.2",
+ "objc2-app-kit",
  "objc2-foundation 0.2.2",
  "objc2-metal",
  "objc2-quartz-core 0.2.2",

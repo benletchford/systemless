@@ -8,6 +8,7 @@ use crate::loader::{
 };
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::menu_model::GuestMenuSnapshot;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -1203,6 +1204,28 @@ impl FixtureRunner {
             self.wake_pending_wait_next_event_with_null_event_for_polling_input();
         }
         self.wake_foreground_after_input();
+    }
+
+    /// Return an immutable snapshot of the guest's current Menu Manager list.
+    /// Native and web frontends can use this without exposing mutable Toolbox
+    /// internals.
+    pub fn guest_menu_snapshot(&mut self) -> GuestMenuSnapshot {
+        self.dispatcher.guest_menu_snapshot(&self.bus)
+    }
+
+    /// Route a host-presented menu selection back through the guest's normal
+    /// mouseDown -> FindWindow -> MenuSelect path.  Returns false if the menu
+    /// or item is no longer present, enabled, and selectable.
+    pub fn select_guest_menu_item(&mut self, menu_id: i16, item_number: i16) -> bool {
+        let Some((_v, _h)) =
+            self.dispatcher
+                .queue_native_menu_selection(&self.bus, menu_id, item_number)
+        else {
+            return false;
+        };
+        self.wake_pending_wait_next_event_if_input_available();
+        self.wake_foreground_after_input();
+        true
     }
 
     /// Inject a mouse-down event and sync low-memory globals.
@@ -3670,7 +3693,9 @@ impl FixtureRunner {
 
     fn deliver_pending_wait_next_event_if_available(&mut self) -> bool {
         let Some(pending) = self.dispatcher.pending_wait_next_event_return.take() else {
-            if !self.dispatcher.event_queue.is_empty() {
+            if !self.dispatcher.event_queue.is_empty()
+                || self.dispatcher.has_pending_native_menu_event()
+            {
                 self.dispatcher.pending_wait_sleep_ticks = 0;
                 return true;
             }

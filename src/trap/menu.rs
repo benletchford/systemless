@@ -2,6 +2,8 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
+use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::ui_theme::UiThemeId;
 use crate::Result;
 
@@ -174,6 +176,24 @@ fn count_menu_items_from_memory(bus: &MacMemoryBus, menu_handle: u32) -> u16 {
 /// byte into U+FFFD, which has no glyph, and drop it from the menu.
 fn macroman_to_string(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| byte as char).collect()
+}
+
+/// Recover the guest Mac Roman bytes stored in the Menu Manager's internal
+/// byte-preserving string representation.
+fn internal_menu_string_bytes(value: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(value.len());
+    for ch in value.chars() {
+        if (ch as u32) <= u8::MAX as u32 {
+            bytes.push(ch as u8);
+        } else {
+            bytes.extend(encode_mac_roman_lossy(&ch.to_string()));
+        }
+    }
+    bytes
+}
+
+fn internal_menu_string_to_unicode(value: &str) -> String {
+    decode_mac_roman(&internal_menu_string_bytes(value))
 }
 
 /// Parse a MENU resource from guest memory into a Menu struct.
@@ -387,7 +407,8 @@ fn serialise_menu_items_to_memory(bus: &mut MacMemoryBus, menu: &Menu) {
     let title_len = bus.read_byte(menu_ptr + 14) as u32;
     let mut offset = 15 + title_len;
     for item in &menu.items {
-        let bytes = item.text.as_bytes();
+        let encoded = internal_menu_string_bytes(&item.text);
+        let bytes = encoded.as_slice();
         let text_len = bytes.len().min(255) as u32;
         let item_size = 1 + text_len + 4;
         if offset + item_size + 1 > MENU_RECORD_SIZE {
@@ -453,6 +474,106 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
+    /// Copy the live, inserted Menu Manager state into a frontend-neutral
+    /// representation.  Refresh enable flags first because classic
+    /// applications and custom menu procedures are allowed to mutate the
+    /// guest-owned MenuInfo records directly.
+    pub(crate) fn guest_menu_snapshot(&mut self, bus: &MacMemoryBus) -> GuestMenuSnapshot {
+        for menu in &mut self.menus {
+            refresh_enable_flags_from_memory(bus, menu);
+        }
+
+        GuestMenuSnapshot {
+            menus: self
+                .menus
+                .iter()
+                .filter(|menu| menu.in_menu_bar)
+                .map(|menu| GuestMenu {
+                    id: menu.id,
+                    title: internal_menu_string_to_unicode(&menu.title),
+                    enabled: menu.enabled,
+                    hierarchical: menu.hierarchical,
+                    visible_in_menu_bar: menu.visible_in_menu_bar,
+                    items: menu
+                        .items
+                        .iter()
+                        .enumerate()
+                        .map(|(index, item)| {
+                            let submenu_id =
+                                Self::is_hierarchical_item(item).then_some(item.mark as i16);
+                            let key_equivalent = Self::menu_item_has_command_key(item)
+                                .then(|| char::from(item.key_equiv).to_ascii_lowercase());
+                            GuestMenuItem {
+                                number: index as i16 + 1,
+                                text: internal_menu_string_to_unicode(&item.text),
+                                enabled: item.enabled,
+                                checked: item.mark != 0 && submenu_id.is_none(),
+                                key_equivalent,
+                                submenu_id,
+                                separator: item.text == "-",
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Validate and stage a host-native selection, returning a point inside
+    /// the first visible title.  The frontend injects that point as a normal
+    /// mouse click so the application follows its ordinary event loop.
+    pub(crate) fn queue_native_menu_selection(
+        &mut self,
+        bus: &MacMemoryBus,
+        menu_id: i16,
+        item_number: i16,
+    ) -> Option<(i16, i16)> {
+        for menu in &mut self.menus {
+            refresh_enable_flags_from_memory(bus, menu);
+        }
+        let menu = self
+            .menus
+            .iter()
+            .find(|menu| menu.in_menu_bar && menu.id == menu_id)?;
+        let item = menu.items.get(item_number.checked_sub(1)? as usize)?;
+        if !menu.enabled || !item.enabled || item.text == "-" || Self::is_hierarchical_item(item) {
+            return None;
+        }
+        let (_, left, right) = self.menu_title_regions_with_indices().into_iter().next()?;
+        let selection = (menu_id, item_number);
+        if self.pending_native_menu_selection != Some(selection) {
+            self.pending_native_menu_selection = Some(selection);
+            self.pending_native_menu_event = Some(super::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 10,
+                where_h: left + (right - left) / 2,
+                modifiers: self.current_event_modifiers(),
+            });
+            self.pending_native_menu_event_tick = None;
+        }
+        Some((10, left + (right - left) / 2))
+    }
+
+    /// Consume a staged selection only if it is still valid in the current
+    /// guest menu list.  Menu contents can change while AppKit is tracking a
+    /// native menu, so validation at enqueue time alone is insufficient.
+    fn take_native_menu_selection(&mut self, bus: &MacMemoryBus) -> Option<u32> {
+        let (menu_id, item_number) = self.pending_native_menu_selection.take()?;
+        self.pending_native_menu_event = None;
+        self.pending_native_menu_event_tick = None;
+        let menu = self
+            .menus
+            .iter_mut()
+            .find(|menu| menu.in_menu_bar && menu.id == menu_id)?;
+        refresh_enable_flags_from_memory(bus, menu);
+        let item = menu.items.get(item_number.checked_sub(1)? as usize)?;
+        if !menu.enabled || !item.enabled || item.text == "-" || Self::is_hierarchical_item(item) {
+            return None;
+        }
+        Some(((menu_id as u16 as u32) << 16) | item_number as u16 as u32)
+    }
+
     fn menu_tracking_button_down(&self, bus: &MacMemoryBus) -> bool {
         // Menu tracking ends on mouse-up; MBState ($0172) is the documented
         // low-memory mouse button state (0=down, $80=up). Fold it in with
@@ -1643,6 +1764,30 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-355
             // MenuSelect ($A93D): Full mouse tracking with dropdown, highlighting, flashing
             (true, 0x13D) => {
+                if self.menu_tracking.is_none() && self.pending_native_menu_selection.is_some() {
+                    let sp = cpu.read_reg(Register::A7);
+                    let result = self.take_native_menu_selection(bus).unwrap_or(0);
+                    // The synthetic mouse-up belongs to the native selection;
+                    // native AppKit tracking has already completed it.
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+                    bus.write_long(sp + 4, result);
+                    cpu.write_reg(Register::A7, sp + 4);
+                    self.record_menuselect_input_trace(
+                        "native",
+                        None,
+                        None,
+                        Some((result & 0xFFFF) as i16),
+                        Some(result),
+                        if result == 0 {
+                            "native_selection_invalidated"
+                        } else {
+                            "native_selection"
+                        },
+                    );
+                    return Some(Ok(()));
+                }
                 if self.menu_tracking.is_some() {
                     // Re-fire: we're in tracking mode
                     if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
@@ -12265,5 +12410,120 @@ mod tests {
             0,
             "PlotIcon should not touch icon/rect memory when current_port is NIL"
         );
+    }
+
+    #[test]
+    fn guest_menu_snapshot_exposes_only_the_inserted_menu_list() {
+        let (mut disp, _cpu, bus) = setup();
+        disp.menus = vec![
+            Menu {
+                id: 100,
+                title: "File".into(),
+                items: vec![MenuItem {
+                    // The renderer-facing Menu model preserves Mac Roman
+                    // bytes as chars; the native snapshot must expose Unicode.
+                    text: "New Level\u{C9}".into(),
+                    icon: 0,
+                    key_equiv: b'N',
+                    mark: 0x12,
+                    style: 0,
+                    enabled: true,
+                }],
+                enabled: true,
+                handle: 0,
+                in_menu_bar: true,
+                hierarchical: false,
+                visible_in_menu_bar: true,
+            },
+            Menu {
+                id: 101,
+                title: "Detached".into(),
+                items: Vec::new(),
+                enabled: true,
+                handle: 0,
+                in_menu_bar: false,
+                hierarchical: false,
+                visible_in_menu_bar: false,
+            },
+        ];
+
+        let snapshot = disp.guest_menu_snapshot(&bus);
+        assert_eq!(snapshot.menus.len(), 1);
+        assert_eq!(snapshot.menus[0].id, 100);
+        assert_eq!(snapshot.menus[0].items[0].number, 1);
+        assert_eq!(snapshot.menus[0].items[0].text, "New Level…");
+        assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('n'));
+        assert!(snapshot.menus[0].items[0].checked);
+    }
+
+    #[test]
+    fn native_selection_returns_through_menuselect_pascal_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.menus = vec![Menu {
+            id: -120,
+            title: "Game".into(),
+            items: vec![MenuItem {
+                text: "Pause".into(),
+                icon: 0,
+                key_equiv: 0,
+                mark: 0,
+                style: 0,
+                enabled: true,
+            }],
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        }];
+
+        assert!(disp.queue_native_menu_selection(&bus, -120, 1).is_some());
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP + 4, 0xDEAD_BEEF);
+        let result = disp
+            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .expect("MenuSelect handled");
+        assert!(result.is_ok());
+        assert_eq!(bus.read_long(TEST_SP + 4), 0xFF88_0001);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert!(disp.pending_native_menu_selection.is_none());
+        assert!(disp.pending_native_menu_event.is_none());
+        assert!(disp.pending_native_menu_event_tick.is_none());
+    }
+
+    #[test]
+    fn native_selection_rejects_disabled_and_hierarchical_parent_items() {
+        let (mut disp, _cpu, bus) = setup();
+        disp.menus = vec![Menu {
+            id: 100,
+            title: "File".into(),
+            items: vec![
+                MenuItem {
+                    text: "Disabled".into(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: false,
+                },
+                MenuItem {
+                    text: "Recent".into(),
+                    icon: 0,
+                    key_equiv: 0x1B,
+                    mark: 7,
+                    style: 0,
+                    enabled: true,
+                },
+            ],
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        }];
+
+        assert_eq!(disp.queue_native_menu_selection(&bus, 100, 1), None);
+        assert_eq!(disp.queue_native_menu_selection(&bus, 100, 2), None);
+        assert_eq!(disp.queue_native_menu_selection(&bus, 999, 1), None);
     }
 }

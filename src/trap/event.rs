@@ -295,6 +295,38 @@ impl super::TrapDispatcher {
         });
     }
 
+    fn peek_pending_native_menu_event(
+        &self,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        if self.pending_native_menu_event_tick == Some(self.tick_count) {
+            return None;
+        }
+        self.pending_native_menu_event
+            .as_ref()
+            .filter(|event| Self::event_matches_mask(event_mask, event.what))
+            .cloned()
+    }
+
+    fn dequeue_pending_native_menu_event(
+        &mut self,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        let event = self.peek_pending_native_menu_event(event_mask)?;
+        self.pending_native_menu_event_tick = Some(self.tick_count);
+        if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
+            eprintln!(
+                "[INPUT] present latched native-menu mouseDown where=({}, {}) mask=${:04X} tick={}",
+                event.where_v, event.where_h, event_mask, self.tick_count
+            );
+        }
+        Some(event)
+    }
+
+    pub(crate) fn has_pending_native_menu_event(&self) -> bool {
+        self.pending_native_menu_event.is_some()
+    }
+
     pub(crate) fn peek_toolbox_event(
         &mut self,
         bus: &MacMemoryBus,
@@ -302,20 +334,25 @@ impl super::TrapDispatcher {
     ) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(event_mask);
-        self.event_queue
-            .iter()
-            .find(|event| Self::event_matches_mask(event_mask, event.what))
-            .cloned()
+        self.peek_pending_native_menu_event(event_mask)
+            .or_else(|| {
+                self.event_queue
+                    .iter()
+                    .find(|event| Self::event_matches_mask(event_mask, event.what))
+                    .cloned()
+            })
             .or_else(|| self.peek_flushed_update_event(bus, event_mask))
             .or_else(|| self.pending_update_event(bus, event_mask))
     }
 
     fn peek_event(&mut self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_auto_key_if_due(event_mask);
-        self.event_queue
-            .iter()
-            .find(|event| Self::event_matches_mask(event_mask, event.what))
-            .cloned()
+        self.peek_pending_native_menu_event(event_mask).or_else(|| {
+            self.event_queue
+                .iter()
+                .find(|event| Self::event_matches_mask(event_mask, event.what))
+                .cloned()
+        })
     }
 
     pub(crate) fn dequeue_toolbox_event<C: CpuOps>(
@@ -326,6 +363,16 @@ impl super::TrapDispatcher {
     ) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(event_mask);
+        if let Some(event) = self.dequeue_pending_native_menu_event(event_mask) {
+            return (
+                event.what,
+                event.message,
+                event.where_v,
+                event.where_h,
+                event.modifiers,
+                true,
+            );
+        }
         if let Some(idx) = self
             .event_queue
             .iter()
@@ -475,6 +522,16 @@ impl super::TrapDispatcher {
     /// Returns (what, message, where_v, where_h, modifiers, has_event).
     pub(crate) fn dequeue_event(&mut self, event_mask: u16) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_auto_key_if_due(event_mask);
+        if let Some(event) = self.dequeue_pending_native_menu_event(event_mask) {
+            return (
+                event.what,
+                event.message,
+                event.where_v,
+                event.where_h,
+                event.modifiers,
+                true,
+            );
+        }
         if let Some(idx) = self
             .event_queue
             .iter()
@@ -1023,6 +1080,32 @@ mod tests {
     use crate::memory::MemoryBus;
 
     // ---- FlushEvents ($A032) ----
+
+    #[test]
+    fn native_menu_mouse_down_is_latched_and_rate_limited_until_menuselect() {
+        let (mut disp, _cpu, _bus) = setup();
+        disp.tick_count = 100;
+        disp.pending_native_menu_event = Some(QueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: 10,
+            where_h: 42,
+            modifiers: 0,
+        });
+
+        let first = disp.dequeue_event(1 << 1);
+        assert!(first.5);
+        assert_eq!((first.0, first.2, first.3), (1, 10, 42));
+        assert!(disp.pending_native_menu_event.is_some());
+
+        let same_tick = disp.dequeue_event(1 << 1);
+        assert!(!same_tick.5, "latched click must not spin an event loop");
+
+        disp.tick_count += 1;
+        let next_tick = disp.dequeue_event(1 << 1);
+        assert!(next_tick.5, "ignored menu click must be presented again");
+        assert!(disp.pending_native_menu_event.is_some());
+    }
 
     #[test]
     fn flush_events_clears_queue_and_sets_d0_zero() {
