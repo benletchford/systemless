@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/benletchford/systemless/compare/v0.4.1...v0.4.2) (2026-07-26)
+
+
+### Bug Fixes
+
+* preserve application-painted dialog pixels during framebuffer redraws ([954de06](https://github.com/benletchford/systemless/commit/954de06e6ccc76d57dc28e1b5740cdf3152b5f56))
+* stop ModalDialog repainting a dialog the application already drew itself ([a56286d](https://github.com/benletchford/systemless/commit/a56286d908d1ed5850d857a571c09ca2056bb514))
+
 ## [0.4.1](https://github.com/benletchford/systemless/compare/v0.4.0...v0.4.1) (2026-07-25)
 
 
