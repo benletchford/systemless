@@ -2824,6 +2824,10 @@ impl FixtureRunner {
                         active_interrupt_callback.source,
                         ActiveInterruptCallbackSource::DialogDrawProc
                     );
+                    let completed_timer = matches!(
+                        active_interrupt_callback.source,
+                        ActiveInterruptCallbackSource::Timer
+                    );
                     let completed_modeless_dialog_draw_proc = completed_dialog_draw_proc
                         && self.dispatcher.active_modeless_dialog_draw_proc.is_some();
                     if completed_dialog_draw_proc {
@@ -2832,6 +2836,12 @@ impl FixtureRunner {
                     }
                     self.active_interrupt_callback = None;
                     self.refill_foreground_budget_after_async_return();
+                    if completed_timer {
+                        self.fire_timer_tasks(self.guest_tick());
+                        if self.active_interrupt_callback.is_some() {
+                            continue;
+                        }
+                    }
                     if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
                     {
                         continue;
@@ -4207,21 +4217,27 @@ impl FixtureRunner {
             return;
         }
 
-        // Fire at most one task per tick to avoid deep nesting
+        const SUBTICKS_PER_TICK: u64 = 1_000_000;
+        let target_subtick = current_tick as u64 * SUBTICKS_PER_TICK;
+
+        // Fire at most one task at a time to avoid nested callbacks.
         if let Some(task) = self
             .dispatcher
             .timer_tasks
             .iter_mut()
-            .filter(|task| task.active && current_tick >= task.fire_at_tick)
-            .min_by_key(|task| task.fire_at_tick)
+            .filter(|task| task.active && target_subtick >= task.fire_at_subtick)
+            .min_by_key(|task| task.fire_at_subtick)
         {
             let task_ptr = task.task_ptr;
             let tm_addr = task.tm_addr;
+            self.dispatcher.timer_current_subtick = task.fire_at_subtick;
+            self.dispatcher.timer_callback_active = true;
             // Mark only the task being delivered as fired. Other tasks that
             // expire on the same tick must remain active for a later interrupt.
             task.active = false;
 
             if tm_addr == 0 {
+                self.dispatcher.timer_callback_active = false;
                 return;
             }
 
@@ -4300,6 +4316,9 @@ impl FixtureRunner {
                 );
             }
             self.cpu.write_reg(Register::PC, tramp);
+        } else {
+            self.dispatcher.timer_current_subtick = target_subtick;
+            self.dispatcher.timer_callback_active = false;
         }
     }
 
@@ -7550,6 +7569,7 @@ mod tests {
             tm_addr: 0x0004_1234,
             active: true,
             fire_at_tick: 10,
+            fire_at_subtick: 10_000_000,
         });
 
         runner.fire_timer_tasks(10);
@@ -7595,6 +7615,7 @@ mod tests {
             tm_addr: callback_addr,
             active: true,
             fire_at_tick: 101,
+            fire_at_subtick: 101_000_000,
         });
 
         let (steps, running) = runner.run_steps(1, Some(101));
@@ -7642,6 +7663,7 @@ mod tests {
             tm_addr: callback_addr,
             active: true,
             fire_at_tick: 102,
+            fire_at_subtick: 102_000_000,
         });
 
         let (steps, running) = runner.run_steps(1, None);
@@ -7679,12 +7701,14 @@ mod tests {
                 tm_addr: 0x0002_0000,
                 active: true,
                 fire_at_tick: 10,
+                fire_at_subtick: 10_000_000,
             },
             TimerTask {
                 task_ptr: 0x0039_3900,
                 tm_addr: 0x0002_1000,
                 active: true,
                 fire_at_tick: 10,
+                fire_at_subtick: 10_000_000,
             },
         ]);
 
@@ -7700,6 +7724,7 @@ mod tests {
         // jump ahead of an older task that is still waiting for delivery.
         runner.dispatcher.timer_tasks[0].active = true;
         runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
+        runner.dispatcher.timer_tasks[0].fire_at_subtick = 11_000_000;
         runner.active_interrupt_callback = None;
         runner.cpu.write_reg(Register::PC, interrupted_pc);
         runner.cpu.write_reg(Register::A7, interrupted_sp);

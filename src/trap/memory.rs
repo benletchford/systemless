@@ -1676,6 +1676,7 @@ impl super::TrapDispatcher {
                     tm_addr,
                     active: false,
                     fire_at_tick: 0,
+                    fire_at_subtick: 0,
                 });
                 // InsTime clears the qType high-order bit (task inactive until PrimeTime).
                 // Processes 1994, 3-12: "InsTime procedure initially clears this bit."
@@ -1707,24 +1708,31 @@ impl super::TrapDispatcher {
                 let task_ptr = cpu.read_reg(Register::A0);
                 let delay = cpu.read_reg(Register::D0) as i32;
                 let current_ticks = bus.read_long(0x016A);
+                const SUBTICKS_PER_TICK: u64 = 1_000_000;
                 // Convert delay to 60.15 Hz ticks (VBL rate per Guide to Macintosh Family
                 // Hardware, 2nd Ed., p. 6-798: "once every 16.63 ms").
                 // We use 60 (not 60.15) to keep integer arithmetic exact for common
-                // millisecond values and avoid spurious ceil rounding.
+                // millisecond values.
                 // Positive = milliseconds, negative = negated microseconds.
-                // Round up so coarse tick emulation never fires earlier than requested.
-                let delay_ticks = if delay == 0 {
-                    1 // Fire ASAP (next tick)
+                let delay_subticks = if delay == 0 {
+                    SUBTICKS_PER_TICK // Fire ASAP (next tick)
                 } else if delay > 0 {
-                    (((delay as u64) * 60).div_ceil(1000) as u32).max(1)
+                    (delay as u64) * 60_000
                 } else {
                     let us = (-delay) as u64;
-                    ((us * 60).div_ceil(1_000_000) as u32).max(1)
+                    (us * 60).max(1)
                 };
-                let fire_at = current_ticks.wrapping_add(delay_ticks);
+                let current_subtick = if self.timer_callback_active {
+                    self.timer_current_subtick
+                } else {
+                    current_ticks as u64 * SUBTICKS_PER_TICK
+                };
+                let fire_at_subtick = current_subtick.saturating_add(delay_subticks);
+                let fire_at = fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
                 if let Some(task) = self.timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
                     task.active = true;
                     task.fire_at_tick = fire_at;
+                    task.fire_at_subtick = fire_at_subtick;
                     // Re-read tmAddr in case it changed between InsTime and PrimeTime
                     task.tm_addr = bus.read_long(task_ptr + 6);
                 }
@@ -9099,6 +9107,37 @@ mod tests {
         assert_eq!(
             task.fire_at_tick, 102,
             "33 ms should round up to two 60 Hz ticks from TickCount 100"
+        );
+    }
+
+    #[test]
+    fn test_prime_time_preserves_negative_microsecond_deadline() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = 0x200000;
+
+        bus.write_long(0x016A, 100);
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, (-3333_i32) as u32);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let task = dispatcher
+            .timer_tasks
+            .iter()
+            .find(|task| task.task_ptr == task_ptr)
+            .expect("timer task should be queued");
+        assert_eq!(task.fire_at_tick, 101);
+        assert_eq!(
+            task.fire_at_subtick, 100_199_980,
+            "3,333 microseconds should remain below one 60 Hz guest tick"
         );
     }
 
