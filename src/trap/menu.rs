@@ -165,6 +165,17 @@ fn count_menu_items_from_memory(bus: &MacMemoryBus, menu_handle: u32) -> u16 {
     count
 }
 
+/// Decode a guest menu string payload as Mac Roman text.
+///
+/// Menu titles and item text are Mac Roman byte strings (IM:I I-247), and
+/// the glyph lookup treats a `char` in 0x80..=0xFF as the Mac Roman code
+/// for that byte. Decoding is therefore a per-byte cast: interpreting the
+/// payload as UTF-8 would fold every accent, ellipsis, bullet and symbol
+/// byte into U+FFFD, which has no glyph, and drop it from the menu.
+fn macroman_to_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|&byte| byte as char).collect()
+}
+
 /// Parse a MENU resource from guest memory into a Menu struct.
 fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
     let menu_id = bus.read_word(res_ptr) as i16;
@@ -175,7 +186,7 @@ fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
     for i in 0..title_len {
         title_bytes.push(bus.read_byte(res_ptr + 15 + i as u32));
     }
-    let title = String::from_utf8_lossy(&title_bytes).into_owned();
+    let title = macroman_to_string(&title_bytes);
 
     // Items start after the title Pascal string
     let mut offset = res_ptr + 15 + title_len as u32;
@@ -190,7 +201,7 @@ fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
         for i in 0..item_len {
             text_bytes.push(bus.read_byte(offset + 1 + i as u32));
         }
-        let text = String::from_utf8_lossy(&text_bytes).into_owned();
+        let text = macroman_to_string(&text_bytes);
         offset += 1 + item_len as u32;
 
         let icon = bus.read_byte(offset);
@@ -291,7 +302,7 @@ fn parse_appendmenu_items(bytes: &[u8]) -> Vec<MenuItem> {
                 }
             }
         }
-        item.text = String::from_utf8_lossy(&text).into_owned();
+        item.text = macroman_to_string(&text);
         items.push(item);
     }
     items
@@ -576,7 +587,7 @@ impl super::TrapDispatcher {
             nth += 1;
             if nth == selected {
                 let bytes = bus.read_bytes(offset + 1, item_len);
-                return Some(String::from_utf8_lossy(&bytes).into_owned());
+                return Some(macroman_to_string(&bytes));
             }
             offset += 1 + item_len as u32 + 4;
         }
@@ -756,6 +767,35 @@ impl super::TrapDispatcher {
             return None;
         };
         Self::menu_color_rgb_pixel_index(bus, rgb)
+    }
+
+    /// Pixel value the standard definition procedures use to dim
+    /// unavailable menu content on a colour screen.
+    ///
+    /// MTE 1992 p. 3-131 and HIG 1992 p. 54 say unavailable titles and
+    /// items stay visible but dimmed. The System 7 definition procedures
+    /// do that with `GetGray` (IM:V 1986 p. V-142), which resolves the
+    /// shade halfway between the content colour and the menu background
+    /// against the device colour table — so a colour screen shows solid
+    /// grey glyphs rather than stippled black ones. `None` means the
+    /// device cannot express that shade (notably 1-bit screens), where
+    /// the definition procedures apply the 50% grey pattern instead.
+    pub(super) fn menu_dim_pixel_index(
+        bus: &MacMemoryBus,
+        pixel_size: u16,
+        content_index: Option<u8>,
+        background_index: Option<u8>,
+    ) -> Option<u8> {
+        if pixel_size == 1 {
+            return None;
+        }
+        let resolve = |index: Option<u8>, default: [u16; 3]| match index {
+            Some(index) => Self::fb_rgb_for_pixel_index(bus, index).unwrap_or(default),
+            None => default,
+        };
+        let background = resolve(background_index, [0xFFFF; 3]);
+        let content = resolve(content_index, [0; 3]);
+        Self::fb_gray_pixel_index_between(bus, background, content)
     }
 
     fn menu_hilite_pixel_indexes(
@@ -1121,7 +1161,7 @@ impl super::TrapDispatcher {
                     // Terminate the menuData area with an empty item string
                     // so AppendMenu's scan knows where to append.
                     bus.write_byte(menu_ptr + 15 + title_len, 0);
-                    title = String::from_utf8_lossy(&title_bytes).into_owned();
+                    title = macroman_to_string(&title_bytes);
                 }
                 // Track the menu in self.menus immediately so AppendMenu
                 // (which often runs BEFORE InsertMenu in typical Mac app
@@ -1308,7 +1348,7 @@ impl super::TrapDispatcher {
                                     for i in 0..title_len {
                                         title_bytes.push(bus.read_byte(menu_ptr + 15 + i as u32));
                                     }
-                                    let title = String::from_utf8_lossy(&title_bytes).into_owned();
+                                    let title = macroman_to_string(&title_bytes);
                                     if !title.is_empty() {
                                         eprintln!(
                                             "[MENU] InsertMenu: title=\"{}\" (no resource)",
@@ -2107,7 +2147,7 @@ impl super::TrapDispatcher {
                     for i in 0..text_len {
                         text_bytes.push(bus.read_byte(text_ptr + 1 + i as u32));
                     }
-                    let text = String::from_utf8_lossy(&text_bytes).into_owned();
+                    let text = macroman_to_string(&text_bytes);
                     if !self.menus.iter().any(|m| m.handle == menu_handle) {
                         let menu_ptr = bus.read_long(menu_handle);
                         if menu_ptr != 0 {
@@ -3514,10 +3554,28 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn menu_items_height(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
-        items
+        Self::laid_out_items(items)
             .iter()
             .map(|item| self.menu_item_height(bus, item))
             .sum()
+    }
+
+    /// The items a menu actually lays out.
+    ///
+    /// A divider only means anything between groups of items (HIG 1992
+    /// p. 63), and the standard definition procedure gives a trailing one
+    /// no row. Applications author the Apple menu as an About command plus
+    /// a divider in their `'MENU'` resource so `AppendResMenu` has
+    /// something to append below (MTE 1992 pp. 3-97 to 3-98); when the
+    /// Apple Menu Items list comes back empty, System 7.5.3 under
+    /// BasiliskII draws that menu exactly one item tall rather than
+    /// leaving a dangling line.
+    fn laid_out_items(items: &[MenuItem]) -> &[MenuItem] {
+        let mut end = items.len();
+        while end > 0 && items[end - 1].text == "-" {
+            end -= 1;
+        }
+        &items[..end]
     }
 
     pub(super) fn menu_item_width_extra(&self, bus: &MacMemoryBus, item: &MenuItem) -> i16 {
@@ -3547,15 +3605,28 @@ impl super::TrapDispatcher {
 
     fn menu_item_pulldown_padding(item: &MenuItem) -> i16 {
         let has_key = Self::menu_item_has_command_key(item);
-        let has_mark_or_icon = item.mark != 0 || item.icon != 0;
+        let has_icon = item.icon != 0;
+        // IM:I I-358 and MTE 1992 pp. 3-115 to 3-117: the mark sits in the
+        // fixed inset left of the item text that every item already
+        // reserves, so a marked item is exactly as wide as the same item
+        // unmarked — System 7.5.3 sizes Absolute Solitaire's Game menu from
+        // "Beleaguered Castle", not from the checked "Klondike (Common)"
+        // beside it. `menu_item_width_extra` still reports the mark column
+        // for CalcMenuSize's menuWidth, so cancel that allowance here.
+        let is_hierarchical = Self::is_hierarchical_item(item);
+        let mark_allowance = if item.mark != 0 && !is_hierarchical {
+            14
+        } else {
+            0
+        };
         if Self::menu_item_uses_normal_icon(item) {
             6
-        } else if has_key && !has_mark_or_icon {
-            20
-        } else if !has_key && !has_mark_or_icon {
-            26
-        } else {
+        } else if has_icon || is_hierarchical {
             14
+        } else if has_key {
+            20 - mark_allowance
+        } else {
+            26 - mark_allowance
         }
     }
 
@@ -4223,7 +4294,7 @@ impl super::TrapDispatcher {
             if !menu.visible_in_menu_bar {
                 continue;
             }
-            let width = Self::fb_measure_string(&menu.title, 0, 12);
+            let width = Self::menu_title_advance(&menu.title);
             let left = x - 7; // padding before title
             let right = x + width + 6; // padding after title
             regions.push((menu_idx, left, right));
@@ -4415,7 +4486,7 @@ impl super::TrapDispatcher {
             .unwrap_or(0);
 
         let mut item_top = top + 1;
-        for (i, item) in menu.items.iter().enumerate() {
+        for (i, item) in Self::laid_out_items(&menu.items).iter().enumerate() {
             let item_no = i as i16 + 1;
             let item_height = self.menu_item_height(bus, item);
             let item_bottom = item_top + item_height;
@@ -4455,30 +4526,41 @@ impl super::TrapDispatcher {
                 + (item_height - (metrics.ascent + metrics.descent)) / 2
                 + metrics.ascent
                 + text_baseline_adjust;
-            let classic_plain_dimmed_row =
-                dropdown_bg_index.is_none() && (!item.enabled || is_separator);
+            // IM:I I-358 / MTE 1992 p. 3-131: DisableItem dims an item and
+            // takes it out of MenuSelect and MenuKey, and HIG 1992 p. 54 says
+            // it stays visible while dimmed. Separator rows are dimmed the
+            // same way because IM:I I-353 keeps hyphen items disabled. On a
+            // colour screen the definition procedure resolves the dim shade
+            // through GetGray (IM:V 1986 p. V-142); where the device has no
+            // intermediate shade it knocks the drawn glyphs back with the 50%
+            // grey pattern instead.
+            let dim_row = !item.enabled || is_separator;
+            let dim_index = if dim_row {
+                Self::menu_dim_pixel_index(bus, pixel_size, name_pixel_index, dropdown_bg_index)
+            } else {
+                None
+            };
+            let dim_with_pattern = dim_row && dim_index.is_none();
+            let content_index = |component_index: Option<u8>| {
+                if dim_row {
+                    dim_index.or(component_index)
+                } else {
+                    component_index
+                }
+            };
 
             if is_separator {
                 if provider_item_chrome {
                     item_top = item_bottom;
                     continue;
                 }
-                if classic_plain_dimmed_row {
-                    // The plain BasiliskII/System 7.5.3 screen reference maps
-                    // the standard MDEF's dimmed separator treatment to the
-                    // white menu background. IM:I I-349 says hyphen rows are
-                    // dividing lines; IM:I I-353 says separators should be
-                    // disabled, and disabled items are dimmed. Color
-                    // MenuCInfo paths still draw their explicit table colors.
-                    item_top = item_bottom;
-                    continue;
-                }
-                // Separator: dotted line across the middle of the item row.
+                // Separator: a dividing line across the item row, one pixel
+                // above the row's midpoint in the System 7.5.3 standard MDEF.
                 // Inside Macintosh Volume I, I-359
-                let sep_y = item_top + item_height / 2;
+                let sep_y = item_top + item_height / 2 - 1;
                 for x in (left + 1)..(right - 1) {
-                    if x % 2 == 0 {
-                        Self::fb_set_pixel(
+                    match dim_index {
+                        Some(pixel_index) => Self::fb_set_pixel_index(
                             bus,
                             screen_base,
                             row_bytes,
@@ -4487,21 +4569,27 @@ impl super::TrapDispatcher {
                             screen_height,
                             x,
                             sep_y,
-                            true,
-                        );
+                            pixel_index,
+                        ),
+                        // 50% grey pattern: set pixels where the pattern bit
+                        // is on. Imaging With QuickDraw 1994 p. 3-9.
+                        None => {
+                            if (x + sep_y) % 2 == 0 {
+                                Self::fb_set_pixel(
+                                    bus,
+                                    screen_base,
+                                    row_bytes,
+                                    pixel_size,
+                                    screen_width,
+                                    screen_height,
+                                    x,
+                                    sep_y,
+                                    true,
+                                );
+                            }
+                        }
                     }
                 }
-                item_top = item_bottom;
-                continue;
-            }
-
-            if classic_plain_dimmed_row && !provider_item_chrome {
-                // On a plain classic screen dump, disabled standard menu item
-                // content is represented by the menu background rather than
-                // black stippled glyphs. This preserves the item row geometry
-                // while matching the BasiliskII/System 7.5.3 MenuSelect
-                // capture. IM:I I-358: DisableItem makes items dimmed and
-                // unavailable to MenuSelect/MenuKey.
                 item_top = item_bottom;
                 continue;
             }
@@ -4520,7 +4608,7 @@ impl super::TrapDispatcher {
                     let s = String::from(item.mark as char);
                     s.into()
                 };
-                if let Some(pixel_index) = mark_pixel_index {
+                if let Some(pixel_index) = content_index(mark_pixel_index) {
                     Self::fb_draw_string_styled_index(
                         bus,
                         screen_base,
@@ -4600,7 +4688,7 @@ impl super::TrapDispatcher {
             // measurement on the existing classic metrics path, and let
             // the framebuffer text renderer apply only the visible style
             // pixels for the app-owned item text.
-            if let Some(pixel_index) = name_pixel_index {
+            if let Some(pixel_index) = content_index(name_pixel_index) {
                 Self::fb_draw_string_styled_index(
                     bus,
                     screen_base,
@@ -4641,17 +4729,30 @@ impl super::TrapDispatcher {
                     let x = right - 12 + dx;
                     let half_height = dx.min(6 - dx);
                     for dy in -half_height..=half_height {
-                        Self::fb_set_pixel(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            x,
-                            tri_mid_y + dy,
-                            true,
-                        );
+                        match content_index(None) {
+                            Some(pixel_index) => Self::fb_set_pixel_index(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                x,
+                                tri_mid_y + dy,
+                                pixel_index,
+                            ),
+                            None => Self::fb_set_pixel(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                x,
+                                tri_mid_y + dy,
+                                true,
+                            ),
+                        }
                     }
                 }
             }
@@ -4669,7 +4770,7 @@ impl super::TrapDispatcher {
                 // keeps N/O/W equivalents aligned in the System 7.5.3
                 // MenuSelect reference. MTE 1992 pp. 3-115 to 3-117.
                 let command_left = right - 25;
-                if let Some(pixel_index) = command_pixel_index {
+                if let Some(pixel_index) = content_index(command_pixel_index) {
                     Self::fb_draw_string_styled_index(
                         bus,
                         screen_base,
@@ -4703,11 +4804,16 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // Gray out disabled items by drawing a white dither pattern over them
-            if !item.enabled && !provider_item_chrome {
+            // Devices with no intermediate shade dim by knocking the drawn
+            // glyphs back with the 50% grey pattern, the standard MDEF's
+            // fallback when GetGray reports it cannot grey the content.
+            // The pattern is `$AA $55 …` aligned to the port origin, so its
+            // bits are on where x + y is even and the glyph keeps only those
+            // pixels. IM:V 1986 p. V-142; Imaging With QuickDraw 1994 p. 3-9.
+            if dim_with_pattern && !provider_item_chrome {
                 for y in item_top..item_bottom {
                     for x in (left + 1)..(right - 1) {
-                        if (x + y) % 2 == 0 {
+                        if (x + y) % 2 != 0 {
                             Self::fb_set_pixel(
                                 bus,
                                 screen_base,
@@ -5087,7 +5193,7 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
         parse_appendmenu_items, Menu, MenuItem, MenuTrackingState, MC_ENTRY_SIZE,
-        MC_RESOURCE_ENTRY_SIZE, MENU_KEY_REDUCED_ICON, MENU_KEY_SMALL_ICON,
+        MC_RESOURCE_ENTRY_SIZE, MENU_KEY_REDUCED_ICON, MENU_KEY_SMALL_ICON, MENU_ROW_HEIGHT,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
@@ -8354,7 +8460,13 @@ mod tests {
         insert_menu(&mut disp, &mut cpu, &mut bus, system);
         insert_menu(&mut disp, &mut cpu, &mut bus, file);
 
-        let system_title_width = super::super::TrapDispatcher::fb_measure_string("\u{14}", 0, 12);
+        // The mark cell is pinned to the Chicago 12 mark advance the
+        // System 7.5.3 menu bar lays out with, not measured from the
+        // loaded font's mark glyph — Systemless substitutes its own
+        // artwork for that glyph, so measuring it would drift the whole
+        // bar whenever the font catalogue changed.
+        let system_title_width = super::super::TrapDispatcher::menu_title_advance("\u{14}");
+        assert_eq!(system_title_width, 11, "pinned system mark cell width");
         let regions = disp.menu_title_regions();
         assert_eq!(regions[0], (11, 18 + system_title_width + 6));
         assert_eq!(regions[1].0, 18 + system_title_width + 6);
@@ -8454,6 +8566,63 @@ mod tests {
                 "light mark pixel ({x}, {y})"
             );
         }
+    }
+
+    // MTE 1992 p. 3-131 / HIG 1992 p. 54: DisableItem(menu, 0) leaves the
+    // title visible but dimmed. On a colour screen the definition procedure
+    // greys it through GetGray (IM:V 1986 p. V-142), so every glyph pixel
+    // lands on the intermediate shade — System 7.5.3 under BasiliskII draws
+    // Sid Meier's Civilization's disabled City title in solid grey, not as
+    // stippled black.
+    #[test]
+    fn drawmenubar_8bpp_dims_a_disabled_title_to_solid_gray() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 643, 0x303300, "File");
+        let city = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 644, 0x303340, "City");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+        insert_menu(&mut disp, &mut cpu, &mut bus, city);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, city);
+        assert!(
+            disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "DisableItem(menu, 0) should disable the whole City title"
+        );
+
+        disp.draw_menu_bar_to_fb(&mut bus);
+
+        let black = super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0; 3]).unwrap();
+        let gray =
+            super::super::TrapDispatcher::fb_gray_pixel_index_between(&bus, [0xFFFF; 3], [0, 0, 0])
+                .expect("8bpp test screen should express an intermediate shade");
+        let regions = disp.menu_title_regions();
+        let cell = |(left, right): (i16, i16)| -> Vec<u8> {
+            (1..19)
+                .flat_map(|y| (left..right).map(move |x| (x, y)))
+                .map(|(x, y)| screen_pixel_index(&bus, base, row_bytes, x, y))
+                .collect()
+        };
+
+        let enabled = cell(regions[0]);
+        assert!(
+            enabled.iter().any(|&pixel| pixel == black),
+            "the enabled File title should draw in full black"
+        );
+
+        let dimmed = cell(regions[1]);
+        assert!(
+            dimmed.iter().any(|&pixel| pixel == gray),
+            "the disabled City title should draw in the intermediate grey shade"
+        );
+        assert!(
+            !dimmed.iter().any(|&pixel| pixel == black),
+            "no part of a dimmed title should stay full black"
+        );
     }
 
     #[test]
@@ -9154,6 +9323,164 @@ mod tests {
             );
             row_top = row_bottom;
         }
+    }
+
+    // MTE 1992 p. 3-131 / HIG 1992 p. 54: an unavailable item stays visible
+    // but dimmed, and MTE 1992 p. 3-30 says a colour screen shows dividers
+    // and dimmed content as grey lines and glyphs (a black-and-white screen
+    // gets the 50% grey pattern instead). System 7.5.3 under BasiliskII draws
+    // Absolute Solitaire's all-disabled Edit menu that way — every row
+    // legible in solid grey — so a dimmed row must not collapse to bare
+    // background.
+    #[test]
+    fn draw_menu_dropdown_8bpp_dims_disabled_items_and_dividers_to_solid_gray() {
+        let rect = (20, 20, 70, 140);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 640, 0x303000, "Edit");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x303040,
+            "Undo/Z;-;Copy",
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, menu);
+        assert!(
+            disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "DisableItem should disable the first item"
+        );
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let background =
+            super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0xFFFF; 3]).unwrap();
+        let black = super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0; 3]).unwrap();
+        let gray =
+            super::super::TrapDispatcher::fb_gray_pixel_index_between(&bus, [0xFFFF; 3], [0, 0, 0])
+                .expect("8bpp test screen should express an intermediate shade");
+
+        let row_pixels = |top: i16| -> Vec<u8> {
+            (top..top + MENU_ROW_HEIGHT)
+                .flat_map(|y| ((rect.1 + 1)..(rect.3 - 1)).map(move |x| (x, y)))
+                .map(|(x, y)| screen_pixel_index(&bus, base, row_bytes, x, y))
+                .collect()
+        };
+
+        let disabled = row_pixels(rect.0 + 1);
+        assert!(
+            disabled.iter().any(|&pixel| pixel == gray),
+            "the disabled item's text should draw in the intermediate grey shade"
+        );
+        assert!(
+            !disabled.iter().any(|&pixel| pixel == black),
+            "no part of a dimmed item should stay full black"
+        );
+
+        // The divider is a solid grey line one pixel above the row midpoint.
+        let divider_top = rect.0 + 1 + MENU_ROW_HEIGHT;
+        let divider_y = divider_top + MENU_ROW_HEIGHT / 2 - 1;
+        for x in (rect.1 + 1)..(rect.3 - 1) {
+            assert_eq!(
+                screen_pixel_index(&bus, base, row_bytes, x, divider_y),
+                gray,
+                "divider pixel at x={x}"
+            );
+        }
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, rect.1 + 4, divider_y - 2),
+            background,
+            "the divider should be a single line, not a filled row"
+        );
+
+        let enabled = row_pixels(divider_top + MENU_ROW_HEIGHT);
+        assert!(
+            enabled.iter().any(|&pixel| pixel == black),
+            "an enabled item's text should still draw in full black"
+        );
+    }
+
+    // MTE 1992 p. 3-30: a black-and-white screen has no intermediate shade,
+    // so the definition procedure dims with the 50% grey pattern and draws
+    // dividers as dotted lines. Imaging With QuickDraw 1994 p. 3-9 fixes the
+    // pattern phase, so the surviving pixels are the ones where x + y is even.
+    #[test]
+    fn draw_menu_dropdown_1bpp_dims_disabled_items_with_the_gray_pattern() {
+        let rect = (20, 16, 60, 120);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 16u32;
+        let base = bus.alloc(row_bytes * 96);
+        disp.set_screen_mode_for_test(base, row_bytes, 128, 96, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 96);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, base);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 641, 0x303100, "Edit");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303140, "(Undo;-");
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let dimmed_row: Vec<(i16, i16)> = ((rect.0 + 1)..(rect.0 + 1 + MENU_ROW_HEIGHT))
+            .flat_map(|y| ((rect.1 + 1)..(rect.3 - 1)).map(move |x| (x, y)))
+            .collect();
+        assert!(
+            dimmed_row
+                .iter()
+                .any(|&(x, y)| screen_pixel_is_set(&bus, base, row_bytes, x, y)),
+            "the dimmed item should still leave legible ink on a 1-bit screen"
+        );
+        assert!(
+            dimmed_row
+                .iter()
+                .filter(|&&(x, y)| screen_pixel_is_set(&bus, base, row_bytes, x, y))
+                .all(|&(x, y)| (x + y) % 2 == 0),
+            "dimmed ink should survive only where the 50% grey pattern is on"
+        );
+
+        // A trailing divider is not laid out at all, so the box is one row
+        // tall and its bottom frame sits directly under the dimmed item.
+        assert_eq!(
+            disp.menu_items_height(&bus, &disp.menus[0].items),
+            MENU_ROW_HEIGHT,
+            "a trailing divider should not claim a row"
+        );
+    }
+
+    // Applications author the Apple menu as an About command plus a divider
+    // so AppendResMenu has something to append below (MTE 1992 pp. 3-97 to
+    // 3-98). With no Apple Menu Items to append, System 7.5.3 under
+    // BasiliskII draws Absolute Solitaire's Apple menu exactly one item tall
+    // rather than leaving a dangling divider.
+    #[test]
+    fn menu_layout_gives_a_trailing_divider_no_row() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 642, 0x303200, "\u{14}");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x303240,
+            "About Systemless;-",
+        );
+
+        assert_eq!(disp.menus[0].items.len(), 2, "both items stay in the menu");
+        assert_eq!(
+            disp.menu_items_height(&bus, &disp.menus[0].items),
+            MENU_ROW_HEIGHT,
+            "only the About command claims a row"
+        );
+
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303280, "Note Pad");
+        assert_eq!(
+            disp.menu_items_height(&bus, &disp.menus[0].items),
+            MENU_ROW_HEIGHT * 3,
+            "the divider claims its row again once an item follows it"
+        );
     }
 
     #[test]
