@@ -1580,7 +1580,7 @@ impl super::TrapDispatcher {
                 let ptr = cpu.read_reg(Register::A0);
                 let new_size = cpu.read_reg(Register::D0);
                 if ptr == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
+                    write_memory_result(cpu, bus, NIL_HANDLE_ERR);
                     return Some(Ok(()));
                 }
                 let old_size = bus.get_alloc_size(ptr).unwrap_or(0);
@@ -1595,13 +1595,13 @@ impl super::TrapDispatcher {
                         bus.fill_zeros(ptr.wrapping_add(new_size), old_size - new_size);
                     }
                     bus.set_alloc_size(ptr, new_size);
-                    cpu.write_reg(Register::D0, 0); // noErr
+                    write_memory_result(cpu, bus, NO_ERR);
                     return Some(Ok(()));
                 }
                 // Can't grow beyond aligned capacity without moving —
                 // spec requires memFullErr rather than silently
                 // moving the pointer.
-                cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                write_memory_result(cpu, bus, MEM_FULL_ERR);
                 Ok(())
             }
 
@@ -8868,6 +8868,11 @@ mod tests {
             .unwrap();
         assert_eq!(cpu.read_reg(Register::D0) as i32, 0, "noErr expected");
         assert_eq!(
+            bus.read_word(addr::MEM_ERR),
+            0,
+            "successful SetPtrSize must clear MemErr"
+        );
+        assert_eq!(
             cpu.read_reg(Register::A0),
             original_ptr,
             "SetPtrSize must not move the pointer (IM:Memory 1992 p.2-44)"
@@ -8935,6 +8940,11 @@ mod tests {
             cpu.read_reg(Register::D0) as i32,
             -108,
             "SetPtrSize beyond aligned capacity must return memFullErr (-108)"
+        );
+        assert_eq!(
+            bus.read_word(addr::MEM_ERR) as i16,
+            -108,
+            "failed SetPtrSize must publish memFullErr through MemErr"
         );
         assert_eq!(
             cpu.read_reg(Register::A0),
