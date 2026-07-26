@@ -2219,6 +2219,54 @@ impl FixtureRunner {
             );
         }
 
+        // Private QuickDraw callback at $0574. Executor's clean-room table
+        // initializes this as a no-argument no-op; some QuickDraw clients call
+        // it immediately after JShieldCursor, so NIL is not a safe default.
+        self.bus
+            .write_long(addr::J_UNKNOWN_574, CURSOR_TASK_NOOP_ADDR);
+
+        // JHideCursor/JShowCursor ($0800/$0804): no-argument QuickDraw
+        // bottlenecks. Adapt direct JSR calls to the existing A-line traps by
+        // removing the JSR return address before dispatch and jumping back
+        // afterward.
+        let hide_cursor_trampoline = self.bus.alloc(6);
+        self.bus
+            .write_word(hide_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus
+            .write_word(hide_cursor_trampoline + 2, 0xA852); // HideCursor
+        self.bus
+            .write_word(hide_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus
+            .write_long(addr::J_HIDE_CURSOR, hide_cursor_trampoline);
+
+        let show_cursor_trampoline = self.bus.alloc(6);
+        self.bus
+            .write_word(show_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus
+            .write_word(show_cursor_trampoline + 2, 0xA853); // ShowCursor
+        self.bus
+            .write_word(show_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus
+            .write_long(addr::J_SHOW_CURSOR, show_cursor_trampoline);
+
+        // JShieldCursor ($0808): private QuickDraw bottleneck called directly
+        // with four Pascal INTEGER arguments (left, top, right, bottom).
+        // MPW Quickdraw.h declares QDJShieldCursorProcPtr with that exact
+        // eight-byte frame. Cursor shielding is host-rendered in this HLE, so
+        // the callable vector consumes the arguments and returns without
+        // changing guest cursor state, matching the existing ShieldCursor
+        // trap compromise.
+        let shield_cursor_trampoline = self.bus.alloc(8);
+        self.bus
+            .write_word(shield_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus
+            .write_word(shield_cursor_trampoline + 2, 0x4FEF); // LEA 8(SP),SP
+        self.bus.write_word(shield_cursor_trampoline + 4, 8);
+        self.bus
+            .write_word(shield_cursor_trampoline + 6, 0x4ED0); // JMP (A0)
+        self.bus
+            .write_long(addr::J_SHIELD_CURSOR, shield_cursor_trampoline);
+
         // JSwapFont ($08E0): private Font Manager vector used by QuickDraw to
         // call FMSwapFont directly. Executor's clean-room low-memory table
         // identifies the address and initializes it from the $A901 routine.
@@ -7419,6 +7467,106 @@ mod tests {
             0,
             "JSwapFont should return a non-NIL FMOutPtr through the Pascal result slot"
         );
+    }
+
+    #[test]
+    fn init_app_seeds_callable_quickdraw_low_memory_vectors() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let trampoline = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_SHIELD_CURSOR);
+        let hide_trampoline = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_HIDE_CURSOR);
+        let show_trampoline = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_SHOW_CURSOR);
+        assert_eq!(
+            runner
+                .bus
+                .read_long(crate::memory::globals::addr::J_UNKNOWN_574),
+            CURSOR_TASK_NOOP_ADDR
+        );
+        assert_eq!(
+            [
+                runner.bus.read_word(hide_trampoline),
+                runner.bus.read_word(hide_trampoline + 2),
+                runner.bus.read_word(hide_trampoline + 4),
+            ],
+            [0x205F, 0xA852, 0x4ED0]
+        );
+        assert_eq!(
+            [
+                runner.bus.read_word(show_trampoline),
+                runner.bus.read_word(show_trampoline + 2),
+                runner.bus.read_word(show_trampoline + 4),
+            ],
+            [0x205F, 0xA853, 0x4ED0]
+        );
+        assert_ne!(trampoline, 0);
+        assert_eq!(
+            [
+                runner.bus.read_word(trampoline),
+                runner.bus.read_word(trampoline + 2),
+                runner.bus.read_word(trampoline + 4),
+                runner.bus.read_word(trampoline + 6),
+            ],
+            [0x205F, 0x4FEF, 0x0008, 0x4ED0]
+        );
+
+        let args_sp = 0x007F_FE00u32;
+        let return_pc = 0x0002_0000u32;
+        runner.bus.write_word(args_sp, 10); // left
+        runner.bus.write_word(args_sp + 2, 20); // top
+        runner.bus.write_word(args_sp + 4, 300); // right
+        runner.bus.write_word(args_sp + 6, 400); // bottom
+        runner.bus.write_long(args_sp - 4, return_pc);
+        runner.bus.write_word(return_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, trampoline);
+        runner.cpu.write_reg(Register::A7, args_sp - 4);
+
+        let (steps, running) = runner.run_steps(3, None);
+
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), args_sp + 8);
+
+        runner.bus.write_long(args_sp - 4, return_pc);
+        runner.cpu.write_reg(Register::PC, hide_trampoline);
+        runner.cpu.write_reg(Register::A7, args_sp - 4);
+        let (steps, running) = runner.run_steps(3, None);
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), args_sp);
+        assert_eq!(runner.dispatcher().cursor_level(), -1);
+
+        runner.bus.write_long(args_sp - 4, return_pc);
+        runner.cpu.write_reg(Register::PC, show_trampoline);
+        runner.cpu.write_reg(Register::A7, args_sp - 4);
+        let (steps, running) = runner.run_steps(3, None);
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), args_sp);
+        assert_eq!(runner.dispatcher().cursor_level(), 0);
     }
 
     #[test]

@@ -110,6 +110,20 @@ pub mod addr {
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
     pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
     pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
+    /// Private QuickDraw compatibility hook at `$0574`.
+    ///
+    /// The clean-room Executor low-memory table names this `JUnknown574` and
+    /// initializes it to a no-argument no-op callback.
+    pub const J_UNKNOWN_574: u32 = 0x0574;
+    /// QuickDraw cursor bottleneck vectors (ProcPtr).
+    pub const J_HIDE_CURSOR: u32 = 0x0800;
+    pub const J_SHOW_CURSOR: u32 = 0x0804;
+    /// JShieldCursor: address of QuickDraw's cursor-shielding bottleneck.
+    ///
+    /// The classic low-memory vector table places `JShieldCursor` at `$0808`.
+    /// MPW Quickdraw.h declares its Pascal callback ABI as four 16-bit
+    /// rectangle coordinates: left, top, right, bottom.
+    pub const J_SHIELD_CURSOR: u32 = 0x0808;
     /// JSwapFont: address of the Font Manager's FMSwapFont routine (ProcPtr).
     ///
     /// This private vector is called directly by QuickDraw text code. Executor's
