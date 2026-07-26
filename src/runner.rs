@@ -2364,7 +2364,7 @@ impl FixtureRunner {
             return self.try_spin_template_a(pc_after_trap, dn, w1, tick_cap, count);
         }
 
-        // Template B: CMP.L (d16, An), Dn; BLS.S <back>
+        // Template B: CMP.L (d16, An), Dn; BLS.S/BLE.S <back>
         if (w1 & 0xF1F8) == 0xB0A8 && ((w1 >> 9) & 7) as usize == dn {
             return self.try_spin_template_b(pc_after_trap, dn, w1, tick_cap, count);
         }
@@ -2497,10 +2497,12 @@ impl FixtureRunner {
     /// Template B: memory-target variant.
     ///   MOVE.L (A7)+, Dn
     ///   CMP.L  (d16, An), Dn    ; 4 bytes (opcode word + d16)
-    ///   BLS.S  <backward, into body that rewrites (An+d16)>
+    ///   BLS.S/BLE.S <backward, into body that rewrites (An+d16)>
     ///
     /// Exit when `TickCount() > *(An+d16)`, i.e. `target_tick =
-    /// *(An+d16) + 1`.
+    /// *(An+d16) + 1`. Classic compilers may emit either BLS (unsigned) or
+    /// BLE (signed). The signed form is accelerated only while its target can
+    /// be incremented without crossing i32::MAX.
     fn try_spin_template_b(
         &mut self,
         pc_after_trap: u32,
@@ -2513,8 +2515,9 @@ impl FixtureRunner {
         let d16 = self.bus.read_word(pc_after_trap.wrapping_add(4)) as i16 as i32;
         let w_brk = self.bus.read_word(pc_after_trap.wrapping_add(6));
 
-        // BLS.S disp8
-        if (w_brk & 0xFF00) != 0x6300 {
+        // BLS.S/BLE.S disp8
+        let branch_condition = w_brk & 0xFF00;
+        if branch_condition != 0x6300 && branch_condition != 0x6F00 {
             return false;
         }
         let disp8 = (w_brk & 0xFF) as i8 as i32;
@@ -2533,6 +2536,14 @@ impl FixtureRunner {
         let an_val = self.cpu.core.a(an);
         let mem_addr = (an_val as i32).wrapping_add(d16) as u32;
         let mem_target = self.bus.read_long(mem_addr);
+        if branch_condition == 0x6F00 {
+            let captured_tick = self.bus.read_long(self.cpu.core.a(7));
+            if (captured_tick as i32) > (mem_target as i32) || mem_target == i32::MAX as u32 {
+                // BLE would already fall through, or signed TickCount overflow
+                // would keep it taken rather than exiting at target + 1.
+                return false;
+            }
+        }
         let target_tick = mem_target.wrapping_add(1);
 
         match self.advance_until_tick(target_tick, tick_cap) {
@@ -8793,6 +8804,70 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
         // Template B synthesises 3 instructions (MOVE, CMP, BLS).
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn spin_fastfwd_template_b_signed_ble_variant() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let a5 = 0x0001_8000u32;
+        let sp = 0x0010_0000u32;
+
+        // Signed memory-target loop shape emitted by some classic compilers:
+        //   SUBQ.W #4,A7; _TickCount; MOVE.L (A7)+,D0
+        //   CMP.L (-16,A5),D0; BLE.S back-to-SUBQ
+        runner.bus.write_word(base, 0x594F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0xB0AD);
+        runner.bus.write_word(base + 8, 0xFFF0);
+        runner.bus.write_word(base + 10, 0x6FF4);
+        runner.bus.write_word(base + 12, 0x4E71);
+
+        runner.bus.write_long(a5 - 16, 400);
+        runner.bus.write_long(0x016A, 100);
+        runner.bus.write_long(sp, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::A5, a5);
+        runner.cpu.write_reg(Register::A7, sp);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 401);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 401);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn spin_fastfwd_template_b_signed_ble_rejects_overflow_target() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let a5 = 0x0001_8000u32;
+        let sp = 0x0010_0000u32;
+        runner.bus.write_word(base, 0x594F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0xB0AD);
+        runner.bus.write_word(base + 8, 0xFFF0);
+        runner.bus.write_word(base + 10, 0x6FF4);
+        runner.bus.write_long(a5 - 16, i32::MAX as u32);
+        runner.bus.write_long(0x016A, 100);
+        runner.bus.write_long(sp, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::A5, a5);
+        runner.cpu.write_reg(Register::A7, sp);
+
+        let mut count = 0usize;
+        runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert_eq!(runner.guest_tick(), 100);
+        assert_eq!(runner.cpu.read_reg(Register::PC), 0);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(count, 0);
     }
 
     /// Regression gate for the TickCount spin fast-forward absolute
