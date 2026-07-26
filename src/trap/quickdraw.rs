@@ -19810,24 +19810,18 @@ impl super::TrapDispatcher {
         out
     }
 
-    fn colorize_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3]) -> [u16; 3] {
-        let mut out = [0u16; 3];
-        for component in 0..3 {
-            let src = u32::from(src_rgb[component]);
-            let fg = u32::from(fg_rgb[component]);
-            out[component] = (((0xFFFF - src) * fg + 0x7FFF) / 0xFFFF) as u16;
-        }
-        out
+    fn colorize_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3], dst_rgb: [u16; 3]) -> [u16; 3] {
+        // Black source applies the foreground, white source preserves the
+        // destination, and intermediate source colors interpolate between
+        // them. Imaging With QuickDraw (1994), pp. 4-32..4-34.
+        Self::colorize_src_copy_rgb(src_rgb, fg_rgb, dst_rgb)
     }
 
-    fn colorize_not_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3]) -> [u16; 3] {
-        let mut out = [0u16; 3];
-        for component in 0..3 {
-            let src = u32::from(src_rgb[component]);
-            let fg = u32::from(fg_rgb[component]);
-            out[component] = ((src * fg + 0x7FFF) / 0xFFFF) as u16;
-        }
-        out
+    fn colorize_not_src_or_rgb(src_rgb: [u16; 3], fg_rgb: [u16; 3], dst_rgb: [u16; 3]) -> [u16; 3] {
+        // Black source preserves the destination, white source applies the
+        // foreground, and intermediate source colors interpolate between
+        // them. Imaging With QuickDraw (1994), pp. 4-32..4-34.
+        Self::colorize_src_copy_rgb(src_rgb, dst_rgb, fg_rgb)
     }
 
     fn copy_bits_color_source_mode_pixel(
@@ -19856,21 +19850,24 @@ impl super::TrapDispatcher {
             return Some(raw_source());
         };
         let src_rgb = src_clut[src_pixel as usize];
+        let dst_rgb = dst_clut[dst_pixel as usize];
         let is_black = src_rgb == [0, 0, 0];
         let is_white = src_rgb == [0xFFFF, 0xFFFF, 0xFFFF];
         let map_rgb = |rgb| self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, rgb);
 
         match mode_base {
             0 => Some(raw_source()),
-            1 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, fg_rgb))),
+            1 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, fg_rgb, dst_rgb))),
             2 => is_black.then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
-            3 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, bg_rgb))),
+            3 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, bg_rgb, dst_rgb))),
             4 => Some(map_rgb(Self::colorize_src_copy_rgb(
                 src_rgb, bg_rgb, fg_rgb,
             ))),
-            5 => (!is_black).then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, fg_rgb))),
+            5 => (!is_black)
+                .then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, fg_rgb, dst_rgb))),
             6 => is_white.then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
-            7 => (!is_black).then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, bg_rgb))),
+            7 => (!is_black)
+                .then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, bg_rgb, dst_rgb))),
             _ => Some(raw_source()),
         }
     }
@@ -29593,6 +29590,63 @@ mod tests {
                 0, 255, 255, 255,
             ],
             "8bpp srcOr should render bracket strokes through the foreground color without copying the source rectangle's white background"
+        );
+    }
+
+    #[test]
+    fn copy_bits_8bpp_srcor_blends_colored_source_with_destination() {
+        // Imaging With QuickDraw (1994), pp. 4-32..4-34: srcOr applies the
+        // foreground for black, preserves the destination for white, and
+        // blends the foreground with the destination for intermediate
+        // source colors. With black foreground over white, this reproduces
+        // the colored source image.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.fg_color = (0, 0, 0);
+        d.bg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 4, 1, 0);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 4, 1, 0);
+        bus.write_bytes(src_base, &[0xFF, 0x08, 0x0A, 0x00]);
+        bus.write_bytes(dst_base, &[0x00, 0x00, 0x00, 0x5A]);
+
+        let src_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 4);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 4);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 1u16); // srcOr
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_bytes(dst_base, 4),
+            vec![0xFF, 0x08, 0x0A, 0x5A],
+            "srcOr with black foreground over white should reproduce colored source pixels while white preserves the destination"
+        );
+    }
+
+    #[test]
+    fn colored_srcor_includes_the_existing_destination_color() {
+        // A half-intensity source between a black foreground and a
+        // half-intensity destination produces quarter intensity. Omitting
+        // the destination term incorrectly produces black; treating the
+        // operation as a raw source copy incorrectly produces half intensity.
+        assert_eq!(
+            TrapDispatcher::colorize_src_or_rgb(
+                [0x8000, 0x8000, 0x8000],
+                [0, 0, 0],
+                [0x8000, 0x8000, 0x8000],
+            ),
+            [0x4000, 0x4000, 0x4000]
         );
     }
 
