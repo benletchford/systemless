@@ -1161,6 +1161,11 @@ pub struct TrapDispatcher {
     /// Their behavior is implemented by the Window Manager HLE, but callers
     /// may still fetch the resources directly through GetResource.
     pub(crate) system_wdef_cache: HashMap<i16, u32>,
+    /// Cache of the synthetic ROM `'MDEF'` resource used by standard menus.
+    /// The Menu Manager HLE owns standard drawing and hit testing, but
+    /// MenuInfo.menuProc remains guest-visible and some applications invoke
+    /// the procedure directly.
+    pub(crate) system_mdef_cache: HashMap<i16, u32>,
     /// Cache of allocated tool-trap trampolines for GetTrapAddress.
     /// Each entry is a 2-byte allocation containing the auto-pop
     /// variant of the canonical tool-trap word. When the guest does
@@ -2714,6 +2719,7 @@ impl TrapDispatcher {
             system_clut_cache: HashMap::new(),
             system_kchr_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
+            system_mdef_cache: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -4754,6 +4760,32 @@ impl TrapDispatcher {
         bus.write_word(ptr + 6, 0x4297); // CLR.L (SP) — LongInt function result.
         bus.write_word(ptr + 8, 0x4ED0); // JMP (A0).
         self.system_wdef_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate (and cache) a callable shim for the standard ROM menu
+    /// definition procedure. The Menu Manager HLE performs the built-in
+    /// MDEF behavior, but direct guest calls still use the five-parameter,
+    /// 18-byte Pascal procedure ABI declared by MPW Menus.h. Inside
+    /// Macintosh Volume I, I-352 and I-365.
+    pub(crate) fn synthesize_system_mdef(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_mdef_cache.get(&res_id) {
+            return Some(ptr);
+        }
+        if res_id != 0 {
+            return None;
+        }
+
+        let ptr = bus.alloc(8);
+        bus.write_word(ptr, 0x205F); // MOVEA.L (SP)+,A0 — recover JSR return PC.
+        bus.write_word(ptr + 2, 0xDEFC); // ADDA.W #18,SP — discard MDEF parameters.
+        bus.write_word(ptr + 4, 18);
+        bus.write_word(ptr + 6, 0x4ED0); // JMP (A0).
+        self.system_mdef_cache.insert(res_id, ptr);
         Some(ptr)
     }
 
