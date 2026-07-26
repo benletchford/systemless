@@ -695,6 +695,22 @@ pub(crate) struct LoadSegGetResourceState {
     pub a_regs: [u32; 8],
 }
 
+/// Saved 68K state for one cooperative Thread Manager thread.
+///
+/// Cooperative switches occur only inside `_ThreadDispatch`, so the HLE can
+/// preserve the complete caller-visible register file without involving a
+/// host thread. New threads inherit the creator's register world (notably A5)
+/// and receive a private guest stack.
+#[derive(Clone, Debug)]
+pub(crate) struct CooperativeThread {
+    pub(crate) d_regs: [u32; 8],
+    pub(crate) a_regs: [u32; 8],
+    pub(crate) pc: u32,
+    pub(crate) ccr: u8,
+    pub(crate) state: u16,
+    pub(crate) result_destination: u32,
+}
+
 /// In-flight AppleEvent handler call. Built by Pack8 routine 27
 /// (`AEProcessAppleEvent`) when it dispatches a registered handler;
 /// consumed by the trampoline trap when the handler `RTD`s back.
@@ -1086,6 +1102,16 @@ pub struct TrapDispatcher {
     /// HLE on one host thread, so Thread Manager critical sections collapse
     /// to a single dispatcher-wide counter.
     pub(crate) thread_critical_nesting: u32,
+    /// Cooperative Thread Manager contexts keyed by their opaque ThreadID.
+    pub(crate) cooperative_threads: HashMap<u32, CooperativeThread>,
+    /// Round-robin queue of ready cooperative threads.
+    pub(crate) cooperative_thread_ready: VecDeque<u32>,
+    /// ThreadID whose register context is currently installed in the CPU.
+    pub(crate) current_cooperative_thread: u32,
+    /// Next guest-visible ThreadID. IDs 1 and 2 are reserved by Threads.h.
+    pub(crate) next_cooperative_thread_id: u32,
+    /// Guest trampoline entered when a ThreadEntryProc returns.
+    pub(crate) thread_return_trampoline: u32,
     /// Synthetic Component Manager instances opened for HLE-provided
     /// components such as the QuickTime movie controller.
     pub(crate) synthetic_component_instances: HashSet<u32>,
@@ -2674,6 +2700,11 @@ impl TrapDispatcher {
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
             thread_critical_nesting: 0,
+            cooperative_threads: HashMap::new(),
+            cooperative_thread_ready: VecDeque::new(),
+            current_cooperative_thread: 2,
+            next_cooperative_thread_id: 3,
+            thread_return_trampoline: 0,
             synthetic_component_instances: HashSet::new(),
             next_synthetic_component_instance: 0x00C1_0001,
             saved_draw_old_regions: HashMap::new(),

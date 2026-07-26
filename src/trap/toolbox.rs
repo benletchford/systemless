@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 
 use super::dispatch::{
     AeCoercionHandler, AeDescriptor, AeObjectAccessor, AePrivateHashTable, AeResolveLevel,
-    AeResolveState, DialogItem, MovieState, StandardFileGetEntry, StandardFileGetTrackingState,
-    StandardFilePutTrackingState, SyntheticAppleEvent,
+    AeResolveState, CooperativeThread, DialogItem, MovieState, StandardFileGetEntry,
+    StandardFileGetTrackingState, StandardFilePutTrackingState, SyntheticAppleEvent,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
@@ -58,6 +58,107 @@ const AE_KEY_MARK_PROC: u32 = u32::from_be_bytes(*b"mark");
 const AE_KEY_ADJUST_MARKS_PROC: u32 = u32::from_be_bytes(*b"adjm");
 const AE_KEY_GET_ERR_DESC_PROC: u32 = u32::from_be_bytes(*b"indc");
 const QUICKTIME_INVALID_MOVIE: i16 = -2010;
+
+fn scan_sane_decimal(
+    bus: &mut MacMemoryBus,
+    bytes: &[u8],
+    index_ptr: u32,
+    decimal_ptr: u32,
+    valid_prefix_ptr: u32,
+) {
+    let start = usize::from(bus.read_word(index_ptr)).min(bytes.len());
+    let mut cursor = start;
+    let mut negative = false;
+    if let Some(sign) = bytes.get(cursor) {
+        if *sign == b'+' || *sign == b'-' {
+            negative = *sign == b'-';
+            cursor += 1;
+        }
+    }
+
+    let mut digits = Vec::new();
+    let mut fraction_digits = 0i32;
+    let mut saw_digit = false;
+    while let Some(ch) = bytes.get(cursor) {
+        if ch.is_ascii_digit() {
+            digits.push(*ch);
+            saw_digit = true;
+            cursor += 1;
+        } else {
+            break;
+        }
+    }
+    if bytes.get(cursor) == Some(&b'.') {
+        cursor += 1;
+        while let Some(ch) = bytes.get(cursor) {
+            if ch.is_ascii_digit() {
+                digits.push(*ch);
+                fraction_digits += 1;
+                saw_digit = true;
+                cursor += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let exponent_start = cursor;
+    let mut explicit_exponent = 0i32;
+    if saw_digit && matches!(bytes.get(cursor), Some(b'e' | b'E')) {
+        cursor += 1;
+        let mut exponent_negative = false;
+        if let Some(sign) = bytes.get(cursor) {
+            if *sign == b'+' || *sign == b'-' {
+                exponent_negative = *sign == b'-';
+                cursor += 1;
+            }
+        }
+        let exponent_digits_start = cursor;
+        while let Some(ch) = bytes.get(cursor) {
+            if ch.is_ascii_digit() {
+                explicit_exponent = explicit_exponent
+                    .saturating_mul(10)
+                    .saturating_add(i32::from(*ch - b'0'));
+                cursor += 1;
+            } else {
+                break;
+            }
+        }
+        if cursor == exponent_digits_start {
+            cursor = exponent_start;
+            explicit_exponent = 0;
+        } else if exponent_negative {
+            explicit_exponent = -explicit_exponent;
+        }
+    }
+
+    if saw_digit {
+        let first_nonzero = digits.iter().position(|digit| *digit != b'0');
+        let significant = first_nonzero
+            .map(|offset| &digits[offset..])
+            .unwrap_or(&b"0"[..]);
+        let significant_len = significant.len().min(20);
+        let exponent = explicit_exponent.saturating_sub(fraction_digits);
+
+        bus.write_byte(decimal_ptr, u8::from(negative));
+        bus.write_byte(decimal_ptr + 1, 0);
+        bus.write_word(
+            decimal_ptr + 2,
+            exponent.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16,
+        );
+        bus.write_byte(decimal_ptr + 4, significant_len as u8);
+        for index in 0..20u32 {
+            bus.write_byte(
+                decimal_ptr + 5 + index,
+                significant.get(index as usize).copied().unwrap_or(0),
+            );
+        }
+        bus.write_byte(decimal_ptr + 25, 0);
+        bus.write_word(index_ptr, cursor as u16);
+    }
+    let valid_prefix = saw_digit && cursor == bytes.len();
+    bus.write_word(valid_prefix_ptr, if valid_prefix { 0xFFFF } else { 0 });
+}
 
 fn standard_file_cancel_reply(bus: &mut MacMemoryBus, reply_ptr: u32) {
     if reply_ptr != 0 {
@@ -198,6 +299,7 @@ const STANDARD_FILE_GET_LIST_RECT: (i16, i16, i16, i16) = (48, 24, 135, 330);
 const STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
 const STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (151, 166, 173, 246);
 const STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (151, 258, 173, 338);
+const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
 
 #[inline]
 fn return_noerr_and_pop<C: CpuOps>(cpu: &mut C, bytes: u32) -> Result<()> {
@@ -623,6 +725,161 @@ impl super::TrapDispatcher {
     const ALIAS_KIND_FOLDER: u16 = 1;
     const ALIAS_EXTRA_PARENT_DIR_NAME: i16 = 0;
     const ALIAS_EXTRA_END: i16 = -1;
+
+    fn capture_cooperative_thread<C: CpuOps>(
+        cpu: &C,
+        state: u16,
+        result_destination: u32,
+    ) -> CooperativeThread {
+        let d_regs = [
+            cpu.read_reg(Register::D0),
+            cpu.read_reg(Register::D1),
+            cpu.read_reg(Register::D2),
+            cpu.read_reg(Register::D3),
+            cpu.read_reg(Register::D4),
+            cpu.read_reg(Register::D5),
+            cpu.read_reg(Register::D6),
+            cpu.read_reg(Register::D7),
+        ];
+        let a_regs = [
+            cpu.read_reg(Register::A0),
+            cpu.read_reg(Register::A1),
+            cpu.read_reg(Register::A2),
+            cpu.read_reg(Register::A3),
+            cpu.read_reg(Register::A4),
+            cpu.read_reg(Register::A5),
+            cpu.read_reg(Register::A6),
+            cpu.read_reg(Register::A7),
+        ];
+        CooperativeThread {
+            d_regs,
+            a_regs,
+            pc: cpu.read_reg(Register::PC),
+            ccr: cpu.get_ccr(),
+            state,
+            result_destination,
+        }
+    }
+
+    fn install_cooperative_thread<C: CpuOps>(cpu: &mut C, thread: &CooperativeThread) {
+        let d_registers = [
+            Register::D0,
+            Register::D1,
+            Register::D2,
+            Register::D3,
+            Register::D4,
+            Register::D5,
+            Register::D6,
+            Register::D7,
+        ];
+        let a_registers = [
+            Register::A0,
+            Register::A1,
+            Register::A2,
+            Register::A3,
+            Register::A4,
+            Register::A5,
+            Register::A6,
+            Register::A7,
+        ];
+        for (register, value) in d_registers.into_iter().zip(thread.d_regs) {
+            cpu.write_reg(register, value);
+        }
+        for (register, value) in a_registers.into_iter().zip(thread.a_regs) {
+            cpu.write_reg(register, value);
+        }
+        cpu.write_reg(Register::PC, thread.pc);
+        cpu.set_ccr(thread.ccr);
+    }
+
+    fn thread_return_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if self.thread_return_trampoline == 0 {
+            let trampoline = bus.alloc(8);
+            bus.write_word(trampoline, 0x303C); // MOVE.W #$FFFE,D0
+            bus.write_word(trampoline + 2, 0xFFFE);
+            bus.write_word(trampoline + 4, 0xABF2); // _ThreadDispatch
+            bus.write_word(trampoline + 6, 0x4E75); // defensive RTS
+            self.thread_return_trampoline = trampoline;
+        }
+        self.thread_return_trampoline
+    }
+
+    fn yield_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, suggested_thread: u32) {
+        if self.thread_critical_nesting != 0 {
+            return;
+        }
+
+        let current_id = self.current_cooperative_thread;
+        let result_destination = self
+            .cooperative_threads
+            .get(&current_id)
+            .map_or(0, |thread| thread.result_destination);
+        let current = Self::capture_cooperative_thread(cpu, 0, result_destination);
+        self.cooperative_threads.insert(current_id, current);
+        if !self.cooperative_thread_ready.contains(&current_id) {
+            self.cooperative_thread_ready.push_back(current_id);
+        }
+
+        let preferred = if suggested_thread > 1 && suggested_thread != current_id {
+            self.cooperative_thread_ready
+                .iter()
+                .position(|thread_id| *thread_id == suggested_thread)
+                .and_then(|position| self.cooperative_thread_ready.remove(position))
+        } else {
+            None
+        };
+        let next_id = preferred.or_else(|| {
+            let queue_len = self.cooperative_thread_ready.len();
+            for _ in 0..queue_len {
+                let candidate = self.cooperative_thread_ready.pop_front()?;
+                if candidate != current_id {
+                    return Some(candidate);
+                }
+                self.cooperative_thread_ready.push_back(candidate);
+            }
+            None
+        });
+
+        let Some(next_id) = next_id else {
+            return;
+        };
+        let Some(mut next) = self.cooperative_threads.get(&next_id).cloned() else {
+            return;
+        };
+        if next.state != 0 {
+            return;
+        }
+        next.state = 2;
+        self.cooperative_threads.insert(next_id, next.clone());
+        self.current_cooperative_thread = next_id;
+        Self::install_cooperative_thread(cpu, &next);
+    }
+
+    fn finish_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        let finished_id = self.current_cooperative_thread;
+        let result = cpu.read_reg(Register::A0);
+        if let Some(finished) = self.cooperative_threads.remove(&finished_id) {
+            if finished.result_destination != 0 {
+                bus.write_long(finished.result_destination, result);
+            }
+        }
+        self.cooperative_thread_ready
+            .retain(|thread_id| *thread_id != finished_id);
+
+        while let Some(next_id) = self.cooperative_thread_ready.pop_front() {
+            let Some(mut next) = self.cooperative_threads.get(&next_id).cloned() else {
+                continue;
+            };
+            if next.state != 0 {
+                continue;
+            }
+            next.state = 2;
+            self.cooperative_threads.insert(next_id, next.clone());
+            self.current_cooperative_thread = next_id;
+            Self::install_cooperative_thread(cpu, &next);
+            return;
+        }
+    }
 
     fn apple_event_handler_for(&self, event_class: u32, event_id: u32) -> Option<(u32, u32)> {
         // Inside Macintosh Volume VI, 6-28 to 6-29: AEInstallEventHandler
@@ -11348,100 +11605,29 @@ impl super::TrapDispatcher {
                         let valid_prefix_ptr = bus.read_long(sp + 10);
                         let string_ptr = bus.read_long(sp + 14);
                         let bytes = bus.read_pstring(string_ptr);
-                        let start = usize::from(bus.read_word(index_ptr)).min(bytes.len());
-
-                        let mut cursor = start;
-                        let mut negative = false;
-                        if let Some(sign) = bytes.get(cursor) {
-                            if *sign == b'+' || *sign == b'-' {
-                                negative = *sign == b'-';
-                                cursor += 1;
-                            }
-                        }
-
-                        let mut digits = Vec::new();
-                        let mut fraction_digits = 0i32;
-                        let mut saw_digit = false;
-                        while let Some(ch) = bytes.get(cursor) {
-                            if ch.is_ascii_digit() {
-                                digits.push(*ch);
-                                saw_digit = true;
-                                cursor += 1;
-                            } else {
+                        scan_sane_decimal(bus, &bytes, index_ptr, decimal_ptr, valid_prefix_ptr);
+                        cpu.write_reg(Register::A7, sp + 18);
+                    }
+                    4 => {
+                        // FCSTR2DEC / CStr2Dec: scan a NUL-terminated C
+                        // string into a 68K SANE decimal record. Inside
+                        // Macintosh Volume IV, IV-69 and IV-307 identifies
+                        // selector 4. MPW 3.5's linked str2dec wrapper places:
+                        //   SP+2  validPrefix*, SP+6 decimal*, SP+10 index*,
+                        //   SP+14 C string*.
+                        let valid_prefix_ptr = bus.read_long(sp + 2);
+                        let decimal_ptr = bus.read_long(sp + 6);
+                        let index_ptr = bus.read_long(sp + 10);
+                        let string_ptr = bus.read_long(sp + 14);
+                        let mut bytes = Vec::new();
+                        for offset in 0..=u16::MAX as u32 {
+                            let byte = bus.read_byte(string_ptr.wrapping_add(offset));
+                            if byte == 0 {
                                 break;
                             }
+                            bytes.push(byte);
                         }
-                        if bytes.get(cursor) == Some(&b'.') {
-                            cursor += 1;
-                            while let Some(ch) = bytes.get(cursor) {
-                                if ch.is_ascii_digit() {
-                                    digits.push(*ch);
-                                    fraction_digits += 1;
-                                    saw_digit = true;
-                                    cursor += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-
-                        let exponent_start = cursor;
-                        let mut explicit_exponent = 0i32;
-                        if saw_digit && matches!(bytes.get(cursor), Some(b'e' | b'E')) {
-                            cursor += 1;
-                            let mut exponent_negative = false;
-                            if let Some(sign) = bytes.get(cursor) {
-                                if *sign == b'+' || *sign == b'-' {
-                                    exponent_negative = *sign == b'-';
-                                    cursor += 1;
-                                }
-                            }
-                            let exponent_digits_start = cursor;
-                            while let Some(ch) = bytes.get(cursor) {
-                                if ch.is_ascii_digit() {
-                                    explicit_exponent = explicit_exponent
-                                        .saturating_mul(10)
-                                        .saturating_add(i32::from(*ch - b'0'));
-                                    cursor += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                            if cursor == exponent_digits_start {
-                                cursor = exponent_start;
-                                explicit_exponent = 0;
-                            } else if exponent_negative {
-                                explicit_exponent = -explicit_exponent;
-                            }
-                        }
-
-                        if saw_digit {
-                            let first_nonzero =
-                                digits.iter().position(|digit| *digit != b'0');
-                            let significant = first_nonzero
-                                .map(|offset| &digits[offset..])
-                                .unwrap_or(&b"0"[..]);
-                            let significant_len = significant.len().min(20);
-                            let exponent = explicit_exponent.saturating_sub(fraction_digits);
-
-                            bus.write_byte(decimal_ptr, u8::from(negative));
-                            bus.write_byte(decimal_ptr + 1, 0);
-                            bus.write_word(
-                                decimal_ptr + 2,
-                                exponent.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16,
-                            );
-                            bus.write_byte(decimal_ptr + 4, significant_len as u8);
-                            for index in 0..20u32 {
-                                bus.write_byte(
-                                    decimal_ptr + 5 + index,
-                                    significant.get(index as usize).copied().unwrap_or(0),
-                                );
-                            }
-                            bus.write_byte(decimal_ptr + 25, 0);
-                            bus.write_word(index_ptr, cursor as u16);
-                        }
-                        let valid_prefix = saw_digit && cursor == bytes.len();
-                        bus.write_word(valid_prefix_ptr, if valid_prefix { 0xFFFF } else { 0 });
+                        scan_sane_decimal(bus, &bytes, index_ptr, decimal_ptr, valid_prefix_ptr);
                         cpu.write_reg(Register::A7, sp + 18);
                     }
                     _ => {
@@ -14318,18 +14504,22 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // ThreadDispatch ($ABF2) — Thread Manager critical sections
-            // Inside Macintosh: Operating System Utilities 1994,
-            // Thread Manager chapter (pp. 69-70):
+            // ThreadDispatch ($ABF2) — cooperative Thread Manager
+            // Inside Macintosh: Thread Manager (1999), pp. 1-56 to 1-58:
+            //   NewThread(threadStyle, threadEntry, threadParam, stackSize,
+            //             options, threadResult, threadMade);
+            // and pp. 1-70 to 1-71:
             //   pascal OSErr ThreadBeginCritical(void);
             //   pascal OSErr ThreadEndCritical(void);
-            // The public MPW glue dispatches those no-arg routines
-            // through `_ThreadDispatch` selectors $000B and $000C.
-            // MPW uses `#pragma parameter __D0` for the selector
-            // thunk, so the selector arrives in D0 and the stack is
-            // untouched.
+            // MPW Interfaces/CIncludes/Threads.h dispatches NewThread through
+            // selector $0E03. The selector high byte encodes fourteen stack
+            // words, so the Pascal frame is 28 argument bytes followed by the
+            // OSErr result slot. The same glue uses no-argument selectors
+            // $000B/$000C for ThreadBeginCritical/ThreadEndCritical.
             //
-            // HLE behaviour: selector $000B increments the dispatcher-
+            // HLE behaviour: selector $0E03 creates a cooperative 68K context,
+            // inheriting the caller's register world and receiving a private
+            // guest stack. Selector $000B increments the dispatcher-
             // wide critical-section nesting counter and returns noErr.
             // Selector $000C decrements the counter when nonzero and
             // returns noErr; when the counter is already zero it
@@ -14340,6 +14530,7 @@ impl super::TrapDispatcher {
             // in D0.
             //
             // Regression coverage:
+            //   src/trap/toolbox.rs::tests::threaddispatch_newthread_accepts_default_stack_and_consumes_mpw_frame
             //   src/trap/toolbox.rs::tests::threaddispatch_begin_and_end_critical_roundtrip
             //   src/trap/toolbox.rs::tests::threaddispatch_endcritical_underflow_returns_thread_protocol_err
             //   src/trap/toolbox.rs::tests::threaddispatch_unsupported_selector_returns_param_err
@@ -14347,6 +14538,76 @@ impl super::TrapDispatcher {
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
                 let sp = cpu.read_reg(Register::A7);
                 let result = match selector {
+                    0xFFFE => {
+                        self.finish_cooperative_thread(cpu, bus);
+                        return Some(Ok(()));
+                    }
+                    0x0205 => {
+                        let suggested_thread = bus.read_long(sp);
+                        bus.write_word(sp + 4, 0);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, 0);
+                        self.yield_cooperative_thread(cpu, suggested_thread);
+                        return Some(Ok(()));
+                    }
+                    0x0206 => {
+                        let current_thread = bus.read_long(sp);
+                        if current_thread == 0 {
+                            -50
+                        } else {
+                            bus.write_long(current_thread, self.current_cooperative_thread);
+                            0
+                        }
+                    }
+                    0x0E03 => {
+                        let thread_made = bus.read_long(sp);
+                        let result_destination = bus.read_long(sp + 4);
+                        let options = bus.read_long(sp + 8);
+                        let stack_size = bus.read_long(sp + 12);
+                        let thread_param = bus.read_long(sp + 16);
+                        let thread_entry = bus.read_long(sp + 20);
+                        let thread_style = bus.read_long(sp + 24);
+
+                        if thread_made == 0
+                            || thread_entry == 0
+                            || thread_style != 1
+                            || options & 0x0000_0002 != 0
+                        {
+                            if thread_made != 0 {
+                                bus.write_long(thread_made, 0);
+                            }
+                            -50
+                        } else {
+                            let thread_id = self.next_cooperative_thread_id;
+                            self.next_cooperative_thread_id =
+                                self.next_cooperative_thread_id.wrapping_add(1).max(3);
+
+                            let stack_size = if stack_size == 0 {
+                                DEFAULT_COOPERATIVE_THREAD_STACK_SIZE
+                            } else {
+                                stack_size
+                            };
+                            let allocation_size = stack_size.saturating_add(12);
+                            let stack_base = bus.alloc(allocation_size);
+                            let entry_sp = stack_base.wrapping_add(stack_size);
+                            let return_trampoline = self.thread_return_trampoline(bus);
+                            bus.write_long(entry_sp, return_trampoline);
+                            bus.write_long(entry_sp + 4, thread_param);
+                            bus.write_long(entry_sp + 8, 0);
+
+                            let state = if options & 0x0000_0001 != 0 { 1 } else { 0 };
+                            let mut thread =
+                                Self::capture_cooperative_thread(cpu, state, result_destination);
+                            thread.pc = thread_entry;
+                            thread.a_regs[7] = entry_sp;
+                            self.cooperative_threads.insert(thread_id, thread);
+                            if state == 0 {
+                                self.cooperative_thread_ready.push_back(thread_id);
+                            }
+                            bus.write_long(thread_made, thread_id);
+                            0
+                        }
+                    }
                     0x000B => {
                         self.thread_critical_nesting =
                             self.thread_critical_nesting.saturating_add(1);
@@ -14359,11 +14620,12 @@ impl super::TrapDispatcher {
                     }
                     _ => -50,
                 };
-                bus.write_word(sp, result as u16);
+                let argument_bytes = (selector >> 8) * 2;
+                bus.write_word(sp + argument_bytes, result as u16);
                 if result == 0 {
-                    return_noerr(cpu)
+                    return_noerr_and_pop(cpu, argument_bytes)
                 } else {
-                    return_error_and_pop(cpu, 0, result)
+                    return_error_and_pop(cpu, argument_bytes, result)
                 }
             }
 
@@ -22473,6 +22735,155 @@ mod tests {
         assert_eq!(disp.thread_critical_nesting, 0);
     }
 
+    #[test]
+    fn threaddispatch_newthread_accepts_default_stack_and_consumes_mpw_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let thread_made = bus.alloc(4);
+        let entry = 0x0012_3456;
+        let param = 0x0065_4321;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::A5, 0x00AA_5500);
+        bus.write_long(sp, thread_made);
+        bus.write_long(sp + 4, 0); // optional threadResult
+        bus.write_long(sp + 8, 0x0000_0008); // kFPUNotNeeded
+        bus.write_long(sp + 12, 0); // documented default stack size
+        bus.write_long(sp + 16, param);
+        bus.write_long(sp + 20, entry);
+        bus.write_long(sp + 24, 0x0000_0001); // kCooperativeThread
+        bus.write_word(sp + 28, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0000_0E03);
+
+        let result = disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus);
+        assert!(result.is_some(), "ThreadDispatch should handle NewThread");
+        assert!(result.unwrap().is_ok(), "NewThread should return");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 28);
+        assert_eq!(bus.read_word(sp + 28), 0);
+        assert_eq!(bus.read_long(thread_made), 3);
+    }
+
+    #[test]
+    fn threaddispatch_yield_to_any_thread_roundtrips_complete_68k_contexts() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let new_sp = TEST_SP;
+        let thread_made = bus.alloc(4);
+        let entry = 0x0012_3456;
+        let param = 0x0065_4321;
+
+        cpu.write_reg(Register::A7, new_sp);
+        cpu.write_reg(Register::A5, 0x00AA_5500);
+        bus.write_long(new_sp, thread_made);
+        bus.write_long(new_sp + 4, 0);
+        bus.write_long(new_sp + 8, 0x0000_0008);
+        bus.write_long(new_sp + 12, 0x0000_1800);
+        bus.write_long(new_sp + 16, param);
+        bus.write_long(new_sp + 20, entry);
+        bus.write_long(new_sp + 24, 1);
+        bus.write_word(new_sp + 28, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0E03);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let app_sp = new_sp + 28;
+        let app_pc = 0x000F_0000;
+        cpu.write_reg(Register::PC, app_pc);
+        cpu.write_reg(Register::D3, 0xCAFE_BABE);
+        bus.write_long(app_sp, 0); // YieldToAnyThread's synthetic ThreadID
+        bus.write_word(app_sp + 4, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0205);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(disp.current_cooperative_thread, 3);
+        assert_eq!(cpu.read_reg(Register::PC), entry);
+        assert_eq!(cpu.read_reg(Register::A5), 0x00AA_5500);
+        let thread_sp = cpu.read_reg(Register::A7);
+        assert_eq!(bus.read_long(thread_sp), disp.thread_return_trampoline);
+        assert_eq!(bus.read_long(thread_sp + 4), param);
+
+        let thread_yield_sp = thread_sp - 8;
+        cpu.write_reg(Register::A7, thread_yield_sp);
+        bus.write_long(thread_yield_sp, 0);
+        bus.write_word(thread_yield_sp + 4, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0205);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(disp.current_cooperative_thread, 2);
+        assert_eq!(cpu.read_reg(Register::PC), app_pc);
+        assert_eq!(cpu.read_reg(Register::A7), app_sp + 4);
+        assert_eq!(cpu.read_reg(Register::D3), 0xCAFE_BABE);
+        assert_eq!(bus.read_word(app_sp + 4), 0);
+    }
+
+    #[test]
+    fn threaddispatch_getcurrentthread_reports_application_thread_and_consumes_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let current_thread = bus.alloc(4);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, current_thread);
+        bus.write_word(sp + 4, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0206);
+
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_long(current_thread), 2);
+        assert_eq!(bus.read_word(sp + 4), 0);
+    }
+
+    #[test]
+    fn threaddispatch_thread_entry_return_delivers_result_and_resumes_application() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let new_sp = TEST_SP;
+        let thread_made = bus.alloc(4);
+        let thread_result = bus.alloc(4);
+
+        cpu.write_reg(Register::A7, new_sp);
+        bus.write_long(new_sp, thread_made);
+        bus.write_long(new_sp + 4, thread_result);
+        bus.write_long(new_sp + 8, 0x0000_0008);
+        bus.write_long(new_sp + 12, 0x0000_1800);
+        bus.write_long(new_sp + 16, 0x0065_4321);
+        bus.write_long(new_sp + 20, 0x0012_3456);
+        bus.write_long(new_sp + 24, 1);
+        bus.write_word(new_sp + 28, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0E03);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let app_sp = new_sp + 28;
+        cpu.write_reg(Register::PC, 0x000F_0000);
+        bus.write_long(app_sp, 3);
+        bus.write_word(app_sp + 4, 0xBEEF);
+        cpu.write_reg(Register::D0, 0x0205);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A0, 0xCAFE_BABE);
+        cpu.write_reg(Register::D0, 0xFFFE);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(disp.current_cooperative_thread, 2);
+        assert!(!disp.cooperative_threads.contains_key(&3));
+        assert_eq!(bus.read_long(thread_result), 0xCAFE_BABE);
+        assert_eq!(cpu.read_reg(Register::PC), 0x000F_0000);
+        assert_eq!(cpu.read_reg(Register::A7), app_sp + 4);
+    }
+
     // DictionaryDispatch ($AA53)
     // Inside Macintosh: Text (1993), pp. 8-11, 8-21 to 8-24, 8-34.
     // InitializeDictionary is the public client call that creates the
@@ -23492,6 +23903,43 @@ mod tests {
 
         assert_eq!(bus.read_word(sp + 6), 0x5678);
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+    }
+
+    #[test]
+    fn pack7_cstr2dec_selector_0004_scans_c_string_and_consumes_mpw_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let string_ptr = 0x5000;
+        let index_ptr = 0x5100;
+        let decimal_ptr = 0x5200;
+        let valid_prefix_ptr = 0x5300;
+
+        bus.write_bytes(string_ptr, b"prefix-12.50e+2tail\0");
+        bus.write_word(index_ptr, 6);
+        bus.write_word(valid_prefix_ptr, 0xFFFF);
+        bus.write_bytes(decimal_ptr, &[0xCC; 26]);
+
+        // MPW 3.5's str2dec wrapper leaves the DecStr68K selector at
+        // SP, followed by validPrefix*, decimal*, index*, and C string*.
+        bus.write_word(sp, 4);
+        bus.write_long(sp + 2, valid_prefix_ptr);
+        bus.write_long(sp + 6, decimal_ptr);
+        bus.write_long(sp + 10, index_ptr);
+        bus.write_long(sp + 14, string_ptr);
+
+        let result = disp.dispatch_toolbox(true, 0x1EE, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+        assert_eq!(bus.read_word(index_ptr), 15);
+        assert_eq!(bus.read_word(valid_prefix_ptr), 0);
+        assert_eq!(bus.read_byte(decimal_ptr), 1);
+        assert_eq!(bus.read_byte(decimal_ptr + 1), 0);
+        assert_eq!(bus.read_word(decimal_ptr + 2), 0);
+        assert_eq!(bus.read_byte(decimal_ptr + 4), 4);
+        assert_eq!(bus.read_bytes(decimal_ptr + 5, 4), b"1250");
+        assert_eq!(bus.read_byte(decimal_ptr + 25), 0);
     }
 
     #[test]

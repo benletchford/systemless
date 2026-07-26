@@ -25,6 +25,8 @@ The HLE now covers the major runtime surfaces needed by interactive software:
   offscreen GWorlds, cursors, and 1bpp/8bpp framebuffers.
 - Event, Menu, Window, Control, Dialog, TextEdit, Cursor, Process, Sound,
   SANE, and common Toolbox utility traps.
+- Cooperative Thread Manager contexts, yielding, current-thread queries,
+  critical sections, and thread-entry result delivery.
 - Sound Manager playback, channel state, command queues, callbacks, file
   playback, and host audio mixing.
 
