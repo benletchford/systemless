@@ -1187,6 +1187,52 @@ impl super::TrapDispatcher {
             pix_base == self.screen_mode.0 && touch_top < touch_bottom && touch_left < touch_right;
         if touched_screen {
             self.ensure_dialog_background_saved_for_screen_port(bus, port);
+
+            // A large FrameRect is explicit guest-drawn presentation
+            // geometry. Remember the outermost such frame so the frontend can
+            // correlate it with a retained app-managed CPort instead of
+            // assuming that buffer is centered. FrameRect draws its outline
+            // "just inside" the supplied rectangle (Inside Macintosh:
+            // Imaging With QuickDraw, 1994, p. 3-59), so the rectangle itself
+            // is the visible extent; do not expand it by the pen dimensions.
+            if matches!(op, ShapeOp::Frame) {
+                let width = r.right.saturating_sub(r.left);
+                let height = r.bottom.saturating_sub(r.top);
+                let (_, _, screen_width, screen_height, _) = self.screen_mode;
+                if width >= (screen_width as i16 / 2).max(1)
+                    && height >= (screen_height as i16 / 2).max(1)
+                    && width < screen_width as i16
+                    && height < screen_height as i16
+                {
+                    let candidate = super::dispatch::ScreenCopyBitsRect {
+                        src_top: r.top,
+                        src_left: r.left,
+                        src_bottom: r.bottom,
+                        src_right: r.right,
+                        dst_top: r.top,
+                        dst_left: r.left,
+                        dst_bottom: r.bottom,
+                        dst_right: r.right,
+                    };
+                    let candidate_area = i64::from(width) * i64::from(height);
+                    let current_area = if self.last_screen_frame_rect_tick == self.tick_count {
+                        self.last_screen_frame_rect
+                            .map(|current| {
+                                i64::from(current.dst_right.saturating_sub(current.dst_left))
+                                    * i64::from(current.dst_bottom.saturating_sub(current.dst_top))
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    if self.last_screen_frame_rect_tick != self.tick_count
+                        || candidate_area > current_area
+                    {
+                        self.last_screen_frame_rect = Some(candidate);
+                        self.last_screen_frame_rect_tick = self.tick_count;
+                    }
+                }
+            }
         }
 
         let vis_region_complex =

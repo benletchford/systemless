@@ -87,7 +87,7 @@ struct ContentRect {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
 struct CachedContentRect {
     version: u8,
     screen_width: u16,
@@ -104,15 +104,13 @@ fn viewport_cache_path(game_path: &std::path::Path) -> PathBuf {
 #[cfg(target_os = "macos")]
 fn valid_cached_content_rect(cache: &CachedContentRect) -> bool {
     let content = cache.content;
-    cache.version == 1
+    cache.version == 2
         && cache.screen_width != 0
         && cache.screen_height != 0
         && content.width != 0
         && content.height != 0
         && content.left.saturating_add(content.width) <= u32::from(cache.screen_width)
         && content.top.saturating_add(content.height) <= u32::from(cache.screen_height)
-        && content.left == (u32::from(cache.screen_width).saturating_sub(content.width)) / 2
-        && content.top == (u32::from(cache.screen_height).saturating_sub(content.height)) / 2
 }
 
 #[cfg(target_os = "macos")]
@@ -130,7 +128,7 @@ fn persist_content_rect(
     content: ContentRect,
 ) {
     let cache = CachedContentRect {
-        version: 1,
+        version: 2,
         screen_width: screen_mode.2,
         screen_height: screen_mode.3,
         pixel_size: screen_mode.4,
@@ -893,15 +891,24 @@ impl App {
                 self.content_rect_previous_frame.clear();
             }
 
-            let authoritative_rect = (self.content_rect.is_none())
-                .then(|| {
+            // A guest-drawn screen frame is stronger evidence than an
+            // earlier inferred or cached crop. Keep looking for it after a
+            // provisional crop has been accepted: some applications first
+            // blit their unpositioned backing PixMap at (0,0), then draw the
+            // actual presentation frame later in startup.
+            let framed_rect = runner
+                .dispatcher()
+                .framed_manual_cport_presentation_rect(runner.bus())
+                .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h));
+            let authoritative_rect = framed_rect.or_else(|| {
+                self.content_rect.is_none().then(|| {
                     let dispatcher = runner.dispatcher();
                     dispatcher
-                        .declared_centered_presentation_rect(runner.bus())
-                        .or_else(|| dispatcher.manual_cport_presentation_rect(runner.bus()))
-                })
-                .flatten()
-                .and_then(|rect| centered_content_rect_from_copybits(rect, game_w, game_h));
+                        .manual_cport_presentation_rect(runner.bus())
+                        .or_else(|| dispatcher.declared_centered_presentation_rect(runner.bus()))
+                        .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
+                })?
+            });
 
             let framebuffer_len = screen_mode.1.saturating_mul(u32::from(screen_mode.3));
             let framebuffer = runner.bus().ram_slice(screen_mode.0, framebuffer_len);
@@ -917,7 +924,7 @@ impl App {
                     detected = runner
                         .dispatcher()
                         .last_screen_copybits_rect
-                        .and_then(|rect| centered_content_rect_from_copybits(rect, game_w, game_h))
+                        .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
                         .map(|rect| (rect, confirmations));
                 }
                 if detected.is_none()
@@ -949,26 +956,33 @@ impl App {
                 }
             }
 
-            if self.content_rect.is_none() {
-                if let Some(rect) = accepted_rect {
+            if let Some(rect) = accepted_rect.filter(|rect| self.content_rect != Some(*rect)) {
+                let replacing_provisional_crop = self.content_rect.is_some();
+                if replacing_provisional_crop {
+                    eprintln!(
+                        "[SYSTEMLESS] Guest content updated from explicit frame: {}x{} at ({},{}) inside {}x{}",
+                        rect.width, rect.height, rect.left, rect.top, game_w, game_h
+                    );
+                } else {
                     eprintln!(
                         "[SYSTEMLESS] Guest content: {}x{} at ({},{}) inside {}x{}",
                         rect.width, rect.height, rect.left, rect.top, game_w, game_h
                     );
-                    self.content_rect = Some(rect);
-                    persist_content_rect(&self.game_path, screen_mode, rect);
-                    if let Some(window) = self.window.as_ref() {
-                        let current = window.inner_size();
-                        let integer_scale = (current.width / rect.width)
-                            .min(current.height / rect.height)
-                            .max(1);
-                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
-                            rect.width.saturating_mul(integer_scale),
-                            rect.height.saturating_mul(integer_scale),
-                        ));
-                    }
-                    self.window_sized_content_rect = Some(rect);
                 }
+                self.content_rect = Some(rect);
+                self.content_rect_candidate = None;
+                persist_content_rect(&self.game_path, screen_mode, rect);
+                if let Some(window) = self.window.as_ref() {
+                    let current = window.inner_size();
+                    let integer_scale = (current.width / rect.width)
+                        .min(current.height / rect.height)
+                        .max(1);
+                    let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
+                        rect.width.saturating_mul(integer_scale),
+                        rect.height.saturating_mul(integer_scale),
+                    ));
+                }
+                self.window_sized_content_rect = Some(rect);
             }
 
             let stable_content = self.content_rect.unwrap_or(ContentRect {
@@ -1468,7 +1482,7 @@ fn detect_centered_content_rect_8bpp(
     })
 }
 
-fn centered_content_rect_from_copybits(
+fn content_rect_from_copybits(
     rect: ScreenCopyBitsRect,
     screen_width: u32,
     screen_height: u32,
@@ -1487,15 +1501,8 @@ fn centered_content_rect_from_copybits(
     let content_height = bottom - top;
     let right_margin = screen_width - right;
     let bottom_margin = screen_height - bottom;
-    let horizontal_tolerance = (screen_width / 100).max(4);
-    let vertical_tolerance = (screen_height / 100).max(4);
     let has_border = left >= 4 || right_margin >= 4 || top >= 4 || bottom_margin >= 4;
-    if !has_border
-        || left.abs_diff(right_margin) > horizontal_tolerance
-        || top.abs_diff(bottom_margin) > vertical_tolerance
-        || content_width < screen_width / 2
-        || content_height < screen_height / 2
-    {
+    if !has_border || content_width < screen_width / 2 || content_height < screen_height / 2 {
         return None;
     }
     Some(ContentRect {
@@ -2958,7 +2965,7 @@ mod tests {
     }
 
     #[test]
-    fn centered_copybits_detection_rejects_fullscreen_and_off_center_blits() {
+    fn copybits_detection_accepts_bordered_off_center_blits() {
         let centered = ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,
@@ -2970,7 +2977,7 @@ mod tests {
             dst_right: 720,
         };
         assert_eq!(
-            centered_content_rect_from_copybits(centered, 800, 600),
+            content_rect_from_copybits(centered, 800, 600),
             Some(ContentRect {
                 left: 80,
                 top: 60,
@@ -2988,10 +2995,7 @@ mod tests {
             dst_right: 800,
             ..centered
         };
-        assert_eq!(
-            centered_content_rect_from_copybits(fullscreen, 800, 600),
-            None
-        );
+        assert_eq!(content_rect_from_copybits(fullscreen, 800, 600), None);
 
         let off_center = ScreenCopyBitsRect {
             dst_left: 10,
@@ -2999,16 +3003,21 @@ mod tests {
             ..centered
         };
         assert_eq!(
-            centered_content_rect_from_copybits(off_center, 800, 600),
-            None
+            content_rect_from_copybits(off_center, 800, 600),
+            Some(ContentRect {
+                left: 10,
+                top: 60,
+                width: 640,
+                height: 480,
+            })
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn cached_viewport_must_match_centered_guest_screen_geometry() {
+    fn cached_viewport_must_fit_guest_screen_geometry() {
         let valid = CachedContentRect {
-            version: 1,
+            version: 2,
             screen_width: 800,
             screen_height: 600,
             pixel_size: 8,
@@ -3028,7 +3037,16 @@ mod tests {
             },
             ..valid
         };
-        assert!(!valid_cached_content_rect(&off_center));
+        assert!(valid_cached_content_rect(&off_center));
+
+        let out_of_bounds = CachedContentRect {
+            content: ContentRect {
+                left: 700,
+                ..valid.content
+            },
+            ..valid
+        };
+        assert!(!valid_cached_content_rect(&out_of_bounds));
     }
 
     #[test]
