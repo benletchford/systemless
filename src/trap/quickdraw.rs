@@ -737,8 +737,13 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // SetPortBits ($A875)
-            // SetPortBits ($A875): Copies 14 bytes of BitMap data into port
+            // SetPortBits / SetPortPix ($A875)
+            //
+            // Basic and Color QuickDraw share this trap. SetPortBits copies a
+            // BitMap into a basic GrafPort, while SetPortPix replaces only the
+            // portPixMap handle of a CGrafPort. Each operation is documented
+            // to have no effect on the other kind of port. Inside Macintosh:
+            // Imaging With QuickDraw (1994), pp. 4-86..4-87.
             (true, 0x075) => {
                 let sp = cpu.read_reg(Register::A7);
                 let bits_ptr = bus.read_long(sp);
@@ -746,20 +751,32 @@ impl super::TrapDispatcher {
                 let a5 = cpu.read_reg(Register::A5);
                 let global_ptr = bus.read_long(a5);
                 let port_ptr = bus.read_long(global_ptr);
-                for i in 0..14 {
-                    bus.write_byte(port_ptr + 2 + i, bus.read_byte(bits_ptr + i));
+                let is_cgraf_port = (bus.read_word(port_ptr + 6) & 0xC000) == 0xC000;
+                if is_cgraf_port {
+                    bus.write_long(port_ptr + 2, bits_ptr);
+                } else {
+                    for i in 0..14 {
+                        bus.write_byte(port_ptr + 2 + i, bus.read_byte(bits_ptr + i));
+                    }
                 }
                 self.cache_portbits_pixmap_handle(bus, port_ptr + 2, bus.read_long(port_ptr + 2));
                 if trace_dialog_ports_enabled() {
-                    let row_bytes = bus.read_word(bits_ptr + 4);
-                    let top = bus.read_word(bits_ptr + 6) as i16;
-                    let left = bus.read_word(bits_ptr + 8) as i16;
-                    let bottom = bus.read_word(bits_ptr + 10) as i16;
-                    let right = bus.read_word(bits_ptr + 12) as i16;
-                    eprintln!(
-                        "[DIALOG-PORT] SetPortBits port=${:08X} bits=${:08X} rowBytes=${:04X} bounds=({},{},{},{})",
-                        port_ptr, bits_ptr, row_bytes, top, left, bottom, right
-                    );
+                    if is_cgraf_port {
+                        eprintln!(
+                            "[DIALOG-PORT] SetPortPix port=${:08X} pixmap_handle=${:08X}",
+                            port_ptr, bits_ptr
+                        );
+                    } else {
+                        let row_bytes = bus.read_word(bits_ptr + 4);
+                        let top = bus.read_word(bits_ptr + 6) as i16;
+                        let left = bus.read_word(bits_ptr + 8) as i16;
+                        let bottom = bus.read_word(bits_ptr + 10) as i16;
+                        let right = bus.read_word(bits_ptr + 12) as i16;
+                        eprintln!(
+                            "[DIALOG-PORT] SetPortBits port=${:08X} bits=${:08X} rowBytes=${:04X} bounds=({},{},{},{})",
+                            port_ptr, bits_ptr, row_bytes, top, left, bottom, right
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -22412,6 +22429,42 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn setportpix_replaces_only_cgrafport_pixmap_handle() {
+        // Imaging With QuickDraw (1994), pp. 4-86..4-87: SetPortPix
+        // replaces portPixMap with the supplied PixMapHandle. It does not
+        // copy the PixMap record over the surrounding CGrafPort fields.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let old_pixmap_handle = 0x260000u32;
+        let new_pixmap_handle = 0x260100u32;
+
+        bus.write_long(port_ptr + 2, old_pixmap_handle);
+        bus.write_word(port_ptr + 6, 0xC000); // CGrafPort version
+        for offset in 6..=14u32 {
+            bus.write_byte(port_ptr + offset, (0x40 + offset) as u8);
+        }
+        // Restore the color-port marker after filling the sentinel bytes.
+        bus.write_word(port_ptr + 6, 0xC000);
+        let untouched = (6..=14u32)
+            .map(|offset| bus.read_byte(port_ptr + offset))
+            .collect::<Vec<_>>();
+        bus.write_long(TEST_SP, new_pixmap_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x075, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_long(port_ptr + 2), new_pixmap_handle);
+        assert_eq!(
+            (6..=14u32)
+                .map(|offset| bus.read_byte(port_ptr + offset))
+                .collect::<Vec<_>>(),
+            untouched,
+            "SetPortPix must not overwrite fields following portPixMap"
+        );
     }
 
     #[test]
