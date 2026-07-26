@@ -135,6 +135,13 @@ pub mod addr {
     pub const CUR_DIR_STORE: u32 = 0x0398; // Directory ID of directory last opened (long) - Inside Macintosh Volume IV, IV-72
     pub const FS_FCB_LEN: u32 = 0x03F6; // Size of a file control block (word) - Files 1992, 2-384
 
+    /// Callable OS trap-table entry for SwapMMUMode ($A05D).
+    ///
+    /// Inside Macintosh Volume V, V-593 identifies SwapMMUMode as trap
+    /// `$A05D`. OS trap-table entries begin at `$0400`, so selector `$5D`
+    /// occupies `$0400 + ($5D * 4) = $0574`.
+    pub const SWAP_MMU_MODE_TRAP: u32 = 0x0574;
+
     // Memory Manager globals (for NewPtr, etc.)
     pub const APP_L_ZONE: u32 = 0x02AA; // Application zone (ptr)
     pub const SYS_ZONE: u32 = 0x02A6; // System zone (ptr)

@@ -2219,6 +2219,19 @@ impl FixtureRunner {
             );
         }
 
+        // The OS trap table begins at $0400 and stores callable routine
+        // addresses by low-byte trap number. SwapMMUMode is $A05D, placing
+        // its table entry at $0574. Inside Macintosh Volume V, V-593
+        // documents both the trap number and its register-based mode swap.
+        // Some clients call the table entry directly rather than executing
+        // the A-line opcode, so seed a real trap-and-return trampoline.
+        // Allocate this only after reserving the application zone header.
+        let swap_mmu_mode_trampoline = self.bus.alloc(4);
+        self.bus.write_word(swap_mmu_mode_trampoline, 0xA05D); // SwapMMUMode
+        self.bus.write_word(swap_mmu_mode_trampoline + 2, 0x4E75); // RTS
+        self.bus
+            .write_long(addr::SWAP_MMU_MODE_TRAP, swap_mmu_mode_trampoline);
+
         // JSwapFont ($08E0): private Font Manager vector used by QuickDraw to
         // call FMSwapFont directly. Executor's clean-room low-memory table
         // identifies the address and initializes it from the $A901 routine.
@@ -7320,6 +7333,65 @@ mod tests {
                 .read_byte(crate::memory::globals::addr::MMU32_BIT),
             1,
             "MMU32Bit ($0CB2) should mirror Systemless's default 32-bit addressing mode"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_callable_swap_mmu_mode_trap_table_entry() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let entry = runner
+            .bus
+            .read_long(crate::memory::globals::addr::SWAP_MMU_MODE_TRAP);
+        assert_ne!(entry, 0);
+        assert_eq!(
+            [runner.bus.read_word(entry), runner.bus.read_word(entry + 2),],
+            [0xA05D, 0x4E75],
+            "the $0574 OS trap-table entry should target SwapMMUMode followed by RTS"
+        );
+
+        let call_site = 0x0002_0000u32;
+        let initial_sp = 0x007F_FE00u32;
+        runner.bus.write_word(call_site, 0x2078); // MOVEA.L ($0574).W,A0
+        runner.bus.write_word(call_site + 2, 0x0574);
+        runner.bus.write_word(call_site + 4, 0x4E90); // JSR (A0)
+        runner.bus.write_word(call_site + 6, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, call_site);
+        runner.cpu.write_reg(Register::A7, initial_sp);
+        runner.cpu.write_reg(Register::D0, 0);
+
+        let (steps, running) = runner.run_steps(4, None);
+
+        assert!(running);
+        assert_eq!(steps, 4);
+        assert_eq!(runner.cpu.read_reg(Register::PC), call_site + 6);
+        assert_eq!(runner.cpu.read_reg(Register::A7), initial_sp);
+        assert_eq!(
+            runner.cpu.read_reg(Register::D0),
+            1,
+            "SwapMMUMode should return the previous 32-bit mode in D0"
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_byte(crate::memory::globals::addr::MMU32_BIT),
+            0,
+            "the indirect call should update the requested addressing mode"
         );
     }
 
