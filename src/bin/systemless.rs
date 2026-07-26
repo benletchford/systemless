@@ -1788,6 +1788,29 @@ fn run_headless(game_path: &std::path::Path, max_instructions: usize, show_menu_
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    if args
+        .iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        println!(
+            "Usage: {} [--headless] [--arrows-as-numpad] [--literal-arrows] \
+             [--cpu-mhz N] [--max-instructions N] \
+             [--show-menu-bar] <game>",
+            args[0]
+        );
+        return;
+    }
+
+    if args
+        .iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "--version" | "-V"))
+    {
+        println!("systemless {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let mut headless = false;
     let mut arrows_as_numpad = DEFAULT_GUI_ARROWS_AS_NUMPAD;
     let mut cpu_mhz: Option<f64> = None;

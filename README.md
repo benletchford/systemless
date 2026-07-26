@@ -34,6 +34,15 @@ system integration are modeled only where guest-visible behavior matters.
 
 ## Quick Start
 
+Install with Homebrew on macOS:
+
+```sh
+brew install benletchford/tap/systemless
+systemless path/to/app-or-game.sit
+```
+
+Or install from crates.io:
+
 ```sh
 cargo install systemless
 systemless path/to/app-or-game.sit
