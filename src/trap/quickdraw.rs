@@ -13619,9 +13619,8 @@ impl super::TrapDispatcher {
             //
             // Stack: SP+0=extra(Fixed, 4). Pops 4.
             //
-            // Future work: respect char_extra when computing glyph
-            // advances in draw_string / draw_char (Systemless currently
-            // stores the value without applying it during text rendering).
+            // draw_char applies the integer portion to each non-space glyph;
+            // spaces use the GrafPort's separate SpaceExtra value.
             (true, 0x223) => {
                 let sp = cpu.read_reg(Register::A7);
                 let extra_fixed = bus.read_long(sp) as i32;
@@ -21389,6 +21388,31 @@ mod tests {
             bus.read_word(addr + 4) as i16,
             bus.read_word(addr + 6) as i16,
         )
+    }
+
+    #[test]
+    fn condensed_outline_uses_plain_text_advance() {
+        // Applications can overlay an outline|condense pass ($28) with a
+        // plain color pass. QuickDraw's one-pixel condense adjustment cancels
+        // the outline adjustment, keeping every glyph registered.
+        let (mut d, _cpu, _bus) = setup();
+        d.tx_face = 0x00;
+        let plain = d.advance_extra();
+        d.tx_face = 0x08;
+        assert_eq!(d.advance_extra(), plain + 1);
+        d.tx_face = 0x20;
+        assert_eq!(d.advance_extra(), plain - 1);
+        d.tx_face = 0x28;
+        assert_eq!(d.advance_extra(), plain);
+    }
+
+    #[test]
+    fn extended_face_adds_one_pixel_to_each_advance() {
+        let (mut d, _cpu, _bus) = setup();
+        d.tx_face = 0x00;
+        let plain = d.advance_extra();
+        d.tx_face = 0x40;
+        assert_eq!(d.advance_extra(), plain + 1);
     }
 
     /// Helper: allocate a simple 10-byte region and its handle at given addresses.
