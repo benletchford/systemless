@@ -5,7 +5,6 @@
 
 ### Features
 
-* document Homebrew installation ([3500070](https://github.com/benletchford/systemless/commit/350007065ad79bf2ce5a322b88563fc4458dcec3))
 * document Homebrew installation ([be7742f](https://github.com/benletchford/systemless/commit/be7742f030dc63289b84141c328fef3d8f1aacdc))
 
 
