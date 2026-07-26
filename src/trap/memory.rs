@@ -1722,11 +1722,9 @@ impl super::TrapDispatcher {
                     let us = (-delay) as u64;
                     (us * 60).max(1)
                 };
-                let current_subtick = if self.timer_callback_active {
-                    self.timer_current_subtick
-                } else {
-                    current_ticks as u64 * SUBTICKS_PER_TICK
-                };
+                let current_subtick = self
+                    .timer_current_subtick
+                    .max(current_ticks as u64 * SUBTICKS_PER_TICK);
                 let fire_at_subtick = current_subtick.saturating_add(delay_subticks);
                 let fire_at = fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
                 if let Some(task) = self.timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {

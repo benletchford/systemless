@@ -1680,9 +1680,6 @@ pub struct TrapDispatcher {
     pub(crate) timer_tasks: Vec<TimerTask>,
     /// Exact Time Manager time while a callback is being delivered.
     pub(crate) timer_current_subtick: u64,
-    /// Whether PrimeTime should schedule relative to an interrupt deadline
-    /// rather than the coarser low-memory TickCount value.
-    pub(crate) timer_callback_active: bool,
     /// Installed Vertical Retrace Manager tasks.
     /// Processes 1994, 4-6 to 4-7
     pub(crate) vbl_tasks: Vec<VblTask>,
@@ -2918,7 +2915,6 @@ impl TrapDispatcher {
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
             timer_current_subtick: 0,
-            timer_callback_active: false,
             vbl_tasks: Vec::new(),
             system_vbl_queue_anchor: 0,
             primary_vbl_slot: 0,

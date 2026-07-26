@@ -2716,6 +2716,13 @@ impl FixtureRunner {
                 break;
             }
 
+            if !sound_work_only && self.active_interrupt_callback.is_none() {
+                self.fire_timer_tasks_at(self.current_timer_subtick());
+                if self.active_interrupt_callback.is_some() {
+                    continue;
+                }
+            }
+
             // Service blocking traps (Delay, WaitNextEvent sleep).
             if !sound_work_only {
                 if self.service_wait_sleep_ticks(tick_cap) {
@@ -2824,10 +2831,6 @@ impl FixtureRunner {
                         active_interrupt_callback.source,
                         ActiveInterruptCallbackSource::DialogDrawProc
                     );
-                    let completed_timer = matches!(
-                        active_interrupt_callback.source,
-                        ActiveInterruptCallbackSource::Timer
-                    );
                     let completed_modeless_dialog_draw_proc = completed_dialog_draw_proc
                         && self.dispatcher.active_modeless_dialog_draw_proc.is_some();
                     if completed_dialog_draw_proc {
@@ -2836,12 +2839,6 @@ impl FixtureRunner {
                     }
                     self.active_interrupt_callback = None;
                     self.refill_foreground_budget_after_async_return();
-                    if completed_timer {
-                        self.fire_timer_tasks(self.guest_tick());
-                        if self.active_interrupt_callback.is_some() {
-                            continue;
-                        }
-                    }
                     if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
                     {
                         continue;
@@ -4213,31 +4210,42 @@ impl FixtureRunner {
     ///   4. Restores D0-D3/A0-A3 via MOVEM.L from the stack
     ///   5. RTS back to the interrupted code
     fn fire_timer_tasks(&mut self, current_tick: u32) {
+        self.fire_timer_tasks_at(current_tick as u64 * 1_000_000);
+    }
+
+    fn current_timer_subtick(&self) -> u64 {
+        const SUBTICKS_PER_TICK: u64 = 1_000_000;
+        let tick_base = self.guest_tick() as u64 * SUBTICKS_PER_TICK;
+        if self.tick_budget <= 0 {
+            return tick_base;
+        }
+        let instructions_per_tick = self.instructions_per_tick.max(1) as i64;
+        let remaining = (self.tick_budget as i64).clamp(0, instructions_per_tick);
+        let elapsed = instructions_per_tick - remaining;
+        tick_base + (elapsed as u64 * SUBTICKS_PER_TICK) / instructions_per_tick as u64
+    }
+
+    fn fire_timer_tasks_at(&mut self, current_subtick: u64) {
         if self.active_interrupt_callback.is_some() {
             return;
         }
-
-        const SUBTICKS_PER_TICK: u64 = 1_000_000;
-        let target_subtick = current_tick as u64 * SUBTICKS_PER_TICK;
 
         // Fire at most one task at a time to avoid nested callbacks.
         if let Some(task) = self
             .dispatcher
             .timer_tasks
             .iter_mut()
-            .filter(|task| task.active && target_subtick >= task.fire_at_subtick)
+            .filter(|task| task.active && current_subtick >= task.fire_at_subtick)
             .min_by_key(|task| task.fire_at_subtick)
         {
             let task_ptr = task.task_ptr;
             let tm_addr = task.tm_addr;
-            self.dispatcher.timer_current_subtick = task.fire_at_subtick;
-            self.dispatcher.timer_callback_active = true;
+            self.dispatcher.timer_current_subtick = current_subtick;
             // Mark only the task being delivered as fired. Other tasks that
             // expire on the same tick must remain active for a later interrupt.
             task.active = false;
 
             if tm_addr == 0 {
-                self.dispatcher.timer_callback_active = false;
                 return;
             }
 
@@ -4317,8 +4325,7 @@ impl FixtureRunner {
             }
             self.cpu.write_reg(Register::PC, tramp);
         } else {
-            self.dispatcher.timer_current_subtick = target_subtick;
-            self.dispatcher.timer_callback_active = false;
+            self.dispatcher.timer_current_subtick = current_subtick;
         }
     }
 
