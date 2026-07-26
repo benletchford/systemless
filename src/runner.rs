@@ -4536,7 +4536,7 @@ impl FixtureRunner {
                     // pop on return. Push cmdPtr nearest SP and chan beneath it,
                     // then reset SP to the saved-register frame after JSR so
                     // one-arg, two-arg, and C-style cleanup all resume safely.
-                    let tramp = self.bus.alloc(42);
+                    let tramp = self.bus.alloc_synthetic(42);
                     self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
                     self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
                     self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
@@ -4573,7 +4573,7 @@ impl FixtureRunner {
 
                 // Sound 1994, 2-151
                 if self.sound_file_completion_trampoline == 0 {
-                    let tramp = self.bus.alloc(28);
+                    let tramp = self.bus.alloc_synthetic(28);
                     self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
                     self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
                     self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
@@ -4673,7 +4673,7 @@ impl FixtureRunner {
         //   +28: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F (restore regs)
         //   +32: RTS                          ; 4E75
         if self.sound_doubleback_trampoline == 0 {
-            let tramp = self.bus.alloc(34);
+            let tramp = self.bus.alloc_synthetic(34);
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
             self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
             self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #imm,-(SP)
@@ -8166,6 +8166,44 @@ mod tests {
         assert_eq!(runner.bus.read_word(cmd_ptr), crate::sound::cmd::CALLBACK);
         assert_eq!(runner.bus.read_word(cmd_ptr + 2), 0x1234);
         assert_eq!(runner.bus.read_long(cmd_ptr + 4), 0x0001_43FC);
+        assert_eq!(
+            runner.bus.get_alloc_size(tramp),
+            None,
+            "Systemless-owned command callback trampoline must stay outside the guest heap"
+        );
+    }
+
+    #[test]
+    fn sound_command_callback_trampoline_does_not_perturb_guest_allocations() {
+        let mut baseline = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let _baseline_callback = baseline.bus.alloc(2);
+        let expected_next_guest_ptr = baseline.bus.alloc(64);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let callback_addr = runner.bus.alloc(2);
+        runner.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(crate::sound::PendingSoundCallback::Command {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                cmd: crate::sound::SndCommand {
+                    cmd: crate::sound::cmd::CALLBACK,
+                    param1: 0,
+                    param2: 0,
+                },
+            });
+
+        runner.fire_sound_callbacks();
+        let actual_next_guest_ptr = runner.bus.alloc(64);
+
+        assert_eq!(
+            actual_next_guest_ptr, expected_next_guest_ptr,
+            "lazy callback setup must not consume application-visible heap space"
+        );
     }
 
     #[test]
@@ -8206,6 +8244,13 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc + 2);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
+        assert_eq!(
+            runner
+                .bus
+                .get_alloc_size(runner.sound_file_completion_trampoline),
+            None,
+            "Systemless-owned file completion trampoline must stay outside the guest heap"
+        );
     }
 
     #[test]
@@ -8240,6 +8285,13 @@ mod tests {
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
+        assert_eq!(
+            runner
+                .bus
+                .get_alloc_size(runner.sound_doubleback_trampoline),
+            None,
+            "Systemless-owned double-back trampoline must stay outside the guest heap"
+        );
     }
 
     #[test]
