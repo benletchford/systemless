@@ -7642,6 +7642,40 @@ mod tests {
     }
 
     #[test]
+    fn sub_vbl_timer_callback_fires_before_next_guest_tick() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = 0x0002_0000;
+
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S to self
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.tick_budget = runner.instructions_per_tick as i32;
+        runner.dispatcher.timer_tasks.push(TimerTask {
+            task_ptr: 0x0039_38C8,
+            tm_addr: callback_addr,
+            active: true,
+            fire_at_tick: 101,
+            fire_at_subtick: 100_200_000,
+        });
+
+        let steps = runner.instructions_per_tick as usize / 4;
+        let (executed, running) = runner.run_steps(steps, None);
+        let (_, still_running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert!(still_running);
+        assert_eq!(executed, steps);
+        assert_eq!(runner.guest_tick(), 100);
+        assert!(!runner.dispatcher.timer_tasks[0].active);
+        assert_ne!(runner.timer_trampoline, 0);
+    }
+
+    #[test]
     fn timer_callback_return_runs_foreground_before_next_due_timer() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000;
