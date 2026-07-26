@@ -2219,6 +2219,23 @@ impl FixtureRunner {
             );
         }
 
+        // JShieldCursor ($0808): low-level QuickDraw cursor-shielding vector.
+        // MPW Universal Interfaces Quickdraw.h declares QDJShieldCursorProcPtr
+        // as a Pascal procedure taking four INTEGER values (left, top, right,
+        // bottom). These occupy the same eight stack bytes consumed by the
+        // ShieldCursor ($A855) HLE. Pop the JSR return address before entering
+        // the trap, then jump back after the trap consumes that payload.
+        // Inside Macintosh Volume I, I-474; MPW Quickdraw.h.
+        let shield_cursor_trampoline = self.bus.alloc(6);
+        self.bus
+            .write_word(shield_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus
+            .write_word(shield_cursor_trampoline + 2, 0xA855); // ShieldCursor
+        self.bus
+            .write_word(shield_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus
+            .write_long(addr::J_SHIELD_CURSOR, shield_cursor_trampoline);
+
         // JSwapFont ($08E0): private Font Manager vector used by QuickDraw to
         // call FMSwapFont directly. Executor's clean-room low-memory table
         // identifies the address and initializes it from the $A901 routine.
@@ -7418,6 +7435,61 @@ mod tests {
             runner.bus.read_long(fm_input_sp + 4),
             0,
             "JSwapFont should return a non-NIL FMOutPtr through the Pascal result slot"
+        );
+    }
+
+    #[test]
+    fn init_app_seeds_callable_shield_cursor_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let shield_cursor_trampoline = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_SHIELD_CURSOR);
+        assert_ne!(shield_cursor_trampoline, 0);
+        assert_eq!(
+            [
+                runner.bus.read_word(shield_cursor_trampoline),
+                runner.bus.read_word(shield_cursor_trampoline + 2),
+                runner.bus.read_word(shield_cursor_trampoline + 4),
+            ],
+            [0x205F, 0xA855, 0x4ED0]
+        );
+
+        let args_sp = 0x007F_FE00u32;
+        let return_pc = 0x0002_0000u32;
+        runner.bus.write_word(args_sp, 100); // left
+        runner.bus.write_word(args_sp + 2, 120); // top
+        runner.bus.write_word(args_sp + 4, 500); // right
+        runner.bus.write_word(args_sp + 6, 420); // bottom
+        runner.bus.write_long(args_sp - 4, return_pc);
+        runner.bus.write_word(return_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, shield_cursor_trampoline);
+        runner.cpu.write_reg(Register::A7, args_sp - 4);
+
+        let (steps, running) = runner.run_steps(3, None);
+
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(
+            runner.cpu.read_reg(Register::A7),
+            args_sp + 8,
+            "JShieldCursor should consume its four Pascal INTEGER arguments"
         );
     }
 
