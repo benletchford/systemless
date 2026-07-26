@@ -3777,6 +3777,13 @@ impl super::TrapDispatcher {
             .dialog_visible_snapshots
             .iter()
             .filter_map(|(&dialog_ptr, snapshot)| {
+                // A dialog the application painted itself owns its pixels;
+                // replaying the snapshot the HLE captured before the app drew
+                // would repaint the stale contents.
+                // Inside Macintosh Volume I, I-415.
+                if self.dialogs_drawn_by_app.contains(&dialog_ptr) {
+                    return None;
+                }
                 if front_is_dialog && dialog_ptr != front_window {
                     None
                 } else {
@@ -4863,6 +4870,43 @@ mod redraw_chrome_tests {
             bus.read_byte(probe),
             0x77,
             "visible dialog snapshot should remain composited even when the front port changes"
+        );
+    }
+
+    #[test]
+    fn restore_visible_dialog_snapshots_preserves_application_drawn_pixels() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let bounds = (10, 10, 30, 30);
+        for y in 10..30u32 {
+            for x in 10..30u32 {
+                bus.write_byte(screen_base + y * 64 + x, 0x22);
+            }
+        }
+        let stale_pixels = disp.save_dialog_pixels(&bus, bounds);
+
+        let dialog_ptr = 0x00D1_A106;
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            super::super::dispatch::PersistentDialogSnapshot {
+                bounds,
+                pixels: stale_pixels,
+            },
+        );
+        disp.dialogs_drawn_by_app.insert(dialog_ptr);
+
+        let probe = screen_base + 18 * 64 + 18;
+        bus.write_byte(probe, 0x77);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x77,
+            "a retained snapshot must not overwrite pixels painted after DrawDialog"
         );
     }
 
