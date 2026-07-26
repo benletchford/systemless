@@ -1101,6 +1101,8 @@ impl super::TrapDispatcher {
         let is_bold = (self.tx_face & 1) != 0;
         let is_outline = (self.tx_face & 8) != 0;
         let is_shadow = (self.tx_face & 16) != 0;
+        let is_condensed = (self.tx_face & 32) != 0;
+        let is_extended = (self.tx_face & 64) != 0;
 
         let mut extra: i16 = if is_bold { 1 } else { 0 };
         if is_outline {
@@ -1109,6 +1111,17 @@ impl super::TrapDispatcher {
         if is_shadow {
             // Note: advance is always +2, but rendering smear uses +3 for size >= 18 (separate calculation)
             extra += 2;
+        }
+        // Classic QuickDraw's algorithmic condense/extend faces adjust the
+        // inter-character advance by one pixel.  Applications commonly pair
+        // `outline | condense`: condense cancels outline's extra pixel so an
+        // outlined pass and a plain-color pass drawn at the same MoveTo point
+        // remain registered character-for-character.
+        if is_condensed {
+            extra -= 1;
+        }
+        if is_extended {
+            extra += 1;
         }
         extra
     }

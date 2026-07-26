@@ -4230,6 +4230,9 @@ impl TrapDispatcher {
         res_id: i16,
         data: Vec<u8>,
     ) {
+        if res_type == *b"FONT" || res_type == *b"NFNT" {
+            let _ = crate::quickdraw::fonts::register_resource_font_strike(res_id, &data);
+        }
         self.resource_backing_data
             .insert((refnum, res_type, res_id), data);
     }
@@ -4287,6 +4290,10 @@ impl TrapDispatcher {
 
     pub(crate) fn remember_resource_fork_backing_data(&mut self, refnum: u16, fork: &ResourceFork) {
         for ((res_type, res_id), resource) in fork.resources() {
+            if res_type == b"FONT" || res_type == b"NFNT" {
+                let _ =
+                    crate::quickdraw::fonts::register_resource_font_strike(*res_id, &resource.data);
+            }
             self.resource_backing_data
                 .entry((refnum, *res_type, *res_id))
                 .or_insert_with(|| resource.data.clone());
