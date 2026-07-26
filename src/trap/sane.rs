@@ -213,7 +213,7 @@ impl super::TrapDispatcher {
         let is_two_addr = matches!(
             op,
             0x00 | 0x02 | 0x04 | 0x06 | // add, sub, mul, div
-            0x08 | 0x0A | 0x0C |         // cmp, cpx, rem
+            0x08 | 0x09 | 0x0A | 0x0C |  // cmp, decimal-to-binary, cpx, rem
             0x0E | 0x10 |                 // z2x, x2z (conversions)
             0x18 |                         // scalb (scale binary, two-address)
             0x1C // class (classify, two-address: src=ext, dst=int16)
@@ -243,6 +243,33 @@ impl super::TrapDispatcher {
             let dst_ptr = bus.read_long(sp + 2);
             let src_ptr = bus.read_long(sp + 6);
             cpu.write_reg(Register::A7, sp + 10);
+
+            if op == 0x09 {
+                // FOD2B / FDEC2{X,D,S,C,I,L}: convert a decimal record
+                // at SRC into the opcode-selected binary format at DST.
+                // Apple Numerics Manual (1988), Decimal-to-Binary
+                // Conversion; MPW SANEMacs.a defines FOD2B=$0009 and
+                // requires destination and source addresses on the stack.
+                let negative = bus.read_byte(src_ptr) != 0;
+                let exponent = bus.read_word(src_ptr + 2) as i16;
+                let length = usize::from(bus.read_byte(src_ptr + 4)).min(20);
+                let digits = bus.read_bytes(src_ptr + 5, length);
+                let text = String::from_utf8_lossy(&digits);
+                let mut value = match text.as_ref() {
+                    "INF" | "Inf" | "inf" => f64::INFINITY,
+                    value if value.starts_with("NAN") || value.starts_with("NaN") => f64::NAN,
+                    _ => digits
+                        .iter()
+                        .filter(|digit| digit.is_ascii_digit())
+                        .fold(0.0, |value, digit| value * 10.0 + f64::from(*digit - b'0'))
+                        * libm::pow(10.0, f64::from(exponent)),
+                };
+                if negative {
+                    value = -value;
+                }
+                Extended80::from(value).write_format(bus, dst_ptr, fmt);
+                return Ok(());
+            }
 
             if !trace_sane && !trace_sane_nan {
                 match op {
@@ -1033,6 +1060,34 @@ mod tests {
         assert!(result.is_infinite(), "expected infinity, got {}", result);
         assert!(result > 0.0, "expected positive infinity");
         assert_eq!(new_sp, TEST_SP + 10);
+    }
+
+    #[test]
+    fn fp68k_decimal_to_binary_converts_record_and_consumes_two_addresses() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        // Apple Numerics Manual (1988), Decimal-to-Binary Conversion:
+        // decimal = (-1)^sgn × integer(sig.text) × 10^exp.
+        bus.write_byte(SRC_ADDR, 1); // negative
+        bus.write_byte(SRC_ADDR + 1, 0);
+        bus.write_word(SRC_ADDR + 2, (-1i16) as u16);
+        bus.write_byte(SRC_ADDR + 4, 2);
+        bus.write_bytes(SRC_ADDR + 5, b"12");
+        bus.write_byte(SRC_ADDR + 25, 0);
+        disp.write_fp_extended(&mut bus, DST_ADDR, 0.0);
+
+        // FOD2B ($0009): destination binary pointer is on top, followed
+        // by the source decimal pointer.
+        bus.write_word(sp, 0x0009);
+        bus.write_long(sp + 2, DST_ADDR);
+        bus.write_long(sp + 6, SRC_ADDR);
+
+        disp.dispatch_sane(true, 0x1EB, &mut cpu, &mut bus);
+
+        let result = disp.read_fp_extended(&bus, DST_ADDR);
+        assert!((result + 1.2).abs() < 1e-10, "expected -1.2, got {result}");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
     }
 
     #[test]

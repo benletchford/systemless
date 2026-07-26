@@ -186,6 +186,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"te  "
             | b"teat"
             | b"tmgr"
+            | b"thds"
             | b"dplv"
             | b"dply"
             | b"alis"
@@ -3393,6 +3394,19 @@ impl super::TrapDispatcher {
                     // gestaltTimeMgrVersion ('tmgr') -> revised Timer Manager
                     b"tmgr" => {
                         cpu.write_reg(Register::A0, 2);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltThreadMgrAttr ('thds') -> Thread Manager
+                    // present. Inside Macintosh: Operating System Utilities
+                    // 1994, p. 1-25 defines bit 0 as
+                    // gestaltThreadMgrPresent and bit 1 as
+                    // gestaltSpecificMatchSupport. Systemless implements the
+                    // public critical-section dispatch contract through
+                    // _ThreadDispatch ($ABF2), so report bit 0. Leave bit 1
+                    // clear because exact-match thread creation is not
+                    // implemented.
+                    b"thds" => {
+                        cpu.write_reg(Register::A0, 1);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltDisplayMgrVers ('dplv') -> Display Manager
@@ -12322,6 +12336,35 @@ mod tests {
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_thread_manager_reports_supported_critical_sections() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"thds"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            1,
+            "bit 0 should report Thread Manager present"
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn newgestalt_rejects_builtin_thread_manager_selector() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0x0040_0000);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"thds"));
+
+        call_trap_word(&mut disp, 0xA3AD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF_EA50);
     }
 
     #[test]

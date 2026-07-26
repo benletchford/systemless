@@ -3,7 +3,7 @@
 //! Hosts the 68k interpreter that drives the HLE Toolbox dispatch
 //! path.
 
-use crate::memory::MacMemoryBus;
+use crate::memory::{MacMemoryBus, MemoryBus};
 
 pub use m68k::HleHandler;
 
@@ -67,13 +67,20 @@ pub struct M68kCpu {
     /// Exposed so callers can reach interpreter-specific APIs not
     /// surfaced by the [`CpuOps`] trait.
     pub core: m68k::CpuCore,
+    /// One-shot suppression for the synthetic custom zero-divide-handler
+    /// watch installed by [`Self::run_batch`]. After expanding the exception
+    /// frame, the next batch must execute the watched handler entry.
+    skip_format_two_handler_watch: Option<u32>,
 }
 
 impl M68kCpu {
     pub fn new() -> Self {
         let mut core = m68k::CpuCore::new();
         core.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
-        Self { core }
+        Self {
+            core,
+            skip_format_two_handler_watch: None,
+        }
     }
 
     /// `#[inline]` — called many times per instruction. The match
@@ -148,7 +155,56 @@ impl M68kCpu {
         max_instructions: u32,
         watch_pcs: &[u32],
     ) -> m68k::BatchResult {
-        self.core.run_batch(bus, max_instructions, watch_pcs)
+        let zero_divide_handler = bus.read_long(0x0014);
+        let suppress_handler_watch =
+            self.skip_format_two_handler_watch == Some(self.core.pc);
+        if suppress_handler_watch {
+            self.skip_format_two_handler_watch = None;
+        }
+        let handler_already_watched = watch_pcs.contains(&zero_divide_handler);
+        let should_intercept_zero_divide = zero_divide_handler != 0
+            && zero_divide_handler != 0x0000_00FE
+            && !suppress_handler_watch
+            && (handler_already_watched || watch_pcs.len() < 3);
+        let mut extended_watches = [0u32; 3];
+        let active_watches = if should_intercept_zero_divide && !handler_already_watched {
+            extended_watches[..watch_pcs.len()].copy_from_slice(watch_pcs);
+            extended_watches[watch_pcs.len()] = zero_divide_handler;
+            &extended_watches[..watch_pcs.len() + 1]
+        } else {
+            watch_pcs
+        };
+
+        let batch = self.core.run_batch(bus, max_instructions, active_watches);
+        if should_intercept_zero_divide
+            && matches!(
+                batch.exit,
+                m68k::BatchExit::WatchedPc { pc } if pc == zero_divide_handler
+            )
+            && bus.read_word(self.core.ppc) & 0xFFC0 == 0x4C40
+        {
+            // A 68020+ zero-divide fault uses a format-2 exception frame:
+            // SR, next PC, format/vector word, then the faulting instruction
+            // address. The m68k backend currently emits a format-0 frame for
+            // all synchronous exceptions. Classic applications can install a
+            // vector-5 handler that consumes the format-2 address field (Dark
+            // Forces does so to skip a four-byte DIVSL), so expand the frame
+            // before entering a non-default guest handler.
+            //
+            // Motorola M68000 Family Programmer's Reference Manual (1992),
+            // §6.3.4, format-2 stack frame.
+            let old_sp = self.core.a(7);
+            let saved_sr = bus.read_word(old_sp);
+            let saved_pc = bus.read_long(old_sp + 2);
+            let new_sp = old_sp.wrapping_sub(4);
+            bus.write_word(new_sp, saved_sr);
+            bus.write_long(new_sp + 2, saved_pc);
+            bus.write_word(new_sp + 6, 0x2014);
+            bus.write_long(new_sp + 8, self.core.ppc);
+            self.core.set_a(7, new_sp);
+            self.skip_format_two_handler_watch = Some(zero_divide_handler);
+        }
+        batch
     }
 
     /// `#[inline]` — called once per M68K instruction. The wrapper
@@ -214,6 +270,42 @@ impl CpuOps for M68kCpu {
 mod tests {
     use super::{M68kCpu, Register, StepResult};
     use crate::memory::{MacMemoryBus, MemoryBus};
+
+    #[test]
+    fn custom_zero_divide_handler_receives_68020_format_two_frame() {
+        let mut cpu = M68kCpu::new();
+        let mut bus = MacMemoryBus::new(0x400000);
+        let prog = 0x0010_0000;
+        let handler = 0x0010_0100;
+        let initial_sp = 0x003F_FFC0;
+
+        // DIVSL.L D1,D2:D0; NOP
+        bus.write_word(prog, 0x4C41);
+        bus.write_word(prog + 2, 0x0C02);
+        bus.write_word(prog + 4, 0x4E71);
+        bus.write_long(0x0014, handler);
+
+        // A classic format-2 skip handler: discard SR/PC/format, advance
+        // the saved instruction address by the four-byte DIVSL, then RTS.
+        bus.write_word(handler, 0x508F); // ADDQ.L #8,A7
+        bus.write_word(handler + 2, 0x5897); // ADDQ.L #4,(A7)
+        bus.write_word(handler + 4, 0x4E75); // RTS
+
+        cpu.write_reg(Register::PC, prog);
+        cpu.write_reg(Register::A7, initial_sp);
+        cpu.write_reg(Register::D0, 100);
+        cpu.write_reg(Register::D1, 0);
+        cpu.write_reg(Register::D2, 0);
+
+        let first = cpu.run_batch(&mut bus, 10, &[]);
+        assert_eq!(first.instructions, 1);
+        assert_eq!(cpu.read_reg(Register::PC), handler);
+
+        let second = cpu.run_batch(&mut bus, 4, &[]);
+        assert_eq!(second.instructions, 4);
+        assert_eq!(cpu.read_reg(Register::PC), prog + 6);
+        assert_eq!(cpu.read_reg(Register::A7), initial_sp);
+    }
 
     #[test]
     fn cmp_word_address_indirect_sets_lt_and_branches() {
