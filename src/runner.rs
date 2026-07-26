@@ -513,6 +513,7 @@ enum ActiveInterruptCallbackSource {
     SoundCallback,
     SoundFileCompletion,
     SoundDoubleBack,
+    FileCompletion,
     DialogDrawProc,
     DialogFilterProc,
     MenuHook,
@@ -742,6 +743,9 @@ pub struct FixtureRunner {
     /// Guest-memory address of the SndStartFilePlay completion trampoline.
     /// Allocated once on first use and reused for all file completion routines.
     sound_file_completion_trampoline: u32,
+    /// Guest-memory trampoline used to invoke File Manager asynchronous
+    /// completion procedures.
+    file_completion_trampoline: u32,
     /// Guest-memory address of the dialog userItem draw proc trampoline (26 bytes).
     /// Allocated once on first use and reused for all subsequent draw proc calls.
     dialog_draw_trampoline: u32,
@@ -831,6 +835,7 @@ impl FixtureRunner {
             sound_doubleback_trampoline: 0,
             sound_callback_trampoline: 0,
             sound_file_completion_trampoline: 0,
+            file_completion_trampoline: 0,
             dialog_draw_trampoline: 0,
             dialog_filter_trampoline: 0,
             menu_hook_trampoline: 0,
@@ -2696,6 +2701,13 @@ impl FixtureRunner {
                 break;
             }
 
+            // File Manager async completions are interrupt work. Deliver a
+            // completed request before the foreground application can inspect
+            // or reuse its parameter block.
+            if !sound_work_only && self.active_interrupt_callback.is_none() {
+                self.fire_file_completion_callback();
+            }
+
             // Sound callbacks are interrupt work. If a previous slice queued
             // one, dispatch it before running more foreground guest code. Do
             // not drain the whole queue in one CPU slice: double-buffer
@@ -4496,6 +4508,43 @@ impl FixtureRunner {
         self.cpu.write_reg(Register::PC, trampoline);
     }
 
+    /// Publish and optionally deliver one completed asynchronous File Manager
+    /// request.
+    ///
+    /// A File Manager completion procedure receives A0 pointing at the
+    /// parameter block and D0 equal to its final `ioResult`.
+    /// Inside Macintosh: Files (1992), 2-238.
+    fn fire_file_completion_callback(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+
+        let Some(completion) = self.dispatcher.pending_file_completions.pop_front() else {
+            return false;
+        };
+
+        self.bus
+            .write_word(completion.parameter_block + 16, completion.result as u16);
+        if completion.completion_addr == 0 {
+            return false;
+        }
+
+        if self.file_completion_trampoline == 0 {
+            let tramp = self.bus.alloc_synthetic(8);
+            self.bus.write_word(tramp, 0x4EB9); // JSR abs.L
+            self.bus.write_word(tramp + 6, 0x4E75); // RTS
+            self.file_completion_trampoline = tramp;
+        }
+
+        let tramp = self.file_completion_trampoline;
+        self.bus.write_long(tramp + 2, completion.completion_addr);
+        self.inject_interrupt_callback(ActiveInterruptCallbackSource::FileCompletion, tramp);
+        self.cpu.write_reg(Register::A0, completion.parameter_block);
+        self.cpu
+            .write_reg(Register::D0, completion.result as i32 as u32);
+        true
+    }
+
     /// Fire pending Sound Manager callback procedures and file completion routines.
     fn fire_sound_callbacks(&mut self) -> bool {
         if self.active_interrupt_callback.is_some() {
@@ -5981,8 +6030,8 @@ mod tests {
         SndChannel, SndCommand, OUTPUT_RATE,
     };
     use crate::trap::dispatch::{
-        DialogItem, DialogTrackingState, PendingWaitNextEventReturn, QueuedEvent, TimerTask,
-        VblTask,
+        DialogItem, DialogTrackingState, PendingFileCompletion, PendingWaitNextEventReturn,
+        QueuedEvent, TimerTask, VblTask,
     };
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
@@ -8166,6 +8215,57 @@ mod tests {
         assert_eq!(runner.bus.read_word(cmd_ptr), crate::sound::cmd::CALLBACK);
         assert_eq!(runner.bus.read_word(cmd_ptr + 2), 0x1234);
         assert_eq!(runner.bus.read_long(cmd_ptr + 4), 0x0001_43FC);
+    }
+
+    #[test]
+    fn file_completion_callback_uses_documented_registers_and_restores_foreground() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let parameter_block = runner.bus.alloc(64);
+        let callback_addr = runner.bus.alloc(2);
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS
+        for offset in (0..20).step_by(2) {
+            runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
+        }
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.write_reg(Register::A0, 0x1111_1111);
+        runner.cpu.write_reg(Register::D0, 0x2222_2222);
+        runner
+            .dispatcher
+            .pending_file_completions
+            .push_back(PendingFileCompletion {
+                parameter_block,
+                completion_addr: callback_addr,
+                result: -39,
+            });
+
+        assert!(runner.fire_file_completion_callback());
+        assert_eq!(runner.bus.read_word(parameter_block + 16) as i16, -39);
+        assert_eq!(runner.cpu.read_reg(Register::A0), parameter_block);
+        assert_eq!(runner.cpu.read_reg(Register::D0) as i32, -39);
+        assert!(matches!(
+            runner.active_interrupt_callback.map(|active| active.source),
+            Some(ActiveInterruptCallbackSource::FileCompletion)
+        ));
+        assert!(
+            runner
+                .bus
+                .get_alloc_size(runner.file_completion_trampoline)
+                .is_none(),
+            "Systemless-owned completion trampoline must stay outside the guest heap"
+        );
+
+        let (_, running) = runner.run_steps(6, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.cpu.read_reg(Register::A0), 0x1111_1111);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 0x2222_2222);
+        assert!(!runner.is_halted());
     }
 
     #[test]
