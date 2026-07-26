@@ -19255,7 +19255,7 @@ impl super::TrapDispatcher {
         value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
     }
 
-    fn inset_region_row(row: &[i16], dh: i16) -> Vec<i16> {
+    pub(super) fn inset_region_row(row: &[i16], dh: i16) -> Vec<i16> {
         if row.is_empty() {
             return Vec::new();
         }
@@ -21384,6 +21384,48 @@ mod tests {
             data_words
         ));
         handle
+    }
+
+    #[test]
+    fn framergn_frames_complex_boundary_without_painting_interior() {
+        // Imaging With QuickDraw (1994), pp. 3-100--3-101: FrameRgn is
+        // equivalent to CopyRgn + InsetRgn + DiffRgn.  A complex region's
+        // interior must therefore remain untouched.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.current_port = 0x181000;
+        d.pn_size = (1, 1);
+        d.pn_pat = [0xFF; 8];
+        d.pn_mode = 8; // patCopy
+
+        let rgn = bus.alloc(4);
+        let mut rows = vec![vec![10, 20]; 10];
+        // A two-pixel hole makes this a genuinely complex region and gives
+        // FrameRgn an interior boundary to outline as well.
+        rows[5] = vec![10, 14, 16, 20];
+        assert!(TrapDispatcher::write_region_from_rows(
+            &mut bus, rgn, 10, &rows
+        ));
+        assert!(bus.read_word(bus.read_long(rgn)) > super::REGION_HEADER_SIZE as u16);
+
+        d.draw_rgn(&mut cpu, &mut bus, rgn, ShapeOp::Frame);
+
+        let screen = bus.read_long(0x0824);
+        let pixel_is_black = |bus: &MacMemoryBus, y: u32, x: u32| {
+            let byte = bus.read_byte(screen + y * 64 + x / 8);
+            byte & (1 << (7 - (x % 8))) != 0
+        };
+        assert!(
+            pixel_is_black(&bus, 10, 12),
+            "outer boundary must be framed"
+        );
+        assert!(
+            pixel_is_black(&bus, 15, 13),
+            "the boundary around a complex-region hole must be framed"
+        );
+        assert!(
+            !pixel_is_black(&bus, 12, 12),
+            "FrameRgn must not paint a complex region's interior"
+        );
     }
 
     /// Helper: write a BitMap record.

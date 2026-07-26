@@ -603,6 +603,58 @@ impl super::TrapDispatcher {
         // and persists until the next y-entry changes it.  See IM:I I-142 and
         // build_region_membership_cache in quickdraw.rs for the full parser.
         let cache = Self::build_region_membership_cache(bus, rgn_handle, bbox.top, bbox.bottom);
+
+        // Imaging With QuickDraw (1994), pp. 3-100--3-101 specifies FrameRgn
+        // as CopyRgn + InsetRgn(pnSize) + DiffRgn: paint the original region
+        // minus its inset, never the whole interior.  InsetRgn's horizontal
+        // erosion shrinks every span; its vertical erosion intersects the
+        // neighbouring rows.  Computing that membership here avoids temporary
+        // guest handles while retaining the documented geometry.
+        if matches!(op, ShapeOp::Frame) {
+            let Some(cache) = cache else {
+                return;
+            };
+            let pen_h = self.pn_size.0.max(0) as i32;
+            let pen_w = self.pn_size.1.max(0);
+            let inset_rows = cache
+                .rows
+                .iter()
+                .map(|row| Self::inset_region_row(row, pen_w))
+                .collect::<Vec<_>>();
+            let top = i32::from(bbox.top);
+            let bottom = i32::from(bbox.bottom);
+
+            self.draw_generic_shape(cpu, bus, &bbox, op, false, |y, x| {
+                let row = i32::from(y) - top;
+                if row < 0
+                    || row >= cache.rows.len() as i32
+                    || !Self::endpoints_contain_point(&cache.rows[row as usize], x)
+                {
+                    return 0;
+                }
+
+                // A zero-sized pen draws no frame, matching the rectangular
+                // shape paths. Otherwise this is membership in the region
+                // produced by InsetRgn(rgn, pnSize.h, pnSize.v).
+                if pen_h == 0 && pen_w == 0 {
+                    return 0;
+                }
+                let first_source_y = i32::from(y) - pen_h;
+                let last_source_y = i32::from(y) + pen_h;
+                let inside_inset = first_source_y >= top
+                    && last_source_y < bottom
+                    && (first_source_y..=last_source_y).all(|source_y| {
+                        Self::endpoints_contain_point(&inset_rows[(source_y - top) as usize], x)
+                    });
+                if inside_inset {
+                    0
+                } else {
+                    255
+                }
+            });
+            return;
+        }
+
         self.draw_generic_shape(cpu, bus, &bbox, op, false, |y, x| {
             if let Some(c) = &cache {
                 let row = (y - c.top) as usize;
