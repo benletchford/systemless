@@ -14791,11 +14791,12 @@ impl super::TrapDispatcher {
         }
     }
 
-    /// Dereference a PolyHandle and extend the recording region by the
-    /// polygon's stored polyBBox (4 words at poly_ptr+2). NIL handles and
-    /// empty bboxes just report the recording state without mutating the
-    /// bbox. Returns true if recording is active (caller should skip the
-    /// draw).
+    /// Dereference a PolyHandle and add its actual boundary to the open
+    /// region.  Recording only the polyBBox is not equivalent: concave
+    /// polygons (for example, a starburst) would turn into solid rectangles
+    /// and overwrite unrelated drawing when the resulting region is painted.
+    /// NIL handles and empty polygons still report the recording state so the
+    /// caller suppresses drawing while OpenRgn is active.
     pub(crate) fn extend_recording_region_from_poly(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -14811,12 +14812,26 @@ impl super::TrapDispatcher {
         if poly_ptr == 0 {
             return true;
         }
-        let top = bus.read_word(poly_ptr + 2) as i16;
-        let left = bus.read_word(poly_ptr + 4) as i16;
-        let bottom = bus.read_word(poly_ptr + 6) as i16;
-        let right = bus.read_word(poly_ptr + 8) as i16;
-        if bottom > top && right > left {
-            self.extend_recording_region(top, left, bottom, right);
+        let vertices = self.read_poly_vertices(bus, poly_handle);
+        if vertices.len() >= 2 {
+            let recording = self.recording_region.as_mut().unwrap();
+            for index in 0..vertices.len() {
+                let start = vertices[index];
+                let end = vertices[(index + 1) % vertices.len()];
+                if start != end {
+                    recording.outline_segments.push((start, end));
+                }
+            }
+
+            let (mut top, mut left) = vertices[0];
+            let (mut bottom, mut right) = vertices[0];
+            for &(v, h) in &vertices[1..] {
+                top = top.min(v);
+                left = left.min(h);
+                bottom = bottom.max(v);
+                right = right.max(h);
+            }
+            Self::extend_recording_bbox(recording, top, left, bottom, right);
         }
         true
     }
@@ -28764,6 +28779,48 @@ mod tests {
             bus.read_byte(screen_base + 15 * row_bytes + 15),
             0x00,
             "FramePoly should not rasterize while OpenRgn recording is active"
+        );
+    }
+
+    #[test]
+    fn closergn_preserves_concave_framepoly_boundary() {
+        // OpenRgn must record the polygon itself, not polyBBox.  This shape's
+        // right-hand notch is inside its bbox but outside its boundary.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let poly_ptr = bus.alloc(34);
+        let poly_handle = bus.alloc(4);
+        make_poly(
+            &mut bus,
+            poly_ptr,
+            poly_handle,
+            (10, 10, 30, 30),
+            &[(10, 10), (10, 30), (20, 20), (30, 30), (30, 10)],
+        );
+        let dst_ptr = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_ptr, dst, 0, 0, 0, 0);
+
+        assert!(d
+            .dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, poly_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0C6, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 20, 15));
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, dst, 20, 25),
+            "the concave notch must not be filled merely because it lies inside polyBBox"
         );
     }
 
