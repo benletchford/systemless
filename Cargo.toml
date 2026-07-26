@@ -15,6 +15,7 @@ documentation = "https://docs.rs/systemless"
 default-run = "systemless"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
 m68k = "0.2.5"
 thiserror = "2"
 tracing = "0.1"

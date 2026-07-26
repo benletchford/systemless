@@ -28,6 +28,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use clap::Parser;
 use desktop_save_store::DesktopSaveStore;
 #[cfg(target_os = "macos")]
 use objc2::{msg_send, runtime::NSObject};
@@ -77,6 +78,42 @@ const CONTENT_RECT_CONFIRMATIONS: u16 = 5;
 const VIEWPORT_CACHE_FILE: &str = "viewport.json";
 const MAX_AUDIO_MIX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 const DEFAULT_GUI_ARROWS_AS_NUMPAD: bool = false;
+
+#[derive(Debug, Parser)]
+#[command(name = "systemless", version, about)]
+struct Cli {
+    /// Application or game archive to launch
+    #[arg(value_name = "GAME")]
+    game: PathBuf,
+
+    /// Run without opening a window
+    #[arg(long)]
+    headless: bool,
+
+    /// Map arrow keys to the numeric keypad
+    #[arg(long, conflicts_with = "literal_arrows")]
+    arrows_as_numpad: bool,
+
+    /// Keep arrow keys mapped as literal arrow keys
+    #[arg(
+        long,
+        visible_alias = "no-arrows-as-numpad",
+        conflicts_with = "arrows_as_numpad"
+    )]
+    literal_arrows: bool,
+
+    /// Emulate the requested CPU clock speed
+    #[arg(long, value_name = "N")]
+    cpu_mhz: Option<f64>,
+
+    /// Stop a headless run after this many instructions
+    #[arg(long, value_name = "N")]
+    max_instructions: Option<usize>,
+
+    /// Show the classic Mac menu bar
+    #[arg(long)]
+    show_menu_bar: bool,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 struct ContentRect {
@@ -1827,75 +1864,14 @@ fn run_headless(game_path: &std::path::Path, max_instructions: usize, show_menu_
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args
-        .iter()
-        .skip(1)
-        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
-    {
-        println!(
-            "Usage: {} [--headless] [--arrows-as-numpad] [--literal-arrows] \
-             [--cpu-mhz N] [--max-instructions N] \
-             [--show-menu-bar] <game>",
-            args[0]
-        );
-        return;
-    }
-
-    if args
-        .iter()
-        .skip(1)
-        .any(|arg| matches!(arg.as_str(), "--version" | "-V"))
-    {
-        println!("systemless {}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
-
-    let mut headless = false;
-    let mut arrows_as_numpad = DEFAULT_GUI_ARROWS_AS_NUMPAD;
-    let mut cpu_mhz: Option<f64> = None;
-    let mut game_path_str = None;
-    let mut max_instructions: Option<usize> = None;
-    let mut show_menu_bar = false;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--headless" => headless = true,
-            "--arrows-as-numpad" => arrows_as_numpad = true,
-            "--literal-arrows" | "--no-arrows-as-numpad" => arrows_as_numpad = false,
-            "--show-menu-bar" => show_menu_bar = true,
-            "--cpu-mhz" => {
-                i += 1;
-                if let Some(mhz) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
-                    cpu_mhz = Some(mhz);
-                }
-            }
-            "--max-instructions" => {
-                i += 1;
-                max_instructions = args.get(i).and_then(|s| s.parse().ok());
-            }
-            _ => {
-                if game_path_str.is_none() {
-                    game_path_str = Some(args[i].clone());
-                }
-            }
-        }
-        i += 1;
-    }
-
-    let game_path = match game_path_str {
-        Some(p) => PathBuf::from(p),
-        None => {
-            eprintln!(
-                "Usage: {} [--headless] [--arrows-as-numpad] [--literal-arrows] \
-                 [--cpu-mhz N] [--max-instructions N] \
-                 [--show-menu-bar] <game>",
-                args[0]
-            );
-            std::process::exit(1);
-        }
+    let cli = Cli::parse();
+    let game_path = cli.game;
+    let arrows_as_numpad = if cli.literal_arrows {
+        false
+    } else if cli.arrows_as_numpad {
+        true
+    } else {
+        DEFAULT_GUI_ARROWS_AS_NUMPAD
     };
 
     if !game_path.exists() {
@@ -1906,14 +1882,14 @@ fn main() {
     eprintln!("[SYSTEMLESS] Starting emulator...");
     eprintln!("[SYSTEMLESS] Game: {}", game_path.display());
 
-    if headless {
+    if cli.headless {
         run_headless(
             &game_path,
-            max_instructions.unwrap_or(5_000_000),
-            show_menu_bar,
+            cli.max_instructions.unwrap_or(5_000_000),
+            cli.show_menu_bar,
         );
     } else {
-        run_gui(game_path, arrows_as_numpad, cpu_mhz, show_menu_bar);
+        run_gui(game_path, arrows_as_numpad, cli.cpu_mhz, cli.show_menu_bar);
     }
 }
 
@@ -2160,6 +2136,7 @@ fn keycode_to_mac_printable_char(key: &PhysicalKey) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::error::ErrorKind;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2193,6 +2170,63 @@ mod tests {
         }
 
         fn stop(&mut self) {}
+    }
+
+    #[test]
+    fn cli_parses_typed_runner_options() {
+        let cli = Cli::try_parse_from([
+            "systemless",
+            "--headless",
+            "--arrows-as-numpad",
+            "--cpu-mhz",
+            "25.5",
+            "--max-instructions",
+            "1234",
+            "--show-menu-bar",
+            "game.sit",
+        ])
+        .expect("runner options should parse");
+
+        assert_eq!(cli.game, PathBuf::from("game.sit"));
+        assert!(cli.headless);
+        assert!(cli.arrows_as_numpad);
+        assert!(!cli.literal_arrows);
+        assert_eq!(cli.cpu_mhz, Some(25.5));
+        assert_eq!(cli.max_instructions, Some(1234));
+        assert!(cli.show_menu_bar);
+    }
+
+    #[test]
+    fn cli_preserves_literal_arrows_compatibility_alias() {
+        let cli = Cli::try_parse_from(["systemless", "--no-arrows-as-numpad", "game.sit"])
+            .expect("compatibility alias should parse");
+
+        assert!(cli.literal_arrows);
+    }
+
+    #[test]
+    fn cli_generates_help_and_version() {
+        let help =
+            Cli::try_parse_from(["systemless", "--help"]).expect_err("--help should stop parsing");
+        let version = Cli::try_parse_from(["systemless", "--version"])
+            .expect_err("--version should stop parsing");
+
+        assert_eq!(help.kind(), ErrorKind::DisplayHelp);
+        assert_eq!(version.kind(), ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn cli_rejects_missing_game_invalid_values_and_unknown_options() {
+        let missing_game =
+            Cli::try_parse_from(["systemless"]).expect_err("game path should be required");
+        let invalid_value = Cli::try_parse_from(["systemless", "--cpu-mhz", "fast", "game.sit"])
+            .expect_err("CPU clock should be numeric");
+        let unknown_option = Cli::try_parse_from(["systemless", "--wat", "game.sit"])
+            .expect_err("unknown options should be rejected");
+
+        assert_eq!(missing_game.kind(), ErrorKind::MissingRequiredArgument);
+        assert_eq!(invalid_value.kind(), ErrorKind::ValueValidation);
+        assert_eq!(unknown_option.kind(), ErrorKind::UnknownArgument);
     }
 
     fn gui_runner_with_counting_audio() -> (FixtureRunner, Rc<RefCell<usize>>) {
