@@ -4212,7 +4212,8 @@ impl FixtureRunner {
             .dispatcher
             .timer_tasks
             .iter_mut()
-            .find(|task| task.active && current_tick >= task.fire_at_tick)
+            .filter(|task| task.active && current_tick >= task.fire_at_tick)
+            .min_by_key(|task| task.fire_at_tick)
         {
             let task_ptr = task.task_ptr;
             let tm_addr = task.tm_addr;
@@ -7693,6 +7694,26 @@ mod tests {
         assert!(
             runner.dispatcher.timer_tasks[1].active,
             "a second task due on the same tick must remain queued"
+        );
+
+        // The delivered task may re-prime itself from its callback. It must not
+        // jump ahead of an older task that is still waiting for delivery.
+        runner.dispatcher.timer_tasks[0].active = true;
+        runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
+        runner.active_interrupt_callback = None;
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.fire_timer_tasks(11);
+
+        assert!(
+            runner.dispatcher.timer_tasks[0].active,
+            "the newly re-primed task must wait behind the older due task"
+        );
+        assert!(!runner.dispatcher.timer_tasks[1].active);
+        assert_eq!(
+            runner.bus.read_long(runner.timer_trampoline + 6),
+            0x0039_3900
         );
     }
 
