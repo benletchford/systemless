@@ -3922,6 +3922,17 @@ impl super::TrapDispatcher {
             // PBHGetVInfo ($A207): HFS variant aliased onto $A007
             (false, 0x07) => {
                 let pb = cpu.read_reg(Register::A0);
+                let volume_index = bus.read_word(pb + 28) as i16;
+                if volume_index > 1 {
+                    // Files 1992, 2-145: positive ioVolIndex values walk the
+                    // mounted-volume queue, and enumeration ends with nsvErr.
+                    // Systemless currently exposes one mounted boot volume.
+                    const NSV_ERR: i16 = -35;
+                    bus.write_word(pb + 16, NSV_ERR as u16);
+                    cpu.write_reg(Register::D0, NSV_ERR as i32 as u32);
+                    return Some(Ok(()));
+                }
+
                 let name_ptr = bus.read_long(pb + 18);
                 if name_ptr != 0 {
                     Self::write_pstring(bus, name_ptr, super::TrapDispatcher::boot_volume_name());
@@ -13079,6 +13090,51 @@ mod tests {
         // Volume name
         let len = bus.read_byte(name_buf) as usize;
         assert_eq!(len, 11);
+    }
+
+    #[test]
+    fn pb_hget_vinfo_positive_index_one_returns_boot_volume() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_word(pb + 22, 0x1234);
+        bus.write_word(pb + 28, 1); // ioVolIndex
+
+        call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0, "ioResult");
+        assert_eq!(
+            bus.read_word(pb + 22),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            "ioVRefNum"
+        );
+        assert_eq!(bus.read_pstring(name_buf), b"MacintoshHD");
+    }
+
+    #[test]
+    fn pb_hget_vinfo_index_after_last_volume_returns_nsv_err_without_outputs() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_word(pb + 22, 0x1234);
+        bus.write_word(pb + 28, 2); // ioVolIndex
+        bus.write_long(pb + 30, 0xCAFE_BABE);
+        bus.write_pstring(name_buf, b"unchanged");
+
+        call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-35i32) as u32);
+        assert_eq!(bus.read_word(pb + 16), (-35i16) as u16, "ioResult");
+        assert_eq!(bus.read_word(pb + 22), 0x1234, "ioVRefNum");
+        assert_eq!(bus.read_long(pb + 30), 0xCAFE_BABE, "ioVCrDate");
+        assert_eq!(bus.read_pstring(name_buf), b"unchanged");
     }
 
     // ================================================================
