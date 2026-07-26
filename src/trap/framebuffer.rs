@@ -34,6 +34,10 @@ const TEXT_STYLE_SHADOW: u8 = 0x10;
 const TEXT_STYLE_CONDENSE: u8 = 0x20;
 const TEXT_STYLE_EXTEND: u8 = 0x40;
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+/// Menu bar cell width for the system menu's mark title, matching the
+/// Chicago 12 mark advance System 7.5.3 lays the bar out with. See
+/// `TrapDispatcher::menu_title_advance`.
+const SYSTEM_MENU_MARK_TITLE_ADVANCE: i16 = 11;
 
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
@@ -734,6 +738,67 @@ impl super::TrapDispatcher {
             }
         }
         best_index
+    }
+
+    /// Read back the RGB a pixel value resolves to through the active
+    /// device colour table.
+    ///
+    /// Imaging With QuickDraw 1994 p. 4-82 describes the colour table as
+    /// the mapping from pixel values to RGB; this is the inverse of
+    /// `fb_pixel_index_for_rgb`.
+    pub(crate) fn fb_rgb_for_pixel_index(bus: &MacMemoryBus, index: u8) -> Option<[u16; 3]> {
+        let ctab = Self::active_gdevice_ctab(bus)?;
+        let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+
+        let ordinal = u32::from(index);
+        let read_entry = |entry: u32| {
+            [
+                bus.read_word(entry + 2),
+                bus.read_word(entry + 4),
+                bus.read_word(entry + 6),
+            ]
+        };
+        if ordinal < count {
+            let entry = ctab + 8 + ordinal * 8;
+            if bus.read_word(entry) == u16::from(index) {
+                return Some(read_entry(entry));
+            }
+        }
+        for ordinal in 0..count {
+            let entry = ctab + 8 + ordinal * 8;
+            if bus.read_word(entry) == u16::from(index) {
+                return Some(read_entry(entry));
+            }
+        }
+        None
+    }
+
+    /// Resolve the pixel value halfway between two colours, the way
+    /// `GetGray` does when the Menu Manager dims unavailable content.
+    ///
+    /// IM:V 1986 p. V-142 (`GetGray`) averages the supplied background
+    /// and foreground colours and resolves the result against the
+    /// device's colour table, returning FALSE when the device cannot
+    /// express an intermediate shade. Callers treat `None` the same way
+    /// the standard definition procedures treat that FALSE: fall back to
+    /// the 50% grey pattern.
+    pub(crate) fn fb_gray_pixel_index_between(
+        bus: &MacMemoryBus,
+        background: [u16; 3],
+        foreground: [u16; 3],
+    ) -> Option<u8> {
+        let midpoint = [
+            ((u32::from(background[0]) + u32::from(foreground[0])) / 2) as u16,
+            ((u32::from(background[1]) + u32::from(foreground[1])) / 2) as u16,
+            ((u32::from(background[2]) + u32::from(foreground[2])) / 2) as u16,
+        ];
+        let gray = Self::fb_pixel_index_for_rgb(bus, midpoint)?;
+        let background_index = Self::fb_pixel_index_for_rgb(bus, background);
+        let foreground_index = Self::fb_pixel_index_for_rgb(bus, foreground);
+        if Some(gray) == background_index || Some(gray) == foreground_index {
+            return None;
+        }
+        Some(gray)
     }
 
     fn logical_white_pixel_index(bus: &MacMemoryBus) -> u8 {
@@ -1949,7 +2014,7 @@ impl super::TrapDispatcher {
                 continue;
             }
             let title = &menu.title;
-            let title_width = Self::fb_measure_string(title, font_id, font_size);
+            let title_width = Self::menu_title_advance(title);
             // HIG 1992 p. 54 says unavailable menu titles remain visible
             // but dimmed; p. 55 says pressing a menu title highlights it.
             // Route title-state chrome through the provider while keeping
@@ -1964,65 +2029,25 @@ impl super::TrapDispatcher {
                 false,
             );
             let title_index = Self::menu_title_pixel_index(bus, menu.id, pixel_size);
-            let classic_plain_dimmed_title = self.ui_theme_id() == UiThemeId::ClassicSystem7
-                && title_index.is_none()
-                && !menu.enabled;
-            let width = if classic_plain_dimmed_title {
-                // MTE 1992 p. 3-131: DisableItem(menu, 0) disables the whole
-                // menu title, and HIG 1992 p. 54 says an unavailable title
-                // stays visible but dimmed. The standard MDEF dims by drawing
-                // the title and then knocking it back with the 50% gray
-                // pattern, so the text reads as grey rather than vanishing —
-                // System 7.5.3 under BasiliskII renders SimCity 2000's
-                // disabled File title exactly that way.
-                let drawn = Self::fb_draw_string(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    x,
-                    text_y,
-                    title,
-                    font_id,
-                    font_size,
-                );
-                let dim_top = (text_y - metrics.ascent).max(0);
-                let dim_bottom = (text_y + metrics.descent).min(menu_bar_height - 1);
-                for py in dim_top..dim_bottom {
-                    for px in x..x.saturating_add(drawn) {
-                        if (px as i32 + py as i32) % 2 != 0 {
-                            continue;
-                        }
-                        match menu_bar_bg_index {
-                            Some(bg_index) => Self::fb_set_pixel_index(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                px,
-                                py,
-                                bg_index,
-                            ),
-                            None => Self::fb_set_pixel(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                px,
-                                py,
-                                false,
-                            ),
-                        }
-                    }
-                }
-                drawn
-            } else if Self::is_system_menu_mark_title(title) {
+            // MTE 1992 p. 3-131: DisableItem(menu, 0) disables the whole menu
+            // title, and HIG 1992 p. 54 says an unavailable title stays
+            // visible but dimmed. On a colour screen the standard definition
+            // procedure resolves the dim shade through GetGray (IM:V 1986
+            // p. V-142) and draws solid grey glyphs; a device with no
+            // intermediate shade gets the title drawn and then knocked back
+            // with the 50% grey pattern.
+            let dim_title = self.ui_theme_id() == UiThemeId::ClassicSystem7 && !menu.enabled;
+            let dim_index = if dim_title {
+                Self::menu_dim_pixel_index(bus, pixel_size, title_index, menu_bar_bg_index)
+            } else {
+                None
+            };
+            let system_mark = Self::is_system_menu_mark_title(title);
+            // The retro mark is multi-coloured original artwork, so it dims
+            // through the pattern path on every screen depth rather than
+            // collapsing to a single grey silhouette.
+            let dim_with_pattern = dim_title && (dim_index.is_none() || system_mark);
+            let width = if system_mark {
                 self.fb_draw_retro_computer_menu_mark(
                     bus,
                     screen_base,
@@ -2033,7 +2058,7 @@ impl super::TrapDispatcher {
                     x,
                 );
                 title_width
-            } else if let Some(pixel_index) = title_index {
+            } else if let Some(pixel_index) = dim_index.or(title_index) {
                 Self::fb_draw_string_styled_index(
                     bus,
                     screen_base,
@@ -2064,6 +2089,50 @@ impl super::TrapDispatcher {
                     font_size,
                 )
             };
+            if dim_with_pattern {
+                let (dim_top, dim_bottom) = if system_mark {
+                    (1, menu_bar_height - 1)
+                } else {
+                    (
+                        (text_y - metrics.ascent).max(0),
+                        (text_y + metrics.descent).min(menu_bar_height - 1),
+                    )
+                };
+                for py in dim_top..dim_bottom {
+                    for px in x..x.saturating_add(width) {
+                        // Keep the pixels the 50% grey pattern covers — its
+                        // `$AA $55 …` bits are on where x + y is even.
+                        // Imaging With QuickDraw 1994 p. 3-9.
+                        if (px as i32 + py as i32) % 2 == 0 {
+                            continue;
+                        }
+                        match menu_bar_bg_index {
+                            Some(bg_index) => Self::fb_set_pixel_index(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                px,
+                                py,
+                                bg_index,
+                            ),
+                            None => Self::fb_set_pixel(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                px,
+                                py,
+                                false,
+                            ),
+                        }
+                    }
+                }
+            }
             x += width + 13;
         }
     }
@@ -2071,6 +2140,25 @@ impl super::TrapDispatcher {
     fn is_system_menu_mark_title(title: &str) -> bool {
         let mut chars = title.chars();
         matches!(chars.next(), Some('\u{14}' | '\u{F8FF}')) && chars.next().is_none()
+    }
+
+    /// Width the menu bar reserves for one menu title.
+    ///
+    /// The system menu's title is the mark character ($14, IM:I I-354),
+    /// and the menu bar sizes its cell from the system font's mark glyph —
+    /// 11 pixels in the Chicago 12 strike System 7.5.3 lays the bar out
+    /// with. Systemless substitutes its own artwork for that glyph, so the
+    /// cell is pinned to the reference advance rather than measured from
+    /// whichever mark glyph the loaded font happens to carry: measuring it
+    /// would shift the first title, and every title after it, whenever the
+    /// font catalogue changed, and would crowd the artwork against the next
+    /// title's highlight rectangle.
+    pub(crate) fn menu_title_advance(title: &str) -> i16 {
+        if Self::is_system_menu_mark_title(title) {
+            SYSTEM_MENU_MARK_TITLE_ADVANCE
+        } else {
+            Self::fb_measure_string(title, 0, 12)
+        }
     }
 
     fn fb_draw_retro_computer_menu_mark(
@@ -2684,18 +2772,23 @@ impl super::TrapDispatcher {
             return;
         };
         if latched_port != candidate.port {
-            let visible_samples = self.manual_cport_visible_sample_count(
+            let (visible_samples, distinct_indices) = self.manual_cport_sample_content(
                 bus,
                 candidate.base,
                 candidate.row_bytes,
                 candidate.width,
                 candidate.height,
             );
-            if visible_samples < 8 {
+            if visible_samples < 8 || distinct_indices < 2 {
                 if trace {
                     eprintln!(
-                        "[BLIT-CPORT] skip: candidate port=${:08X} base=${:08X} {}x{} has too little sampled content ({})",
-                        candidate.port, candidate.base, candidate.width, candidate.height, visible_samples
+                        "[BLIT-CPORT] skip: candidate port=${:08X} base=${:08X} {}x{} has too little sampled content (visible={}, distinct={})",
+                        candidate.port,
+                        candidate.base,
+                        candidate.width,
+                        candidate.height,
+                        visible_samples,
+                        distinct_indices
                     );
                 }
                 return;
@@ -2735,6 +2828,38 @@ impl super::TrapDispatcher {
         if row_count == 0 || col_count == 0 {
             return;
         }
+
+        let current_screen_witness = Self::manual_cport_screen_witness(
+            bus,
+            screen_base,
+            screen_rb,
+            dst_x,
+            dst_y,
+            col_count,
+            row_count,
+        );
+        if latched_port == candidate.port && !self.manual_cport_screen_witness.is_empty() {
+            let changed_samples = current_screen_witness
+                .iter()
+                .zip(&self.manual_cport_screen_witness)
+                .filter(|(current, previous)| current != previous)
+                .count();
+            // A few changed samples can be cursor or Window Manager activity.
+            // Broad changes mean the application is now drawing to the
+            // physical framebuffer itself, so replaying an earlier offscreen
+            // compatibility surface would overwrite authoritative pixels.
+            if changed_samples >= 8 {
+                if trace {
+                    eprintln!(
+                        "[BLIT-CPORT] releasing port=${:08X}: screen changed at {} witness samples",
+                        candidate.port, changed_samples
+                    );
+                }
+                self.manual_cport_presented_port = 0;
+                self.manual_cport_screen_witness.clear();
+                return;
+            }
+        }
         self.manual_cport_presented_port = candidate.port;
 
         if trace {
@@ -2767,6 +2892,15 @@ impl super::TrapDispatcher {
                     bus.write_byte(dst_addr + col, translation[src_idx as usize]);
                 }
             }
+            self.manual_cport_screen_witness = Self::manual_cport_screen_witness(
+                bus,
+                screen_base,
+                screen_rb,
+                dst_x,
+                dst_y,
+                col_count,
+                row_count,
+            );
             return;
         }
 
@@ -2775,6 +2909,39 @@ impl super::TrapDispatcher {
             let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
             bus.block_move(src_addr, dst_addr, col_count);
         }
+        self.manual_cport_screen_witness = Self::manual_cport_screen_witness(
+            bus,
+            screen_base,
+            screen_rb,
+            dst_x,
+            dst_y,
+            col_count,
+            row_count,
+        );
+    }
+
+    fn manual_cport_screen_witness(
+        bus: &MacMemoryBus,
+        screen_base: u32,
+        screen_row_bytes: u32,
+        left: u32,
+        top: u32,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let step_x = (width / 16).max(1);
+        let step_y = (height / 12).max(1);
+        let mut witness = Vec::with_capacity(16 * 12);
+        let mut y = step_y / 2;
+        while y < height {
+            let mut x = step_x / 2;
+            while x < width {
+                witness.push(bus.read_byte(screen_base + (top + y) * screen_row_bytes + left + x));
+                x += step_x;
+            }
+            y += step_y;
+        }
+        witness
     }
 
     /// Geometry of the app-managed CGrafPort that the HLE has actually
@@ -2827,29 +2994,30 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn manual_cport_visible_sample_count(
+    fn manual_cport_sample_content(
         &self,
         bus: &MacMemoryBus,
         base: u32,
         row_bytes: u32,
         width: u32,
         height: u32,
-    ) -> u32 {
+    ) -> (u32, u32) {
         if base == 0 || width == 0 || height == 0 || row_bytes < width {
-            return 0;
+            return (0, 0);
         }
         let visible = |idx: u8| {
             let rgb = self.device_clut[idx as usize];
             rgb[0] > 0x1111 || rgb[1] > 0x1111 || rgb[2] > 0x1111
         };
-        let sample = |x: u32, y: u32| -> bool {
+        let sample = |x: u32, y: u32| -> Option<u8> {
             if x >= width || y >= height {
-                return false;
+                return None;
             }
-            visible(bus.read_byte(base + y * row_bytes + x))
+            Some(bus.read_byte(base + y * row_bytes + x))
         };
 
         let mut visible_samples = 0u32;
+        let mut sampled_indices = [false; 256];
         for (x, y) in [
             (0, 0),
             (width - 1, 0),
@@ -2857,8 +3025,11 @@ impl super::TrapDispatcher {
             (width - 1, height - 1),
             (width / 2, height / 2),
         ] {
-            if sample(x, y) {
-                visible_samples += 1;
+            if let Some(index) = sample(x, y) {
+                sampled_indices[index as usize] = true;
+                if visible(index) {
+                    visible_samples += 1;
+                }
             }
         }
 
@@ -2868,14 +3039,20 @@ impl super::TrapDispatcher {
         while y < height {
             let mut x = step_x / 2;
             while x < width {
-                if sample(x, y) {
-                    visible_samples += 1;
+                if let Some(index) = sample(x, y) {
+                    sampled_indices[index as usize] = true;
+                    if visible(index) {
+                        visible_samples += 1;
+                    }
                 }
                 x += step_x;
             }
             y += step_y;
         }
-        visible_samples
+        (
+            visible_samples,
+            sampled_indices.into_iter().filter(|present| *present).count() as u32,
+        )
     }
 
     fn screen_is_dark_for_manual_cport(
@@ -5381,6 +5558,7 @@ mod redraw_chrome_tests {
         disp.cport_ports.insert(manual_port);
 
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
         bus.write_byte(screen_base + 90 * 800 + 80, 0xAA);
 
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -5419,6 +5597,7 @@ mod redraw_chrome_tests {
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
         bus.write_byte(dst, 0xFF);
 
         disp.blit_large_manual_cport_to_screen(&mut bus);
@@ -5605,6 +5784,7 @@ mod redraw_chrome_tests {
 
         let dst = screen_base + 90 * 800 + 80;
         bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
         disp.blit_large_manual_cport_to_screen(&mut bus);
         assert_eq!(bus.read_byte(dst), 0x44);
 
@@ -5617,6 +5797,48 @@ mod redraw_chrome_tests {
             bus.read_byte(dst),
             0x66,
             "a manual CPort selected before a later CopyBits should keep presenting"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_releases_latched_manual_cport_after_direct_framebuffer_draw() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.device_clut[0] = [0, 0, 0];
+        bus.fill_bytes(screen_base, 800 * 600, 0);
+        bus.write_long(0x0824, screen_base);
+        install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+
+        let manual_port = bus.alloc(200);
+        let manual_base = bus.alloc(640 * 420);
+        install_8bpp_cgrafport_at(&mut bus, manual_port, manual_base, 640, 640, 420, 0);
+        disp.cport_ports.insert(manual_port);
+
+        let dst = screen_base + 90 * 800 + 80;
+        bus.fill_bytes(manual_base, 640 * 420, 0x44);
+        bus.write_byte(manual_base + 640 * 420 - 1, 0x55);
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+        assert_eq!(bus.read_byte(dst), 0x44);
+
+        for row in 0..420 {
+            bus.fill_bytes(dst + row * 800, 640, 0xAA);
+        }
+        bus.fill_bytes(manual_base, 640 * 420, 0x66);
+        disp.blit_large_manual_cport_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(dst),
+            0xAA,
+            "direct framebuffer rendering must remain authoritative over the fallback CPort"
+        );
+        assert_eq!(
+            disp.manual_cport_presented_port, 0,
+            "substantial direct framebuffer rendering should release the compatibility latch"
         );
     }
 }

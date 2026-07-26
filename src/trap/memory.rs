@@ -12,6 +12,10 @@ static TRACE_VIDEO_DRIVER: OnceLock<bool> = OnceLock::new();
 static TRACE_ENTROPY: OnceLock<bool> = OnceLock::new();
 static TRACE_VBL: OnceLock<bool> = OnceLock::new();
 
+/// `VBLQueue`, the 10-byte low-memory `QHdr` for the system VBL queue.
+/// Universal Interfaces 3.4 LowMem.h; Processes 1994, p. 4-28.
+const VBL_QUEUE_HEADER: u32 = 0x0160;
+
 fn trace_memory_enabled() -> bool {
     *TRACE_MEMORY.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MEMORY").is_some())
 }
@@ -293,15 +297,47 @@ fn memory_manager_trap_updates_dispatcher_ccr(is_tool: bool, trap_num: u16) -> b
 
 impl super::TrapDispatcher {
     fn sync_vbl_links(&mut self, bus: &mut MacMemoryBus) {
-        let len = self.vbl_tasks.len();
-        for index in 0..len {
+        if self.system_vbl_queue_anchor == 0 {
+            let anchor = bus.alloc_synthetic(14);
+            if anchor != 0 {
+                bus.write_word(anchor + 4, 1); // vType
+                self.system_vbl_queue_anchor = anchor;
+            }
+        }
+
+        for task in &self.vbl_tasks {
             let next = self
                 .vbl_tasks
-                .get(index + 1)
-                .map(|task| task.task_ptr)
+                .iter()
+                .skip_while(|candidate| candidate.task_ptr != task.task_ptr)
+                .skip(1)
+                .find(|candidate| candidate.slot == task.slot)
+                .map(|candidate| candidate.task_ptr)
                 .unwrap_or(0);
-            bus.write_long(self.vbl_tasks[index].task_ptr, next);
+            bus.write_long(task.task_ptr, next);
         }
+
+        let mut system_tasks = self
+            .vbl_tasks
+            .iter()
+            .filter(|task| task.slot.is_none())
+            .map(|task| task.task_ptr);
+        let first_task = system_tasks.next().unwrap_or(0);
+        let anchor = self.system_vbl_queue_anchor;
+        if anchor != 0 {
+            bus.write_long(anchor, first_task);
+        }
+        let head = if anchor != 0 { anchor } else { first_task };
+        let tail = system_tasks.last().unwrap_or_else(|| {
+            if first_task != 0 {
+                first_task
+            } else {
+                anchor
+            }
+        });
+        // QHdr layout: qFlags WORD, qHead QElemPtr, qTail QElemPtr.
+        bus.write_long(VBL_QUEUE_HEADER + 2, head);
+        bus.write_long(VBL_QUEUE_HEADER + 6, tail);
     }
 
     fn trap_address_table_key(&self, trap_word: u16) -> u16 {
@@ -1045,23 +1081,29 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Debugger / DebugStr ($ABFF)
-            // Enters the system debugger if one is installed; otherwise returns immediately.
-            // On System 7 without MacsBug, this is a no-op.
+            // DebugStr ($ABFF)
+            // Enters the system debugger with a Pascal-string message if one
+            // is installed; otherwise returns after consuming the argument.
             // Steel Fighters and similar mid-90s titles call this trap
             // many times in tight self-check loops, so the log line is
             // gated behind SYSTEMLESS_TRACE_DEBUGGER_TRAP=1 to avoid
             // drowning stderr when those games run.
-            // PROCEDURE Debugger;
-            // Inside Macintosh: Processes (1994), p. 7-9;
-            // Inside Macintosh: Memory (1992), p. 3-23
-            // Debugger / DebugStr ($ABFF): HLE no-op when no debugger is installed
+            // void DebugStr(ConstStr255Param debuggerMsg);
+            // Universal Interfaces 3.4 MacTypes.h; Inside Macintosh:
+            // Memory (1992), p. 3-23
+            // DebugStr ($ABFF): HLE no-op when no debugger is installed.
             (true, 0x3FF) => {
+                let sp = cpu.read_reg(Register::A7);
+                let debugger_msg = bus.read_long(sp);
                 if std::env::var_os("SYSTEMLESS_TRACE_DEBUGGER_TRAP").is_some() {
+                    let trap_site = cpu.read_reg(Register::PC).wrapping_sub(2);
+                    let message =
+                        String::from_utf8_lossy(&bus.read_pstring(debugger_msg)).into_owned();
                     eprintln!(
-                        "[TRAP] Debugger/DebugStr called - no debugger installed, continuing"
+                        "[TRAP] DebugStr @${trap_site:08X} (${debugger_msg:08X}, {message:?}) called - no debugger installed, continuing"
                     );
                 }
+                cpu.write_reg(Register::A7, sp.wrapping_add(4));
                 Ok(())
             }
 
@@ -1580,7 +1622,7 @@ impl super::TrapDispatcher {
                 let ptr = cpu.read_reg(Register::A0);
                 let new_size = cpu.read_reg(Register::D0);
                 if ptr == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
+                    write_memory_result(cpu, bus, NIL_HANDLE_ERR);
                     return Some(Ok(()));
                 }
                 let old_size = bus.get_alloc_size(ptr).unwrap_or(0);
@@ -1595,13 +1637,13 @@ impl super::TrapDispatcher {
                         bus.fill_zeros(ptr.wrapping_add(new_size), old_size - new_size);
                     }
                     bus.set_alloc_size(ptr, new_size);
-                    cpu.write_reg(Register::D0, 0); // noErr
+                    write_memory_result(cpu, bus, NO_ERR);
                     return Some(Ok(()));
                 }
                 // Can't grow beyond aligned capacity without moving —
                 // spec requires memFullErr rather than silently
                 // moving the pointer.
-                cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                write_memory_result(cpu, bus, MEM_FULL_ERR);
                 Ok(())
             }
 
@@ -5820,6 +5862,56 @@ mod tests {
             0,
             "single-task queue link should terminate at NIL"
         );
+        assert_eq!(
+            bus.read_long(super::VBL_QUEUE_HEADER + 2),
+            dispatcher.system_vbl_queue_anchor,
+            "VInstall should keep the system-owned queue anchor at the head"
+        );
+        assert_eq!(
+            bus.read_long(dispatcher.system_vbl_queue_anchor),
+            task_ptr,
+            "the system-owned queue anchor should link to the application task"
+        );
+        assert_eq!(
+            bus.read_long(super::VBL_QUEUE_HEADER + 6),
+            task_ptr,
+            "VInstall should publish the system queue tail in low memory"
+        );
+    }
+
+    #[test]
+    fn vinstall_and_vremove_keep_low_memory_queue_header_and_links_coherent() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let first = bus.alloc(14);
+        let second = bus.alloc(14);
+        for task_ptr in [first, second] {
+            bus.write_word(task_ptr + 4, 1);
+            bus.write_long(task_ptr + 6, 0x1234_5678);
+            bus.write_word(task_ptr + 10, 2);
+            cpu.write_reg(Register::A0, task_ptr);
+            dispatcher
+                .dispatch_memory(false, 0x33, &mut cpu, &mut bus)
+                .expect("VInstall should be handled")
+                .expect("VInstall should return");
+        }
+
+        let anchor = dispatcher.system_vbl_queue_anchor;
+        assert_ne!(anchor, 0);
+        assert_eq!(bus.read_long(super::VBL_QUEUE_HEADER + 2), anchor);
+        assert_eq!(bus.read_long(super::VBL_QUEUE_HEADER + 6), second);
+        assert_eq!(bus.read_long(anchor), first);
+        assert_eq!(bus.read_long(first), second);
+        assert_eq!(bus.read_long(second), 0);
+
+        cpu.write_reg(Register::A0, first);
+        dispatcher
+            .dispatch_memory(false, 0x34, &mut cpu, &mut bus)
+            .expect("VRemove should be handled")
+            .expect("VRemove should return");
+        assert_eq!(bus.read_long(super::VBL_QUEUE_HEADER + 2), anchor);
+        assert_eq!(bus.read_long(super::VBL_QUEUE_HEADER + 6), second);
+        assert_eq!(bus.read_long(anchor), second);
+        assert_eq!(bus.read_long(second), 0);
     }
 
     #[test]
@@ -8868,6 +8960,11 @@ mod tests {
             .unwrap();
         assert_eq!(cpu.read_reg(Register::D0) as i32, 0, "noErr expected");
         assert_eq!(
+            bus.read_word(addr::MEM_ERR),
+            0,
+            "successful SetPtrSize must clear MemErr"
+        );
+        assert_eq!(
             cpu.read_reg(Register::A0),
             original_ptr,
             "SetPtrSize must not move the pointer (IM:Memory 1992 p.2-44)"
@@ -8935,6 +9032,11 @@ mod tests {
             cpu.read_reg(Register::D0) as i32,
             -108,
             "SetPtrSize beyond aligned capacity must return memFullErr (-108)"
+        );
+        assert_eq!(
+            bus.read_word(addr::MEM_ERR) as i16,
+            -108,
+            "failed SetPtrSize must publish memFullErr through MemErr"
         );
         assert_eq!(
             cpu.read_reg(Register::A0),
@@ -11293,62 +11395,21 @@ mod tests {
     // ==================== Toolbox Traps (is_tool=true) ====================
 
     #[test]
-    fn debugger_trap_is_parameterless_and_preserves_stack_pointer() {
-        // Inside Macintosh: Processes (1994), p. 7-9 and Inside Macintosh:
-        // Memory (1992), p. 3-23 describe _Debugger as a trap-driven debugger
-        // entry point; Systemless models it as a parameterless call frame.
+    fn debugstr_consumes_message_pointer_and_preserves_registers() {
+        // Universal Interfaces 3.4 MacTypes.h declares
+        // DebugStr(ConstStr255Param) as ONEWORDINLINE($ABFF).
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
-        let result = dispatcher.dispatch_memory(true, 0x3FF, &mut cpu, &mut bus);
-        assert!(result.is_some(), "Debugger should be handled");
-        assert!(result.unwrap().is_ok(), "Debugger should return");
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "_Debugger should preserve A7 (no stack arguments)"
-        );
-    }
-
-    #[test]
-    fn debugger_without_installed_debugger_returns_to_caller() {
-        // On a stock System 7/BasiliskII setup without MacsBug installed,
-        // _Debugger returns immediately to the caller.
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_long(sp_before, 0x0012_3400);
         cpu.write_reg(Register::D0, 0x1234_5678);
         cpu.write_reg(Register::A0, 0x00AA_5500);
-        let result = dispatcher.dispatch_memory(true, 0x3FF, &mut cpu, &mut bus);
-        assert!(result.is_some(), "Debugger should be handled");
-        assert!(result.unwrap().is_ok(), "Debugger should return to caller");
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0x1234_5678,
-            "_Debugger no-op path should preserve D0"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A0),
-            0x00AA_5500,
-            "_Debugger no-op path should preserve A0"
-        );
-    }
-
-    #[test]
-    fn debugstr_trap_is_parameterless_and_preserves_stack_pointer() {
-        // Inside Macintosh: Processes (1994), p. 7-9 and Inside Macintosh:
-        // Memory (1992), p. 3-23 describe the debugger-entry trap entry
-        // point. Systemless's no-debugger HLE path should return without
-        // consuming stack space or perturbing scratch registers.
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        cpu.write_reg(Register::D0, 0x1234_5678);
-        cpu.write_reg(Register::A0, 0x00AA_5500);
-
         let result = dispatcher.dispatch_memory(true, 0x3FF, &mut cpu, &mut bus);
         assert!(result.is_some(), "DebugStr should be handled");
         assert!(result.unwrap().is_ok(), "DebugStr should return");
         assert_eq!(
             cpu.read_reg(Register::A7),
-            sp_before,
-            "_DebugStr should preserve A7 (no stack arguments)"
+            sp_before + 4,
+            "_DebugStr should consume its Pascal-string pointer"
         );
         assert_eq!(
             cpu.read_reg(Register::D0),
@@ -11360,6 +11421,21 @@ mod tests {
             0x00AA_5500,
             "_DebugStr no-op path should preserve A0"
         );
+    }
+
+    #[test]
+    fn repeated_debugstr_calls_consume_one_message_pointer_each() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let sp_before = cpu.read_reg(Register::A7);
+        for index in 0..5 {
+            let sp = cpu.read_reg(Register::A7);
+            bus.write_long(sp, 0x0012_3400 + index);
+            dispatcher
+                .dispatch_memory(true, 0x3FF, &mut cpu, &mut bus)
+                .expect("DebugStr should be handled")
+                .expect("DebugStr should return");
+        }
+        assert_eq!(cpu.read_reg(Register::A7), sp_before + 20);
     }
 
     #[test]

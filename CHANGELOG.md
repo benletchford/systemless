@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/benletchford/systemless/compare/v0.4.2...v0.5.0) (2026-07-26)
+
+
+### Features
+
+* document Homebrew installation ([be7742f](https://github.com/benletchford/systemless/commit/be7742f030dc63289b84141c328fef3d8f1aacdc))
+
+
+### Bug Fixes
+
+* decode menu titles and item text as Mac Roman instead of UTF-8 ([b719dc4](https://github.com/benletchford/systemless/commit/b719dc4112cdae50475b91c353e6095f269653f4))
+* draw dimmed menu items, dividers and title metrics the way System 7.5.3 does ([0230216](https://github.com/benletchford/systemless/commit/0230216bfe16c80760b56a658a90131722285a55))
+* preserve direct framebuffer output after pointer resize failures ([4ce0903](https://github.com/benletchford/systemless/commit/4ce090384ac148cc00dcf8a48be0338b62719a8d))
+* preserve VBL queues and Color QuickDraw indices for direct-drawing games ([be22899](https://github.com/benletchford/systemless/commit/be228991c3064444ccc686b849ce7ef093223dea))
+
 ## [0.4.2](https://github.com/benletchford/systemless/compare/v0.4.1...v0.4.2) (2026-07-26)
 
 
