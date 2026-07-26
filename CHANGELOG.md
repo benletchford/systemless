@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.0](https://github.com/benletchford/systemless/compare/v0.5.0...v0.6.0) (2026-07-26)
+
+
+### Features
+
+* **macos:** mirror guest menus in the menu bar ([c27d671](https://github.com/benletchford/systemless/commit/c27d6716afb4d6981629d980620bcab38b62f918))
+
+
+### Bug Fixes
+
+* **gui:** derive viewports from guest-drawn frames ([9ab5281](https://github.com/benletchford/systemless/commit/9ab528128b5d5fb91f7e7522aa34bf54cff19694))
+* **quickdraw:** frame complex regions as outlines ([67d69dd](https://github.com/benletchford/systemless/commit/67d69dd8725424767948d3a370b6f985687bdee5))
+* **quickdraw:** honor application bitmap fonts and face widths ([cbd7f67](https://github.com/benletchford/systemless/commit/cbd7f67f1e443f18361e70ef6672830218d2606a))
+* **quickdraw:** implement SetPortPix for color ports ([d704cc5](https://github.com/benletchford/systemless/commit/d704cc532b526b0b59ceeee44191decd89337b78))
+* **quickdraw:** preserve destinations in colored OR modes ([7b0dde1](https://github.com/benletchford/systemless/commit/7b0dde1b8fdfa2aaa63bf0d9365890449019e048))
+* **quickdraw:** preserve polygon boundaries in regions ([00026af](https://github.com/benletchford/systemless/commit/00026afbe257d78ea1aa6793fe628dbafeafe49d))
+
+
+### Performance Improvements
+
+* **macos:** stage only visible guest framebuffer rows ([ce355f9](https://github.com/benletchford/systemless/commit/ce355f9f69045444c5a0edd494aad55033c832fe))
+* **runner:** fast-forward signed TickCount waits ([c42dbb3](https://github.com/benletchford/systemless/commit/c42dbb368787ecbab1a5674b3fa6701509b7f3f9))
+
 ## [0.5.0](https://github.com/benletchford/systemless/compare/v0.4.2...v0.5.0) (2026-07-26)
 
 
