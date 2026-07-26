@@ -4207,17 +4207,19 @@ impl FixtureRunner {
             return;
         }
 
-        // Collect tasks that need to fire (avoid borrow issues)
-        let mut to_fire: Vec<(u32, u32)> = Vec::new(); // (task_ptr, tm_addr)
-        for task in &mut self.dispatcher.timer_tasks {
-            if task.active && current_tick >= task.fire_at_tick {
-                to_fire.push((task.task_ptr, task.tm_addr));
-                task.active = false; // Mark as fired; callback may re-prime
-            }
-        }
-
         // Fire at most one task per tick to avoid deep nesting
-        if let Some((task_ptr, tm_addr)) = to_fire.into_iter().next() {
+        if let Some(task) = self
+            .dispatcher
+            .timer_tasks
+            .iter_mut()
+            .find(|task| task.active && current_tick >= task.fire_at_tick)
+        {
+            let task_ptr = task.task_ptr;
+            let tm_addr = task.tm_addr;
+            // Mark only the task being delivered as fired. Other tasks that
+            // expire on the same tick must remain active for a later interrupt.
+            task.active = false;
+
             if tm_addr == 0 {
                 return;
             }
@@ -7659,6 +7661,38 @@ mod tests {
         assert!(
             runner.dispatcher.timer_tasks[0].active,
             "the next due timer should remain queued until foreground code gets a slice"
+        );
+    }
+
+    #[test]
+    fn simultaneous_timer_callbacks_keep_undelivered_tasks_active() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.dispatcher.timer_tasks.extend([
+            TimerTask {
+                task_ptr: 0x0039_38C8,
+                tm_addr: 0x0002_0000,
+                active: true,
+                fire_at_tick: 10,
+            },
+            TimerTask {
+                task_ptr: 0x0039_3900,
+                tm_addr: 0x0002_1000,
+                active: true,
+                fire_at_tick: 10,
+            },
+        ]);
+
+        runner.fire_timer_tasks(10);
+
+        assert!(!runner.dispatcher.timer_tasks[0].active);
+        assert!(
+            runner.dispatcher.timer_tasks[1].active,
+            "a second task due on the same tick must remain queued"
         );
     }
 
