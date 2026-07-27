@@ -11,8 +11,9 @@ use std::sync::OnceLock;
 
 use super::dispatch::{
     AeCoercionHandler, AeDescriptor, AeObjectAccessor, AePrivateHashTable, AeResolveLevel,
-    AeResolveState, DialogItem, MovieState, StandardFileGetEntry, StandardFileGetTrackingState,
-    StandardFilePutTrackingState, SyntheticAppleEvent,
+    AeResolveState, CooperativeThread, DialogItem, MovieState, StandardFileGetEntry,
+    StandardFileGetTrackingState, StandardFilePutTrackingState, SyntheticAppleEvent,
+    DEFAULT_COOPERATIVE_THREAD_STACK_SIZE,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
@@ -23,6 +24,7 @@ static TRACE_TITLE_DIAG: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
 static TRACE_AE: OnceLock<bool> = OnceLock::new();
 static TRACE_GETKEYS_NONZERO: OnceLock<bool> = OnceLock::new();
+static TRACE_THREADS: OnceLock<bool> = OnceLock::new();
 static FORCE_BUTTON_TRUE_AT_PC: OnceLock<Option<u32>> = OnceLock::new();
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -58,6 +60,107 @@ const AE_KEY_MARK_PROC: u32 = u32::from_be_bytes(*b"mark");
 const AE_KEY_ADJUST_MARKS_PROC: u32 = u32::from_be_bytes(*b"adjm");
 const AE_KEY_GET_ERR_DESC_PROC: u32 = u32::from_be_bytes(*b"indc");
 const QUICKTIME_INVALID_MOVIE: i16 = -2010;
+
+fn scan_sane_decimal(
+    bus: &mut MacMemoryBus,
+    bytes: &[u8],
+    index_ptr: u32,
+    decimal_ptr: u32,
+    valid_prefix_ptr: u32,
+) {
+    let start = usize::from(bus.read_word(index_ptr)).min(bytes.len());
+    let mut cursor = start;
+    let mut negative = false;
+    if let Some(sign) = bytes.get(cursor) {
+        if *sign == b'+' || *sign == b'-' {
+            negative = *sign == b'-';
+            cursor += 1;
+        }
+    }
+
+    let mut digits = Vec::new();
+    let mut fraction_digits = 0i32;
+    let mut saw_digit = false;
+    while let Some(ch) = bytes.get(cursor) {
+        if ch.is_ascii_digit() {
+            digits.push(*ch);
+            saw_digit = true;
+            cursor += 1;
+        } else {
+            break;
+        }
+    }
+    if bytes.get(cursor) == Some(&b'.') {
+        cursor += 1;
+        while let Some(ch) = bytes.get(cursor) {
+            if ch.is_ascii_digit() {
+                digits.push(*ch);
+                fraction_digits += 1;
+                saw_digit = true;
+                cursor += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let exponent_start = cursor;
+    let mut explicit_exponent = 0i32;
+    if saw_digit && matches!(bytes.get(cursor), Some(b'e' | b'E')) {
+        cursor += 1;
+        let mut exponent_negative = false;
+        if let Some(sign) = bytes.get(cursor) {
+            if *sign == b'+' || *sign == b'-' {
+                exponent_negative = *sign == b'-';
+                cursor += 1;
+            }
+        }
+        let exponent_digits_start = cursor;
+        while let Some(ch) = bytes.get(cursor) {
+            if ch.is_ascii_digit() {
+                explicit_exponent = explicit_exponent
+                    .saturating_mul(10)
+                    .saturating_add(i32::from(*ch - b'0'));
+                cursor += 1;
+            } else {
+                break;
+            }
+        }
+        if cursor == exponent_digits_start {
+            cursor = exponent_start;
+            explicit_exponent = 0;
+        } else if exponent_negative {
+            explicit_exponent = -explicit_exponent;
+        }
+    }
+
+    if saw_digit {
+        let first_nonzero = digits.iter().position(|digit| *digit != b'0');
+        let significant = first_nonzero
+            .map(|offset| &digits[offset..])
+            .unwrap_or(&b"0"[..]);
+        let significant_len = significant.len().min(20);
+        let exponent = explicit_exponent.saturating_sub(fraction_digits);
+
+        bus.write_byte(decimal_ptr, u8::from(negative));
+        bus.write_byte(decimal_ptr + 1, 0);
+        bus.write_word(
+            decimal_ptr + 2,
+            exponent.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16,
+        );
+        bus.write_byte(decimal_ptr + 4, significant_len as u8);
+        for index in 0..20u32 {
+            bus.write_byte(
+                decimal_ptr + 5 + index,
+                significant.get(index as usize).copied().unwrap_or(0),
+            );
+        }
+        bus.write_byte(decimal_ptr + 25, 0);
+        bus.write_word(index_ptr, cursor as u16);
+    }
+    let valid_prefix = saw_digit && cursor == bytes.len();
+    bus.write_word(valid_prefix_ptr, if valid_prefix { 0xFFFF } else { 0 });
+}
 
 fn standard_file_cancel_reply(bus: &mut MacMemoryBus, reply_ptr: u32) {
     if reply_ptr != 0 {
@@ -292,20 +395,18 @@ fn scan_quicktime_atoms(
                     let (parsed_time_scale, parsed_duration) = if version == 0 {
                         (
                             read_quicktime_u32(payload, 12),
-                            read_quicktime_u32(payload, 16)
-                                .map(|value| value.min(i32::MAX as u32)),
+                            read_quicktime_u32(payload, 16).map(|value| value.min(i32::MAX as u32)),
                         )
                     } else if payload.len() >= 32 {
                         (
                             read_quicktime_u32(payload, 20),
-                            read_quicktime_u32(payload, 28)
-                                .map(|value| value.min(i32::MAX as u32)),
+                            read_quicktime_u32(payload, 28).map(|value| value.min(i32::MAX as u32)),
                         )
                     } else {
                         (None, None)
                     };
-                    if let Some(value) = parsed_time_scale
-                        .filter(|value| *value > 0 && *value <= i32::MAX as u32)
+                    if let Some(value) =
+                        parsed_time_scale.filter(|value| *value > 0 && *value <= i32::MAX as u32)
                     {
                         *time_scale = Some(value as i32);
                     }
@@ -342,13 +443,7 @@ fn quicktime_movie_metadata(data: &[u8]) -> ((i16, i16, i16, i16), i32, i32) {
     let mut bounds = None;
     let mut duration = None;
     let mut time_scale = None;
-    scan_quicktime_atoms(
-        data,
-        0,
-        &mut bounds,
-        &mut duration,
-        &mut time_scale,
-    );
+    scan_quicktime_atoms(data, 0, &mut bounds, &mut duration, &mut time_scale);
     (
         bounds.unwrap_or((0, 0, 120, 160)),
         duration.unwrap_or(1),
@@ -560,6 +655,10 @@ fn trace_getkeys_nonzero_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_GETKEYS_NONZERO").is_some())
 }
 
+fn trace_threads_enabled() -> bool {
+    *TRACE_THREADS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_THREADS").is_some())
+}
+
 fn format_fourcc(v: u32) -> String {
     v.to_be_bytes()
         .iter()
@@ -623,6 +722,311 @@ impl super::TrapDispatcher {
     const ALIAS_KIND_FOLDER: u16 = 1;
     const ALIAS_EXTRA_PARENT_DIR_NAME: i16 = 0;
     const ALIAS_EXTRA_END: i16 = -1;
+
+    /// `kApplicationThreadID` from Threads.h — the thread the process
+    /// starts on, which owns the process stack rather than a pooled one.
+    const APPLICATION_THREAD_ID: u32 = 2;
+    const THREAD_STATE_READY: u16 = 0;
+    const THREAD_STATE_STOPPED: u16 = 1;
+    const THREAD_STATE_RUNNING: u16 = 2;
+    /// `threadTooManyReqsErr` .. `threadProtocolErr` from Errors.h.
+    const THREAD_NOT_FOUND_ERR: i16 = -617;
+    const THREAD_PROTOCOL_ERR: i16 = -619;
+
+    fn capture_cooperative_thread<C: CpuOps>(
+        cpu: &C,
+        state: u16,
+        result_destination: u32,
+    ) -> CooperativeThread {
+        let d_regs = [
+            cpu.read_reg(Register::D0),
+            cpu.read_reg(Register::D1),
+            cpu.read_reg(Register::D2),
+            cpu.read_reg(Register::D3),
+            cpu.read_reg(Register::D4),
+            cpu.read_reg(Register::D5),
+            cpu.read_reg(Register::D6),
+            cpu.read_reg(Register::D7),
+        ];
+        let a_regs = [
+            cpu.read_reg(Register::A0),
+            cpu.read_reg(Register::A1),
+            cpu.read_reg(Register::A2),
+            cpu.read_reg(Register::A3),
+            cpu.read_reg(Register::A4),
+            cpu.read_reg(Register::A5),
+            cpu.read_reg(Register::A6),
+            cpu.read_reg(Register::A7),
+        ];
+        CooperativeThread {
+            d_regs,
+            a_regs,
+            pc: cpu.read_reg(Register::PC),
+            ccr: cpu.get_ccr(),
+            state,
+            result_destination,
+            stack_base: 0,
+            stack_limit: 0,
+            switch_in: (0, 0),
+            switch_out: (0, 0),
+            terminator: (0, 0),
+        }
+    }
+
+    fn install_cooperative_thread<C: CpuOps>(cpu: &mut C, thread: &CooperativeThread) {
+        let d_registers = [
+            Register::D0,
+            Register::D1,
+            Register::D2,
+            Register::D3,
+            Register::D4,
+            Register::D5,
+            Register::D6,
+            Register::D7,
+        ];
+        let a_registers = [
+            Register::A0,
+            Register::A1,
+            Register::A2,
+            Register::A3,
+            Register::A4,
+            Register::A5,
+            Register::A6,
+            Register::A7,
+        ];
+        for (register, value) in d_registers.into_iter().zip(thread.d_regs) {
+            cpu.write_reg(register, value);
+        }
+        for (register, value) in a_registers.into_iter().zip(thread.a_regs) {
+            cpu.write_reg(register, value);
+        }
+        cpu.write_reg(Register::PC, thread.pc);
+        cpu.set_ccr(thread.ccr);
+    }
+
+    fn thread_return_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if self.thread_return_trampoline == 0 {
+            let trampoline = bus.alloc(8);
+            bus.write_word(trampoline, 0x303C);
+            bus.write_word(trampoline + 2, 0xFFFE);
+            bus.write_word(trampoline + 4, 0xABF2);
+            bus.write_word(trampoline + 6, 0x4E75);
+            self.thread_return_trampoline = trampoline;
+        }
+        self.thread_return_trampoline
+    }
+
+    /// Resolve a guest-supplied ThreadID. `kCurrentThreadID` (1) and 0
+    /// both name the running thread, per Threads.h.
+    fn resolve_cooperative_thread_id(&self, thread_id: u32) -> u32 {
+        if thread_id == 0 || thread_id == 1 {
+            self.current_cooperative_thread
+        } else {
+            thread_id
+        }
+    }
+
+    /// Materialise the record for the application thread the process
+    /// booted on. It exists implicitly from launch, so `GetThreadState`,
+    /// `SetThreadSwitcher` and friends must find it without a prior
+    /// `NewThread`.
+    fn cooperative_thread_mut<C: CpuOps>(
+        &mut self,
+        cpu: &C,
+        thread_id: u32,
+    ) -> Option<&mut CooperativeThread> {
+        if thread_id == Self::APPLICATION_THREAD_ID
+            && !self
+                .cooperative_threads
+                .contains_key(&Self::APPLICATION_THREAD_ID)
+        {
+            let running = self.current_cooperative_thread == Self::APPLICATION_THREAD_ID;
+            let state = if running {
+                Self::THREAD_STATE_RUNNING
+            } else {
+                Self::THREAD_STATE_READY
+            };
+            let thread = Self::capture_cooperative_thread(cpu, state, 0);
+            self.cooperative_threads
+                .insert(Self::APPLICATION_THREAD_ID, thread);
+        }
+        self.cooperative_threads.get_mut(&thread_id)
+    }
+
+    /// Save the running thread's registers back into its record without
+    /// changing its scheduling state.
+    fn save_current_cooperative_thread<C: CpuOps>(&mut self, cpu: &C) {
+        let current_id = self.current_cooperative_thread;
+        let saved = Self::capture_cooperative_thread(cpu, Self::THREAD_STATE_RUNNING, 0);
+        match self.cooperative_thread_mut(cpu, current_id) {
+            Some(thread) => {
+                thread.d_regs = saved.d_regs;
+                thread.a_regs = saved.a_regs;
+                thread.pc = saved.pc;
+                thread.ccr = saved.ccr;
+            }
+            None => {
+                self.cooperative_threads.insert(current_id, saved);
+            }
+        }
+    }
+
+    /// Pick the next ready thread. `suggested_thread` is honoured when it
+    /// names a ready thread, matching `YieldToThread`; otherwise the queue
+    /// runs round-robin, which is what the stock 68K scheduler does.
+    fn next_ready_cooperative_thread(&mut self, suggested_thread: u32) -> Option<u32> {
+        let current_id = self.current_cooperative_thread;
+        if suggested_thread > 1 && suggested_thread != current_id {
+            if let Some(position) = self
+                .cooperative_thread_ready
+                .iter()
+                .position(|thread_id| *thread_id == suggested_thread)
+            {
+                return self.cooperative_thread_ready.remove(position);
+            }
+        }
+        for _ in 0..self.cooperative_thread_ready.len() {
+            let candidate = self.cooperative_thread_ready.pop_front()?;
+            if candidate == current_id {
+                self.cooperative_thread_ready.push_back(candidate);
+                continue;
+            }
+            let ready = self
+                .cooperative_threads
+                .get(&candidate)
+                .is_some_and(|thread| thread.state == Self::THREAD_STATE_READY);
+            if ready {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Install `next_id` as the running thread. The caller has already
+    /// saved and re-queued the outgoing context.
+    fn switch_to_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, next_id: u32) -> bool {
+        let Some(mut next) = self.cooperative_threads.get(&next_id).cloned() else {
+            return false;
+        };
+        if next.state != Self::THREAD_STATE_READY {
+            self.cooperative_thread_ready.push_back(next_id);
+            return false;
+        }
+        next.state = Self::THREAD_STATE_RUNNING;
+        Self::install_cooperative_thread(cpu, &next);
+        self.cooperative_threads.insert(next_id, next);
+        self.current_cooperative_thread = next_id;
+        true
+    }
+
+    /// `YieldToThread` / `YieldToAnyThread`. A yield inside a critical
+    /// section is a no-op: Threads.h documents `ThreadBeginCritical` as
+    /// suppressing scheduling until the matching end.
+    fn yield_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, suggested_thread: u32) {
+        if self.thread_critical_nesting != 0 || self.cooperative_thread_ready.is_empty() {
+            return;
+        }
+
+        let current_id = self.current_cooperative_thread;
+        self.save_current_cooperative_thread(cpu);
+        if let Some(thread) = self.cooperative_threads.get_mut(&current_id) {
+            if thread.state == Self::THREAD_STATE_RUNNING {
+                thread.state = Self::THREAD_STATE_READY;
+            }
+        }
+        let requeue = self
+            .cooperative_threads
+            .get(&current_id)
+            .is_some_and(|thread| thread.state == Self::THREAD_STATE_READY)
+            && !self.cooperative_thread_ready.contains(&current_id);
+        if requeue {
+            self.cooperative_thread_ready.push_back(current_id);
+        }
+
+        let Some(next_id) = self.next_ready_cooperative_thread(suggested_thread) else {
+            if let Some(thread) = self.cooperative_threads.get_mut(&current_id) {
+                thread.state = Self::THREAD_STATE_RUNNING;
+            }
+            self.cooperative_thread_ready
+                .retain(|thread_id| *thread_id != current_id);
+            return;
+        };
+        if !self.switch_to_cooperative_thread(cpu, next_id) {
+            if let Some(thread) = self.cooperative_threads.get_mut(&current_id) {
+                thread.state = Self::THREAD_STATE_RUNNING;
+            }
+            self.cooperative_thread_ready
+                .retain(|thread_id| *thread_id != current_id);
+        }
+    }
+
+    /// Retire `thread_id`, storing its entry-proc result and returning its
+    /// stack to the pool so `NewThread` can recycle it.
+    fn retire_cooperative_thread(&mut self, thread_id: u32, result: u32, bus: &mut MacMemoryBus) {
+        if let Some(finished) = self.cooperative_threads.remove(&thread_id) {
+            if finished.result_destination != 0 {
+                bus.write_long(finished.result_destination, result);
+            }
+            if finished.stack_base != 0 {
+                self.cooperative_thread_pool
+                    .push((finished.stack_base, finished.stack_limit));
+            }
+        }
+        self.cooperative_thread_ready
+            .retain(|queued| *queued != thread_id);
+    }
+
+    /// Entered through the return trampoline when a `ThreadEntryProc`
+    /// returns. The Pascal result is in D0 for a pointer-returning
+    /// function under MPW's 68K ABI.
+    fn finish_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        let finished_id = self.current_cooperative_thread;
+        let result = cpu.read_reg(Register::D0);
+        self.retire_cooperative_thread(finished_id, result, bus);
+
+        // The finished thread has no context left to return to, so a
+        // successor must be installed. Fall back to the application
+        // thread, which always has a live saved context.
+        let next = self
+            .next_ready_cooperative_thread(0)
+            .filter(|next_id| *next_id != finished_id);
+        if let Some(next_id) = next {
+            if self.switch_to_cooperative_thread(cpu, next_id) {
+                return;
+            }
+        }
+        if let Some(mut application) = self
+            .cooperative_threads
+            .get(&Self::APPLICATION_THREAD_ID)
+            .cloned()
+        {
+            self.cooperative_thread_ready
+                .retain(|queued| *queued != Self::APPLICATION_THREAD_ID);
+            application.state = Self::THREAD_STATE_RUNNING;
+            Self::install_cooperative_thread(cpu, &application);
+            self.cooperative_threads
+                .insert(Self::APPLICATION_THREAD_ID, application);
+            self.current_cooperative_thread = Self::APPLICATION_THREAD_ID;
+        }
+    }
+
+    /// Claim a pooled stack of at least `stack_size` bytes, or allocate a
+    /// fresh one. Returns `(base, limit)`.
+    fn acquire_cooperative_thread_stack(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        stack_size: u32,
+    ) -> (u32, u32) {
+        if let Some(position) = self
+            .cooperative_thread_pool
+            .iter()
+            .position(|(base, limit)| limit.saturating_sub(*base) >= stack_size)
+        {
+            return self.cooperative_thread_pool.swap_remove(position);
+        }
+        let base = bus.alloc(stack_size);
+        (base, base.wrapping_add(stack_size))
+    }
 
     fn apple_event_handler_for(&self, event_class: u32, event_id: u32) -> Option<(u32, u32)> {
         // Inside Macintosh Volume VI, 6-28 to 6-29: AEInstallEventHandler
@@ -3517,8 +3921,7 @@ impl super::TrapDispatcher {
                 state.last_service_tick = Some(now);
                 // Guest ticks run at 60 Hz; the movie time scale is units per
                 // second. rate is a Fixed (16.16) multiplier on real time.
-                let units_per_tick =
-                    (state.time_scale as i64 * state.rate as i64) / (60 * 65536);
+                let units_per_tick = (state.time_scale as i64 * state.rate as i64) / (60 * 65536);
                 let advance = units_per_tick.saturating_mul(elapsed_ticks as i64);
                 let mut new_time = state.current_time as i64 + advance;
                 let mut finished = false;
@@ -3662,12 +4065,7 @@ impl super::TrapDispatcher {
         if super::dispatch::trace_quicktime_enabled() {
             eprintln!(
                 "[QUICKTIME] render movie=${:08X} sample={}/{} time={} -> port=${:08X} box={:?}",
-                movie,
-                target,
-                media_time,
-                movie_time,
-                port,
-                box_rect
+                movie, target, media_time, movie_time, port, box_rect
             );
         }
 
@@ -5319,6 +5717,18 @@ impl super::TrapDispatcher {
 
                 if selector == super::dispatch::LOADSEG_GETRESOURCE_SENTINEL {
                     return Some(self.resume_loadseg_after_getresource(bus, cpu));
+                }
+
+                // Synthetic 'MDEF' 0 selector. Every `MenuInfo.menuProc`
+                // points at a stub holding `MOVE.W #$FEFC, D0; _Pack8;
+                // RTD #18`, so an application that calls the menu
+                // definition procedure directly — which Inside Macintosh
+                // Volume I, I-352 entitles it to do — lands here instead of
+                // dereferencing a NIL handle. The stub's own `RTD` pops the
+                // Pascal frame once this returns.
+                if selector == 0xFEFC {
+                    self.menu_def_proc_message(bus, sp);
+                    return Some(Ok(()));
                 }
 
                 // Trampoline selector — when an AE handler we dispatched
@@ -11348,100 +11758,29 @@ impl super::TrapDispatcher {
                         let valid_prefix_ptr = bus.read_long(sp + 10);
                         let string_ptr = bus.read_long(sp + 14);
                         let bytes = bus.read_pstring(string_ptr);
-                        let start = usize::from(bus.read_word(index_ptr)).min(bytes.len());
-
-                        let mut cursor = start;
-                        let mut negative = false;
-                        if let Some(sign) = bytes.get(cursor) {
-                            if *sign == b'+' || *sign == b'-' {
-                                negative = *sign == b'-';
-                                cursor += 1;
-                            }
-                        }
-
-                        let mut digits = Vec::new();
-                        let mut fraction_digits = 0i32;
-                        let mut saw_digit = false;
-                        while let Some(ch) = bytes.get(cursor) {
-                            if ch.is_ascii_digit() {
-                                digits.push(*ch);
-                                saw_digit = true;
-                                cursor += 1;
-                            } else {
+                        scan_sane_decimal(bus, &bytes, index_ptr, decimal_ptr, valid_prefix_ptr);
+                        cpu.write_reg(Register::A7, sp + 18);
+                    }
+                    4 => {
+                        // FCSTR2DEC / CStr2Dec: scan a NUL-terminated C
+                        // string into a 68K SANE decimal record. Inside
+                        // Macintosh Volume IV, IV-69 and IV-307 identifies
+                        // selector 4. MPW 3.5's linked str2dec wrapper places:
+                        //   SP+2  validPrefix*, SP+6 decimal*, SP+10 index*,
+                        //   SP+14 C string*.
+                        let valid_prefix_ptr = bus.read_long(sp + 2);
+                        let decimal_ptr = bus.read_long(sp + 6);
+                        let index_ptr = bus.read_long(sp + 10);
+                        let string_ptr = bus.read_long(sp + 14);
+                        let mut bytes = Vec::new();
+                        for offset in 0..=u16::MAX as u32 {
+                            let byte = bus.read_byte(string_ptr.wrapping_add(offset));
+                            if byte == 0 {
                                 break;
                             }
+                            bytes.push(byte);
                         }
-                        if bytes.get(cursor) == Some(&b'.') {
-                            cursor += 1;
-                            while let Some(ch) = bytes.get(cursor) {
-                                if ch.is_ascii_digit() {
-                                    digits.push(*ch);
-                                    fraction_digits += 1;
-                                    saw_digit = true;
-                                    cursor += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-
-                        let exponent_start = cursor;
-                        let mut explicit_exponent = 0i32;
-                        if saw_digit && matches!(bytes.get(cursor), Some(b'e' | b'E')) {
-                            cursor += 1;
-                            let mut exponent_negative = false;
-                            if let Some(sign) = bytes.get(cursor) {
-                                if *sign == b'+' || *sign == b'-' {
-                                    exponent_negative = *sign == b'-';
-                                    cursor += 1;
-                                }
-                            }
-                            let exponent_digits_start = cursor;
-                            while let Some(ch) = bytes.get(cursor) {
-                                if ch.is_ascii_digit() {
-                                    explicit_exponent = explicit_exponent
-                                        .saturating_mul(10)
-                                        .saturating_add(i32::from(*ch - b'0'));
-                                    cursor += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                            if cursor == exponent_digits_start {
-                                cursor = exponent_start;
-                                explicit_exponent = 0;
-                            } else if exponent_negative {
-                                explicit_exponent = -explicit_exponent;
-                            }
-                        }
-
-                        if saw_digit {
-                            let first_nonzero =
-                                digits.iter().position(|digit| *digit != b'0');
-                            let significant = first_nonzero
-                                .map(|offset| &digits[offset..])
-                                .unwrap_or(&b"0"[..]);
-                            let significant_len = significant.len().min(20);
-                            let exponent = explicit_exponent.saturating_sub(fraction_digits);
-
-                            bus.write_byte(decimal_ptr, u8::from(negative));
-                            bus.write_byte(decimal_ptr + 1, 0);
-                            bus.write_word(
-                                decimal_ptr + 2,
-                                exponent.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16,
-                            );
-                            bus.write_byte(decimal_ptr + 4, significant_len as u8);
-                            for index in 0..20u32 {
-                                bus.write_byte(
-                                    decimal_ptr + 5 + index,
-                                    significant.get(index as usize).copied().unwrap_or(0),
-                                );
-                            }
-                            bus.write_byte(decimal_ptr + 25, 0);
-                            bus.write_word(index_ptr, cursor as u16);
-                        }
-                        let valid_prefix = saw_digit && cursor == bytes.len();
-                        bus.write_word(valid_prefix_ptr, if valid_prefix { 0xFFFF } else { 0 });
+                        scan_sane_decimal(bus, &bytes, index_ptr, decimal_ptr, valid_prefix_ptr);
                         cpu.write_reg(Register::A7, sp + 18);
                     }
                     _ => {
@@ -12803,10 +13142,7 @@ impl super::TrapDispatcher {
                             QUICKTIME_INVALID_MOVIE
                         };
                         if super::dispatch::trace_quicktime_enabled() {
-                            eprintln!(
-                                "[QUICKTIME] GetMovieBox movie=${:08X} -> {:?}",
-                                movie, rect
-                            );
+                            eprintln!("[QUICKTIME] GetMovieBox movie=${:08X} -> {:?}", movie, rect);
                         }
                         cpu.write_reg(Register::A7, sp + 8);
                         cpu.write_reg(Register::D0, err as u32);
@@ -14046,8 +14382,7 @@ impl super::TrapDispatcher {
                             bus.read_long(description)
                         };
                         let count = u32::from(
-                            component_type == 0
-                                || component_type == MOVIE_CONTROLLER_COMPONENT,
+                            component_type == 0 || component_type == MOVIE_CONTROLLER_COMPONENT,
                         );
                         bus.write_long(sp + 4, count);
                         cpu.write_reg(Register::A7, sp + 4);
@@ -14063,8 +14398,7 @@ impl super::TrapDispatcher {
                             bus.read_long(description)
                         };
                         let component = if previous == 0
-                            && (component_type == 0
-                                || component_type == MOVIE_CONTROLLER_COMPONENT)
+                            && (component_type == 0 || component_type == MOVIE_CONTROLLER_COMPONENT)
                         {
                             SYNTHETIC_MOVIE_CONTROLLER
                         } else {
@@ -14318,52 +14652,441 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // ThreadDispatch ($ABF2) — Thread Manager critical sections
-            // Inside Macintosh: Operating System Utilities 1994,
-            // Thread Manager chapter (pp. 69-70):
-            //   pascal OSErr ThreadBeginCritical(void);
-            //   pascal OSErr ThreadEndCritical(void);
-            // The public MPW glue dispatches those no-arg routines
-            // through `_ThreadDispatch` selectors $000B and $000C.
-            // MPW uses `#pragma parameter __D0` for the selector
-            // thunk, so the selector arrives in D0 and the stack is
-            // untouched.
+            // ThreadDispatch ($ABF2) — cooperative Thread Manager
+            // Inside Macintosh: Operating System Utilities 1994, p. 2448
+            // documents only the availability gate: Gestalt
+            // `gestaltThreadMgrAttr` ('thds') bit 0
+            // `gestaltThreadMgrPresent`. The routine selectors are defined
+            // by MPW Interfaces/CIncludes/Threads.h (Universal Interfaces
+            // 2.0a3, ETO #16, 11 November 1994), which declares each entry
+            // point as THREEWORDINLINE(0x303C, <selector>, 0xABF2):
+            //   CreateThreadPool             $0501
+            //   GetFreeThreadCount           $0402
+            //   NewThread                    $0E03
+            //   DisposeThread                $0504
+            //   YieldToThread                $0205
+            //   GetCurrentThread             $0206
+            //   GetThreadState               $0407
+            //   SetThreadState               $0508
+            //   SetThreadScheduler           $0209
+            //   SetThreadSwitcher            $070A
+            //   ThreadBeginCritical          $000B
+            //   ThreadEndCritical            $000C
+            //   SetDebuggerNotificationProcs $060D
+            //   GetThreadCurrentTaskRef      $020E
+            //   GetThreadStateGivenTaskRef   $060F
+            //   SetThreadReadyGivenTaskRef   $0410
+            //   SetThreadTerminator          $0611
+            //   SetThreadStateEndCritical    $0512
+            //   GetDefaultThreadStackSize    $0413
+            //   ThreadCurrentStackSpace      $0414
+            //   GetSpecificFreeThreadCount   $0615
+            // The selector's high byte is the argument size in stack words,
+            // so the Pascal frame is `(selector >> 8) * 2` argument bytes
+            // followed by the OSErr result slot.
             //
-            // HLE behaviour: selector $000B increments the dispatcher-
-            // wide critical-section nesting counter and returns noErr.
-            // Selector $000C decrements the counter when nonzero and
-            // returns noErr; when the counter is already zero it
-            // returns threadProtocolErr (-619). Unsupported selectors
-            // return paramErr (-50). The public `Threads.h` wrappers
-            // read the 16-bit OSErr from the caller's zero-arg result
-            // slot at SP, so we mirror the low word there as well as
-            // in D0.
+            // HLE behaviour: Systemless runs the guest on one host thread
+            // and switches cooperative contexts entirely inside this trap,
+            // so the whole caller-visible 68K register file can be banked
+            // without any host concurrency. `kCooperativeThread` is the only
+            // supported style — `kPreemptiveThread` is refused with
+            // paramErr, matching a 68K machine with no MP services.
             //
             // Regression coverage:
+            //   src/trap/toolbox.rs::tests::threaddispatch_newthread_creates_ready_cooperative_thread_and_consumes_mpw_frame
+            //   src/trap/toolbox.rs::tests::threaddispatch_yield_round_trips_between_two_cooperative_contexts
+            //   src/trap/toolbox.rs::tests::threaddispatch_get_and_set_thread_state_track_the_ready_queue
+            //   src/trap/toolbox.rs::tests::threaddispatch_switcher_and_terminator_are_recorded_per_thread
             //   src/trap/toolbox.rs::tests::threaddispatch_begin_and_end_critical_roundtrip
             //   src/trap/toolbox.rs::tests::threaddispatch_endcritical_underflow_returns_thread_protocol_err
             //   src/trap/toolbox.rs::tests::threaddispatch_unsupported_selector_returns_param_err
             (true, 0x3F2) => {
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
                 let sp = cpu.read_reg(Register::A7);
+                if trace_threads_enabled() {
+                    eprintln!(
+                        "[THREADS] selector=${:04X} pc=${:08X} sp=${:08X} args={:08X} {:08X} {:08X} {:08X}",
+                        selector,
+                        cpu.read_reg(Register::PC),
+                        sp,
+                        bus.read_long(sp),
+                        bus.read_long(sp + 4),
+                        bus.read_long(sp + 8),
+                        bus.read_long(sp + 12),
+                    );
+                }
+                // Threads.h option bits.
+                const K_NEW_SUSPEND: u32 = 1 << 0;
+                const K_PREEMPTIVE_THREAD: u32 = 1 << 1;
+
                 let result = match selector {
+                    // Private selector planted by the return trampoline that
+                    // every cooperative thread's stack is seeded with. It is
+                    // not a Threads.h entry point; it exists so a
+                    // ThreadEntryProc's RTS lands somewhere the HLE controls.
+                    0xFFFE => {
+                        self.finish_cooperative_thread(cpu, bus);
+                        return Some(Ok(()));
+                    }
+                    // CreateThreadPool(threadStyle, numToCreate, stackSize)
+                    0x0501 => {
+                        let stack_size = bus.read_long(sp);
+                        let count = bus.read_word(sp + 4) as i16;
+                        let thread_style = bus.read_long(sp + 6);
+                        if thread_style & K_PREEMPTIVE_THREAD != 0 {
+                            -50
+                        } else {
+                            let stack_size = if stack_size == 0 {
+                                self.cooperative_thread_stack_size
+                            } else {
+                                stack_size
+                            };
+                            for _ in 0..count.max(0) {
+                                let stack = self.acquire_cooperative_thread_stack(bus, stack_size);
+                                self.cooperative_thread_pool.push(stack);
+                            }
+                            0
+                        }
+                    }
+                    // GetFreeThreadCount(threadStyle, freeCount)
+                    0x0402 => {
+                        let free_count = bus.read_long(sp);
+                        let thread_style = bus.read_long(sp + 4);
+                        if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
+                            -50
+                        } else {
+                            bus.write_word(free_count, self.cooperative_thread_pool.len() as u16);
+                            0
+                        }
+                    }
+                    // NewThread(threadStyle, threadEntry, threadParam,
+                    //           stackSize, options, threadResult, threadMade)
+                    0x0E03 => {
+                        let thread_made = bus.read_long(sp);
+                        let result_destination = bus.read_long(sp + 4);
+                        let options = bus.read_long(sp + 8);
+                        let stack_size = bus.read_long(sp + 12);
+                        let thread_param = bus.read_long(sp + 16);
+                        let thread_entry = bus.read_long(sp + 20);
+                        let thread_style = bus.read_long(sp + 24);
+
+                        if thread_made == 0
+                            || thread_entry == 0
+                            || thread_style & K_PREEMPTIVE_THREAD != 0
+                        {
+                            if thread_made != 0 {
+                                bus.write_long(thread_made, 0);
+                            }
+                            -50
+                        } else {
+                            let thread_id = self.next_cooperative_thread_id;
+                            self.next_cooperative_thread_id =
+                                self.next_cooperative_thread_id.saturating_add(1);
+
+                            let stack_size = if stack_size == 0 {
+                                self.cooperative_thread_stack_size
+                            } else {
+                                stack_size
+                            };
+                            let (stack_base, stack_limit) =
+                                self.acquire_cooperative_thread_stack(bus, stack_size);
+
+                            // Seed the private stack as though the entry proc
+                            // had been called by the trampoline: return
+                            // address, then the single Pascal argument.
+                            let return_trampoline = self.thread_return_trampoline(bus);
+                            let entry_sp = stack_limit.wrapping_sub(8);
+                            bus.write_long(entry_sp, return_trampoline);
+                            bus.write_long(entry_sp + 4, thread_param);
+
+                            let state = if options & K_NEW_SUSPEND != 0 {
+                                Self::THREAD_STATE_STOPPED
+                            } else {
+                                Self::THREAD_STATE_READY
+                            };
+                            let mut thread =
+                                Self::capture_cooperative_thread(cpu, state, result_destination);
+                            thread.pc = thread_entry;
+                            thread.a_regs[7] = entry_sp;
+                            thread.stack_base = stack_base;
+                            thread.stack_limit = stack_limit;
+                            self.cooperative_threads.insert(thread_id, thread);
+                            if state == Self::THREAD_STATE_READY {
+                                self.cooperative_thread_ready.push_back(thread_id);
+                            }
+                            bus.write_long(thread_made, thread_id);
+                            0
+                        }
+                    }
+                    // DisposeThread(threadToDump, threadResult, recycleThread)
+                    0x0504 => {
+                        let _recycle = bus.read_word(sp) != 0;
+                        let thread_result = bus.read_long(sp + 2);
+                        let thread_to_dump =
+                            self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
+                        if !self.cooperative_threads.contains_key(&thread_to_dump)
+                            && thread_to_dump != Self::APPLICATION_THREAD_ID
+                        {
+                            Self::THREAD_NOT_FOUND_ERR
+                        } else if thread_to_dump == self.current_cooperative_thread {
+                            // Threads.h allows a thread to dispose of itself;
+                            // the call never returns to it.
+                            self.retire_cooperative_thread(thread_to_dump, thread_result, bus);
+                            self.finish_cooperative_thread(cpu, bus);
+                            return Some(Ok(()));
+                        } else {
+                            self.retire_cooperative_thread(thread_to_dump, thread_result, bus);
+                            0
+                        }
+                    }
+                    // YieldToThread(suggestedThread) — also the tail of
+                    // YieldToAnyThread, which pushes kNoThreadID first.
+                    0x0205 => {
+                        let suggested_thread = bus.read_long(sp);
+                        bus.write_word(sp + 4, 0);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, 0);
+                        self.yield_cooperative_thread(cpu, suggested_thread);
+                        return Some(Ok(()));
+                    }
+                    // GetCurrentThread(currentThreadID)
+                    0x0206 => {
+                        let current_thread = bus.read_long(sp);
+                        if current_thread == 0 {
+                            -50
+                        } else {
+                            bus.write_long(current_thread, self.current_cooperative_thread);
+                            0
+                        }
+                    }
+                    // GetThreadState(threadToGet, threadState)
+                    0x0407 => {
+                        let thread_state = bus.read_long(sp);
+                        let thread_to_get =
+                            self.resolve_cooperative_thread_id(bus.read_long(sp + 4));
+                        if thread_state == 0 {
+                            -50
+                        } else {
+                            match self.cooperative_thread_mut(cpu, thread_to_get) {
+                                Some(thread) => {
+                                    let state = thread.state;
+                                    bus.write_word(thread_state, state);
+                                    0
+                                }
+                                None => Self::THREAD_NOT_FOUND_ERR,
+                            }
+                        }
+                    }
+                    // SetThreadState(threadToSet, newState, suggestedThread)
+                    // and SetThreadStateEndCritical, which additionally
+                    // performs the ThreadEndCritical the caller owes.
+                    0x0508 | 0x0512 => {
+                        let suggested_thread = bus.read_long(sp);
+                        let new_state = bus.read_word(sp + 4);
+                        let thread_to_set =
+                            self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
+                        if selector == 0x0512 {
+                            self.thread_critical_nesting =
+                                self.thread_critical_nesting.saturating_sub(1);
+                        }
+                        match self.cooperative_thread_mut(cpu, thread_to_set) {
+                            None => Self::THREAD_NOT_FOUND_ERR,
+                            Some(thread) => {
+                                let was_running = thread.state == Self::THREAD_STATE_RUNNING;
+                                thread.state = new_state;
+                                self.cooperative_thread_ready
+                                    .retain(|queued| *queued != thread_to_set);
+                                if new_state == Self::THREAD_STATE_READY {
+                                    self.cooperative_thread_ready.push_back(thread_to_set);
+                                }
+                                // Stopping the running thread must hand the
+                                // CPU to someone else immediately.
+                                if was_running && new_state != Self::THREAD_STATE_RUNNING {
+                                    bus.write_word(sp + 10, 0);
+                                    cpu.write_reg(Register::A7, sp + 10);
+                                    cpu.write_reg(Register::D0, 0);
+                                    self.save_current_cooperative_thread(cpu);
+                                    if let Some(next_id) =
+                                        self.next_ready_cooperative_thread(suggested_thread)
+                                    {
+                                        self.switch_to_cooperative_thread(cpu, next_id);
+                                    }
+                                    return Some(Ok(()));
+                                }
+                                0
+                            }
+                        }
+                    }
+                    // SetThreadScheduler(threadScheduler)
+                    0x0209 => {
+                        self.cooperative_thread_scheduler = bus.read_long(sp);
+                        0
+                    }
+                    // SetThreadSwitcher(thread, threadSwitcher,
+                    //                   switchProcParam, inOrOut)
+                    0x070A => {
+                        let switch_in = bus.read_word(sp) != 0;
+                        let switch_proc_param = bus.read_long(sp + 2);
+                        let thread_switcher = bus.read_long(sp + 6);
+                        let thread = self.resolve_cooperative_thread_id(bus.read_long(sp + 10));
+                        match self.cooperative_thread_mut(cpu, thread) {
+                            None => Self::THREAD_NOT_FOUND_ERR,
+                            Some(record) => {
+                                if switch_in {
+                                    record.switch_in = (thread_switcher, switch_proc_param);
+                                } else {
+                                    record.switch_out = (thread_switcher, switch_proc_param);
+                                }
+                                0
+                            }
+                        }
+                    }
+                    // ThreadBeginCritical
                     0x000B => {
                         self.thread_critical_nesting =
                             self.thread_critical_nesting.saturating_add(1);
                         0
                     }
-                    0x000C if self.thread_critical_nesting == 0 => -619,
+                    // ThreadEndCritical
+                    0x000C if self.thread_critical_nesting == 0 => Self::THREAD_PROTOCOL_ERR,
                     0x000C => {
                         self.thread_critical_nesting -= 1;
                         0
                     }
+                    // SetThreadTerminator(thread, threadTerminator,
+                    //                     terminationProcParam)
+                    0x0611 => {
+                        let termination_proc_param = bus.read_long(sp);
+                        let thread_terminator = bus.read_long(sp + 4);
+                        let thread = self.resolve_cooperative_thread_id(bus.read_long(sp + 8));
+                        match self.cooperative_thread_mut(cpu, thread) {
+                            None => Self::THREAD_NOT_FOUND_ERR,
+                            Some(record) => {
+                                record.terminator = (thread_terminator, termination_proc_param);
+                                0
+                            }
+                        }
+                    }
+                    // SetDebuggerNotificationProcs(notifyNewThread,
+                    //     notifyDisposeThread, notifyThreadScheduler).
+                    // Systemless hosts no 68K debugger, so the notification
+                    // procs are accepted and never called.
+                    0x060D => 0,
+                    // GetThreadCurrentTaskRef(threadTRef). Systemless runs a
+                    // single Thread Manager task; its ref is the application
+                    // thread's ID, which is a stable non-nil token.
+                    0x020E => {
+                        let thread_t_ref = bus.read_long(sp);
+                        if thread_t_ref == 0 {
+                            -50
+                        } else {
+                            bus.write_long(thread_t_ref, Self::APPLICATION_THREAD_ID);
+                            0
+                        }
+                    }
+                    // GetThreadStateGivenTaskRef(threadTRef, threadToGet,
+                    //                            threadState)
+                    0x060F => {
+                        let thread_state = bus.read_long(sp);
+                        let thread_to_get =
+                            self.resolve_cooperative_thread_id(bus.read_long(sp + 4));
+                        if thread_state == 0 {
+                            -50
+                        } else {
+                            match self.cooperative_thread_mut(cpu, thread_to_get) {
+                                Some(thread) => {
+                                    let state = thread.state;
+                                    bus.write_word(thread_state, state);
+                                    0
+                                }
+                                None => Self::THREAD_NOT_FOUND_ERR,
+                            }
+                        }
+                    }
+                    // SetThreadReadyGivenTaskRef(threadTRef, threadToSet)
+                    0x0410 => {
+                        let thread_to_set = self.resolve_cooperative_thread_id(bus.read_long(sp));
+                        match self.cooperative_thread_mut(cpu, thread_to_set) {
+                            None => Self::THREAD_NOT_FOUND_ERR,
+                            Some(thread) => {
+                                if thread.state == Self::THREAD_STATE_STOPPED {
+                                    thread.state = Self::THREAD_STATE_READY;
+                                    self.cooperative_thread_ready.push_back(thread_to_set);
+                                }
+                                0
+                            }
+                        }
+                    }
+                    // GetDefaultThreadStackSize(threadStyle, stackSize)
+                    0x0413 => {
+                        let stack_size = bus.read_long(sp);
+                        let thread_style = bus.read_long(sp + 4);
+                        if stack_size == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
+                            -50
+                        } else {
+                            bus.write_long(stack_size, self.cooperative_thread_stack_size);
+                            0
+                        }
+                    }
+                    // ThreadCurrentStackSpace(thread, freeStack)
+                    0x0414 => {
+                        let free_stack = bus.read_long(sp);
+                        let thread = self.resolve_cooperative_thread_id(bus.read_long(sp + 4));
+                        if free_stack == 0 {
+                            -50
+                        } else {
+                            let running = thread == self.current_cooperative_thread;
+                            let current_sp = cpu.read_reg(Register::A7);
+                            match self.cooperative_thread_mut(cpu, thread) {
+                                None => Self::THREAD_NOT_FOUND_ERR,
+                                Some(record) => {
+                                    let stack_pointer = if running {
+                                        current_sp
+                                    } else {
+                                        record.a_regs[7]
+                                    };
+                                    let free = stack_pointer.saturating_sub(record.stack_base);
+                                    // The application thread keeps the process
+                                    // stack, whose base this record does not
+                                    // track; report the default size instead of
+                                    // a bogus multi-megabyte figure.
+                                    let free = if record.stack_base == 0 {
+                                        DEFAULT_COOPERATIVE_THREAD_STACK_SIZE
+                                    } else {
+                                        free
+                                    };
+                                    bus.write_long(free_stack, free);
+                                    0
+                                }
+                            }
+                        }
+                    }
+                    // GetSpecificFreeThreadCount(threadStyle, stackSize,
+                    //                            freeCount)
+                    0x0615 => {
+                        let free_count = bus.read_long(sp);
+                        let stack_size = bus.read_long(sp + 4);
+                        let thread_style = bus.read_long(sp + 8);
+                        if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
+                            -50
+                        } else {
+                            let matching = self
+                                .cooperative_thread_pool
+                                .iter()
+                                .filter(|(base, limit)| limit.saturating_sub(*base) >= stack_size)
+                                .count();
+                            bus.write_word(free_count, matching as u16);
+                            0
+                        }
+                    }
                     _ => -50,
                 };
-                bus.write_word(sp, result as u16);
+                let argument_bytes = (selector >> 8) * 2;
+                bus.write_word(sp + argument_bytes, result as u16);
                 if result == 0 {
-                    return_noerr(cpu)
+                    return_noerr_and_pop(cpu, argument_bytes)
                 } else {
-                    return_error_and_pop(cpu, 0, result)
+                    return_error_and_pop(cpu, argument_bytes, result)
                 }
             }
 
@@ -22431,6 +23154,168 @@ mod tests {
         assert_eq!(disp.thread_critical_nesting, 0);
     }
 
+    /// `NewThread` (selector $0E03) banks a ready cooperative context and
+    /// consumes the 28-byte MPW frame the selector's high byte encodes.
+    /// MPW Interfaces/CIncludes/Threads.h, Universal Interfaces 2.0a3.
+    #[test]
+    fn threaddispatch_newthread_creates_ready_cooperative_thread_and_consumes_mpw_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let thread_made = TEST_SP + 0x400;
+        let thread_result = TEST_SP + 0x410;
+        cpu.write_reg(Register::A7, sp);
+        // Pushed left to right: threadStyle, threadEntry, threadParam,
+        // stackSize, options, threadResult, threadMade.
+        bus.write_long(sp, thread_made);
+        bus.write_long(sp + 4, thread_result);
+        bus.write_long(sp + 8, 0); // options
+        bus.write_long(sp + 12, 4096); // stackSize
+        bus.write_long(sp + 16, 0xCAFE_F00D); // threadParam
+        bus.write_long(sp + 20, 0x0004_2000); // threadEntry
+        bus.write_long(sp + 24, 1); // kCooperativeThread
+
+        cpu.write_reg(Register::D0, 0x0000_0E03);
+        let result = disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus);
+        assert!(result.is_some(), "ThreadDispatch should handle NewThread");
+        assert!(result.unwrap().is_ok(), "NewThread should return");
+
+        assert_eq!(cpu.read_reg(Register::D0), 0, "NewThread should return noErr");
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp + 28,
+            "NewThread should pop its 28-byte Pascal frame"
+        );
+
+        let new_id = bus.read_long(thread_made);
+        assert!(new_id >= 3, "new ThreadID must not reuse a reserved ID");
+        let thread = disp
+            .cooperative_threads
+            .get(&new_id)
+            .expect("NewThread should bank a context");
+        assert_eq!(thread.pc, 0x0004_2000, "entry proc becomes the thread PC");
+        assert_eq!(thread.state, 0, "an unsuspended thread starts ready");
+        assert_eq!(thread.result_destination, thread_result);
+        assert!(
+            disp.cooperative_thread_ready.contains(&new_id),
+            "a ready thread must be queued for scheduling"
+        );
+        // The private stack is seeded as though the entry proc had been
+        // called: return address, then its single Pascal argument.
+        assert_eq!(
+            bus.read_long(thread.a_regs[7] + 4),
+            0xCAFE_F00D,
+            "threadParam must be the entry proc's argument"
+        );
+    }
+
+    /// `kPreemptiveThread` has no 68K implementation, so `NewThread` must
+    /// refuse it rather than hand back an unschedulable ID.
+    #[test]
+    fn threaddispatch_newthread_rejects_preemptive_style_with_param_err() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let thread_made = TEST_SP + 0x400;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, thread_made);
+        bus.write_long(sp + 4, 0);
+        bus.write_long(sp + 8, 0);
+        bus.write_long(sp + 12, 4096);
+        bus.write_long(sp + 16, 0);
+        bus.write_long(sp + 20, 0x0004_2000);
+        bus.write_long(sp + 24, 2); // kPreemptiveThread
+
+        cpu.write_reg(Register::D0, 0x0000_0E03);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .expect("ThreadDispatch should handle NewThread")
+            .expect("NewThread should return");
+
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 28);
+        assert_eq!(bus.read_long(thread_made), 0, "no ThreadID on failure");
+        assert!(disp.cooperative_threads.is_empty());
+    }
+
+    /// `GetCurrentThread` reports the application thread before any
+    /// `NewThread`, and `GetThreadState` materialises that implicit record
+    /// rather than failing with threadNotFoundErr.
+    #[test]
+    fn threaddispatch_get_and_set_thread_state_track_the_ready_queue() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let out = TEST_SP + 0x400;
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, out);
+        cpu.write_reg(Register::D0, 0x0000_0206); // GetCurrentThread
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .expect("GetCurrentThread handled")
+            .expect("GetCurrentThread returns");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(
+            bus.read_long(out),
+            2,
+            "kApplicationThreadID is the launch thread"
+        );
+
+        // GetThreadState(kCurrentThreadID, &state)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, out);
+        bus.write_long(sp + 4, 1); // kCurrentThreadID
+        cpu.write_reg(Register::D0, 0x0000_0407);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .expect("GetThreadState handled")
+            .expect("GetThreadState returns");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(
+            bus.read_word(out),
+            2,
+            "the running thread reports kRunningThreadState"
+        );
+    }
+
+    /// `SetThreadSwitcher` and `SetThreadTerminator` record their procs per
+    /// thread, and the switch-in and switch-out slots stay independent.
+    #[test]
+    fn threaddispatch_switcher_and_terminator_are_recorded_per_thread() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        // SetThreadSwitcher(thread, switcher, param, inOrOut=true)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0100); // Boolean true in the high byte
+        bus.write_long(sp + 2, 0x1111_2222); // switchProcParam
+        bus.write_long(sp + 6, 0x0003_0000); // threadSwitcher
+        bus.write_long(sp + 10, 2); // kApplicationThreadID
+        cpu.write_reg(Register::D0, 0x0000_070A);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .expect("SetThreadSwitcher handled")
+            .expect("SetThreadSwitcher returns");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+
+        // SetThreadTerminator(thread, terminator, param)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0x3333_4444);
+        bus.write_long(sp + 4, 0x0003_1000);
+        bus.write_long(sp + 8, 2);
+        cpu.write_reg(Register::D0, 0x0000_0611);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .expect("SetThreadTerminator handled")
+            .expect("SetThreadTerminator returns");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+
+        let thread = disp
+            .cooperative_threads
+            .get(&2)
+            .expect("the application thread record must exist");
+        assert_eq!(thread.switch_in, (0x0003_0000, 0x1111_2222));
+        assert_eq!(thread.switch_out, (0, 0), "switch-out stays unset");
+        assert_eq!(thread.terminator, (0x0003_1000, 0x3333_4444));
+    }
+
     #[test]
     fn threaddispatch_endcritical_underflow_returns_thread_protocol_err() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -27383,7 +28268,10 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
 
         assert!(result.is_some(), "DisposeMovieController should be handled");
-        assert!(result.unwrap().is_ok(), "DisposeMovieController should return");
+        assert!(
+            result.unwrap().is_ok(),
+            "DisposeMovieController should return"
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }

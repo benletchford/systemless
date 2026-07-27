@@ -186,6 +186,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"te  "
             | b"teat"
             | b"tmgr"
+            | b"thds"
             | b"dplv"
             | b"dply"
             | b"alis"
@@ -1631,9 +1632,8 @@ impl super::TrapDispatcher {
 
                 if res_type == *b"WDEF" {
                     if let Some(ptr) = self.synthesize_system_wdef(bus, res_id) {
-                        let handle = self.get_or_create_resource_handle_in_file(
-                            bus, res_type, res_id, ptr, 0,
-                        );
+                        let handle = self
+                            .get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, 0);
                         cpu.write_reg(Register::A0, handle);
                         cpu.write_reg(Register::D0, 0);
                         bus.write_word(0x0A60, 0); // ResErr = noErr
@@ -3395,6 +3395,19 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A0, 2);
                         cpu.write_reg(Register::D0, 0);
                     }
+                    // gestaltThreadMgrAttr ('thds') -> Thread Manager
+                    // present. Inside Macintosh: Operating System Utilities
+                    // 1994, p. 1-25 defines bit 0 as
+                    // gestaltThreadMgrPresent and bit 1 as
+                    // gestaltSpecificMatchSupport. Systemless implements the
+                    // public critical-section dispatch contract through
+                    // _ThreadDispatch ($ABF2), so report bit 0. Leave bit 1
+                    // clear because exact-match thread creation is not
+                    // implemented.
+                    b"thds" => {
+                        cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(Register::D0, 0);
+                    }
                     // gestaltDisplayMgrVers ('dplv') -> Display Manager
                     // 2.0.6, matching the BasiliskII System 7.5.3 reference.
                     // Operating System Utilities 1994 lists 'dplv' as the
@@ -3922,6 +3935,17 @@ impl super::TrapDispatcher {
             // PBHGetVInfo ($A207): HFS variant aliased onto $A007
             (false, 0x07) => {
                 let pb = cpu.read_reg(Register::A0);
+                let volume_index = bus.read_word(pb + 28) as i16;
+                if volume_index > 1 {
+                    // Files 1992, 2-145: positive ioVolIndex values walk the
+                    // mounted-volume queue, and enumeration ends with nsvErr.
+                    // Systemless currently exposes one mounted boot volume.
+                    const NSV_ERR: i16 = -35;
+                    bus.write_word(pb + 16, NSV_ERR as u16);
+                    cpu.write_reg(Register::D0, NSV_ERR as i32 as u32);
+                    return Some(Ok(()));
+                }
+
                 let name_ptr = bus.read_long(pb + 18);
                 if name_ptr != 0 {
                     Self::write_pstring(bus, name_ptr, super::TrapDispatcher::boot_volume_name());
@@ -13486,10 +13510,7 @@ mod tests {
         let pb = 0x300000u32;
         let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"poison");
         bus.write_word(pb + 16, 0x3FFF);
-        bus.write_word(
-            pb + 22,
-            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
-        );
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
         bus.write_word(pb + 28, (-1i16) as u16);
         bus.write_long(pb + 48, 2);
         cpu.write_reg(Register::D0, 9);

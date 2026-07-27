@@ -2230,12 +2230,9 @@ impl FixtureRunner {
         // leaves A7 on the four-byte FMOutPtr result slot. Allocate this only
         // after reserving the application zone header so it remains live.
         let swap_font_trampoline = self.bus.alloc(6);
-        self.bus
-            .write_word(swap_font_trampoline, 0x205F); // MOVEA.L (SP)+,A0
-        self.bus
-            .write_word(swap_font_trampoline + 2, 0xA901); // FMSwapFont
-        self.bus
-            .write_word(swap_font_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus.write_word(swap_font_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus.write_word(swap_font_trampoline + 2, 0xA901); // FMSwapFont
+        self.bus.write_word(swap_font_trampoline + 4, 0x4ED0); // JMP (A0)
         self.bus.write_long(addr::J_SWAP_FONT, swap_font_trampoline);
 
         // Set CPU state
@@ -4528,28 +4525,37 @@ impl FixtureRunner {
 
                 // Sound 1994, 2-152
                 if self.sound_callback_trampoline == 0 {
-                    // Sound callback:
-                    //   PROCEDURE MyCallBack(chan: SndChannelPtr; cmd: SndCommand);
-                    //
-                    // In practice shipped apps commonly receive `cmd` as a
-                    // pointer-sized argument and differ on how much stack they
-                    // pop on return. Push cmdPtr nearest SP and chan beneath it,
-                    // then reset SP to the saved-register frame after JSR so
-                    // one-arg, two-arg, and C-style cleanup all resume safely.
-                    let tramp = self.bus.alloc(42);
-                    self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
-                    self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
-                    self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
-                    self.bus.write_word(tramp + 10, 0x2F3C); // MOVE.L #cmdPtr,-(SP)
-                    self.bus.write_word(tramp + 16, 0x4EB9); // JSR abs.L
-                    self.bus.write_word(tramp + 22, 0x2E7C); // MOVEA.L #savedSP,A7
-                    self.bus.write_word(tramp + 28, 0x4CDF); // MOVEM.L (SP)+,regs
-                    self.bus.write_word(tramp + 30, 0x0F0F); // D0-D3/A0-A3
-                    self.bus.write_word(tramp + 32, 0x4E75); // RTS
-                    self.sound_callback_trampoline = tramp;
+                    self.sound_callback_trampoline = self.bus.alloc(42);
                 }
 
                 let tramp = self.sound_callback_trampoline;
+                // Sound callback:
+                //   PROCEDURE MyCallBack(chan: SndChannelPtr; cmd: SndCommand);
+                //
+                // In practice shipped apps commonly receive `cmd` as a
+                // pointer-sized argument and differ on how much stack they
+                // pop on return. Push cmdPtr nearest SP and chan beneath it,
+                // then reset SP to the saved-register frame after JSR so
+                // one-arg, two-arg, and C-style cleanup all resume safely.
+                //
+                // The opcodes are rewritten on every dispatch, not just when
+                // the block is first allocated. A sound callback runs at
+                // interrupt time against whatever the application has since
+                // done to the heap, and a game that overruns one of its own
+                // buffers into this stub would otherwise leave the HLE
+                // jumping into data — Warcraft II clobbers it between
+                // callbacks. Rewriting is what the Window Manager's WDEF
+                // trampoline already does for the same reason.
+                self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
+                self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
+                self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
+                self.bus.write_word(tramp + 10, 0x2F3C); // MOVE.L #cmdPtr,-(SP)
+                self.bus.write_word(tramp + 16, 0x4EB9); // JSR abs.L
+                self.bus.write_word(tramp + 22, 0x2E7C); // MOVEA.L #savedSP,A7
+                self.bus.write_word(tramp + 28, 0x4CDF); // MOVEM.L (SP)+,regs
+                self.bus.write_word(tramp + 30, 0x0F0F); // D0-D3/A0-A3
+                self.bus.write_word(tramp + 32, 0x4E75); // RTS
+
                 let cmd_ptr = tramp + 34;
                 let interrupted_sp = self.cpu.read_reg(Register::A7);
                 let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
@@ -4573,19 +4579,21 @@ impl FixtureRunner {
 
                 // Sound 1994, 2-151
                 if self.sound_file_completion_trampoline == 0 {
-                    let tramp = self.bus.alloc(28);
-                    self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
-                    self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
-                    self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
-                    self.bus.write_word(tramp + 10, 0x4EB9); // JSR abs.L
-                    self.bus.write_word(tramp + 16, 0x2E7C); // MOVEA.L #savedSP,A7
-                    self.bus.write_word(tramp + 22, 0x4CDF); // MOVEM.L (SP)+,regs
-                    self.bus.write_word(tramp + 24, 0x0F0F); // D0-D3/A0-A3
-                    self.bus.write_word(tramp + 26, 0x4E75); // RTS
-                    self.sound_file_completion_trampoline = tramp;
+                    self.sound_file_completion_trampoline = self.bus.alloc(28);
                 }
 
+                // Rewritten on every dispatch for the same reason as the
+                // command-callback trampoline above.
                 let tramp = self.sound_file_completion_trampoline;
+                self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
+                self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
+                self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
+                self.bus.write_word(tramp + 10, 0x4EB9); // JSR abs.L
+                self.bus.write_word(tramp + 16, 0x2E7C); // MOVEA.L #savedSP,A7
+                self.bus.write_word(tramp + 22, 0x4CDF); // MOVEM.L (SP)+,regs
+                self.bus.write_word(tramp + 24, 0x0F0F); // D0-D3/A0-A3
+                self.bus.write_word(tramp + 26, 0x4E75); // RTS
+
                 let interrupted_sp = self.cpu.read_reg(Register::A7);
                 let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
                 self.bus.write_long(tramp + 6, chan_ptr);

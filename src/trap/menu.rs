@@ -1299,6 +1299,7 @@ impl super::TrapDispatcher {
                         visible_in_menu_bar: false,
                     });
                 }
+                self.install_menu_def_procs(bus);
                 bus.write_long(sp + 6, handle);
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
@@ -1359,6 +1360,7 @@ impl super::TrapDispatcher {
                         0
                     }
                 };
+                self.install_menu_def_procs(bus);
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -1493,6 +1495,7 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                self.install_menu_def_procs(bus);
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
             }
@@ -1624,7 +1627,9 @@ impl super::TrapDispatcher {
                     }
                     let list_handle = bus.alloc(4);
                     bus.write_long(list_handle, list_block);
+                    let menu_handles: Vec<u32> = snapshot.iter().map(|menu| menu.handle).collect();
                     self.saved_menu_bars.insert(list_handle, snapshot);
+                    self.install_menu_def_proc_in(bus, &menu_handles);
                     list_handle
                 } else {
                     0
@@ -2581,28 +2586,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-
-                if let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) {
-                    let menu_height = self.menu_items_height(bus, &menu.items) + 2;
-
-                    let mut max_width: i16 = 0;
-                    for item in &menu.items {
-                        let w = Self::fb_measure_string(&item.text, 0, 12);
-                        let total = w + self.menu_item_width_extra(bus, item) + 24;
-                        if total > max_width {
-                            max_width = total;
-                        }
-                    }
-                    max_width = max_width.max(100);
-
-                    if menu_handle != 0 {
-                        let menu_ptr = bus.read_long(menu_handle);
-                        if menu_ptr != 0 {
-                            bus.write_word(menu_ptr + 2, max_width as u16);
-                            bus.write_word(menu_ptr + 4, menu_height as u16);
-                        }
-                    }
-                }
+                self.calc_menu_size(bus, menu_handle);
                 Ok(())
             }
 
@@ -3696,6 +3680,249 @@ impl super::TrapDispatcher {
         } else {
             base_height
         }
+    }
+
+    /// Offset of `menuProc` inside a `MenuInfo` record.
+    /// Inside Macintosh Volume I, I-355.
+    const MENU_PROC_OFFSET: u32 = 6;
+
+    /// `mDrawMsg`, `mChooseMsg` and `mSizeMsg` from the menu definition
+    /// procedure's message parameter. Inside Macintosh Volume I, I-352.
+    const M_DRAW_MSG: i16 = 0;
+    const M_CHOOSE_MSG: i16 = 1;
+    const M_SIZE_MSG: i16 = 2;
+
+    /// Bytes of the guest-callable stub installed as 'MDEF' 0:
+    /// `MOVE.W #imm,D0` (4) + `_Pack8` (2) + `RTD #imm` (4).
+    const MENU_DEF_PROC_STUB_SIZE: u32 = 10;
+
+    /// Lazily build the handle stored in every `MenuInfo.menuProc`.
+    ///
+    /// Inside Macintosh Volume I, I-352 makes the menu definition procedure
+    /// part of the menu record's public contract: `menuProc` is "a handle
+    /// to the menu definition procedure", and applications call through it
+    /// directly to size or draw a menu without going through the Menu
+    /// Manager. Leaving the field NIL makes any such call dereference
+    /// address zero. Systemless therefore installs a real handle whose
+    /// master pointer is a six-byte guest stub:
+    ///
+    /// ```text
+    ///   MOVE.W  #$FEFC,D0     ; private Systemless trampoline selector
+    ///   _Pack8                ; re-enters the HLE
+    ///   RTD     #18           ; pop the MDEF's Pascal frame
+    /// ```
+    ///
+    /// `_Pack8` is the dispatch trap Systemless already reserves for
+    /// guest-to-HLE trampoline returns (selector `$FEFE` finalises an
+    /// AppleEvent handler call); `$FEFC` names the synthetic 'MDEF' 0 in
+    /// the same private selector space. The `RTD #18` discards the
+    /// message, theMenu, menuRect, hitPt and whichItem arguments, which is
+    /// what a Pascal procedure with that signature owes its caller.
+    pub(crate) fn menu_def_proc_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if self.menu_def_proc_handle != 0 {
+            return self.menu_def_proc_handle;
+        }
+
+        let stub = bus.alloc(Self::MENU_DEF_PROC_STUB_SIZE);
+        let handle = bus.alloc(4);
+        if stub == 0 || handle == 0 {
+            return 0;
+        }
+        bus.write_word(stub, 0x303C); // MOVE.W #imm,D0
+        bus.write_word(stub + 2, 0xFEFC);
+        bus.write_word(stub + 4, 0xA816); // _Pack8
+        bus.write_word(stub + 6, 0x4E74); // RTD #imm
+        bus.write_word(stub + 8, 18);
+        bus.write_long(handle, stub);
+        self.ptr_to_handle.insert(stub, handle);
+        self.menu_def_proc_handle = handle;
+        handle
+    }
+
+    /// Fill in `menuProc` for every menu that still has a NIL one.
+    ///
+    /// Called after each Menu Manager entry point that can produce a menu
+    /// record — `NewMenu`, `GetMenu`, `GetNewMBar`, `InsertMenu` — so the
+    /// field is populated before the application can observe it. Menus
+    /// built by copying a `'MENU'` resource inherit the resource's zero
+    /// `menuProc`, which is exactly what the real Menu Manager overwrites
+    /// with the 'MDEF' handle when it reads the resource in
+    /// (Inside Macintosh Volume I, I-366).
+    pub(crate) fn install_menu_def_procs(&mut self, bus: &mut MacMemoryBus) {
+        let handles: Vec<u32> = self.menus.iter().map(|menu| menu.handle).collect();
+        self.install_menu_def_proc_in(bus, &handles);
+    }
+
+    /// [`Self::install_menu_def_procs`] for an explicit handle list, used by
+    /// `GetNewMBar`, whose menus live in a saved menu-bar snapshot rather
+    /// than the current menu list.
+    pub(crate) fn install_menu_def_proc_in(&mut self, bus: &mut MacMemoryBus, handles: &[u32]) {
+        if handles.is_empty() {
+            return;
+        }
+        let def_proc = self.menu_def_proc_handle(bus);
+        if def_proc == 0 {
+            return;
+        }
+        for &handle in handles {
+            if handle == 0 {
+                continue;
+            }
+            let menu_ptr = bus.read_long(handle);
+            if menu_ptr == 0 {
+                continue;
+            }
+            let current = bus.read_long(menu_ptr + Self::MENU_PROC_OFFSET);
+            if !Self::menu_def_proc_is_installed(bus, current) {
+                bus.write_long(menu_ptr + Self::MENU_PROC_OFFSET, def_proc);
+            }
+        }
+    }
+
+    /// Whether `menuProc` already holds a handle to real code.
+    ///
+    /// A menu read from a `'MENU'` resource arrives with the resource ID of
+    /// its definition procedure sitting in the `menuProc` bytes, which
+    /// Inside Macintosh Volume I, I-366 describes as "a placeholder for the
+    /// handle to the procedure" that `GetMenu` replaces. Systemless has to
+    /// tell that placeholder apart from a handle an application installed
+    /// itself, so it accepts only a handle whose master pointer starts with
+    /// an instruction a procedure entry point can plausibly begin with —
+    /// the same test the Window Manager applies to a guest 'WDEF'.
+    fn menu_def_proc_is_installed(bus: &MacMemoryBus, menu_proc: u32) -> bool {
+        if menu_proc == 0 || menu_proc >= bus.ram_size().saturating_sub(4) {
+            return false;
+        }
+        let entry = bus.read_long(menu_proc);
+        if entry == 0 || entry >= bus.ram_size().saturating_sub(2) {
+            return false;
+        }
+        matches!(
+            bus.read_word(entry),
+            0x303C // MOVE.W #imm,D0 — the Systemless stub
+                | 0x4E56 // LINK.W A6,#imm
+                | 0x48E7 // MOVEM.L regs,-(SP)
+                | 0x4EF9 // JMP abs.L
+                | 0x4EFA // JMP d16(PC)
+                | 0x6000..=0x60FF // BRA to the real entry
+        )
+    }
+
+    /// Compute a menu's dimensions and store them in `menuWidth` and
+    /// `menuHeight`. Shared by `CalcMenuSize` ($A948) and the synthetic
+    /// 'MDEF' 0's `mSizeMsg`, which Inside Macintosh Volume I, I-361 and
+    /// I-352 define as the same operation.
+    pub(super) fn calc_menu_size(&mut self, bus: &mut MacMemoryBus, menu_handle: u32) {
+        let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) else {
+            return;
+        };
+        let menu_height = self.menu_items_height(bus, &menu.items) + 2;
+
+        let mut max_width: i16 = 0;
+        for item in &menu.items {
+            let w = Self::fb_measure_string(&item.text, 0, 12);
+            let total = w + self.menu_item_width_extra(bus, item) + 24;
+            if total > max_width {
+                max_width = total;
+            }
+        }
+        max_width = max_width.max(100);
+
+        if menu_handle == 0 {
+            return;
+        }
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr != 0 {
+            bus.write_word(menu_ptr + 2, max_width as u16);
+            bus.write_word(menu_ptr + 4, menu_height as u16);
+        }
+    }
+
+    /// Body of the synthetic 'MDEF' 0, reached through the `$FEFC` `_Pack8`
+    /// selector planted by [`Self::menu_def_proc_handle`].
+    ///
+    /// ```text
+    /// PROCEDURE MyMenu (message: INTEGER; theMenu: MenuHandle;
+    ///                   VAR menuRect: Rect; hitPt: Point;
+    ///                   VAR whichItem: INTEGER);
+    /// ```
+    /// Inside Macintosh Volume I, I-352. `sp` points at the caller's return
+    /// address, so the Pascal frame starts four bytes above it; the stub's
+    /// own `RTD #18` pops the arguments once this returns.
+    pub(crate) fn menu_def_proc_message(&mut self, bus: &mut MacMemoryBus, sp: u32) {
+        let args = sp.wrapping_add(4);
+        let which_item_ptr = bus.read_long(args);
+        let hit_pt = bus.read_long(args + 4);
+        let menu_rect_ptr = bus.read_long(args + 8);
+        let menu_handle = bus.read_long(args + 12);
+        let message = bus.read_word(args + 16) as i16;
+
+        match message {
+            // mSizeMsg: store the menu's dimensions in the menu record.
+            Self::M_SIZE_MSG => self.calc_menu_size(bus, menu_handle),
+            // mChooseMsg: report which enabled item hitPt falls in, or 0
+            // when the point is outside menuRect or the menu is disabled.
+            // Highlighting is not performed here — Systemless draws menu
+            // tracking itself from MenuSelect rather than by re-entering
+            // the definition procedure.
+            Self::M_CHOOSE_MSG => {
+                if which_item_ptr != 0 {
+                    let item = self.menu_def_item_at_point(bus, menu_handle, menu_rect_ptr, hit_pt);
+                    bus.write_word(which_item_ptr, item as u16);
+                }
+            }
+            // mDrawMsg: Systemless owns menu rendering end-to-end through
+            // the Menu Manager traps, so a direct draw request is honoured
+            // by leaving the framebuffer to that path rather than emitting
+            // a second, conflicting copy of the menu.
+            Self::M_DRAW_MSG => {}
+            _ => {}
+        }
+    }
+
+    /// Hit-test a point against a laid-out menu, in the coordinate space of
+    /// `menuRect`. Returns 0 when the point misses, the menu is disabled,
+    /// or the item under it is disabled — the contract Inside Macintosh
+    /// Volume I, I-352 gives `whichItem` for `mChooseMsg`.
+    fn menu_def_item_at_point(
+        &self,
+        bus: &MacMemoryBus,
+        menu_handle: u32,
+        menu_rect_ptr: u32,
+        hit_pt: u32,
+    ) -> i16 {
+        if menu_rect_ptr == 0 {
+            return 0;
+        }
+        let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) else {
+            return 0;
+        };
+        if !menu.enabled {
+            return 0;
+        }
+
+        let top = bus.read_word(menu_rect_ptr) as i16;
+        let left = bus.read_word(menu_rect_ptr + 2) as i16;
+        let bottom = bus.read_word(menu_rect_ptr + 4) as i16;
+        let right = bus.read_word(menu_rect_ptr + 6) as i16;
+        let v = (hit_pt >> 16) as u16 as i16;
+        let h = (hit_pt & 0xFFFF) as u16 as i16;
+        if v < top || v >= bottom || h < left || h >= right {
+            return 0;
+        }
+
+        let mut row_top = top + 1;
+        for (index, item) in Self::laid_out_items(&menu.items).iter().enumerate() {
+            let height = self.menu_item_height(bus, item);
+            if v >= row_top && v < row_top + height {
+                if item.text == "-" || !item.enabled {
+                    return 0;
+                }
+                return index as i16 + 1;
+            }
+            row_top += height;
+        }
+        0
     }
 
     pub(super) fn menu_items_height(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
@@ -6798,6 +7025,141 @@ mod tests {
             get_mc_entry_ptr_for_test(&mut disp, &mut cpu, &mut bus, 601, 0),
             0,
             "InitMenus should autoload all declared mctb=0 entries"
+        );
+    }
+
+    /// IM:I I-355 and I-366: `menuProc` holds "a handle to the menu
+    /// definition procedure", and `GetMenu` replaces the resource's
+    /// four-byte placeholder with it. A NIL `menuProc` makes an application
+    /// that calls the definition procedure directly — which I-352 entitles
+    /// it to do — dereference address zero, which is how Warcraft II
+    /// crashed while sizing its menu bar.
+    #[test]
+    fn newmenu_installs_a_callable_menu_definition_procedure_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 240, TEST_SP + 0x200, "Go");
+
+        let menu_ptr = bus.read_long(handle);
+        let menu_proc = bus.read_long(menu_ptr + 6);
+        assert_ne!(menu_proc, 0, "menuProc must not be NIL");
+
+        let entry = bus.read_long(menu_proc);
+        assert_ne!(entry, 0, "the menuProc handle must have a master pointer");
+        assert_eq!(
+            bus.read_word(entry),
+            0x303C,
+            "the stub must start with MOVE.W #imm,D0"
+        );
+        assert_eq!(
+            bus.read_word(entry + 2),
+            0xFEFC,
+            "the stub must carry the private MDEF selector"
+        );
+        assert_eq!(bus.read_word(entry + 4), 0xA816, "the stub must trap _Pack8");
+        assert_eq!(bus.read_word(entry + 6), 0x4E74, "the stub must end with RTD");
+        assert_eq!(
+            bus.read_word(entry + 8),
+            18,
+            "RTD must pop the MDEF's 18-byte Pascal frame"
+        );
+    }
+
+    /// IM:I I-352: `mSizeMsg` tells the definition procedure to compute the
+    /// menu's dimensions and store them in `menuWidth`/`menuHeight` — the
+    /// same work `CalcMenuSize` does.
+    #[test]
+    fn menu_def_proc_size_message_fills_menu_width_and_height() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 241, TEST_SP + 0x200, "Go");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            TEST_SP + 0x240,
+            "Start;Stop",
+        );
+
+        let menu_ptr = bus.read_long(handle);
+        bus.write_word(menu_ptr + 2, 0);
+        bus.write_word(menu_ptr + 4, 0);
+
+        // The stub traps with SP pointing at the caller's return address,
+        // so the Pascal frame starts four bytes above it.
+        let sp = TEST_SP + 0x300;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0xDEAD_BEEF); // return address
+        bus.write_long(sp + 4, 0); // VAR whichItem
+        bus.write_long(sp + 8, 0); // hitPt
+        bus.write_long(sp + 12, 0); // VAR menuRect
+        bus.write_long(sp + 16, handle); // theMenu
+        bus.write_word(sp + 20, 2); // mSizeMsg
+
+        cpu.write_reg(Register::D0, 0x0000_FEFC);
+        disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .expect("the private MDEF selector must be handled")
+            .expect("the MDEF message must return");
+
+        assert!(
+            bus.read_word(menu_ptr + 2) as i16 > 0,
+            "mSizeMsg must set menuWidth"
+        );
+        assert!(
+            bus.read_word(menu_ptr + 4) as i16 > 0,
+            "mSizeMsg must set menuHeight"
+        );
+    }
+
+    /// IM:I I-352: for `mChooseMsg` the definition procedure reports the
+    /// enabled item under `hitPt`, and 0 when the point misses `menuRect`.
+    #[test]
+    fn menu_def_proc_choose_message_reports_the_item_under_the_point() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 242, TEST_SP + 0x200, "Go");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            TEST_SP + 0x240,
+            "Start;Stop",
+        );
+        let (width, height) = calc_menu_size_for_test(&mut disp, &mut cpu, &mut bus, handle);
+
+        let menu_rect = TEST_SP + 0x280;
+        bus.write_word(menu_rect, 20); // top
+        bus.write_word(menu_rect + 2, 10); // left
+        bus.write_word(menu_rect + 4, (20 + height) as u16); // bottom
+        bus.write_word(menu_rect + 6, (10 + width) as u16); // right
+        let which_item = TEST_SP + 0x290;
+
+        let mut choose = |v: i16, h: i16| -> i16 {
+            let sp = TEST_SP + 0x300;
+            bus.write_word(which_item, 0xFFFF);
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, 0xDEAD_BEEF);
+            bus.write_long(sp + 4, which_item);
+            bus.write_long(sp + 8, ((v as u16 as u32) << 16) | h as u16 as u32);
+            bus.write_long(sp + 12, menu_rect);
+            bus.write_long(sp + 16, handle);
+            bus.write_word(sp + 20, 1); // mChooseMsg
+            cpu.write_reg(Register::D0, 0x0000_FEFC);
+            disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+                .expect("the private MDEF selector must be handled")
+                .expect("the MDEF message must return");
+            bus.read_word(which_item) as i16
+        };
+
+        assert_eq!(choose(21, 20), 1, "a point in the first row picks item 1");
+        assert_eq!(
+            choose(5, 20),
+            0,
+            "a point above menuRect selects no item at all"
+        );
+        assert_eq!(
+            choose(21, 5),
+            0,
+            "a point left of menuRect selects no item at all"
         );
     }
 
