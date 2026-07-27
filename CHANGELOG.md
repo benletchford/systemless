@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/benletchford/systemless/compare/v0.7.1...v0.8.0) (2026-07-27)
+
+
+### Features
+
+* implement the full Thread Manager selector table for cooperative threads ([0545f62](https://github.com/benletchford/systemless/commit/0545f62de193dbb2d4c1cf8279083243e1246cc3))
+
 ## [0.7.1](https://github.com/benletchford/systemless/compare/v0.7.0...v0.7.1) (2026-07-27)
 
 
