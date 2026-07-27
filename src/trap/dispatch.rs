@@ -673,6 +673,16 @@ pub struct TimerTask {
     /// Tick count at which this task should fire.
     /// Computed from current ticks + delay when PrimeTime is called.
     pub fire_at_tick: u32,
+    /// Revised Time Manager deadline in millionths of a 60 Hz guest tick.
+    /// This preserves negative PrimeTime microsecond delays below one VBL.
+    pub fire_at_subtick: u64,
+    /// VBL tick in which this task was most recently dispatched.
+    ///
+    /// BasiliskII's Time Manager services an individual queue element at
+    /// most once per VBL even when its revised/extended delay is shorter.
+    /// Retaining the sub-tick deadline still orders concurrent tasks without
+    /// allowing one self-repriming task to monopolize the interrupt queue.
+    pub last_fired_tick: Option<u32>,
 }
 
 /// An installed Vertical Retrace Manager task.
@@ -1685,6 +1695,8 @@ pub struct TrapDispatcher {
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: Vec<TimerTask>,
+    /// Exact Time Manager time while a callback is being delivered.
+    pub(crate) timer_current_subtick: u64,
     /// Installed Vertical Retrace Manager tasks.
     /// Processes 1994, 4-6 to 4-7
     pub(crate) vbl_tasks: Vec<VblTask>,
@@ -2920,6 +2932,7 @@ impl TrapDispatcher {
             native_trap_table: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
+            timer_current_subtick: 0,
             vbl_tasks: Vec::new(),
             system_vbl_queue_anchor: 0,
             primary_vbl_slot: 0,
