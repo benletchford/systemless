@@ -2240,6 +2240,18 @@ impl FixtureRunner {
         self.bus.write_word(swap_mmu_mode_trampoline + 2, 0x4E75); // RTS
         self.bus
             .write_long(addr::SWAP_MMU_MODE_TRAP, swap_mmu_mode_trampoline);
+        // JHideCursor ($0800): argument-free QuickDraw cursor bottleneck.
+        // Adapt a direct JSR to the existing A-line trap by removing the JSR
+        // return address before dispatch and jumping back afterward.
+        let hide_cursor_trampoline = self.bus.alloc(6);
+        self.bus
+            .write_word(hide_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus
+            .write_word(hide_cursor_trampoline + 2, 0xA852); // HideCursor
+        self.bus
+            .write_word(hide_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus
+            .write_long(addr::J_HIDE_CURSOR, hide_cursor_trampoline);
         // JShowCursor ($0804): QuickDraw glue vector for ShowCursor.
         // On Macintosh Programming: Advanced Techniques (1990) identifies
         // the vector address; MPW Quickdraw.h declares ShowCursor as the
@@ -7732,6 +7744,59 @@ mod tests {
             args_sp + 8,
             "JShieldCursor should consume its four Pascal INTEGER arguments"
         );
+    }
+
+    #[test]
+    fn init_app_seeds_callable_hide_cursor_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let hide_cursor_trampoline = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_HIDE_CURSOR);
+        assert_ne!(hide_cursor_trampoline, 0);
+        assert_eq!(
+            [
+                runner.bus.read_word(hide_cursor_trampoline),
+                runner.bus.read_word(hide_cursor_trampoline + 2),
+                runner.bus.read_word(hide_cursor_trampoline + 4),
+            ],
+            [0x205F, 0xA852, 0x4ED0],
+            "JHideCursor should pop the JSR return address, trap, and jump back"
+        );
+
+        let call_sp = 0x007F_FE00u32;
+        let return_pc = 0x0002_0000u32;
+        runner.bus.write_long(call_sp - 4, return_pc);
+        runner.bus.write_word(return_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, hide_cursor_trampoline);
+        runner.cpu.write_reg(Register::A7, call_sp - 4);
+
+        let (steps, running) = runner.run_steps(3, None);
+
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(
+            runner.cpu.read_reg(Register::A7),
+            call_sp,
+            "JHideCursor takes no arguments and must restore the caller stack"
+        );
+        assert_eq!(runner.dispatcher().cursor_level(), -1);
     }
 
     #[test]

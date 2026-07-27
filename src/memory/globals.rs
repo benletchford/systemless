@@ -110,6 +110,11 @@ pub mod addr {
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
     pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
     pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
+    /// JHideCursor: QuickDraw glue vector for HideCursor.
+    ///
+    /// The classic low-memory vector table places the argument-free
+    /// `JHideCursor` bottleneck at `$0800`, immediately below `JShowCursor`.
+    pub const J_HIDE_CURSOR: u32 = 0x0800;
     /// JShowCursor: QuickDraw glue vector for ShowCursor.
     ///
     /// The low-memory globals table in On Macintosh Programming: Advanced
