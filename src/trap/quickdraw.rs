@@ -11364,22 +11364,41 @@ impl super::TrapDispatcher {
             // it), decrement cursor level like HideCursor, and balance
             // with ShowCursor.
             //
-            // HLE compromise: cursor presentation is host-rendered and
-            // this runtime does not model cursor/rectangle intersection
-            // in guest coordinates across host frame boundaries, so
-            // ShieldCursor is a stack-shape no-op that only consumes its
-            // arguments.  The Apple-canonical cursor-level decrement is
-            // pinned via the in-Rust contract test
-            // `shield_cursor_pops_eight_bytes_and_preserves_cursor_state_in_hle`.
-            // The two engines diverge on the LowMem CrsrVis side effect
-            // (BII System 7.5.3 ROM writes CrsrVis; Systemless HLE doesn't
-            // touch it) but share the 8-byte arg-frame pop: A7 is balanced
-            // across single and 5-call sequences (net A7 delta zero).
-            //
-            // ShieldCursor ($A855): HLE no-op; pops 8 bytes per IM:I I-474 MPW C declaration ShieldCursor(const Rect *shieldRect, Point offsetPt) ONEWORDINLINE(0xA855)
+            // Systemless tests immediate intersection against the
+            // host-rendered 16×16 cursor bounds in global screen
+            // coordinates and applies the documented cursor-level
+            // decrement when those bounds overlap.
             (true, 0x055) => {
                 let sp = cpu.read_reg(Register::A7);
+                let offset_v = bus.read_word(sp) as i16;
+                let offset_h = bus.read_word(sp + 2) as i16;
+                let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
+
+                if rect_ptr != 0 {
+                    let shield_top = (bus.read_word(rect_ptr) as i16).wrapping_add(offset_v);
+                    let shield_left = (bus.read_word(rect_ptr + 2) as i16).wrapping_add(offset_h);
+                    let shield_bottom = (bus.read_word(rect_ptr + 4) as i16).wrapping_add(offset_v);
+                    let shield_right = (bus.read_word(rect_ptr + 6) as i16).wrapping_add(offset_h);
+                    let (mouse_v, mouse_h) = self.mouse_position();
+                    let (hot_v, hot_h) = self
+                        .cursor_data()
+                        .map(|(_, _, hot_v, hot_h)| (hot_v, hot_h))
+                        .unwrap_or((0, 0));
+                    let cursor_top = mouse_v.saturating_sub(hot_v);
+                    let cursor_left = mouse_h.saturating_sub(hot_h);
+                    let cursor_bottom = cursor_top.saturating_add(16);
+                    let cursor_right = cursor_left.saturating_add(16);
+
+                    if cursor_top < shield_bottom
+                        && cursor_bottom > shield_top
+                        && cursor_left < shield_right
+                        && cursor_right > shield_left
+                    {
+                        self.cursor_level = self.cursor_level.saturating_sub(1);
+                        self.cursor_visible = false;
+                    }
+                }
                 Ok(())
             }
 
@@ -23017,10 +23036,10 @@ mod tests {
     }
 
     #[test]
-    fn shield_cursor_pops_eight_bytes_and_preserves_cursor_state_in_hle() {
+    fn shield_cursor_hides_intersecting_cursor_and_pops_eight_bytes() {
         // IM:I I-474 signature: ShieldCursor(shieldRect: Rect; offsetPt: Point).
-        // HLE contract: consume arguments but leave cursor level/visibility
-        // unchanged (host-rendered cursor, no guest-side intersection model).
+        // The local rectangle is offset into global coordinates and intersects
+        // the current cursor bounds, so the cursor level decrements.
         let (mut d, mut cpu, mut bus) = setup();
         let shield_rect_ptr = 0x340000u32;
         write_rect(&mut bus, shield_rect_ptr, 100, 120, 200, 220);
@@ -23028,14 +23047,38 @@ mod tests {
         bus.write_word(TEST_SP + 2, 34); // offsetPt.h
         bus.write_long(TEST_SP + 4, shield_rect_ptr);
 
-        d.cursor_level = -2;
-        d.cursor_visible = false;
+        d.set_mouse_position(150, 180);
+        d.cursor_level = 0;
+        d.cursor_visible = true;
 
         let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
-        assert_eq!(d.cursor_level, -2);
+        assert_eq!(d.cursor_level, -1);
         assert!(!d.cursor_visible);
+    }
+
+    #[test]
+    fn shield_cursor_preserves_nonintersecting_cursor_state() {
+        // IM:I I-474: a stationary cursor outside the shield rectangle
+        // remains visible. The local rectangle is offset well away from
+        // the current cursor bounds.
+        let (mut d, mut cpu, mut bus) = setup();
+        let shield_rect_ptr = 0x340000u32;
+        write_rect(&mut bus, shield_rect_ptr, 100, 120, 200, 220);
+        bus.write_word(TEST_SP, 12); // offsetPt.v
+        bus.write_word(TEST_SP + 2, 34); // offsetPt.h
+        bus.write_long(TEST_SP + 4, shield_rect_ptr);
+
+        d.set_mouse_position(20, 30);
+        d.cursor_level = 0;
+        d.cursor_visible = true;
+
+        let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(d.cursor_level, 0);
+        assert!(d.cursor_visible);
     }
 
     #[test]
