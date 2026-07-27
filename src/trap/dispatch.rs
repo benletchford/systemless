@@ -51,6 +51,13 @@ pub(crate) struct RecentFileRead {
     pub(crate) bytes_read: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingFileCompletion {
+    pub(crate) parameter_block: u32,
+    pub(crate) completion_addr: u32,
+    pub(crate) result: i16,
+}
+
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
 // to toggle these at runtime cannot — values are read ONCE at first call.
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1208,6 +1215,9 @@ pub struct TrapDispatcher {
     pub(crate) file_positions: HashMap<u16, usize>,
     /// Most recent successful PBRead/FSRead from a data fork.
     pub(crate) recent_file_read: Option<RecentFileRead>,
+    /// Completed asynchronous File Manager requests awaiting `ioResult`
+    /// publication and optional completion-procedure delivery.
+    pub(crate) pending_file_completions: VecDeque<PendingFileCompletion>,
     /// Set of VFS keys whose `ioFlAttrib` lock bit is set.
     /// Maintained by SetFilLock/HSetFLock ($A041/$A241) and
     /// RstFilLock/HRstFLock ($A042/$A242); read by
@@ -2734,6 +2744,7 @@ impl TrapDispatcher {
             write_refnums: HashSet::new(),
             file_positions: HashMap::new(),
             recent_file_read: None,
+            pending_file_completions: VecDeque::new(),
             locked_files: HashSet::new(),
             next_refnum: 100,
             mmu_mode: 1,                      // true32b — 32-bit addressing by default
