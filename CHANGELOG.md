@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.1](https://github.com/benletchford/systemless/compare/v0.7.0...v0.7.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* activate queued launches when caller exits ([0b8c40a](https://github.com/benletchford/systemless/commit/0b8c40a1890714df2e05d53b9fed44d48eb7f2c6))
+* correct sound doubleback argument order ([f390999](https://github.com/benletchford/systemless/commit/f39099990f19c64e90c297c1d584a900e0d0ef64))
+* deliver asynchronous file read completions ([49759a4](https://github.com/benletchford/systemless/commit/49759a4ffb1e2eeea5983f1de3a56a8942ab4e67))
+* honor ShieldCursor intersection visibility ([b27a3f3](https://github.com/benletchford/systemless/commit/b27a3f386ab7c9c214c343a0574631d531bb5b11))
+* initialize QuickDraw cursor vectors ([5117ad4](https://github.com/benletchford/systemless/commit/5117ad435dedb15959dd87dc3e9e30518c77fc19))
+* initialize shield cursor vector ([66faeef](https://github.com/benletchford/systemless/commit/66faeef1fe7af40f6254fa8b552d172c00e2fde6))
+* initialize show cursor vector ([0670e85](https://github.com/benletchford/systemless/commit/0670e85fa26924cbd822bde50f4a433e06491829))
+* initialize swap mmu trap vector ([b3395ae](https://github.com/benletchford/systemless/commit/b3395ae23e5e125000268fd5ec9d3cfb04214587))
+* interleave sub-vbl timer callbacks ([0d3a3fe](https://github.com/benletchford/systemless/commit/0d3a3fe2e8e87c4051f71a066f85967ab5c94b25))
+* isolate sound callback trampolines ([3c08c52](https://github.com/benletchford/systemless/commit/3c08c523978e2cb92c0e4e2378750d8976d02e22))
+* **memory:** keep application allocations inside the zone boundary ([76dbf1e](https://github.com/benletchford/systemless/commit/76dbf1e0f5f8c29effd33b8f695b78a2317780c1))
+* pace self-reprimed timer tasks ([48494fb](https://github.com/benletchford/systemless/commit/48494fb274f846e23e2459a69b245c881bb6773a))
+* preserve concurrent timer callbacks ([69e6402](https://github.com/benletchford/systemless/commit/69e64027a54bbef4808c6791023d869ff082ec55))
+* preserve sub-vbl timer deadlines ([284495f](https://github.com/benletchford/systemless/commit/284495f9361699a4f3a8cb26d5cd263143d7ed4c))
+* prioritize overdue timer callbacks ([95fad8f](https://github.com/benletchford/systemless/commit/95fad8fed3ef017e74469e7adc9b0ddbce6d7a28))
+* **quickdraw:** support packed indexed CopyBits sources ([d211fa4](https://github.com/benletchford/systemless/commit/d211fa4202d73d883c1ab991bb16a38549d76ecf))
+* resolve menu definition procedure handles ([25f7829](https://github.com/benletchford/systemless/commit/25f7829412190352ff4dbac737b399fd0b145d6e))
+* stabilize centered fullscreen margins ([f5fffd0](https://github.com/benletchford/systemless/commit/f5fffd0696ae6262485553a3ca9ae23bf9c7293e))
+* **window:** expose the legacy window manager port layout ([dcac552](https://github.com/benletchford/systemless/commit/dcac552bc0d1956c893c5b8e330463d2b4bd731e))
+
 ## [0.7.0](https://github.com/benletchford/systemless/compare/v0.6.0...v0.7.0) (2026-07-26)
 
 
