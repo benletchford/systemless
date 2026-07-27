@@ -4757,8 +4757,8 @@ impl FixtureRunner {
         //
         // Trampoline layout (34 bytes):
         //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)  ; 48E7 F0F0 (save regs)
-        //   +4:  MOVE.L  #chanPtr,-(SP)       ; 2F3C xxxx xxxx (Pascal param1 = deeper)
-        //   +10: MOVE.L  #exhaustedBuf,-(SP) ; 2F3C xxxx xxxx (Pascal param2 = top)
+        //   +4:  MOVE.L  #exhaustedBuf,-(SP) ; 2F3C xxxx xxxx (push param2 first)
+        //   +10: MOVE.L  #chanPtr,-(SP)       ; 2F3C xxxx xxxx (param1 nearest return)
         //   +16: JSR     callback             ; 4EB9 xxxx xxxx
         //   +22: MOVEA.L #savedRegsSP,A7      ; ignore guest callback cleanup convention
         //   +28: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F (restore regs)
@@ -4768,9 +4768,9 @@ impl FixtureRunner {
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
             self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
             self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                    // +6..+9: chan ptr (patched)
+                                                    // +6..+9: exhausted buf ptr (patched)
             self.bus.write_word(tramp + 10, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                     // +12..+15: exhausted buf ptr (patched)
+                                                     // +12..+15: chan ptr (patched)
             self.bus.write_word(tramp + 16, 0x4EB9); // JSR abs.L
                                                      // +18..+21: callback addr (patched)
             self.bus.write_word(tramp + 22, 0x2E7C); // MOVEA.L #savedSP,A7
@@ -4784,8 +4784,11 @@ impl FixtureRunner {
         let tramp = self.sound_doubleback_trampoline;
         let interrupted_sp = self.cpu.read_reg(Register::A7);
         let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
-        self.bus.write_long(tramp + 6, cb.chan_ptr);
-        self.bus.write_long(tramp + 12, exhausted_buf_ptr);
+        // Classic Pascal pushes parameters right-to-left. At callback entry,
+        // after JSR has stacked the return address, chan is at SP+4 and the
+        // exhausted buffer is at SP+8. Sound 1994, 2-153.
+        self.bus.write_long(tramp + 6, exhausted_buf_ptr);
+        self.bus.write_long(tramp + 12, cb.chan_ptr);
         self.bus.write_long(tramp + 18, cb.callback_addr);
         self.bus.write_long(tramp + 24, saved_regs_sp);
 
@@ -7996,13 +7999,13 @@ mod tests {
         let saved_regs_sp = interrupted_sp - 4 - 32;
         assert_eq!(
             runner.bus.read_long(saved_regs_sp - 4),
-            chan_ptr,
-            "first declared Pascal argument is deeper on the stack"
+            exhausted_buf_ptr,
+            "the last declared Pascal argument is pushed first"
         );
         assert_eq!(
             runner.bus.read_long(saved_regs_sp - 8),
-            exhausted_buf_ptr,
-            "last declared Pascal argument is nearest the return address"
+            chan_ptr,
+            "the first declared Pascal argument is nearest the return address"
         );
     }
 
