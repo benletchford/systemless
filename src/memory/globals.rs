@@ -110,19 +110,21 @@ pub mod addr {
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
     pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
     pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
-    /// Private QuickDraw compatibility hook at `$0574`.
+    /// JHideCursor: QuickDraw glue vector for HideCursor.
     ///
-    /// The clean-room Executor low-memory table names this `JUnknown574` and
-    /// initializes it to a no-argument no-op callback.
-    pub const J_UNKNOWN_574: u32 = 0x0574;
-    /// QuickDraw cursor bottleneck vectors (ProcPtr).
+    /// The classic low-memory vector table places the argument-free
+    /// `JHideCursor` bottleneck at `$0800`, immediately below `JShowCursor`.
     pub const J_HIDE_CURSOR: u32 = 0x0800;
-    pub const J_SHOW_CURSOR: u32 = 0x0804;
-    /// JShieldCursor: address of QuickDraw's cursor-shielding bottleneck.
+    /// JShowCursor: QuickDraw glue vector for ShowCursor.
     ///
-    /// The classic low-memory vector table places `JShieldCursor` at `$0808`.
-    /// MPW Quickdraw.h declares its Pascal callback ABI as four 16-bit
-    /// rectangle coordinates: left, top, right, bottom.
+    /// The low-memory globals table in On Macintosh Programming: Advanced
+    /// Techniques (1990) identifies `JShowCursor` at `$0804`.
+    pub const J_SHOW_CURSOR: u32 = 0x0804;
+    /// JShieldCursor: address of QuickDraw's low-level cursor shielding
+    /// procedure (QDJShieldCursorProcPtr).
+    ///
+    /// MPW Universal Interfaces Quickdraw.h declares this callback as four
+    /// Pascal INTEGER arguments: left, top, right, and bottom.
     pub const J_SHIELD_CURSOR: u32 = 0x0808;
     /// JSwapFont: address of the Font Manager's FMSwapFont routine (ProcPtr).
     ///
@@ -148,6 +150,13 @@ pub mod addr {
     pub const FS_Q_HDR: u32 = 0x0360; // File I/O queue header
     pub const CUR_DIR_STORE: u32 = 0x0398; // Directory ID of directory last opened (long) - Inside Macintosh Volume IV, IV-72
     pub const FS_FCB_LEN: u32 = 0x03F6; // Size of a file control block (word) - Files 1992, 2-384
+
+    /// Callable OS trap-table entry for SwapMMUMode ($A05D).
+    ///
+    /// Inside Macintosh Volume V, V-593 identifies SwapMMUMode as trap
+    /// `$A05D`. OS trap-table entries begin at `$0400`, so selector `$5D`
+    /// occupies `$0400 + ($5D * 4) = $0574`.
+    pub const SWAP_MMU_MODE_TRAP: u32 = 0x0574;
 
     // Memory Manager globals (for NewPtr, etc.)
     pub const APP_L_ZONE: u32 = 0x02AA; // Application zone (ptr)
