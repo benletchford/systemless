@@ -712,6 +712,12 @@ pub(crate) struct LoadSegGetResourceState {
     pub a_regs: [u32; 8],
 }
 
+/// Stack size handed to a cooperative thread when `NewThread` is passed 0
+/// and the size reported by `GetDefaultThreadStackSize`. The 68K Thread
+/// Manager's own default is a small multiple of a page; 32K comfortably
+/// covers the Toolbox call depth Systemless threads reach.
+pub(crate) const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
+
 /// Saved 68K state for one cooperative Thread Manager thread.
 ///
 /// Cooperative switches occur only inside `_ThreadDispatch`, so the HLE can
@@ -724,8 +730,21 @@ pub(crate) struct CooperativeThread {
     pub(crate) a_regs: [u32; 8],
     pub(crate) pc: u32,
     pub(crate) ccr: u8,
+    /// `ThreadState` from Threads.h: 0 ready, 1 stopped, 2 running.
     pub(crate) state: u16,
+    /// `void **threadResult` the entry proc's return value is stored to.
     pub(crate) result_destination: u32,
+    /// Lowest address of the private guest stack, or 0 for the
+    /// application thread, which keeps the process stack.
+    pub(crate) stack_base: u32,
+    /// Address one past the top of the private guest stack.
+    pub(crate) stack_limit: u32,
+    /// `SetThreadSwitcher` switch-in proc and its `switchProcParam`.
+    pub(crate) switch_in: (u32, u32),
+    /// `SetThreadSwitcher` switch-out proc and its `switchProcParam`.
+    pub(crate) switch_out: (u32, u32),
+    /// `SetThreadTerminator` proc and its `terminationProcParam`.
+    pub(crate) terminator: (u32, u32),
 }
 
 /// In-flight AppleEvent handler call. Built by Pack8 routine 27
@@ -1130,6 +1149,14 @@ pub struct TrapDispatcher {
     pub(crate) next_cooperative_thread_id: u32,
     /// Guest trampoline entered when a ThreadEntryProc returns.
     pub(crate) thread_return_trampoline: u32,
+    /// Custom `ThreadSchedulerProcPtr` installed by `SetThreadScheduler`.
+    pub(crate) cooperative_thread_scheduler: u32,
+    /// Default cooperative stack size reported by
+    /// `GetDefaultThreadStackSize` and used when `NewThread` is passed 0.
+    pub(crate) cooperative_thread_stack_size: u32,
+    /// Cooperative stacks banked by `CreateThreadPool` and recycled by
+    /// `DisposeThread`, reused by `NewThread` before allocating.
+    pub(crate) cooperative_thread_pool: Vec<(u32, u32)>,
     /// Synthetic Component Manager instances opened for HLE-provided
     /// components such as the QuickTime movie controller.
     pub(crate) synthetic_component_instances: HashSet<u32>,
@@ -2733,6 +2760,9 @@ impl TrapDispatcher {
             current_cooperative_thread: 2,
             next_cooperative_thread_id: 3,
             thread_return_trampoline: 0,
+            cooperative_thread_scheduler: 0,
+            cooperative_thread_stack_size: DEFAULT_COOPERATIVE_THREAD_STACK_SIZE,
+            cooperative_thread_pool: Vec::new(),
             synthetic_component_instances: HashSet::new(),
             next_synthetic_component_instance: 0x00C1_0001,
             saved_draw_old_regions: HashMap::new(),
