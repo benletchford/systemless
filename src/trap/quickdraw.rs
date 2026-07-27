@@ -3371,6 +3371,19 @@ impl super::TrapDispatcher {
                         bus.write_bytes(dst_addr, &src_row);
                     }
                     if dst_info.base == self.screen_mode.0 {
+                        self.fill_kiosk_letterbox_for_copybits(
+                            bus,
+                            ScreenCopyBitsRect {
+                                src_top,
+                                src_left,
+                                src_bottom,
+                                src_right,
+                                dst_top,
+                                dst_left,
+                                dst_bottom,
+                                dst_right,
+                            },
+                        );
                         self.refresh_dialog_saved_pixels_after_screen_draw(
                             bus,
                             self.current_port,
@@ -3930,6 +3943,19 @@ impl super::TrapDispatcher {
                     }
                 }
                 if dst_info.base == self.screen_mode.0 {
+                    self.fill_kiosk_letterbox_for_copybits(
+                        bus,
+                        ScreenCopyBitsRect {
+                            src_top,
+                            src_left,
+                            src_bottom,
+                            src_right,
+                            dst_top,
+                            dst_left,
+                            dst_bottom,
+                            dst_right,
+                        },
+                    );
                     self.refresh_dialog_saved_pixels_after_screen_draw(
                         bus,
                         self.current_port,
@@ -18344,6 +18370,87 @@ impl super::TrapDispatcher {
         });
     }
 
+    fn fill_kiosk_letterbox_for_copybits(&self, bus: &mut MacMemoryBus, rect: ScreenCopyBitsRect) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) = self.screen_mode;
+        let src_width = rect.src_right.saturating_sub(rect.src_left);
+        let src_height = rect.src_bottom.saturating_sub(rect.src_top);
+        let dst_width = rect.dst_right.saturating_sub(rect.dst_left);
+        let dst_height = rect.dst_bottom.saturating_sub(rect.dst_top);
+        let large = dst_width >= (screen_width as i16 / 2).max(1)
+            && dst_height >= (screen_height as i16 / 2).max(1);
+        let centered = rect.dst_left >= 0
+            && rect.dst_top >= 0
+            && (screen_width as i16 - rect.dst_right - rect.dst_left).abs() <= 1
+            && (screen_height as i16 - rect.dst_bottom - rect.dst_top).abs() <= 1;
+        if !self.menu_bar_hidden
+            || !large
+            || !centered
+            || src_width != dst_width
+            || src_height != dst_height
+            || (dst_width >= screen_width as i16 && dst_height >= screen_height as i16)
+        {
+            return;
+        }
+
+        // A game can install a palette where the conventional index 255 is
+        // no longer black. Derive the margin index from the active hardware
+        // CLUT after the blit has completed; doing this before an overlapping
+        // screen-to-screen CopyBits would destroy source pixels.
+        let black_index = self
+            .device_clut
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
+            .map(|(index, _)| index as u8)
+            .unwrap_or(255);
+        for (top, left, bottom, right) in [
+            (0, 0, rect.dst_top, screen_width as i16),
+            (
+                rect.dst_bottom,
+                0,
+                screen_height as i16,
+                screen_width as i16,
+            ),
+            (rect.dst_top, 0, rect.dst_bottom, rect.dst_left),
+            (
+                rect.dst_top,
+                rect.dst_right,
+                rect.dst_bottom,
+                screen_width as i16,
+            ),
+        ] {
+            if pixel_size == 8 {
+                Self::fb_fill_rect_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width as i16,
+                    screen_height as i16,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    black_index,
+                );
+            } else {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width as i16,
+                    screen_height as i16,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    true,
+                );
+            }
+        }
+    }
+
     /// Address of a replacement `grafProcs.bitsProc` on the current port, or
     /// `None` when the standard StdBits bottleneck is in force.
     ///
@@ -21392,7 +21499,7 @@ mod tests {
     use crate::display::CursorImage;
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::{
-        DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap,
+        DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap, ScreenCopyBitsRect,
     };
     use crate::trap::quickdraw::CopyBitmapInfo;
     use crate::trap::types::{Rect, ShapeOp};
@@ -21423,6 +21530,108 @@ mod tests {
             bus.read_word(addr + 4) as i16,
             bus.read_word(addr + 6) as i16,
         )
+    }
+
+    fn centered_640x480_copybits_rect() -> ScreenCopyBitsRect {
+        ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: 60,
+            dst_left: 80,
+            dst_bottom: 540,
+            dst_right: 720,
+        }
+    }
+
+    #[test]
+    fn centered_kiosk_copybits_fills_only_margins_with_active_clut_black() {
+        let (mut d, _cpu, mut bus) = setup();
+        let (screen_base, row_bytes, width, height, _) = d.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x7F);
+        d.menu_bar_hidden = true;
+        d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        d.device_clut[37] = [0, 0, 0];
+
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+
+        assert_eq!(bus.read_byte(screen_base), 37);
+        assert_eq!(
+            bus.read_byte(screen_base + 300 * row_bytes + 10),
+            37,
+            "side margin should use the darkest active CLUT entry"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 300 * row_bytes + 400),
+            0x7F,
+            "the completed CopyBits destination must remain untouched"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + (u32::from(height) - 1) * row_bytes + u32::from(width) - 1),
+            37
+        );
+    }
+
+    #[test]
+    fn kiosk_letterbox_ignores_fullscreen_off_center_and_menu_visible_blits() {
+        let cases = [
+            (
+                ScreenCopyBitsRect {
+                    src_top: 0,
+                    src_left: 0,
+                    src_bottom: 600,
+                    src_right: 800,
+                    dst_top: 0,
+                    dst_left: 0,
+                    dst_bottom: 600,
+                    dst_right: 800,
+                },
+                true,
+            ),
+            (
+                ScreenCopyBitsRect {
+                    dst_left: 40,
+                    dst_right: 680,
+                    ..centered_640x480_copybits_rect()
+                },
+                true,
+            ),
+            (
+                ScreenCopyBitsRect {
+                    src_bottom: 240,
+                    src_right: 320,
+                    ..centered_640x480_copybits_rect()
+                },
+                true,
+            ),
+            (
+                ScreenCopyBitsRect {
+                    src_bottom: 100,
+                    src_right: 100,
+                    dst_top: 250,
+                    dst_left: 350,
+                    dst_bottom: 350,
+                    dst_right: 450,
+                    ..centered_640x480_copybits_rect()
+                },
+                true,
+            ),
+            (centered_640x480_copybits_rect(), false),
+        ];
+
+        for (rect, menu_bar_hidden) in cases {
+            let (mut d, _cpu, mut bus) = setup();
+            let (screen_base, row_bytes, _, height, _) = d.screen_mode;
+            bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x7F);
+            d.menu_bar_hidden = menu_bar_hidden;
+            d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+            d.device_clut[37] = [0, 0, 0];
+
+            d.fill_kiosk_letterbox_for_copybits(&mut bus, rect);
+
+            assert_eq!(bus.read_byte(screen_base), 0x7F);
+        }
     }
 
     #[test]
