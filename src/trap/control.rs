@@ -1976,6 +1976,28 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Read a Pascal `BOOLEAN` parameter from its two-byte stack slot.
+    ///
+    /// Inside Macintosh Volume I, I-331 declares parameters such as
+    /// `NewControl`'s `visible` as `BOOLEAN`, which is one byte, but the 68K
+    /// stack keeps word alignment so the caller pushes two. Compilers differ
+    /// on which half they write and leave the other undefined: MPW C leaves
+    /// the flag in the high byte, while Dark Castle's build writes it in the
+    /// low byte and zeroes the high one (`$00FF` for TRUE). Reading a fixed
+    /// half therefore misreads one of the two — taking the high byte makes
+    /// every Dark Castle control invisible, so its Play/Demo/Quit buttons and
+    /// Novice/Beginner/Intermediate/Advanced radios never draw.
+    ///
+    /// A `BOOLEAN` is false only when it is zero, so treat the slot as true
+    /// when either byte is set. That is exactly the set of values a caller
+    /// can mean by TRUE, and it leaves the high-byte convention unchanged.
+    ///
+    /// Regression coverage:
+    ///   src/trap/control.rs::tests::newcontrol_accepts_a_visible_flag_in_either_byte
+    fn read_pascal_boolean(bus: &MacMemoryBus, addr: u32) -> bool {
+        bus.read_word(addr) != 0
+    }
+
     pub(crate) fn dispatch_control<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -1996,9 +2018,7 @@ impl super::TrapDispatcher {
                 let window_ptr = bus.read_long(sp + 22);
                 let bounds_ptr = bus.read_long(sp + 18);
                 let title_ptr = bus.read_long(sp + 14);
-                // Read Pascal BOOLEAN as the HIGH byte of its 2-byte stack slot
-                // (MPW C convention).
-                let visible = bus.read_byte(sp + 12) != 0;
+                let visible = Self::read_pascal_boolean(bus, sp + 12);
                 let value = bus.read_word(sp + 10) as i16;
                 let min = bus.read_word(sp + 8) as i16;
                 let max = bus.read_word(sp + 6) as i16;
@@ -3455,6 +3475,78 @@ mod tests {
         let result = disp.dispatch_control(true, 0x154, cpu, bus);
         assert!(result.unwrap().is_ok());
         bus.read_long(cpu.read_reg(Register::A7))
+    }
+
+    /// IM:I I-331 declares `NewControl`'s `visible` as a `BOOLEAN`, which is
+    /// one byte in a word-aligned stack slot. MPW C writes the flag in the
+    /// high byte; Dark Castle's build writes it in the low byte and zeroes
+    /// the high one, so a fixed-half read makes every one of its controls
+    /// invisible and none of them draw.
+    #[test]
+    fn newcontrol_accepts_a_visible_flag_in_either_byte() {
+        for (label, word) in [
+            ("high byte (MPW C)", 0xFF00u16),
+            ("low byte (Dark Castle)", 0x00FFu16),
+            ("both bytes", 0xFFFFu16),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let sp = 0x300000u32;
+            let window_ptr = bus.alloc(200);
+            let bounds_ptr = bus.alloc(8);
+            for (i, v) in [276i16, 20, 292, 87].iter().enumerate() {
+                bus.write_word(bounds_ptr + (i as u32) * 2, *v as u16);
+            }
+            let title_ptr = bus.alloc(16);
+            bus.write_byte(title_ptr, 4);
+            bus.write_bytes(title_ptr + 1, b"Play");
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, 0);
+            bus.write_word(sp + 4, 0); // pushButProc
+            bus.write_word(sp + 6, 1);
+            bus.write_word(sp + 8, 0);
+            bus.write_word(sp + 10, 0);
+            bus.write_word(sp + 12, word);
+            bus.write_long(sp + 14, title_ptr);
+            bus.write_long(sp + 18, bounds_ptr);
+            bus.write_long(sp + 22, window_ptr);
+
+            disp.dispatch_control(true, 0x154, &mut cpu, &mut bus)
+                .expect("NewControl handled")
+                .expect("NewControl returns");
+
+            let handle = bus.read_long(sp + 26);
+            let ctrl_ptr = bus.read_long(handle);
+            assert_eq!(
+                bus.read_byte(ctrl_ptr + 16),
+                255,
+                "contrlVis must be 255 for a TRUE visible flag in the {} slot",
+                label
+            );
+        }
+
+        // A genuinely FALSE flag stays invisible.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = 0x300000u32;
+        let bounds_ptr = bus.alloc(8);
+        let title_ptr = bus.alloc(4);
+        bus.write_byte(title_ptr, 0);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 1);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 0);
+        bus.write_word(sp + 12, 0x0000);
+        bus.write_long(sp + 14, title_ptr);
+        bus.write_long(sp + 18, bounds_ptr);
+        bus.write_long(sp + 22, 0);
+        disp.dispatch_control(true, 0x154, &mut cpu, &mut bus)
+            .expect("NewControl handled")
+            .expect("NewControl returns");
+        let handle = bus.read_long(sp + 26);
+        let ctrl_ptr = bus.read_long(handle);
+        assert_eq!(bus.read_byte(ctrl_ptr + 16), 0, "FALSE stays invisible");
     }
 
     fn make_control_ctab_handle(bus: &mut MacMemoryBus) -> u32 {
