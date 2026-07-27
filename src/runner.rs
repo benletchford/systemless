@@ -513,6 +513,7 @@ enum ActiveInterruptCallbackSource {
     SoundCallback,
     SoundFileCompletion,
     SoundDoubleBack,
+    FileCompletion,
     DialogDrawProc,
     DialogFilterProc,
     MenuHook,
@@ -742,6 +743,9 @@ pub struct FixtureRunner {
     /// Guest-memory address of the SndStartFilePlay completion trampoline.
     /// Allocated once on first use and reused for all file completion routines.
     sound_file_completion_trampoline: u32,
+    /// Guest-memory trampoline used to invoke File Manager asynchronous
+    /// completion procedures.
+    file_completion_trampoline: u32,
     /// Guest-memory address of the dialog userItem draw proc trampoline (26 bytes).
     /// Allocated once on first use and reused for all subsequent draw proc calls.
     dialog_draw_trampoline: u32,
@@ -831,6 +835,7 @@ impl FixtureRunner {
             sound_doubleback_trampoline: 0,
             sound_callback_trampoline: 0,
             sound_file_completion_trampoline: 0,
+            file_completion_trampoline: 0,
             dialog_draw_trampoline: 0,
             dialog_filter_trampoline: 0,
             menu_hook_trampoline: 0,
@@ -1783,10 +1788,14 @@ impl FixtureRunner {
         Ok(())
     }
 
-    fn service_pending_launch_application(&mut self, event_yield_reached: bool) -> bool {
+    fn service_pending_launch_application(
+        &mut self,
+        event_yield_reached: bool,
+        caller_exited: bool,
+    ) -> bool {
         let Some(path) = self
             .dispatcher
-            .take_pending_launch_application(event_yield_reached)
+            .take_pending_launch_application(event_yield_reached, caller_exited)
         else {
             return false;
         };
@@ -2229,6 +2238,22 @@ impl FixtureRunner {
         self.bus.write_word(show_cursor_trampoline + 2, 0x4E75); // RTS
         self.bus
             .write_long(addr::J_SHOW_CURSOR, show_cursor_trampoline);
+        // JShieldCursor ($0808): low-level QuickDraw cursor-shielding vector.
+        // MPW Universal Interfaces Quickdraw.h declares QDJShieldCursorProcPtr
+        // as a Pascal procedure taking four INTEGER values (left, top, right,
+        // bottom). These occupy the same eight stack bytes consumed by the
+        // ShieldCursor ($A855) HLE. Pop the JSR return address before entering
+        // the trap, then jump back after the trap consumes that payload.
+        // Inside Macintosh Volume I, I-474; MPW Quickdraw.h.
+        let shield_cursor_trampoline = self.bus.alloc(6);
+        self.bus
+            .write_word(shield_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus
+            .write_word(shield_cursor_trampoline + 2, 0xA855); // ShieldCursor
+        self.bus
+            .write_word(shield_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus
+            .write_long(addr::J_SHIELD_CURSOR, shield_cursor_trampoline);
 
         // JSwapFont ($08E0): private Font Manager vector used by QuickDraw to
         // call FMSwapFont directly. Executor's clean-room low-memory table
@@ -2707,6 +2732,13 @@ impl FixtureRunner {
                 break;
             }
 
+            // File Manager async completions are interrupt work. Deliver a
+            // completed request before the foreground application can inspect
+            // or reuse its parameter block.
+            if !sound_work_only && self.active_interrupt_callback.is_none() {
+                self.fire_file_completion_callback();
+            }
+
             // Sound callbacks are interrupt work. If a previous slice queued
             // one, dispatch it before running more foreground guest code. Do
             // not drain the whole queue in one CPU slice: double-buffer
@@ -2725,6 +2757,13 @@ impl FixtureRunner {
 
             if sound_work_only && self.active_interrupt_callback.is_none() {
                 break;
+            }
+
+            if !sound_work_only && self.active_interrupt_callback.is_none() {
+                self.fire_timer_tasks_at(self.current_timer_subtick());
+                if self.active_interrupt_callback.is_some() {
+                    continue;
+                }
             }
 
             // Service blocking traps (Delay, WaitNextEvent sleep).
@@ -3286,7 +3325,7 @@ impl FixtureRunner {
                             self.dispatcher.trap_histogram[idx].saturating_add(1);
                         self.dispatcher.inline_skipped[idx] =
                             self.dispatcher.inline_skipped[idx].saturating_add(1);
-                        if self.service_pending_launch_application(true) {
+                        if self.service_pending_launch_application(true, false) {
                             if self.halted {
                                 return (count, false);
                             }
@@ -3457,9 +3496,10 @@ impl FixtureRunner {
                             // Service any pending Delay ticks immediately after
                             // the trap dispatch, before the next instruction.
                             self.service_delay_ticks(tick_cap);
-                            if self.service_pending_launch_application(event_manager_yield_trap(
-                                opcode,
-                            )) {
+                            if self.service_pending_launch_application(
+                                event_manager_yield_trap(opcode),
+                                false,
+                            ) {
                                 if self.halted {
                                     return (count, false);
                                 }
@@ -3467,6 +3507,14 @@ impl FixtureRunner {
                             }
                         }
                         Err(Error::Halted) => {
+                            if matches!(opcode, 0xA9F2 | 0xA9F4)
+                                && self.service_pending_launch_application(false, true)
+                            {
+                                if self.halted {
+                                    return (count, false);
+                                }
+                                continue;
+                            }
                             // Surface the auto-pop caller PC if the
                             // halted trap was called via JSR through a
                             // trampoline. Without this, the halt log
@@ -4214,21 +4262,54 @@ impl FixtureRunner {
     ///   4. Restores D0-D3/A0-A3 via MOVEM.L from the stack
     ///   5. RTS back to the interrupted code
     fn fire_timer_tasks(&mut self, current_tick: u32) {
+        self.fire_timer_tasks_at(current_tick as u64 * 1_000_000);
+    }
+
+    fn current_timer_subtick(&self) -> u64 {
+        const SUBTICKS_PER_TICK: u64 = 1_000_000;
+        let tick_base = self.guest_tick() as u64 * SUBTICKS_PER_TICK;
+        if self.tick_budget <= 0 {
+            return tick_base;
+        }
+        let instructions_per_tick = self.instructions_per_tick.max(1) as i64;
+        let remaining = (self.tick_budget as i64).clamp(0, instructions_per_tick);
+        let elapsed = instructions_per_tick - remaining;
+        tick_base + (elapsed as u64 * SUBTICKS_PER_TICK) / instructions_per_tick as u64
+    }
+
+    fn fire_timer_tasks_at(&mut self, current_subtick: u64) {
         if self.active_interrupt_callback.is_some() {
             return;
         }
 
-        // Collect tasks that need to fire (avoid borrow issues)
-        let mut to_fire: Vec<(u32, u32)> = Vec::new(); // (task_ptr, tm_addr)
-        for task in &mut self.dispatcher.timer_tasks {
-            if task.active && current_tick >= task.fire_at_tick {
-                to_fire.push((task.task_ptr, task.tm_addr));
-                task.active = false; // Mark as fired; callback may re-prime
-            }
-        }
+        const SUBTICKS_PER_TICK: u64 = 1_000_000;
+        let current_tick = (current_subtick / SUBTICKS_PER_TICK) as u32;
+        // Fire at most one task at a time to avoid nested callbacks.
+        if let Some(task) = self
+            .dispatcher
+            .timer_tasks
+            .iter_mut()
+            .filter(|task| {
+                task.active
+                    && current_subtick >= task.fire_at_subtick
+                    && task.last_fired_tick != Some(current_tick)
+            })
+            .min_by_key(|task| task.fire_at_subtick)
+        {
+            let task_ptr = task.task_ptr;
+            let tm_addr = task.tm_addr;
+            self.dispatcher.timer_current_subtick = current_subtick;
+            // Mark only the task being delivered as fired. Other tasks that
+            // expire on the same tick must remain active for a later interrupt.
+            task.active = false;
+            task.last_fired_tick = Some(current_tick);
+            // The revised Time Manager clears the qType active bit when the
+            // delay expires, before invoking tmAddr. A callback can therefore
+            // observe that its task is inactive and safely PrimeTime it again.
+            // Inside Macintosh: Processes (1994), pp. 3-6 and 3-20.
+            let q_type = self.bus.read_word(task_ptr + 4);
+            self.bus.write_word(task_ptr + 4, q_type & 0x7FFF);
 
-        // Fire at most one task per tick to avoid deep nesting
-        if let Some((task_ptr, tm_addr)) = to_fire.into_iter().next() {
             if tm_addr == 0 {
                 return;
             }
@@ -4308,6 +4389,8 @@ impl FixtureRunner {
                 );
             }
             self.cpu.write_reg(Register::PC, tramp);
+        } else {
+            self.dispatcher.timer_current_subtick = current_subtick;
         }
     }
 
@@ -4507,6 +4590,43 @@ impl FixtureRunner {
         self.cpu.write_reg(Register::PC, trampoline);
     }
 
+    /// Publish and optionally deliver one completed asynchronous File Manager
+    /// request.
+    ///
+    /// A File Manager completion procedure receives A0 pointing at the
+    /// parameter block and D0 equal to its final `ioResult`.
+    /// Inside Macintosh: Files (1992), 2-238.
+    fn fire_file_completion_callback(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+
+        let Some(completion) = self.dispatcher.pending_file_completions.pop_front() else {
+            return false;
+        };
+
+        self.bus
+            .write_word(completion.parameter_block + 16, completion.result as u16);
+        if completion.completion_addr == 0 {
+            return false;
+        }
+
+        if self.file_completion_trampoline == 0 {
+            let tramp = self.bus.alloc_synthetic(8);
+            self.bus.write_word(tramp, 0x4EB9); // JSR abs.L
+            self.bus.write_word(tramp + 6, 0x4E75); // RTS
+            self.file_completion_trampoline = tramp;
+        }
+
+        let tramp = self.file_completion_trampoline;
+        self.bus.write_long(tramp + 2, completion.completion_addr);
+        self.inject_interrupt_callback(ActiveInterruptCallbackSource::FileCompletion, tramp);
+        self.cpu.write_reg(Register::A0, completion.parameter_block);
+        self.cpu
+            .write_reg(Register::D0, completion.result as i32 as u32);
+        true
+    }
+
     /// Fire pending Sound Manager callback procedures and file completion routines.
     fn fire_sound_callbacks(&mut self) -> bool {
         if self.active_interrupt_callback.is_some() {
@@ -4547,7 +4667,7 @@ impl FixtureRunner {
                     // pop on return. Push cmdPtr nearest SP and chan beneath it,
                     // then reset SP to the saved-register frame after JSR so
                     // one-arg, two-arg, and C-style cleanup all resume safely.
-                    let tramp = self.bus.alloc(42);
+                    let tramp = self.bus.alloc_synthetic(42);
                     self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
                     self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
                     self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
@@ -4584,7 +4704,7 @@ impl FixtureRunner {
 
                 // Sound 1994, 2-151
                 if self.sound_file_completion_trampoline == 0 {
-                    let tramp = self.bus.alloc(28);
+                    let tramp = self.bus.alloc_synthetic(28);
                     self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
                     self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
                     self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #chan,-(SP)
@@ -4677,20 +4797,20 @@ impl FixtureRunner {
         //
         // Trampoline layout (34 bytes):
         //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)  ; 48E7 F0F0 (save regs)
-        //   +4:  MOVE.L  #chanPtr,-(SP)       ; 2F3C xxxx xxxx (Pascal param1 = deeper)
-        //   +10: MOVE.L  #exhaustedBuf,-(SP) ; 2F3C xxxx xxxx (Pascal param2 = top)
+        //   +4:  MOVE.L  #exhaustedBuf,-(SP) ; 2F3C xxxx xxxx (push param2 first)
+        //   +10: MOVE.L  #chanPtr,-(SP)       ; 2F3C xxxx xxxx (param1 nearest return)
         //   +16: JSR     callback             ; 4EB9 xxxx xxxx
         //   +22: MOVEA.L #savedRegsSP,A7      ; ignore guest callback cleanup convention
         //   +28: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F (restore regs)
         //   +32: RTS                          ; 4E75
         if self.sound_doubleback_trampoline == 0 {
-            let tramp = self.bus.alloc(34);
+            let tramp = self.bus.alloc_synthetic(34);
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
             self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
             self.bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                    // +6..+9: chan ptr (patched)
+                                                    // +6..+9: exhausted buf ptr (patched)
             self.bus.write_word(tramp + 10, 0x2F3C); // MOVE.L #imm,-(SP)
-                                                     // +12..+15: exhausted buf ptr (patched)
+                                                     // +12..+15: chan ptr (patched)
             self.bus.write_word(tramp + 16, 0x4EB9); // JSR abs.L
                                                      // +18..+21: callback addr (patched)
             self.bus.write_word(tramp + 22, 0x2E7C); // MOVEA.L #savedSP,A7
@@ -4704,8 +4824,11 @@ impl FixtureRunner {
         let tramp = self.sound_doubleback_trampoline;
         let interrupted_sp = self.cpu.read_reg(Register::A7);
         let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
-        self.bus.write_long(tramp + 6, cb.chan_ptr);
-        self.bus.write_long(tramp + 12, exhausted_buf_ptr);
+        // Classic Pascal pushes parameters right-to-left. At callback entry,
+        // after JSR has stacked the return address, chan is at SP+4 and the
+        // exhausted buffer is at SP+8. Sound 1994, 2-153.
+        self.bus.write_long(tramp + 6, exhausted_buf_ptr);
+        self.bus.write_long(tramp + 12, cb.chan_ptr);
         self.bus.write_long(tramp + 18, cb.callback_addr);
         self.bus.write_long(tramp + 24, saved_regs_sp);
 
@@ -5992,8 +6115,8 @@ mod tests {
         SndChannel, SndCommand, OUTPUT_RATE,
     };
     use crate::trap::dispatch::{
-        DialogItem, DialogTrackingState, PendingWaitNextEventReturn, QueuedEvent, TimerTask,
-        VblTask,
+        DialogItem, DialogTrackingState, PendingFileCompletion, PendingWaitNextEventReturn,
+        QueuedEvent, TimerTask, VblTask,
     };
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
@@ -6593,10 +6716,10 @@ mod tests {
             .queue_pending_launch_application("Apps/Register Helper", true);
 
         assert!(
-            !runner.service_pending_launch_application(false),
+            !runner.service_pending_launch_application(false, false),
             "launchContinue target must wait for an Event Manager yield"
         );
-        let switched = runner.service_pending_launch_application(true);
+        let switched = runner.service_pending_launch_application(true, false);
 
         assert!(
             switched,
@@ -6675,7 +6798,7 @@ mod tests {
             .dispatcher
             .queue_pending_launch_application("Apps/Register Helper", false);
 
-        let switched = runner.service_pending_launch_application(false);
+        let switched = runner.service_pending_launch_application(false, false);
 
         assert!(
             switched,
@@ -7486,6 +7609,61 @@ mod tests {
     }
 
     #[test]
+    fn init_app_seeds_callable_shield_cursor_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let shield_cursor_trampoline = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_SHIELD_CURSOR);
+        assert_ne!(shield_cursor_trampoline, 0);
+        assert_eq!(
+            [
+                runner.bus.read_word(shield_cursor_trampoline),
+                runner.bus.read_word(shield_cursor_trampoline + 2),
+                runner.bus.read_word(shield_cursor_trampoline + 4),
+            ],
+            [0x205F, 0xA855, 0x4ED0]
+        );
+
+        let args_sp = 0x007F_FE00u32;
+        let return_pc = 0x0002_0000u32;
+        runner.bus.write_word(args_sp, 100); // left
+        runner.bus.write_word(args_sp + 2, 120); // top
+        runner.bus.write_word(args_sp + 4, 500); // right
+        runner.bus.write_word(args_sp + 6, 420); // bottom
+        runner.bus.write_long(args_sp - 4, return_pc);
+        runner.bus.write_word(return_pc, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, shield_cursor_trampoline);
+        runner.cpu.write_reg(Register::A7, args_sp - 4);
+
+        let (steps, running) = runner.run_steps(3, None);
+
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(
+            runner.cpu.read_reg(Register::A7),
+            args_sp + 8,
+            "JShieldCursor should consume its four Pascal INTEGER arguments"
+        );
+    }
+
+    #[test]
     fn cursor_task_noop_vector_does_not_fire_on_guest_tick() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0002_0000;
@@ -7605,12 +7783,15 @@ mod tests {
         runner.cpu.write_reg(Register::A6, 0xCCCC_0000);
         runner.cpu.write_reg(Register::A7, interrupted_sp);
         runner.cpu.core.set_ccr(0x1F);
+        runner.bus.write_word(0x0039_38C8 + 4, 0x8001);
 
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
             tm_addr: 0x0004_1234,
             active: true,
             fire_at_tick: 10,
+            fire_at_subtick: 10_000_000,
+            last_fired_tick: None,
         });
 
         runner.fire_timer_tasks(10);
@@ -7631,6 +7812,11 @@ mod tests {
         assert_eq!(active.d_regs[7], 0x7777_7777);
         assert_eq!(active.sr & 0x001F, 0x001F);
         assert_eq!(active.ccr, 0x1F);
+        assert_eq!(
+            runner.bus.read_word(0x0039_38C8 + 4),
+            1,
+            "an expired Time Manager task must be inactive before tmAddr runs"
+        );
 
         assert_ne!(runner.timer_trampoline, 0);
         assert_eq!(runner.cpu.read_reg(Register::PC), runner.timer_trampoline);
@@ -7656,6 +7842,8 @@ mod tests {
             tm_addr: callback_addr,
             active: true,
             fire_at_tick: 101,
+            fire_at_subtick: 101_000_000,
+            last_fired_tick: None,
         });
 
         let (steps, running) = runner.run_steps(1, Some(101));
@@ -7672,6 +7860,41 @@ mod tests {
             runner.cpu.read_reg(Register::PC),
             runner.timer_trampoline + 4
         );
+    }
+
+    #[test]
+    fn sub_vbl_timer_callback_fires_before_next_guest_tick() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = 0x0002_0000;
+
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S to self
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.tick_budget = runner.instructions_per_tick as i32;
+        runner.dispatcher.timer_tasks.push(TimerTask {
+            task_ptr: 0x0039_38C8,
+            tm_addr: callback_addr,
+            active: true,
+            fire_at_tick: 101,
+            fire_at_subtick: 100_200_000,
+            last_fired_tick: None,
+        });
+
+        let steps = runner.instructions_per_tick as usize / 4;
+        let (executed, running) = runner.run_steps(steps, None);
+        let (_, still_running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert!(still_running);
+        assert_eq!(executed, steps);
+        assert_eq!(runner.guest_tick(), 100);
+        assert!(!runner.dispatcher.timer_tasks[0].active);
+        assert_ne!(runner.timer_trampoline, 0);
     }
 
     #[test]
@@ -7703,6 +7926,8 @@ mod tests {
             tm_addr: callback_addr,
             active: true,
             fire_at_tick: 102,
+            fire_at_subtick: 102_000_000,
+            last_fired_tick: None,
         });
 
         let (steps, running) = runner.run_steps(1, None);
@@ -7724,6 +7949,108 @@ mod tests {
             runner.dispatcher.timer_tasks[0].active,
             "the next due timer should remain queued until foreground code gets a slice"
         );
+    }
+
+    #[test]
+    fn simultaneous_timer_callbacks_keep_undelivered_tasks_active() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.dispatcher.timer_tasks.extend([
+            TimerTask {
+                task_ptr: 0x0039_38C8,
+                tm_addr: 0x0002_0000,
+                active: true,
+                fire_at_tick: 10,
+                fire_at_subtick: 10_000_000,
+                last_fired_tick: None,
+            },
+            TimerTask {
+                task_ptr: 0x0039_3900,
+                tm_addr: 0x0002_1000,
+                active: true,
+                fire_at_tick: 10,
+                fire_at_subtick: 10_000_000,
+                last_fired_tick: None,
+            },
+        ]);
+
+        runner.fire_timer_tasks(10);
+
+        assert!(!runner.dispatcher.timer_tasks[0].active);
+        assert!(
+            runner.dispatcher.timer_tasks[1].active,
+            "a second task due on the same tick must remain queued"
+        );
+
+        // The delivered task may re-prime itself from its callback. It must not
+        // jump ahead of an older task that is still waiting for delivery.
+        runner.dispatcher.timer_tasks[0].active = true;
+        runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
+        runner.dispatcher.timer_tasks[0].fire_at_subtick = 11_000_000;
+        runner.active_interrupt_callback = None;
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        runner.fire_timer_tasks(11);
+
+        assert!(
+            runner.dispatcher.timer_tasks[0].active,
+            "the newly re-primed task must wait behind the older due task"
+        );
+        assert!(!runner.dispatcher.timer_tasks[1].active);
+        assert_eq!(
+            runner.bus.read_long(runner.timer_trampoline + 6),
+            0x0039_3900
+        );
+    }
+
+    #[test]
+    fn self_reprimed_timer_waits_for_the_next_vbl_service() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let task_ptr = 0x0039_38C8;
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.dispatcher.timer_tasks.push(TimerTask {
+            task_ptr,
+            tm_addr: 0x0002_0000,
+            active: true,
+            fire_at_tick: 10,
+            fire_at_subtick: 10_100_000,
+            last_fired_tick: None,
+        });
+
+        runner.fire_timer_tasks_at(10_100_000);
+        assert_eq!(runner.dispatcher.timer_tasks[0].last_fired_tick, Some(10));
+
+        // Model the callback returning and re-priming itself for another
+        // revised Time Manager deadline inside the same VBL.
+        runner.active_interrupt_callback = None;
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.dispatcher.timer_tasks[0].active = true;
+        runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
+        runner.dispatcher.timer_tasks[0].fire_at_subtick = 10_300_000;
+
+        runner.fire_timer_tasks_at(10_300_000);
+        assert!(
+            runner.active_interrupt_callback.is_none(),
+            "one queue element must not monopolize the same VBL"
+        );
+        assert!(runner.dispatcher.timer_tasks[0].active);
+
+        runner.fire_timer_tasks_at(11_000_000);
+        assert!(
+            runner.active_interrupt_callback.is_some(),
+            "the re-primed element becomes eligible at the next VBL service"
+        );
+        assert_eq!(runner.dispatcher.timer_tasks[0].last_fired_tick, Some(11));
     }
 
     #[test]
@@ -7820,13 +8147,13 @@ mod tests {
         let saved_regs_sp = interrupted_sp - 4 - 32;
         assert_eq!(
             runner.bus.read_long(saved_regs_sp - 4),
-            chan_ptr,
-            "first declared Pascal argument is deeper on the stack"
+            exhausted_buf_ptr,
+            "the last declared Pascal argument is pushed first"
         );
         assert_eq!(
             runner.bus.read_long(saved_regs_sp - 8),
-            exhausted_buf_ptr,
-            "last declared Pascal argument is nearest the return address"
+            chan_ptr,
+            "the first declared Pascal argument is nearest the return address"
         );
     }
 
@@ -8230,6 +8557,95 @@ mod tests {
         assert_eq!(runner.bus.read_word(cmd_ptr), crate::sound::cmd::CALLBACK);
         assert_eq!(runner.bus.read_word(cmd_ptr + 2), 0x1234);
         assert_eq!(runner.bus.read_long(cmd_ptr + 4), 0x0001_43FC);
+        assert_eq!(
+            runner.bus.get_alloc_size(tramp),
+            None,
+            "Systemless-owned command callback trampoline must stay outside the guest heap"
+        );
+    }
+
+    #[test]
+    fn sound_command_callback_trampoline_does_not_perturb_guest_allocations() {
+        let mut baseline = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let _baseline_callback = baseline.bus.alloc(2);
+        let expected_next_guest_ptr = baseline.bus.alloc(64);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let callback_addr = runner.bus.alloc(2);
+        runner.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(crate::sound::PendingSoundCallback::Command {
+                callback_addr,
+                chan_ptr: 0x0039_38C8,
+                cmd: crate::sound::SndCommand {
+                    cmd: crate::sound::cmd::CALLBACK,
+                    param1: 0,
+                    param2: 0,
+                },
+            });
+
+        runner.fire_sound_callbacks();
+        let actual_next_guest_ptr = runner.bus.alloc(64);
+
+        assert_eq!(
+            actual_next_guest_ptr, expected_next_guest_ptr,
+            "lazy callback setup must not consume application-visible heap space"
+        );
+    }
+
+    #[test]
+    fn file_completion_callback_uses_documented_registers_and_restores_foreground() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let parameter_block = runner.bus.alloc(64);
+        let callback_addr = runner.bus.alloc(2);
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS
+        for offset in (0..20).step_by(2) {
+            runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
+        }
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.write_reg(Register::A0, 0x1111_1111);
+        runner.cpu.write_reg(Register::D0, 0x2222_2222);
+        runner
+            .dispatcher
+            .pending_file_completions
+            .push_back(PendingFileCompletion {
+                parameter_block,
+                completion_addr: callback_addr,
+                result: -39,
+            });
+
+        assert!(runner.fire_file_completion_callback());
+        assert_eq!(runner.bus.read_word(parameter_block + 16) as i16, -39);
+        assert_eq!(runner.cpu.read_reg(Register::A0), parameter_block);
+        assert_eq!(runner.cpu.read_reg(Register::D0) as i32, -39);
+        assert!(matches!(
+            runner.active_interrupt_callback.map(|active| active.source),
+            Some(ActiveInterruptCallbackSource::FileCompletion)
+        ));
+        assert!(
+            runner
+                .bus
+                .get_alloc_size(runner.file_completion_trampoline)
+                .is_none(),
+            "Systemless-owned completion trampoline must stay outside the guest heap"
+        );
+
+        let (_, running) = runner.run_steps(6, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.cpu.read_reg(Register::A0), 0x1111_1111);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 0x2222_2222);
+        assert!(!runner.is_halted());
     }
 
     #[test]
@@ -8270,6 +8686,13 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc + 2);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
+        assert_eq!(
+            runner
+                .bus
+                .get_alloc_size(runner.sound_file_completion_trampoline),
+            None,
+            "Systemless-owned file completion trampoline must stay outside the guest heap"
+        );
     }
 
     #[test]
@@ -8304,6 +8727,13 @@ mod tests {
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
+        assert_eq!(
+            runner
+                .bus
+                .get_alloc_size(runner.sound_doubleback_trampoline),
+            None,
+            "Systemless-owned double-back trampoline must stay outside the guest heap"
+        );
     }
 
     #[test]
@@ -9653,6 +10083,42 @@ mod tests {
         assert!(
             runner.halted_by_exit_to_shell(),
             "ExitToShell halt must be classified as a clean application exit"
+        );
+    }
+
+    #[test]
+    fn exit_to_shell_activates_launch_target_queued_until_event_yield() {
+        let helper_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let helper_fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &helper_code0)]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+
+        runner
+            .dispatcher
+            .vfs
+            .insert("Apps/Register Helper".to_string(), Vec::new());
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Apps/Register Helper".to_string(), helper_fork_bytes);
+        runner.dispatcher.ensure_vfs_catalog();
+        runner
+            .dispatcher
+            .queue_pending_launch_application("Apps/Register Helper", true);
+        runner.bus.write_word(base, 0xA9F4); // _ExitToShell
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let (_steps, running) = runner.run_steps(1, None);
+
+        assert!(
+            running,
+            "ExitToShell should activate a valid queued launch target"
+        );
+        assert!(!runner.is_halted());
+        assert_eq!(
+            runner.dispatcher.launched_app_path.as_deref(),
+            Some("Apps/Register Helper")
         );
     }
 

@@ -51,6 +51,13 @@ pub(crate) struct RecentFileRead {
     pub(crate) bytes_read: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingFileCompletion {
+    pub(crate) parameter_block: u32,
+    pub(crate) completion_addr: u32,
+    pub(crate) result: i16,
+}
+
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
 // to toggle these at runtime cannot — values are read ONCE at first call.
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -666,6 +673,16 @@ pub struct TimerTask {
     /// Tick count at which this task should fire.
     /// Computed from current ticks + delay when PrimeTime is called.
     pub fire_at_tick: u32,
+    /// Revised Time Manager deadline in millionths of a 60 Hz guest tick.
+    /// This preserves negative PrimeTime microsecond delays below one VBL.
+    pub fire_at_subtick: u64,
+    /// VBL tick in which this task was most recently dispatched.
+    ///
+    /// BasiliskII's Time Manager services an individual queue element at
+    /// most once per VBL even when its revised/extended delay is shorter.
+    /// Retaining the sub-tick deadline still orders concurrent tasks without
+    /// allowing one self-repriming task to monopolize the interrupt queue.
+    pub last_fired_tick: Option<u32>,
 }
 
 /// An installed Vertical Retrace Manager task.
@@ -885,6 +902,7 @@ pub(crate) struct WorkingDirectory {
 pub(crate) struct PendingLaunchApplication {
     pub path: String,
     pub after_event_yield: bool,
+    pub after_caller_exit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1208,6 +1226,9 @@ pub struct TrapDispatcher {
     pub(crate) file_positions: HashMap<u16, usize>,
     /// Most recent successful PBRead/FSRead from a data fork.
     pub(crate) recent_file_read: Option<RecentFileRead>,
+    /// Completed asynchronous File Manager requests awaiting `ioResult`
+    /// publication and optional completion-procedure delivery.
+    pub(crate) pending_file_completions: VecDeque<PendingFileCompletion>,
     /// Set of VFS keys whose `ioFlAttrib` lock bit is set.
     /// Maintained by SetFilLock/HSetFLock ($A041/$A241) and
     /// RstFilLock/HRstFLock ($A042/$A242); read by
@@ -1675,6 +1696,8 @@ pub struct TrapDispatcher {
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: Vec<TimerTask>,
+    /// Exact Time Manager time while a callback is being delivered.
+    pub(crate) timer_current_subtick: u64,
     /// Installed Vertical Retrace Manager tasks.
     /// Processes 1994, 4-6 to 4-7
     pub(crate) vbl_tasks: Vec<VblTask>,
@@ -2734,6 +2757,7 @@ impl TrapDispatcher {
             write_refnums: HashSet::new(),
             file_positions: HashMap::new(),
             recent_file_read: None,
+            pending_file_completions: VecDeque::new(),
             locked_files: HashSet::new(),
             next_refnum: 100,
             mmu_mode: 1,                      // true32b — 32-bit addressing by default
@@ -2909,6 +2933,7 @@ impl TrapDispatcher {
             native_trap_table: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
+            timer_current_subtick: 0,
             vbl_tasks: Vec::new(),
             system_vbl_queue_anchor: 0,
             primary_vbl_slot: 0,
@@ -3336,17 +3361,29 @@ impl TrapDispatcher {
         self.pending_launch_app = Some(PendingLaunchApplication {
             path: normalized,
             after_event_yield,
+            after_caller_exit: false,
+        });
+    }
+
+    pub(crate) fn queue_background_launch_application(&mut self, name: &str) {
+        let normalized = Self::normalize_vfs_path(name);
+        self.pending_launch_app = Some(PendingLaunchApplication {
+            path: normalized,
+            after_event_yield: false,
+            after_caller_exit: true,
         });
     }
 
     pub(crate) fn take_pending_launch_application(
         &mut self,
         event_yield_reached: bool,
+        caller_exited: bool,
     ) -> Option<String> {
-        let ready = self
-            .pending_launch_app
-            .as_ref()
-            .is_some_and(|pending| !pending.after_event_yield || event_yield_reached);
+        let ready = self.pending_launch_app.as_ref().is_some_and(|pending| {
+            caller_exited
+                || ((!pending.after_event_yield || event_yield_reached)
+                    && !pending.after_caller_exit)
+        });
         if ready {
             self.pending_launch_app.take().map(|pending| pending.path)
         } else {
