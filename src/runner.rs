@@ -1788,10 +1788,14 @@ impl FixtureRunner {
         Ok(())
     }
 
-    fn service_pending_launch_application(&mut self, event_yield_reached: bool) -> bool {
+    fn service_pending_launch_application(
+        &mut self,
+        event_yield_reached: bool,
+        caller_exited: bool,
+    ) -> bool {
         let Some(path) = self
             .dispatcher
-            .take_pending_launch_application(event_yield_reached)
+            .take_pending_launch_application(event_yield_reached, caller_exited)
         else {
             return false;
         };
@@ -3294,7 +3298,7 @@ impl FixtureRunner {
                             self.dispatcher.trap_histogram[idx].saturating_add(1);
                         self.dispatcher.inline_skipped[idx] =
                             self.dispatcher.inline_skipped[idx].saturating_add(1);
-                        if self.service_pending_launch_application(true) {
+                        if self.service_pending_launch_application(true, false) {
                             if self.halted {
                                 return (count, false);
                             }
@@ -3465,9 +3469,10 @@ impl FixtureRunner {
                             // Service any pending Delay ticks immediately after
                             // the trap dispatch, before the next instruction.
                             self.service_delay_ticks(tick_cap);
-                            if self.service_pending_launch_application(event_manager_yield_trap(
-                                opcode,
-                            )) {
+                            if self.service_pending_launch_application(
+                                event_manager_yield_trap(opcode),
+                                false,
+                            ) {
                                 if self.halted {
                                     return (count, false);
                                 }
@@ -3475,6 +3480,14 @@ impl FixtureRunner {
                             }
                         }
                         Err(Error::Halted) => {
+                            if matches!(opcode, 0xA9F2 | 0xA9F4)
+                                && self.service_pending_launch_application(false, true)
+                            {
+                                if self.halted {
+                                    return (count, false);
+                                }
+                                continue;
+                            }
                             // Surface the auto-pop caller PC if the
                             // halted trap was called via JSR through a
                             // trampoline. Without this, the halt log
@@ -6676,10 +6689,10 @@ mod tests {
             .queue_pending_launch_application("Apps/Register Helper", true);
 
         assert!(
-            !runner.service_pending_launch_application(false),
+            !runner.service_pending_launch_application(false, false),
             "launchContinue target must wait for an Event Manager yield"
         );
-        let switched = runner.service_pending_launch_application(true);
+        let switched = runner.service_pending_launch_application(true, false);
 
         assert!(
             switched,
@@ -6758,7 +6771,7 @@ mod tests {
             .dispatcher
             .queue_pending_launch_application("Apps/Register Helper", false);
 
-        let switched = runner.service_pending_launch_application(false);
+        let switched = runner.service_pending_launch_application(false, false);
 
         assert!(
             switched,
@@ -9935,6 +9948,42 @@ mod tests {
         assert!(
             runner.halted_by_exit_to_shell(),
             "ExitToShell halt must be classified as a clean application exit"
+        );
+    }
+
+    #[test]
+    fn exit_to_shell_activates_launch_target_queued_until_event_yield() {
+        let helper_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let helper_fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &helper_code0)]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+
+        runner
+            .dispatcher
+            .vfs
+            .insert("Apps/Register Helper".to_string(), Vec::new());
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Apps/Register Helper".to_string(), helper_fork_bytes);
+        runner.dispatcher.ensure_vfs_catalog();
+        runner
+            .dispatcher
+            .queue_pending_launch_application("Apps/Register Helper", true);
+        runner.bus.write_word(base, 0xA9F4); // _ExitToShell
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let (_steps, running) = runner.run_steps(1, None);
+
+        assert!(
+            running,
+            "ExitToShell should activate a valid queued launch target"
+        );
+        assert!(!runner.is_halted());
+        assert_eq!(
+            runner.dispatcher.launched_app_path.as_deref(),
+            Some("Apps/Register Helper")
         );
     }
 

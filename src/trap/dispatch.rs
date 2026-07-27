@@ -902,6 +902,7 @@ pub(crate) struct WorkingDirectory {
 pub(crate) struct PendingLaunchApplication {
     pub path: String,
     pub after_event_yield: bool,
+    pub after_caller_exit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -3360,17 +3361,29 @@ impl TrapDispatcher {
         self.pending_launch_app = Some(PendingLaunchApplication {
             path: normalized,
             after_event_yield,
+            after_caller_exit: false,
+        });
+    }
+
+    pub(crate) fn queue_background_launch_application(&mut self, name: &str) {
+        let normalized = Self::normalize_vfs_path(name);
+        self.pending_launch_app = Some(PendingLaunchApplication {
+            path: normalized,
+            after_event_yield: false,
+            after_caller_exit: true,
         });
     }
 
     pub(crate) fn take_pending_launch_application(
         &mut self,
         event_yield_reached: bool,
+        caller_exited: bool,
     ) -> Option<String> {
-        let ready = self
-            .pending_launch_app
-            .as_ref()
-            .is_some_and(|pending| !pending.after_event_yield || event_yield_reached);
+        let ready = self.pending_launch_app.as_ref().is_some_and(|pending| {
+            caller_exited
+                || ((!pending.after_event_yield || event_yield_reached)
+                    && !pending.after_caller_exit)
+        });
         if ready {
             self.pending_launch_app.take().map(|pending| pending.path)
         } else {
