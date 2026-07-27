@@ -38499,6 +38499,26 @@ mod tests {
             0xC000,
             "GetCWMgrPort should return a CGrafPort-backed Window Manager port"
         );
+        let pixmap_handle = bus.read_long(wmgr_port + 2);
+        let pixmap = bus.read_long(pixmap_handle);
+        assert_ne!(pixmap, 0, "GetCWMgrPort should expose a valid PixMap");
+        let (_, _, width, height, pixel_depth) = d.screen_mode;
+        assert_eq!(bus.read_word(pixmap + 4) & 0x8000, 0x8000);
+        assert_eq!(bus.read_word(pixmap + 6) as i16, 0);
+        assert_eq!(bus.read_word(pixmap + 8) as i16, 0);
+        assert_eq!(bus.read_word(pixmap + 10) as i16, height as i16);
+        assert_eq!(bus.read_word(pixmap + 12) as i16, width as i16);
+        assert_eq!(bus.read_word(pixmap + 32), pixel_depth);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, out_ptr);
+        let second = d.dispatch_quickdraw(true, 0x248, &mut cpu, &mut bus);
+        assert!(second.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(out_ptr),
+            wmgr_port,
+            "GetCWMgrPort should return a stable port pointer"
+        );
     }
 
     #[test]
