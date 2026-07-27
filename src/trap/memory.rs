@@ -75,6 +75,49 @@ fn reconcile_application_zone_limit(bus: &mut MacMemoryBus, old_limit: u32, new_
     bus.write_long(app_zone + 12, adjusted_free.min(zone_size)); // zcbFree
 }
 
+/// Keep the guest-visible application zone large enough to contain a
+/// successful application-heap allocation.
+///
+/// Systemless eagerly materializes loaded resources in the same backing heap
+/// used by Memory Manager traps. That can advance the backing allocator past a
+/// SIZE-resource-derived `ApplLimit` before a later `NewPtr` call succeeds.
+/// Classic clients validate pointers against the current zone's `[zone,
+/// bkLim)` span, so returning a pointer above stale `bkLim` makes a successful
+/// Memory Manager allocation appear invalid. Inside Macintosh: Memory (1992),
+/// pp. 1-20..1-21 defines `bkLim` as the address immediately beyond the zone.
+///
+/// The newly exposed span has already been consumed by backing allocations,
+/// so this deliberately does not add it to `zcbFree`.
+fn include_application_allocation_in_zone(bus: &mut MacMemoryBus, ptr: u32, size: u32) {
+    if ptr == 0 {
+        return;
+    }
+    let app_zone = bus.read_long(addr::APP_L_ZONE);
+    if app_zone == 0 || ptr < app_zone {
+        return;
+    }
+    let allocation_end = ptr.saturating_add(MacMemoryBus::allocation_bucket_size(size));
+    let old_bk_lim = bus.read_long(app_zone);
+    if allocation_end <= old_bk_lim {
+        return;
+    }
+
+    bus.write_long(app_zone, allocation_end); // bkLim
+
+    let old_appl_limit = bus.read_long(addr::APPL_LIMIT);
+    if allocation_end > old_appl_limit {
+        bus.write_long(addr::APPL_LIMIT, allocation_end);
+        if bus.read_long(addr::BUF_PTR) == old_appl_limit {
+            bus.write_long(addr::BUF_PTR, allocation_end);
+        }
+    }
+
+    let heap_end = bus.read_long(addr::HEAP_END);
+    if allocation_end > heap_end {
+        bus.write_long(addr::HEAP_END, allocation_end);
+    }
+}
+
 fn init_zone_header(
     bus: &mut MacMemoryBus,
     start: u32,
@@ -472,6 +515,12 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A0, 0);
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
                 } else {
+                    // Trap bit 10 selects the system-heap variants. Keep the
+                    // application-zone header synchronized only for ordinary
+                    // NewPtr/NewPtrClear allocations.
+                    if (self.current_trap_word & 0x0400) == 0 {
+                        include_application_allocation_in_zone(bus, ptr, size);
+                    }
                     // Check CLEAR bit (bit 9 = 0x0200 in trap word)
                     if (self.current_trap_word & 0x0200) != 0 && size > 0 {
                         bus.fill_zeros(ptr, size);
@@ -1676,6 +1725,8 @@ impl super::TrapDispatcher {
                     tm_addr,
                     active: false,
                     fire_at_tick: 0,
+                    fire_at_subtick: 0,
+                    last_fired_tick: None,
                 });
                 // InsTime clears the qType high-order bit (task inactive until PrimeTime).
                 // Processes 1994, 3-12: "InsTime procedure initially clears this bit."
@@ -1707,24 +1758,29 @@ impl super::TrapDispatcher {
                 let task_ptr = cpu.read_reg(Register::A0);
                 let delay = cpu.read_reg(Register::D0) as i32;
                 let current_ticks = bus.read_long(0x016A);
+                const SUBTICKS_PER_TICK: u64 = 1_000_000;
                 // Convert delay to 60.15 Hz ticks (VBL rate per Guide to Macintosh Family
                 // Hardware, 2nd Ed., p. 6-798: "once every 16.63 ms").
                 // We use 60 (not 60.15) to keep integer arithmetic exact for common
-                // millisecond values and avoid spurious ceil rounding.
+                // millisecond values.
                 // Positive = milliseconds, negative = negated microseconds.
-                // Round up so coarse tick emulation never fires earlier than requested.
-                let delay_ticks = if delay == 0 {
-                    1 // Fire ASAP (next tick)
+                let delay_subticks = if delay == 0 {
+                    SUBTICKS_PER_TICK // Fire ASAP (next tick)
                 } else if delay > 0 {
-                    (((delay as u64) * 60).div_ceil(1000) as u32).max(1)
+                    (delay as u64) * 60_000
                 } else {
                     let us = (-delay) as u64;
-                    ((us * 60).div_ceil(1_000_000) as u32).max(1)
+                    (us * 60).max(1)
                 };
-                let fire_at = current_ticks.wrapping_add(delay_ticks);
+                let current_subtick = self
+                    .timer_current_subtick
+                    .max(current_ticks as u64 * SUBTICKS_PER_TICK);
+                let fire_at_subtick = current_subtick.saturating_add(delay_subticks);
+                let fire_at = fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
                 if let Some(task) = self.timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
                     task.active = true;
                     task.fire_at_tick = fire_at;
+                    task.fire_at_subtick = fire_at_subtick;
                     // Re-read tmAddr in case it changed between InsTime and PrimeTime
                     task.tm_addr = bus.read_long(task_ptr + 6);
                 }
@@ -4454,6 +4510,81 @@ mod tests {
             0,
             "NewPtr should set D0 to 0 (noErr)"
         );
+    }
+
+    #[test]
+    fn new_ptr_extends_stale_application_zone_past_successful_allocation() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let app_zone = 0x0020_0000;
+        let old_limit = 0x0020_1000;
+        let allocation_start = 0x0020_2000;
+        let size = 0x100;
+        let original_free = 0x800;
+
+        bus.write_long(addr::APP_L_ZONE, app_zone);
+        bus.write_long(addr::THE_ZONE, app_zone);
+        bus.write_long(addr::HEAP_END, app_zone + 64);
+        bus.write_long(addr::APPL_LIMIT, old_limit);
+        bus.write_long(addr::BUF_PTR, old_limit);
+        bus.write_long(app_zone, old_limit); // bkLim
+        bus.write_long(app_zone + 12, original_free); // zcbFree
+        bus.reserve_heap_until(allocation_start);
+
+        // $A11E is the ordinary NewPtr entry point used by MPW clients.
+        dispatcher.current_trap_word = 0xA11E;
+        cpu.write_reg(Register::D0, size);
+        let result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+        assert!(result.is_some(), "NewPtr should be handled");
+        assert!(result.unwrap().is_ok(), "NewPtr should succeed");
+
+        let ptr = cpu.read_reg(Register::A0);
+        let allocation_end = ptr + size;
+        assert_eq!(ptr, allocation_start);
+        assert_eq!(
+            bus.read_long(app_zone),
+            allocation_end,
+            "bkLim must remain immediately beyond every successful application-zone allocation"
+        );
+        assert_eq!(bus.read_long(addr::APPL_LIMIT), allocation_end);
+        assert_eq!(bus.read_long(addr::BUF_PTR), allocation_end);
+        assert_eq!(bus.read_long(addr::HEAP_END), allocation_end);
+        assert_eq!(
+            bus.read_long(app_zone + 12),
+            original_free,
+            "already-consumed backing span must not be added to zcbFree"
+        );
+        assert!(
+            ptr >= app_zone && ptr < bus.read_long(app_zone),
+            "a successful NewPtr result must pass the classic [zone, bkLim) validity test"
+        );
+    }
+
+    #[test]
+    fn new_ptr_sys_does_not_extend_application_zone() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let app_zone = 0x0020_0000;
+        let old_limit = 0x0020_1000;
+        let allocation_start = 0x0020_2000;
+
+        bus.write_long(addr::APP_L_ZONE, app_zone);
+        bus.write_long(addr::THE_ZONE, app_zone);
+        bus.write_long(addr::HEAP_END, old_limit);
+        bus.write_long(addr::APPL_LIMIT, old_limit);
+        bus.write_long(app_zone, old_limit); // bkLim
+        bus.reserve_heap_until(allocation_start);
+
+        dispatcher.current_trap_word = 0xA51E; // NewPtrSys
+        cpu.write_reg(Register::D0, 0x100);
+        let result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+        assert!(result.is_some() && result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), allocation_start);
+        assert_eq!(
+            bus.read_long(app_zone),
+            old_limit,
+            "system-heap allocations must not widen the application zone"
+        );
+        assert_eq!(bus.read_long(addr::APPL_LIMIT), old_limit);
+        assert_eq!(bus.read_long(addr::HEAP_END), old_limit);
     }
 
     #[test]
@@ -9099,6 +9230,37 @@ mod tests {
         assert_eq!(
             task.fire_at_tick, 102,
             "33 ms should round up to two 60 Hz ticks from TickCount 100"
+        );
+    }
+
+    #[test]
+    fn test_prime_time_preserves_negative_microsecond_deadline() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = 0x200000;
+
+        bus.write_long(0x016A, 100);
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, (-3333_i32) as u32);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let task = dispatcher
+            .timer_tasks
+            .iter()
+            .find(|task| task.task_ptr == task_ptr)
+            .expect("timer task should be queued");
+        assert_eq!(task.fire_at_tick, 101);
+        assert_eq!(
+            task.fire_at_subtick, 100_199_980,
+            "3,333 microseconds should remain below one 60 Hz guest tick"
         );
     }
 

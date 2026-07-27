@@ -110,6 +110,17 @@ pub mod addr {
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
     pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
     pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
+    /// JShowCursor: QuickDraw glue vector for ShowCursor.
+    ///
+    /// The low-memory globals table in On Macintosh Programming: Advanced
+    /// Techniques (1990) identifies `JShowCursor` at `$0804`.
+    pub const J_SHOW_CURSOR: u32 = 0x0804;
+    /// JShieldCursor: address of QuickDraw's low-level cursor shielding
+    /// procedure (QDJShieldCursorProcPtr).
+    ///
+    /// MPW Universal Interfaces Quickdraw.h declares this callback as four
+    /// Pascal INTEGER arguments: left, top, right, and bottom.
+    pub const J_SHIELD_CURSOR: u32 = 0x0808;
     /// JSwapFont: address of the Font Manager's FMSwapFont routine (ProcPtr).
     ///
     /// This private vector is called directly by QuickDraw text code. Executor's

@@ -4883,7 +4883,9 @@ impl super::TrapDispatcher {
             // are queued for the runner to load into a fresh application
             // heap; launchContinue launches begin when the caller next
             // yields through the Event Manager, matching Processes 1994
-            // p. 2-15. launchDontSwitch remains a bookkeeping-only path.
+            // p. 2-15. A launchDontSwitch target remains deferred until
+            // the caller exits, when it becomes the only runnable app and
+            // is promoted into Systemless's foreground process slot.
             // On launch failure, LaunchApplication returns 0 in the
             // launchProcessSN / launchPreferredSize / launchMinimumSize /
             // launchAvailableSize fields so callers do not observe stale
@@ -4945,9 +4947,13 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::D0, launch_result);
                 let queued_foreground_launch =
                     launch_result == 0 && launch_target.is_some() && !launch_dont_switch;
-                if queued_foreground_launch {
+                if launch_result == 0 {
                     if let Some(app_path) = launch_target.as_deref() {
-                        self.queue_pending_launch_application(app_path, launch_continue);
+                        if launch_dont_switch {
+                            self.queue_background_launch_application(app_path);
+                        } else {
+                            self.queue_pending_launch_application(app_path, launch_continue);
+                        }
                     }
                 }
                 if launch_continue || queued_foreground_launch {
@@ -18468,11 +18474,11 @@ mod tests {
             Some("LaunchTargets/Register Helper")
         );
         assert!(
-            disp.take_pending_launch_application(false).is_none(),
+            disp.take_pending_launch_application(false, false).is_none(),
             "launchContinue target should not start until an Event Manager yield"
         );
         assert_eq!(
-            disp.take_pending_launch_application(true).as_deref(),
+            disp.take_pending_launch_application(true, false).as_deref(),
             Some("LaunchTargets/Register Helper")
         );
     }
@@ -18520,14 +18526,14 @@ mod tests {
             Some("LaunchTargets/Register Helper")
         );
         assert_eq!(
-            disp.take_pending_launch_application(false).as_deref(),
+            disp.take_pending_launch_application(false, false).as_deref(),
             Some("LaunchTargets/Register Helper"),
             "non-launchContinue foreground target should be immediately serviceable"
         );
     }
 
     #[test]
-    fn launchapplication_launchdontswitch_records_existing_target_without_queueing() {
+    fn launchapplication_launchdontswitch_defers_existing_target_until_caller_exit() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
         let launch_pb = bus.alloc(64);
@@ -18569,8 +18575,13 @@ mod tests {
             Some("LaunchTargets/Register Helper")
         );
         assert!(
-            disp.take_pending_launch_application(true).is_none(),
-            "launchDontSwitch target should not queue a foreground app switch"
+            disp.take_pending_launch_application(true, false).is_none(),
+            "launchDontSwitch target must remain in the background while its caller runs"
+        );
+        assert_eq!(
+            disp.take_pending_launch_application(false, true).as_deref(),
+            Some("LaunchTargets/Register Helper"),
+            "launchDontSwitch target should become runnable when its caller exits"
         );
     }
 

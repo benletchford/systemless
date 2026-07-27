@@ -2787,7 +2787,7 @@ impl super::TrapDispatcher {
             // Copies a bit or pixel image between graphics ports, scaling and clipping to visRgn, clipRgn, and maskRgn.
             // PROCEDURE CopyBits (srcBits,dstBits: BitMap; srcRect,dstRect: Rect; mode: INTEGER; maskRgn: RgnHandle);
             // Imaging With QuickDraw 1994, 3-112
-            // CopyBits ($A8EC): Supports 1bpp/8bpp BitMap and PixMap sources, nearest-neighbor scaling, palette translation, transparent mode, and bbox clipping to visRgn/clipRgn/maskRgn; complex transfer modes and non-rectangular region semantics remain incomplete
+            // CopyBits ($A8EC): Supports packed 1/2/4/8bpp BitMap and PixMap sources, nearest-neighbor scaling, palette translation, transparent mode, and bbox clipping to visRgn/clipRgn/maskRgn; complex transfer modes and non-rectangular region semantics remain incomplete
             (true, 0x0EC) => {
                 self.debug_copy_bits_count = self.debug_copy_bits_count.saturating_add(1);
                 let sp = cpu.read_reg(Register::A7);
@@ -3127,7 +3127,7 @@ impl super::TrapDispatcher {
                 };
 
                 let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
-                let src_clut = (src_info.pixel_size == 8)
+                let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
                 let dst_clut =
                     (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
@@ -3260,8 +3260,13 @@ impl super::TrapDispatcher {
                     && src_clut
                         .as_ref()
                         .is_some_and(Self::uses_canonical_system_8bpp_clut);
-                let skip_hardware_palette_to_screen = hardware_palette_active;
-                let palette_translation = if src_info.pixel_size == 8
+                // A same-depth 8-bit screen blit already carries indices for
+                // the installed hardware palette. Packed 2/4-bit sources do
+                // not: their small source CTable must still be expanded into
+                // the active 8-bit destination palette.
+                let skip_hardware_palette_to_screen =
+                    hardware_palette_active && src_info.pixel_size == 8;
+                let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && dst_info.pixel_size == 8
                     && src_info.ctab_handle != dst_info.ctab_handle
                     && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
@@ -3371,6 +3376,19 @@ impl super::TrapDispatcher {
                         bus.write_bytes(dst_addr, &src_row);
                     }
                     if dst_info.base == self.screen_mode.0 {
+                        self.fill_kiosk_letterbox_for_copybits(
+                            bus,
+                            ScreenCopyBitsRect {
+                                src_top,
+                                src_left,
+                                src_bottom,
+                                src_right,
+                                dst_top,
+                                dst_left,
+                                dst_bottom,
+                                dst_right,
+                            },
+                        );
                         self.refresh_dialog_saved_pixels_after_screen_draw(
                             bus,
                             self.current_port,
@@ -3613,6 +3631,45 @@ impl super::TrapDispatcher {
                         let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                         match (src_info.pixel_size, dst_info.pixel_size) {
+                            (src_bits @ (2 | 4), 8) => {
+                                // Indexed PixMap pixels are packed high bit first:
+                                // four 2-bit pixels or two 4-bit pixels per byte.
+                                // Imaging With QuickDraw (1994), pp. 4-5–4-9,
+                                // defines these indexed depths and CopyBits
+                                // performs the source CTable conversion when
+                                // copying into a deeper indexed destination.
+                                let pixels_per_byte = 8 / src_bits;
+                                let src_byte_offset =
+                                    src_y_off * src_info.row_bytes + src_x_off / pixels_per_byte;
+                                let shift = 8 - src_bits - (src_x_off % pixels_per_byte) * src_bits;
+                                let mask = (1u8 << src_bits) - 1;
+                                let src_pixel =
+                                    (read_src_byte(bus, src_info.base + src_byte_offset) >> shift)
+                                        & mask;
+                                if mode_base == 36
+                                    && transparent_src_indices
+                                        .as_ref()
+                                        .is_some_and(|indices| indices[src_pixel as usize])
+                                {
+                                    continue;
+                                }
+                                let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
+                                let Some(dst_pixel) = self.copy_bits_color_source_mode_pixel(
+                                    bus,
+                                    dst_ctab_handle,
+                                    src_clut,
+                                    dst_clut,
+                                    palette_translation,
+                                    mode_base,
+                                    src_pixel,
+                                    bus.read_byte(dst_addr),
+                                    copy_fg_rgb,
+                                    copy_bg_rgb,
+                                ) else {
+                                    continue;
+                                };
+                                bus.write_byte(dst_addr, dst_pixel);
+                            }
                             (8, 8) => {
                                 let src_addr =
                                     src_info.base + src_y_off * src_info.row_bytes + src_x_off;
@@ -3930,6 +3987,19 @@ impl super::TrapDispatcher {
                     }
                 }
                 if dst_info.base == self.screen_mode.0 {
+                    self.fill_kiosk_letterbox_for_copybits(
+                        bus,
+                        ScreenCopyBitsRect {
+                            src_top,
+                            src_left,
+                            src_bottom,
+                            src_right,
+                            dst_top,
+                            dst_left,
+                            dst_bottom,
+                            dst_right,
+                        },
+                    );
                     self.refresh_dialog_saved_pixels_after_screen_draw(
                         bus,
                         self.current_port,
@@ -11338,22 +11408,41 @@ impl super::TrapDispatcher {
             // it), decrement cursor level like HideCursor, and balance
             // with ShowCursor.
             //
-            // HLE compromise: cursor presentation is host-rendered and
-            // this runtime does not model cursor/rectangle intersection
-            // in guest coordinates across host frame boundaries, so
-            // ShieldCursor is a stack-shape no-op that only consumes its
-            // arguments.  The Apple-canonical cursor-level decrement is
-            // pinned via the in-Rust contract test
-            // `shield_cursor_pops_eight_bytes_and_preserves_cursor_state_in_hle`.
-            // The two engines diverge on the LowMem CrsrVis side effect
-            // (BII System 7.5.3 ROM writes CrsrVis; Systemless HLE doesn't
-            // touch it) but share the 8-byte arg-frame pop: A7 is balanced
-            // across single and 5-call sequences (net A7 delta zero).
-            //
-            // ShieldCursor ($A855): HLE no-op; pops 8 bytes per IM:I I-474 MPW C declaration ShieldCursor(const Rect *shieldRect, Point offsetPt) ONEWORDINLINE(0xA855)
+            // Systemless tests immediate intersection against the
+            // host-rendered 16×16 cursor bounds in global screen
+            // coordinates and applies the documented cursor-level
+            // decrement when those bounds overlap.
             (true, 0x055) => {
                 let sp = cpu.read_reg(Register::A7);
+                let offset_v = bus.read_word(sp) as i16;
+                let offset_h = bus.read_word(sp + 2) as i16;
+                let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
+
+                if rect_ptr != 0 {
+                    let shield_top = (bus.read_word(rect_ptr) as i16).wrapping_add(offset_v);
+                    let shield_left = (bus.read_word(rect_ptr + 2) as i16).wrapping_add(offset_h);
+                    let shield_bottom = (bus.read_word(rect_ptr + 4) as i16).wrapping_add(offset_v);
+                    let shield_right = (bus.read_word(rect_ptr + 6) as i16).wrapping_add(offset_h);
+                    let (mouse_v, mouse_h) = self.mouse_position();
+                    let (hot_v, hot_h) = self
+                        .cursor_data()
+                        .map(|(_, _, hot_v, hot_h)| (hot_v, hot_h))
+                        .unwrap_or((0, 0));
+                    let cursor_top = mouse_v.saturating_sub(hot_v);
+                    let cursor_left = mouse_h.saturating_sub(hot_h);
+                    let cursor_bottom = cursor_top.saturating_add(16);
+                    let cursor_right = cursor_left.saturating_add(16);
+
+                    if cursor_top < shield_bottom
+                        && cursor_bottom > shield_top
+                        && cursor_left < shield_right
+                        && cursor_right > shield_left
+                    {
+                        self.cursor_level = self.cursor_level.saturating_sub(1);
+                        self.cursor_visible = false;
+                    }
+                }
                 Ok(())
             }
 
@@ -17946,20 +18035,20 @@ impl super::TrapDispatcher {
         };
 
         let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
-        let src_clut =
-            (src_info.pixel_size == 8).then(|| self.read_port_clut(bus, src_info.ctab_handle));
+        let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
+            .then(|| self.read_port_clut(bus, src_info.ctab_handle));
         let dst_clut =
             (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
         let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
         let dst_ctab_seed = Self::ctab_seed(bus, dst_ctab_handle);
         let hardware_palette_active =
             dst_ctab_handle == 0 && self.device_clut != self.color_manager_clut;
-        let palette_translation = if src_info.pixel_size == 8
+        let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
             && dst_info.pixel_size == 8
             && src_info.ctab_handle != dst_info.ctab_handle
             && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
             && src_ctab_seed != dst_ctab_seed
-            && !hardware_palette_active
+            && !(hardware_palette_active && src_info.pixel_size == 8)
         {
             match (src_clut.as_ref(), dst_clut.as_ref()) {
                 (Some(src_clut), Some(dst_clut)) => {
@@ -18171,6 +18260,38 @@ impl super::TrapDispatcher {
                 let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                 match (src_info.pixel_size, dst_info.pixel_size) {
+                    (src_bits @ (2 | 4), 8) => {
+                        let pixels_per_byte = 8 / src_bits;
+                        let src_byte_offset =
+                            src_y_off * src_info.row_bytes + src_x_off / pixels_per_byte;
+                        let shift = 8 - src_bits - (src_x_off % pixels_per_byte) * src_bits;
+                        let mask = (1u8 << src_bits) - 1;
+                        let src_pixel =
+                            (read_src_byte(bus, src_info.base + src_byte_offset) >> shift) & mask;
+                        if mode_base == 36
+                            && transparent_src_indices
+                                .as_ref()
+                                .is_some_and(|indices| indices[src_pixel as usize])
+                        {
+                            continue;
+                        }
+                        let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
+                        let Some(dst_pixel) = self.copy_bits_color_source_mode_pixel(
+                            bus,
+                            dst_ctab_handle,
+                            src_clut,
+                            dst_clut,
+                            palette_translation,
+                            mode_base,
+                            src_pixel,
+                            bus.read_byte(dst_addr),
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        ) else {
+                            continue;
+                        };
+                        bus.write_byte(dst_addr, dst_pixel);
+                    }
                     (8, 8) => {
                         let src_addr = src_info.base + src_y_off * src_info.row_bytes + src_x_off;
                         let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
@@ -18344,6 +18465,87 @@ impl super::TrapDispatcher {
         });
     }
 
+    fn fill_kiosk_letterbox_for_copybits(&self, bus: &mut MacMemoryBus, rect: ScreenCopyBitsRect) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) = self.screen_mode;
+        let src_width = rect.src_right.saturating_sub(rect.src_left);
+        let src_height = rect.src_bottom.saturating_sub(rect.src_top);
+        let dst_width = rect.dst_right.saturating_sub(rect.dst_left);
+        let dst_height = rect.dst_bottom.saturating_sub(rect.dst_top);
+        let large = dst_width >= (screen_width as i16 / 2).max(1)
+            && dst_height >= (screen_height as i16 / 2).max(1);
+        let centered = rect.dst_left >= 0
+            && rect.dst_top >= 0
+            && (screen_width as i16 - rect.dst_right - rect.dst_left).abs() <= 1
+            && (screen_height as i16 - rect.dst_bottom - rect.dst_top).abs() <= 1;
+        if !self.menu_bar_hidden
+            || !large
+            || !centered
+            || src_width != dst_width
+            || src_height != dst_height
+            || (dst_width >= screen_width as i16 && dst_height >= screen_height as i16)
+        {
+            return;
+        }
+
+        // A game can install a palette where the conventional index 255 is
+        // no longer black. Derive the margin index from the active hardware
+        // CLUT after the blit has completed; doing this before an overlapping
+        // screen-to-screen CopyBits would destroy source pixels.
+        let black_index = self
+            .device_clut
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
+            .map(|(index, _)| index as u8)
+            .unwrap_or(255);
+        for (top, left, bottom, right) in [
+            (0, 0, rect.dst_top, screen_width as i16),
+            (
+                rect.dst_bottom,
+                0,
+                screen_height as i16,
+                screen_width as i16,
+            ),
+            (rect.dst_top, 0, rect.dst_bottom, rect.dst_left),
+            (
+                rect.dst_top,
+                rect.dst_right,
+                rect.dst_bottom,
+                screen_width as i16,
+            ),
+        ] {
+            if pixel_size == 8 {
+                Self::fb_fill_rect_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width as i16,
+                    screen_height as i16,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    black_index,
+                );
+            } else {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width as i16,
+                    screen_height as i16,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    true,
+                );
+            }
+        }
+    }
+
     /// Address of a replacement `grafProcs.bitsProc` on the current port, or
     /// `None` when the standard StdBits bottleneck is in force.
     ///
@@ -18511,6 +18713,12 @@ impl super::TrapDispatcher {
         let col = (x - info.bounds_left) as u32;
         match info.pixel_size {
             8 => Some(bus.read_byte(info.base + row * info.row_bytes + col)),
+            bits @ (2 | 4) => {
+                let pixels_per_byte = 8 / bits;
+                let byte = bus.read_byte(info.base + row * info.row_bytes + col / pixels_per_byte);
+                let shift = 8 - bits - (col % pixels_per_byte) * bits;
+                Some((byte >> shift) & ((1u8 << bits) - 1))
+            }
             1 => {
                 let addr = info.base + row * info.row_bytes + (col / 8);
                 let bit = 7 - (col % 8);
@@ -21392,7 +21600,7 @@ mod tests {
     use crate::display::CursorImage;
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::{
-        DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap,
+        DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap, ScreenCopyBitsRect,
     };
     use crate::trap::quickdraw::CopyBitmapInfo;
     use crate::trap::types::{Rect, ShapeOp};
@@ -21423,6 +21631,108 @@ mod tests {
             bus.read_word(addr + 4) as i16,
             bus.read_word(addr + 6) as i16,
         )
+    }
+
+    fn centered_640x480_copybits_rect() -> ScreenCopyBitsRect {
+        ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: 60,
+            dst_left: 80,
+            dst_bottom: 540,
+            dst_right: 720,
+        }
+    }
+
+    #[test]
+    fn centered_kiosk_copybits_fills_only_margins_with_active_clut_black() {
+        let (mut d, _cpu, mut bus) = setup();
+        let (screen_base, row_bytes, width, height, _) = d.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x7F);
+        d.menu_bar_hidden = true;
+        d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        d.device_clut[37] = [0, 0, 0];
+
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+
+        assert_eq!(bus.read_byte(screen_base), 37);
+        assert_eq!(
+            bus.read_byte(screen_base + 300 * row_bytes + 10),
+            37,
+            "side margin should use the darkest active CLUT entry"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 300 * row_bytes + 400),
+            0x7F,
+            "the completed CopyBits destination must remain untouched"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + (u32::from(height) - 1) * row_bytes + u32::from(width) - 1),
+            37
+        );
+    }
+
+    #[test]
+    fn kiosk_letterbox_ignores_fullscreen_off_center_and_menu_visible_blits() {
+        let cases = [
+            (
+                ScreenCopyBitsRect {
+                    src_top: 0,
+                    src_left: 0,
+                    src_bottom: 600,
+                    src_right: 800,
+                    dst_top: 0,
+                    dst_left: 0,
+                    dst_bottom: 600,
+                    dst_right: 800,
+                },
+                true,
+            ),
+            (
+                ScreenCopyBitsRect {
+                    dst_left: 40,
+                    dst_right: 680,
+                    ..centered_640x480_copybits_rect()
+                },
+                true,
+            ),
+            (
+                ScreenCopyBitsRect {
+                    src_bottom: 240,
+                    src_right: 320,
+                    ..centered_640x480_copybits_rect()
+                },
+                true,
+            ),
+            (
+                ScreenCopyBitsRect {
+                    src_bottom: 100,
+                    src_right: 100,
+                    dst_top: 250,
+                    dst_left: 350,
+                    dst_bottom: 350,
+                    dst_right: 450,
+                    ..centered_640x480_copybits_rect()
+                },
+                true,
+            ),
+            (centered_640x480_copybits_rect(), false),
+        ];
+
+        for (rect, menu_bar_hidden) in cases {
+            let (mut d, _cpu, mut bus) = setup();
+            let (screen_base, row_bytes, _, height, _) = d.screen_mode;
+            bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x7F);
+            d.menu_bar_hidden = menu_bar_hidden;
+            d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+            d.device_clut[37] = [0, 0, 0];
+
+            d.fill_kiosk_letterbox_for_copybits(&mut bus, rect);
+
+            assert_eq!(bus.read_byte(screen_base), 0x7F);
+        }
     }
 
     #[test]
@@ -22808,10 +23118,10 @@ mod tests {
     }
 
     #[test]
-    fn shield_cursor_pops_eight_bytes_and_preserves_cursor_state_in_hle() {
+    fn shield_cursor_hides_intersecting_cursor_and_pops_eight_bytes() {
         // IM:I I-474 signature: ShieldCursor(shieldRect: Rect; offsetPt: Point).
-        // HLE contract: consume arguments but leave cursor level/visibility
-        // unchanged (host-rendered cursor, no guest-side intersection model).
+        // The local rectangle is offset into global coordinates and intersects
+        // the current cursor bounds, so the cursor level decrements.
         let (mut d, mut cpu, mut bus) = setup();
         let shield_rect_ptr = 0x340000u32;
         write_rect(&mut bus, shield_rect_ptr, 100, 120, 200, 220);
@@ -22819,14 +23129,38 @@ mod tests {
         bus.write_word(TEST_SP + 2, 34); // offsetPt.h
         bus.write_long(TEST_SP + 4, shield_rect_ptr);
 
-        d.cursor_level = -2;
-        d.cursor_visible = false;
+        d.set_mouse_position(150, 180);
+        d.cursor_level = 0;
+        d.cursor_visible = true;
 
         let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
-        assert_eq!(d.cursor_level, -2);
+        assert_eq!(d.cursor_level, -1);
         assert!(!d.cursor_visible);
+    }
+
+    #[test]
+    fn shield_cursor_preserves_nonintersecting_cursor_state() {
+        // IM:I I-474: a stationary cursor outside the shield rectangle
+        // remains visible. The local rectangle is offset well away from
+        // the current cursor bounds.
+        let (mut d, mut cpu, mut bus) = setup();
+        let shield_rect_ptr = 0x340000u32;
+        write_rect(&mut bus, shield_rect_ptr, 100, 120, 200, 220);
+        bus.write_word(TEST_SP, 12); // offsetPt.v
+        bus.write_word(TEST_SP + 2, 34); // offsetPt.h
+        bus.write_long(TEST_SP + 4, shield_rect_ptr);
+
+        d.set_mouse_position(20, 30);
+        d.cursor_level = 0;
+        d.cursor_visible = true;
+
+        let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(d.cursor_level, 0);
+        assert!(d.cursor_visible);
     }
 
     #[test]
@@ -29891,6 +30225,29 @@ mod tests {
         bus.write_long(pixmap_ptr + 42, ctab_handle);
     }
 
+    fn write_pixmap_indexed(
+        bus: &mut crate::memory::MacMemoryBus,
+        pixmap_ptr: u32,
+        base_addr: u32,
+        row_bytes: u16,
+        width: u16,
+        height: u16,
+        pixel_size: u16,
+        ctab_handle: u32,
+    ) {
+        bus.write_long(pixmap_ptr, base_addr);
+        bus.write_word(pixmap_ptr + 4, 0x8000 | row_bytes);
+        bus.write_word(pixmap_ptr + 6, 0);
+        bus.write_word(pixmap_ptr + 8, 0);
+        bus.write_word(pixmap_ptr + 10, height);
+        bus.write_word(pixmap_ptr + 12, width);
+        bus.write_word(pixmap_ptr + 30, 0);
+        bus.write_word(pixmap_ptr + 32, pixel_size);
+        bus.write_word(pixmap_ptr + 34, 1);
+        bus.write_word(pixmap_ptr + 36, pixel_size);
+        bus.write_long(pixmap_ptr + 42, ctab_handle);
+    }
+
     fn write_color_table(
         bus: &mut crate::memory::MacMemoryBus,
         handle: u32,
@@ -29909,6 +30266,120 @@ mod tests {
             bus.write_word(entry_ptr + 4, *green);
             bus.write_word(entry_ptr + 6, *blue);
         }
+    }
+
+    #[test]
+    fn copy_bits_4bpp_to_8bpp_reads_high_nibbles_and_translates_palette() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x320100u32;
+        let dst_pixmap = 0x320200u32;
+        let src_base = 0x321000u32;
+        let dst_base = 0x322000u32;
+        let src_ctab_handle = 0x323000u32;
+        let dst_ctab_handle = 0x324000u32;
+        let src_rect = 0x325000u32;
+        let dst_rect = 0x325010u32;
+        let colors = [
+            (0x1111, 0x0202, 0x0303),
+            (0x2222, 0x1313, 0x0505),
+            (0x3333, 0x2424, 0x0707),
+            (0x4444, 0x3535, 0x0909),
+            (0x5555, 0x4646, 0x0B0B),
+            (0x6666, 0x5757, 0x0D0D),
+        ];
+        let src_entries = colors
+            .iter()
+            .enumerate()
+            .map(|(index, &(red, green, blue))| ((index + 1) as u16, red, green, blue))
+            .collect::<Vec<_>>();
+        let dst_entries = colors
+            .iter()
+            .enumerate()
+            .map(|(index, &(red, green, blue))| ((index + 41) as u16, red, green, blue))
+            .collect::<Vec<_>>();
+        write_color_table(&mut bus, src_ctab_handle, 0x1111_1111, &src_entries);
+        write_color_table(&mut bus, dst_ctab_handle, 0x2222_2222, &dst_entries);
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 2, 3, 2, 4, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 6, 2, dst_ctab_handle);
+        // Three pixels per row. The unused low nibble is deliberately a
+        // different value so an odd-width implementation cannot consume it.
+        bus.write_bytes(src_base, &[0x12, 0x3E, 0x45, 0x6D]);
+        bus.write_bytes(dst_base, &[0; 12]);
+        write_rect(&mut bus, src_rect, 0, 0, 2, 3);
+        write_rect(&mut bus, dst_rect, 0, 0, 2, 6);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_bytes(dst_base, 12),
+            vec![41, 41, 42, 42, 43, 43, 44, 44, 45, 45, 46, 46]
+        );
+    }
+
+    #[test]
+    fn copy_bits_2bpp_to_8bpp_honors_transparent_mode_and_row_padding() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x326100u32;
+        let dst_pixmap = 0x326200u32;
+        let src_base = 0x327000u32;
+        let dst_base = 0x328000u32;
+        let src_ctab_handle = 0x329000u32;
+        let dst_ctab_handle = 0x32A000u32;
+        let src_rect = 0x32B000u32;
+        let dst_rect = 0x32B010u32;
+        let white = (0xFFFF, 0xFFFF, 0xFFFF);
+        let red = (0xF111, 0x0202, 0x0303);
+        let green = (0x0404, 0xE222, 0x0505);
+        let blue = (0x0606, 0x0707, 0xD333);
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x3333_3333,
+            &[
+                (0, white.0, white.1, white.2),
+                (1, red.0, red.1, red.2),
+                (2, green.0, green.1, green.2),
+                (3, blue.0, blue.1, blue.2),
+            ],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x4444_4444,
+            &[
+                (7, 0x1111, 0x1111, 0x1111),
+                (51, red.0, red.1, red.2),
+                (52, green.0, green.1, green.2),
+                (53, blue.0, blue.1, blue.2),
+                (99, white.0, white.1, white.2),
+            ],
+        );
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 2, 5, 1, 2, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 5, 1, dst_ctab_handle);
+        // Pixels 0,1,2,3,1. The final six bits are row padding.
+        bus.write_bytes(src_base, &[0b00_01_10_11, 0b01_11_10_00]);
+        bus.write_bytes(dst_base, &[7; 5]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 5);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 5);
+        d.bg_color = white;
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 36);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 5), vec![7, 51, 52, 53, 51]);
     }
 
     fn compiled_crsr_resource_2bpp() -> Vec<u8> {
@@ -38246,6 +38717,26 @@ mod tests {
             bus.read_word(wmgr_port + 6) & 0xC000,
             0xC000,
             "GetCWMgrPort should return a CGrafPort-backed Window Manager port"
+        );
+        let pixmap_handle = bus.read_long(wmgr_port + 2);
+        let pixmap = bus.read_long(pixmap_handle);
+        assert_ne!(pixmap, 0, "GetCWMgrPort should expose a valid PixMap");
+        let (_, _, width, height, pixel_depth) = d.screen_mode;
+        assert_eq!(bus.read_word(pixmap + 4) & 0x8000, 0x8000);
+        assert_eq!(bus.read_word(pixmap + 6) as i16, 0);
+        assert_eq!(bus.read_word(pixmap + 8) as i16, 0);
+        assert_eq!(bus.read_word(pixmap + 10) as i16, height as i16);
+        assert_eq!(bus.read_word(pixmap + 12) as i16, width as i16);
+        assert_eq!(bus.read_word(pixmap + 32), pixel_depth);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, out_ptr);
+        let second = d.dispatch_quickdraw(true, 0x248, &mut cpu, &mut bus);
+        assert!(second.unwrap().is_ok());
+        assert_eq!(
+            bus.read_long(out_ptr),
+            wmgr_port,
+            "GetCWMgrPort should return a stable port pointer"
         );
     }
 

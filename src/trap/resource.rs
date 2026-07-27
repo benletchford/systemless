@@ -3685,12 +3685,14 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // PBRead ($A002)
+            // PBRead/PBReadAsync ($A002/$A402)
             // Reads bytes from an open file, including PBRead newline mode.
             // FUNCTION PBRead (paramBlock: ParmBlkPtr; async: Boolean): OSErr;
-            // Files 1992, 2-121 to 2-122
+            // Files 1992, 2-84, 2-121 to 2-122, 2-238
             (false, 0x02) => {
                 let pb = cpu.read_reg(Register::A0);
+                let async_call = (self.current_trap_word & 0x0400) != 0;
+                let completion_addr = bus.read_long(pb + 12);
                 let ref_num = bus.read_word(pb + 24);
                 let buffer = bus.read_long(pb + 32);
                 let request_count = bus.read_long(pb + 36) as usize;
@@ -3705,54 +3707,57 @@ impl super::TrapDispatcher {
                     if let Some(file_buf) = self.vfs.get(&filename) {
                         let file_len = file_buf.len();
                         let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
-                        let Ok(start) = Self::resolve_file_mark_position(
+                        match Self::resolve_file_mark_position(
                             pos_mode, pos_offset, cur_pos, file_len,
-                        ) else {
-                            bus.write_word(pb + 16, (-40i16) as u16); // posErr
-                            bus.write_long(pb + 40, 0);
-                            bus.write_long(pb + 46, cur_pos as u32);
-                            cpu.write_reg(Register::D0, (-40i32) as u32);
-                            return Some(Ok(()));
-                        };
-                        let start = start.min(file_len);
-                        let avail = file_len - start;
-                        let max_read = request_count.min(avail);
-                        let newline_mode = (pos_mode & 0x0080) != 0;
-                        let newline_char = (pos_mode >> 8) as u8;
-                        let newline_offset = if newline_mode {
-                            file_buf[start..start + max_read]
-                                .iter()
-                                .position(|&byte| byte == newline_char)
-                        } else {
-                            None
-                        };
-                        let bytes_read =
-                            newline_offset.map(|offset| offset + 1).unwrap_or(max_read);
-                        let stopped_at_newline = newline_offset.is_some();
+                        ) {
+                            Err(_) => {
+                                bus.write_word(pb + 16, (-40i16) as u16); // posErr
+                                bus.write_long(pb + 40, 0);
+                                bus.write_long(pb + 46, cur_pos as u32);
+                                cpu.write_reg(Register::D0, (-40i32) as u32);
+                            }
+                            Ok(start) => {
+                                let start = start.min(file_len);
+                                let avail = file_len - start;
+                                let max_read = request_count.min(avail);
+                                let newline_mode = (pos_mode & 0x0080) != 0;
+                                let newline_char = (pos_mode >> 8) as u8;
+                                let newline_offset = if newline_mode {
+                                    file_buf[start..start + max_read]
+                                        .iter()
+                                        .position(|&byte| byte == newline_char)
+                                } else {
+                                    None
+                                };
+                                let bytes_read =
+                                    newline_offset.map(|offset| offset + 1).unwrap_or(max_read);
+                                let stopped_at_newline = newline_offset.is_some();
 
-                        bus.write_bytes(buffer, &file_buf[start..start + bytes_read]);
+                                bus.write_bytes(buffer, &file_buf[start..start + bytes_read]);
 
-                        self.file_positions.insert(ref_num, start + bytes_read);
-                        bus.write_long(pb + 40, bytes_read as u32);
-                        bus.write_long(pb + 46, (start + bytes_read) as u32);
-                        self.recent_file_read = Some(super::dispatch::RecentFileRead {
-                            ref_num,
-                            filename: filename.clone(),
-                            buffer,
-                            start,
-                            bytes_read,
-                        });
+                                self.file_positions.insert(ref_num, start + bytes_read);
+                                bus.write_long(pb + 40, bytes_read as u32);
+                                bus.write_long(pb + 46, (start + bytes_read) as u32);
+                                self.recent_file_read = Some(super::dispatch::RecentFileRead {
+                                    ref_num,
+                                    filename: filename.clone(),
+                                    buffer,
+                                    start,
+                                    bytes_read,
+                                });
 
-                        if !stopped_at_newline && bytes_read < request_count {
-                            eprintln!(
-                                "[TRAP] PBRead -> eofErr (read {} of {} from pos {})",
-                                bytes_read, request_count, start
-                            );
-                            bus.write_word(pb + 16, (-39i16) as u16); // eofErr
-                            cpu.write_reg(Register::D0, (-39i32) as u32);
-                        } else {
-                            bus.write_word(pb + 16, 0);
-                            cpu.write_reg(Register::D0, 0);
+                                if !stopped_at_newline && bytes_read < request_count {
+                                    eprintln!(
+                                        "[TRAP] PBRead -> eofErr (read {} of {} from pos {})",
+                                        bytes_read, request_count, start
+                                    );
+                                    bus.write_word(pb + 16, (-39i16) as u16); // eofErr
+                                    cpu.write_reg(Register::D0, (-39i32) as u32);
+                                } else {
+                                    bus.write_word(pb + 16, 0);
+                                    cpu.write_reg(Register::D0, 0);
+                                }
+                            }
                         }
                     } else {
                         eprintln!("[TRAP] PBRead -> fnfErr (file not in VFS)");
@@ -3772,6 +3777,24 @@ impl super::TrapDispatcher {
                     bus.write_word(pb + 16, (-51i16) as u16); // rfNumErr
                     bus.write_long(pb + 40, 0);
                     cpu.write_reg(Register::D0, (-51i32) as u32);
+                }
+
+                if async_call {
+                    let result = cpu.read_reg(Register::D0) as i16;
+                    self.pending_file_completions.push_back(
+                        super::dispatch::PendingFileCompletion {
+                            parameter_block: pb,
+                            completion_addr,
+                            result,
+                        },
+                    );
+                    // A successfully queued asynchronous request returns noErr.
+                    // ioResult remains positive until the request completes.
+                    bus.write_word(pb + 16, 1);
+                    cpu.write_reg(Register::D0, 0);
+                } else {
+                    // The File Manager clears ioCompletion for synchronous calls.
+                    bus.write_long(pb + 12, 0);
                 }
                 Ok(())
             }
@@ -12731,6 +12754,65 @@ mod tests {
         assert_eq!(bus.read_byte(read_buf), 10);
         assert_eq!(bus.read_byte(read_buf + 1), 20);
         assert_eq!(bus.read_byte(read_buf + 2), 30);
+    }
+
+    #[test]
+    fn pb_read_async_queues_completion_and_leaves_ioresult_in_progress() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let read_buf = 0x310000u32;
+        let completion_addr = 0x320000u32;
+
+        disp.vfs
+            .insert("AsyncData".to_string(), vec![10, 20, 30, 40]);
+        disp.open_files.insert(100, "AsyncData".to_string());
+        disp.file_positions.insert(100, 0);
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 12, completion_addr);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, read_buf);
+        bus.write_long(pb + 36, 4);
+        bus.write_word(pb + 44, 0);
+        bus.write_long(pb + 46, 0);
+
+        call_trap_word(&mut disp, 0xA402, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0, "queueing returns noErr");
+        assert_eq!(bus.read_word(pb + 16), 1, "ioResult stays in progress");
+        assert_eq!(bus.read_long(pb + 40), 4);
+        assert_eq!(bus.read_bytes(read_buf, 4), vec![10, 20, 30, 40]);
+        assert_eq!(
+            disp.pending_file_completions.pop_front(),
+            Some(super::super::dispatch::PendingFileCompletion {
+                parameter_block: pb,
+                completion_addr,
+                result: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn pb_read_sync_clears_completion_and_returns_final_result_directly() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+
+        disp.vfs.insert("Empty".to_string(), Vec::new());
+        disp.open_files.insert(100, "Empty".to_string());
+        disp.file_positions.insert(100, 0);
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 12, 0x320000);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, 0x310000);
+        bus.write_long(pb + 36, 1);
+        bus.write_word(pb + 44, 0);
+        bus.write_long(pb + 46, 0);
+
+        call_trap_word(&mut disp, 0xA002, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(bus.read_word(pb + 16) as i16, -39);
+        assert_eq!(bus.read_long(pb + 12), 0);
+        assert!(disp.pending_file_completions.is_empty());
     }
 
     #[test]

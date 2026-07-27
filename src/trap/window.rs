@@ -635,7 +635,7 @@ impl super::TrapDispatcher {
             return lowmem_port;
         }
 
-        let (screen_base, row_bytes, width, height, pixel_depth) = self.screen_mode;
+        let (screen_base, row_bytes, width, height, _) = self.screen_mode;
         let bounds = (0i16, 0i16, height as i16, width as i16);
         let port_ptr = bus.alloc(256);
 
@@ -644,45 +644,64 @@ impl super::TrapDispatcher {
         } else {
             bus.read_long(0x0824)
         };
-        let gd_handle = self.ensure_main_gdevice(bus);
-        let gd_ptr = bus.read_long(gd_handle);
-        let gd_pmap_handle = bus.read_long(gd_ptr + 22);
-        let gd_pmap = bus.read_long(gd_pmap_handle);
-        let gd_ctab_handle = bus.read_long(gd_pmap + 42);
-
-        let pixmap = bus.alloc(50);
-        bus.write_long(pixmap, effective_screen_base); // baseAddr
-        bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000); // rowBytes with PixMap flag
-        bus.write_word(pixmap + 6, bounds.0 as u16); // bounds.top
-        bus.write_word(pixmap + 8, bounds.1 as u16); // bounds.left
-        bus.write_word(pixmap + 10, bounds.2 as u16); // bounds.bottom
-        bus.write_word(pixmap + 12, bounds.3 as u16); // bounds.right
-        bus.write_word(pixmap + 30, 0); // pixelType (chunky)
-        bus.write_word(pixmap + 32, pixel_depth); // pixelSize
-        bus.write_word(pixmap + 34, 1); // cmpCount
-        bus.write_word(pixmap + 36, pixel_depth); // cmpSize
-        bus.write_long(pixmap + 42, gd_ctab_handle); // pmTable
-        let pixmap_handle = bus.alloc(4);
-        bus.write_long(pixmap_handle, pixmap);
-
+        // GetWMgrPort returns a GrafPtr, not a CGrafPtr. Publish the classic
+        // GrafPort layout with its 14-byte inline BitMap so legacy callers can
+        // inspect portBits exactly as documented. In particular, the bytes at
+        // +8..+15 must be screenBits.bounds, not the grafVars/chExtra/
+        // pnLocHFrac fields that occupy the same offsets in a CGrafPort.
+        //
+        // Inside Macintosh Volume I (1985), p. I-282;
+        // Imaging With QuickDraw (1994), pp. 2-30, 2-38, 4-8 to 4-9.
         bus.write_word(port_ptr, 0); // device
-        bus.write_long(port_ptr + 2, pixmap_handle); // portPixMap
-        bus.write_word(port_ptr + 6, 0xC000); // portVersion (CGrafPort flag)
-        bus.write_long(port_ptr + 8, 0); // grafVars
-        bus.write_word(port_ptr + 12, 0); // chExtra
-        bus.write_word(port_ptr + 14, 0x8000); // pnLocHFrac
+        bus.write_long(port_ptr + 2, effective_screen_base); // portBits.baseAddr
+        bus.write_word(port_ptr + 6, (row_bytes as u16) & 0x3FFF); // portBits.rowBytes
+        bus.write_word(port_ptr + 8, bounds.0 as u16); // portBits.bounds.top
+        bus.write_word(port_ptr + 10, bounds.1 as u16); // portBits.bounds.left
+        bus.write_word(port_ptr + 12, bounds.2 as u16); // portBits.bounds.bottom
+        bus.write_word(port_ptr + 14, bounds.3 as u16); // portBits.bounds.right
         bus.write_word(port_ptr + 16, bounds.0 as u16); // portRect.top
         bus.write_word(port_ptr + 18, bounds.1 as u16); // portRect.left
         bus.write_word(port_ptr + 20, bounds.2 as u16); // portRect.bottom
         bus.write_word(port_ptr + 22, bounds.3 as u16); // portRect.right
 
         let vis_rgn = Self::alloc_rect_region_handle(bus, Some(bounds));
-        let clip_rgn = Self::alloc_rect_region_handle(bus, Some(bounds));
+        let clip_rgn =
+            Self::alloc_rect_region_handle(bus, Some((i16::MIN, i16::MIN, i16::MAX, i16::MAX)));
         bus.write_long(port_ptr + 24, vis_rgn);
         bus.write_long(port_ptr + 28, clip_rgn);
 
-        // CGrafPort defaults used by color Window Manager drawing.
-        self.init_cgraf_port_defaults(port_ptr, bus);
+        // OpenPort defaults for the remainder of the basic GrafPort.
+        // Imaging With QuickDraw (1994), Table 2-2, p. 2-38.
+        for offset in 32..40 {
+            bus.write_byte(port_ptr + offset, 0); // bkPat = white
+        }
+        for offset in 40..48 {
+            bus.write_byte(port_ptr + offset, 0xFF); // fillPat = black
+        }
+        bus.write_word(port_ptr + 48, 0); // pnLoc.v
+        bus.write_word(port_ptr + 50, 0); // pnLoc.h
+        bus.write_word(port_ptr + 52, 1); // pnSize.v
+        bus.write_word(port_ptr + 54, 1); // pnSize.h
+        bus.write_word(port_ptr + 56, 8); // pnMode = patCopy
+        for offset in 58..66 {
+            bus.write_byte(port_ptr + offset, 0xFF); // pnPat = black
+        }
+        bus.write_word(port_ptr + 66, 0); // pnVis
+        bus.write_word(port_ptr + 68, 0); // txFont
+        bus.write_word(port_ptr + 70, 0); // txFace
+        bus.write_word(port_ptr + 72, 1); // txMode = srcOr
+        bus.write_word(port_ptr + 74, 0); // txSize
+        bus.write_long(port_ptr + 76, 0); // spExtra
+        bus.write_long(port_ptr + 80, 0x0000_0021); // fgColor = blackColor
+        bus.write_long(port_ptr + 84, 0x0000_001E); // bkColor = whiteColor
+        bus.write_word(port_ptr + 88, 0); // colrBit
+        bus.write_word(port_ptr + 90, 0); // patStretch
+        bus.write_long(port_ptr + 92, 0); // picSave
+        bus.write_long(port_ptr + 96, 0); // rgnSave
+        bus.write_long(port_ptr + 100, 0); // polySave
+        bus.write_long(port_ptr + 104, 0); // grafProcs
+        self.port_draw_states
+            .insert(port_ptr, PortDrawState::default());
 
         self.window_manager_port = port_ptr;
         bus.write_long(Self::LOWMEM_WMGR_PORT, port_ptr);
@@ -695,18 +714,37 @@ impl super::TrapDispatcher {
             return self.window_manager_cport;
         }
 
-        let lowmem_port = self.ensure_window_manager_port(bus);
-        let color_port = bus.alloc(256);
-        for offset in 0..256u32 {
-            bus.write_byte(color_port + offset, bus.read_byte(lowmem_port + offset));
+        let _ = self.ensure_window_manager_port(bus);
+        let (_, _, width, height, _) = self.screen_mode;
+        let bounds = (0i16, 0i16, height as i16, width as i16);
+        let gd_handle = self.ensure_main_gdevice(bus);
+        let gd_ptr = bus.read_long(gd_handle);
+        let gd_pmap_handle = bus.read_long(gd_ptr + 22);
+        let gd_pmap = bus.read_long(gd_pmap_handle);
+        let pixmap = bus.alloc(50);
+        for offset in 0..50u32 {
+            bus.write_byte(pixmap + offset, bus.read_byte(gd_pmap + offset));
         }
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap);
 
-        let state = self
-            .port_draw_states
-            .get(&lowmem_port)
-            .copied()
-            .unwrap_or_else(PortDrawState::default);
-        self.port_draw_states.insert(color_port, state);
+        let color_port = bus.alloc(256);
+        bus.write_word(color_port, 0); // device
+        bus.write_long(color_port + 2, pixmap_handle); // portPixMap
+        bus.write_word(color_port + 6, 0xC000); // portVersion
+        bus.write_long(color_port + 8, 0); // grafVars
+        bus.write_word(color_port + 12, 0); // chExtra
+        bus.write_word(color_port + 14, 0x8000); // pnLocHFrac
+        bus.write_word(color_port + 16, bounds.0 as u16);
+        bus.write_word(color_port + 18, bounds.1 as u16);
+        bus.write_word(color_port + 20, bounds.2 as u16);
+        bus.write_word(color_port + 22, bounds.3 as u16);
+        let vis_rgn = Self::alloc_rect_region_handle(bus, Some(bounds));
+        let clip_rgn =
+            Self::alloc_rect_region_handle(bus, Some((i16::MIN, i16::MIN, i16::MAX, i16::MAX)));
+        bus.write_long(color_port + 24, vis_rgn);
+        bus.write_long(color_port + 28, clip_rgn);
+        self.init_cgraf_port_defaults(color_port, bus);
 
         self.window_manager_cport = color_port;
         color_port
@@ -5243,20 +5281,37 @@ mod tests {
         );
         assert_eq!(
             bus.read_word(wmgr_port + 6) & 0xC000,
-            0xC000,
-            "Window Manager port should be a CGrafPort on color systems"
-        );
-        assert_ne!(
-            bus.read_long(wmgr_port + 2),
             0,
-            "Window Manager CGrafPort should expose a portPixMap handle"
+            "GetWMgrPort must expose a basic GrafPort rowBytes field"
         );
         assert_ne!(
             wmgr_port, disp.front_window,
             "Window Manager port pointer should not alias the front window pointer"
         );
 
-        let (_, _, width, height, _) = disp.screen_mode;
+        let (screen_base, row_bytes, width, height, _) = disp.screen_mode;
+        assert_eq!(
+            bus.read_long(wmgr_port + 2),
+            screen_base,
+            "GrafPort.portBits.baseAddr should address the main screen"
+        );
+        assert_eq!(
+            u32::from(bus.read_word(wmgr_port + 6)),
+            row_bytes,
+            "GrafPort.portBits.rowBytes should describe the main screen"
+        );
+        assert_eq!(bus.read_word(wmgr_port + 8) as i16, 0);
+        assert_eq!(bus.read_word(wmgr_port + 10) as i16, 0);
+        assert_eq!(
+            bus.read_word(wmgr_port + 12) as i16,
+            height as i16,
+            "GrafPort.portBits.bounds.bottom should match screen height"
+        );
+        assert_eq!(
+            bus.read_word(wmgr_port + 14) as i16,
+            width as i16,
+            "GrafPort.portBits.bounds.right should match screen width"
+        );
         assert_eq!(bus.read_word(wmgr_port + 16) as i16, 0);
         assert_eq!(bus.read_word(wmgr_port + 18) as i16, 0);
         assert_eq!(
