@@ -90,6 +90,62 @@ fn elems_op_name(opcode: u16) -> &'static str {
     }
 }
 
+fn write_sane_decimal(bus: &mut MacMemoryBus, dst: u32, value: f64, style: u8, digits: i16) {
+    let negative = value.is_sign_negative();
+    let absolute = value.abs();
+    let (exponent, significand) = if absolute.is_nan() {
+        (0, "N".to_string())
+    } else if absolute.is_infinite() {
+        (0, "I".to_string())
+    } else if absolute == 0.0 {
+        (0, "0".to_string())
+    } else if style == 1 {
+        let decimal_places = i32::from(digits);
+        if decimal_places.unsigned_abs() > 19 {
+            (0, "?".to_string())
+        } else {
+            let (exponent, text) = if decimal_places >= 0 {
+                let precision = decimal_places as usize;
+                (
+                    -decimal_places,
+                    format!("{:.*}", precision, absolute).replace('.', ""),
+                )
+            } else {
+                let exponent = -decimal_places;
+                let scale = libm::pow(10.0, f64::from(exponent));
+                (exponent, format!("{:.0}", absolute / scale))
+            };
+            let text = text.trim_start_matches('0');
+            let text = if text.is_empty() { "0" } else { text };
+            if text.len() > 19 {
+                (0, "?".to_string())
+            } else {
+                (exponent as i16, text.to_string())
+            }
+        }
+    } else {
+        let significant_digits = digits.clamp(1, 19) as usize;
+        let scientific = format!("{:.*e}", significant_digits - 1, absolute);
+        let (mantissa, exponent) = scientific
+            .split_once('e')
+            .expect("Rust scientific formatting always includes an exponent");
+        let text = mantissa.replace('.', "");
+        let exponent = exponent.parse::<i16>().unwrap_or(0) - (text.len() as i16 - 1);
+        (exponent, text)
+    };
+
+    // SANE.h defines the 68K Decimal record as a high-byte sign, an
+    // exponent word, and a 20-character Pascal string.
+    bus.write_byte(dst, u8::from(negative));
+    bus.write_byte(dst + 1, 0);
+    bus.write_word(dst + 2, exponent as u16);
+    bus.write_byte(dst + 4, significand.len() as u8);
+    for offset in 0..=20 {
+        bus.write_byte(dst + 5 + offset, 0);
+    }
+    bus.write_bytes(dst + 5, significand.as_bytes());
+}
+
 /// SANE memory-load reporter. Fires when a SANE handler reads a NaN or
 /// +/-inf value from guest memory — meaning the value was created somewhere
 /// we don't trace (earlier SANE ops, game arithmetic, or uninit memory).
@@ -192,6 +248,9 @@ impl super::TrapDispatcher {
     ///
     /// Stack layout for two-address ops:
     ///   SP+0: opcode (2), SP+2: dst_ptr (4), SP+6: src_ptr (4) = 10 bytes
+    /// Stack layout for binary-to-decimal conversion:
+    ///   SP+0: opcode (2), SP+2: dst_ptr (4), SP+6: src_ptr (4),
+    ///   SP+10: decform_ptr (4) = 14 bytes
     /// Stack layout for one-address ops:
     ///   SP+0: opcode (2), SP+2: dst_ptr (4) = 6 bytes
     fn handle_fp68k<C: CpuOps>(
@@ -237,6 +296,25 @@ impl super::TrapDispatcher {
         };
 
         use super::extended80::Extended80;
+
+        if op == 0x0B {
+            // F{X,D,S,C,I,L}2DEC ($A9EB, opword $000B)
+            // Converts the opcode-selected binary source into a decimal
+            // record according to a decform record.
+            // PROCEDURE Num2Dec(f: DecForm; x: extended; VAR d: Decimal);
+            // Apple Numerics Manual, 2nd ed. (1988), pp. 157-158 and
+            // Appendix E, Table E-14 (p. 271).
+            let dst_ptr = bus.read_long(sp + 2);
+            let src_ptr = bus.read_long(sp + 6);
+            let decform_ptr = bus.read_long(sp + 10);
+            cpu.write_reg(Register::A7, sp + 14);
+
+            let value = f64::from(Extended80::read_format(bus, src_ptr, fmt));
+            let style = bus.read_byte(decform_ptr);
+            let digits = bus.read_word(decform_ptr + 2) as i16;
+            write_sane_decimal(bus, dst_ptr, value, style, digits);
+            return Ok(());
+        }
 
         if is_two_addr {
             // Two-address: SP+0: opcode(2), SP+2: dst_ptr(4), SP+6: src_ptr(4)
@@ -454,10 +532,6 @@ impl super::TrapDispatcher {
                     bus.write_word(dst_ptr, 0);
                     return Ok(());
                 } // FGETERR
-                0x0B => {
-                    bus.write_word(dst_ptr, 0);
-                    return Ok(());
-                } // FTESTXCP
                 _ => None,
             };
 
@@ -889,6 +963,7 @@ mod tests {
 
     const DST_ADDR: u32 = 0x300000;
     const SRC_ADDR: u32 = 0x300100;
+    const DECFORM_ADDR: u32 = 0x300200;
     const NON_STACK_REGS: [Register; 15] = [
         Register::D0,
         Register::D1,
@@ -1088,6 +1163,35 @@ mod tests {
         let result = disp.read_fp_extended(&bus, DST_ADDR);
         assert!((result + 1.2).abs() < 1e-10, "expected -1.2, got {result}");
         assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+    }
+
+    #[test]
+    fn pack4_binary_to_decimal_consumes_three_addresses_and_writes_fixed_record() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        disp.write_fp_extended(&mut bus, SRC_ADDR, 3.321_428_571_428_571_6);
+        bus.write_bytes(DST_ADDR, &[0xCC; 26]);
+        bus.write_byte(DECFORM_ADDR, 1); // FixedDecimal
+        bus.write_byte(DECFORM_ADDR + 1, 0);
+        bus.write_word(DECFORM_ADDR + 2, 2); // two digits right of decimal
+
+        // Apple Numerics Manual, 2nd ed., pp. 157-158: push SRC2
+        // (decform), SRC, then DST. The opword makes a 14-byte frame.
+        bus.write_word(sp, 0x000B); // FX2DEC
+        bus.write_long(sp + 2, DST_ADDR);
+        bus.write_long(sp + 6, SRC_ADDR);
+        bus.write_long(sp + 10, DECFORM_ADDR);
+
+        disp.dispatch_sane(true, 0x1EB, &mut cpu, &mut bus);
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(bus.read_byte(DST_ADDR), 0);
+        assert_eq!(bus.read_byte(DST_ADDR + 1), 0);
+        assert_eq!(bus.read_word(DST_ADDR + 2) as i16, -2);
+        assert_eq!(bus.read_byte(DST_ADDR + 4), 3);
+        assert_eq!(bus.read_bytes(DST_ADDR + 5, 3), b"332");
+        assert_eq!(bus.read_byte(DST_ADDR + 25), 0);
     }
 
     #[test]
