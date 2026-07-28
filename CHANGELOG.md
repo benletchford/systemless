@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.1](https://github.com/benletchford/systemless/compare/v0.8.0...v0.8.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* accept a Pascal BOOLEAN parameter in either byte of its stack slot ([#114](https://github.com/benletchford/systemless/issues/114)) ([d4ea0f5](https://github.com/benletchford/systemless/commit/d4ea0f5f9f3e8437d3346f57ba1138a6490d8b25))
+* preserve Sound Manager Pascal callback and dispatch frames ([#120](https://github.com/benletchford/systemless/issues/120)) ([a89d233](https://github.com/benletchford/systemless/commit/a89d233a75b2cde2c964f7be61b76b5583bef70a))
+* resolve control title ink against the live device colour table ([#119](https://github.com/benletchford/systemless/issues/119)) ([c804e91](https://github.com/benletchford/systemless/commit/c804e91b5524a183dad2ce89fa6afdb194a09218))
+
 ## [0.8.0](https://github.com/benletchford/systemless/compare/v0.7.1...v0.8.0) (2026-07-27)
 
 
