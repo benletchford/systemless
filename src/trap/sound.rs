@@ -275,7 +275,7 @@ impl super::TrapDispatcher {
             // stack arguments. `sound_dispatch_param_bytes` maps those
             // documented literals back to their real frame sizes so clients
             // that pass table values directly do not return through args.
-            // SoundDispatch ($A800): Routes by selector; SndPlayDoubleBuffer ($20) with doubleback callbacks, SndStartFilePlay ($00) plays 'snd ' resources by ID or AIFF file by refnum with async completion callbacks, SndStopFilePlay ($08) stops channel, SndPauseFilePlay ($04) toggles file pause, SndSoundManagerVersion ($0C) returns a Sound Manager 3.x NumVersion; SndChannelStatus ($10) zero-fills 24-byte SCStatus per IM:Sound 2-101 (no async playback so all fields are documented-correct at zero); SndManagerStatus ($14) fills 6-byte SMStatus with smNumChannels = active channel count, default smMaxCPULoad = 100, and zero current load per IM:Sound 2-101 + 2-201; volume selectors ($24/$28/$2C/$30) persist Sound Manager 3.x packed L/R levels
+            // SoundDispatch ($A800): Routes by full selector; SndPlayDoubleBuffer ($20) with doubleback callbacks, SndStartFilePlay ($00) plays 'snd ' resources by ID or AIFF file by refnum with async completion callbacks, SndStopFilePlay ($08) stops channel, SndPauseFilePlay ($04) toggles file pause, SndSoundManagerVersion ($000C0008) returns a Sound Manager 3.x NumVersion, UnsignedFixedMulDiv ($060C0018) computes its 16.16 result and pops its 12-byte frame; SndChannelStatus ($10) zero-fills 24-byte SCStatus per IM:Sound 2-101 (no async playback so all fields are documented-correct at zero); SndManagerStatus ($14) fills 6-byte SMStatus with smNumChannels = active channel count, default smMaxCPULoad = 100, and zero current load per IM:Sound 2-101 + 2-201; volume selectors ($24/$28/$2C/$30) persist Sound Manager 3.x packed L/R levels
             (true, 0x000) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0);
@@ -288,16 +288,33 @@ impl super::TrapDispatcher {
                     );
                 }
                 match routine {
-                    // SndSoundManagerVersion (routine $0C, sel $000C0008)
-                    // FUNCTION SndSoundManagerVersion: NumVersion;
-                    // Sound 1994, 2-201
+                    // SndSoundManagerVersion and UnsignedFixedMulDiv share
+                    // routine byte $0C across different selector families.
                     0x0C => {
-                        // NumVersion uses the first two bytes for major and
-                        // minor release numbers, followed by release stage.
-                        // Return Sound Manager 3.3.3 final so version gates
-                        // that require 3.1+ take the Sound Manager 3.x path.
-                        // Sound 1994, 2-34.
-                        bus.write_long(sp, 0x0333_8000);
+                        if selector == 0x060C_0018 {
+                            // UnsignedFixedMulDiv(value, multiplier, divisor)
+                            // returns (value * multiplier) / divisor. MPW
+                            // Sound.h declares three 4-byte UnsignedFixed
+                            // arguments and a 4-byte result.
+                            let divisor = bus.read_long(sp);
+                            let multiplier = bus.read_long(sp + 4);
+                            let value = bus.read_long(sp + 8);
+                            let result = if divisor == 0 {
+                                u32::MAX
+                            } else {
+                                ((value as u64 * multiplier as u64) / divisor as u64)
+                                    .min(u32::MAX as u64) as u32
+                            };
+                            bus.write_long(sp + param_bytes, result);
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        } else {
+                            // NumVersion uses the first two bytes for major
+                            // and minor release numbers, followed by release
+                            // stage. Return Sound Manager 3.3.3 final so
+                            // version gates that require 3.1+ take the Sound
+                            // Manager 3.x path. Sound 1994, 2-34.
+                            bus.write_long(sp, 0x0333_8000);
+                        }
                     }
 
                     // SndPlayDoubleBuffer (routine $20, sel $00200008)
@@ -3288,6 +3305,25 @@ mod tests {
             0x80,
             "release stage byte must mark a final release"
         );
+    }
+
+    #[test]
+    fn sounddispatch_unsigned_fixed_mul_div_returns_result_and_pops_arguments() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x060C_0018); // UnsignedFixedMulDiv
+        bus.write_long(sp, 0x5622_0000); // divisor
+        bus.write_long(sp + 4, 0x5622_0000); // multiplier
+        bus.write_long(sp + 8, 0x0001_0000); // value
+        bus.write_long(sp + 12, 0xDEAD_BEEF); // result placeholder
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_long(sp + 12), 0x0001_0000);
     }
 
     #[test]
