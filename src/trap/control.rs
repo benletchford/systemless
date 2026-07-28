@@ -25,6 +25,14 @@ impl super::TrapDispatcher {
     const AUX_CTL_RECORD_SIZE: u32 = 22;
     const INACTIVE_CONTROL_TITLE_RGB: [u16; 3] = [0xA1A1, 0xA1A1, 0xA1A1];
 
+    // The drawCntl contract defines invisibility as contrlVis == 0; callers
+    // that write the packed ControlRecord directly may use another nonzero
+    // Boolean representation instead of ShowControl's canonical 255.
+    // Inside Macintosh Volume I, I-329
+    fn control_vis_is_visible(vis: u8) -> bool {
+        vis != 0
+    }
+
     fn control_trace_nonzero(value: u32) -> String {
         if value == 0 {
             "$00000000".to_string()
@@ -49,7 +57,7 @@ impl super::TrapDispatcher {
             "control_handle={} control_ptr={} rect=({top},{left},{bottom},{right}) visible={} hilite={} proc_id={proc_id}",
             Self::control_trace_nonzero(ctrl_handle),
             Self::control_trace_nonzero(ctrl_ptr),
-            vis == 255,
+            Self::control_vis_is_visible(vis),
             hilite,
         )
     }
@@ -755,7 +763,7 @@ impl super::TrapDispatcher {
             return;
         }
         let vis = bus.read_byte(ctrl_ptr + 16);
-        if vis != 255 {
+        if !Self::control_vis_is_visible(vis) {
             return;
         }
 
@@ -2614,7 +2622,7 @@ impl super::TrapDispatcher {
                 if ctrl_ptr != 0 {
                     let vis = bus.read_byte(ctrl_ptr + 16);
                     let hilite = bus.read_byte(ctrl_ptr + 17);
-                    if vis == 255 && hilite != 255 {
+                    if Self::control_vis_is_visible(vis) && hilite != 255 {
                         let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                         let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                         let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
@@ -2748,7 +2756,7 @@ impl super::TrapDispatcher {
                         let vis = bus.read_byte(ctrl_ptr + 16);
                         let hilite = bus.read_byte(ctrl_ptr + 17);
                         outcome = "inactive_or_invisible";
-                        if vis == 255 && hilite != 255 {
+                        if Self::control_vis_is_visible(vis) && hilite != 255 {
                             let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                             let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                             let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
@@ -2900,7 +2908,7 @@ impl super::TrapDispatcher {
                             // popupMenuProc needs special MENU resource lookup
                             let vis = bus.read_byte(ctrl_ptr + 16);
                             let hilite = bus.read_byte(ctrl_ptr + 17);
-                            if vis == 255 {
+                            if Self::control_vis_is_visible(vis) {
                                 let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                                 let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                                 let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
@@ -3026,12 +3034,12 @@ impl super::TrapDispatcher {
                             break;
                         }
 
-                        // Check visibility (offset 16, 255 = visible)
+                        // Check visibility (offset 16; zero is invisible)
                         let vis = bus.read_byte(ctrl_ptr + 16);
                         // Check hilite (offset 17, 255 = inactive/disabled)
                         let hilite = bus.read_byte(ctrl_ptr + 17);
 
-                        if vis == 255 && hilite != 255 {
+                        if Self::control_vis_is_visible(vis) && hilite != 255 {
                             // Check contrlRect (offset 8): top, left, bottom, right
                             let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                             let r_left = bus.read_word(ctrl_ptr + 10) as i16;
@@ -5665,6 +5673,53 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn draw1control_treats_any_nonzero_contrlvis_as_visible() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(16 * 128);
+        let row_bytes = 16u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 128, 1);
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(0x0828, row_bytes as u16);
+        clear_1bpp_screen(&mut bus, screen_base, row_bytes, 128);
+
+        let window_ptr = disp.current_port;
+        bus.write_word(window_ptr + 16, 0);
+        bus.write_word(window_ptr + 18, 0);
+        bus.write_word(window_ptr + 20, 128);
+        bus.write_word(window_ptr + 22, 128);
+        let ctrl_ptr = bus.alloc(296);
+        let ctrl_handle = bus.alloc(4);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            ctrl_ptr,
+            window_ptr,
+            (20, 20, 44, 100),
+            b"Play",
+            false,
+            0,
+            0,
+            1,
+            0,
+            0,
+        );
+        bus.write_byte(ctrl_ptr + 16, 1);
+
+        let sp = 0x300000u32;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, ctrl_handle);
+        disp.dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            count_set_pixels(&bus, screen_base, row_bytes, 20, 20, 44, 100) > 40,
+            "drawCntl skips only contrlVis == 0 (Inside Macintosh I-329)"
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
