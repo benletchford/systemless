@@ -4556,22 +4556,29 @@ impl super::TrapDispatcher {
             //   convention itself — A7 unchanged across the call after
             //   the 8-byte arg frame is consumed.
             //
-            // Behaviour that diverges from BasiliskII:
-            //   BII System 7.5.3 ROM Color QuickDraw dereferences pp^^
-            //   and *myColor, then writes a dithered 8x8 pattern plus
-            //   a partial color table into the pixPat record. Systemless
-            //   HLE is a true no-op because the host runtime renders
-            //   only to 1bpp canvases and has no dithered pattern
-            //   construction path; games that rely on the dithered
-            //   pattern visually see whatever the pattern slot already
-            //   contained, but the calling convention is preserved so
-            //   the rest of the program's stack frame stays intact.
+            // Systemless retains the requested source RGB by PixPatHandle.
+            // FillCRect resolves it against the destination depth at draw
+            // time, mirroring the ROM's depth-specific expansion without
+            // baking the current screen CLUT into the pattern.
             //
             // Contract-test coverage in this file (mod tests):
             //   makergbpat_pascal_procedure_preserves_stack_across_five_calls
             (true, 0x20D) => {
                 let sp = cpu.read_reg(Register::A7);
+                // Pascal argument order places the second argument at SP+0.
+                let color_ptr = bus.read_long(sp);
+                let pp_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
+                if pp_handle != 0 && bus.read_long(pp_handle) != 0 && color_ptr != 0 {
+                    self.makergbpat_colors.insert(
+                        pp_handle,
+                        (
+                            bus.read_word(color_ptr),
+                            bus.read_word(color_ptr + 2),
+                            bus.read_word(color_ptr + 4),
+                        ),
+                    );
+                }
                 Ok(())
             }
 
@@ -11139,6 +11146,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let ppat_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
+                self.makergbpat_colors.remove(&ppat_handle);
                 if ppat_handle != 0 {
                     let ppat_ptr = bus.read_long(ppat_handle);
                     if ppat_ptr != 0 {
@@ -12199,6 +12207,11 @@ impl super::TrapDispatcher {
                 let dst_handle = bus.read_long(sp);
                 let src_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
+                if let Some(rgb) = self.makergbpat_colors.get(&src_handle).copied() {
+                    self.makergbpat_colors.insert(dst_handle, rgb);
+                } else {
+                    self.makergbpat_colors.remove(&dst_handle);
+                }
                 if src_handle != 0 && dst_handle != 0 {
                     let src_ptr = bus.read_long(src_handle);
                     let dst_ptr = bus.read_long(dst_handle);
@@ -12788,7 +12801,19 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                let raw_filled = self.fill_rect_with_raw_pixpat(bus, &r, pp_handle);
+                let generated_rgb = self.makergbpat_colors.get(&pp_handle).copied();
+                let raw_filled = if let Some(rgb) = generated_rgb {
+                    let saved_fg = self.fg_color;
+                    let saved_bg = self.bg_color;
+                    self.fg_color = rgb;
+                    self.bg_color = rgb;
+                    self.draw_rect(cpu, bus, &r, ShapeOp::Fill([0xFF; 8]));
+                    self.fg_color = saved_fg;
+                    self.bg_color = saved_bg;
+                    true
+                } else {
+                    self.fill_rect_with_raw_pixpat(bus, &r, pp_handle)
+                };
                 if trace_qd_colors_enabled() {
                     let pp_ptr = if pp_handle != 0 {
                         bus.read_long(pp_handle)
@@ -32365,6 +32390,65 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x20D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+    }
+
+    #[test]
+    fn makergbpat_color_drives_fillcrect_instead_of_default_checkerboard() {
+        // IM:V V-73: MakeRGBPat generates a PixPat approximating the
+        // requested RGBColor. FillCRect must draw that generated color,
+        // not the 50%-gray pat1Data installed by NewPixPat.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_polygon_surface(&mut d, &mut bus);
+        let requested = (0x1234, 0x5678, 0x9ABC);
+        d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        d.device_clut[7] = [requested.0, requested.1, requested.2];
+
+        let pp_handle =
+            make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+        let color_ptr = bus.alloc(6);
+        bus.write_word(color_ptr, requested.0);
+        bus.write_word(color_ptr + 2, requested.1);
+        bus.write_word(color_ptr + 4, requested.2);
+
+        // Pascal argument order: RGBColor* at SP+0, PixPatHandle at SP+4.
+        bus.write_long(TEST_SP, color_ptr);
+        bus.write_long(TEST_SP + 4, pp_handle);
+        let result = d.dispatch_quickdraw(true, 0x20D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(
+            d.makergbpat_colors.get(&pp_handle),
+            Some(&requested),
+            "MakeRGBPat must retain the requested source RGB"
+        );
+
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, 10, 10, 14, 14);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = d.dispatch_quickdraw(true, 0x20E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let filled_pixel = read_surface_pixel(&bus, screen_base, row_bytes, 10, 10);
+        assert_ne!(
+            filled_pixel, 0,
+            "generated RGB PixPat must resolve to a visible destination pixel"
+        );
+        for y in 10..14 {
+            for x in 10..14 {
+                assert_eq!(
+                    read_surface_pixel(&bus, screen_base, row_bytes, x, y),
+                    filled_pixel,
+                    "generated RGB PixPat must fill every pixel, not alternate through pat1Data"
+                );
+            }
+        }
+        assert_eq!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 9, 9),
+            0,
+            "FillCRect must preserve pixels outside the requested rectangle"
+        );
     }
 
     #[test]

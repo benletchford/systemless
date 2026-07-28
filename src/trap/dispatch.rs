@@ -1308,6 +1308,11 @@ pub struct TrapDispatcher {
     pub(crate) fg_color: (u16, u16, u16),
     /// Current background color (RGBColor: R, G, B)
     pub(crate) bg_color: (u16, u16, u16),
+    /// Requested colors for PixPats initialized by MakeRGBPat, keyed by
+    /// PixPatHandle. The ROM expands these into depth-specific pattern data;
+    /// HLE keeps the source RGB so color fills can resolve it for the current
+    /// destination depth at draw time.
+    pub(crate) makergbpat_colors: HashMap<u32, (u16, u16, u16)>,
     /// Current hilite color (RGBColor: R, G, B). Set by HiliteColor
     /// ($AA22) and conceptually stored in the cGrafPort's grafVars
     /// handle per IM:V V-149. Systemless uses a single dispatcher field
@@ -2805,6 +2810,7 @@ impl TrapDispatcher {
             output_dir: None,
             fg_color: (0, 0, 0),
             bg_color: (0xFFFF, 0xFFFF, 0xFFFF),
+            makergbpat_colors: HashMap::new(),
             // Default HiliteRGB used before an application calls HiliteColor.
             // The System 7.5.3 BasiliskII reference resolves this to EV's
             // darker selected-list green rather than a saturated primary.
