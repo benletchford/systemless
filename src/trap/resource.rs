@@ -4968,10 +4968,22 @@ impl super::TrapDispatcher {
                 let name_ptr = bus.read_long(pb + 18);
                 let filename = Self::read_pb_filename(bus, name_ptr);
                 let v_ref = bus.read_word(pb + 22) as i16;
-                let dir_id = bus.read_long(pb + 48);
+                let is_hfs_variant = (self.current_trap_word & 0x0F00) == 0x0200;
+                let dir_id = if is_hfs_variant {
+                    bus.read_long(pb + 48)
+                } else {
+                    0
+                };
                 eprintln!(
-                    "[TRAP] PBCreate(\"{}\") vref={} dirID={}",
-                    filename, v_ref, dir_id
+                    "[TRAP] {}(\"{}\") vref={} dirID={}",
+                    if is_hfs_variant {
+                        "PBHCreate"
+                    } else {
+                        "PBCreate"
+                    },
+                    filename,
+                    v_ref,
+                    dir_id
                 );
 
                 if filename.is_empty() {
@@ -13467,6 +13479,47 @@ mod tests {
         assert_eq!(disp.vfs.get("Pilot 1").unwrap().len(), 0);
     }
 
+    #[test]
+    fn pb_create_uses_working_directory_refnum_and_ignores_hfs_dirid_bytes() {
+        // Files 1992, 2-89: legacy PBCreate takes a ParamBlockRec, whose
+        // ioVRefNum may be a WDRefNum. The ioDirID field exists only in the
+        // HParamBlockRec used by PBHCreate ($A208), so bytes at offset 48
+        // must not redirect a legacy $A008 create.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pilots_dir_id = disp.ensure_vfs_directory("Pilots");
+        let unrelated_dir_id = disp.ensure_vfs_directory("Unrelated");
+        let wd_ref = disp
+            .open_working_directory(
+                super::super::dispatch::BOOT_VOLUME_REF_NUM,
+                pilots_dir_id,
+                0,
+            )
+            .expect("working directory");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Untitled");
+        bus.write_word(pb + 22, wd_ref as u16);
+        bus.write_long(pb + 48, unrelated_dir_id);
+
+        call_trap_word(&mut disp, 0xA008, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert!(disp.vfs.contains_key("Pilots/Untitled"));
+        assert!(!disp.vfs.contains_key("Unrelated/Untitled"));
+
+        bus.write_word(pb + 24, 0);
+        bus.write_long(pb + 48, unrelated_dir_id);
+        cpu.write_reg(Register::D0, 26);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            disp.open_files.get(&bus.read_word(pb + 24)),
+            Some(&"Pilots/Untitled".to_string())
+        );
+    }
+
     // Real Mac files always have both forks; PBCreate must seed an empty
     // rsrc fork so the next PBOpenRF returns noErr instead of fnfErr.
     // Files 1992, 1-58.
@@ -13477,7 +13530,7 @@ mod tests {
         let pb = 0x300000u32;
         setup_param_block(&mut bus, &mut cpu, pb, b"Installer Temp");
 
-        call(&mut disp, false, 0x08, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA008, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert!(disp.vfs.contains_key("Installer Temp"));
@@ -13499,7 +13552,7 @@ mod tests {
         bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
         bus.write_long(pb + 48, temp_dir_id);
 
-        call(&mut disp, false, 0x08, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA208, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
