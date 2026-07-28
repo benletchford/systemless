@@ -1143,6 +1143,39 @@ impl super::TrapDispatcher {
         let text_y = abs_top
             + (abs_bottom - abs_top - (metrics.ascent + metrics.descent)) / 2
             + metrics.ascent;
+        if pixel_size == 8 {
+            // Control drawing writes straight to the screen framebuffer, so
+            // the ink has to be resolved against the colour table the screen
+            // is actually displayed with. `fb_draw_string` picks its index
+            // from the active GDevice table instead, and the two disagree
+            // whenever a game installs its own palette: Dark Castle's
+            // GDevice table calls index 1 black, while the live device CLUT
+            // has index 1 as pure green, so every control title was painted
+            // in a colour the button then swallowed.
+            //
+            // Imaging With QuickDraw 1994, p. 4-82: the Color Manager's
+            // inverse table is derived from its own palette, which
+            // low-level `cscSetEntries` palette animation does not update.
+            // For a screen-backed draw the hardware CLUT is the authority.
+            let ink = super::pict::closest_clut_index(0, 0, 0, &self.device_clut);
+            Self::fb_draw_string_styled_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                text_x,
+                text_y,
+                title,
+                font_id,
+                font_size,
+                0,
+                ink,
+            );
+            return;
+        }
+
         Self::fb_draw_string(
             bus,
             screen_base,
@@ -4580,6 +4613,82 @@ mod tests {
         assert_eq!(
             radio_black, 0,
             "inactive radio title must not leave black glyph pixels"
+        );
+    }
+
+    /// An active push-button title must resolve its ink against the colour
+    /// table the screen is displayed with, not the current GDevice table.
+    ///
+    /// Games that install their own palette leave the two disagreeing. Dark
+    /// Castle's GDevice table calls index 1 black while the live device CLUT
+    /// has index 1 as pure green, so every control title was painted green.
+    /// The inactive-title path already resolved against `device_clut`; this
+    /// pins the active path to the same rule.
+    #[test]
+    fn active_button_title_uses_the_device_clut_black_index() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(128 * 128);
+        let row_bytes = 128u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 128, 8);
+
+        // Live device CLUT: black lives at 255, and index 1 is bright green.
+        disp.device_clut = [[0x8080, 0x8080, 0x8080]; 256];
+        disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut[1] = [0, 0xFFFF, 0];
+        disp.device_clut[255] = [0, 0, 0];
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(0x0828, row_bytes as u16);
+
+        // GDevice table disagrees: it claims index 1 is the black one, which
+        // is what the old ink lookup would have latched onto.
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+        let gdevice = bus.read_long(gdevice_handle);
+        let pixmap_handle = bus.read_long(gdevice + 22);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+        for index in 0u32..256 {
+            let entry = ctab + 8 + index * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, 0x8080);
+            bus.write_word(entry + 4, 0x8080);
+            bus.write_word(entry + 6, 0x8080);
+        }
+        let black_claim = ctab + 8 + 8;
+        bus.write_word(black_claim, 1);
+        bus.write_word(black_claim + 2, 0);
+        bus.write_word(black_claim + 4, 0);
+        bus.write_word(black_claim + 6, 0);
+
+        for offset in 0..(row_bytes * 128) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+        let window_ptr = disp.current_port;
+        bus.write_word(window_ptr + 8, 0);
+        bus.write_word(window_ptr + 10, 0);
+        bus.write_word(window_ptr + 16, 0);
+        bus.write_word(window_ptr + 18, 0);
+        bus.write_word(window_ptr + 20, 128);
+        bus.write_word(window_ptr + 22, 128);
+
+        let rect = (20i16, 10i16, 44i16, 118i16);
+        let ctrl_ptr = bus.alloc(296);
+        disp.initialize_control_record(
+            &mut bus, ctrl_ptr, window_ptr, rect, b"Play", true, 0, 0, 1, 0, 0,
+        );
+        disp.draw_control(&mut cpu, &mut bus, ctrl_ptr);
+
+        let black = count_pixel_index(&bus, screen_base, row_bytes, 20, 10, 44, 118, 255);
+        let green = count_pixel_index(&bus, screen_base, row_bytes, 20, 10, 44, 118, 1);
+        assert!(
+            black > 12,
+            "title glyphs should use the device CLUT's black index, got {black} px"
+        );
+        assert_eq!(
+            green, 0,
+            "title must not be painted in the GDevice table's mistaken black"
         );
     }
 
