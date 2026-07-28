@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.2](https://github.com/benletchford/systemless/compare/v0.8.1...v0.8.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* honor MakeRGBPat colors in FillCRect ([#128](https://github.com/benletchford/systemless/issues/128)) ([7f50f52](https://github.com/benletchford/systemless/commit/7f50f527dd619eddd6ebe307919aca5f321a9ed9))
+* implement Pack4 binary-to-decimal conversion ([#126](https://github.com/benletchford/systemless/issues/126)) ([3623732](https://github.com/benletchford/systemless/commit/3623732d066b75c786c204ed1654db2c6bb9c023))
+* resolve legacy PBCreate through working directory references ([#124](https://github.com/benletchford/systemless/issues/124)) ([185b8c5](https://github.com/benletchford/systemless/commit/185b8c583287a2588b094e4e31f991f78f59b95e))
+* treat nonzero control visibility values as visible ([#122](https://github.com/benletchford/systemless/issues/122)) ([133c00a](https://github.com/benletchford/systemless/commit/133c00ac4b7b7248575a7b24248f6a0b0e2f58c7))
+
 ## [0.8.1](https://github.com/benletchford/systemless/compare/v0.8.0...v0.8.1) (2026-07-28)
 
 
