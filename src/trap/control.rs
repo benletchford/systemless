@@ -3289,7 +3289,7 @@ impl super::TrapDispatcher {
                     }
 
                     let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
-                    if ctrl_ptr != 0 && Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16)) {
+                    if ctrl_ptr != 0 && bus.read_byte(ctrl_ptr + 16) == 255 {
                         self.draw_control(cpu, bus, ctrl_ptr);
                     }
                 }
