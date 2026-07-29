@@ -3307,6 +3307,32 @@ impl TrapDispatcher {
             .cloned()
     }
 
+    pub(crate) fn find_case_insensitive_relative_key<'a, I>(keys: I, target: &str) -> Option<String>
+    where
+        I: IntoIterator<Item = &'a String>,
+    {
+        let normalized_target = Self::normalize_vfs_path(target);
+        if !normalized_target.contains('/') {
+            return None;
+        }
+        // A leading colon denotes a partial HFS pathname whose directory
+        // components remain significant. Match the whole normalized suffix
+        // on a component boundary before any basename-only compatibility
+        // fallback can discard those components.
+        // Inside Macintosh: Files (1992), pp. 2-27 to 2-30.
+        let suffix = format!("/{normalized_target}").to_ascii_lowercase();
+        let mut sorted: Vec<&String> = keys.into_iter().collect();
+        sorted.sort_unstable();
+        sorted
+            .into_iter()
+            .find(|key| {
+                Self::normalize_vfs_path(key)
+                    .to_ascii_lowercase()
+                    .ends_with(&suffix)
+            })
+            .cloned()
+    }
+
     pub(crate) fn ensure_vfs_directory(&mut self, path: &str) -> u32 {
         let normalized = Self::normalize_vfs_path(path);
         if normalized.is_empty() {
@@ -5389,6 +5415,11 @@ impl TrapDispatcher {
             .find(|key| Self::normalize_vfs_path(key).eq_ignore_ascii_case(&normalized))
         {
             return Some(found.clone());
+        }
+        if let Some(found) =
+            Self::find_case_insensitive_relative_key(sorted_keys.iter().copied(), &normalized)
+        {
+            return Some(found);
         }
         let hfs_basename = hfs_normalized
             .rsplit('/')
