@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.6](https://github.com/benletchford/systemless/compare/v0.8.5...v0.8.6) (2026-07-29)
+
+
+### Performance Improvements
+
+* **runner:** prove and park exact idle cycles ([8cd95d7](https://github.com/benletchford/systemless/commit/8cd95d73a733a9fe21d546b3cba6d5b9df3372c5))
+* **runner:** support signed BLT and computed-deadline TickCount waits ([bfe2ded](https://github.com/benletchford/systemless/commit/bfe2ded6a5f691e4b82b1fad17fc239f08982398))
+
 ## [0.8.5](https://github.com/benletchford/systemless/compare/v0.8.4...v0.8.5) (2026-07-29)
 
 
