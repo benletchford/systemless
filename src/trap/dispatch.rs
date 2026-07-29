@@ -970,6 +970,8 @@ pub(crate) struct InverseTableCacheEntry {
 
 /// Trap dispatcher with resource fork access and emulator state.
 pub struct TrapDispatcher {
+    /// Synthetic keyboard and mouse entries exposed by the ADB Manager.
+    pub(crate) adb: crate::adb::AdbManager,
     /// Loaded resources by handle -> (ptr, type, id)
     pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
     /// Fast index from (resource-file refnum, type, id) to its live handle.
@@ -2716,6 +2718,7 @@ impl TrapDispatcher {
         vfs_directory_paths.insert(2, String::new());
 
         let mut dispatcher = Self {
+            adb: crate::adb::AdbManager::new(),
             loaded_handles: HashMap::new(),
             resource_handles_by_key: HashMap::new(),
             handle_state_bits: HashMap::new(),
@@ -4068,6 +4071,7 @@ impl TrapDispatcher {
     /// Coordinates are in Mac screen space (0,0 = top-left of screen).
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
         self.mouse_pos = (v, h);
+        self.adb.note_mouse_state(self.mouse_pos, self.mouse_button);
     }
 
     pub(crate) fn has_unmatched_queued_mouse_down(&self) -> bool {
@@ -4086,6 +4090,7 @@ impl TrapDispatcher {
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
         self.mouse_button = true;
         self.mouse_pos = (v, h);
+        self.adb.note_mouse_state(self.mouse_pos, self.mouse_button);
         let modifiers = self.current_event_modifiers();
         self.event_queue.push_back(QueuedEvent {
             what: 1, // mouseDown
@@ -4104,6 +4109,7 @@ impl TrapDispatcher {
     pub fn push_mouse_up(&mut self, v: i16, h: i16) {
         self.mouse_pos = (v, h);
         self.mouse_button = false;
+        self.adb.note_mouse_state(self.mouse_pos, self.mouse_button);
         let modifiers = self.current_event_modifiers();
         self.event_queue.push_back(QueuedEvent {
             what: 2, // mouseUp

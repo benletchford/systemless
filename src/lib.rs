@@ -32,6 +32,7 @@
 //!
 //! [`m68k`]: https://crates.io/crates/m68k
 
+mod adb;
 pub mod audio;
 pub mod binhex;
 pub mod cpu;
