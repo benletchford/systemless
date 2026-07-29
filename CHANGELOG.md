@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.8](https://github.com/benletchford/systemless/compare/v0.8.7...v0.8.8) (2026-07-29)
+
+
+### Bug Fixes
+
+* restore retained modal backgrounds using dialog bounds ([95ff71c](https://github.com/benletchford/systemless/commit/95ff71c31e9905197a8414d4f1e6535e8b903b7b))
+
 ## [0.8.7](https://github.com/benletchford/systemless/compare/v0.8.6...v0.8.7) (2026-07-29)
 
 
