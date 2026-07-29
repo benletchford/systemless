@@ -4895,6 +4895,8 @@ impl super::TrapDispatcher {
         items_handle: u32,
         items: Vec<DialogItem>,
     ) -> u32 {
+        let previous_port = self.current_port;
+        let previous_gdevice = self.current_gdevice;
         let dlg_ptr = if storage_ptr != 0 {
             storage_ptr
         } else {
@@ -4993,6 +4995,12 @@ impl super::TrapDispatcher {
         } else {
             self.dialog_initial_draw_deferred.remove(&dlg_ptr);
         }
+
+        // NewDialog/GetNewDialog create a window but do not make its GrafPort
+        // current; callers explicitly use SetPort when they want to draw in
+        // the new dialog. Restore the port used while constructing and
+        // initially drawing the dialog before returning to the application.
+        self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
 
         dlg_ptr
     }
@@ -19447,6 +19455,7 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     struct DialogCreationSnapshot {
+        new_previous_port: u32,
         new_dialog_ptr: u32,
         new_stack_after: u32,
         new_result_slot: u32,
@@ -19468,6 +19477,7 @@ mod tests {
         new_update_event_queued: bool,
         new_edit_field: u16,
         new_default_item: u16,
+        get_previous_port: u32,
         get_dialog_ptr: u32,
         get_stack_after: u32,
         get_result_slot: u32,
@@ -22107,6 +22117,9 @@ mod tests {
         let new_screen_base = new_bus.alloc((640 * 480) as u32);
         new_bus.write_long(0x0824, new_screen_base);
         new_disp.screen_mode = (new_screen_base, 640, 640, 480, 8);
+        let new_previous_port = new_bus.alloc(170);
+        new_disp.current_port = new_previous_port;
+        new_bus.write_long(crate::memory::globals::addr::THE_PORT, new_previous_port);
 
         let new_ditl = build_test_ditl_items(&[
             (16, (10, 12, 28, 120), b"Alpha".as_slice()),
@@ -22154,6 +22167,9 @@ mod tests {
         let get_screen_base = get_bus.alloc((640 * 480) as u32);
         get_bus.write_long(0x0824, get_screen_base);
         get_disp.screen_mode = (get_screen_base, 640, 640, 480, 8);
+        let get_previous_port = get_bus.alloc(170);
+        get_disp.current_port = get_previous_port;
+        get_bus.write_long(crate::memory::globals::addr::THE_PORT, get_previous_port);
 
         let mut dlog = build_test_dlog((80, 90, 160, 240), 1901, 0);
         dlog[10] = 1; // visible
@@ -22185,6 +22201,7 @@ mod tests {
             .any(|event| event.what == 6 && event.message == get_dialog_ptr);
 
         DialogCreationSnapshot {
+            new_previous_port,
             new_dialog_ptr,
             new_stack_after: new_cpu.read_reg(Register::A7),
             new_result_slot: new_bus.read_long(new_sp + 30),
@@ -22210,6 +22227,7 @@ mod tests {
             new_update_event_queued,
             new_edit_field: new_bus.read_word(new_dialog_ptr + 164),
             new_default_item: new_bus.read_word(new_dialog_ptr + 168),
+            get_previous_port,
             get_dialog_ptr,
             get_stack_after: get_cpu.read_reg(Register::A7),
             get_result_slot: get_bus.read_long(TEST_SP + 10),
@@ -22792,7 +22810,7 @@ mod tests {
         // IM:I I-412 and I-424: GetNewDialog reads DLOG/DITL resources and
         // uses a copy of the item list. Theme chrome must not alter resource
         // parsing, item-list ownership, DialogRecord fields, visible/update
-        // bookkeeping, current-port side effects, or Pascal stack ABI.
+        // bookkeeping, current-port preservation, or Pascal stack ABI.
         let classic = dialog_creation_results_for_theme(UiThemeId::ClassicSystem7);
         let themed = dialog_creation_results_for_theme(UiThemeId::SystemlessDefault);
 
@@ -22801,8 +22819,8 @@ mod tests {
         assert_eq!(classic.new_result_slot, classic.new_dialog_ptr);
         assert_eq!(classic.new_window_list, vec![classic.new_dialog_ptr]);
         assert_eq!(classic.new_front_window, classic.new_dialog_ptr);
-        assert_eq!(classic.new_current_port, classic.new_dialog_ptr);
-        assert_eq!(classic.new_the_port, classic.new_dialog_ptr);
+        assert_eq!(classic.new_current_port, classic.new_previous_port);
+        assert_eq!(classic.new_the_port, classic.new_previous_port);
         assert_eq!(classic.new_visible_byte, 0xFF);
         assert_eq!(classic.new_goaway_byte, 0xFF);
         assert_eq!(classic.new_refcon, 0x1234_5678);
@@ -22829,8 +22847,8 @@ mod tests {
         assert_eq!(classic.get_result_slot, classic.get_dialog_ptr);
         assert_eq!(classic.get_window_list, vec![classic.get_dialog_ptr]);
         assert_eq!(classic.get_front_window, classic.get_dialog_ptr);
-        assert_eq!(classic.get_current_port, classic.get_dialog_ptr);
-        assert_eq!(classic.get_the_port, classic.get_dialog_ptr);
+        assert_eq!(classic.get_current_port, classic.get_previous_port);
+        assert_eq!(classic.get_the_port, classic.get_previous_port);
         assert_eq!(classic.get_visible_byte, 0xFF);
         assert_eq!(classic.get_refcon, 0);
         assert_eq!(classic.get_window_kind, 2);
