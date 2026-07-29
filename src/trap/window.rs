@@ -4,6 +4,7 @@ use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
 use crate::trap::quickdraw::RegionBooleanOp;
+use crate::trap::types::{Rect, ShapeOp};
 use crate::Result;
 use std::sync::OnceLock;
 
@@ -2527,6 +2528,50 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Paint the newly exposed content of a visible window with its
+    /// background pattern after its final z-order has been established.
+    ///
+    /// The Window Manager's PaintOne operation draws the frame, erases the
+    /// exposed content with the window background pattern, and adds that
+    /// content to updateRgn (Inside Macintosh Volume I, pp. I-278, I-296).
+    /// NewWindow then reports an update event for the whole content area
+    /// (pp. I-282..I-283).  The erase matters even when an application draws
+    /// immediately instead of waiting for that event: transparent QuickDraw
+    /// text modes preserve the destination outside their glyphs.
+    ///
+    /// Full-screen windows are initialized separately above because kiosk
+    /// mode deliberately uses a black stage instead of the classic desktop.
+    fn paint_new_window_content<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window_ptr: u32,
+        visible: bool,
+    ) {
+        if !visible {
+            return;
+        }
+
+        let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        if top <= 0 && left <= 0 && bottom >= screen_height as i16 && right >= screen_width as i16 {
+            return;
+        }
+
+        let (top, left, bottom, right) = self.window_port_rect(bus, window_ptr);
+        self.draw_rect(
+            cpu,
+            bus,
+            &Rect {
+                top,
+                left,
+                bottom,
+                right,
+            },
+            ShapeOp::Erase,
+        );
+    }
+
     pub(crate) fn dispatch_window<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -2664,6 +2709,7 @@ impl super::TrapDispatcher {
                 self.activate_frontmost_created_window_if_needed(
                     bus, window_ptr, visible, behind, old_front,
                 );
+                self.paint_new_window_content(bus, cpu, window_ptr, visible);
                 if !visible || behind == 0 {
                     self.set_current_port_state(
                         bus,
@@ -2762,6 +2808,7 @@ impl super::TrapDispatcher {
                 self.activate_frontmost_created_window_if_needed(
                     bus, window_ptr, visible, behind, old_front,
                 );
+                self.paint_new_window_content(bus, cpu, window_ptr, visible);
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
@@ -2840,6 +2887,7 @@ impl super::TrapDispatcher {
                 self.activate_frontmost_created_window_if_needed(
                     bus, window_ptr, visible, behind, old_front,
                 );
+                self.paint_new_window_content(bus, cpu, window_ptr, visible);
                 if !visible || behind == 0 {
                     self.set_current_port_state(
                         bus,
@@ -2932,6 +2980,7 @@ impl super::TrapDispatcher {
                 self.activate_frontmost_created_window_if_needed(
                     bus, window_ptr, visible, behind, old_front,
                 );
+                self.paint_new_window_content(bus, cpu, window_ptr, visible);
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
@@ -5386,6 +5435,60 @@ mod tests {
 
         // front_window should be updated
         assert_eq!(disp.front_window, window_ptr);
+    }
+
+    fn new_window_content_probe(visible: bool) -> u8 {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000;
+        let row_bytes = 512;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 8);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, screen_base);
+
+        // Pick a pixel well inside the content region, away from the frame.
+        // A newly exposed visible window must erase it to the default white
+        // background before NewWindow returns. A hidden window must leave it
+        // untouched.
+        let probe = screen_base + 100 * row_bytes + 150;
+        bus.write_byte(probe, 0x42);
+
+        let bounds_rect_ptr = 0x2F0000;
+        bus.write_word(bounds_rect_ptr, 80);
+        bus.write_word(bounds_rect_ptr + 2, 100);
+        bus.write_word(bounds_rect_ptr + 4, 136);
+        bus.write_word(bounds_rect_ptr + 6, 396);
+
+        let sp = TEST_SP - 26;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..30u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_long(sp + 6, 0xFFFF_FFFF); // frontmost
+        bus.write_word(sp + 10, 1); // dBoxProc
+        bus.write_byte(sp + 12, u8::from(visible));
+        bus.write_long(sp + 18, bounds_rect_ptr);
+
+        let result = dispatch(&mut disp, 0x113, &mut cpu, &mut bus);
+        assert!(result.is_some(), "NewWindow should be handled");
+        assert!(result.unwrap().is_ok(), "NewWindow should return");
+        bus.read_byte(probe)
+    }
+
+    #[test]
+    fn visible_new_window_erases_exposed_content_before_returning() {
+        assert_eq!(
+            new_window_content_probe(true),
+            0,
+            "visible NewWindow content must be erased to the default white background"
+        );
+    }
+
+    #[test]
+    fn hidden_new_window_does_not_erase_screen_content() {
+        assert_eq!(
+            new_window_content_probe(false),
+            0x42,
+            "hidden NewWindow must not alter the framebuffer"
+        );
     }
 
     // NewWindow must honor the `visible` parameter at SP+12 per IM:I I-299.
