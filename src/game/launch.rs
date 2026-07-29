@@ -287,13 +287,29 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
     let name_len = (file_data[1] as usize).min(63);
     let name_bytes = &file_data[2..2 + name_len];
     let app_name = std::str::from_utf8(name_bytes).unwrap_or("FixtureGen");
-    runner.dispatcher_mut().set_launched_app_path(app_name);
-
     let rsrc_data = &file_data[rsrc_start..rsrc_start + rsrc_len];
-    let fork = ResourceFork::parse(rsrc_data).ok_or("Failed to parse resource fork")?;
-    runner
-        .load_app(&fork)
-        .ok_or_else(|| "Failed to load app".to_string())
+    let file_type: [u8; 4] = file_data[65..69].try_into().unwrap();
+    let creator: [u8; 4] = file_data[69..73].try_into().unwrap();
+    let finder_flags = (u16::from(file_data[73]) << 8) | u16::from(file_data[101]);
+    insert_forks_into_vfs(
+        runner,
+        app_name,
+        data_fork.to_vec(),
+        rsrc_data.to_vec(),
+        file_type,
+        creator,
+        finder_flags,
+    );
+
+    let executable = ExecutableCandidate {
+        name: app_name.to_string(),
+        vfs_key: crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(app_name),
+        is_appl: file_type == *b"APPL",
+        has_data_fork: !data_fork.is_empty(),
+        score: data_fork.len().max(rsrc_data.len()),
+        creator,
+    };
+    load_selected_executable(runner, &executable)
 }
 
 fn no_executable_archive_error(skipped_disk_image_errors: &[String]) -> String {
@@ -1459,6 +1475,23 @@ mod tests {
         bytes
     }
 
+    fn make_macbinary_application(name: &str, data: &[u8], rsrc: &[u8]) -> Vec<u8> {
+        assert!(name.len() <= 63);
+        let data_padded_len = (data.len() + 127) & !127;
+        let rsrc_padded_len = (rsrc.len() + 127) & !127;
+        let mut bytes = vec![0; 128 + data_padded_len + rsrc_padded_len];
+        bytes[1] = name.len() as u8;
+        bytes[2..2 + name.len()].copy_from_slice(name.as_bytes());
+        bytes[65..69].copy_from_slice(b"APPL");
+        bytes[69..73].copy_from_slice(b"TEST");
+        bytes[83..87].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes[87..91].copy_from_slice(&(rsrc.len() as u32).to_be_bytes());
+        bytes[128..128 + data.len()].copy_from_slice(data);
+        let rsrc_start = 128 + data_padded_len;
+        bytes[rsrc_start..rsrc_start + rsrc.len()].copy_from_slice(rsrc);
+        bytes
+    }
+
     struct TestWebPackEntry<'a> {
         name: &'a str,
         file_type: [u8; 4],
@@ -1701,6 +1734,25 @@ mod tests {
 
         let selected = selected.expect("expected an executable candidate");
         assert_eq!(selected.name, "Demo Disk/Pathways into Darkness");
+    }
+
+    #[test]
+    fn macbinary_application_mounts_its_forks_under_the_decoded_filename() {
+        let data = b"self-readable data fork";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let macbinary = make_macbinary_application("Self Opening App", data, &rsrc);
+        let mut runner = new_runner();
+
+        load_macbinary(&mut runner, &macbinary).expect("MacBinary application should load");
+
+        assert_eq!(
+            runner.dispatcher().vfs.get("Self Opening App"),
+            Some(&data.to_vec())
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Self Opening App"),
+            Some(&rsrc)
+        );
     }
 
     #[test]
