@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/benletchford/systemless/compare/v0.8.3...v0.8.4) (2026-07-29)
+
+
+### Bug Fixes
+
+* preserve the current GrafPort when creating dialogs ([6fa282f](https://github.com/benletchford/systemless/commit/6fa282f66e3a3cd8a2759dab71dd58700720d7ac))
+
 ## [0.8.3](https://github.com/benletchford/systemless/compare/v0.8.2...v0.8.3) (2026-07-29)
 
 
