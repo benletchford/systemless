@@ -4367,16 +4367,22 @@ impl super::TrapDispatcher {
             }
 
             // GetMouse ($A972)
-            // Returns the current mouse location in the LOCAL coordinate system
-            // of the current grafPort (not global screen coordinates).
+            // Returns the current low-memory Mouse point in the local
+            // coordinate system of the current grafPort.
             // PROCEDURE GetMouse(VAR mouseLoc: Point);
-            // Inside Macintosh Volume I, I-259
-            // Reference: Executor src/toolevent.cpp C_GetMouse — calls GlobalToLocal.
-            // GetMouse ($A972): Returns mouse position in current port's local coordinates (applies GlobalToLocal)
+            // Inside Macintosh Volume I, I-259; Volume II, Appendix A, A-10
             (true, 0x172) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pt_ptr = bus.read_long(sp);
                 self.debug_get_mouse_count = self.debug_get_mouse_count.saturating_add(1);
+
+                // Mouse ($0830) is the Event Manager's current global mouse
+                // point. Guest code can update it directly (for example, to
+                // recenter a first-person view), so it is authoritative over
+                // the host dispatcher's last injected position.
+                let global_v = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2) as i16;
+                let global_h = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2 + 2) as i16;
+                self.mouse_pos = (global_v, global_h);
 
                 let a5 = cpu.read_reg(Register::A5);
                 let global_ptr = bus.read_long(a5);
@@ -4385,14 +4391,14 @@ impl super::TrapDispatcher {
 
                 // Same conversion as GlobalToLocal: local = global +
                 // portBits.bounds.topLeft.
-                let local_v = self.mouse_pos.0.wrapping_add(bounds_top);
-                let local_h = self.mouse_pos.1.wrapping_add(bounds_left);
+                let local_v = global_v.wrapping_add(bounds_top);
+                let local_h = global_h.wrapping_add(bounds_left);
                 if self.debug_get_mouse_last_local != (local_v, local_h) {
                     self.debug_get_mouse_local_change_count =
                         self.debug_get_mouse_local_change_count.saturating_add(1);
                 }
                 self.debug_get_mouse_last_local = (local_v, local_h);
-                self.debug_get_mouse_last_global = self.mouse_pos;
+                self.debug_get_mouse_last_global = (global_v, global_h);
                 self.debug_get_mouse_last_port = port;
                 self.debug_get_mouse_last_port_bounds_top_left = (bounds_top, bounds_left);
 
@@ -4401,7 +4407,7 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] GetMouse port=${:08X} boundsTopLeft=({}, {}) -> local=({}, {}) global=({}, {})",
-                        port, bounds_top, bounds_left, local_v, local_h, self.mouse_pos.0, self.mouse_pos.1
+                        port, bounds_top, bounds_left, local_v, local_h, global_v, global_h
                     );
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -16714,6 +16720,8 @@ mod tests {
         bus.write_long(sp, pt_ptr);
 
         disp.mouse_pos = (50, 100);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 50);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 100);
 
         let result = disp.dispatch_toolbox(true, 0x172, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -16740,6 +16748,8 @@ mod tests {
         bus.write_word(port + 16, 0);
         bus.write_word(port + 18, 0);
         disp.mouse_pos = (95, 145);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 95);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 145);
 
         let result = disp.dispatch_toolbox(true, 0x172, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -16762,6 +16772,8 @@ mod tests {
         bus.write_word(port + 16, 80);
         bus.write_word(port + 18, 90);
         disp.mouse_pos = (100, 100);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 100);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 100);
 
         let result = disp.dispatch_toolbox(true, 0x172, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -16774,6 +16786,45 @@ mod tests {
             ),
             (80, 90),
             "GetMouse should use portBits.bounds, not portRect.topLeft, after SetOrigin"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn get_mouse_reads_guest_updated_mouse_low_memory() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = TEST_SP;
+        let port = 0x181000u32;
+        let pt_ptr = 0x200000u32;
+        bus.write_long(sp, pt_ptr);
+
+        // A host click left the dispatcher's cached position at (404,526),
+        // then guest code recentered the classic Mouse global at (300,400).
+        // BasiliskII's ROM GetMouse reads Mouse ($0830) and converts that
+        // global point through the current GrafPort. Inside Macintosh
+        // Volume I, I-259; Volume II, Appendix A, p. A-10.
+        disp.mouse_pos = (404, 526);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 300);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 400);
+        bus.write_word(port + 8, (-80i16) as u16);
+        bus.write_word(port + 10, (-120i16) as u16);
+
+        let result = disp.dispatch_toolbox(true, 0x172, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            (
+                bus.read_word(pt_ptr) as i16,
+                bus.read_word(pt_ptr + 2) as i16
+            ),
+            (220, 280),
+            "GetMouse must honor a guest-updated Mouse global before converting to local coordinates"
+        );
+        assert_eq!(
+            disp.mouse_pos,
+            (300, 400),
+            "GetMouse must synchronize the dispatcher with the guest-updated Mouse global"
         );
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
