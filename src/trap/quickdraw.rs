@@ -4570,14 +4570,13 @@ impl super::TrapDispatcher {
                 let pp_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 if pp_handle != 0 && bus.read_long(pp_handle) != 0 && color_ptr != 0 {
-                    self.makergbpat_colors.insert(
-                        pp_handle,
-                        (
-                            bus.read_word(color_ptr),
-                            bus.read_word(color_ptr + 2),
-                            bus.read_word(color_ptr + 4),
-                        ),
+                    let rgb = (
+                        bus.read_word(color_ptr),
+                        bus.read_word(color_ptr + 2),
+                        bus.read_word(color_ptr + 4),
                     );
+                    self.ensure_makergbpat_backing(bus, pp_handle, rgb);
+                    self.makergbpat_colors.insert(pp_handle, rgb);
                 }
                 Ok(())
             }
@@ -11168,6 +11167,8 @@ impl super::TrapDispatcher {
                             }
                             bus.free(pat_xdata_handle);
                         }
+                        // Free patXMap handle (+16)
+                        Self::free_memory_handle(bus, bus.read_long(ppat_ptr + 16));
                         // Free patMap (PixMapHandle at +2) — also frees its ctab
                         let pat_map_handle = bus.read_long(ppat_ptr + 2);
                         if pat_map_handle != 0 {
@@ -11253,7 +11254,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V (1986), p. V-72
             //
             // Analogous to BackPat / PenPixPat. Stores the handle into
-            // the port's bkPixPat field (+66) and copies pat1Data into
+            // the port's bkPixPat field (+32) and copies pat1Data into
             // the legacy 8-byte bkPat shadow.
             //
             // MPW Universal Headers Quickdraw.h:
@@ -11268,7 +11269,7 @@ impl super::TrapDispatcher {
             // Documented behaviour: when pp != NIL, the PixPat's
             // pat1Data (8 bytes at offset +20) is copied into bk_pat,
             // and the handle is stored in the port's bkPixPat field
-            // (+66). When pp == NIL both BII System 7.5.3 ROM Color
+            // (+32). When pp == NIL both BII System 7.5.3 ROM Color
             // QuickDraw and Systemless HLE take an early-exit no-op path
             // before touching bkPixPat: the pop is still performed
             // but no port-field write happens.
@@ -11287,12 +11288,12 @@ impl super::TrapDispatcher {
                             self.bk_pat[i as usize] = bus.read_byte(ppat_ptr + 20 + i);
                         }
                     }
-                    // Store handle into port's bkPixPat field (+66).
+                    // Store handle into the CGrafPort's bkPixPat field (+32).
                     let a5 = cpu.read_reg(Register::A5);
                     let global_ptr = bus.read_long(a5);
                     let port_ptr = bus.read_long(global_ptr);
                     if port_ptr != 0 {
-                        bus.write_long(port_ptr + 66, ppat_handle);
+                        bus.write_long(port_ptr + 32, ppat_handle);
                     }
                 }
                 Ok(())
@@ -12185,17 +12186,6 @@ impl super::TrapDispatcher {
             // Both src/dst handle dereferences are guarded behind non-NIL
             // checks.
             //
-            // Absolute behavior differs from BII: BII System 7.5.3 ROM
-            // Color QuickDraw walks the IM:V V-73 deep-copy chain
-            // (record + patData + patXData + patMap + color table).
-            // Systemless HLE here copies only the 28-byte PixPat record
-            // verbatim from src to dst because its NewPixPat-allocated
-            // records have no embedded handles to chase. The post-copy
-            // record contents diverge between engines (BII honours the
-            // documented full deep copy; Systemless matches its shallower
-            // NewPixPat record layout). The shared, verifiable subset is
-            // the Pascal PROCEDURE pop-8 calling convention itself.
-            //
             // ## TRAP-WORD SWAP FIX (historical)
             // This arm previously matched `(true, 0x208)` and was labeled
             // "$AA08 CopyPixPat" — but per IM:V V-291 master trap dispatch
@@ -12207,17 +12197,68 @@ impl super::TrapDispatcher {
                 let dst_handle = bus.read_long(sp);
                 let src_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if let Some(rgb) = self.makergbpat_colors.get(&src_handle).copied() {
-                    self.makergbpat_colors.insert(dst_handle, rgb);
-                } else {
-                    self.makergbpat_colors.remove(&dst_handle);
+                if src_handle != dst_handle {
+                    if let Some(rgb) = self.makergbpat_colors.get(&src_handle).copied() {
+                        self.makergbpat_colors.insert(dst_handle, rgb);
+                    } else {
+                        self.makergbpat_colors.remove(&dst_handle);
+                    }
                 }
-                if src_handle != 0 && dst_handle != 0 {
+                if src_handle != dst_handle && src_handle != 0 && dst_handle != 0 {
                     let src_ptr = bus.read_long(src_handle);
                     let dst_ptr = bus.read_long(dst_handle);
                     if src_ptr != 0 && dst_ptr != 0 {
+                        let src_pat_map = bus.read_long(src_ptr + 2);
+                        let src_pat_data = bus.read_long(src_ptr + 6);
+                        let src_pat_xdata = bus.read_long(src_ptr + 10);
+                        let src_pat_xmap = bus.read_long(src_ptr + 16);
+                        let cloned_pat_data = Self::clone_memory_handle(bus, src_pat_data);
+                        let cloned_pat_data_ptr = cloned_pat_data
+                            .map(|handle| bus.read_long(handle))
+                            .unwrap_or(0);
+                        let src_pat_data_ptr = cloned_pat_data
+                            .map(|_| bus.read_long(src_pat_data))
+                            .unwrap_or(0);
+                        let cloned_pat_map = Self::clone_pixmap_handle(
+                            bus,
+                            src_pat_map,
+                            src_pat_data_ptr,
+                            cloned_pat_data_ptr,
+                        );
+                        let cloned_pat_xdata = Self::clone_memory_handle(bus, src_pat_xdata);
+                        let cloned_pat_xmap = Self::clone_memory_handle(bus, src_pat_xmap);
+
+                        let dst_pat_map = bus.read_long(dst_ptr + 2);
+                        let dst_pat_data = bus.read_long(dst_ptr + 6);
+                        let dst_pat_xdata = bus.read_long(dst_ptr + 10);
+                        let dst_pat_xmap = bus.read_long(dst_ptr + 16);
+                        if dst_pat_map != src_pat_map {
+                            Self::free_pixmap_handle(bus, dst_pat_map);
+                        }
+                        if dst_pat_data != src_pat_data {
+                            Self::free_memory_handle(bus, dst_pat_data);
+                        }
+                        if dst_pat_xdata != src_pat_xdata {
+                            Self::free_memory_handle(bus, dst_pat_xdata);
+                        }
+                        if dst_pat_xmap != src_pat_xmap {
+                            Self::free_memory_handle(bus, dst_pat_xmap);
+                        }
+
                         for i in 0..28u32 {
                             bus.write_byte(dst_ptr + i, bus.read_byte(src_ptr + i));
+                        }
+                        if let Some(handle) = cloned_pat_map {
+                            bus.write_long(dst_ptr + 2, handle);
+                        }
+                        if let Some(handle) = cloned_pat_data {
+                            bus.write_long(dst_ptr + 6, handle);
+                        }
+                        if let Some(handle) = cloned_pat_xdata {
+                            bus.write_long(dst_ptr + 10, handle);
+                        }
+                        if let Some(handle) = cloned_pat_xmap {
+                            bus.write_long(dst_ptr + 16, handle);
                         }
                     }
                 }
@@ -12898,9 +12939,17 @@ impl super::TrapDispatcher {
                 let pp_handle = bus.read_long(sp);
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if let Some(pat) = Self::read_pixpat_pat1data(bus, pp_handle) {
+                if let Some((pat, generated_rgb)) = self.pixpat_fill_pattern(bus, pp_handle) {
                     let r = read_rect(bus, rect_ptr);
+                    let saved_fg = self.fg_color;
+                    let saved_bg = self.bg_color;
+                    if let Some(rgb) = generated_rgb {
+                        self.fg_color = rgb;
+                        self.bg_color = rgb;
+                    }
                     self.draw_oval(cpu, bus, &r, ShapeOp::Fill(pat));
+                    self.fg_color = saved_fg;
+                    self.bg_color = saved_bg;
                 }
                 Ok(())
             }
@@ -12943,9 +12992,17 @@ impl super::TrapDispatcher {
                 let oval_width = bus.read_word(sp + 6) as i16;
                 let rect_ptr = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
-                if let Some(pat) = Self::read_pixpat_pat1data(bus, pp_handle) {
+                if let Some((pat, generated_rgb)) = self.pixpat_fill_pattern(bus, pp_handle) {
                     let r = read_rect(bus, rect_ptr);
+                    let saved_fg = self.fg_color;
+                    let saved_bg = self.bg_color;
+                    if let Some(rgb) = generated_rgb {
+                        self.fg_color = rgb;
+                        self.bg_color = rgb;
+                    }
                     self.draw_round_rect(cpu, bus, &r, oval_width, oval_height, ShapeOp::Fill(pat));
+                    self.fg_color = saved_fg;
+                    self.bg_color = saved_bg;
                 }
                 Ok(())
             }
@@ -12990,9 +13047,17 @@ impl super::TrapDispatcher {
                 let start_angle = bus.read_word(sp + 6) as i16;
                 let rect_ptr = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
-                if let Some(pat) = Self::read_pixpat_pat1data(bus, pp_handle) {
+                if let Some((pat, generated_rgb)) = self.pixpat_fill_pattern(bus, pp_handle) {
                     let r = read_rect(bus, rect_ptr);
+                    let saved_fg = self.fg_color;
+                    let saved_bg = self.bg_color;
+                    if let Some(rgb) = generated_rgb {
+                        self.fg_color = rgb;
+                        self.bg_color = rgb;
+                    }
                     self.draw_arc(cpu, bus, &r, start_angle, arc_angle, ShapeOp::Fill(pat));
+                    self.fg_color = saved_fg;
+                    self.bg_color = saved_bg;
                 }
                 Ok(())
             }
@@ -13030,8 +13095,16 @@ impl super::TrapDispatcher {
                 let pp_handle = bus.read_long(sp);
                 let rgn_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if let Some(pat) = Self::read_pixpat_pat1data(bus, pp_handle) {
+                if let Some((pat, generated_rgb)) = self.pixpat_fill_pattern(bus, pp_handle) {
+                    let saved_fg = self.fg_color;
+                    let saved_bg = self.bg_color;
+                    if let Some(rgb) = generated_rgb {
+                        self.fg_color = rgb;
+                        self.bg_color = rgb;
+                    }
                     self.draw_rgn(cpu, bus, rgn_handle, ShapeOp::Fill(pat));
+                    self.fg_color = saved_fg;
+                    self.bg_color = saved_bg;
                 }
                 Ok(())
             }
@@ -13073,8 +13146,16 @@ impl super::TrapDispatcher {
                 let pp_handle = bus.read_long(sp);
                 let poly_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if let Some(pat) = Self::read_pixpat_pat1data(bus, pp_handle) {
+                if let Some((pat, generated_rgb)) = self.pixpat_fill_pattern(bus, pp_handle) {
+                    let saved_fg = self.fg_color;
+                    let saved_bg = self.bg_color;
+                    if let Some(rgb) = generated_rgb {
+                        self.fg_color = rgb;
+                        self.bg_color = rgb;
+                    }
                     self.draw_poly(cpu, bus, poly_handle, ShapeOp::Fill(pat));
+                    self.fg_color = saved_fg;
+                    self.bg_color = saved_bg;
                 }
                 Ok(())
             }
@@ -20891,6 +20972,176 @@ impl super::TrapDispatcher {
         Some(pat)
     }
 
+    fn clone_memory_handle(bus: &mut MacMemoryBus, source_handle: u32) -> Option<u32> {
+        if bus.get_alloc_size(source_handle) != Some(4) {
+            return None;
+        }
+        let source = bus.read_long(source_handle);
+        let size = bus.get_alloc_size(source)?;
+        let destination = bus.alloc(size);
+        for offset in 0..size {
+            bus.write_byte(destination + offset, bus.read_byte(source + offset));
+        }
+        let destination_handle = bus.alloc(4);
+        bus.write_long(destination_handle, destination);
+        Some(destination_handle)
+    }
+
+    fn clone_pixmap_handle(
+        bus: &mut MacMemoryBus,
+        source_handle: u32,
+        source_data: u32,
+        cloned_data: u32,
+    ) -> Option<u32> {
+        let destination_handle = Self::clone_memory_handle(bus, source_handle)?;
+        let source = bus.read_long(source_handle);
+        let destination = bus.read_long(destination_handle);
+        if source_data != 0 && bus.read_long(source) == source_data && cloned_data != 0 {
+            bus.write_long(destination, cloned_data);
+        }
+        let source_ctab_handle = bus.read_long(source + 42);
+        if let Some(destination_ctab_handle) = Self::clone_memory_handle(bus, source_ctab_handle) {
+            bus.write_long(destination + 42, destination_ctab_handle);
+        }
+        Some(destination_handle)
+    }
+
+    fn free_memory_handle(bus: &mut MacMemoryBus, handle: u32) {
+        if bus.get_alloc_size(handle) != Some(4) {
+            return;
+        }
+        let ptr = bus.read_long(handle);
+        if bus.get_alloc_size(ptr).is_some() {
+            bus.free(ptr);
+        }
+        bus.free(handle);
+    }
+
+    fn free_pixmap_handle(bus: &mut MacMemoryBus, handle: u32) {
+        if bus.get_alloc_size(handle) != Some(4) {
+            return;
+        }
+        let ptr = bus.read_long(handle);
+        if bus.get_alloc_size(ptr).is_some() {
+            Self::free_memory_handle(bus, bus.read_long(ptr + 42));
+            bus.free(ptr);
+        }
+        bus.free(handle);
+    }
+
+    fn ensure_makergbpat_backing(
+        &self,
+        bus: &mut MacMemoryBus,
+        pp_handle: u32,
+        rgb: (u16, u16, u16),
+    ) {
+        let pp_ptr = bus.read_long(pp_handle);
+        if pp_ptr == 0 {
+            return;
+        }
+
+        let pat_data_handle = if bus.read_long(pp_ptr + 6) != 0 {
+            bus.read_long(pp_ptr + 6)
+        } else {
+            let handle = bus.alloc(4);
+            bus.write_long(pp_ptr + 6, handle);
+            handle
+        };
+        let pat_data = if pat_data_handle != 0 && bus.read_long(pat_data_handle) != 0 {
+            bus.read_long(pat_data_handle)
+        } else {
+            let data = bus.alloc(16);
+            if pat_data_handle != 0 {
+                bus.write_long(pat_data_handle, data);
+            }
+            data
+        };
+        if pat_data != 0 {
+            for row in 0..8u32 {
+                bus.write_byte(pat_data + row * 2, 0xFF);
+                bus.write_byte(pat_data + row * 2 + 1, 0);
+            }
+        }
+
+        let pat_map_handle = if bus.read_long(pp_ptr + 2) != 0 {
+            bus.read_long(pp_ptr + 2)
+        } else {
+            let handle = bus.alloc(4);
+            bus.write_long(pp_ptr + 2, handle);
+            handle
+        };
+        let pat_map = if pat_map_handle != 0 && bus.read_long(pat_map_handle) != 0 {
+            bus.read_long(pat_map_handle)
+        } else {
+            let map = bus.alloc(50);
+            if pat_map_handle != 0 {
+                bus.write_long(pat_map_handle, map);
+            }
+            map
+        };
+        if pat_map == 0 {
+            return;
+        }
+
+        let ctab_handle = if bus.read_long(pat_map + 42) != 0 {
+            bus.read_long(pat_map + 42)
+        } else {
+            let handle = bus.alloc(4);
+            bus.write_long(pat_map + 42, handle);
+            handle
+        };
+        let ctab = if ctab_handle != 0 && bus.read_long(ctab_handle) != 0 {
+            bus.read_long(ctab_handle)
+        } else {
+            let table = bus.alloc(24);
+            if ctab_handle != 0 {
+                bus.write_long(ctab_handle, table);
+            }
+            table
+        };
+
+        bus.fill_zeros(pat_map, 50);
+        bus.write_long(pat_map, pat_data);
+        bus.write_word(pat_map + 4, 0x8002);
+        bus.write_word(pat_map + 6, 0);
+        bus.write_word(pat_map + 8, 0);
+        bus.write_word(pat_map + 10, 8);
+        bus.write_word(pat_map + 12, 8);
+        bus.write_long(pat_map + 16, 72 << 16);
+        bus.write_long(pat_map + 20, 72 << 16);
+        bus.write_word(pat_map + 32, 1);
+        bus.write_word(pat_map + 34, 1);
+        bus.write_word(pat_map + 36, 1);
+        bus.write_long(pat_map + 42, ctab_handle);
+
+        if ctab != 0 {
+            bus.fill_zeros(ctab, 24);
+            bus.write_word(ctab + 4, 0x8000);
+            bus.write_word(ctab + 6, 1);
+            bus.write_word(ctab + 8, 0);
+            bus.write_word(ctab + 10, 0xFFFF);
+            bus.write_word(ctab + 12, 0xFFFF);
+            bus.write_word(ctab + 14, 0xFFFF);
+            bus.write_word(ctab + 16, 1);
+            bus.write_word(ctab + 18, rgb.0);
+            bus.write_word(ctab + 20, rgb.1);
+            bus.write_word(ctab + 22, rgb.2);
+        }
+        bus.write_word(pp_ptr + 14, 0);
+    }
+
+    fn pixpat_fill_pattern(
+        &self,
+        bus: &MacMemoryBus,
+        pp_handle: u32,
+    ) -> Option<([u8; 8], Option<(u16, u16, u16)>)> {
+        if let Some(rgb) = self.makergbpat_colors.get(&pp_handle).copied() {
+            Some(([0xFF; 8], Some(rgb)))
+        } else {
+            Self::read_pixpat_pat1data(bus, pp_handle).map(|pat| (pat, None))
+        }
+    }
+
     fn read_raw_pixpat_color_table(
         &self,
         bus: &MacMemoryBus,
@@ -21918,6 +22169,35 @@ mod tests {
         bus.write_long(PORT_PTR + 2, screen_base);
         bus.write_word(PORT_PTR + 6, row_bytes as u16);
 
+        (screen_base, row_bytes)
+    }
+
+    fn setup_color_polygon_surface(
+        d: &mut TrapDispatcher,
+        cpu: &impl CpuOps,
+        bus: &mut crate::memory::MacMemoryBus,
+    ) -> (u32, u32) {
+        let (screen_base, row_bytes) = setup_polygon_surface(d, bus);
+        let a5 = cpu.read_reg(Register::A5);
+        let globals = bus.read_long(a5);
+        let port = bus.read_long(globals);
+        let pixmap = bus.alloc(50);
+        let pixmap_handle = bus.alloc(4);
+        bus.fill_zeros(pixmap, 50);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+        bus.write_word(pixmap + 6, 0);
+        bus.write_word(pixmap + 8, 0);
+        bus.write_word(pixmap + 10, 64);
+        bus.write_word(pixmap + 12, 64);
+        bus.write_word(pixmap + 32, 8);
+        bus.write_word(pixmap + 34, 1);
+        bus.write_word(pixmap + 36, 8);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        d.init_cgraf_port_defaults(port, bus);
+        d.current_port = port;
         (screen_base, row_bytes)
     }
 
@@ -32333,6 +32613,67 @@ mod tests {
     }
 
     #[test]
+    fn copypixpat_deep_copies_makergbpat_backing_storage() {
+        // IM:V V-73 requires independent copies of the PixPat data,
+        // PixMap, and color table so either pattern can be disposed safely.
+        let (mut d, mut cpu, mut bus) = setup();
+        let src_handle =
+            make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+        let dst_handle =
+            make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+        let color_ptr = bus.alloc(6);
+        bus.write_word(color_ptr, 0x1234);
+        bus.write_word(color_ptr + 2, 0x5678);
+        bus.write_word(color_ptr + 4, 0x9ABC);
+        bus.write_long(TEST_SP, color_ptr);
+        bus.write_long(TEST_SP + 4, src_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x20D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_handle);
+        bus.write_long(TEST_SP + 4, src_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x209, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let src = bus.read_long(src_handle);
+        let dst = bus.read_long(dst_handle);
+        let src_map_handle = bus.read_long(src + 2);
+        let dst_map_handle = bus.read_long(dst + 2);
+        let src_data_handle = bus.read_long(src + 6);
+        let dst_data_handle = bus.read_long(dst + 6);
+        assert_ne!(src_map_handle, dst_map_handle);
+        assert_ne!(src_data_handle, dst_data_handle);
+        assert_ne!(
+            bus.read_long(bus.read_long(src_map_handle) + 42),
+            bus.read_long(bus.read_long(dst_map_handle) + 42)
+        );
+        for offset in 0..16 {
+            assert_eq!(
+                bus.read_byte(bus.read_long(src_data_handle) + offset),
+                bus.read_byte(bus.read_long(dst_data_handle) + offset)
+            );
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x208, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(bus.get_alloc_size(src_map_handle).is_some());
+        assert!(bus.get_alloc_size(src_data_handle).is_some());
+        assert_eq!(
+            d.makergbpat_colors.get(&src_handle),
+            Some(&(0x1234, 0x5678, 0x9ABC))
+        );
+    }
+
+    #[test]
     fn copypixpat_consumes_destination_and_source_handle_arguments() {
         // Inside Macintosh Volume V 1986 p. V-72 signature:
         //   PROCEDURE CopyPixPat(srcPP, dstPP: PixPatHandle).
@@ -32448,6 +32789,95 @@ mod tests {
             read_surface_pixel(&bus, screen_base, row_bytes, 9, 9),
             0,
             "FillCRect must preserve pixels outside the requested rectangle"
+        );
+    }
+
+    #[test]
+    fn makergbpat_constructs_documented_rgb_pattern_backing() {
+        // IM:V V-73: an RGB PixPat has an 8-by-8 patMap with rowBytes=2
+        // and color backing that remains valid until DisposPixPat.
+        let (mut d, mut cpu, mut bus) = setup();
+        let pp_handle =
+            make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+        let color_ptr = bus.alloc(6);
+        bus.write_word(color_ptr, 0x1234);
+        bus.write_word(color_ptr + 2, 0x5678);
+        bus.write_word(color_ptr + 4, 0x9ABC);
+        bus.write_long(TEST_SP, color_ptr);
+        bus.write_long(TEST_SP + 4, pp_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x20D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let pp_ptr = bus.read_long(pp_handle);
+        let pat_map_handle = bus.read_long(pp_ptr + 2);
+        let pat_map = bus.read_long(pat_map_handle);
+        let pat_data_handle = bus.read_long(pp_ptr + 6);
+        assert_ne!(pat_map_handle, 0);
+        assert_ne!(pat_map, 0);
+        assert_ne!(pat_data_handle, 0);
+        assert_ne!(bus.read_long(pat_data_handle), 0);
+        assert_eq!(bus.read_word(pat_map + 4) & 0x3FFF, 2);
+        assert_eq!(
+            (
+                bus.read_word(pat_map + 6),
+                bus.read_word(pat_map + 8),
+                bus.read_word(pat_map + 10),
+                bus.read_word(pat_map + 12),
+            ),
+            (0, 0, 8, 8)
+        );
+    }
+
+    #[test]
+    fn penpixpat_generated_rgb_drives_framerect_color() {
+        // IM:V V-72: PenPixPat installs the multicolor pixel pattern used
+        // by subsequent pen operations. A MakeRGBPat-generated pattern must
+        // therefore color FrameRect instead of falling back to rgbFgColor.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        let requested = (0, 0, 0xFFFF);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [requested.0, requested.1, requested.2];
+
+        let pp_handle =
+            make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+        let color_ptr = bus.alloc(6);
+        bus.write_word(color_ptr, requested.0);
+        bus.write_word(color_ptr + 2, requested.1);
+        bus.write_word(color_ptr + 4, requested.2);
+        bus.write_long(TEST_SP, color_ptr);
+        bus.write_long(TEST_SP + 4, pp_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x20D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pp_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x20A, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 10, 10, 20, 20);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rect);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0A1, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        assert_eq!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 10, 10),
+            7,
+            "FrameRect must resolve the PenPixPat's generated RGB color"
+        );
+        assert_eq!(
+            read_surface_pixel(&bus, screen_base, row_bytes, 11, 11),
+            0,
+            "FrameRect must leave its interior untouched"
         );
     }
 

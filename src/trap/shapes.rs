@@ -1121,6 +1121,41 @@ impl super::TrapDispatcher {
             }
         };
 
+        // A MakeRGBPat-generated PixPat carries its requested color in
+        // the installed pnPixPat/bkPixPat handle. Use that color for
+        // color-port pen/background operations while retaining pat1Data
+        // as the documented monochrome fallback on 1bpp destinations.
+        let generated_pen_rgb = if is_color && matches!(op, ShapeOp::Paint | ShapeOp::Frame) {
+            self.makergbpat_colors
+                .get(&bus.read_long(port.wrapping_add(58)))
+                .copied()
+        } else {
+            None
+        };
+        let generated_back_rgb = if is_color && matches!(op, ShapeOp::Erase) {
+            self.makergbpat_colors
+                .get(&bus.read_long(port.wrapping_add(32)))
+                .copied()
+        } else {
+            None
+        };
+        let effective_pn_pat = if generated_pen_rgb.is_some() {
+            [0xFF; 8]
+        } else {
+            self.pn_pat
+        };
+        let effective_bk_pat = if generated_back_rgb.is_some() {
+            [0xFF; 8]
+        } else {
+            self.bk_pat
+        };
+        let effective_fg_color = generated_pen_rgb
+            .or(generated_back_rgb)
+            .unwrap_or(self.fg_color);
+        let effective_bg_color = generated_pen_rgb
+            .or(generated_back_rgb)
+            .unwrap_or(self.bg_color);
+
         if trace_menu_redraw_enabled()
             && trace_menu_rect_intersects(r.top, r.left, r.bottom, r.right)
         {
@@ -1301,9 +1336,9 @@ impl super::TrapDispatcher {
             } else {
                 self.read_port_clut(bus, ctab_handle)
             };
-            let (r, g, b) = self.fg_color;
+            let (r, g, b) = effective_fg_color;
             fg_idx = shape_palette_index_for_rgb([r, g, b], &port_clut);
-            let (r, g, b) = self.bg_color;
+            let (r, g, b) = effective_bg_color;
             bg_idx = shape_palette_index_for_rgb([r, g, b], &port_clut);
             if trace_dialog_text_enabled() && matches!(op, ShapeOp::Glyph(_)) {
                 eprintln!(
@@ -1325,7 +1360,13 @@ impl super::TrapDispatcher {
         }
 
         if pixel_size == 8 && full_rect_coverage && !has_complex_port_clip {
-            if let Some(fill_idx) = self.solid_src_copy_fill_index(&op, fg_idx, bg_idx) {
+            if let Some(fill_idx) = self.solid_src_copy_fill_index(
+                &op,
+                fg_idx,
+                bg_idx,
+                effective_pn_pat,
+                effective_bk_pat,
+            ) {
                 let top = r.top.max(clip_top);
                 let left = r.left.max(clip_left);
                 let bottom = r.bottom.min(clip_bottom);
@@ -1449,7 +1490,7 @@ impl super::TrapDispatcher {
                     let addr = pix_base + byte_offset;
                     match op {
                         ShapeOp::Paint | ShapeOp::Frame => {
-                            let source_is_black = self.pn_pat[y.rem_euclid(8) as usize]
+                            let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
                                 & (1 << (7 - x.rem_euclid(8)))
                                 != 0;
                             let old = bus.read_byte(addr);
@@ -1463,7 +1504,7 @@ impl super::TrapDispatcher {
                             bus.write_byte(addr, new);
                         }
                         ShapeOp::Erase => {
-                            let source_is_black = self.bk_pat[y.rem_euclid(8) as usize]
+                            let source_is_black = effective_bk_pat[y.rem_euclid(8) as usize]
                                 & (1 << (7 - x.rem_euclid(8)))
                                 != 0;
                             let old = bus.read_byte(addr);
@@ -1504,15 +1545,15 @@ impl super::TrapDispatcher {
                     }
                     let addr = pix_base + byte_offset;
                     let old = bus.read_long(addr) & 0x00FF_FFFF;
-                    let (fg_r, fg_g, fg_b) = self.fg_color;
+                    let (fg_r, fg_g, fg_b) = effective_fg_color;
                     let fg_color =
                         ((fg_r as u32 >> 8) << 16) | ((fg_g as u32 >> 8) << 8) | (fg_b as u32 >> 8);
-                    let (bg_r, bg_g, bg_b) = self.bg_color;
+                    let (bg_r, bg_g, bg_b) = effective_bg_color;
                     let bg_color =
                         ((bg_r as u32 >> 8) << 16) | ((bg_g as u32 >> 8) << 8) | (bg_b as u32 >> 8);
                     let color = match op {
                         ShapeOp::Paint | ShapeOp::Frame => {
-                            let source_is_black = self.pn_pat[y.rem_euclid(8) as usize]
+                            let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
                                 & (1 << (7 - x.rem_euclid(8)))
                                 != 0;
                             apply_boolean_transfer_32(
@@ -1524,7 +1565,7 @@ impl super::TrapDispatcher {
                             )
                         }
                         ShapeOp::Erase => {
-                            let source_is_black = self.bk_pat[y.rem_euclid(8) as usize]
+                            let source_is_black = effective_bk_pat[y.rem_euclid(8) as usize]
                                 & (1 << (7 - x.rem_euclid(8)))
                                 != 0;
                             apply_boolean_transfer_32(old, 0, source_is_black, fg_color, bg_color)
@@ -1608,10 +1649,17 @@ impl super::TrapDispatcher {
     }
 
     #[inline]
-    fn solid_src_copy_fill_index(&self, op: &ShapeOp, fg_idx: u8, bg_idx: u8) -> Option<u8> {
+    fn solid_src_copy_fill_index(
+        &self,
+        op: &ShapeOp,
+        fg_idx: u8,
+        bg_idx: u8,
+        pn_pat: [u8; 8],
+        bk_pat: [u8; 8],
+    ) -> Option<u8> {
         let pattern = match op {
-            ShapeOp::Paint if normalize_boolean_transfer_mode(self.pn_mode) == 0 => self.pn_pat,
-            ShapeOp::Erase => self.bk_pat,
+            ShapeOp::Paint if normalize_boolean_transfer_mode(self.pn_mode) == 0 => pn_pat,
+            ShapeOp::Erase => bk_pat,
             ShapeOp::Fill(pattern) => *pattern,
             _ => return None,
         };
