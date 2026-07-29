@@ -2906,6 +2906,12 @@ impl super::TrapDispatcher {
                 {
                     return Some(Ok(()));
                 }
+                let screen_copybits_rect = (dst_info.base == self.screen_mode.0).then(|| {
+                    Self::screen_copybits_rect(
+                        &dst_info, src_top, src_left, src_bottom, src_right, dst_top, dst_left,
+                        dst_bottom, dst_right,
+                    )
+                });
 
                 if trace_title_diag_enabled()
                     && self.tick_count >= 68
@@ -3072,11 +3078,17 @@ impl super::TrapDispatcher {
                 if eff_width <= 0 || eff_height <= 0 {
                     return Some(Ok(()));
                 }
-                if dst_info.base == self.screen_mode.0 {
+                if let Some(rect) = screen_copybits_rect {
                     self.copybits_screen_count += 1;
                     self.note_screen_copybits_rect(
-                        src_top, src_left, src_bottom, src_right, dst_top, dst_left, dst_bottom,
-                        dst_right,
+                        rect.src_top,
+                        rect.src_left,
+                        rect.src_bottom,
+                        rect.src_right,
+                        rect.dst_top,
+                        rect.dst_left,
+                        rect.dst_bottom,
+                        rect.dst_right,
                     );
                     self.ensure_dialog_background_saved_for_screen_port(bus, port);
                 }
@@ -3375,20 +3387,8 @@ impl super::TrapDispatcher {
                         let src_row = bus.read_bytes(src_addr, row_byte_count as usize);
                         bus.write_bytes(dst_addr, &src_row);
                     }
-                    if dst_info.base == self.screen_mode.0 {
-                        self.fill_kiosk_letterbox_for_copybits(
-                            bus,
-                            ScreenCopyBitsRect {
-                                src_top,
-                                src_left,
-                                src_bottom,
-                                src_right,
-                                dst_top,
-                                dst_left,
-                                dst_bottom,
-                                dst_right,
-                            },
-                        );
+                    if let Some(rect) = screen_copybits_rect {
+                        self.fill_kiosk_letterbox_for_copybits(bus, rect);
                         self.refresh_dialog_saved_pixels_after_screen_draw(
                             bus,
                             self.current_port,
@@ -3986,20 +3986,8 @@ impl super::TrapDispatcher {
                         return Some(Err(err));
                     }
                 }
-                if dst_info.base == self.screen_mode.0 {
-                    self.fill_kiosk_letterbox_for_copybits(
-                        bus,
-                        ScreenCopyBitsRect {
-                            src_top,
-                            src_left,
-                            src_bottom,
-                            src_right,
-                            dst_top,
-                            dst_left,
-                            dst_bottom,
-                            dst_right,
-                        },
-                    );
+                if let Some(rect) = screen_copybits_rect {
+                    self.fill_kiosk_letterbox_for_copybits(bus, rect);
                     self.refresh_dialog_saved_pixels_after_screen_draw(
                         bus,
                         self.current_port,
@@ -18571,6 +18559,34 @@ impl super::TrapDispatcher {
         });
     }
 
+    fn screen_copybits_rect(
+        dst_info: &CopyBitmapInfo,
+        src_top: i16,
+        src_left: i16,
+        src_bottom: i16,
+        src_right: i16,
+        dst_top: i16,
+        dst_left: i16,
+        dst_bottom: i16,
+        dst_right: i16,
+    ) -> ScreenCopyBitsRect {
+        // A screen-backed window PixMap expresses CopyBits destinations in
+        // port-local coordinates. Its bounds origin maps those coordinates
+        // onto the physical framebuffer; screen bookkeeping and letterbox
+        // fills must therefore remove that origin. Inside Macintosh Volume I
+        // (1985), pp. I-148 and I-166.
+        ScreenCopyBitsRect {
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            dst_top: dst_top.saturating_sub(dst_info.bounds_top),
+            dst_left: dst_left.saturating_sub(dst_info.bounds_left),
+            dst_bottom: dst_bottom.saturating_sub(dst_info.bounds_top),
+            dst_right: dst_right.saturating_sub(dst_info.bounds_left),
+        }
+    }
+
     fn fill_kiosk_letterbox_for_copybits(&self, bus: &mut MacMemoryBus, rect: ScreenCopyBitsRect) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) = self.screen_mode;
         let src_width = rect.src_right.saturating_sub(rect.src_left);
@@ -21948,6 +21964,99 @@ mod tests {
             bus.read_byte(screen_base + (u32::from(height) - 1) * row_bytes + u32::from(width) - 1),
             37
         );
+    }
+
+    #[test]
+    fn window_local_screen_copybits_uses_physical_destination_for_letterboxing() {
+        // A screen-backed window PixMap keeps its origin in bounds.topLeft.
+        // CopyBits receives local destination coordinates, but fullscreen
+        // bookkeeping and margin clearing must describe the physical screen
+        // rectangle that those coordinates address.
+        // Inside Macintosh Volume I (1985), pp. I-148 and I-166.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, screen_row_bytes, screen_width, screen_height, _) = d.screen_mode;
+        let port = 0x181000;
+        d.current_port = port;
+        let src_pixmap = bus.alloc(50);
+        let src_base = bus.alloc(512 * 342);
+        let dst_pixmap = bus.alloc(50);
+        let dst_pixmap_handle = bus.alloc(4);
+        let src_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 512, 342, 0);
+        bus.write_long(dst_pixmap, screen_base);
+        bus.write_word(dst_pixmap + 4, 0x8000 | screen_row_bytes as u16);
+        bus.write_word(dst_pixmap + 6, (-129i16) as u16);
+        bus.write_word(dst_pixmap + 8, (-144i16) as u16);
+        bus.write_word(dst_pixmap + 10, 471);
+        bus.write_word(dst_pixmap + 12, 656);
+        bus.write_word(dst_pixmap + 30, 0);
+        bus.write_word(dst_pixmap + 32, 8);
+        bus.write_word(dst_pixmap + 34, 1);
+        bus.write_word(dst_pixmap + 36, 8);
+        bus.write_long(dst_pixmap + 42, 0);
+        bus.write_long(dst_pixmap_handle, dst_pixmap);
+        bus.write_long(port + 2, dst_pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        let vis_rgn = bus.read_long(port + 24);
+        let clip_rgn = bus.read_long(port + 28);
+        assert!(TrapDispatcher::write_region(
+            &mut bus,
+            vis_rgn,
+            Some((0, 0, 342, 512)),
+            &[],
+        ));
+        assert!(TrapDispatcher::write_region(
+            &mut bus,
+            clip_rgn,
+            Some((-32767, -32767, 32767, 32767)),
+            &[],
+        ));
+
+        bus.fill_bytes(
+            screen_base,
+            screen_row_bytes * u32::from(screen_height),
+            0x7F,
+        );
+        bus.fill_bytes(src_base, 512 * 342, 0x2A);
+        write_rect(&mut bus, src_rect, 0, 0, 342, 512);
+        write_rect(&mut bus, dst_rect, 0, 0, 342, 512);
+        d.menu_bar_hidden = true;
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            d.last_screen_copybits_rect,
+            Some(ScreenCopyBitsRect {
+                src_top: 0,
+                src_left: 0,
+                src_bottom: 342,
+                src_right: 512,
+                dst_top: 129,
+                dst_left: 144,
+                dst_bottom: 471,
+                dst_right: 656,
+            })
+        );
+        assert_eq!(
+            bus.read_byte(screen_base),
+            255,
+            "the physical top-left margin should be cleared"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 300 * screen_row_bytes + 400),
+            0x2A,
+            "the centered physical destination should remain intact"
+        );
+        assert_eq!((screen_width, screen_height), (800, 600));
     }
 
     #[test]
