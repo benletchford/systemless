@@ -13437,6 +13437,27 @@ impl super::TrapDispatcher {
                 let dst_bottom = bus.read_word(dst_rect_ptr + 4) as i16;
                 let dst_right = bus.read_word(dst_rect_ptr + 6) as i16;
 
+                // Indexed pixels are meaningful only through their source
+                // color table. CopyMask uses that table for source color
+                // information and the current GDevice's table for destination
+                // color information; the destination PixMap's table is not
+                // authoritative. Imaging With QuickDraw (1994), pp. 4-31 and
+                // 3-119--3-120. In particular, equal ctSeed values do not make
+                // raw indices interchangeable when the tables contain
+                // different colors.
+                let dst_ctab_handle =
+                    self.copy_bits_destination_ctab_handle(bus, self.current_port, &dst_info);
+                let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
+                    .then(|| self.read_port_clut(bus, src_info.ctab_handle));
+                let dst_clut =
+                    (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
+                let palette_translation = match (src_clut.as_ref(), dst_clut.as_ref()) {
+                    (Some(src_clut), Some(dst_clut)) if src_clut != dst_clut => Some(
+                        self.build_palette_translation(bus, src_clut, dst_clut, dst_ctab_handle),
+                    ),
+                    _ => None,
+                };
+
                 if src_bottom <= src_top
                     || src_right <= src_left
                     || mask_bottom <= mask_top
@@ -13538,9 +13559,14 @@ impl super::TrapDispatcher {
                                 bus.write_byte(addr, new_byte);
                             }
                             8 => {
+                                let dst_pixel = palette_translation
+                                    .as_ref()
+                                    .map_or(src_pixel, |translation| {
+                                        translation[src_pixel as usize]
+                                    });
                                 bus.write_byte(
                                     dst_info.base + row * dst_info.row_bytes + col,
-                                    src_pixel,
+                                    dst_pixel,
                                 );
                             }
                             _ => {} // 16/32 bpp not yet supported
@@ -29945,6 +29971,85 @@ mod tests {
             bus.read_byte(dst_base),
             0b0101_1010,
             "mask bits cleared to 0 should preserve destination bits"
+        );
+    }
+
+    #[test]
+    fn copymask_matches_indexed_source_colors_to_destination_table() {
+        // On indexed devices, CopyMask interprets source pixels through the
+        // source PixMap's color table and writes the matching color from the
+        // current destination GDevice table. The destination PixMap's raw
+        // index at the same numeric position may represent a different color.
+        // Imaging With QuickDraw (1994), pp. 4-31 and 3-119--3-120.
+        let (mut d, mut cpu, mut bus) = setup();
+        let src_pixmap = 0x320100u32;
+        let mask_bits = 0x320200u32;
+        let dst_pixmap = 0x320300u32;
+        let src_base = 0x321000u32;
+        let mask_base = 0x322000u32;
+        let dst_base = 0x323000u32;
+        let src_ctab_handle = 0x324000u32;
+        let dst_ctab_handle = 0x325000u32;
+        let src_rect = 0x326000u32;
+        let mask_rect = 0x326010u32;
+        let dst_rect = 0x326020u32;
+        let red = (0xF123, 0x0123, 0x0234);
+        let unmatched_red = (0xE123, 0x1123, 0x1234);
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[
+                (2, red.0, red.1, red.2),
+                (3, unmatched_red.0, unmatched_red.1, unmatched_red.2),
+            ],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[
+                (2, 0xFFFF, 0xFFFF, 0x9999),
+                (216, red.0, red.1, red.2),
+                (
+                    217,
+                    unmatched_red.0 + 1,
+                    unmatched_red.1 + 1,
+                    unmatched_red.2 + 1,
+                ),
+            ],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 2, 1, src_ctab_handle);
+        write_bitmap_1bpp(&mut bus, mask_bits, mask_base, 1, (0, 0, 1, 2));
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 2, 1, dst_ctab_handle);
+        bus.write_byte(src_base, 2);
+        bus.write_byte(src_base + 1, 3);
+        bus.write_byte(mask_base, 0xC0);
+        bus.write_byte(dst_base, 7);
+        bus.write_byte(dst_base + 1, 7);
+
+        write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, mask_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, mask_rect);
+        bus.write_long(TEST_SP + 8, src_rect);
+        bus.write_long(TEST_SP + 12, dst_pixmap);
+        bus.write_long(TEST_SP + 16, mask_bits);
+        bus.write_long(TEST_SP + 20, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x017, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(dst_base),
+            216,
+            "CopyMask must preserve the source color rather than its numeric palette index"
+        );
+        assert_eq!(
+            bus.read_byte(dst_base + 1),
+            217,
+            "CopyMask must choose the nearest destination color when no exact match exists"
         );
     }
 
