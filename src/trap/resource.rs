@@ -13755,6 +13755,39 @@ mod tests {
     }
 
     #[test]
+    fn fsdispatch_pbgetcatinfo_resolves_root_by_parent_id_and_volume_name() {
+        // Files 1992, 1-27 and 2-85: the File Manager assigns parent dirID 1
+        // to a volume's root so callers can identify it consistently by
+        // volume reference number, parent directory ID, and volume name.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(
+            &mut bus,
+            &mut cpu,
+            pb,
+            super::super::dispatch::BOOT_VOLUME_NAME.as_bytes(),
+        );
+        bus.write_word(pb + 16, 0x3FFF);
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0);
+        bus.write_long(pb + 48, 1);
+        cpu.write_reg(Register::D0, 9);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(
+            bus.read_pstring(name_ptr),
+            super::super::dispatch::BOOT_VOLUME_NAME.as_bytes()
+        );
+        assert_eq!(bus.read_byte(pb + 30), 0x10);
+        assert_eq!(bus.read_long(pb + 48), 2);
+        assert_eq!(bus.read_long(pb + 100), 1);
+    }
+
+    #[test]
     fn fsdispatch_pbgetcatinfo_finds_resource_only_file() {
         let (mut disp, mut cpu, mut bus) = setup();
 
