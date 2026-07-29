@@ -419,6 +419,135 @@ enum AdvanceResult {
     TooFar,
 }
 
+/// Architecturally visible processor state at a candidate idle-cycle
+/// boundary. JIT caches, prefetch bookkeeping, and remaining host batch cycles
+/// are deliberately excluded: they affect execution speed, not guest results.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CpuArchitecturalSnapshot {
+    dar: [u32; 16],
+    dar_save: [u32; 16],
+    sr_save: u16,
+    ppc: u32,
+    stack_pointers: [u32; 8],
+    pc: u32,
+    sr: u16,
+    vbr: u32,
+    sfc: u32,
+    dfc: u32,
+    cacr: u32,
+    caar: u32,
+    itt: [u32; 2],
+    dtt: [u32; 2],
+    ir: u32,
+    fpr: [u64; 8],
+    fpiar: u32,
+    fpsr: u32,
+    fpcr: u32,
+    mmu: [u32; 16],
+    int_level: u32,
+    stopped: u32,
+    change_of_flow: bool,
+    prefetch: [u32; 2],
+    run_mode: u32,
+    fpu_just_reset: bool,
+    reset_cycles: u32,
+    virq_state: u32,
+    nmi_pending: u32,
+    exception_processing: bool,
+}
+
+impl CpuArchitecturalSnapshot {
+    fn capture(cpu: &m68k::CpuCore) -> Self {
+        Self {
+            dar: cpu.dar,
+            dar_save: cpu.dar_save,
+            sr_save: cpu.sr_save,
+            ppc: cpu.ppc,
+            stack_pointers: cpu.sp,
+            pc: cpu.pc,
+            sr: cpu.get_sr(),
+            vbr: cpu.vbr,
+            sfc: cpu.sfc,
+            dfc: cpu.dfc,
+            cacr: cpu.cacr,
+            caar: cpu.caar,
+            itt: [cpu.itt0, cpu.itt1],
+            dtt: [cpu.dtt0, cpu.dtt1],
+            ir: cpu.ir,
+            fpr: cpu.fpr.map(f64::to_bits),
+            fpiar: cpu.fpiar,
+            fpsr: cpu.fpsr,
+            fpcr: cpu.fpcr,
+            mmu: [
+                cpu.mmu_crp_aptr,
+                cpu.mmu_crp_limit,
+                cpu.mmu_srp_aptr,
+                cpu.mmu_srp_limit,
+                cpu.mmu_tc,
+                u32::from(cpu.mmu_sr),
+                cpu.mmu_tt0,
+                cpu.mmu_tt1,
+                cpu.urp,
+                cpu.srp,
+                cpu.tc,
+                cpu.mmusr,
+                cpu.dacr0,
+                cpu.dacr1,
+                cpu.iacr0,
+                cpu.iacr1,
+            ],
+            int_level: cpu.int_level,
+            stopped: cpu.stopped,
+            change_of_flow: cpu.change_of_flow,
+            prefetch: [cpu.pref_addr, cpu.pref_data],
+            run_mode: cpu.run_mode,
+            fpu_just_reset: cpu.fpu_just_reset,
+            reset_cycles: cpu.reset_cycles,
+            virq_state: cpu.virq_state,
+            nmi_pending: cpu.nmi_pending,
+            exception_processing: cpu.exception_processing,
+        }
+    }
+}
+
+struct IdleCycleProbe {
+    trap_pc: u32,
+    tick: u32,
+    cpu: CpuArchitecturalSnapshot,
+}
+
+/// Host-side Event Manager inputs that are not stored in guest RAM. A proven
+/// idle cycle may remain parked across frontend calls only while these inputs
+/// are unchanged and the Event Manager still has no deliverable event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IdleCycleHostSnapshot {
+    mouse_pos: (i16, i16),
+    mouse_button: bool,
+    key_map: [u8; 16],
+}
+
+impl IdleCycleHostSnapshot {
+    fn capture(dispatcher: &TrapDispatcher) -> Self {
+        Self {
+            mouse_pos: dispatcher.mouse_pos,
+            mouse_button: dispatcher.mouse_button,
+            key_map: *dispatcher.key_map_bytes(),
+        }
+    }
+}
+
+/// A complete null-event cycle that has already been proven to be an exact
+/// identity operation. The bus write journal remains armed while the frontend
+/// owns execution, so any guest-memory mutation invalidates the parked state
+/// without hashing the whole emulated address space every frame.
+struct ProvenIdleCycleSleep {
+    trap_pc: u32,
+    wake_tick: u32,
+    tick: u32,
+    cpu: CpuArchitecturalSnapshot,
+    host: IdleCycleHostSnapshot,
+}
+
 // Layout for dialog callback scratch region.
 const DIALOG_DRAW_TRAMPOLINE_OFFSET: u32 = 0x00;
 const DIALOG_FILTER_TRAMPOLINE_OFFSET: u32 = 0x40;
@@ -710,6 +839,18 @@ pub struct FixtureRunner {
     /// and HLE trap costs are deducted. When this reaches zero or below, the
     /// tick advances and the budget is refilled from `instructions_per_tick`.
     tick_budget: i32,
+    /// Most recent null-event boundary seen in the current host execution
+    /// slice. A second same-tick visit starts an exact-state cycle probe; no
+    /// optimization is enabled by this observation alone.
+    idle_cycle_last_seen: Option<(u32, u32)>,
+    /// One-cycle proof in progress. The paired memory-bus journal disables
+    /// direct fast-memory stores until this call site repeats or the proof is
+    /// canceled by a non-quiescent trap.
+    idle_cycle_probe: Option<IdleCycleProbe>,
+    /// Proven null-event cycle parked at its post-trap boundary. Unlike an
+    /// in-progress proof, this may cross frontend slices: a second write
+    /// journal plus CPU/input/event checks revoke it before any reuse.
+    idle_cycle_sleep: Option<ProvenIdleCycleSleep>,
     /// Tick value saved when menu tracking starts.  While set, run_steps caps
     /// its tick_override to this value so the game clock is frozen — matching
     /// the real Mac where MenuSelect blocks the application event loop.
@@ -825,6 +966,9 @@ impl FixtureRunner {
             instructions_per_tick: INSTRUCTIONS_PER_TICK,
             wait_sleep_cap_in_headless: None,
             tick_budget: INSTRUCTIONS_PER_TICK as i32,
+            idle_cycle_last_seen: None,
+            idle_cycle_probe: None,
+            idle_cycle_sleep: None,
             frozen_ticks: None,
             timer_trampoline: 0,
             vbl_trampoline: 0,
@@ -2468,6 +2612,221 @@ impl FixtureRunner {
         false
     }
 
+    /// Cancel only a same-slice observation. A proven sleep has its own write
+    /// guard and intentionally survives the frontend boundary.
+    fn cancel_idle_cycle_observation(&mut self) {
+        if self.idle_cycle_probe.is_some() {
+            self.bus.cancel_write_probe();
+        }
+        self.idle_cycle_probe = None;
+        self.idle_cycle_last_seen = None;
+    }
+
+    fn cancel_idle_cycle_detector(&mut self) {
+        self.bus.cancel_write_probe();
+        self.idle_cycle_probe = None;
+        self.idle_cycle_last_seen = None;
+        self.idle_cycle_sleep = None;
+    }
+
+    fn begin_idle_cycle_probe(&mut self, trap_pc: u32, tick: u32, cpu: CpuArchitecturalSnapshot) {
+        self.bus.begin_write_probe();
+        self.idle_cycle_probe = Some(IdleCycleProbe { trap_pc, tick, cpu });
+        self.idle_cycle_last_seen = Some((trap_pc, tick));
+    }
+
+    fn park_proven_idle_cycle(&mut self, trap_pc: u32, wake_tick: u32) {
+        self.bus.cancel_write_probe();
+        self.idle_cycle_probe = None;
+        self.idle_cycle_last_seen = None;
+
+        let tick = self.dispatcher.tick_count;
+        self.idle_cycle_sleep = Some(ProvenIdleCycleSleep {
+            trap_pc,
+            wake_tick,
+            tick,
+            cpu: CpuArchitecturalSnapshot::capture(&self.cpu.core),
+            host: IdleCycleHostSnapshot::capture(&self.dispatcher),
+        });
+        // No guest code runs while parked. This second journal therefore
+        // catches every bus-visible mutation made by the frontend or an HLE
+        // subsystem between slices, without scanning all guest RAM.
+        self.bus.begin_write_probe();
+    }
+
+    /// Reuse a proven identity cycle without executing it again. The proof is
+    /// valid across a frontend boundary only if CPU state, every bus-visible
+    /// memory write, host input state, the event stream, and SystemTask's
+    /// periodic-work condition all remain quiescent. Any mismatch resumes the
+    /// guest at the ordinary proven boundary.
+    fn try_resume_proven_idle_cycle(&mut self, tick_cap: Option<u32>) -> bool {
+        let Some(sleep) = self.idle_cycle_sleep.take() else {
+            return false;
+        };
+
+        let memory_unchanged = self.bus.finish_write_probe_unchanged();
+        let cpu_unchanged = sleep.cpu == CpuArchitecturalSnapshot::capture(&self.cpu.core);
+        let tick_unchanged =
+            self.dispatcher.tick_count == sleep.tick && self.bus.read_long(0x016A) == sleep.tick;
+        let host_unchanged = sleep.host == IdleCycleHostSnapshot::capture(&self.dispatcher);
+        let can_observe_events = self.active_interrupt_callback.is_none()
+            && self.dispatcher.key_repeat.is_none()
+            && self.dispatcher.pending_launch_app.is_none()
+            && !self.dispatcher.system_task_has_periodic_work();
+        let event_stream_empty = can_observe_events
+            && self
+                .dispatcher
+                .peek_toolbox_event(&self.bus, u16::MAX)
+                .is_none();
+
+        if !memory_unchanged
+            || !cpu_unchanged
+            || !tick_unchanged
+            || !host_unchanged
+            || !event_stream_empty
+        {
+            self.cancel_idle_cycle_detector();
+            return false;
+        }
+
+        let Some(cap) = tick_cap else {
+            self.cancel_idle_cycle_detector();
+            return false;
+        };
+        match self.advance_until_tick(sleep.wake_tick, Some(cap)) {
+            AdvanceResult::CapHit => {
+                self.park_proven_idle_cycle(sleep.trap_pc, sleep.wake_tick);
+                true
+            }
+            AdvanceResult::Advanced => {
+                self.cancel_idle_cycle_detector();
+                false
+            }
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => {
+                self.cancel_idle_cycle_detector();
+                false
+            }
+        }
+    }
+
+    /// Record whether a returned HLE trap remained quiescent during an exact
+    /// cycle probe. Null GetNextEvent/EventAvail calls are deterministic while
+    /// the frontend is executing on its event thread: newly arrived host input
+    /// cannot be injected until the slice returns. SystemTask is quiescent only
+    /// while the HLE has no periodic desk-accessory or driver work.
+    fn note_idle_cycle_trap_result(&mut self, opcode: u16) -> bool {
+        let null_event = matches!(
+            canonical_trap_number(opcode),
+            (true, 0x0170) | (true, 0x0171)
+        ) && self.bus.read_word(self.cpu.core.a(7)) == 0;
+        if self.idle_cycle_probe.is_none() {
+            return null_event;
+        }
+        let quiescent = match canonical_trap_number(opcode) {
+            (true, 0x0170) | (true, 0x0171) => null_event,
+            // GlobalToLocal is a deterministic transform whose inputs and
+            // outputs are entirely represented by CPU registers and guest
+            // memory. The exact-state journal therefore observes every
+            // consequence without needing a separate host-state condition.
+            (true, 0x0071) => true,
+            (true, 0x01B4) => !self.dispatcher.system_task_has_periodic_work(),
+            _ => false,
+        };
+        if !quiescent {
+            self.cancel_idle_cycle_detector();
+        }
+        null_event
+    }
+
+    /// Prove that a complete idle event-loop iteration returned to the same
+    /// architectural CPU and guest-memory state, then advance only to the
+    /// first known dependency: the next guest tick, the GUI wall-clock cap, or
+    /// an interrupt.
+    ///
+    /// The first same-tick repeat starts a one-cycle write journal; a third
+    /// visit closes it. This warm-up is evidence collection, not an eligibility
+    /// threshold. Any changed final byte, CPU state, non-null event, unknown
+    /// trap, periodic SystemTask work, tick change, or interrupt rejects the
+    /// proof and leaves normal execution in place.
+    fn try_exact_idle_cycle_fastfwd(
+        &mut self,
+        trap_pc: u32,
+        wake_tick: u32,
+        tick_cap: Option<u32>,
+    ) -> bool {
+        let Some(cap) = tick_cap else {
+            return false;
+        };
+        let tick = self.dispatcher.tick_count;
+        let cpu = CpuArchitecturalSnapshot::capture(&self.cpu.core);
+
+        if let Some(probe) = self.idle_cycle_probe.take() {
+            let memory_unchanged = self.bus.finish_write_probe_unchanged();
+            let exact_repeat = probe.trap_pc == trap_pc
+                && probe.tick == tick
+                && probe.cpu == cpu
+                && memory_unchanged;
+            if exact_repeat {
+                self.idle_cycle_last_seen = Some((trap_pc, tick));
+                if tick >= cap {
+                    self.park_proven_idle_cycle(trap_pc, wake_tick);
+                    return true;
+                }
+                match self.advance_until_tick(wake_tick, Some(cap)) {
+                    AdvanceResult::CapHit => {
+                        self.park_proven_idle_cycle(trap_pc, wake_tick);
+                        return true;
+                    }
+                    AdvanceResult::Advanced => {
+                        self.cancel_idle_cycle_detector();
+                        return false;
+                    }
+                    AdvanceResult::Interrupted | AdvanceResult::TooFar => {
+                        self.cancel_idle_cycle_detector();
+                        return false;
+                    }
+                }
+            }
+
+            if probe.trap_pc == trap_pc && probe.tick == tick {
+                // The loop may still be converging (for example, it updated a
+                // cached mouse position on the prior pass). Prove the next
+                // complete iteration from this new state.
+                self.begin_idle_cycle_probe(trap_pc, tick, cpu);
+            } else {
+                self.idle_cycle_last_seen = Some((trap_pc, tick));
+            }
+            return false;
+        }
+
+        if self.idle_cycle_last_seen == Some((trap_pc, tick)) {
+            self.begin_idle_cycle_probe(trap_pc, tick, cpu);
+        } else {
+            self.idle_cycle_last_seen = Some((trap_pc, tick));
+        }
+        false
+    }
+
+    /// Observe an entire null-event state-machine pass rather than a specific
+    /// compiler template. The proof starts at the post-GetNextEvent boundary
+    /// and closes only when execution returns to that exact trap site with the
+    /// same CPU state and identical final values for every RAM byte written in
+    /// between. A successful proof can safely park only until the next tick:
+    /// unlike a decoded timeout predicate, arbitrary guest code may begin
+    /// tick-dependent work then.
+    fn try_exact_null_event_cycle_fastfwd(&mut self, trap_pc: u32, tick_cap: Option<u32>) -> bool {
+        if let Some(probe) = self.idle_cycle_probe.as_ref() {
+            // Avoid switching between multiple event sites while a complete
+            // cycle is being measured.
+            if probe.trap_pc != trap_pc {
+                return false;
+            }
+        }
+
+        let wake_tick = self.dispatcher.tick_count.wrapping_add(1);
+        self.try_exact_idle_cycle_fastfwd(trap_pc, wake_tick, tick_cap)
+    }
+
     /// Template E: signed computed-deadline variant.
     ///   SUBQ.W  #4, A7
     ///   _TickCount
@@ -2850,6 +3209,12 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: bool,
     ) -> (usize, bool) {
+        // An unfinished proof may never span a frontend scheduling boundary.
+        // A *completed* proof is different: it remains parked behind a second
+        // memory-write journal and exact CPU/input/event guards, all checked
+        // before it can be reused below.
+        self.cancel_idle_cycle_observation();
+
         // Freeze ticks while menu/control tracking is active. ModalDialog
         // refires still return to the GUI for intermediate rendering, but
         // they must not freeze ticks: EV's pilot dialogs keep Sound/VBL/Time
@@ -3046,6 +3411,10 @@ impl FixtureRunner {
                         active_interrupt_callback.resume_sp
                     );
                 }
+            }
+
+            if !sound_work_only && self.try_resume_proven_idle_cycle(tick_cap) {
+                break;
             }
 
             if pc == 0 {
@@ -3287,6 +3656,24 @@ impl FixtureRunner {
                     // past it).
                     let pc = self.cpu.core.ppc;
 
+                    // An exact-cycle probe permits only event polling, the
+                    // periodic-work-free SystemTask call, and the TickCount
+                    // observation that closes the cycle. Any other HLE trap
+                    // may have host-side state not represented by the guest
+                    // CPU/RAM snapshot, so reject the proof before dispatch.
+                    if self.idle_cycle_probe.is_some()
+                        && !matches!(
+                            canonical_trap_number(opcode),
+                            (true, 0x0170) // GetNextEvent
+                                | (true, 0x0171) // EventAvail
+                                | (true, 0x0071) // GlobalToLocal (pure guest-state transform)
+                                | (true, 0x01B4) // SystemTask
+                                | (true, 0x0175) // TickCount
+                        )
+                    {
+                        self.cancel_idle_cycle_detector();
+                    }
+
                     // --- Runner-inline fast paths for hot traps ---
                     //
                     // Rule of thumb: only inline a trap's body here if
@@ -3523,6 +3910,13 @@ impl FixtureRunner {
                             self.dispatcher.trap_histogram[idx].saturating_add(1);
                         self.dispatcher.inline_skipped[idx] =
                             self.dispatcher.inline_skipped[idx].saturating_add(1);
+                        let null_event = self.note_idle_cycle_trap_result(opcode);
+                        if null_event
+                            && spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap)
+                            && self.try_exact_null_event_cycle_fastfwd(pc, tick_cap)
+                        {
+                            break;
+                        }
                         continue;
                     }
 
@@ -3532,6 +3926,7 @@ impl FixtureRunner {
                         .dispatch(opcode, &mut self.cpu, &mut self.bus)
                     {
                         Ok(()) => {
+                            let null_event = self.note_idle_cycle_trap_result(opcode);
                             let extra_tick_cost = hle_trap_extra_tick_cost(opcode)
                                 .saturating_add(self.dispatcher.take_hle_tick_cost());
                             if extra_tick_cost > 0
@@ -3652,6 +4047,12 @@ impl FixtureRunner {
                                 }
                                 continue;
                             }
+                            if null_event
+                                && spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap)
+                                && self.try_exact_null_event_cycle_fastfwd(pc, tick_cap)
+                            {
+                                break;
+                            }
                         }
                         Err(Error::Halted) => {
                             if matches!(opcode, 0xA9F2 | 0xA9F4)
@@ -3711,6 +4112,7 @@ impl FixtureRunner {
             self.dispatcher.instruction_count = self.total_instructions;
         }
 
+        self.cancel_idle_cycle_observation();
         if finish_frame {
             self.finish_host_frame(audio_samples, sound_interrupt_dispatched || sound_work_only);
         }
@@ -3865,6 +4267,9 @@ impl FixtureRunner {
     }
 
     fn advance_guest_tick(&mut self) -> u32 {
+        // A same-tick cycle proof is invalid as soon as any ordinary clock
+        // advancement or interrupt work occurs during the observed cycle.
+        self.cancel_idle_cycle_detector();
         let new_tick = self.bus.read_long(0x016A).wrapping_add(1);
         self.bus.write_long(0x016A, new_tick);
         self.dispatcher.tick_count = new_tick;
@@ -9444,6 +9849,242 @@ mod tests {
                 runner.dispatcher.tick_count,
             );
         }
+    }
+
+    #[test]
+    fn exact_idle_cycle_requires_cpu_and_memory_repeat() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        let sp = 0x0010_0000u32;
+        let scratch = 0x0020_0000u32;
+        runner.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.cpu.core.ppc = trap_pc;
+        runner.cpu.core.ir = 0xA975;
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_long(sp, 100);
+        runner.bus.write_long(scratch, 0x1122_3344);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+        assert!(runner.bus.fast_mem_window().is_none());
+
+        // A complete guest iteration may use its stack and locals as long as
+        // it restores every touched byte before returning to the boundary.
+        runner.bus.write_long(scratch, 0xAABB_CCDD);
+        runner.bus.write_long(scratch, 0x1122_3344);
+        runner.note_idle_cycle_trap_result(0xA971); // null EventAvail result at SP
+
+        assert!(runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert_eq!(runner.dispatcher.tick_count, 105);
+        assert_eq!(runner.bus.read_long(0x016A), 105);
+        assert_eq!(runner.bus.read_long(sp), 100);
+        assert!(runner.idle_cycle_probe.is_none());
+        assert!(runner.idle_cycle_sleep.is_some());
+        assert!(
+            runner.bus.fast_mem_window().is_none(),
+            "the parked sleep keeps a write guard armed across the frontend boundary"
+        );
+
+        runner.dispatcher.sent_open_app_event = true;
+        assert!(runner.try_resume_proven_idle_cycle(Some(110)));
+        assert_eq!(runner.dispatcher.tick_count, 110);
+        assert_eq!(runner.bus.read_long(sp), 100);
+        assert!(runner.idle_cycle_sleep.is_some());
+
+        runner.push_mouse_down(20, 30);
+        assert!(
+            !runner.try_resume_proven_idle_cycle(Some(115)),
+            "new host input must revoke a proof before the guest event loop is skipped"
+        );
+        assert_eq!(runner.dispatcher.tick_count, 110);
+        assert!(runner.idle_cycle_sleep.is_none());
+        assert!(runner.bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn exact_idle_cycle_rejects_an_architectural_cpu_change() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        runner.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.cpu.core.ppc = trap_pc;
+        runner.cpu.core.ir = 0xA970;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
+        assert!(runner.idle_cycle_probe.is_some());
+
+        runner.cpu.write_reg(Register::D3, 1);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
+        assert_eq!(runner.dispatcher.tick_count, 100);
+        assert!(runner.idle_cycle_sleep.is_none());
+        assert!(
+            runner.idle_cycle_probe.is_some(),
+            "a changed state may start a new observation but must not reuse the old proof"
+        );
+    }
+
+    #[test]
+    fn exact_null_event_cycle_covers_the_complete_guest_state_machine() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let code = 0x0002_0000u32;
+        let event = 0x0020_0000u32;
+        let delay_base = 0x0021_0000u32;
+        let tick_base = 0x0022_0000u32;
+        let flag_base = 0x0023_0000u32;
+        let stack = 0x0010_0000u32;
+
+        // loop:
+        //   SUBQ.W  #2,A7                 ; Boolean result slot
+        //   MOVE.W  #-1,-(A7)             ; every event type
+        //   PEA      event
+        //   _GetNextEvent
+        //   TST.W   (A7)+
+        //   PEA      event.where
+        //   _GlobalToLocal
+        //   _SystemTask
+        //   SUBQ.W  #4,A7                 ; TickCount result slot
+        //   _TickCount
+        //   MOVE.W  16(A0),D0             ; event/timeout predicate
+        //   EXT.L   D0
+        //   ADD.L   32(A1),D0
+        //   CMP.L   (A7)+,D0
+        //   SLT     D0
+        //   TST.W   48(A2)
+        //   SNE     D1
+        //   OR.B    D1,D0
+        //   BEQ.W   loop
+        //
+        // The event record is overwritten with host coordinates and then
+        // converted to local coordinates on every pass. The write journal
+        // must compare final values, not reject the temporary overwrite. The
+        // post-TickCount words deliberately resemble a compiler-generated
+        // event/timeout predicate. The proof is based on the complete cycle's
+        // observed state, not on recognizing that instruction sequence.
+        for (offset, word) in [
+            (0, 0x554F),
+            (2, 0x3F3C),
+            (4, 0xFFFF),
+            (6, 0x4879),
+            (8, (event >> 16) as u16),
+            (10, event as u16),
+            (12, 0xA970),
+            (14, 0x4A5F),
+            (16, 0x4879),
+            (18, ((event + 10) >> 16) as u16),
+            (20, (event + 10) as u16),
+            (22, 0xA871),
+            (24, 0xA9B4),
+            (26, 0x594F),
+            (28, 0xA975),
+            (30, 0x3028),
+            (32, 16),
+            (34, 0x48C0),
+            (36, 0xD0A9),
+            (38, 32),
+            (40, 0xB09F),
+            (42, 0x5DC0),
+            (44, 0x4A6A),
+            (46, 48),
+            (48, 0x56C1),
+            (50, 0x8001),
+            (52, 0x6700),
+            (54, 0xFFCA),
+        ] {
+            runner.bus.write_word(code + offset, word);
+        }
+        runner.cpu.write_reg(Register::PC, code);
+        runner.cpu.write_reg(Register::A7, stack);
+        runner.cpu.write_reg(Register::A0, delay_base);
+        runner.cpu.write_reg(Register::A1, tick_base);
+        runner.cpu.write_reg(Register::A2, flag_base);
+        runner.cpu.write_reg(Register::D0, 0);
+        runner.cpu.write_reg(Register::D1, 0);
+        runner.bus.write_word(delay_base + 16, 5);
+        runner.bus.write_long(tick_base + 32, 100);
+        runner.bus.write_word(flag_base + 48, 0);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.dispatcher.sent_open_app_event = true;
+
+        let (_, running) = runner.run_steps_internal(1_000, Some(100), 0, true, false, false);
+        assert!(running);
+        let sleep = runner
+            .idle_cycle_sleep
+            .as_ref()
+            .expect("the complete null-event state machine should prove an identity cycle");
+        assert_eq!(sleep.trap_pc, code + 12);
+        assert_eq!(sleep.wake_tick, 101);
+
+        assert!(!runner.try_resume_proven_idle_cycle(Some(101)));
+        assert_eq!(runner.dispatcher.tick_count, 101);
+        assert!(runner.idle_cycle_sleep.is_none());
+        assert_eq!(runner.cpu.core.pc, code + 14);
+    }
+
+    #[test]
+    fn proven_idle_cycle_stops_sleeping_at_its_known_dependency() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        let sp = 0x0010_0000u32;
+        runner.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.cpu.core.ppc = trap_pc;
+        runner.cpu.core.ir = 0xA975;
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.dispatcher.sent_open_app_event = true;
+
+        runner.park_proven_idle_cycle(trap_pc, 103);
+        assert!(!runner.try_resume_proven_idle_cycle(Some(110)));
+        assert_eq!(runner.dispatcher.tick_count, 103);
+        assert!(runner.idle_cycle_sleep.is_none());
+        assert!(runner.bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn exact_idle_cycle_rejects_changed_memory_and_non_quiescent_traps() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        let scratch = 0x0020_0000u32;
+        runner.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.cpu.core.ppc = trap_pc;
+        runner.cpu.core.ir = 0xA975;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        runner.bus.write_byte(scratch, 1);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert_eq!(runner.dispatcher.tick_count, 100);
+
+        runner.note_idle_cycle_trap_result(0xA8AD); // PtInRect has host-side HLE semantics
+        assert!(runner.idle_cycle_probe.is_none());
+        assert!(runner.idle_cycle_last_seen.is_none());
+        assert!(runner.bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn ordinary_tick_advance_cancels_an_exact_idle_cycle_probe() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        runner.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+
+        runner.advance_guest_tick();
+
+        assert!(runner.idle_cycle_probe.is_none());
+        assert!(runner.idle_cycle_last_seen.is_none());
+        assert!(runner.bus.fast_mem_window().is_some());
     }
 
     /// Regression gate for the TickCount spin fast-forward template A

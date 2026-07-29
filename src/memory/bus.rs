@@ -453,6 +453,16 @@ pub struct MacMemoryBus {
     /// bucket so its full capacity is recovered. Absent for blocks
     /// produced by the bump path or the exact-size fast path.
     alloc_bucket_sizes: HashMap<u32, u32>,
+    /// Original byte values for a short, explicitly requested execution
+    /// probe. While present, fast-memory and bulk-write paths are disabled so
+    /// every guest and HLE write passes through `write_byte`. Comparing the
+    /// journal with final RAM proves whether a candidate execution cycle left
+    /// guest memory unchanged, while still allowing temporary stack writes
+    /// that are restored before the cycle closes.
+    write_probe_original: Option<HashMap<u32, u8>>,
+    /// An out-of-range write makes the probe unverifiable even though the
+    /// normal bus retains its legacy warn-and-ignore behavior.
+    write_probe_invalid: bool,
 }
 
 /// RAM storage - either owned vector or borrowed slice
@@ -756,9 +766,11 @@ impl MacMemoryBus {
             return;
         }
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let count_usize = count as usize;
         let src_end = (src as u64).saturating_add(count as u64);
         let dst_end = (dst as u64).saturating_add(count as u64);
@@ -803,6 +815,8 @@ impl MacMemoryBus {
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
+            write_probe_original: None,
+            write_probe_invalid: false,
         };
         bus.write_word(super::globals::addr::ROM85, 0x7FFF);
 
@@ -878,7 +892,53 @@ impl MacMemoryBus {
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
+            write_probe_original: None,
+            write_probe_invalid: false,
         }
+    }
+
+    /// Begin journaling original RAM bytes for an exact-state execution
+    /// probe. Calling this again discards the previous incomplete probe.
+    pub(crate) fn begin_write_probe(&mut self) {
+        self.write_probe_original = Some(HashMap::new());
+        self.write_probe_invalid = false;
+    }
+
+    /// Discard an incomplete write probe and restore normal fast-memory use.
+    pub(crate) fn cancel_write_probe(&mut self) {
+        self.write_probe_original = None;
+        self.write_probe_invalid = false;
+    }
+
+    /// Finish a write probe and report whether guest RAM is byte-for-byte
+    /// identical at every address written during the probe.
+    pub(crate) fn finish_write_probe_unchanged(&mut self) -> bool {
+        let Some(original) = self.write_probe_original.take() else {
+            return false;
+        };
+        let unchanged = !self.write_probe_invalid
+            && original
+                .into_iter()
+                .all(|(address, value)| self.ram.get_in_bounds(address as usize) == value);
+        self.write_probe_invalid = false;
+        unchanged
+    }
+
+    #[inline]
+    fn record_write_probe_byte(&mut self, address: u32) {
+        if self.write_probe_original.is_none() {
+            return;
+        }
+        if address >= self.ram_size {
+            self.write_probe_invalid = true;
+            return;
+        }
+        let original = self.ram.get_in_bounds(address as usize);
+        self.write_probe_original
+            .as_mut()
+            .expect("write probe checked above")
+            .entry(address)
+            .or_insert(original);
     }
 
     /// Allocate memory from heap.
@@ -1114,9 +1174,11 @@ impl MacMemoryBus {
     #[inline]
     pub fn copy_ram_bytes(&mut self, src: u32, dst: u32, len: u32) -> bool {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let src_end = (src as u64).saturating_add(len as u64);
         let dst_end = (dst as u64).saturating_add(len as u64);
         if src_end > self.ram_size as u64 || dst_end > self.ram_size as u64 {
@@ -1140,9 +1202,11 @@ impl MacMemoryBus {
     #[inline]
     pub fn copy_mapped_ram_bytes(&mut self, src: u32, dst: u32, len: u32, map: &[u8; 256]) -> bool {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let src_end = (src as u64).saturating_add(len as u64);
         let dst_end = (dst as u64).saturating_add(len as u64);
         if src_end > self.ram_size as u64 || dst_end > self.ram_size as u64 {
@@ -1194,6 +1258,7 @@ impl MacMemoryBus {
             || mem_read_trace_active()
             || mem_write_trace_active()
             || watchpoint_armed()
+            || self.write_probe_original.is_some()
         {
             return None;
         }
@@ -1269,6 +1334,7 @@ impl MemoryBus for MacMemoryBus {
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        self.record_write_probe_byte(address);
         maybe_log_mem_write(address, 1, value as u32);
 
         // Optional release-mode FB-write tracer. Cheap when unset (one
@@ -1432,9 +1498,11 @@ impl MemoryBus for MacMemoryBus {
 
         // Fast path: watchpoint disarmed + tracer disabled + write fully in-bounds.
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         if fast && (address as u64) + 2 <= (self.ram_size as u64) {
             self.ram.write_word_in_bounds(address as usize, value);
             return;
@@ -1451,9 +1519,11 @@ impl MemoryBus for MacMemoryBus {
         maybe_log_mem_write(address, 4, value);
 
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         if fast && (address as u64) + 4 <= (self.ram_size as u64) {
             self.ram.write_long_in_bounds(address as usize, value);
             return;
@@ -1507,9 +1577,11 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let end = (address as u64).saturating_add(data.len() as u64);
         if fast && end <= self.ram_size as u64 {
             self.ram.write_bytes_in_bounds(address as usize, data);
@@ -1523,9 +1595,11 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn fill_zeros(&mut self, address: u32, len: u32) {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let end = (address as u64).saturating_add(len as u64);
         if fast && end <= self.ram_size as u64 {
             self.ram
@@ -1540,9 +1614,11 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed) && fb_write_trace_range().is_none();
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let end = (address as u64).saturating_add(len as u64);
         if fast && end <= self.ram_size as u64 {
             self.ram
@@ -1562,6 +1638,45 @@ impl MemoryBus for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_probe_accepts_temporary_writes_that_restore_original_bytes() {
+        let mut bus = MacMemoryBus::new(1024);
+        bus.write_long(0x100, 0x1122_3344);
+
+        bus.begin_write_probe();
+        assert!(bus.fast_mem_window().is_none());
+        bus.write_word(0x100, 0xAABB);
+        bus.write_byte(0x102, 0xCC);
+        bus.write_long(0x100, 0x1122_3344);
+
+        assert!(bus.finish_write_probe_unchanged());
+        assert!(bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn write_probe_rejects_a_changed_final_byte() {
+        let mut bus = MacMemoryBus::new(1024);
+        bus.write_long(0x100, 0x1122_3344);
+
+        bus.begin_write_probe();
+        bus.write_byte(0x102, 0xCC);
+
+        assert!(!bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn write_probe_observes_bulk_and_copy_fast_paths() {
+        let mut bus = MacMemoryBus::new(1024);
+        bus.write_bytes(0x100, &[1, 2, 3, 4]);
+        bus.write_bytes(0x200, &[5, 6, 7, 8]);
+
+        bus.begin_write_probe();
+        bus.write_bytes(0x100, &[9, 2, 3, 4]);
+        assert!(bus.copy_ram_bytes(0x200, 0x204, 4));
+
+        assert!(!bus.finish_write_probe_unchanged());
+    }
 
     #[test]
     fn test_big_endian_word() {

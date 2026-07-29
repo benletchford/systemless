@@ -683,6 +683,19 @@ fn force_button_true_at_pc() -> Option<u32> {
 }
 
 impl super::TrapDispatcher {
+    /// Whether `SystemTask` currently has periodic Desk Manager work to do.
+    ///
+    /// Inside Macintosh Volume I, I-442 and I-444 through I-445, specifies
+    /// that `SystemTask` calls the control routines of open desk accessories
+    /// and other device drivers whose `dNeedTime`/`drvrDelay` period has
+    /// elapsed. Systemless does not yet model that periodic DA/driver chain,
+    /// so the current HLE implementation has no observable work. Keeping the
+    /// decision behind this runtime query gives future DA/driver support a
+    /// single place to revoke transparent execution.
+    pub(crate) fn system_task_has_periodic_work(&self) -> bool {
+        false
+    }
+
     const LIST_RVIEW_OFFSET: u32 = 0;
     const LIST_PORT_OFFSET: u32 = 8;
     const LIST_INDENT_OFFSET: u32 = 12;
@@ -4894,7 +4907,7 @@ impl super::TrapDispatcher {
             }
 
             // SystemTask ($A9B4)
-            // Per IM:I I-440: "For each open desk accessory (or other
+            // Per IM:I I-442: "For each open desk accessory (or other
             // device driver performing periodic actions), SystemTask
             // causes the accessory to perform the periodic action
             // defined for it, if any such action has been defined and
@@ -4903,22 +4916,21 @@ impl super::TrapDispatcher {
             // often as possible, usually once every time through your
             // main event loop."
             // PROCEDURE SystemTask;
-            // Inside Macintosh Volume I, I-440
+            // Inside Macintosh Volume I, I-442; periodic driver state is
+            // described at I-444 through I-445.
             //
-            // Calling convention (Tool-bit PROCEDURE per IM:I I-440):
+            // Calling convention (Tool-bit PROCEDURE per IM:I I-442):
             //   no inputs, no FUNCTION result slot, no Pascal stack
             //   argument frame. A7 is preserved across the call.
             //
             // MPW Universal Headers Desk.h:
             //   EXTERN_API(void) SystemTask(void) ONEWORDINLINE(0xA9B4);
             //
-            // HLE compromise: Systemless models no Desk Accessories, no
-            // DRVR chain, no DCE table, no Time Manager periodic-task
-            // queue — every component the trap would walk is empty.
-            // The implementation is `Ok(())` (a true no-op). Apps
-            // universally call SystemTask once per main-event-loop
-            // iteration; the call is correctly a no-op since no DA is
-            // registered.
+            // HLE compromise: Systemless models no open Desk Accessories or
+            // periodic device-driver chain, so every component this trap
+            // would currently visit is empty. The implementation is
+            // `Ok(())`; `system_task_has_periodic_work` is the runtime gate
+            // that must become true before either subsystem is implemented.
             //
             // Behavioral contract:
             //   - register-only Tool-bit PROCEDURE calling convention
@@ -18260,9 +18272,14 @@ mod tests {
     // SystemTask ($A9B4)
     #[test]
     fn systemtask_procedure_call_preserves_stack_pointer() {
-        // IM:I 1985, p. I-440: PROCEDURE SystemTask;
+        // IM:I 1985, p. I-442: PROCEDURE SystemTask;
         let (mut disp, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
+
+        assert!(
+            !disp.system_task_has_periodic_work(),
+            "the transparent path is valid only while no periodic DA/driver work is modeled"
+        );
 
         let result = disp.dispatch_toolbox(true, 0x1B4, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -18278,7 +18295,7 @@ mod tests {
     // single call might mask.
     #[test]
     fn systemtask_five_call_composition_preserves_stack_pointer() {
-        // IM:I 1985, p. I-440: PROCEDURE SystemTask;
+        // IM:I 1985, p. I-442: PROCEDURE SystemTask;
         let (mut disp, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
 
