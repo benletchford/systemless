@@ -1348,9 +1348,19 @@ struct ExecutableCandidate {
 }
 
 impl ExecutableCandidate {
-    fn selection_key(&self) -> (bool, bool, usize) {
-        (self.is_appl, self.has_data_fork, self.score)
+    fn selection_key(&self) -> (bool, bool, bool, usize) {
+        (
+            self.is_appl,
+            !is_system_folder_path(&self.name),
+            self.has_data_fork,
+            self.score,
+        )
     }
+}
+
+fn is_system_folder_path(path: &str) -> bool {
+    path.split(['/', ':'])
+        .any(|component| component.eq_ignore_ascii_case("System Folder"))
 }
 
 fn is_stuffit_archive(bytes: &[u8]) -> bool {
@@ -1664,6 +1674,33 @@ mod tests {
 
         let selected = selected.expect("expected an executable candidate");
         assert_eq!(selected.name, "Sample App/Sample Runtime");
+    }
+
+    #[test]
+    fn executable_selection_prefers_user_app_over_system_folder_utility() {
+        let utility_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+        let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let mut selected = None;
+
+        maybe_select_executable(
+            &mut selected,
+            "Demo Disk/System Folder/Apple Menu Items/Stickies",
+            &utility_rsrc,
+            true,
+            38,
+            *b"notz",
+        );
+        maybe_select_executable(
+            &mut selected,
+            "Demo Disk/Pathways into Darkness",
+            &game_rsrc,
+            true,
+            0,
+            *b"p.th",
+        );
+
+        let selected = selected.expect("expected an executable candidate");
+        assert_eq!(selected.name, "Demo Disk/Pathways into Darkness");
     }
 
     #[test]
