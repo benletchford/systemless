@@ -22,6 +22,7 @@ use std::path::PathBuf;
 
 pub(crate) const BOOT_VOLUME_NAME: &str = "MacintoshHD";
 pub(crate) const BOOT_VOLUME_REF_NUM: i16 = -1;
+const VFS_HFS_LITERAL_SLASH: char = '\u{F02F}';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenCopyBitsRect {
@@ -3211,6 +3212,43 @@ impl TrapDispatcher {
         Self::normalize_vfs_path_components(&path)
     }
 
+    fn encode_hfs_component_for_vfs(component: &str) -> String {
+        component
+            .chars()
+            .map(|character| {
+                if character == '/' {
+                    VFS_HFS_LITERAL_SLASH
+                } else {
+                    character
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn normalize_hfs_path(name: &str) -> String {
+        if Self::is_unix_tmp_path(name) {
+            return Self::normalize_vfs_path(name);
+        }
+        name.split(':')
+            .filter(|component| !component.is_empty() && *component != ".")
+            .map(Self::encode_hfs_component_for_vfs)
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    pub(crate) fn hfs_name_from_vfs_component(component: &str) -> String {
+        component
+            .chars()
+            .map(|character| {
+                if character == VFS_HFS_LITERAL_SLASH {
+                    '/'
+                } else {
+                    character
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn boot_volume_name() -> &'static str {
         BOOT_VOLUME_NAME
     }
@@ -3690,7 +3728,7 @@ impl TrapDispatcher {
 
     pub(crate) fn find_vfs_file_in_directory(&mut self, dir_id: u32, name: &str) -> Option<String> {
         self.ensure_vfs_catalog();
-        let normalized = Self::normalize_vfs_path(name);
+        let normalized = Self::normalize_hfs_path(name);
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
             let candidate = if dir_path.is_empty() {
                 normalized.clone()
@@ -3763,7 +3801,7 @@ impl TrapDispatcher {
         name: &str,
     ) -> Option<String> {
         self.ensure_vfs_catalog();
-        let normalized = Self::normalize_vfs_path(name);
+        let normalized = Self::normalize_hfs_path(name);
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
             let candidate = if dir_path.is_empty() {
                 normalized.clone()
@@ -3803,7 +3841,7 @@ impl TrapDispatcher {
         name: &str,
     ) -> Option<String> {
         self.ensure_vfs_catalog();
-        let normalized = Self::normalize_vfs_path(name);
+        let normalized = Self::normalize_hfs_path(name);
         if normalized.is_empty() {
             return None;
         }
@@ -5322,15 +5360,33 @@ impl TrapDispatcher {
     /// Find a file in vfs_rsrc by name (exact match, then basename match).
     pub(crate) fn find_vfs_rsrc_file(&self, name: &str) -> Option<String> {
         let normalized = Self::normalize_vfs_path(name);
+        let hfs_normalized = Self::normalize_hfs_path(name);
         // Sort iteration so the first-match is stable across runs.
         let mut sorted_keys: Vec<&String> = self.vfs_rsrc.keys().collect();
         sorted_keys.sort_unstable();
         if let Some(found) = sorted_keys
             .iter()
             .copied()
+            .find(|key| key.eq_ignore_ascii_case(&hfs_normalized))
+        {
+            return Some(found.clone());
+        }
+        if let Some(found) = sorted_keys
+            .iter()
+            .copied()
             .find(|key| Self::normalize_vfs_path(key).eq_ignore_ascii_case(&normalized))
         {
             return Some(found.clone());
+        }
+        let hfs_basename = hfs_normalized
+            .rsplit('/')
+            .next()
+            .unwrap_or(hfs_normalized.as_str());
+        for key in &sorted_keys {
+            let key_base = key.rsplit('/').next().unwrap_or(key);
+            if key_base.eq_ignore_ascii_case(hfs_basename) {
+                return Some((*key).clone());
+            }
         }
         let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
         for key in &sorted_keys {
@@ -5941,6 +5997,19 @@ mod tests {
         assert_eq!(
             disp.find_vfs_file_in_directory(dir_id, ":Resources:Settings"),
             Some("Disk/App Folder/Settings".to_string())
+        );
+    }
+
+    #[test]
+    fn hfs_path_encoding_preserves_literal_slashes_and_percent_sequences() {
+        let encoded = TrapDispatcher::normalize_hfs_path("Folder:100%/Done");
+
+        assert_eq!(encoded, format!("Folder/100%{VFS_HFS_LITERAL_SLASH}Done"));
+        assert_eq!(
+            TrapDispatcher::hfs_name_from_vfs_component(&format!(
+                "100%{VFS_HFS_LITERAL_SLASH}Done"
+            )),
+            "100%/Done"
         );
     }
 
