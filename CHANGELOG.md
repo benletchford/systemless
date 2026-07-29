@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.7](https://github.com/benletchford/systemless/compare/v0.8.6...v0.8.7) (2026-07-29)
+
+
+### Bug Fixes
+
+* **loader:** prefer user applications over System Folder utilities ([722f76e](https://github.com/benletchford/systemless/commit/722f76ead301cf4f1feeb6d789271756ebbb69df))
+
 ## [0.8.6](https://github.com/benletchford/systemless/compare/v0.8.5...v0.8.6) (2026-07-29)
 
 
