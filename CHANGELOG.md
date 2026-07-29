@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.5](https://github.com/benletchford/systemless/compare/v0.8.4...v0.8.5) (2026-07-29)
+
+
+### Bug Fixes
+
+* honor guest-updated mouse coordinates in GetMouse ([#139](https://github.com/benletchford/systemless/issues/139)) ([d47e2e9](https://github.com/benletchford/systemless/commit/d47e2e9ba454aee94f286ca6abefb967a66e7822))
+
 ## [0.8.4](https://github.com/benletchford/systemless/compare/v0.8.3...v0.8.4) (2026-07-29)
 
 
