@@ -8871,7 +8871,12 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         dispose_storage: bool,
     ) {
-        let was_front = self.front_window == dialog_ptr;
+        let retained_modal_is_logical_front = self.dialog_modal_entered.contains(&dialog_ptr)
+            && self
+                .window_stack
+                .last()
+                .is_some_and(|(previous, _, _, _)| *previous == self.front_window);
+        let was_front = self.front_window == dialog_ptr || retained_modal_is_logical_front;
         let retained_visible_bounds = self
             .dialog_visible_snapshots
             .get(&dialog_ptr)
@@ -8882,11 +8887,7 @@ impl super::TrapDispatcher {
         } else {
             self.window_bounds
         };
-        let exposed_rect = if was_front {
-            self.window_bounds
-        } else {
-            retained_visible_bounds.unwrap_or(dialog_record_bounds)
-        };
+        let exposed_rect = retained_visible_bounds.unwrap_or(dialog_record_bounds);
         let initial_draw_deferred = self.dialog_initial_draw_deferred.remove(&dialog_ptr);
         let retained_stale_saved_under = self
             .dialog_saved_pixels
@@ -8897,7 +8898,7 @@ impl super::TrapDispatcher {
         if was_front && !initial_draw_deferred {
             if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
                 restored_stale_saved_under = self.saved_pixels_are_mostly_logical_white(&saved);
-                self.restore_dialog_pixels(bus, self.window_bounds, &saved);
+                self.restore_dialog_pixels(bus, dialog_record_bounds, &saved);
             }
         } else {
             self.dialog_saved_pixels.remove(&dialog_ptr);
@@ -12099,7 +12100,14 @@ impl super::TrapDispatcher {
                         // The game may have written them directly to the DITL
                         // handle data after GetNewDialog returned.
                         Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
-                        let bounds = self.window_bounds;
+                        let record_bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
+                        let bounds = if record_bounds.0 < record_bounds.2
+                            && record_bounds.1 < record_bounds.3
+                        {
+                            record_bounds
+                        } else {
+                            self.window_bounds
+                        };
                         let proc_id = self.window_proc_id;
                         let title = self.window_title.clone();
 
@@ -26323,6 +26331,48 @@ mod tests {
             !disp.dialog_saved_pixels.contains_key(&dialog_ptr),
             "saved pixels must be consumed after DisposDialog"
         );
+    }
+
+    #[test]
+    fn disposdialog_restores_retained_modal_when_cached_front_is_predecessor() {
+        // Apps may restore the underlying GrafPort after ModalDialog returns.
+        // The entered modal remains logically front until DisposDialog even
+        // when the cached front pointer now names its stacked predecessor.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes = 640u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let dialog_ptr = bus.alloc(170);
+        let predecessor = bus.alloc(170);
+        bus.write_word(dialog_ptr + 8, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-100i16) as u16);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 50);
+        bus.write_word(dialog_ptr + 22, 100);
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.dialog_modal_entered.insert(dialog_ptr);
+        disp.front_window = predecessor;
+        disp.window_bounds = (0, 0, 480, 640);
+        disp.window_stack
+            .push((predecessor, (0, 0, 480, 640), 0, String::new()));
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x33; 66 * 116]);
+
+        for y in 92u32..158 {
+            for x in 92u32..208 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0xCC);
+            }
+        }
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_byte(screen_base + 100 * row_bytes + 100), 0x33);
+        assert!(!disp.dialog_saved_pixels.contains_key(&dialog_ptr));
     }
 
     #[test]
