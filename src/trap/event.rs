@@ -363,6 +363,11 @@ impl super::TrapDispatcher {
     ) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(event_mask);
+        let preferred_update = if Self::event_matches_mask(event_mask, 6) {
+            self.service_window_picture_updates(cpu, bus)
+        } else {
+            None
+        };
         if let Some(event) = self.dequeue_pending_native_menu_event(event_mask) {
             return (
                 event.what,
@@ -373,11 +378,22 @@ impl super::TrapDispatcher {
                 true,
             );
         }
-        if let Some(idx) = self
+        if let Some(first_idx) = self
             .event_queue
             .iter()
             .position(|event| Self::event_matches_mask(event_mask, event.what))
         {
+            let idx = if self.event_queue[first_idx].what == 6 {
+                preferred_update
+                    .and_then(|window| {
+                        self.event_queue
+                            .iter()
+                            .position(|event| event.what == 6 && event.message == window)
+                    })
+                    .unwrap_or(first_idx)
+            } else {
+                first_idx
+            };
             let event = self.event_queue[idx].clone();
             if self.consume_retained_modal_dialog_event(cpu, bus, &event) {
                 self.event_queue.remove(idx);

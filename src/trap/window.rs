@@ -1357,6 +1357,59 @@ impl super::TrapDispatcher {
         self.window_update_rect(bus, window_ptr).is_some()
     }
 
+    /// Redraw dirty visible windows that have a picture installed through
+    /// SetWindowPic, then leave ordinary dirty windows for update-event
+    /// delivery.
+    ///
+    /// CheckUpdate ($A911)
+    /// Scans windows from front to back; it redraws a dirty window whose
+    /// windowPic field is non-NIL and continues scanning instead of returning
+    /// an update event for that window.
+    /// FUNCTION CheckUpdate (VAR theEvent: EventRecord): BOOLEAN;
+    /// Macintosh Toolbox Essentials (1992), p. 4-116
+    pub(crate) fn service_window_picture_updates<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> Option<u32> {
+        let windows = self.window_list.clone();
+        for window in windows {
+            if !self.window_visible(bus, window) || !self.window_has_pending_update(bus, window) {
+                continue;
+            }
+            let picture = bus.read_long(window + Self::WINDOW_PIC_OFFSET);
+            if picture == 0 || bus.read_long(picture) == 0 {
+                return Some(window);
+            }
+
+            let old_port = self.current_port;
+            let old_gdevice = self.current_gdevice;
+            let old_sp = cpu.read_reg(Register::A7);
+            self.set_current_port_state(bus, cpu, window, None);
+            self.begin_update_window(bus, window);
+
+            // DrawPicture(myPicture, &theWindow->portRect). Use temporary
+            // guest-stack storage so the normal DrawPicture implementation
+            // supplies PICT parsing, palette handling, and region clipping.
+            let draw_sp = old_sp.wrapping_sub(16);
+            let dst_rect = draw_sp + 8;
+            let (top, left, bottom, right) = self.window_port_rect(bus, window);
+            bus.write_word(dst_rect, top as u16);
+            bus.write_word(dst_rect + 2, left as u16);
+            bus.write_word(dst_rect + 4, bottom as u16);
+            bus.write_word(dst_rect + 6, right as u16);
+            bus.write_long(draw_sp, dst_rect);
+            bus.write_long(draw_sp + 4, picture);
+            cpu.write_reg(Register::A7, draw_sp);
+            let _ = self.dispatch_quickdraw(true, 0x0F6, cpu, bus);
+
+            self.end_update_window(bus, window);
+            cpu.write_reg(Register::A7, old_sp);
+            self.set_current_port_state(bus, cpu, old_port, Some(old_gdevice));
+        }
+        None
+    }
+
     pub(crate) fn begin_update_window(&mut self, bus: &mut MacMemoryBus, window: u32) {
         if window == 0 {
             return;
@@ -4018,16 +4071,33 @@ impl super::TrapDispatcher {
 
             // CheckUpdate ($A911)
             // FUNCTION CheckUpdate(VAR theEvent: EventRecord): BOOLEAN;
-            // CheckUpdate ($A911): Dequeues an updateEvt (what=6) from event_queue, writes EventRecord, returns TRUE; otherwise FALSE
+            // Macintosh Toolbox Essentials (1992), p. 4-116
+            // CheckUpdate ($A911): Redraws dirty windowPic windows, then dequeues an updateEvt for the next ordinary dirty window
             (true, 0x111) => {
                 let sp = cpu.read_reg(Register::A7);
                 let event_ptr = bus.read_long(sp);
-                let event =
-                    if let Some(idx) = self.event_queue.iter().position(|event| event.what == 6) {
-                        self.event_queue.remove(idx)
-                    } else {
-                        self.pending_update_event(bus, 1u16 << 6)
-                    };
+                let next_window = self.service_window_picture_updates(cpu, bus);
+                let event = next_window
+                    .and_then(|window| {
+                        self.event_queue
+                            .iter()
+                            .position(|event| event.what == 6 && event.message == window)
+                            .and_then(|idx| self.event_queue.remove(idx))
+                            .or(Some(QueuedEvent {
+                                what: 6,
+                                message: window,
+                                where_v: 0,
+                                where_h: 0,
+                                modifiers: 0,
+                            }))
+                    })
+                    .or_else(|| {
+                        self.event_queue
+                            .iter()
+                            .position(|event| event.what == 6)
+                            .and_then(|idx| self.event_queue.remove(idx))
+                    })
+                    .or_else(|| self.pending_update_event(bus, 1u16 << 6));
                 if let Some(ev) = event {
                     if event_ptr != 0 {
                         self.write_event_record(
@@ -4644,6 +4714,35 @@ mod tests {
             bus.read_word(ptr + 6) as i16,
             bus.read_word(ptr + 8) as i16,
         )
+    }
+
+    fn make_v1_paintrect_picture(
+        bus: &mut crate::memory::MacMemoryBus,
+        frame: (i16, i16, i16, i16),
+    ) -> u32 {
+        let picture_data = bus.alloc(32);
+        let mut cursor = picture_data + 10;
+        bus.write_byte(cursor, 0x11); // versionOp
+        cursor += 1;
+        bus.write_byte(cursor, 0x01); // version 1
+        cursor += 1;
+        bus.write_byte(cursor, 0x31); // paintRect
+        cursor += 1;
+        for coordinate in [frame.0, frame.1, frame.2, frame.3] {
+            bus.write_word(cursor, coordinate as u16);
+            cursor += 2;
+        }
+        bus.write_byte(cursor, 0xFF); // EndOfPicture
+        cursor += 1;
+        bus.write_word(picture_data, (cursor - picture_data) as u16);
+        bus.write_word(picture_data + 2, frame.0 as u16);
+        bus.write_word(picture_data + 4, frame.1 as u16);
+        bus.write_word(picture_data + 6, frame.2 as u16);
+        bus.write_word(picture_data + 8, frame.3 as u16);
+
+        let picture = bus.alloc(4);
+        bus.write_long(picture, picture_data);
+        picture
     }
 
     #[test]
@@ -8748,6 +8847,158 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 2);
         assert_eq!(bus.read_word(TEST_SP - 2), 0, "result should be FALSE");
         assert_eq!(bus.read_word(event_ptr), 0xCCCC, "event record untouched");
+    }
+
+    #[test]
+    fn checkupdate_redraws_window_picture_and_continues_to_next_update() {
+        // CheckUpdate redraws dirty windows with a non-NIL windowPic itself
+        // and continues scanning instead of returning their update events.
+        // Macintosh Toolbox Essentials (1992), p. 4-116.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.menu_bar_hidden = true;
+        let picture_window = bus.alloc(256);
+        let screen_base = disp.screen_mode.0;
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            picture_window,
+            screen_base,
+            0,
+            0,
+            8,
+            8,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        let picture = make_v1_paintrect_picture(&mut bus, (0, 0, 8, 8));
+        bus.write_long(
+            picture_window + super::super::TrapDispatcher::WINDOW_PIC_OFFSET,
+            picture,
+        );
+
+        let ordinary_window = 0x00A0_4000;
+        disp.event_queue.push_back(QueuedEvent {
+            what: 6,
+            message: ordinary_window,
+            where_v: 77,
+            where_h: 123,
+            modifiers: 0x4400,
+        });
+
+        let event_ptr = bus.alloc(16);
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, event_ptr);
+        bus.write_word(sp + 4, 0);
+
+        let result = dispatch(&mut disp, 0x111, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 4), 0xFFFF);
+        assert_eq!(bus.read_word(event_ptr), 6);
+        assert_eq!(
+            bus.read_long(event_ptr + 2),
+            ordinary_window,
+            "CheckUpdate should continue to the next ordinary dirty window"
+        );
+        assert!(
+            !disp.window_has_pending_update(&bus, picture_window),
+            "the automatic picture redraw should clear its update region"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base),
+            0xFF,
+            "the installed picture should be rendered into the window"
+        );
+        assert!(
+            !disp
+                .event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == picture_window),
+            "the pictured window must not retain an application-visible update"
+        );
+    }
+
+    #[test]
+    fn toolbox_events_deliver_front_update_before_redrawing_back_window_picture() {
+        // Event Manager update scans use the same front-to-back CheckUpdate
+        // ordering: stop at the first ordinary dirty window, then redraw a
+        // pictured window behind it on the following scan.
+        // Macintosh Toolbox Essentials (1992), p. 4-116.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.menu_bar_hidden = true;
+        let screen_base = disp.screen_mode.0;
+        let pictured_back = bus.alloc(256);
+        let ordinary_front = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            pictured_back,
+            screen_base,
+            0,
+            0,
+            8,
+            8,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            ordinary_front,
+            screen_base,
+            20,
+            20,
+            28,
+            28,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        let picture = make_v1_paintrect_picture(&mut bus, (0, 0, 8, 8));
+        bus.write_long(
+            pictured_back + super::super::TrapDispatcher::WINDOW_PIC_OFFSET,
+            picture,
+        );
+
+        let (what, message, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1u16 << 6);
+        assert!(has_event);
+        assert_eq!(what, 6);
+        assert_eq!(
+            message, ordinary_front,
+            "the front ordinary window should receive the first update"
+        );
+        assert!(
+            disp.window_has_pending_update(&bus, pictured_back),
+            "CheckUpdate must stop before redrawing a pictured window behind an ordinary update"
+        );
+
+        disp.begin_update_window(&mut bus, ordinary_front);
+        disp.end_update_window(&mut bus, ordinary_front);
+        let (what, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1u16 << 6);
+        assert!(!has_event);
+        assert_eq!(what, 0);
+        assert!(
+            !disp.window_has_pending_update(&bus, pictured_back),
+            "the following scan should redraw and clear the pictured window"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base),
+            0xFF,
+            "the back window picture should be rendered automatically"
+        );
     }
 
     #[test]
