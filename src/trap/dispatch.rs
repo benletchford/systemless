@@ -3810,6 +3810,12 @@ impl TrapDispatcher {
         if normalized.is_empty() {
             return None;
         }
+        // HFS identifies a volume's root using its volume reference number,
+        // reserved parent directory ID 1, and volume name. The root itself has
+        // directory ID 2. Files 1992, 1-27 and 2-85.
+        if dir_id == 1 && normalized.eq_ignore_ascii_case(BOOT_VOLUME_NAME) {
+            return Some(String::new());
+        }
         // Sort vfs_directories keys before first-match .find() to avoid
         // leaking HashMap hash-randomisation into directory resolution
         // (and from there into resource load order, allocation order, and
