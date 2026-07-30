@@ -16637,6 +16637,7 @@ mod tests {
     #[test]
     fn test_wait_next_event_synthesizes_open_app() {
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.application_high_level_event_aware = true;
         assert!(!disp.sent_open_app_event);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
@@ -16673,6 +16674,25 @@ mod tests {
         let result2 = disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus);
         assert!(result2.unwrap().is_ok());
         assert_eq!(bus.read_word(sp + 14), 0); // no event
+    }
+
+    #[test]
+    fn wait_next_event_skips_open_app_for_high_level_unaware_application() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let event_ptr = 0x200000u32;
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, 0);
+        bus.write_long(sp + 8, event_ptr);
+        bus.write_word(sp + 12, 0x0400);
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x060, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 14), 0);
+        assert_eq!(bus.read_word(event_ptr), 0);
+        assert!(!disp.sent_open_app_event);
     }
 
     // EventAvail ($A971) — with event (peeks, does not remove)
@@ -16804,6 +16824,7 @@ mod tests {
     #[test]
     fn test_event_avail_synthesizes_open_app_without_consuming() {
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.application_high_level_event_aware = true;
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -16824,6 +16845,7 @@ mod tests {
     #[test]
     fn test_get_next_event_synthesizes_open_app() {
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.application_high_level_event_aware = true;
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
