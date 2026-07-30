@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.8](https://github.com/benletchford/systemless/compare/v0.9.7...v0.9.8) (2026-07-30)
+
+
+### Bug Fixes
+
+* correct FixRound Pascal stack discipline ([#214](https://github.com/benletchford/systemless/issues/214)) ([2f66eed](https://github.com/benletchford/systemless/commit/2f66eed0ff6d185964618d6fb1dd6cfa9dcf048d))
+
 ## [0.9.7](https://github.com/benletchford/systemless/compare/v0.9.6...v0.9.7) (2026-07-30)
 
 
