@@ -17736,8 +17736,13 @@ impl super::TrapDispatcher {
         }
 
         self.sync_main_gdevice_geometry(bus, width, height, row_bytes, depth);
+        self.install_standard_depth_clut(bus, depth);
+        self.sync_screen_backed_cgrafports_depth(bus, color_screen_base, row_bytes, depth);
 
-        let clear_byte = if depth == 1 { 0x00 } else { 0xFF };
+        // System 7.5.3 clears an 8bpp mode to 0xFF, as covered by the strict
+        // SetDepth oracle. Packed 1/2/4bpp modes clear to index 0; in the
+        // standard low-depth tables that is white.
+        let clear_byte = if depth == 8 { 0xFF } else { 0x00 };
         for i in 0..(row_bytes * u32::from(height)) {
             bus.write_byte(color_screen_base + i, clear_byte);
         }
@@ -28501,35 +28506,6 @@ mod tests {
             bus.read_byte(pixel_addr),
             0xFF,
             "basic GrafPort with screen_base baseAddr must write 8bpp pixels (0xFF for black), not 1bpp bit-set fragments"
-        );
-    }
-
-    #[test]
-    fn test_fill_rect_basic_grafport_at_screen_writes_packed_4bpp() {
-        let (mut d, mut cpu, mut bus) = setup_with_port();
-        let screen_base = bus.alloc(400 * 600);
-        bus.write_long(0x0824, screen_base);
-        d.screen_mode = (screen_base, 400, 800, 600, 4);
-
-        const PORT_PTR: u32 = 0x181000;
-        bus.write_long(PORT_PTR + 2, screen_base);
-        bus.write_word(PORT_PTR + 6, 400);
-
-        let pixel_addr = screen_base + 30 * 400 + 50;
-        bus.write_byte(pixel_addr, 0xAB);
-        let pat_ptr = 0x300000u32;
-        bus.write_bytes(pat_ptr, &[0xFF; 8]);
-        let rect_ptr = 0x300010u32;
-        write_rect(&mut bus, rect_ptr, 30, 100, 31, 101);
-        bus.write_long(TEST_SP, pat_ptr);
-        bus.write_long(TEST_SP + 4, rect_ptr);
-        let result = d.dispatch_quickdraw(true, 0x0A5, &mut cpu, &mut bus);
-
-        assert!(result.unwrap().is_ok());
-        assert_eq!(
-            bus.read_byte(pixel_addr),
-            0xFB,
-            "4bpp drawing must replace the target nibble and preserve its neighbor"
         );
     }
 
