@@ -636,6 +636,7 @@ fn current_mac_epoch_seconds() -> u32 {
 
 #[derive(Clone, Copy, Debug)]
 enum ActiveInterruptCallbackSource {
+    Adb,
     Timer,
     Vbl,
     CursorTask,
@@ -864,6 +865,9 @@ pub struct FixtureRunner {
     /// Guest-memory address of the low-memory `JCrsrTask` callback trampoline.
     /// Allocated once on first use and reused for cursor task callbacks.
     cursor_task_trampoline: u32,
+    /// Guest-memory trampoline and packet buffer for ADB service routines.
+    adb_callback_trampoline: u32,
+    adb_packet_buffer: u32,
     /// Currently executing Time Manager callback, if any.
     ///
     /// Real timer delivery happens from interrupt context, so the same timer source
@@ -951,9 +955,15 @@ impl FixtureRunner {
     pub fn new(ram_size: usize, config: FixtureRunnerConfig) -> Self {
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.set_ui_theme_id(config.ui_theme);
+        let mut bus = MacMemoryBus::new(ram_size);
+        let standard_adb_service = bus.alloc_synthetic(2);
+        bus.write_word(standard_adb_service, 0x4E75); // RTS
+        dispatcher
+            .adb
+            .install_standard_service_routine(standard_adb_service);
         Self {
             cpu: M68kCpu::new(),
-            bus: MacMemoryBus::new(ram_size),
+            bus,
             dispatcher,
             config,
             trace_buffer: std::collections::VecDeque::with_capacity(2000),
@@ -973,6 +983,8 @@ impl FixtureRunner {
             timer_trampoline: 0,
             vbl_trampoline: 0,
             cursor_task_trampoline: 0,
+            adb_callback_trampoline: 0,
+            adb_packet_buffer: 0,
             active_interrupt_callback: None,
             audio: None,
             audio_buffer: Vec::new(),
@@ -3249,6 +3261,7 @@ impl FixtureRunner {
             // or reuse its parameter block.
             if !sound_work_only && self.active_interrupt_callback.is_none() {
                 self.fire_file_completion_callback();
+                self.fire_adb_callback();
             }
 
             // Sound callbacks are interrupt work. If a previous slice queued
@@ -5176,6 +5189,47 @@ impl FixtureRunner {
         self.cpu.write_reg(Register::A0, completion.parameter_block);
         self.cpu
             .write_reg(Register::D0, completion.result as i32 as u32);
+        true
+    }
+
+    /// Deliver one pending ADB Talk-register-0 packet to the service routine
+    /// installed through SetADBInfo.
+    ///
+    /// A0 points to the Pascal-string packet, A1 to the service routine,
+    /// A2 to its registered data area, and D0 contains the command byte.
+    /// Inside Macintosh Volume V (1986), pp. V-367 to V-371.
+    fn fire_adb_callback(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+        let Some(packet) = self.dispatcher.adb.pop_pending_packet() else {
+            return false;
+        };
+        if packet.service_routine == 0 {
+            return false;
+        }
+
+        if self.adb_callback_trampoline == 0 {
+            let tramp = self.bus.alloc_synthetic(8);
+            self.bus.write_word(tramp, 0x4EB9); // JSR abs.L
+            self.bus.write_word(tramp + 6, 0x4E75); // RTS
+            self.adb_callback_trampoline = tramp;
+        }
+        if self.adb_packet_buffer == 0 {
+            self.adb_packet_buffer = self.bus.alloc_synthetic(4);
+        }
+
+        let tramp = self.adb_callback_trampoline;
+        self.bus.write_long(tramp + 2, packet.service_routine);
+        for (offset, byte) in packet.packet.into_iter().enumerate() {
+            self.bus
+                .write_byte(self.adb_packet_buffer + offset as u32, byte);
+        }
+        self.inject_interrupt_callback(ActiveInterruptCallbackSource::Adb, tramp);
+        self.cpu.write_reg(Register::A0, self.adb_packet_buffer);
+        self.cpu.write_reg(Register::A1, packet.service_routine);
+        self.cpu.write_reg(Register::A2, packet.data_area);
+        self.cpu.write_reg(Register::D0, u32::from(packet.command));
         true
     }
 
@@ -9309,6 +9363,62 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
         assert_eq!(runner.cpu.read_reg(Register::A0), 0x1111_1111);
         assert_eq!(runner.cpu.read_reg(Register::D0), 0x2222_2222);
+        assert!(!runner.is_halted());
+    }
+
+    #[test]
+    fn adb_mouse_callback_uses_documented_registers_and_restores_foreground() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let callback_addr = runner.bus.alloc(2);
+        let data_area = runner.bus.alloc(16);
+
+        runner.bus.write_word(callback_addr, 0x4E75); // RTS
+        for offset in (0..20).step_by(2) {
+            runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
+        }
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.write_reg(Register::A0, 0x1111_1111);
+        runner.cpu.write_reg(Register::A1, 0x2222_2222);
+        runner.cpu.write_reg(Register::A2, 0x3333_3333);
+        runner.cpu.write_reg(Register::D0, 0x4444_4444);
+        assert!(runner.dispatcher.adb.set_device_handler(
+            3,
+            callback_addr,
+            data_area,
+            false,
+        ));
+        runner.dispatcher.adb.note_mouse_state((5, -10), true);
+
+        assert!(runner.fire_adb_callback());
+        let packet_ptr = runner.cpu.read_reg(Register::A0);
+        assert_eq!(runner.bus.read_bytes(packet_ptr, 3), &[2, 5, 0xF6]);
+        assert_eq!(runner.cpu.read_reg(Register::A1), callback_addr);
+        assert_eq!(runner.cpu.read_reg(Register::A2), data_area);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 0x3C);
+        assert!(matches!(
+            runner.active_interrupt_callback.map(|active| active.source),
+            Some(ActiveInterruptCallbackSource::Adb)
+        ));
+        assert!(
+            runner
+                .bus
+                .get_alloc_size(runner.adb_callback_trampoline)
+                .is_none(),
+            "Systemless-owned ADB trampoline must stay outside the guest heap"
+        );
+
+        let (_, running) = runner.run_steps(6, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.cpu.read_reg(Register::A0), 0x1111_1111);
+        assert_eq!(runner.cpu.read_reg(Register::A1), 0x2222_2222);
+        assert_eq!(runner.cpu.read_reg(Register::A2), 0x3333_3333);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 0x4444_4444);
         assert!(!runner.is_halted());
     }
 

@@ -3341,88 +3341,26 @@ impl super::TrapDispatcher {
             // Returns the number of ADB devices.
             // FUNCTION CountADBs: INTEGER;
             // Inside Macintosh Volume V, V-372
-            //
-            // Returns count in D0. We report 2 devices (keyboard + mouse).
-            //
-            // CountADBs ($A077): Returns 2 (keyboard + mouse) per IM:V V-372
             (false, 0x77) => {
-                cpu.write_reg(Register::D0, 2); // keyboard + mouse
+                cpu.write_reg(Register::D0, u32::from(self.adb.device_count()));
                 Ok(())
             }
 
-            // GetIndADB ($A078) — ADB Manager
-            //
-            // Per IM:V V-373: "GetIndADB returns information from the
-            // ADB device-table entry whose index number is given by
-            // devTableIndex. ... GetIndADB returns the current ADB
-            // address of the device. If it is unable to complete
-            // execution successfully, GetIndADB returns a negative
-            // value."
-            //
-            // Per IM:V V-373 + IM:Devices 1994 pp. 5-43..5-44:
-            // GetIndADB is an OS-bit trap with register-only ABI.
-            //   On entry  A0 = pointer to ADBDataBlock
-            //             D0 = devTableIndex (byte, range 1..CountADBs)
-            //   On exit   D0 = positive current ADB address (byte) OR
-            //                  negative error code (byte)
-            //
-            // ADBDataBlock layout (IM:V V-373, 10 bytes):
-            //     +0  devType        SignedByte  {handler ID}
-            //     +1  origADBAddr    SignedByte  {original ADB addr}
-            //     +2  dbServiceRtPtr Ptr (4)     {service routine}
-            //     +6  dbDataAreaAddr Ptr (4)     {data area for rtn}
-            //
-            // MPW Universal Headers (DeskBus.h) exposes GetIndADB
-            // as an inline OS trap with `#pragma parameter __D0
-            // GetIndADB(__A0, __D0)` mapping the FUNCTION result to
-            // D0, the info pointer to A0, and devTableIndex to D0:
-            //   #pragma parameter __D0 GetIndADB(__A0, __D0)
-            //   EXTERN_API( ADBAddress )
-            //   GetIndADB(ADBDataBlock *info, short devTableIndex)
-            //     ONEWORDINLINE(0xA078);
-            //
-            // BasiliskII-vs-Systemless note (they agree on the documented
-            // API surface; only the specific byte values written
-            // through *info diverge): BasiliskII System 7.5.3 ROM
-            // walks its real ADB device table populated by the boot
-            // sequence, writing actual handler-ID + service-routine
-            // + data-area-pointer bytes. Systemless HLE hardcodes the
-            // System 7.5 default-address scheme from IM:V V-364..V-365
-            // (index 1 -> keyboard at ADB address 2, index 2 -> mouse
-            // at ADB address 3) and zero-fills devType / service-rtn
-            // / data-area fields since neither pointer is meaningful
-            // in the HLE event model. Both engines agree on:
-            //   * positive ADB-address return for valid indices
-            //   * negative error return for out-of-range indices
-            //   * caller's ADBDataBlock written through A0
-            // The documented API-surface behavior matches Apple; the
-            // per-byte exact values do NOT (kx_GetIndADB rec_b1 contents
-            // differ byte-for-byte between BII and Systemless).
-            //
-            // Regression coverage (in-Rust):
-            //   getindadb_returns_device_info
-            //   src/trap/memory.rs `mod tests`:
-            //     - getindadb_valid_index_returns_positive_adb_address
-            //     - getindadb_out_of_range_index_returns_negative_result
-            //     - getindadb_writes_adbdatablock_for_valid_index
-            //     - getindadb_preserves_caller_memory_beyond_adbdatablock
+            // GetIndADB ($A078)
+            // Returns a device-table entry selected by its one-based index.
+            // FUNCTION GetIndADB(VAR info: ADBDataBlock; devTableIndex: INTEGER): ADBAddress;
+            // Inside Macintosh Volume V, V-373
             (false, 0x78) => {
                 let index = cpu.read_reg(Register::D0) & 0xFF;
                 let info_ptr = cpu.read_reg(Register::A0);
-                if let Some(adb_addr) = match index {
-                    1 => Some(2u32), // keyboard
-                    2 => Some(3u32), // mouse
-                    _ => None,
-                } {
+                if let Some(entry) = self.adb.device_by_index(index as u8) {
                     if info_ptr != 0 {
-                        // ADBDataBlock: devType(1), origADBAddr(1), dbServiceRtPtr(4), dbDataAreaAddr(4).
-                        // HLE exposes two canonical devices and zeroes pointer fields.
-                        for i in 0..10u32 {
-                            bus.write_byte(info_ptr + i, 0);
-                        }
-                        bus.write_byte(info_ptr + 1, adb_addr as u8);
+                        bus.write_byte(info_ptr, entry.handler_id);
+                        bus.write_byte(info_ptr + 1, entry.original_address);
+                        bus.write_long(info_ptr + 2, entry.service_routine);
+                        bus.write_long(info_ptr + 6, entry.data_area);
                     }
-                    cpu.write_reg(Register::D0, adb_addr);
+                    cpu.write_reg(Register::D0, u32::from(entry.current_address));
                 } else {
                     // IM:Devices 5-43 / IM:V V-373: unknown entry -> negative result.
                     cpu.write_reg(Register::D0, 0xFFFF_FFFF);
@@ -3434,16 +3372,20 @@ impl super::TrapDispatcher {
             // Returns ADB device info by address.
             // FUNCTION GetADBInfo(VAR info: ADBDataBlock; adbAddr: ADBAddress): OSErr;
             // Inside Macintosh Volume V, V-373
-            //
-            // GetADBInfo ($A079): Zero-fills the 10-byte ADBDataBlock, returns noErr per IM:V V-373
             (false, 0x79) => {
+                let address = (cpu.read_reg(Register::D0) & 0xFF) as u8;
                 let info_ptr = cpu.read_reg(Register::A0);
-                if info_ptr != 0 {
-                    for i in 0..10u32 {
-                        bus.write_byte(info_ptr + i, 0);
+                if let Some(entry) = self.adb.device_by_address(address) {
+                    if info_ptr != 0 {
+                        bus.write_byte(info_ptr, entry.handler_id);
+                        bus.write_byte(info_ptr + 1, entry.original_address);
+                        bus.write_long(info_ptr + 2, entry.service_routine);
+                        bus.write_long(info_ptr + 6, entry.data_area);
                     }
+                    cpu.write_reg(Register::D0, 0); // noErr
+                } else {
+                    cpu.write_reg(Register::D0, 0xFFFF_FFFF);
                 }
-                cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
             }
 
@@ -3451,10 +3393,17 @@ impl super::TrapDispatcher {
             // Sets ADB device info.
             // FUNCTION SetADBInfo(VAR info: ADBSetInfoBlock; adbAddr: ADBAddress): OSErr;
             // Inside Macintosh Volume V, V-374
-            // No-op.
-            //
-            // SetADBInfo ($A07A): Returns noErr per IM:V V-374
             (false, 0x7A) => {
+                let address = (cpu.read_reg(Register::D0) & 0xFF) as u8;
+                let info_ptr = cpu.read_reg(Register::A0);
+                if info_ptr != 0 {
+                    self.adb.set_device_handler(
+                        address,
+                        bus.read_long(info_ptr),
+                        bus.read_long(info_ptr + 4),
+                        self.mouse_button,
+                    );
+                }
                 cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
             }
@@ -3468,71 +3417,15 @@ impl super::TrapDispatcher {
             // ADBReInit ($A07B): Per IM:V V-371
             (false, 0x7B) => Ok(()),
 
-            // ADBOp ($A07C) — ADB Manager
-            //
-            // Per IM:V V-368: "ADBOp is used to send commands to ADB
-            // devices. The data parameter points to a data buffer; the
-            // compRout parameter points to a completion routine; the
-            // buffer parameter points to a data area for the
-            // completion routine; and the commandNum parameter is the
-            // ADB command byte."
-            //
-            // Per IM:V V-371 + Devices 1994 pp. 5-39..5-45: ADBOp is
-            // an OS-bit trap with a register-only ABI — the C-visible
-            // Pascal signature `FUNCTION ADBOp(data: Ptr;
-            // compRout: ProcPtr; buffer: Ptr; commandNum: INTEGER):
-            // OSErr` is informational; the actual interface is
-            // A0=ADBOpBlock pointer, D0=commandNum (byte), D0=OSErr
-            // result. No Pascal stack arguments are consumed.
-            //
-            // ADBOpBlock layout (IM:V V-368, 12 bytes):
-            //     +0  dataBuffPtr      Ptr {data buffer}
-            //     +4  opServiceRtPtr   Ptr {completion routine}
-            //     +8  opDataAreaPtr    Ptr {data area for service rtn}
-            //
-            // ADB command byte format (IM:V V-368 Table 35):
-            //     bits 7..4 = ADB device address (0..15)
-            //     bits 3..2 = command type:
-            //                   00 = SendReset (reserved/internal)
-            //                   01 = Flush
-            //                   10 = Listen
-            //                   11 = Talk
-            //     bits 1..0 = ADB register (0..3) for Listen/Talk
-            //
-            // MPW Universal Headers: <Devices.h> exposes ADBOp via
-            // an inline thunk; callers wishing to capture the D0
-            // result use `#pragma parameter __D0 kx_ADBOp(__A0, __D0)
-            // pascal long kx_ADBOp(Ptr block, short commandNum) =
-            // {0xA07C};` to map the FUNCTION result and arg registers.
-            //
-            // Inside Macintosh Volume V (1986), pp. V-367 to V-368
-            // Inside Macintosh: Devices (1994), pp. 5-39 to 5-45
-            //
-            // BasiliskII-vs-Systemless divergence on D0 return value:
-            //   BasiliskII System 7.5.3 ROM returns a non-zero result
-            //   code in D0 for synthetic ADBOp calls with no completion
-            //   routine wired (the emulated ADB Manager rejects calls
-            //   it cannot complete asynchronously). Systemless HLE returns
-            //   D0 = 0 unconditionally per its Stub (no-op)
-            //   classification — ADB hardware events are sourced by
-            //   the host event loop, so the ADB command queue is
-            //   silently accepted as a no-op.
-            //
-            //   The Apple-canonical "ADBOp returns noErr on queued
-            //   accept" contract from IM:V V-368 is pinned in-Rust via
-            //   the `adbop_returns_noerr_when_command_queue_accepts_request`
-            //   regression test below, since the engines disagree on
-            //   the absolute D0 value.
-            //
-            //   Both share the register-only OS-bit-trap calling
-            //   convention (A0 + D0 inputs, D0 output, no Pascal stack
-            //   frame).
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::tests::adbop_returns_noerr_when_command_queue_accepts_request
-            //   src/trap/memory.rs::tests::adbop_uses_a0_parameter_block_and_d0_commandnum_without_stack_arguments
-            //   src/trap/memory.rs::tests::adbop_repeated_calls_balance_stack_no_drift
+            // ADBOp ($A07C)
+            // Sends a command to an ADB device; Flush clears queued HLE packets.
+            // FUNCTION ADBOp(data: Ptr; compRout: ProcPtr; buffer: Ptr; commandNum: INTEGER): OSErr;
+            // Inside Macintosh Volume V, V-367 to V-368
             (false, 0x7C) => {
+                let command = (cpu.read_reg(Register::D0) & 0xFF) as u8;
+                if command & 0x0F == 1 {
+                    self.adb.flush(command >> 4);
+                }
                 cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
             }
@@ -10671,8 +10564,8 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetIndADB should return");
         assert_eq!(
             bus.read_byte(info),
-            0,
-            "GetIndADB should write devType field in info block"
+            2,
+            "GetIndADB should report the extended-keyboard handler ID"
         );
         assert_eq!(
             bus.read_byte(info + 1),
@@ -10761,13 +10654,13 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetADBInfo should return");
         assert_eq!(
             bus.read_byte(info),
-            0,
-            "device handler byte should be written"
+            1,
+            "GetADBInfo should report the standard mouse handler ID"
         );
         assert_eq!(
             bus.read_byte(info + 1),
-            0,
-            "original-address byte should be written"
+            3,
+            "GetADBInfo should report the mouse's original address"
         );
         assert_eq!(
             bus.read_long(info + 2),
@@ -10820,6 +10713,21 @@ mod tests {
             cpu.read_reg(Register::D0),
             0,
             "SetADBInfo nominal path should return noErr in D0"
+        );
+
+        cpu.write_reg(Register::A0, info + 16);
+        cpu.write_reg(Register::D0, 2);
+        let get_result = dispatcher.dispatch_memory(false, 0x79, &mut cpu, &mut bus);
+        assert!(get_result.unwrap().is_ok(), "GetADBInfo should return");
+        assert_eq!(
+            bus.read_long(info + 18),
+            0x00AA_5500,
+            "GetADBInfo should return the installed service routine"
+        );
+        assert_eq!(
+            bus.read_long(info + 22),
+            0x00CC_7700,
+            "GetADBInfo should return the installed data area"
         );
     }
 
