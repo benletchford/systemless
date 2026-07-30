@@ -3253,10 +3253,12 @@ impl super::TrapDispatcher {
                         eprintln!("[COPYBITS-ALL] palettes {}", palette_details);
                     }
                 }
-                // Executor only depth-converts indexed copies when the source
-                // PixMap's table differs from the destination PixMap's table,
-                // the source table has a nonzero seed, and that seed differs
-                // from the current GDevice's seed.
+                // CopyBits translates between different indexed depths even
+                // when an old application leaves the source CTable seed at 0.
+                // For same-depth copies, preserve Executor's seed gate so a
+                // zero seed continues to mean that the pixels already carry
+                // destination-device indices.
+                // Imaging With QuickDraw 1994, 3-71.
                 // references/executor/src/quickdraw/qStdBits.cpp
                 // During a seeded palette window the screen's cm holds
                 // the title palette while offscreen buffers retain the
@@ -3283,8 +3285,9 @@ impl super::TrapDispatcher {
                 let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && dst_info.pixel_size == 8
                     && src_info.ctab_handle != dst_info.ctab_handle
-                    && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
-                    && src_ctab_seed != dst_ctab_seed
+                    && (src_info.pixel_size != dst_info.pixel_size
+                        || (matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
+                            && src_ctab_seed != dst_ctab_seed))
                     && !skip_canonical_to_screen
                     && !skip_hardware_palette_to_screen
                     && !skip_explicit_palette_translation
@@ -31086,7 +31089,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_bits_4bpp_to_8bpp_reads_high_nibbles_and_translates_palette() {
+    fn copy_bits_4bpp_to_8bpp_translates_a_zero_seed_palette() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let src_pixmap = 0x320100u32;
         let dst_pixmap = 0x320200u32;
@@ -31114,7 +31117,7 @@ mod tests {
             .enumerate()
             .map(|(index, &(red, green, blue))| ((index + 41) as u16, red, green, blue))
             .collect::<Vec<_>>();
-        write_color_table(&mut bus, src_ctab_handle, 0x1111_1111, &src_entries);
+        write_color_table(&mut bus, src_ctab_handle, 0, &src_entries);
         write_color_table(&mut bus, dst_ctab_handle, 0x2222_2222, &dst_entries);
         write_pixmap_indexed(&mut bus, src_pixmap, src_base, 2, 3, 2, 4, src_ctab_handle);
         write_pixmap_8(&mut bus, dst_pixmap, dst_base, 6, 2, dst_ctab_handle);
