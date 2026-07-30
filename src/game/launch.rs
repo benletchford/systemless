@@ -10,8 +10,13 @@ use crate::memory::MemoryBus;
 use crate::runner::{FixtureRunner, FixtureRunnerConfig};
 use stuffit::SitArchive;
 
-const WEB_PACK_MAGIC: &[u8; 4] = b"KPK1";
+const LEGACY_WEB_PACK_MAGIC: &[u8; 4] = b"KPK1";
+const WEB_PACK_MAGIC: &[u8; 4] = b"KPK2";
 const WEB_PACK_INITIAL_FORK_RESERVE_BYTES: usize = 1024 * 1024;
+
+fn is_web_pack(file_data: &[u8]) -> bool {
+    file_data.starts_with(WEB_PACK_MAGIC) || file_data.starts_with(LEGACY_WEB_PACK_MAGIC)
+}
 
 /// Standard RAM size for all frontends (32 MB).
 pub const RAM_SIZE: u32 = crate::machine_profile::REFERENCE_MACHINE_PROFILE.ram_size_bytes;
@@ -38,7 +43,7 @@ pub fn new_runner() -> FixtureRunner {
 /// Handles StuffIt archives (populates VFS with all entries, finds executable),
 /// MacBinary files, and macOS resource fork paths. Returns the LoadedApp on success.
 pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
-    if file_data.starts_with(WEB_PACK_MAGIC) {
+    if is_web_pack(file_data) {
         load_web_pack(runner, file_data)
     } else if is_stuffit_archive(file_data) {
         load_stuffit(runner, file_data)
@@ -123,6 +128,8 @@ fn pack_payload_files_for_web(file_entries: Vec<PayloadFile>) -> Result<Vec<u8>,
         out.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
         out.extend_from_slice(name_bytes);
         out.extend_from_slice(&entry.file_type);
+        out.extend_from_slice(&entry.creator);
+        out.extend_from_slice(&entry.finder_flags.to_be_bytes());
         out.extend_from_slice(&(entry.data.len() as u32).to_be_bytes());
         out.extend_from_slice(&entry.data);
         out.extend_from_slice(&(entry.rsrc.len() as u32).to_be_bytes());
@@ -143,7 +150,7 @@ pub fn load_game_from_path(
     // Explicit containers in the data fork win over any host macOS resource
     // fork. DiskCopy images extracted by unar, for example, can carry a small
     // Finder metadata resource fork on the host; that is not the launchable app.
-    if file_data.starts_with(WEB_PACK_MAGIC)
+    if is_web_pack(&file_data)
         || is_stuffit_archive(&file_data)
         || crate::binhex::looks_like_binhex(&file_data)
         || crate::disk_image::looks_like_dc42_or_hfs(&file_data)
@@ -391,7 +398,7 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
     loader.finish(runner)
 }
 
-/// Incremental loader for Systemless web packs (`KPK1`).
+/// Incremental loader for Systemless web packs (`KPK1` and `KPK2`).
 ///
 /// The standard `load_game` path consumes the whole pack synchronously. Browser
 /// frontends can use this loader to copy large data/resource forks in bounded
@@ -404,6 +411,7 @@ pub struct WebPackLoader<'a> {
     executable_entry: Option<ExecutableCandidate>,
     pending: Option<WebPackPendingEntry>,
     remove_paths: Vec<String>,
+    has_finder_metadata: bool,
 }
 
 impl<'a> WebPackLoader<'a> {
@@ -416,11 +424,12 @@ impl<'a> WebPackLoader<'a> {
         file_data: &'a [u8],
         remove_paths: &[&str],
     ) -> Result<Option<Self>, String> {
-        if !file_data.starts_with(WEB_PACK_MAGIC) {
+        if !is_web_pack(file_data) {
             return Ok(None);
         }
 
         let mut offset = WEB_PACK_MAGIC.len();
+        let has_finder_metadata = file_data.starts_with(WEB_PACK_MAGIC);
         let total_entries = read_u32_be(file_data, &mut offset)? as usize;
         {
             let dispatcher = runner.dispatcher_mut();
@@ -436,6 +445,7 @@ impl<'a> WebPackLoader<'a> {
             loaded_entries: 0,
             executable_entry: None,
             pending: None,
+            has_finder_metadata,
             remove_paths: remove_paths
                 .iter()
                 .map(|path| crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(path))
@@ -499,7 +509,7 @@ impl<'a> WebPackLoader<'a> {
                     &pending.rsrc,
                     pending.is_appl,
                     pending.data_len,
-                    *b"????",
+                    pending.creator_code,
                 );
                 insert_forks_into_vfs(
                     runner,
@@ -507,8 +517,8 @@ impl<'a> WebPackLoader<'a> {
                     pending.data,
                     pending.rsrc,
                     pending.file_type_code,
-                    *b"????",
-                    0,
+                    pending.creator_code,
+                    pending.finder_flags,
                 );
                 self.loaded_entries += 1;
             } else if copied == 0 {
@@ -544,6 +554,15 @@ impl<'a> WebPackLoader<'a> {
         let file_type = read_exact(self.file_data, &mut self.offset, 4)?;
         let mut file_type_code = [0u8; 4];
         file_type_code.copy_from_slice(file_type);
+        let (creator_code, finder_flags) = if self.has_finder_metadata {
+            let creator = read_exact(self.file_data, &mut self.offset, 4)?;
+            let mut creator_code = [0u8; 4];
+            creator_code.copy_from_slice(creator);
+            let finder_flags = read_u16_be(self.file_data, &mut self.offset)?;
+            (creator_code, finder_flags)
+        } else {
+            (*b"????", 0)
+        };
 
         let data_len = read_u32_be(self.file_data, &mut self.offset)? as usize;
         let data_start = self.offset;
@@ -556,6 +575,8 @@ impl<'a> WebPackLoader<'a> {
         Ok(WebPackEntryHeader {
             name,
             file_type_code,
+            creator_code,
+            finder_flags,
             is_appl: file_type_code == *b"APPL",
             data_start,
             data_len,
@@ -603,6 +624,8 @@ impl<'a> WebPackLoader<'a> {
 struct WebPackEntryHeader {
     name: String,
     file_type_code: [u8; 4],
+    creator_code: [u8; 4],
+    finder_flags: u16,
     is_appl: bool,
     data_start: usize,
     data_len: usize,
@@ -613,6 +636,8 @@ struct WebPackEntryHeader {
 struct WebPackPendingEntry {
     name: String,
     file_type_code: [u8; 4],
+    creator_code: [u8; 4],
+    finder_flags: u16,
     is_appl: bool,
     data_start: usize,
     data_len: usize,
@@ -629,6 +654,8 @@ impl WebPackPendingEntry {
         Self {
             name: header.name,
             file_type_code: header.file_type_code,
+            creator_code: header.creator_code,
+            finder_flags: header.finder_flags,
             is_appl: header.is_appl,
             data_start: header.data_start,
             data_len: header.data_len,
@@ -1581,6 +1608,8 @@ mod tests {
     struct TestWebPackEntry<'a> {
         name: &'a str,
         file_type: [u8; 4],
+        creator: [u8; 4],
+        finder_flags: u16,
         data: &'a [u8],
         rsrc: &'a [u8],
     }
@@ -1593,11 +1622,27 @@ mod tests {
             bytes.extend_from_slice(&(entry.name.len() as u16).to_be_bytes());
             bytes.extend_from_slice(entry.name.as_bytes());
             bytes.extend_from_slice(&entry.file_type);
+            bytes.extend_from_slice(&entry.creator);
+            bytes.extend_from_slice(&entry.finder_flags.to_be_bytes());
             bytes.extend_from_slice(&(entry.data.len() as u32).to_be_bytes());
             bytes.extend_from_slice(entry.data);
             bytes.extend_from_slice(&(entry.rsrc.len() as u32).to_be_bytes());
             bytes.extend_from_slice(entry.rsrc);
         }
+        bytes
+    }
+
+    fn make_legacy_web_pack(entry: &TestWebPackEntry<'_>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(LEGACY_WEB_PACK_MAGIC);
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&(entry.name.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(entry.name.as_bytes());
+        bytes.extend_from_slice(&entry.file_type);
+        bytes.extend_from_slice(&(entry.data.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(entry.data);
+        bytes.extend_from_slice(&(entry.rsrc.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(entry.rsrc);
         bytes
     }
 
@@ -1617,6 +1662,35 @@ mod tests {
     }
 
     #[test]
+    fn web_pack_loader_keeps_legacy_kpk1_compatibility() {
+        let entry = TestWebPackEntry {
+            name: "Folder/Legacy",
+            file_type: *b"TEXT",
+            creator: *b"ttxt",
+            finder_flags: 0x4000,
+            data: b"legacy",
+            rsrc: &[],
+        };
+        let pack = make_legacy_web_pack(&entry);
+        let mut runner = new_runner();
+        let mut loader = WebPackLoader::new(&mut runner, &pack).unwrap().unwrap();
+
+        while !loader.load_next_chunk(&mut runner, 2).unwrap() {}
+
+        assert_eq!(
+            runner.dispatcher().vfs.get("Folder/Legacy"),
+            Some(&b"legacy".to_vec())
+        );
+        let metadata = runner
+            .dispatcher_mut()
+            .vfs_file_metadata("Folder/Legacy")
+            .expect("legacy metadata");
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"TEXT"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"????"));
+        assert_eq!(metadata.finder_flags, 0);
+    }
+
+    #[test]
     fn web_pack_loader_mounts_forks_incrementally() {
         let data = b"abcdefghijkl".to_vec();
         let rsrc = make_single_resource_fork_bytes(*b"DLOG", 4000, b"dialog");
@@ -1624,12 +1698,16 @@ mod tests {
             TestWebPackEntry {
                 name: "Folder/Data",
                 file_type: *b"TEXT",
+                creator: *b"ttxt",
+                finder_flags: 0x4000,
                 data: &data,
                 rsrc: &[],
             },
             TestWebPackEntry {
                 name: "Folder/Sidecar.rsrc",
                 file_type: *b"rsrc",
+                creator: *b"RSED",
+                finder_flags: 0,
                 data: &rsrc,
                 rsrc: &[],
             },
@@ -1662,6 +1740,13 @@ mod tests {
             runner.dispatcher().vfs_rsrc.get("Folder/Sidecar.rsrc"),
             Some(&rsrc)
         );
+        let data_metadata = runner
+            .dispatcher_mut()
+            .vfs_file_metadata("Folder/Data")
+            .expect("packed data metadata");
+        assert_eq!(data_metadata.file_type, u32::from_be_bytes(*b"TEXT"));
+        assert_eq!(data_metadata.creator, u32::from_be_bytes(*b"ttxt"));
+        assert_eq!(data_metadata.finder_flags, 0x4000);
         match loader.finish(&mut runner) {
             Ok(_) => panic!("non-executable web pack should not finish as a loaded app"),
             Err(err) => assert!(err.contains("No executable found in web pack")),
@@ -1678,18 +1763,24 @@ mod tests {
             TestWebPackEntry {
                 name: "Game/Game App",
                 file_type: *b"APPL",
+                creator: *b"TEST",
+                finder_flags: 0,
                 data: &app_data,
                 rsrc: &app_rsrc,
             },
             TestWebPackEntry {
                 name: "Game/Plug-Ins/MAGMA",
                 file_type: *b"DATA",
+                creator: *b"TEST",
+                finder_flags: 0,
                 data: &[],
                 rsrc: &skipped_rsrc,
             },
             TestWebPackEntry {
                 name: "Game/Plug-Ins/Keep",
                 file_type: *b"DATA",
+                creator: *b"TEST",
+                finder_flags: 0,
                 data: &kept_data,
                 rsrc: &[],
             },
