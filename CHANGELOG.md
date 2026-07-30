@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/benletchford/systemless/compare/v0.9.2...v0.9.3) (2026-07-30)
+
+
+### Bug Fixes
+
+* create and resolve minimal full-path aliases ([#191](https://github.com/benletchford/systemless/issues/191)) ([1c0f4c2](https://github.com/benletchford/systemless/commit/1c0f4c2f14f9b5c24edf5a9df541968f82802a9f))
+
 ## [0.9.2](https://github.com/benletchford/systemless/compare/v0.9.1...v0.9.2) (2026-07-30)
 
 
