@@ -17736,8 +17736,13 @@ impl super::TrapDispatcher {
         }
 
         self.sync_main_gdevice_geometry(bus, width, height, row_bytes, depth);
+        self.install_standard_depth_clut(bus, depth);
+        self.sync_screen_backed_cgrafports_depth(bus, color_screen_base, row_bytes, depth);
 
-        let clear_byte = if depth == 1 { 0x00 } else { 0xFF };
+        // System 7.5.3 clears an 8bpp mode to 0xFF, as covered by the strict
+        // SetDepth oracle. Packed 1/2/4bpp modes clear to index 0; in the
+        // standard low-depth tables that is white.
+        let clear_byte = if depth == 8 { 0xFF } else { 0x00 };
         for i in 0..(row_bytes * u32::from(height)) {
             bus.write_byte(color_screen_base + i, clear_byte);
         }
