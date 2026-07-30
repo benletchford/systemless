@@ -3175,6 +3175,97 @@ impl TrapDispatcher {
         Some((clut, entries))
     }
 
+    /// Return the default 4-bit CTable installed by `NewGWorld` on
+    /// System 7.5.3. This differs from the `GetCTable(4)` resource at
+    /// dark-green entry 9.
+    ///
+    /// Inside Macintosh: Imaging With QuickDraw 1994, pp. 6-30..6-31
+    pub(crate) fn standard_mac_4bpp_gworld_clut() -> [[u16; 3]; 256] {
+        let (mut clut, _) = Self::standard_mac_indexed_clut(4).expect("standard 4-bit CTable");
+        clut[9] = [0x0000, 0x64AF, 0x11B0];
+        clut
+    }
+
+    /// Whether the representable entries match the default 4-bit GWorld
+    /// CTable. Callers may carry inherited colors above index 15 because
+    /// `read_ctab_handle_clut` overlays short CTables on the logical table.
+    pub(crate) fn uses_standard_mac_4bpp_gworld_clut(clut: &[[u16; 3]; 256]) -> bool {
+        let standard = Self::standard_mac_4bpp_gworld_clut();
+        clut[..16] == standard[..16]
+    }
+
+    /// System 7.5.3's `MakeITable` result for the default 4-bit GWorld
+    /// CTable at the default resolution of four bits per RGB component.
+    /// Each hexadecimal nibble is one of the 4-bit destination indices.
+    ///
+    /// Color Manager inverse tables use ROM propagation and tie-breaking,
+    /// not a fresh Euclidean nearest-color search. Keeping this oracle exact
+    /// preserves `Color2Index`, `CopyBits`, and `DrawPicture` results.
+    ///
+    /// Inside Macintosh Volume V, pp. V-137 and V-142
+    pub(crate) fn standard_mac_4bpp_gworld_itable() -> &'static [u8; 4096] {
+        const NIBBLES: &str = concat!(
+            "fffffff666666666fffffff666666666fffffff666666666f999eeee666666669999eeeee6666666999999999666667799999999997777779999999997777777",
+            "99999999777777778888888777777777888888877777777788888888777777778888888877777777888888887777777788888888777777778888888877777777",
+            "fffffff555566666fffffff555566666ffffeee555566666f99eeeee55566666999eeeeee55666669999eeeee5566677999999999957777799999999d7777777",
+            "8888888dd77777778888888877777777888888887777777788888888877777778888888887777777888888888777777788888888877777778888888887777777",
+            "ffffff5555556666ffffee5555556666aaaeeee555556666a9eeeeee5555666699eeeeeee5556666999eeeeee55566779999eeeed55577779999eeeddd577777",
+            "8888eedddd7777778888888dd7777777888888887777777788888888877777778888888887777777888888888777777788888888877777778888888887777777",
+            "ffffe55555555666aaaeee5555555666aaaeeee555555666aaeeeeee55555666aeeeeeeee555566699eeeeeee5555677999eeeeed5555777999eeeeddd557777",
+            "888eeeddddd777778888eedddd7777778888888dd777777788888888d777777788888888d777777788888888d777777788888888d777777788888888d7777777",
+            "aaaee55555555555aaaeee5555555555aaaeeee555555555aaeeeeee55555555aeeeeeeee5555555aeeeeeeee555555599eeeeeed555557799eeeeeddd555777",
+            "88eeeedddddd7777888eeeddddd777778888eedddd7777778888888ddd7777778888888ddd7777778888888ddd7777778888888ddd7777778888888ddd777777",
+            "aaaae55555555555aaaaee5555555555aaaaeee555555555aaaeeeee55555555aaeeeeeee5555555aaeeeeeed5555555a9eeeeeddd555577a9bbeeddddddd777",
+            "a8bbedddddddd777888beddddddd77778888edddddd77777888888ddddd77777888888ddddccc777888888ddddccc777888888ddddccc777888888ddddccc770",
+            "aaaae55555555555aaaaee5555555555aaaaeee555555555aaaeeeee55555555aaeeeeeed5555555aaeeeeeddd555555a9bbeedddddddd77abbbbbdddddddd77",
+            "abbbbddddddddd7788bbbdddddddd777888bbddddddd777788888ddddddcc77788888dddddcccc7788888dddddcccc7788888dddddcccc7018888dddddcccc00",
+            "aaaae55555555555aaaaee5555555555aaaaeee555555555aaaeeeedd5555555aaeeeeeddd555555aabbeeddddddddddabbbbbddddddddddbbbbbbdddddddddd",
+            "bbbbbdddddddddddbbbbbddddddddd7788bbbdddddddc777888bbddddddccc77888bbdddddcccccc888bbdddddcccccc188bbdddddccccc0111bbdddddcccc00",
+            "3333e55555555555aaaaee5555555555aaaaeeddd5555555aaabeedddd555555aabbeeddddddddddabbbbbddddddddddbbbbbbddddddddddbbbbbbdddddddddd",
+            "bbbbbdddddddddddbbbbbdddddddddddbbbbbdddddddcc7788bbbddddddccccc88bbbdddddcccccc18bbbdddddcccccc11bbbdddddccccc0111bbdddddcccc00",
+            "3333334445555555333bbb4445555555aaabbbbdd5555555aabbbbbddd555555abbbbbbdddddddddbbbbbbbdddddddddbbbbbbbdddddddddbbbbbbbddddddddd",
+            "bbbbbbddddddddddbbbbbbddddddccccbbbbbbdddddcccccbbbbbbddddccccccbbbbbbdddccccccc1bbbbbdddccccccc11bbbbdddcccccc0111bbbdddccccc00",
+            "33333344445555553333334444555555333bbb444455555533bbbbbddd5555552bbbbbbdddddcccc2bbbbbbdddddcccc2bbbbbbdddddccccbbbbbbbdddddcccc",
+            "bbbbbbddddddccccbbbbbbdddddcccccbbbbbbddddccccccbbbbbbdddccccccc1bbbbbcccccccccc11bbbbcccccccccc111bbbccccccccc01111111ccccccc00",
+            "333333444444444433333344444444443333334444444444333bbb444444cccc22bbbbbddddccccc22bbbbbddddccccc22bbbbbddddccccc2bbbbbbddddccccc",
+            "2bbbbbdddddccccc2bbbbbddddcccccc2bbbbbdddccccccc1bbbbbcccccccccc11bbbccccccccccc111bbccccccccccc111111ccccccccc01111111ccccccc00",
+            "333333444444444433333344444444443333334444444444333333444444cccc222bbb44444ccccc222bbbbdddcccccc222bbbbdddcccccc22bbbbbdddcccccc",
+            "22bbbbddddcccccc22bbbbdddccccccc22bbbbcccccccccc11bbbccccccccccc111bcccccccccccc11111ccccccccccc111111ccccccccc01111111ccccccc00",
+            "3333334444444444333333444444444433333344444444443333334444444444222222444444cccc22222224444ccccc2222222dddcccccc222bbbbdddcccccc",
+            "222bbbddddcccccc222bbbdddccccccc222bbbcccccccccc111bbccccccccccc11111ccccccccccc111111ccccccccc01111111ccccccc0011111111ccccc000",
+            "33333444444444443333344444444444333334444444444422222444444444442222224444444440222222244444ccc022222222444cccc02222222dddccccc0",
+            "222222ddddccccc0222222dddcccccc0222222ccccccccc0111111ccccccccc0111111ccccccccc01111111ccccccc0011111111ccccc0001111111100000000",
+            "333344444444444433334444444444442222444444444444222224444444444422222244444444402222222444444400222222224444cc0022222222444ccc00",
+            "2222222dddcccc002222222ddccccc002222222ccccccc001111111ccccccc001111111ccccccc0011111111ccccc00011111111000000001111111100000000",
+        );
+
+        static TABLE: OnceLock<[u8; 4096]> = OnceLock::new();
+        TABLE.get_or_init(|| {
+            debug_assert_eq!(NIBBLES.len(), 4096);
+            let mut table = [0u8; 4096];
+            for (slot, byte) in table.iter_mut().zip(NIBBLES.bytes()) {
+                *slot = match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte - b'a' + 10,
+                    _ => unreachable!("inverse-table oracle contains only hexadecimal nibbles"),
+                };
+            }
+            table
+        })
+    }
+
+    /// Match an RGB color through the default 4-bit GWorld inverse table.
+    /// Color2Index returns exact CTable entries before consulting the
+    /// quantized inverse-table cell.
+    pub(crate) fn standard_mac_4bpp_gworld_color2index(r: u16, g: u16, b: u16) -> u8 {
+        let clut = Self::standard_mac_4bpp_gworld_clut();
+        if let Some(index) = clut[..16].iter().position(|entry| *entry == [r, g, b]) {
+            return index as u8;
+        }
+        let cell = (usize::from(r >> 12) << 8) | (usize::from(g >> 12) << 4) | usize::from(b >> 12);
+        Self::standard_mac_4bpp_gworld_itable()[cell]
+    }
+
     /// 4-bit-per-channel inverse table (16x16x16 = 4096 cells) precomputed
     /// from `standard_mac_8bpp_clut`. Each cell holds the CLUT index
     /// whose entry is closest (by Euclidean distance in 16-bit RGB) to

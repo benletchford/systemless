@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.11](https://github.com/benletchford/systemless/compare/v0.9.10...v0.9.11) (2026-07-30)
+
+
+### Bug Fixes
+
+* match ROM color mapping for standard 4-bit GWorlds ([aaaf689](https://github.com/benletchford/systemless/commit/aaaf6891241f69fe7cbf9b968e320cf7845fb211))
+
 ## [0.9.10](https://github.com/benletchford/systemless/compare/v0.9.9...v0.9.10) (2026-07-30)
 
 

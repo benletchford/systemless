@@ -3980,6 +3980,19 @@ fn build_src_to_dst_table_uncached(
     device_clut: &[[u16; 3]; 256],
 ) -> [u8; 256] {
     let mut table = [0u8; 256];
+    if super::dispatch::TrapDispatcher::uses_standard_mac_4bpp_gworld_clut(device_clut)
+        && device_clut[16..]
+            .iter()
+            .all(|entry| *entry == device_clut[15])
+    {
+        for (index, entry) in src_clut.iter().take(256).enumerate() {
+            table[index] =
+                super::dispatch::TrapDispatcher::standard_mac_4bpp_gworld_color2index(
+                    entry[0], entry[1], entry[2],
+                );
+        }
+        return table;
+    }
     if should_preserve_source_palette_indices(src_clut, device_clut) {
         for (i, slot) in table.iter_mut().enumerate() {
             *slot = i as u8;
@@ -6187,6 +6200,37 @@ mod tests {
         let table = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(table[71], 71);
+    }
+
+    #[test]
+    fn standard_eight_bit_colors_use_rom_four_bit_color2index_mapping() {
+        let src = TrapDispatcher::standard_mac_8bpp_clut();
+        let mut dst = TrapDispatcher::standard_mac_4bpp_gworld_clut();
+        let terminal = dst[15];
+        dst[16..].fill(terminal);
+
+        let table = build_src_to_dst_table(&src, &dst);
+
+        for (source, destination) in [
+            (0, 0),
+            (1, 0),
+            (7, 12),
+            (16, 2),
+            (42, 12),
+            (64, 3),
+            (128, 13),
+            (214, 15),
+            (215, 3),
+            (225, 8),
+            (235, 6),
+            (245, 0),
+            (255, 15),
+        ] {
+            assert_eq!(
+                table[source], destination,
+                "standard 8-bit source index {source}"
+            );
+        }
     }
 
     #[test]
