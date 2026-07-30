@@ -3141,8 +3141,11 @@ impl super::TrapDispatcher {
                 let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
                 let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let dst_clut =
-                    (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
+                let dst_clut = self.read_indexed_destination_clut(
+                    bus,
+                    dst_ctab_handle,
+                    dst_info.pixel_size,
+                );
                 let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
                 // Executor's translation gate compares the source PixMap's
                 // CTab seed against `CTAB_SEED(PIXMAP_TABLE(GD_PMAP(the_gd)))` —
@@ -3290,7 +3293,7 @@ impl super::TrapDispatcher {
                     == dst_info.pixel_size
                     && self.explicit_palette_ctabs.contains(&src_info.ctab_handle);
                 let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
-                    && dst_info.pixel_size == 8
+                    && matches!(dst_info.pixel_size, 2 | 4 | 8)
                     && src_info.ctab_handle != dst_info.ctab_handle
                     && (src_info.pixel_size != dst_info.pixel_size
                         || (matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
@@ -13451,8 +13454,11 @@ impl super::TrapDispatcher {
                     self.copy_bits_destination_ctab_handle(bus, self.current_port, &dst_info);
                 let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let dst_clut =
-                    (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
+                let dst_clut = self.read_indexed_destination_clut(
+                    bus,
+                    dst_ctab_handle,
+                    dst_info.pixel_size,
+                );
                 let palette_translation = match (src_clut.as_ref(), dst_clut.as_ref()) {
                     (Some(src_clut), Some(dst_clut)) if src_clut != dst_clut => Some(
                         self.build_palette_translation(bus, src_clut, dst_clut, dst_ctab_handle),
@@ -16054,6 +16060,24 @@ impl super::TrapDispatcher {
         clut
     }
 
+    fn read_indexed_destination_clut(
+        &self,
+        bus: &MacMemoryBus,
+        ctab_handle: u32,
+        pixel_size: u32,
+    ) -> Option<[[u16; 3]; 256]> {
+        if !matches!(pixel_size, 2 | 4 | 8) {
+            return None;
+        }
+        let mut clut = self.read_port_clut(bus, ctab_handle);
+        if pixel_size < 8 {
+            let entry_count = 1usize << pixel_size;
+            let terminal = clut[entry_count - 1];
+            clut[entry_count..].fill(terminal);
+        }
+        Some(clut)
+    }
+
     pub(super) fn read_ctab_handle_clut(
         &self,
         bus: &MacMemoryBus,
@@ -18280,13 +18304,13 @@ impl super::TrapDispatcher {
         let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
             .then(|| self.read_port_clut(bus, src_info.ctab_handle));
         let dst_clut =
-            (dst_info.pixel_size == 8).then(|| self.read_port_clut(bus, dst_ctab_handle));
+            self.read_indexed_destination_clut(bus, dst_ctab_handle, dst_info.pixel_size);
         let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
         let dst_ctab_seed = Self::ctab_seed(bus, dst_ctab_handle);
         let hardware_palette_active =
             dst_ctab_handle == 0 && self.device_clut != self.color_manager_clut;
         let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
-            && dst_info.pixel_size == 8
+            && matches!(dst_info.pixel_size, 2 | 4 | 8)
             && src_info.ctab_handle != dst_info.ctab_handle
             && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
             && src_ctab_seed != dst_ctab_seed
@@ -30994,6 +31018,157 @@ mod tests {
                 0, 255, 255, 255,
             ],
             "8bpp srcOr should render bracket strokes through the foreground color without copying the source rectangle's white background"
+        );
+    }
+
+    #[test]
+    fn copy_bits_4bpp_srcor_uses_color_tables_and_preserves_white_source() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.fg_color = (0, 0, 0);
+        d.bg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        let src_pixmap = 0x306100u32;
+        let dst_pixmap = 0x306200u32;
+        let src_base = 0x307000u32;
+        let dst_base = 0x308000u32;
+        let src_ctab_handle = 0x309000u32;
+        let dst_ctab_handle = 0x30A000u32;
+        let src_rect = 0x30B000u32;
+        let dst_rect = 0x30B010u32;
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[
+                (0, 0xFFFF, 0xFFFF, 0xFFFF),
+                (15, 0x0000, 0x0000, 0x0000),
+            ],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[
+                (0, 0xFFFF, 0xFFFF, 0xFFFF),
+                (13, 0x8000, 0x8000, 0x8000),
+                (15, 0x0000, 0x0000, 0x0000),
+            ],
+        );
+        write_pixmap_indexed(
+            &mut bus,
+            src_pixmap,
+            src_base,
+            1,
+            2,
+            1,
+            4,
+            src_ctab_handle,
+        );
+        write_pixmap_indexed(
+            &mut bus,
+            dst_pixmap,
+            dst_base,
+            1,
+            2,
+            1,
+            4,
+            dst_ctab_handle,
+        );
+        bus.write_byte(src_base, 0x0F);
+        bus.write_byte(dst_base, 0xDD);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 1u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(dst_base),
+            0xDF,
+            "4bpp srcOr should preserve white source pixels and apply black through the destination CTable"
+        );
+    }
+
+    #[test]
+    fn copy_bits_4bpp_transparent_translates_visible_source_colors() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.fg_color = (0, 0, 0);
+        d.bg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        let src_pixmap = 0x306100u32;
+        let dst_pixmap = 0x306200u32;
+        let src_base = 0x307000u32;
+        let dst_base = 0x308000u32;
+        let src_ctab_handle = 0x309000u32;
+        let dst_ctab_handle = 0x30A000u32;
+        let src_rect = 0x30B000u32;
+        let dst_rect = 0x30B010u32;
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[
+                (0, 0xFFFF, 0xFFFF, 0xFFFF),
+                (3, 0x8000, 0x8000, 0x8000),
+            ],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[
+                (0, 0xFFFF, 0xFFFF, 0xFFFF),
+                (10, 0x4000, 0x4000, 0x4000),
+                (13, 0x8000, 0x8000, 0x8000),
+                (15, 0x0000, 0x0000, 0x0000),
+            ],
+        );
+        write_pixmap_indexed(
+            &mut bus,
+            src_pixmap,
+            src_base,
+            1,
+            2,
+            1,
+            4,
+            src_ctab_handle,
+        );
+        write_pixmap_indexed(
+            &mut bus,
+            dst_pixmap,
+            dst_base,
+            1,
+            2,
+            1,
+            4,
+            dst_ctab_handle,
+        );
+        bus.write_byte(src_base, 0x03);
+        bus.write_byte(dst_base, 0xAA);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 36u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(dst_base),
+            0xAD,
+            "4bpp transparent CopyBits should preserve the matte pixel and translate the visible pixel through both ColorTables"
         );
     }
 
