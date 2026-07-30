@@ -1702,6 +1702,10 @@ pub struct TrapDispatcher {
     pub(crate) window_palettes: HashMap<u32, (u32, i16)>,
     /// Palette update flags keyed by PaletteHandle.
     pub(crate) palette_updates: HashMap<u32, i16>,
+    /// Color tables produced from palettes whose entries are all pmExplicit.
+    /// Their pixel values are literal device indices, so indexed CopyBits
+    /// must preserve those values instead of color-matching duplicate RGBs.
+    pub(crate) explicit_palette_ctabs: HashSet<u32>,
     /// Printing Manager error code surfaced by `PrError` and set by
     /// `PrSetError`. Inside Macintosh Volume II 1985, p. II-161;
     /// Inside Macintosh Volume V 1986, p. V-408.
@@ -2966,6 +2970,7 @@ impl TrapDispatcher {
             recent_resource_ctable_fetch: None,
             window_palettes: HashMap::new(),
             palette_updates: HashMap::new(),
+            explicit_palette_ctabs: HashSet::new(),
             printing_error: 0,
             next_ct_seed: 1,
             fill_black_override: None,
