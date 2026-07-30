@@ -5007,8 +5007,24 @@ impl super::TrapDispatcher {
 
     // ========== Dialog Drawing Helpers ==========
 
+    fn packed_row_byte_bounds(
+        left: i16,
+        right: i16,
+        row_bytes: u32,
+        pixel_size: u16,
+    ) -> Option<(u32, u32, u32)> {
+        if !matches!(pixel_size, 1 | 2 | 4) || right <= 0 {
+            return None;
+        }
+        let pixels_per_byte = 8 / u32::from(pixel_size);
+        let byte_left = (left.max(0) as u32) / pixels_per_byte;
+        let byte_right = (right.max(0) as u32).div_ceil(pixels_per_byte);
+        let byte_end = byte_right.min(row_bytes);
+        (byte_left < byte_end).then_some((byte_left, byte_end, pixels_per_byte))
+    }
+
     /// Save framebuffer pixels under a dialog region (including shadow).
-    /// Supports both 1bpp and 8bpp modes.
+    /// Supports indexed 1/2/4/8bpp modes.
     pub(crate) fn save_dialog_pixels(
         &self,
         bus: &MacMemoryBus,
@@ -5051,18 +5067,17 @@ impl super::TrapDispatcher {
                     saved.resize(saved.len() + row_width, 0);
                 }
             } else if y_on_screen {
-                let byte_left = (save_left.max(0) as u32) / 8;
-                let byte_right = (save_right as u32).div_ceil(8);
-                let bx_end = byte_right.min(row_bytes);
-                if byte_left < bx_end {
-                    let len = (bx_end - byte_left) as usize;
+                if let Some((byte_left, byte_end, _)) =
+                    Self::packed_row_byte_bounds(save_left, save_right, row_bytes, pixel_size)
+                {
+                    let len = (byte_end - byte_left) as usize;
                     let start = saved.len();
                     saved.resize(start + len, 0);
                     let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
                     bus.read_bytes_into(row_addr, &mut saved[start..start + len]);
                 }
             }
-            // 1bpp off-screen row: silently produces nothing — the
+            // Packed off-screen row: silently produces nothing — the
             // byte_left < bx_end check + row_count-based saved.len tracking
             // tolerates short rows.
         }
@@ -5192,16 +5207,12 @@ impl super::TrapDispatcher {
                     saved[saved_offset..saved_offset + len].copy_from_slice(&row);
                 }
             }
-            1 => {
-                if save_right <= 0 {
+            1 | 2 | 4 => {
+                let Some((byte_left, byte_end, pixels_per_byte)) =
+                    Self::packed_row_byte_bounds(save_left, save_right, row_bytes, pixel_size)
+                else {
                     return;
-                }
-                let byte_left = (save_left.max(0) as u32) / 8;
-                let byte_right = (save_right as u32).div_ceil(8);
-                let byte_end = byte_right.min(row_bytes);
-                if byte_left >= byte_end {
-                    return;
-                }
+                };
                 let row_len = (byte_end - byte_left) as usize;
                 let first_saved_row = save_top.max(0);
                 let top = intersection.0.max(0);
@@ -5220,20 +5231,17 @@ impl super::TrapDispatcher {
                         return;
                     }
                     for x in left..right {
-                        let byte_x = (x as u32) / 8;
+                        let byte_x = (x as u32) / pixels_per_byte;
                         if byte_x < byte_left || byte_x >= byte_end {
                             continue;
                         }
-                        let bit = 7 - ((x as u32) & 7);
-                        let mask = 1u8 << bit;
+                        let pixel_slot = (x as u32) % pixels_per_byte;
+                        let shift = 8 - u32::from(pixel_size) - pixel_slot * u32::from(pixel_size);
+                        let mask = ((1u8 << pixel_size) - 1) << shift;
                         let screen_byte =
                             bus.read_byte(screen_base + (y as u32) * row_bytes + byte_x);
                         let saved_idx = row_offset + (byte_x - byte_left) as usize;
-                        if (screen_byte & mask) != 0 {
-                            saved[saved_idx] |= mask;
-                        } else {
-                            saved[saved_idx] &= !mask;
-                        }
+                        saved[saved_idx] = (saved[saved_idx] & !mask) | (screen_byte & mask);
                     }
                 }
             }
@@ -5280,17 +5288,16 @@ impl super::TrapDispatcher {
                     idx += row_width.min(saved.len() - idx);
                 }
             } else if y_on_screen {
-                let byte_left = (save_left.max(0) as u32) / 8;
-                let byte_right = (save_right as u32).div_ceil(8);
-                let bx_end = byte_right.min(row_bytes);
-                if byte_left < bx_end {
-                    let len = (bx_end - byte_left) as usize;
+                if let Some((byte_left, byte_end, _)) =
+                    Self::packed_row_byte_bounds(save_left, save_right, row_bytes, pixel_size)
+                {
+                    let len = (byte_end - byte_left) as usize;
                     if idx + len <= saved.len() {
                         let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
                         bus.write_bytes(row_addr, &saved[idx..idx + len]);
                         idx += len;
                     } else {
-                        for bx in byte_left..bx_end {
+                        for bx in byte_left..byte_end {
                             if idx < saved.len() {
                                 bus.write_byte(
                                     screen_base + (y as u32) * row_bytes + bx,
@@ -5302,7 +5309,7 @@ impl super::TrapDispatcher {
                     }
                 }
             }
-            // 1bpp off-screen: save produced no bytes for this row,
+            // Packed off-screen: save produced no bytes for this row,
             // so there's nothing to advance idx over here.
         }
     }
@@ -5347,17 +5354,16 @@ impl super::TrapDispatcher {
                     idx += row_width.min(saved.len().saturating_sub(idx));
                 }
             } else if y_on_screen {
-                let byte_left = (save_left.max(0) as u32) / 8;
-                let byte_right = (save_right as u32).div_ceil(8);
-                let bx_end = byte_right.min(row_bytes);
-                if byte_left < bx_end {
-                    for bx in byte_left..bx_end {
+                if let Some((byte_left, byte_end, pixels_per_byte)) =
+                    Self::packed_row_byte_bounds(save_left, save_right, row_bytes, pixel_size)
+                {
+                    for bx in byte_left..byte_end {
                         if idx >= saved.len() {
                             break;
                         }
                         let mut restore_mask = 0u8;
-                        for bit in 0..8u32 {
-                            let x = (bx * 8 + bit) as i16;
+                        for pixel_slot in 0..pixels_per_byte {
+                            let x = (bx * pixels_per_byte + pixel_slot) as i16;
                             if x >= save_left
                                 && x < save_right
                                 && (y < keep_rect.0
@@ -5365,7 +5371,9 @@ impl super::TrapDispatcher {
                                     || x < keep_rect.1
                                     || x >= keep_rect.3)
                             {
-                                restore_mask |= 0x80 >> bit;
+                                let shift =
+                                    8 - u32::from(pixel_size) - pixel_slot * u32::from(pixel_size);
+                                restore_mask |= ((1u8 << pixel_size) - 1) << shift;
                             }
                         }
                         if restore_mask != 0 {
@@ -5413,11 +5421,10 @@ impl super::TrapDispatcher {
                     saved.resize(saved.len() + row_width, 0);
                 }
             } else if y_on_screen {
-                let byte_left = (left.max(0) as u32) / 8;
-                let byte_right = (right.max(0) as u32).div_ceil(8);
-                let bx_end = byte_right.min(row_bytes);
-                if byte_left < bx_end {
-                    let len = (bx_end - byte_left) as usize;
+                if let Some((byte_left, byte_end, _)) =
+                    Self::packed_row_byte_bounds(left, right, row_bytes, pixel_size)
+                {
+                    let len = (byte_end - byte_left) as usize;
                     let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
                     saved.extend_from_slice(&bus.read_bytes(row_addr, len));
                 }
@@ -5625,17 +5632,16 @@ impl super::TrapDispatcher {
                     idx = (idx + row_width).min(saved.len());
                 }
             } else if y_on_screen {
-                let byte_left = (left.max(0) as u32) / 8;
-                let byte_right = (right.max(0) as u32).div_ceil(8);
-                let bx_end = byte_right.min(row_bytes);
-                if byte_left < bx_end {
-                    let len = (bx_end - byte_left) as usize;
+                if let Some((byte_left, byte_end, _)) =
+                    Self::packed_row_byte_bounds(left, right, row_bytes, pixel_size)
+                {
+                    let len = (byte_end - byte_left) as usize;
                     if idx + len <= saved.len() {
                         let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
                         bus.write_bytes(row_addr, &saved[idx..idx + len]);
                         idx += len;
                     } else {
-                        for bx in byte_left..bx_end {
+                        for bx in byte_left..byte_end {
                             if idx < saved.len() {
                                 bus.write_byte(
                                     screen_base + (y as u32) * row_bytes + bx,
@@ -17497,6 +17503,54 @@ mod tests {
                 px, 0x42,
                 "on-screen pixel at col {} must round-trip via framebuffer",
                 col
+            );
+        }
+    }
+
+    #[test]
+    fn dialog_snapshot_round_trips_complete_packed_indexed_rows() {
+        for pixel_size in [2u16, 4] {
+            let (disp, _cpu, mut bus) = setup();
+            let row_bytes = 800 * u32::from(pixel_size) / 8;
+            let screen_base = bus.alloc(row_bytes * 600);
+            let mut d = disp;
+            bus.write_long(0x0824, screen_base);
+            d.screen_mode = (screen_base, row_bytes, 800, 600, pixel_size);
+
+            // Including the dBox margin gives x=72..728. Treating every
+            // non-8bpp screen as 1bpp captured only a fraction of each row
+            // and replayed a stale strip over the left side of the content.
+            let bounds = (100, 80, 500, 720);
+            let save_top = 92u32;
+            let save_bottom = 508u32;
+            let pixels_per_byte = 8 / u32::from(pixel_size);
+            let byte_left = 72 / pixels_per_byte;
+            let byte_end = 728u32.div_ceil(pixels_per_byte);
+            for y in save_top..save_bottom {
+                for byte_x in byte_left..byte_end {
+                    let value = ((y.wrapping_mul(13) + byte_x.wrapping_mul(7)) & 0xFF) as u8;
+                    bus.write_byte(screen_base + y * row_bytes + byte_x, value);
+                }
+            }
+
+            let expected = d.save_dialog_pixels(&bus, bounds);
+            assert_eq!(
+                expected.len(),
+                ((save_bottom - save_top) * (byte_end - byte_left)) as usize
+            );
+
+            for y in save_top..save_bottom {
+                bus.write_bytes(
+                    screen_base + y * row_bytes + byte_left,
+                    &vec![0; (byte_end - byte_left) as usize],
+                );
+            }
+            d.restore_dialog_pixels(&mut bus, bounds, &expected);
+
+            assert_eq!(
+                d.save_dialog_pixels(&bus, bounds),
+                expected,
+                "retained {pixel_size}bpp dialog snapshots must restore every packed pixel row"
             );
         }
     }
