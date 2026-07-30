@@ -5169,15 +5169,32 @@ impl super::TrapDispatcher {
         bounds: (i16, i16, i16, i16),
         screen_rect: (i16, i16, i16, i16),
     ) {
+        let screen_params = self.get_screen_params();
+        let Some(saved) = self.dialog_saved_pixels.get_mut(&dialog_ptr) else {
+            return;
+        };
+        Self::refresh_saved_pixel_buffer_after_screen_draw(
+            bus,
+            screen_params,
+            bounds,
+            screen_rect,
+            saved,
+        );
+    }
+
+    fn refresh_saved_pixel_buffer_after_screen_draw(
+        bus: &MacMemoryBus,
+        screen_params: (u32, u32, i16, i16, u16),
+        bounds: (i16, i16, i16, i16),
+        screen_rect: (i16, i16, i16, i16),
+        saved: &mut [u8],
+    ) {
         let save_rect = Self::dialog_saved_pixel_rect(bounds);
         let Some(intersection) = Self::rect_intersection(save_rect, screen_rect) else {
             return;
         };
 
-        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = self.get_screen_params();
-        let Some(saved) = self.dialog_saved_pixels.get_mut(&dialog_ptr) else {
-            return;
-        };
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = screen_params;
         let (save_top, save_left, save_bottom, save_right) = save_rect;
         let row_width = save_right.saturating_sub(save_left) as usize;
         let row_count = save_bottom.saturating_sub(save_top) as usize;
@@ -6628,6 +6645,48 @@ impl super::TrapDispatcher {
         let pixels = self.save_dialog_pixels(bus, bounds);
         self.dialog_visible_snapshots
             .insert(port, PersistentDialogSnapshot { bounds, pixels });
+    }
+
+    pub(crate) fn refresh_visible_dialog_snapshot_region_for_port(
+        &mut self,
+        bus: &MacMemoryBus,
+        port: u32,
+        screen_rect: (i16, i16, i16, i16),
+    ) {
+        if port == 0 || screen_rect.0 >= screen_rect.2 || screen_rect.1 >= screen_rect.3 {
+            return;
+        }
+        let Some(bounds) = self
+            .dialog_visible_snapshots
+            .get(&port)
+            .map(|snapshot| snapshot.bounds)
+            .or_else(|| {
+                if self.dialog_items.contains_key(&port) && self.window_visible(bus, port) {
+                    Some(Self::dialog_screen_bounds(bus, port))
+                } else {
+                    None
+                }
+            })
+        else {
+            return;
+        };
+
+        let screen_params = self.get_screen_params();
+        if let Some(snapshot) = self.dialog_visible_snapshots.get_mut(&port) {
+            Self::refresh_saved_pixel_buffer_after_screen_draw(
+                bus,
+                screen_params,
+                bounds,
+                screen_rect,
+                &mut snapshot.pixels,
+            );
+        } else {
+            // The first authoritative draw still needs a complete baseline;
+            // later draws can update only the pixels they touched.
+            let pixels = self.save_dialog_pixels(bus, bounds);
+            self.dialog_visible_snapshots
+                .insert(port, PersistentDialogSnapshot { bounds, pixels });
+        }
     }
 
     pub(crate) fn refresh_visible_dialog_snapshot_after_bulk_port_draw(
