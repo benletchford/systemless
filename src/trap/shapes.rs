@@ -1109,13 +1109,14 @@ impl super::TrapDispatcher {
             let right = bus.read_word(port.wrapping_add(14)) as i16;
             // Generic safety net: a basic GrafPort (port_version & 0xC000
             // == 0) is implicitly 1bpp by Mac OS convention. But if `base`
-            // happens to point at an 8bpp screen, per-bit set/clear into
-            // screen bytes corrupts 8bpp pixels. Inside Macintosh V-122:
+            // happens to point at an indexed color screen, per-bit set/clear
+            // into screen bytes corrupts packed pixels. Inside Macintosh V-122:
             // on a color screen, all GrafPorts displayed at the screen
             // base must use the screen's depth.
             let (screen_base_addr, screen_rb, _, _, screen_ps) = self.screen_mode;
-            if screen_ps == 8 && base == screen_base_addr && row_bytes == screen_rb {
-                (base, row_bytes, 8u16, top, left, bottom, right)
+            if matches!(screen_ps, 2 | 4 | 8) && base == screen_base_addr && row_bytes == screen_rb
+            {
+                (base, row_bytes, screen_ps, top, left, bottom, right)
             } else {
                 (base, row_bytes, 1u16, top, left, bottom, right)
             }
@@ -1298,7 +1299,7 @@ impl super::TrapDispatcher {
         // Designing Cards and Drivers 3rd Ed. 1992, p. 245-248
         let fg_idx;
         let bg_idx;
-        if pixel_size == 8 && is_color {
+        if matches!(pixel_size, 2 | 4 | 8) && is_color {
             let pix_map_handle = bus.read_long(port.wrapping_add(2));
             let port_ctab_handle = if pix_map_handle != 0 {
                 let pix_map_ptr = bus.read_long(pix_map_handle);
@@ -1401,43 +1402,44 @@ impl super::TrapDispatcher {
         // (Bayer-dither path superseded the blend) but kept for a future
         // smarter blend path.
         #[allow(unused_variables)]
-        let glyph_clut = if pixel_size == 8 && is_color && matches!(op, ShapeOp::Glyph(_)) {
-            let pix_map_handle = bus.read_long(port.wrapping_add(2));
-            let port_ctab_handle = if pix_map_handle != 0 {
-                let pix_map_ptr = bus.read_long(pix_map_handle);
-                if pix_map_ptr != 0 {
-                    bus.read_long(pix_map_ptr + 42)
+        let glyph_clut =
+            if matches!(pixel_size, 2 | 4 | 8) && is_color && matches!(op, ShapeOp::Glyph(_)) {
+                let pix_map_handle = bus.read_long(port.wrapping_add(2));
+                let port_ctab_handle = if pix_map_handle != 0 {
+                    let pix_map_ptr = bus.read_long(pix_map_handle);
+                    if pix_map_ptr != 0 {
+                        bus.read_long(pix_map_ptr + 42)
+                    } else {
+                        0
+                    }
                 } else {
                     0
-                }
+                };
+                let is_screen_port = pix_base == self.screen_mode.0
+                    && pix_row_bytes == self.screen_mode.1
+                    && pixel_size == self.screen_mode.4;
+                let current_ctab_handle = if port == self.current_port {
+                    self.current_gdevice_ctab_handle(bus)
+                } else {
+                    0
+                };
+                let use_raw_current_ctab = current_ctab_handle != 0
+                    && ctab_uses_noncanonical_black(bus, current_ctab_handle);
+                let ctab_handle = if use_raw_current_ctab {
+                    current_ctab_handle
+                } else {
+                    port_ctab_handle
+                };
+                Some(if is_screen_port {
+                    self.device_clut
+                } else if use_raw_current_ctab {
+                    self.read_ctab_handle_clut(bus, ctab_handle)
+                } else {
+                    self.read_port_clut(bus, ctab_handle)
+                })
             } else {
-                0
+                None
             };
-            let is_screen_port = pix_base == self.screen_mode.0
-                && pix_row_bytes == self.screen_mode.1
-                && pixel_size == self.screen_mode.4;
-            let current_ctab_handle = if port == self.current_port {
-                self.current_gdevice_ctab_handle(bus)
-            } else {
-                0
-            };
-            let use_raw_current_ctab =
-                current_ctab_handle != 0 && ctab_uses_noncanonical_black(bus, current_ctab_handle);
-            let ctab_handle = if use_raw_current_ctab {
-                current_ctab_handle
-            } else {
-                port_ctab_handle
-            };
-            Some(if is_screen_port {
-                self.device_clut
-            } else if use_raw_current_ctab {
-                self.read_ctab_handle_clut(bus, ctab_handle)
-            } else {
-                self.read_port_clut(bus, ctab_handle)
-            })
-        } else {
-            None
-        };
 
         for y in r.top..r.bottom {
             if y < clip_top || y >= clip_bottom {
@@ -1538,6 +1540,49 @@ impl super::TrapDispatcher {
                             bus.write_byte(addr, invert_indexed_pixel(bus.read_byte(addr)))
                         }
                     }
+                } else if matches!(pixel_size, 2 | 4) {
+                    let bits = u32::from(pixel_size);
+                    let pixels_per_byte = 8 / bits;
+                    let byte_col = dx / pixels_per_byte;
+                    if byte_col >= pix_row_bytes {
+                        continue;
+                    }
+                    let shift = 8 - bits - (dx % pixels_per_byte) * bits;
+                    let index_mask = ((1u16 << pixel_size) - 1) as u8;
+                    let addr = pix_base + dy * pix_row_bytes + byte_col;
+                    let byte = bus.read_byte(addr);
+                    let old = (byte >> shift) & index_mask;
+                    let new = match op {
+                        ShapeOp::Paint | ShapeOp::Frame => {
+                            let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
+                                & (1 << (7 - x.rem_euclid(8)))
+                                != 0;
+                            apply_boolean_transfer_8(
+                                old,
+                                self.pn_mode,
+                                source_is_black,
+                                fg_idx,
+                                bg_idx,
+                            )
+                        }
+                        ShapeOp::Erase => {
+                            let source_is_black = effective_bk_pat[y.rem_euclid(8) as usize]
+                                & (1 << (7 - x.rem_euclid(8)))
+                                != 0;
+                            apply_boolean_transfer_8(old, 0, source_is_black, fg_idx, bg_idx)
+                        }
+                        ShapeOp::Fill(ref p) => {
+                            let source_is_black =
+                                p[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0;
+                            apply_boolean_transfer_8(old, 0, source_is_black, fg_idx, bg_idx)
+                        }
+                        ShapeOp::Glyph(mode) => {
+                            apply_boolean_transfer_8(old, mode, true, fg_idx, bg_idx)
+                        }
+                        ShapeOp::Invert => !old,
+                    } & index_mask;
+                    let field_mask = index_mask << shift;
+                    bus.write_byte(addr, (byte & !field_mask) | (new << shift));
                 } else if pixel_size == 32 {
                     let byte_offset = dy * pix_row_bytes + dx * 4;
                     if byte_offset + 4 > (dy + 1) * pix_row_bytes {

@@ -28510,6 +28510,35 @@ mod tests {
     }
 
     #[test]
+    fn test_fill_rect_basic_grafport_at_screen_writes_packed_4bpp() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(400 * 600);
+        bus.write_long(0x0824, screen_base);
+        d.screen_mode = (screen_base, 400, 800, 600, 4);
+
+        const PORT_PTR: u32 = 0x181000;
+        bus.write_long(PORT_PTR + 2, screen_base);
+        bus.write_word(PORT_PTR + 6, 400);
+
+        let pixel_addr = screen_base + 30 * 400 + 50;
+        bus.write_byte(pixel_addr, 0xAB);
+        let pat_ptr = 0x300000u32;
+        bus.write_bytes(pat_ptr, &[0xFF; 8]);
+        let rect_ptr = 0x300010u32;
+        write_rect(&mut bus, rect_ptr, 30, 100, 31, 101);
+        bus.write_long(TEST_SP, pat_ptr);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = d.dispatch_quickdraw(true, 0x0A5, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(pixel_addr),
+            0xFB,
+            "4bpp drawing must replace the target nibble and preserve its neighbor"
+        );
+    }
+
+    #[test]
     fn test_frame_oval() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let rect_ptr = 0x300000u32;
