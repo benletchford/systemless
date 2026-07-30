@@ -12,6 +12,12 @@ use super::globals::LowMemGlobals;
 
 const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
 const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
+// System 7.5.3 on the Quadra 650 leaves exception vector 0 pointing to
+// $40810000. A BasiliskII oracle capture of that ROM establishes the word at
+// offset 6 as $0372. Keep the shadow deliberately narrow: bytes outside this
+// witnessed range retain the bus's existing unmapped-zero behavior.
+const BOOT_ROM_SHADOW_BASE: u32 = 0x4081_0006;
+const BOOT_ROM_SHADOW: [u8; 2] = 0x0372u16.to_be_bytes();
 // Release-mode tracer for writes to a guest address range. Use to
 // localize the source of unexpected pixel writes in the framebuffer
 // or to any other narrow guest memory range. Format:
@@ -719,6 +725,12 @@ impl RamStorage {
 }
 
 impl MacMemoryBus {
+    #[inline]
+    fn boot_rom_shadow_byte(address: u32) -> Option<u8> {
+        let offset = address.checked_sub(BOOT_ROM_SHADOW_BASE)? as usize;
+        BOOT_ROM_SHADOW.get(offset).copied()
+    }
+
     pub(crate) fn allocation_bucket_size(size: u32) -> u32 {
         ((size + 3) & !3).max(4)
     }
@@ -1289,6 +1301,8 @@ impl MemoryBus for MacMemoryBus {
     fn read_byte(&self, address: u32) -> u8 {
         let v = if address < self.ram_size {
             self.ram.get_in_bounds(address as usize)
+        } else if let Some(value) = Self::boot_rom_shadow_byte(address) {
+            value
         } else {
             tracing::warn!("Read from unmapped address ${:08X}", address);
             0
@@ -1644,6 +1658,26 @@ mod tests {
     fn new_bus_publishes_default_screen_row_bytes() {
         let bus = MacMemoryBus::new(1024);
         assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 800);
+    }
+
+    #[test]
+    fn boot_rom_shadow_exposes_witnessed_vector_zero_word() {
+        let bus = MacMemoryBus::new(1024);
+
+        assert_eq!(bus.read_byte(0x4081_0006), 0x03);
+        assert_eq!(bus.read_byte(0x4081_0007), 0x72);
+        assert_eq!(bus.read_word(0x4081_0006), 0x0372);
+        assert_eq!(bus.read_byte(0x4081_0005), 0);
+        assert_eq!(bus.read_byte(0x4081_0008), 0);
+    }
+
+    #[test]
+    fn boot_rom_shadow_ignores_writes() {
+        let mut bus = MacMemoryBus::new(1024);
+
+        bus.write_word(0x4081_0006, 0xA55A);
+
+        assert_eq!(bus.read_word(0x4081_0006), 0x0372);
     }
 
     #[test]

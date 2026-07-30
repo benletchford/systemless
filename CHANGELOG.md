@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.14](https://github.com/benletchford/systemless/compare/v0.9.13...v0.9.14) (2026-07-30)
+
+
+### Bug Fixes
+
+* ignore stale ModalDialog filter results before callbacks ([c8846b9](https://github.com/benletchford/systemless/commit/c8846b9badb6e17b0058a9673b15eb01f27b21e0))
+* shadow witnessed boot ROM bytes ([d73a15f](https://github.com/benletchford/systemless/commit/d73a15fab08de68093a9544b8d21bbb75e8d34f2))
+
+
+### Performance Improvements
+
+* update retained dialog snapshots by damaged region ([22bfe1c](https://github.com/benletchford/systemless/commit/22bfe1cfc919de569f3cdcc29ec885acdca659a4))
+
 ## [0.9.13](https://github.com/benletchford/systemless/compare/v0.9.12...v0.9.13) (2026-07-30)
 
 
