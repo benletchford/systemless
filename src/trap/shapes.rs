@@ -108,7 +108,23 @@ fn trace_all_shapes_enabled() -> bool {
     *TRACE_ALL_SHAPES.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SHAPES_ALL").is_some())
 }
 
-fn shape_palette_index_for_rgb(rgb: [u16; 3], clut: &[[u16; 3]; 256]) -> u8 {
+fn shape_palette_index_for_rgb(
+    rgb: [u16; 3],
+    pixel_size: u16,
+    clut: &[[u16; 3]; 256],
+) -> u8 {
+    // Color QuickDraw maps RGB colors through the destination GDevice's
+    // inverse table. The default 4-bit NewGWorld table uses ROM propagation
+    // and tie-breaking, which can differ from a fresh Euclidean CLUT search.
+    //
+    // Inside Macintosh: Imaging With QuickDraw 1994, pp. 4-82 and 6-30
+    if pixel_size == 4
+        && super::dispatch::TrapDispatcher::uses_standard_mac_4bpp_gworld_clut(clut)
+    {
+        return super::dispatch::TrapDispatcher::standard_mac_4bpp_gworld_color2index(
+            rgb[0], rgb[1], rgb[2],
+        );
+    }
     super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], clut)
 }
 
@@ -1338,9 +1354,9 @@ impl super::TrapDispatcher {
                 self.read_port_clut(bus, ctab_handle)
             };
             let (r, g, b) = effective_fg_color;
-            fg_idx = shape_palette_index_for_rgb([r, g, b], &port_clut);
+            fg_idx = shape_palette_index_for_rgb([r, g, b], pixel_size, &port_clut);
             let (r, g, b) = effective_bg_color;
-            bg_idx = shape_palette_index_for_rgb([r, g, b], &port_clut);
+            bg_idx = shape_palette_index_for_rgb([r, g, b], pixel_size, &port_clut);
             if trace_dialog_text_enabled() && matches!(op, ShapeOp::Glyph(_)) {
                 eprintln!(
                     "[DIALOG-TEXT] Glyph colors port=${:08X} fgRGB=({:04X},{:04X},{:04X}) bgRGB=({:04X},{:04X},{:04X}) fgIdx={} bgIdx={}",
@@ -1722,8 +1738,32 @@ impl super::TrapDispatcher {
 mod tests {
     use super::{
         apply_boolean_transfer_1, apply_boolean_transfer_8, blend_rgb, fg_bg_low_contrast,
-        lighten_stem_alpha, normalize_boolean_transfer_mode,
+        lighten_stem_alpha, normalize_boolean_transfer_mode, shape_palette_index_for_rgb,
     };
+
+    #[test]
+    fn standard_4bit_gworld_shape_colors_use_the_rom_inverse_table() {
+        let clut = crate::trap::TrapDispatcher::standard_mac_4bpp_gworld_clut();
+
+        assert_eq!(
+            shape_palette_index_for_rgb([0x6666, 0xFFFF, 0xFFFF], 4, &clut),
+            0
+        );
+        assert_eq!(
+            crate::trap::pict::closest_clut_index(0x6666, 0xFFFF, 0xFFFF, &clut),
+            12
+        );
+    }
+
+    #[test]
+    fn non_4bit_shape_colors_keep_clut_nearest_matching() {
+        let clut = crate::trap::TrapDispatcher::standard_mac_4bpp_gworld_clut();
+
+        assert_eq!(
+            shape_palette_index_for_rgb([0x6666, 0xFFFF, 0xFFFF], 8, &clut),
+            12
+        );
+    }
 
     #[test]
     fn normalize_boolean_transfer_mode_accepts_pen_and_text_modes() {
