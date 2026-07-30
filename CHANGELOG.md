@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.13](https://github.com/benletchford/systemless/compare/v0.9.12...v0.9.13) (2026-07-30)
+
+
+### Bug Fixes
+
+* use ROM inverse tables for 4-bit RGB shapes ([d701e95](https://github.com/benletchford/systemless/commit/d701e95b9630d51bc7441077e0a29d54c88991e5))
+
 ## [0.9.12](https://github.com/benletchford/systemless/compare/v0.9.11...v0.9.12) (2026-07-30)
 
 
