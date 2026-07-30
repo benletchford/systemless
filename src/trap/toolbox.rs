@@ -733,6 +733,7 @@ impl super::TrapDispatcher {
     const ALIAS_KIND_FILE: u16 = 0;
     const ALIAS_KIND_FOLDER: u16 = 1;
     const ALIAS_EXTRA_PARENT_DIR_NAME: i16 = 0;
+    const ALIAS_EXTRA_FULL_PATH: i16 = 2;
     const ALIAS_EXTRA_END: i16 = -1;
 
     /// `kApplicationThreadID` from Threads.h — the thread the process
@@ -2656,6 +2657,73 @@ impl super::TrapDispatcher {
         let size = record.len().min(u16::MAX as usize) as u16;
         Self::alias_write_u16(&mut record, 4, size);
         record
+    }
+
+    fn build_minimal_alias_record_from_full_path(&self, full_path: &[u8]) -> Vec<u8> {
+        let path = decode_mac_roman(full_path);
+        let components: Vec<&str> = path
+            .split(':')
+            .filter(|component| !component.is_empty())
+            .collect();
+        let volume_name = components
+            .first()
+            .copied()
+            .unwrap_or(Self::boot_volume_name());
+        let target_name = components.last().copied().unwrap_or("");
+        let parent_name = components
+            .get(components.len().saturating_sub(2))
+            .copied()
+            .unwrap_or(volume_name);
+
+        // AliasRecord is deliberately opaque to applications. Populate the
+        // documented fixed fields which GetAliasInfo and the Alias Manager
+        // need even when no catalogue lookup is possible from a full path.
+        let mut record = vec![0; Self::ALIAS_RECORD_FIXED_SIZE];
+        Self::alias_write_u32(&mut record, 0, 0); // userType
+        Self::alias_write_u16(&mut record, 6, Self::ALIAS_RECORD_VERSION);
+        Self::alias_write_u16(&mut record, 8, Self::ALIAS_KIND_FILE);
+        Self::alias_write_pstring(&mut record, 10, 28, volume_name);
+        Self::alias_write_u16(&mut record, 42, 0x4244); // HFS volume signature 'BD'
+        Self::alias_write_u16(&mut record, 44, 0); // fixed hard disk
+        Self::alias_write_pstring(&mut record, 50, 64, target_name);
+        Self::alias_write_i16(&mut record, 130, -1); // no relative source file
+        Self::alias_write_i16(&mut record, 132, -1);
+        Self::append_alias_extra(
+            &mut record,
+            Self::ALIAS_EXTRA_PARENT_DIR_NAME,
+            &encode_mac_roman_lossy(parent_name),
+        );
+        Self::append_alias_extra(&mut record, Self::ALIAS_EXTRA_FULL_PATH, full_path);
+        Self::append_alias_extra(&mut record, Self::ALIAS_EXTRA_END, &[]);
+
+        let size = record.len().min(u16::MAX as usize) as u16;
+        Self::alias_write_u16(&mut record, 4, size);
+        record
+    }
+
+    fn alias_extra_data(
+        bus: &MacMemoryBus,
+        alias_data_ptr: u32,
+        wanted_kind: i16,
+    ) -> Option<Vec<u8>> {
+        let record_size = bus.read_word(alias_data_ptr + 4) as usize;
+        let mut offset = Self::ALIAS_RECORD_FIXED_SIZE;
+        while offset + 4 <= record_size {
+            let kind = bus.read_word(alias_data_ptr + offset as u32) as i16;
+            let length = bus.read_word(alias_data_ptr + offset as u32 + 2) as usize;
+            let data_offset = offset + 4;
+            if data_offset + length > record_size {
+                return None;
+            }
+            if kind == wanted_kind {
+                return Some(bus.read_bytes(alias_data_ptr + data_offset as u32, length));
+            }
+            if kind == Self::ALIAS_EXTRA_END {
+                break;
+            }
+            offset = data_offset + length + (length % 2);
+        }
+        None
     }
 
     fn alias_write_u16(record: &mut [u8], offset: usize, value: u16) {
@@ -12048,7 +12116,6 @@ impl super::TrapDispatcher {
             // Selector-based dispatcher for Alias Manager routines.
             // Selector in D0.
             // Inside Macintosh Volume VI, 9-17; Files 1992, 4-15
-            // AliasDispatch ($A823): Selector 0 = FindFolder; other selectors return paramErr.
             (true, 0x023) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
@@ -12120,6 +12187,115 @@ impl super::TrapDispatcher {
 
                         bus.write_word(sp + 12, 0); // noErr
                         cpu.write_reg(Register::A7, sp + 12);
+                    }
+                    // ResolveAlias (selector $0003)
+                    // FUNCTION ResolveAlias(fromFile: FSSpecPtr; alias: AliasHandle;
+                    //   VAR target: FSSpec; VAR wasChanged: Boolean): OSErr;
+                    // Universal Interfaces 2.0, Aliases.h
+                    // Stack (rightmost on top):
+                    //   SP+0:  wasChanged_ptr(4)  SP+4:  target_ptr(4)
+                    //   SP+8:  alias_handle(4)    SP+12: fromFile_ptr(4)
+                    //   SP+16: result(2)
+                    0x0003 => {
+                        let was_changed_ptr = bus.read_long(sp);
+                        let target_ptr = bus.read_long(sp + 4);
+                        let alias_handle = bus.read_long(sp + 8);
+                        let _from_file_ptr = bus.read_long(sp + 12);
+                        let alias_data_ptr = if alias_handle != 0 {
+                            bus.read_long(alias_handle)
+                        } else {
+                            0
+                        };
+
+                        let full_path = (alias_data_ptr != 0)
+                            .then(|| {
+                                Self::alias_extra_data(
+                                    bus,
+                                    alias_data_ptr,
+                                    Self::ALIAS_EXTRA_FULL_PATH,
+                                )
+                            })
+                            .flatten();
+                        let found = full_path.and_then(|path_bytes| {
+                            let full_path = decode_mac_roman(&path_bytes);
+                            let relative_path = full_path
+                                .split_once(':')
+                                .map(|(_, relative)| relative)
+                                .unwrap_or(full_path.as_str());
+                            let normalized = Self::normalize_hfs_path(relative_path);
+                            self.ensure_vfs_catalog();
+                            Self::find_case_insensitive_relative_key(
+                                self.vfs.keys(),
+                                &normalized,
+                            )
+                            .or_else(|| {
+                                Self::find_case_insensitive_relative_key(
+                                    self.vfs_rsrc.keys(),
+                                    &normalized,
+                                )
+                            })
+                        });
+
+                        if was_changed_ptr != 0 {
+                            bus.write_byte(was_changed_ptr, 0);
+                        }
+                        let resolved = if let (Some(found), true) = (found, target_ptr != 0) {
+                            let metadata = self.vfs_file_metadata(&found);
+                            let parent_dir_id =
+                                metadata.map(|entry| entry.parent_dir_id).unwrap_or(2);
+                            let name = encode_mac_roman_lossy(Self::vfs_basename(&found));
+                            let name_len = name.len().min(63);
+                            bus.write_word(target_ptr, Self::boot_volume_ref_num_u16());
+                            bus.write_long(target_ptr + 2, parent_dir_id);
+                            bus.write_byte(target_ptr + 6, name_len as u8);
+                            bus.write_bytes(target_ptr + 7, &name[..name_len]);
+                            eprintln!("[ALIAS] ResolveAlias target='{}'", found);
+                            true
+                        } else {
+                            false
+                        };
+
+                        bus.write_word(sp + 16, if resolved { 0 } else { (-43i16) as u16 });
+                        cpu.write_reg(Register::A7, sp + 16);
+                    }
+                    // NewAliasMinimalFromFullPath (selector $0009)
+                    // FUNCTION NewAliasMinimalFromFullPath(fullPathLength: INTEGER;
+                    //   fullPath: Ptr; zoneName: Str32; serverName: Str31;
+                    //   VAR alias: AliasHandle): OSErr;
+                    // Universal Interfaces 2.0, Aliases.h
+                    // Stack (rightmost on top):
+                    //   SP+0:  alias_ptr(4)       SP+4:  serverName_ptr(4)
+                    //   SP+8:  zoneName_ptr(4)    SP+12: fullPath_ptr(4)
+                    //   SP+16: fullPathLength(2)  SP+18: result(2)
+                    0x0009 => {
+                        let alias_ptr = bus.read_long(sp);
+                        let _server_name_ptr = bus.read_long(sp + 4);
+                        let _zone_name_ptr = bus.read_long(sp + 8);
+                        let full_path_ptr = bus.read_long(sp + 12);
+                        let full_path_len = bus.read_word(sp + 16) as usize;
+
+                        let valid =
+                            alias_ptr != 0 && full_path_ptr != 0 && full_path_len != 0;
+                        if valid {
+                            let full_path = bus.read_bytes(full_path_ptr, full_path_len);
+                            eprintln!(
+                                "[ALIAS] NewAliasMinimalFromFullPath path='{}'",
+                                decode_mac_roman(&full_path)
+                            );
+                            let alias_data_bytes =
+                                self.build_minimal_alias_record_from_full_path(&full_path);
+                            let alias_data = bus.alloc(alias_data_bytes.len() as u32);
+                            bus.write_bytes(alias_data, &alias_data_bytes);
+                            let alias_handle = bus.alloc(4);
+                            bus.write_long(alias_handle, alias_data);
+                            bus.write_long(alias_ptr, alias_handle);
+                            self.ptr_to_handle.insert(alias_data, alias_handle);
+                        } else if alias_ptr != 0 {
+                            bus.write_long(alias_ptr, 0);
+                        }
+
+                        bus.write_word(sp + 18, if valid { 0 } else { (-50i16) as u16 });
+                        cpu.write_reg(Register::A7, sp + 18);
                     }
                     // ResolveAliasFile (selector $000C)
                     // FUNCTION ResolveAliasFile(VAR theSpec: FSSpec;
@@ -25022,6 +25198,103 @@ mod tests {
         let parent_len = bus.read_word(alias_data_ptr + 152) as usize;
         let end_offset = 154 + parent_len + (parent_len % 2);
         assert_eq!(bus.read_word(alias_data_ptr + end_offset as u32) as i16, -1);
+    }
+
+    // AliasDispatch ($A823) / selector $0009 NewAliasMinimalFromFullPath
+    // Universal Interfaces 2.0 Aliases.h: a full HFS path creates an
+    // allocated AliasHandle through a five-parameter Pascal stack frame.
+    #[test]
+    fn aliasdispatch_newaliasminimalfromfullpath_builds_classic_alias_record() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let alias_out_ptr = 0x341200u32;
+        let full_path_ptr = 0x341300u32;
+        let full_path = b"MacintoshHD:Games:Civilization II:90.PICT";
+        bus.write_bytes(full_path_ptr, full_path);
+
+        cpu.write_reg(Register::D0, 0x0009);
+        bus.write_long(sp, alias_out_ptr);
+        bus.write_long(sp + 4, 0); // serverName
+        bus.write_long(sp + 8, 0); // zoneName
+        bus.write_long(sp + 12, full_path_ptr);
+        bus.write_word(sp + 16, full_path.len() as u16);
+        bus.write_word(sp + 18, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 18), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+        let alias_handle = bus.read_long(alias_out_ptr);
+        assert_ne!(alias_handle, 0);
+        let alias_data_ptr = bus.read_long(alias_handle);
+        assert_ne!(alias_data_ptr, 0);
+        assert_eq!(
+            bus.read_pstring(alias_data_ptr + 10),
+            b"MacintoshHD".to_vec()
+        );
+        assert_eq!(bus.read_pstring(alias_data_ptr + 50), b"90.PICT".to_vec());
+        assert_eq!(bus.read_word(alias_data_ptr + 150), 0);
+        assert_eq!(bus.read_word(alias_data_ptr + 152), 15);
+        assert_eq!(
+            bus.read_bytes(alias_data_ptr + 154, 15),
+            b"Civilization II".to_vec()
+        );
+    }
+
+    // AliasDispatch ($A823) / selector $0003 ResolveAlias
+    // Universal Interfaces 2.0 Aliases.h: resolve a created alias into its
+    // target FSSpec and return wasChanged through the Pascal stack frame.
+    #[test]
+    fn aliasdispatch_resolvealias_finds_minimal_full_path_target() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let alias_out_ptr = 0x341400u32;
+        let full_path_ptr = 0x341500u32;
+        let target_ptr = 0x341600u32;
+        let was_changed_ptr = 0x341700u32;
+        let full_path = b"MacintoshHD:Games:Civilization II:90.PICT";
+        bus.write_bytes(full_path_ptr, full_path);
+        disp.vfs.insert(
+            "Demo/Games/Civilization II/90.PICT".to_string(),
+            b"picture".to_vec(),
+        );
+
+        cpu.write_reg(Register::D0, 0x0009);
+        bus.write_long(sp, alias_out_ptr);
+        bus.write_long(sp + 4, 0);
+        bus.write_long(sp + 8, 0);
+        bus.write_long(sp + 12, full_path_ptr);
+        bus.write_word(sp + 16, full_path.len() as u16);
+        bus.write_word(sp + 18, 0xBEEF);
+        let create = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0003);
+        bus.write_long(sp, was_changed_ptr);
+        bus.write_long(sp + 4, target_ptr);
+        bus.write_long(sp + 8, bus.read_long(alias_out_ptr));
+        bus.write_long(sp + 12, 0); // fromFile
+        bus.write_word(sp + 16, 0xBEEF);
+        bus.write_byte(was_changed_ptr, 0xFF);
+
+        let resolve = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(resolve.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 16), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_byte(was_changed_ptr), 0);
+        assert_eq!(
+            bus.read_word(target_ptr),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16
+        );
+        assert_eq!(bus.read_pstring(target_ptr + 6), b"90.PICT".to_vec());
+        let target_dir_id = bus.read_long(target_ptr + 2);
+        assert_eq!(
+            disp.directory_path_for_id(target_dir_id),
+            Some("Demo/Games/Civilization II")
+        );
     }
 
     // AliasDispatch ($A823) / selector $000C ResolveAliasFile
