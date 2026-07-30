@@ -239,7 +239,14 @@ impl super::TrapDispatcher {
     }
 
     fn enqueue_open_application_event_if_needed(&mut self, event_mask: u16) {
-        if self.sent_open_app_event || (event_mask & Self::HIGH_LEVEL_EVENT_MASK) == 0 {
+        // The Finder sends required launch Apple events only to applications
+        // whose 'SIZE' resource declares isHighLevelEventAware. Applications
+        // without that resource or flag default to false.
+        // Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32 and 5-90.
+        if !self.application_high_level_event_aware
+            || self.sent_open_app_event
+            || (event_mask & Self::HIGH_LEVEL_EVENT_MASK) == 0
+        {
             return;
         }
 
