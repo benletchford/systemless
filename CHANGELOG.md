@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.12](https://github.com/benletchford/systemless/compare/v0.9.11...v0.9.12) (2026-07-30)
+
+
+### Bug Fixes
+
+* match ROM 4-bit to 8-bit color mapping ([21bdeff](https://github.com/benletchford/systemless/commit/21bdeffb3b349f2a1a17cb5ef91bc6181ce08e1b))
+
 ## [0.9.11](https://github.com/benletchford/systemless/compare/v0.9.10...v0.9.11) (2026-07-30)
 
 
