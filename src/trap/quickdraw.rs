@@ -3270,7 +3270,8 @@ impl super::TrapDispatcher {
                 // palette fade completes.
                 let hardware_palette_active =
                     dst_ctab_handle == 0 && self.device_clut != self.color_manager_clut;
-                let skip_canonical_to_screen = dst_ctab_handle == 0
+                let skip_canonical_to_screen = src_info.pixel_size == 8
+                    && dst_ctab_handle == 0
                     && src_clut
                         .as_ref()
                         .is_some_and(Self::uses_canonical_system_8bpp_clut);
@@ -3280,8 +3281,14 @@ impl super::TrapDispatcher {
                 // the active 8-bit destination palette.
                 let skip_hardware_palette_to_screen =
                     hardware_palette_active && src_info.pixel_size == 8;
-                let skip_explicit_palette_translation =
-                    self.explicit_palette_ctabs.contains(&src_info.ctab_handle);
+                // An all-explicit palette assigns stable device indices, so
+                // same-depth copies preserve those indices. Packed 2/4-bit
+                // sources copied into an 8-bit destination cannot preserve
+                // their indices across the depth change; their RGB values
+                // must still be matched into the destination CTable.
+                let skip_explicit_palette_translation = src_info.pixel_size
+                    == dst_info.pixel_size
+                    && self.explicit_palette_ctabs.contains(&src_info.ctab_handle);
                 let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && dst_info.pixel_size == 8
                     && src_info.ctab_handle != dst_info.ctab_handle
@@ -7972,10 +7979,27 @@ impl super::TrapDispatcher {
                     // transient palette indices into the framebuffer that become
                     // wrong after the palette reverts to standard system colors.
                     // Inside Macintosh: Imaging With QuickDraw 1994, p. 7-14
-                    let draw_port_clut = recent_resource_ctable_clut
+                    let selected_draw_port_clut = recent_resource_ctable_clut
                         .as_ref()
                         .or(preseeded_draw_clut.as_ref())
                         .unwrap_or(&port_clut);
+                    // PICT color matching must only consider indices the
+                    // destination depth can represent. `read_port_clut`
+                    // overlays a short 2/4-bit CTable on the logical 8-bit
+                    // table, so leaving its inherited tail visible lets
+                    // matching choose indices above 3/15; packed writes then
+                    // truncate those indices into unrelated colors.
+                    let packed_draw_port_clut =
+                        matches!(port_ps, 1 | 2 | 4).then(|| {
+                            let mut clut = *selected_draw_port_clut;
+                            let entry_count = 1usize << port_ps;
+                            let terminal = clut[entry_count - 1];
+                            clut[entry_count..].fill(terminal);
+                            clut
+                        });
+                    let draw_port_clut = packed_draw_port_clut
+                        .as_ref()
+                        .unwrap_or(selected_draw_port_clut);
                     if !is_screen_picture_target {
                         if let (Some(fetch), Some(fetch_clut)) = (
                             recent_resource_ctable_fetch.as_ref(),
@@ -16753,7 +16777,13 @@ impl super::TrapDispatcher {
 
         let entry_capacity = bus.get_alloc_size(ctab_ptr).unwrap_or(0).saturating_sub(8) / 8;
         let entry_count = Self::indexed_ctab_entry_count(depth).min(entry_capacity.max(1));
-        let clut = self.read_ctab_handle_clut(bus, source_ctab_handle);
+        let clut = if source_ctab_handle == 0 {
+            Self::standard_mac_indexed_clut(depth as u16)
+                .map(|(clut, _)| clut)
+                .unwrap_or_else(|| self.read_ctab_handle_clut(bus, 0))
+        } else {
+            self.read_ctab_handle_clut(bus, source_ctab_handle)
+        };
 
         // Mirror canonical-CLUT -> seed=depth precedence in
         // `overwrite_color_table_handle_with_clut` for the variant
@@ -31391,6 +31421,67 @@ mod tests {
     }
 
     #[test]
+    fn copy_bits_translates_explicit_palette_across_differing_indexed_depths() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x306100u32;
+        let dst_pixmap = 0x306200u32;
+        let src_base = 0x307000u32;
+        let dst_base = 0x308000u32;
+        let src_ctab_handle = 0x309000u32;
+        let dst_ctab_handle = 0x30A000u32;
+        let src_rect = 0x30B000u32;
+        let dst_rect = 0x30B010u32;
+        let explicit_rgb = (0x1111, 0xCCCC, 0x3333);
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[
+                (0, 0xFFFF, 0xFFFF, 0xFFFF),
+                (1, 0xFFFF, 0xFFFF, 0xCCCC),
+                (2, explicit_rgb.0, explicit_rgb.1, explicit_rgb.2),
+            ],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[
+                (0, 0, 0, 0),
+                (42, explicit_rgb.0, explicit_rgb.1, explicit_rgb.2),
+            ],
+        );
+        write_pixmap_indexed(
+            &mut bus,
+            src_pixmap,
+            src_base,
+            1,
+            1,
+            1,
+            4,
+            src_ctab_handle,
+        );
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 1, 1, dst_ctab_handle);
+        bus.write_byte(src_base, 0x20);
+        bus.write_byte(dst_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+        d.explicit_palette_ctabs.insert(src_ctab_handle);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(dst_base), 42);
+    }
+
+    #[test]
     fn test_copy_bits_transparent_uses_cgrafport_background_color() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let src_pixmap = 0x300100u32;
@@ -35660,6 +35751,46 @@ mod tests {
         assert_eq!(bus.read_word(TEST_SP + 22), 0); // noErr
         let gworld = bus.read_long(gworld_ptr_ptr);
         assert_ne!(gworld, 0);
+    }
+
+    #[test]
+    fn test_new_gworld_depth_four_uses_canonical_four_bit_palette() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds_ptr = 0x300000u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 16, 16);
+        bus.write_long(TEST_SP, 0u32);
+        bus.write_long(TEST_SP + 4, 0u32);
+        bus.write_long(TEST_SP + 8, 0u32);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 4u16);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let pixmap_handle = bus.read_long(gworld + 2);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+        let (canonical, entry_count) =
+            TrapDispatcher::standard_mac_indexed_clut(4).expect("4bpp system palette");
+
+        assert_eq!(bus.read_word(pixmap + 32), 4);
+        assert_eq!(bus.read_word(ctab + 6), entry_count as u16 - 1);
+        for (index, expected) in canonical.iter().enumerate().take(entry_count) {
+            let entry = ctab + 8 + index as u32 * 8;
+            assert_eq!(
+                [
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ],
+                *expected,
+                "4bpp NewGWorld CTable entry {index}"
+            );
+        }
     }
 
     #[test]
