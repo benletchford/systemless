@@ -1091,7 +1091,7 @@ impl super::TrapDispatcher {
                 return;
             }
 
-            let base = bus.read_long(pix_map_ptr);
+            let base = Self::offscreen_pixmap_base_ptr(bus, pix_map_ptr);
             let row_bytes = (bus.read_word(pix_map_ptr.wrapping_add(4)) & 0x3FFF) as u32;
             let top = bus.read_word(pix_map_ptr.wrapping_add(6)) as i16;
             let left = bus.read_word(pix_map_ptr.wrapping_add(8)) as i16;

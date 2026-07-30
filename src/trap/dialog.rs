@@ -2791,7 +2791,7 @@ impl super::TrapDispatcher {
                 return false;
             }
             (
-                bus.read_long(pix_map_ptr),
+                Self::offscreen_pixmap_base_ptr(bus, pix_map_ptr),
                 bus.read_word(pix_map_ptr + 4) & 0x3FFF,
                 bus.read_word(pix_map_ptr + 6) as i16,
                 bus.read_word(pix_map_ptr + 8) as i16,
@@ -2930,7 +2930,7 @@ impl super::TrapDispatcher {
                             return 0;
                         }
                         (
-                            bus.read_long(pix_map_ptr),
+                            Self::offscreen_pixmap_base_ptr(bus, pix_map_ptr),
                             (bus.read_word(pix_map_ptr + 4) & 0x3FFF) as u32,
                             bus.read_word(pix_map_ptr + 6) as i16,
                             bus.read_word(pix_map_ptr + 8) as i16,
@@ -9147,7 +9147,7 @@ impl super::TrapDispatcher {
         if pm_ptr == 0 {
             return None;
         }
-        let base = bus.read_long(pm_ptr) & 0x3FFF_FFFF;
+        let base = Self::offscreen_pixmap_base_ptr(bus, pm_ptr) & 0x3FFF_FFFF;
         let row_bytes = (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32;
         let top = bus.read_word(pm_ptr + 6) as i16;
         let left = bus.read_word(pm_ptr + 8) as i16;

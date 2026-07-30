@@ -6621,8 +6621,10 @@ impl super::TrapDispatcher {
                         };
 
                         let pixel_buf = bus.alloc(row_bytes * height);
+                        let pixel_buf_handle = bus.alloc(4);
+                        bus.write_long(pixel_buf_handle, pixel_buf);
                         let pixmap = bus.alloc(50);
-                        bus.write_long(pixmap, pixel_buf);
+                        bus.write_long(pixmap, pixel_buf_handle);
                         bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000);
                         bus.write_word(pixmap + 6, top as u16);
                         bus.write_word(pixmap + 8, left as u16);
@@ -16619,7 +16621,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn offscreen_pixmap_base_handle(bus: &MacMemoryBus, pm_ptr: u32) -> u32 {
+    pub(super) fn offscreen_pixmap_base_handle(bus: &MacMemoryBus, pm_ptr: u32) -> u32 {
         if pm_ptr == 0 {
             return 0;
         }
@@ -16627,10 +16629,9 @@ impl super::TrapDispatcher {
         if base_field == 0 {
             return 0;
         }
-        // QuickDraw PixMap baseAddr is normally a direct pixel pointer.
-        // Older Systemless builds stored an offscreen pixel handle here instead,
-        // so keep recognizing 4-byte master pointer cells for compatibility
-        // with stale/disposed state and hand-built tests.
+        // Imaging With QuickDraw 1994 pp. 6-38..6-39: an offscreen PixMap's
+        // baseAddr stores a movable-memory handle, while an onscreen PixMap's
+        // baseAddr stores the direct pixel pointer.
         if bus.get_alloc_size(base_field) == Some(4) {
             base_field
         } else {
@@ -16638,7 +16639,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn offscreen_pixmap_base_ptr(bus: &MacMemoryBus, pm_ptr: u32) -> u32 {
+    pub(super) fn offscreen_pixmap_base_ptr(bus: &MacMemoryBus, pm_ptr: u32) -> u32 {
         if pm_ptr == 0 {
             return 0;
         }
@@ -17010,11 +17011,16 @@ impl super::TrapDispatcher {
         if pixel_buf == 0 && pixel_bytes > 0 {
             return C_NO_MEM_ERR;
         }
+        let pixel_buf_handle = bus.alloc(4);
+        if pixel_buf_handle == 0 {
+            return C_NO_MEM_ERR;
+        }
+        bus.write_long(pixel_buf_handle, pixel_buf);
         let pixmap = bus.alloc(50);
         if pixmap == 0 {
             return C_NO_MEM_ERR;
         }
-        bus.write_long(pixmap, pixel_buf);
+        bus.write_long(pixmap, pixel_buf_handle);
         bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000);
         bus.write_word(pixmap + 6, top as u16);
         bus.write_word(pixmap + 8, left as u16);
@@ -20276,7 +20282,7 @@ impl super::TrapDispatcher {
                 label,
                 pm_handle,
                 pm_ptr,
-                bus.read_long(pm_ptr),
+                Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
                 bus.read_word(pm_ptr + 4),
                 bus.read_word(pm_ptr + 6) as i16,
                 bus.read_word(pm_ptr + 8) as i16,
@@ -21097,7 +21103,7 @@ impl super::TrapDispatcher {
                 return None;
             }
             (
-                bus.read_long(pm_ptr),
+                Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
                 (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
                 bus.read_word(pm_ptr + 32),
                 bus.read_word(pm_ptr + 6) as i16,
@@ -21539,7 +21545,7 @@ impl super::TrapDispatcher {
         if pix_map_ptr == 0 {
             reject!("current port PixMap handle has nil master pointer");
         }
-        let dst_base = bus.read_long(pix_map_ptr);
+        let dst_base = Self::offscreen_pixmap_base_ptr(bus, pix_map_ptr);
         let dst_row_bytes = u32::from(bus.read_word(pix_map_ptr + 4) & 0x3FFF);
         let bounds_top = bus.read_word(pix_map_ptr + 6) as i16;
         let bounds_left = bus.read_word(pix_map_ptr + 8) as i16;
@@ -36369,11 +36375,9 @@ mod tests {
     }
 
     #[test]
-    fn getpixbaseaddr_returns_direct_pointer_for_offscreen_pixmap() {
-        // Offscreen GWorld PixMaps expose baseAddr as a direct pixel pointer.
-        // Games may read (**pmh).baseAddr directly instead of calling
-        // GetPixBaseAddr, so the visible PixMap field must not be Systemless's
-        // private allocation handle.
+    fn getpixbaseaddr_dereferences_offscreen_pixmap_base_handle() {
+        // Imaging With QuickDraw 1994 pp. 6-38..6-39: offscreen PixMaps
+        // expose a handle in baseAddr, and GetPixBaseAddr returns its target.
         let (mut d, mut cpu, mut bus) = setup();
         let bounds_ptr = 0x300000u32;
         let gworld_ptr_ptr = 0x300100u32;
@@ -36390,10 +36394,12 @@ mod tests {
         let gworld = bus.read_long(gworld_ptr_ptr);
         let pm_handle = bus.read_long(gworld + 2);
         let pm_ptr = bus.read_long(pm_handle);
-        let expected_base = bus.read_long(pm_ptr);
+        let base_handle = bus.read_long(pm_ptr);
+        let expected_base = bus.read_long(base_handle);
+        assert_ne!(base_handle, 0);
         assert_ne!(expected_base, 0);
-        assert_ne!(bus.get_alloc_size(expected_base), Some(4));
-        assert_ne!(bus.get_alloc_size(expected_base), None);
+        assert_eq!(bus.get_alloc_size(base_handle), Some(4));
+        assert_ne!(base_handle, expected_base);
 
         cpu.write_reg(Register::A7, TEST_SP);
         cpu.write_reg(Register::D0, 0x0004_000F);
@@ -36405,7 +36411,7 @@ mod tests {
         assert_eq!(bus.read_long(TEST_SP + 4), expected_base);
         assert_eq!(
             TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm_ptr),
-            0
+            base_handle
         );
         assert_eq!(
             TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm_ptr),
@@ -36414,10 +36420,8 @@ mod tests {
     }
 
     #[test]
-    fn getpixbaseaddr_dereferences_legacy_offscreen_base_handle() {
-        // Systemless used to store a 4-byte pixel master pointer cell in PixMap
-        // baseAddr. Keep the resolver tolerant so disposed-port caches and
-        // hand-built PixMaps continue to work.
+    fn getpixbaseaddr_dereferences_hand_built_offscreen_base_handle() {
+        // Keep the resolver compatible with hand-built offscreen PixMaps.
         let (mut d, mut cpu, mut bus) = setup();
         let pm_handle = bus.alloc(4);
         let pm_ptr = bus.alloc(64);
@@ -36936,7 +36940,7 @@ mod tests {
         let gworld = bus.read_long(gworld_ptr_ptr);
         let pmh = bus.read_long(gworld + 2);
         let pm = bus.read_long(pmh);
-        let old_base = bus.read_long(pm);
+        let old_base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm);
         for i in 0..16 {
             bus.write_byte(old_base + i, 0xA5);
         }
@@ -36952,7 +36956,7 @@ mod tests {
         let update = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(update.unwrap().is_ok());
 
-        let new_base = bus.read_long(pm);
+        let new_base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm);
         let flags = cpu.read_reg(Register::D0);
         assert_ne!(new_base, old_base);
         assert_eq!(flags & (1 << 20), 1 << 20);
@@ -36990,7 +36994,7 @@ mod tests {
         let gworld = bus.read_long(gworld_ptr_ptr);
         let pmh = bus.read_long(gworld + 2);
         let pm = bus.read_long(pmh);
-        let old_base = bus.read_long(pm);
+        let old_base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm);
         for i in 0..16 {
             bus.write_byte(old_base + i, (0x40 + i) as u8);
         }
@@ -37006,7 +37010,7 @@ mod tests {
         let update = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(update.unwrap().is_ok());
 
-        let new_base = bus.read_long(pm);
+        let new_base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm);
         assert_ne!(new_base, old_base);
         for row in 0..4u32 {
             for col in 0..4u32 {
@@ -37501,12 +37505,12 @@ mod tests {
         let base_field = bus.read_long(pm_ptr);
         let base_handle = TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm_ptr);
         let base_ptr = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm_ptr);
-        assert_eq!(base_handle, 0);
-        assert_eq!(base_field, base_ptr);
+        assert_ne!(base_handle, 0);
+        assert_eq!(base_field, base_handle);
+        assert_ne!(base_field, base_ptr);
         assert_ne!(base_ptr, 0);
 
         bus.fill_zeros(base_ptr, 64u32 * 64u32);
-        let expected_base_ptr = base_ptr;
 
         let pic_ptr = 0x361000u32;
         let pic_handle = 0x361100u32;
@@ -37523,7 +37527,7 @@ mod tests {
 
         assert_eq!(
             bus.read_long(pm_ptr),
-            expected_base_ptr,
+            base_handle,
             "DrawPicture must not rewrite the offscreen PixMap baseAddr"
         );
         assert_ne!(
