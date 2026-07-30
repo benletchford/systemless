@@ -7643,6 +7643,12 @@ impl super::TrapDispatcher {
         }) {
             return Some(found.clone());
         }
+        if let Some(found) = super::TrapDispatcher::find_case_insensitive_relative_key(
+            sorted_keys.iter().copied(),
+            &normalized,
+        ) {
+            return Some(found);
+        }
         let hfs_basename = hfs_normalized
             .rsplit('/')
             .next()
@@ -7937,6 +7943,34 @@ mod tests {
             disp.resource_attributes_for_handle(handle).unwrap_or(0) & changed,
             0,
             "SetResPurge(TRUE) should clear the changed flag through MoveHHi"
+        );
+    }
+
+    #[test]
+    fn find_vfs_file_prefers_relative_path_components_before_basename() {
+        let mut disp = super::super::TrapDispatcher::new();
+        disp.vfs
+            .insert("MacPopulous/BigColourData/LOAD.PIC".to_string(), vec![1]);
+        disp.vfs
+            .insert("MacPopulous/ColourData/LOAD.PIC".to_string(), vec![2]);
+
+        assert_eq!(
+            disp.find_vfs_file(":ColourData:load.pic"),
+            Some("MacPopulous/ColourData/LOAD.PIC".to_string())
+        );
+    }
+
+    #[test]
+    fn find_vfs_rsrc_file_prefers_relative_path_components_before_basename() {
+        let mut disp = super::super::TrapDispatcher::new();
+        disp.vfs_rsrc
+            .insert("MacPopulous/BigColourData/LOAD.PIC".to_string(), vec![1]);
+        disp.vfs_rsrc
+            .insert("MacPopulous/ColourData/LOAD.PIC".to_string(), vec![2]);
+
+        assert_eq!(
+            disp.find_vfs_rsrc_file(":ColourData:load.pic"),
+            Some("MacPopulous/ColourData/LOAD.PIC".to_string())
         );
     }
 
