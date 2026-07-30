@@ -184,7 +184,11 @@ fn standard_file_put_reply_old(bus: &mut MacMemoryBus, reply_ptr: u32, vref: i16
     if reply_ptr == 0 {
         return;
     }
-    bus.write_byte(reply_ptr, 0xFF); // good = TRUE
+    // Inside Macintosh, Volume I, p. I-86 ("Pascal Data Types") specifies
+    // BOOLEAN as one byte with its value in bit 0. Write canonical TRUE (1),
+    // leaving its seven non-value bits clear; callers may compare a record
+    // field directly with the ordinal value of TRUE.
+    bus.write_byte(reply_ptr, 1); // good = TRUE
     bus.write_byte(reply_ptr + 1, 0); // copy = FALSE
     bus.write_long(reply_ptr + 2, 0); // fType
     bus.write_word(reply_ptr + 6, vref as u16);
@@ -202,7 +206,7 @@ fn standard_file_get_reply_old(
     if reply_ptr == 0 {
         return;
     }
-    bus.write_byte(reply_ptr, 0xFF); // good = TRUE
+    bus.write_byte(reply_ptr, 1); // good = TRUE
     bus.write_byte(reply_ptr + 1, 0); // copy = FALSE
     bus.write_long(reply_ptr + 2, file_type);
     bus.write_word(reply_ptr + 6, wd_ref as u16);
@@ -221,8 +225,8 @@ fn standard_file_put_reply_modern(
     if reply_ptr == 0 {
         return;
     }
-    bus.write_byte(reply_ptr, 0xFF); // sfGood = TRUE
-    bus.write_byte(reply_ptr + 1, if replacing { 0xFF } else { 0 }); // sfReplacing
+    bus.write_byte(reply_ptr, 1); // sfGood = TRUE
+    bus.write_byte(reply_ptr + 1, u8::from(replacing)); // sfReplacing
     bus.write_long(reply_ptr + 2, 0); // sfType
     bus.write_word(reply_ptr + 6, vref as u16); // sfFile.vRefNum
     bus.write_long(reply_ptr + 8, dir_id); // sfFile.parID
@@ -247,7 +251,7 @@ fn standard_file_get_reply_modern(
     if reply_ptr == 0 {
         return;
     }
-    bus.write_byte(reply_ptr, 0xFF); // sfGood = TRUE
+    bus.write_byte(reply_ptr, 1); // sfGood = TRUE
     bus.write_byte(reply_ptr + 1, 0); // sfReplacing = FALSE
     bus.write_long(reply_ptr + 2, file_type); // sfType
     bus.write_word(reply_ptr + 6, vref as u16); // sfFile.vRefNum
@@ -23788,7 +23792,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_byte(reply_ptr + 1), 0);
         assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
         assert_eq!(
@@ -23834,7 +23838,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"DATA"));
         assert_eq!(
             bus.read_word(reply_ptr + 6),
@@ -23873,7 +23877,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"Flux"));
         assert_eq!(
             bus.read_word(reply_ptr + 6),
@@ -24013,7 +24017,7 @@ mod tests {
         assert!(open.unwrap().is_ok());
 
         assert!(!disp.is_standard_file_get_tracking());
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
         assert_eq!(
             bus.read_word(reply_ptr + 6),
@@ -24070,7 +24074,7 @@ mod tests {
         let wd_info = disp
             .working_directory_info(wd_ref)
             .expect("SFGetFile should return a WDRefNum for the selected file directory");
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_byte(reply_ptr + 1), 0);
         assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
         assert_eq!(wd_info.dir_id, pilots_dir);
@@ -24131,7 +24135,7 @@ mod tests {
             .working_directory_info(wd_ref)
             .expect("SFGetFile GUI path should return a WDRefNum");
         assert!(!disp.is_standard_file_get_tracking());
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
         assert_eq!(wd_info.dir_id, pilots_dir);
         assert_eq!(bus.read_pstring(reply_ptr + 10), b"Ace".to_vec());
@@ -24158,7 +24162,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_byte(reply_ptr + 1), 0);
         assert_eq!(
             bus.read_word(reply_ptr + 6),
@@ -24194,8 +24198,8 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
-        assert_eq!(bus.read_byte(reply_ptr + 1), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
+        assert_eq!(bus.read_byte(reply_ptr + 1), 1);
         assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
         assert_eq!(bus.read_pstring(reply_ptr + 12), b"Existing Pilot".to_vec());
         assert_eq!(cpu.read_reg(Register::A7), sp + 14);
@@ -24256,7 +24260,7 @@ mod tests {
         assert!(accept.unwrap().is_ok());
         assert!(!disp.is_standard_file_put_tracking());
 
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_byte(reply_ptr + 1), 0);
         assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
         assert_eq!(bus.read_pstring(reply_ptr + 12), b"Rick".to_vec());
@@ -24361,7 +24365,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(bus.read_byte(reply_ptr + 1), 0);
         assert_eq!(
             bus.read_word(reply_ptr + 6),
@@ -24397,7 +24401,7 @@ mod tests {
         let wd_info = disp
             .working_directory_info(wd_ref)
             .expect("SFPutFile should return a WDRefNum for the save directory");
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(wd_info.dir_id, pilots_dir);
         assert_eq!(bus.read_pstring(reply_ptr + 10), b"Old Pilot".to_vec());
         assert_eq!(cpu.read_reg(Register::A7), sp + 22);
@@ -24447,7 +24451,7 @@ mod tests {
             .working_directory_info(wd_ref)
             .expect("SFPutFile GUI path should return a WDRefNum for the save directory");
         assert!(!disp.is_standard_file_put_tracking());
-        assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+        assert_eq!(bus.read_byte(reply_ptr), 1);
         assert_eq!(wd_info.dir_id, pilots_dir);
         assert_eq!(bus.read_pstring(reply_ptr + 10), b"Old Pilot".to_vec());
         assert_eq!(cpu.read_reg(Register::A7), sp + 22);
