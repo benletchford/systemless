@@ -3128,6 +3128,53 @@ impl TrapDispatcher {
         clut
     }
 
+    /// Return the canonical indexed Color QuickDraw table and entry count for
+    /// a standard screen depth. The 4bpp values match the System 7.5.3
+    /// `GetCTable(4)` oracle; in particular, the dark-green entry uses the ROM
+    /// value rather than Executor's older 0x64AF green component.
+    pub(crate) fn standard_mac_indexed_clut(depth: u16) -> Option<([[u16; 3]; 256], usize)> {
+        let mut clut = [[0u16; 3]; 256];
+        let entries = match depth {
+            1 => {
+                clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+                clut[1] = [0x0000, 0x0000, 0x0000];
+                2
+            }
+            2 => {
+                clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+                clut[1] = [0xAAAA, 0xAAAA, 0xAAAA];
+                clut[2] = [0x5555, 0x5555, 0x5555];
+                clut[3] = [0x0000, 0x0000, 0x0000];
+                4
+            }
+            4 => {
+                const COLORS: [[u16; 3]; 16] = [
+                    [0xFFFF, 0xFFFF, 0xFFFF],
+                    [0xFC00, 0xF37D, 0x052F],
+                    [0xFFFF, 0x648A, 0x028C],
+                    [0xDD6B, 0x08C2, 0x06A2],
+                    [0xF2D7, 0x0856, 0x84EC],
+                    [0x46E3, 0x0000, 0xA53E],
+                    [0x0000, 0x0000, 0xD400],
+                    [0x0241, 0xAB54, 0xEAFF],
+                    [0x1F21, 0xB793, 0x1431],
+                    [0x0000, 0x8000, 0x11B0],
+                    [0x5600, 0x2C9D, 0x0524],
+                    [0x90D7, 0x7160, 0x3A34],
+                    [0xC000, 0xC000, 0xC000],
+                    [0x8000, 0x8000, 0x8000],
+                    [0x4000, 0x4000, 0x4000],
+                    [0x0000, 0x0000, 0x0000],
+                ];
+                clut[..COLORS.len()].copy_from_slice(&COLORS);
+                COLORS.len()
+            }
+            8 => return Some((Self::standard_mac_8bpp_clut(), 256)),
+            _ => return None,
+        };
+        Some((clut, entries))
+    }
+
     /// 4-bit-per-channel inverse table (16x16x16 = 4096 cells) precomputed
     /// from `standard_mac_8bpp_clut`. Each cell holds the CLUT index
     /// whose entry is closest (by Euclidean distance in 16-bit RGB) to
@@ -4966,16 +5013,12 @@ impl TrapDispatcher {
         if let Some(&ptr) = self.system_clut_cache.get(&res_id) {
             return Some(ptr);
         }
-        if !matches!(res_id, 1 | 2 | 4 | 8) {
-            return None;
-        }
-
-        let std_clut = Self::standard_mac_8bpp_clut();
-        let ptr = bus.alloc(8 + 256 * 8);
+        let (std_clut, entry_count) = Self::standard_mac_indexed_clut(res_id as u16)?;
+        let ptr = bus.alloc(8 + entry_count as u32 * 8);
         bus.write_long(ptr, res_id as u32); // ctSeed follows the standard depth ID.
         bus.write_word(ptr + 4, 0); // ctFlags
-        bus.write_word(ptr + 6, 255); // ctSize
-        for index in 0u32..256 {
+        bus.write_word(ptr + 6, entry_count as u16 - 1); // ctSize
+        for index in 0..entry_count as u32 {
             let entry = ptr + 8 + index * 8;
             let [r, g, b] = std_clut[index as usize];
             bus.write_word(entry, index as u16);
