@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.7](https://github.com/benletchford/systemless/compare/v0.9.6...v0.9.7) (2026-07-30)
+
+
+### Bug Fixes
+
+* preserve Finder metadata in web packages ([#211](https://github.com/benletchford/systemless/issues/211)) ([b52cb58](https://github.com/benletchford/systemless/commit/b52cb5867fda53da3c2078c820ba185fbd2af664))
+
 ## [0.9.6](https://github.com/benletchford/systemless/compare/v0.9.5...v0.9.6) (2026-07-30)
 
 
