@@ -3278,6 +3278,8 @@ impl super::TrapDispatcher {
                 // the active 8-bit destination palette.
                 let skip_hardware_palette_to_screen =
                     hardware_palette_active && src_info.pixel_size == 8;
+                let skip_explicit_palette_translation =
+                    self.explicit_palette_ctabs.contains(&src_info.ctab_handle);
                 let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && dst_info.pixel_size == 8
                     && src_info.ctab_handle != dst_info.ctab_handle
@@ -3285,6 +3287,7 @@ impl super::TrapDispatcher {
                     && src_ctab_seed != dst_ctab_seed
                     && !skip_canonical_to_screen
                     && !skip_hardware_palette_to_screen
+                    && !skip_explicit_palette_translation
                 {
                     match (src_clut.as_ref(), dst_clut.as_ref()) {
                         (Some(src_clut), Some(dst_clut)) => Some(self.build_palette_translation(
@@ -15695,6 +15698,15 @@ impl super::TrapDispatcher {
         self.trace_ctab_seed_write(dst_ctab_ptr, palette_seed, trace_label);
         bus.write_word(dst_ctab_ptr + 4, 0);
         bus.write_word(dst_ctab_ptr + 6, entries.saturating_sub(1) as u16);
+        let all_explicit = (0..entries).all(|offset| {
+            Self::read_palette_color_info(bus, palette, offset as u16)
+                .is_some_and(|(_, usage, _)| usage & PM_EXPLICIT != 0)
+        });
+        if all_explicit {
+            self.explicit_palette_ctabs.insert(dst_ctab);
+        } else {
+            self.explicit_palette_ctabs.remove(&dst_ctab);
+        }
         for offset in 0..entries {
             if let Some((rgb, _, _)) = Self::read_palette_color_info(bus, palette, offset as u16) {
                 let ctab_entry = dst_ctab_ptr + 8 + offset * 8;
@@ -15806,9 +15818,15 @@ impl super::TrapDispatcher {
         }
 
         let palette_entries = usize::from(Self::palette_entry_count(bus, palette_handle)).min(256);
+        let current_clut = self.device_clut;
         let mut updated_clut = Self::standard_mac_8bpp_clut();
         for (index, rgb) in updated_clut.iter_mut().enumerate().take(palette_entries) {
             let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
+            let usage = bus.read_word(color_info + 6) as i16;
+            if usage & PM_EXPLICIT != 0 {
+                *rgb = current_clut[index];
+                continue;
+            }
             *rgb = [
                 bus.read_word(color_info),
                 bus.read_word(color_info + 2),
@@ -31221,6 +31239,50 @@ mod tests {
     }
 
     #[test]
+    fn copy_bits_preserves_indices_from_explicit_palette_color_tables() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        let src_ctab_handle = 0x303000u32;
+        let dst_ctab_handle = 0x304000u32;
+        let src_rect = 0x305000u32;
+        let dst_rect = 0x305010u32;
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[(0, 0, 0, 0), (1, 0xFFFF, 0, 0)],
+        );
+        write_color_table(
+            &mut bus,
+            dst_ctab_handle,
+            0x2222_2222,
+            &[(1, 0, 0, 0), (42, 0xFFFF, 0, 0)],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 1, 1, dst_ctab_handle);
+        bus.write_byte(src_base, 1);
+        bus.write_byte(dst_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+        d.explicit_palette_ctabs.insert(src_ctab_handle);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(dst_base), 1);
+    }
+
+    #[test]
     fn test_copy_bits_transparent_uses_cgrafport_background_color() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let src_pixmap = 0x300100u32;
@@ -33598,6 +33660,32 @@ mod tests {
     }
 
     #[test]
+    fn activatepalette_does_not_render_explicit_palette_entries() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4150u32;
+        let palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_EXPLICIT, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            0,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_EXPLICIT,
+            0,
+        );
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d.current_port = window;
+        let before = d.device_clut;
+        bus.write_long(TEST_SP, window);
+
+        let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.device_clut, before);
+        assert_eq!(d.color_manager_clut, before);
+    }
+
+    #[test]
     fn disposepalette_consumes_palettehandle_and_clears_palette_associations() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4200u32;
@@ -35214,6 +35302,25 @@ mod tests {
             read_test_ctab_rgb(&bus, dst_ctab, 4),
             [0xBEEF, 0x1357, 0x2468]
         );
+        assert!(!d.explicit_palette_ctabs.contains(&dst_ctab));
+    }
+
+    #[test]
+    fn palette2ctab_marks_all_explicit_palettes_for_identity_copybits() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let src_palette = d.create_palette_from_ctab(&mut bus, 2, 0, super::PM_EXPLICIT, 0);
+        let dst_ctab = make_test_ctab_handle(
+            &mut bus,
+            &[[0x0000, 0x0000, 0x0000], [0x1111, 0x2222, 0x3333]],
+            7,
+            0,
+        );
+        bus.write_long(TEST_SP, dst_ctab);
+        bus.write_long(TEST_SP + 4, src_palette);
+
+        let result = d.dispatch_quickdraw(true, 0x2A0, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert!(d.explicit_palette_ctabs.contains(&dst_ctab));
     }
 
     #[test]
