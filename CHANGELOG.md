@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.5](https://github.com/benletchford/systemless/compare/v0.9.4...v0.9.5) (2026-07-30)
+
+
+### Bug Fixes
+
+* gate launch Apple events on the SIZE capability ([#203](https://github.com/benletchford/systemless/issues/203)) ([f975d51](https://github.com/benletchford/systemless/commit/f975d51b762636ff49e4e729cf682109b326a81f))
+* install canonical indexed palettes when changing depth ([#205](https://github.com/benletchford/systemless/issues/205)) ([129fd4d](https://github.com/benletchford/systemless/commit/129fd4d7ad3d5534a181f025df3ef8fc655533e6))
+* render Toolbox chrome through packed indexed framebuffers ([#206](https://github.com/benletchford/systemless/issues/206)) ([7ba1b86](https://github.com/benletchford/systemless/commit/7ba1b863b7d790718590de06be53e2e6c30d1303))
+* resolve bitmap strikes through FOND associations ([#200](https://github.com/benletchford/systemless/issues/200)) ([8cde076](https://github.com/benletchford/systemless/commit/8cde0768739c970ba645b5e6f55ffd0f3afa0707))
+* return canonical byte Booleans from dialog event traps ([#204](https://github.com/benletchford/systemless/issues/204)) ([bf9e9f2](https://github.com/benletchford/systemless/commit/bf9e9f212566156a7a88aa66d9eff76a10147889))
+
 ## [0.9.4](https://github.com/benletchford/systemless/compare/v0.9.3...v0.9.4) (2026-07-30)
 
 
