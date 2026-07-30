@@ -3308,6 +3308,7 @@ impl super::TrapDispatcher {
                             src_clut,
                             dst_clut,
                             dst_ctab_handle,
+                            src_info.pixel_size,
                         )),
                         _ => None,
                     }
@@ -13466,7 +13467,13 @@ impl super::TrapDispatcher {
                 );
                 let palette_translation = match (src_clut.as_ref(), dst_clut.as_ref()) {
                     (Some(src_clut), Some(dst_clut)) if src_clut != dst_clut => Some(
-                        self.build_palette_translation(bus, src_clut, dst_clut, dst_ctab_handle),
+                        self.build_palette_translation(
+                            bus,
+                            src_clut,
+                            dst_clut,
+                            dst_ctab_handle,
+                            src_info.pixel_size,
+                        ),
                     ),
                     _ => None,
                 };
@@ -18352,7 +18359,13 @@ impl super::TrapDispatcher {
         {
             match (src_clut.as_ref(), dst_clut.as_ref()) {
                 (Some(src_clut), Some(dst_clut)) => {
-                    Some(self.build_palette_translation(bus, src_clut, dst_clut, dst_ctab_handle))
+                    Some(self.build_palette_translation(
+                        bus,
+                        src_clut,
+                        dst_clut,
+                        dst_ctab_handle,
+                        src_info.pixel_size,
+                    ))
                 }
                 _ => None,
             }
@@ -20578,8 +20591,26 @@ impl super::TrapDispatcher {
         src_clut: &[[u16; 3]; 256],
         dst_clut: &[[u16; 3]; 256],
         dst_ctab_handle: u32,
+        src_pixel_size: u32,
     ) -> [u8; 256] {
         let mut translation = [0u8; 256];
+        if src_pixel_size == 4
+            && Self::uses_standard_mac_4bpp_gworld_clut(src_clut)
+            && Self::uses_canonical_system_8bpp_clut(dst_clut)
+        {
+            // System 7.5.3 Color2Index results for the default 4-bit
+            // NewGWorld CTable while the standard 8-bit main GDevice is
+            // current. The screen GDevice's inverse table differs from a
+            // full-precision Euclidean search for blue, green, and light
+            // gray because MakeITable uses ROM propagation and tie-breaking.
+            //
+            // Inside Macintosh Volume V, pp. V-137 and V-142
+            const STANDARD_4_TO_8: [u8; 16] = [
+                0, 5, 23, 216, 32, 176, 236, 192, 227, 203, 137, 94, 43, 249, 252, 255,
+            ];
+            translation[..16].copy_from_slice(&STANDARD_4_TO_8);
+            return translation;
+        }
         for (index, rgb) in src_clut.iter().enumerate() {
             translation[index] = if dst_clut[index] == *rgb {
                 index as u8
@@ -31992,6 +32023,20 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_byte(dst_base), 71);
+    }
+
+    #[test]
+    fn test_palette_translation_uses_rom_standard_four_to_eight_mapping() {
+        let (d, _cpu, bus) = setup();
+        let src = TrapDispatcher::standard_mac_4bpp_gworld_clut();
+        let dst = TrapDispatcher::standard_mac_8bpp_clut();
+
+        let translation = d.build_palette_translation(&bus, &src, &dst, 0, 4);
+
+        assert_eq!(
+            &translation[..16],
+            &[0, 5, 23, 216, 32, 176, 236, 192, 227, 203, 137, 94, 43, 249, 252, 255]
+        );
     }
 
     #[test]
