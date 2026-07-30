@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.10](https://github.com/benletchford/systemless/compare/v0.9.9...v0.9.10) (2026-07-30)
+
+
+### Bug Fixes
+
+* honor packed indexed CopyBits transfer modes ([#220](https://github.com/benletchford/systemless/issues/220)) ([63e441c](https://github.com/benletchford/systemless/commit/63e441ce6ea6338e09d48152acf5762aac400f9e))
+
 ## [0.9.9](https://github.com/benletchford/systemless/compare/v0.9.8...v0.9.9) (2026-07-30)
 
 
