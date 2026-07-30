@@ -2546,8 +2546,13 @@ impl super::TrapDispatcher {
                 && !skip_canonical_to_screen
                 && !hardware_palette_active
             {
-                let translation =
-                    self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle);
+                let translation = self.build_palette_translation(
+                    bus,
+                    &src_clut,
+                    &dst_clut,
+                    screen_ctab_handle,
+                    8,
+                );
                 for row in 0..row_count {
                     let src_addr = port_base + (src_y_offset + row) * port_rb + src_x_offset;
                     let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
@@ -3070,8 +3075,13 @@ impl super::TrapDispatcher {
             && !skip_canonical_to_screen
             && !hardware_palette_active
         {
-            let translation =
-                self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle);
+            let translation = self.build_palette_translation(
+                bus,
+                &src_clut,
+                &dst_clut,
+                screen_ctab_handle,
+                8,
+            );
             for row in 0..row_count {
                 let src_addr = candidate.base + row * candidate.row_bytes;
                 let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
