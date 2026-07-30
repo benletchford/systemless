@@ -3229,10 +3229,13 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn normalize_hfs_path(name: &str) -> String {
-        if Self::is_unix_tmp_path(name) {
-            return Self::normalize_vfs_path(name);
+        // MPW fixtures address the synthetic host mount as "Unix:", while
+        // the VFS stores that volume's contents directly at its root.
+        let path = name.strip_prefix("Unix:").unwrap_or(name);
+        if Self::is_unix_tmp_path(path) {
+            return Self::normalize_vfs_path(path);
         }
-        name.split(':')
+        path.split(':')
             .filter(|component| !component.is_empty() && *component != ".")
             .map(Self::encode_hfs_component_for_vfs)
             .collect::<Vec<_>>()
@@ -6053,6 +6056,18 @@ mod tests {
                 "100%{VFS_HFS_LITERAL_SLASH}Done"
             )),
             "100%/Done"
+        );
+    }
+
+    #[test]
+    fn hfs_path_encoding_strips_the_synthetic_unix_volume() {
+        assert_eq!(
+            TrapDispatcher::normalize_hfs_path("Unix:assertions.txt"),
+            "assertions.txt"
+        );
+        assert_eq!(
+            TrapDispatcher::normalize_hfs_path("Unix:Folder:100%/Done"),
+            format!("Folder/100%{VFS_HFS_LITERAL_SLASH}Done")
         );
     }
 
