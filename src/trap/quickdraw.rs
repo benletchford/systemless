@@ -18980,7 +18980,11 @@ impl super::TrapDispatcher {
         Self::push_pict_word(&mut picture, 0); // srcCopy
 
         let pixels_per_byte = 8 / u32::from(pixel_size);
-        let pixel_mask = (1u8 << pixel_size) - 1;
+        let pixel_mask = if pixel_size == 8 {
+            u8::MAX
+        } else {
+            (1u8 << pixel_size) - 1
+        };
         let mut row = vec![0u8; row_bytes as usize];
         for y in 0..height {
             row.fill(0);
@@ -38748,6 +38752,50 @@ mod tests {
             bus.read_bytes(screen_base, 8),
             original,
             "ClosePicture must retain packed 4-bit pixels for a later DrawPicture"
+        );
+    }
+
+    #[test]
+    fn closepicture_preserves_an_8bpp_screen_snapshot_for_drawpicture() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let original = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        let screen_base = bus.alloc(original.len() as u32);
+        bus.write_bytes(screen_base, &original);
+        d.screen_mode = (screen_base, 8, 8, 2, 8);
+
+        let pic_frame = 0x300280u32;
+        write_rect(&mut bus, pic_frame, 0, 0, 2, 8);
+        bus.write_long(TEST_SP, pic_frame);
+        let open_result = d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus);
+        assert!(open_result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 4);
+
+        let close_result = d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus);
+        assert!(close_result.unwrap().is_ok());
+        let pic_ptr = bus.read_long(handle);
+
+        bus.write_bytes(screen_base, &[0xFF; 16]);
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            2,
+            8,
+            d.screen_mode,
+            &d.device_clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert_eq!(
+            bus.read_bytes(screen_base, 16),
+            original,
+            "ClosePicture must retain packed 8-bit pixels for a later DrawPicture"
         );
     }
 
