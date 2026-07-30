@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.9](https://github.com/benletchford/systemless/compare/v0.9.8...v0.9.9) (2026-07-30)
+
+
+### Bug Fixes
+
+* initialize packed indexed color tables by depth ([#217](https://github.com/benletchford/systemless/issues/217)) ([7eca3e8](https://github.com/benletchford/systemless/commit/7eca3e89df695a8539951c6873659346df187176))
+
 ## [0.9.8](https://github.com/benletchford/systemless/compare/v0.9.7...v0.9.8) (2026-07-30)
 
 
