@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.2](https://github.com/benletchford/systemless/compare/v0.9.1...v0.9.2) (2026-07-30)
+
+
+### Bug Fixes
+
+* record 8-bit ClosePicture snapshots without overflow ([1fa7a56](https://github.com/benletchford/systemless/commit/1fa7a56e3177324ff93e7d20d0590dbe430cef06))
+* restore offscreen PixMap base handles ([59e772f](https://github.com/benletchford/systemless/commit/59e772fe4beda4d2d50a5f29aaab565f22cade98))
+
 ## [0.9.1](https://github.com/benletchford/systemless/compare/v0.9.0...v0.9.1) (2026-07-30)
 
 
