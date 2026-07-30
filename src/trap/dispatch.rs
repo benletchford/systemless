@@ -4516,11 +4516,13 @@ impl TrapDispatcher {
         res_id: i16,
         data: Vec<u8>,
     ) {
-        if res_type == *b"FONT" || res_type == *b"NFNT" {
-            let _ = crate::quickdraw::fonts::register_resource_font_strike(res_id, &data);
-        }
         self.resource_backing_data
             .insert((refnum, res_type, res_id), data);
+        if res_type == *b"FONT" || res_type == *b"NFNT" {
+            self.register_resource_font_backing(refnum, res_id);
+        } else if res_type == *b"FOND" {
+            self.register_fond_associated_strikes(refnum, res_id);
+        }
     }
 
     pub(crate) fn loaded_resource_handle_size(data_size: u32) -> u32 {
@@ -4576,13 +4578,103 @@ impl TrapDispatcher {
 
     pub(crate) fn remember_resource_fork_backing_data(&mut self, refnum: u16, fork: &ResourceFork) {
         for ((res_type, res_id), resource) in fork.resources() {
-            if res_type == b"FONT" || res_type == b"NFNT" {
-                let _ =
-                    crate::quickdraw::fonts::register_resource_font_strike(*res_id, &resource.data);
-            }
             self.resource_backing_data
                 .entry((refnum, *res_type, *res_id))
                 .or_insert_with(|| resource.data.clone());
+        }
+        // Parse every FOND only after the complete resource fork is present.
+        // HashMap iteration order is intentionally unspecified, while an
+        // NFNT's arbitrary resource ID is meaningful only through its FOND
+        // association. Inside Macintosh: Text (1993), pp. 4-13 and 4-95.
+        for ((res_type, res_id), _) in fork.resources() {
+            if res_type == b"FONT" || res_type == b"NFNT" {
+                self.register_resource_font_backing(refnum, *res_id);
+            }
+        }
+    }
+
+    fn fond_associations_for_font_resource(
+        &self,
+        refnum: u16,
+        font_resource_id: i16,
+    ) -> Vec<crate::quickdraw::fonts::FondAssociation> {
+        self.resource_backing_data
+            .iter()
+            .filter(|((entry_refnum, res_type, _), _)| {
+                *entry_refnum == refnum && res_type == b"FOND"
+            })
+            .filter_map(|((_, _, fond_id), bytes)| {
+                crate::quickdraw::fonts::parse_fond_associations(*fond_id, bytes)
+            })
+            .flatten()
+            .filter(|association| association.font_resource_id == font_resource_id)
+            .collect()
+    }
+
+    fn register_resource_font_backing(&self, refnum: u16, font_resource_id: i16) {
+        let Some((res_type, bytes)) = [*b"NFNT", *b"FONT"].iter().find_map(|res_type| {
+            self.resource_backing_data
+                .get(&(refnum, *res_type, font_resource_id))
+                .map(|bytes| (*res_type, bytes))
+        }) else {
+            return;
+        };
+        let associations = self.fond_associations_for_font_resource(refnum, font_resource_id);
+        if associations.is_empty() {
+            // Standalone old-style FONT resources retain the original
+            // family*128+size convention. NFNT IDs are arbitrary and only
+            // acquire a family and size through a FOND association, which may
+            // not have been loaded yet.
+            if res_type == *b"FONT" {
+                let _ = crate::quickdraw::fonts::register_resource_font_strike(
+                    font_resource_id,
+                    bytes,
+                );
+            }
+            return;
+        }
+
+        for association in associations {
+            // The renderer currently synthesizes bold/italic/etc. from the
+            // plain strike. Do not accidentally install an intrinsic styled
+            // strike as the family's plain face when both share a point size.
+            if association.style & 0x00FF != 0 {
+                continue;
+            }
+            let registered = crate::quickdraw::fonts::register_resource_font_strike_for_family(
+                association.family_id,
+                association.size,
+                bytes,
+            );
+            if registered && std::env::var_os("SYSTEMLESS_TRACE_FONT_TRAPS").is_some() {
+                eprintln!(
+                    "[FONT] FOND {} maps {}pt style ${:04X} to bitmap resource {}",
+                    association.family_id,
+                    association.size,
+                    association.style,
+                    association.font_resource_id,
+                );
+            }
+        }
+    }
+
+    fn register_fond_associated_strikes(&self, refnum: u16, fond_resource_id: i16) {
+        let Some(fond_bytes) = self
+            .resource_backing_data
+            .get(&(refnum, *b"FOND", fond_resource_id))
+        else {
+            return;
+        };
+        let Some(associations) =
+            crate::quickdraw::fonts::parse_fond_associations(fond_resource_id, fond_bytes)
+        else {
+            return;
+        };
+        for font_resource_id in associations
+            .iter()
+            .map(|association| association.font_resource_id)
+        {
+            self.register_resource_font_backing(refnum, font_resource_id);
         }
     }
 
@@ -5922,6 +6014,52 @@ mod tests {
         bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
 
         bytes
+    }
+
+    fn minimal_test_nfnt() -> Vec<u8> {
+        let mut bytes = vec![0u8; 38];
+        bytes[2..4].copy_from_slice(&32u16.to_be_bytes());
+        bytes[4..6].copy_from_slice(&32u16.to_be_bytes());
+        bytes[6..8].copy_from_slice(&1u16.to_be_bytes());
+        bytes[14..16].copy_from_slice(&1u16.to_be_bytes());
+        bytes[16..18].copy_from_slice(&9u16.to_be_bytes());
+        bytes[18..20].copy_from_slice(&1u16.to_be_bytes());
+        bytes[24..26].copy_from_slice(&1u16.to_be_bytes());
+        bytes[26] = 0xC0;
+        bytes[28..30].copy_from_slice(&0u16.to_be_bytes());
+        bytes[30..32].copy_from_slice(&1u16.to_be_bytes());
+        bytes[32..34].copy_from_slice(&2u16.to_be_bytes());
+        bytes[34..36].copy_from_slice(&1u16.to_be_bytes());
+        bytes[36..38].copy_from_slice(&1u16.to_be_bytes());
+        bytes
+    }
+
+    fn test_fond(font_resource_id: i16, size: i16) -> Vec<u8> {
+        let mut bytes = vec![0u8; 60];
+        bytes[52..54].copy_from_slice(&0u16.to_be_bytes()); // one association minus one
+        bytes[54..56].copy_from_slice(&(size as u16).to_be_bytes());
+        bytes[56..58].copy_from_slice(&0u16.to_be_bytes()); // plain style
+        bytes[58..60].copy_from_slice(&(font_resource_id as u16).to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn fond_associations_register_nfnt_independent_of_resource_load_order() {
+        let nfnt = minimal_test_nfnt();
+
+        let mut fond_first = TrapDispatcher::new();
+        fond_first.remember_resource_backing_data(7, *b"FOND", 30010, test_fond(42, 15));
+        fond_first.remember_resource_backing_data(7, *b"NFNT", 42, nfnt.clone());
+        let face = crate::quickdraw::fonts::get_font_face(30010, 15)
+            .expect("FOND loaded before NFNT should register the associated face");
+        assert_eq!((face.font_id, face.size), (30010, 15));
+
+        let mut nfnt_first = TrapDispatcher::new();
+        nfnt_first.remember_resource_backing_data(8, *b"NFNT", 43, nfnt);
+        nfnt_first.remember_resource_backing_data(8, *b"FOND", 30011, test_fond(43, 16));
+        let face = crate::quickdraw::fonts::get_font_face(30011, 16)
+            .expect("FOND loaded after NFNT should register the associated face");
+        assert_eq!((face.font_id, face.size), (30011, 16));
     }
 
     #[test]
