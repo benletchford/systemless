@@ -2108,6 +2108,10 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
 
+        self.dispatcher.application_high_level_event_aware = app
+            .size_resource
+            .is_some_and(ApplicationSizeResource::is_high_level_event_aware);
+
         // Classic Mac OS application code runs in supervisor mode with the
         // processor priority open to level-1 VBL interrupts. The m68k core
         // starts from CPU reset with all interrupts masked; make the launch
@@ -6374,6 +6378,15 @@ fn load_app_generic<M: MemoryBus>(
                 );
             }
         }
+        if let Some(size) = size_resource {
+            eprintln!(
+                "[LOAD] SIZE -1 flags=${:04X} highLevelEventAware={} preferred={} minimum={}",
+                size.flags,
+                size.is_high_level_event_aware(),
+                size.preferred_size,
+                size.minimum_size
+            );
+        }
     }
 
     let a5_base = load_address + header.below_a5;
@@ -7018,6 +7031,36 @@ mod tests {
             runner.dispatcher.tick_count, DEFAULT_LAUNCH_TICKS,
             "TickCount fast path must stay in sync with low-memory Ticks"
         );
+    }
+
+    #[test]
+    fn init_app_propagates_size_high_level_event_capability() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let unaware_size = size_resource_bytes(0, 0x0008_0000, 0x0008_0000);
+        let unaware_fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, code0.as_slice()),
+            (*b"SIZE", -1, unaware_size.as_slice()),
+        ]);
+        let unaware_fork =
+            ResourceFork::parse(&unaware_fork_bytes).expect("parse unaware app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let unaware_app = runner.load_app(&unaware_fork).expect("load unaware app");
+        runner.init_app(&unaware_app);
+        assert!(!runner.dispatcher.application_high_level_event_aware);
+
+        let aware_size = size_resource_bytes(
+            ApplicationSizeResource::HIGH_LEVEL_EVENT_AWARE,
+            0x0008_0000,
+            0x0008_0000,
+        );
+        let aware_fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, code0.as_slice()),
+            (*b"SIZE", -1, aware_size.as_slice()),
+        ]);
+        let aware_fork = ResourceFork::parse(&aware_fork_bytes).expect("parse aware app fork");
+        let aware_app = runner.load_app(&aware_fork).expect("load aware app");
+        runner.init_app(&aware_app);
+        assert!(runner.dispatcher.application_high_level_event_aware);
     }
 
     #[test]

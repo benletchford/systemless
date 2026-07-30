@@ -1536,6 +1536,11 @@ pub struct TrapDispatcher {
     /// On a real Mac, the Finder sends this Apple Event at launch.
     /// Macintosh Toolbox Essentials 1992, p. 5-90
     pub(crate) sent_open_app_event: bool,
+    /// Whether the application's `'SIZE'` resource declares
+    /// `isHighLevelEventAware`. The Process Manager defaults this capability
+    /// to false when the resource or flag is absent.
+    /// Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32.
+    pub(crate) application_high_level_event_aware: bool,
     /// Full trap word currently being dispatched. Some OS traps share the
     /// low 8-bit trap number and require bit 8 to distinguish variants.
     pub(crate) current_trap_word: u16,
@@ -2915,6 +2920,7 @@ impl TrapDispatcher {
             flushed_update_events: VecDeque::new(),
             system_event_mask: 0xFFEF, // everyEvent - keyUpMask
             sent_open_app_event: false,
+            application_high_level_event_aware: false,
             current_trap_word: 0,
             current_trap_caller: None,
             pending_wait_sleep_ticks: 0,
