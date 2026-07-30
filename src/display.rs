@@ -72,7 +72,7 @@ impl CursorImage {
 
 /// Render the current screen to an RGBA pixel buffer (4 bytes per pixel).
 ///
-/// Uses `ram_slice()` for bulk memory access. Supports both 1bpp and 8bpp modes.
+/// Uses `ram_slice()` for bulk memory access. Supports 1bpp, 4bpp, and 8bpp modes.
 /// The returned buffer has dimensions `width * height * 4` bytes.
 pub fn render_screen(
     bus: &MacMemoryBus,
@@ -92,7 +92,7 @@ pub fn render_screen_into(
     device_clut: &[[u16; 3]; 256],
     pixels: &mut Vec<u8>,
 ) {
-    if screen_mode.4 == 8 {
+    if matches!(screen_mode.4, 4 | 8) {
         let palette = rgba_palette_from_clut(device_clut);
         render_screen_with_rgba_palette_into(bus, screen_mode, &palette, pixels);
     } else {
@@ -122,8 +122,6 @@ pub fn render_screen_with_rgba_palette_into(
     let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
     let w = scrn_w as u32;
     let h = scrn_h as u32;
-    let is_8bpp = pixel_size == 8;
-
     pixels.resize((w * h * 4) as usize, 0);
 
     if w == 0 || h == 0 || row_bytes == 0 {
@@ -133,10 +131,10 @@ pub fn render_screen_with_rgba_palette_into(
 
     let fb = bus.ram_slice(scrn_base, row_bytes * h);
 
-    if is_8bpp {
-        render_8bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels);
-    } else {
-        render_1bpp_rgba_rows(fb, row_bytes, w, h, pixels);
+    match pixel_size {
+        8 => render_8bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
+        4 => render_4bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
+        _ => render_1bpp_rgba_rows(fb, row_bytes, w, h, pixels),
     }
     normalize_centered_compact_mac_viewport_margins_rgba(pixels, w as usize, h as usize);
 }
@@ -470,6 +468,35 @@ fn render_8bpp_rgba_rows(
 }
 
 #[inline]
+fn render_4bpp_rgba_rows(
+    fb: &[u8],
+    row_bytes: u32,
+    w: u32,
+    h: u32,
+    palette: &RgbaPalette,
+    pixels: &mut [u8],
+) {
+    let dst = pixels.as_mut_ptr().cast::<u32>();
+    let w = w as usize;
+    let row_bytes = row_bytes as usize;
+    for gy in 0..h as usize {
+        let src_row = &fb[gy * row_bytes..];
+        let dst_row = unsafe { dst.add(gy * w) };
+        for gx in 0..w {
+            let packed = src_row[gx / 2];
+            let index = if gx & 1 == 0 {
+                packed >> 4
+            } else {
+                packed & 0x0F
+            };
+            unsafe {
+                std::ptr::write_unaligned(dst_row.add(gx), palette[index as usize]);
+            }
+        }
+    }
+}
+
+#[inline]
 fn render_1bpp_rgba_rows(fb: &[u8], row_bytes: u32, w: u32, h: u32, pixels: &mut [u8]) {
     let dst = pixels.as_mut_ptr().cast::<u32>();
     let w = w as usize;
@@ -516,6 +543,16 @@ pub fn screen_pixel_rgb(
             let pixel = bus.read_byte(addr);
             Some(clut_to_rgba8(device_clut, pixel))
         }
+        4 => {
+            let addr = scrn_base + y * row_bytes + x / 2;
+            let packed = bus.read_byte(addr);
+            let pixel = if x & 1 == 0 {
+                packed >> 4
+            } else {
+                packed & 0x0F
+            };
+            Some(clut_to_rgba8(device_clut, pixel))
+        }
         1 => {
             let addr = scrn_base + y * row_bytes + x / 8;
             let byte = bus.read_byte(addr);
@@ -543,7 +580,6 @@ pub fn render_screen_argb(
     let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
     let w = scrn_w as usize;
     let h = scrn_h as usize;
-    let is_8bpp = pixel_size == 8;
     let len = w.saturating_mul(h);
 
     pixels.resize(len, BLACK_ARGB);
@@ -555,28 +591,45 @@ pub fn render_screen_argb(
 
     let fb = bus.ram_slice(scrn_base, row_bytes * scrn_h as u32);
 
-    if is_8bpp {
-        let palette = argb_palette_from_clut(device_clut);
-
-        for gy in 0..h {
-            let row_start = gy * row_bytes as usize;
-            let dst_row = &mut pixels[gy * w..(gy + 1) * w];
-            for gx in 0..w {
-                dst_row[gx] = palette[fb[row_start + gx] as usize];
+    let palette = argb_palette_from_clut(device_clut);
+    match pixel_size {
+        8 => {
+            for gy in 0..h {
+                let row_start = gy * row_bytes as usize;
+                let dst_row = &mut pixels[gy * w..(gy + 1) * w];
+                for gx in 0..w {
+                    dst_row[gx] = palette[fb[row_start + gx] as usize];
+                }
             }
         }
-    } else {
-        for gy in 0..h {
-            let row_start = gy * row_bytes as usize;
-            let dst_row = &mut pixels[gy * w..(gy + 1) * w];
-            for gx in 0..w {
-                let byte = fb[row_start + (gx / 8)];
-                let bit = 7 - (gx % 8);
-                dst_row[gx] = if (byte & (1 << bit)) != 0 {
-                    BLACK_ARGB
-                } else {
-                    WHITE_ARGB
-                };
+        4 => {
+            for gy in 0..h {
+                let row_start = gy * row_bytes as usize;
+                let dst_row = &mut pixels[gy * w..(gy + 1) * w];
+                for gx in 0..w {
+                    let packed = fb[row_start + gx / 2];
+                    let index = if gx & 1 == 0 {
+                        packed >> 4
+                    } else {
+                        packed & 0x0F
+                    };
+                    dst_row[gx] = palette[index as usize];
+                }
+            }
+        }
+        _ => {
+            for gy in 0..h {
+                let row_start = gy * row_bytes as usize;
+                let dst_row = &mut pixels[gy * w..(gy + 1) * w];
+                for gx in 0..w {
+                    let byte = fb[row_start + (gx / 8)];
+                    let bit = 7 - (gx % 8);
+                    dst_row[gx] = if (byte & (1 << bit)) != 0 {
+                        BLACK_ARGB
+                    } else {
+                        WHITE_ARGB
+                    };
+                }
             }
         }
     }
@@ -1355,8 +1408,8 @@ mod tests {
     use super::{
         argb_palette_from_clut, clut_component_to_u8, clut_to_argb,
         normalize_centered_compact_mac_viewport_margins_rgba, render_cursor, render_cursor_argb,
-        render_screen_into, render_screen_with_rgba_palette_into, rgba_palette_from_clut,
-        screen_pixel_rgb, CursorImage,
+        render_screen_argb, render_screen_into, render_screen_with_rgba_palette_into,
+        rgba_palette_from_clut, screen_pixel_rgb, CursorImage,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
 
@@ -1427,6 +1480,45 @@ mod tests {
         render_screen_with_rgba_palette_into(&bus, (base, 4, 3, 1, 8), &palette, &mut precomputed);
 
         assert_eq!(precomputed, direct);
+    }
+
+    #[test]
+    fn render_screen_into_4bpp_decodes_high_then_low_nibbles() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = 128;
+        bus.write_byte(base, 0x12);
+        bus.write_byte(base + 1, 0x30);
+        let mut clut = [[0u16; 3]; 256];
+        clut[1] = [0xFFFF, 0x0000, 0x0000];
+        clut[2] = [0x0000, 0xFFFF, 0x0000];
+        clut[3] = [0x0000, 0x0000, 0xFFFF];
+
+        let mut rgba = Vec::new();
+        render_screen_into(&bus, (base, 2, 4, 1, 4), &clut, &mut rgba);
+        assert_eq!(
+            rgba,
+            vec![
+                0xFF, 0x00, 0x00, 0xFF, //
+                0x00, 0xFF, 0x00, 0xFF, //
+                0x00, 0x00, 0xFF, 0xFF, //
+                0x00, 0x00, 0x00, 0xFF,
+            ]
+        );
+
+        let mut argb = Vec::new();
+        render_screen_argb(&bus, (base, 2, 4, 1, 4), &clut, &mut argb);
+        assert_eq!(
+            argb,
+            vec![0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF, 0xFF00_0000]
+        );
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 2, 4, 1, 4), &clut, 0, 0),
+            Some([255, 0, 0])
+        );
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 2, 4, 1, 4), &clut, 1, 0),
+            Some([0, 255, 0])
+        );
     }
 
     #[test]

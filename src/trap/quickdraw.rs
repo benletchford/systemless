@@ -3631,6 +3631,51 @@ impl super::TrapDispatcher {
                         let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                         match (src_info.pixel_size, dst_info.pixel_size) {
+                            (src_bits @ (2 | 4), dst_bits) if src_bits == dst_bits => {
+                                let pixels_per_byte = 8 / src_bits;
+                                let pixel_mask = (1u8 << src_bits) - 1;
+                                let src_byte_offset =
+                                    src_y_off * src_info.row_bytes + src_x_off / pixels_per_byte;
+                                let src_shift =
+                                    8 - src_bits - (src_x_off % pixels_per_byte) * src_bits;
+                                let src_pixel =
+                                    (read_src_byte(bus, src_info.base + src_byte_offset)
+                                        >> src_shift)
+                                        & pixel_mask;
+                                if mode_base == 36
+                                    && transparent_src_indices
+                                        .as_ref()
+                                        .is_some_and(|indices| indices[src_pixel as usize])
+                                {
+                                    continue;
+                                }
+                                let dst_byte_offset =
+                                    dst_y * dst_info.row_bytes + dst_x / pixels_per_byte;
+                                let dst_shift = 8 - dst_bits - (dst_x % pixels_per_byte) * dst_bits;
+                                let dst_addr = dst_info.base + dst_byte_offset;
+                                let dst_byte = bus.read_byte(dst_addr);
+                                let dst_pixel = (dst_byte >> dst_shift) & pixel_mask;
+                                let Some(new_pixel) = self.copy_bits_color_source_mode_pixel(
+                                    bus,
+                                    dst_ctab_handle,
+                                    src_clut,
+                                    dst_clut,
+                                    palette_translation,
+                                    mode_base,
+                                    src_pixel,
+                                    dst_pixel,
+                                    copy_fg_rgb,
+                                    copy_bg_rgb,
+                                ) else {
+                                    continue;
+                                };
+                                let shifted_mask = pixel_mask << dst_shift;
+                                bus.write_byte(
+                                    dst_addr,
+                                    (dst_byte & !shifted_mask)
+                                        | ((new_pixel & pixel_mask) << dst_shift),
+                                );
+                            }
                             (src_bits @ (2 | 4), 8) => {
                                 // Indexed PixMap pixels are packed high bit first:
                                 // four 2-bit pixels or two 4-bit pixels per byte.
@@ -6202,9 +6247,9 @@ impl super::TrapDispatcher {
                     // nonzero mode ID when supported.
                     //
                     // Systemless exposes the common classic Mac display
-                    // depths as device capabilities. 1bpp and 8bpp are wired
-                    // to screenBits/screen_mode; other supported depths are
-                    // recorded at the GDevice level without changing the
+                    // depths as device capabilities. 1bpp, 4bpp, and 8bpp are
+                    // wired to screenBits/screen_mode; other supported depths
+                    // are recorded at the GDevice level without changing the
                     // backing framebuffer.
                     0x0A14 => {
                         let flags = bus.read_word(sp + 2);
@@ -6222,7 +6267,7 @@ impl super::TrapDispatcher {
                     //
                     // Stack: same layout as HasDepth (10-byte arg block).
                     // Result is OSErr (Integer). Systemless updates screenBits
-                    // and screen_mode for the wired 1bpp/8bpp paths, and
+                    // and screen_mode for the wired 1bpp/4bpp/8bpp paths, and
                     // records other supported depth requests on the GDevice
                     // without changing the backing framebuffer.
                     //
@@ -15387,7 +15432,7 @@ impl super::TrapDispatcher {
             return (-50i16) as u16; // paramErr
         };
 
-        if matches!(depth, 1 | 8) {
+        if matches!(depth, 1 | 4 | 8) {
             if depth == 8 {
                 if let Some((width, height)) = Self::display_mode_geometry(u32::from(depth_or_mode))
                 {
@@ -17499,8 +17544,8 @@ impl super::TrapDispatcher {
     ///
     /// Imaging With QuickDraw 1994 pp. 5-34..5-35: SetDepth changes
     /// the pixel depth and color/B&W mode of the requested device.
-    /// Systemless currently wires this for the two depths its screen
-    /// renderer supports directly: 1bpp B&W and 8bpp indexed color.
+    /// Systemless currently wires this for the depths its screen renderer
+    /// supports directly: 1bpp B&W plus 4bpp and 8bpp indexed color.
     pub(crate) fn do_setdepth<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -17519,6 +17564,7 @@ impl super::TrapDispatcher {
     fn row_bytes_for_depth(width: u16, depth: u16) -> Option<u32> {
         match depth {
             1 => Some(u32::from(width).div_ceil(8)),
+            4 => Some(u32::from(width).div_ceil(2).next_multiple_of(2)),
             8 => Some(u32::from(width)),
             _ => None,
         }
@@ -17586,6 +17632,9 @@ impl super::TrapDispatcher {
             };
             if ctab != 0 {
                 bus.write_long(ctab, u32::from(depth));
+                if matches!(depth, 1 | 2 | 4 | 8) {
+                    bus.write_word(ctab + 6, (1u16 << depth) - 1);
+                }
             }
         }
         let mut flags = bus.read_word(gd + 20);
@@ -17615,6 +17664,7 @@ impl super::TrapDispatcher {
         let ram_size = bus.ram_size();
         let color_screen_base = ram_size - 0x80000;
         bus.write_long(0x0824, color_screen_base); // ScrnBase
+        bus.write_word(crate::memory::globals::addr::SCREEN_ROW, row_bytes as u16);
 
         let sb = crate::memory::globals::addr::SCREEN_BITS;
         bus.write_long(sb, color_screen_base);
@@ -18366,6 +18416,47 @@ impl super::TrapDispatcher {
                 let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                 match (src_info.pixel_size, dst_info.pixel_size) {
+                    (src_bits @ (2 | 4), dst_bits) if src_bits == dst_bits => {
+                        let pixels_per_byte = 8 / src_bits;
+                        let pixel_mask = (1u8 << src_bits) - 1;
+                        let src_byte_offset =
+                            src_y_off * src_info.row_bytes + src_x_off / pixels_per_byte;
+                        let src_shift = 8 - src_bits - (src_x_off % pixels_per_byte) * src_bits;
+                        let src_pixel = (read_src_byte(bus, src_info.base + src_byte_offset)
+                            >> src_shift)
+                            & pixel_mask;
+                        if mode_base == 36
+                            && transparent_src_indices
+                                .as_ref()
+                                .is_some_and(|indices| indices[src_pixel as usize])
+                        {
+                            continue;
+                        }
+                        let dst_byte_offset = dst_y * dst_info.row_bytes + dst_x / pixels_per_byte;
+                        let dst_shift = 8 - dst_bits - (dst_x % pixels_per_byte) * dst_bits;
+                        let dst_addr = dst_info.base + dst_byte_offset;
+                        let dst_byte = bus.read_byte(dst_addr);
+                        let dst_pixel = (dst_byte >> dst_shift) & pixel_mask;
+                        let Some(new_pixel) = self.copy_bits_color_source_mode_pixel(
+                            bus,
+                            dst_ctab_handle,
+                            src_clut,
+                            dst_clut,
+                            palette_translation,
+                            mode_base,
+                            src_pixel,
+                            dst_pixel,
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        ) else {
+                            continue;
+                        };
+                        let shifted_mask = pixel_mask << dst_shift;
+                        bus.write_byte(
+                            dst_addr,
+                            (dst_byte & !shifted_mask) | ((new_pixel & pixel_mask) << dst_shift),
+                        );
+                    }
                     (src_bits @ (2 | 4), 8) => {
                         let pixels_per_byte = 8 / src_bits;
                         let src_byte_offset =
@@ -30629,6 +30720,39 @@ mod tests {
     }
 
     #[test]
+    fn copy_bits_4bpp_to_4bpp_writes_packed_nibbles_and_preserves_neighbors() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x326100u32;
+        let dst_pixmap = 0x326200u32;
+        let src_base = 0x327000u32;
+        let dst_base = 0x328000u32;
+        let src_rect = 0x329000u32;
+        let dst_rect = 0x329010u32;
+
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 2, 4, 1, 4, 0);
+        write_pixmap_indexed(&mut bus, dst_pixmap, dst_base, 4, 6, 1, 4, 0);
+        bus.write_bytes(src_base, &[0x12, 0x34]);
+        bus.write_bytes(dst_base, &[0xA5, 0x67, 0x8B, 0xCC]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 4);
+        write_rect(&mut bus, dst_rect, 0, 1, 1, 5);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0); // srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_bytes(dst_base, 4),
+            vec![0xA1, 0x23, 0x4B, 0xCC],
+            "CopyBits must pack 4-bit pixels high-nibble first without clobbering adjacent pixels or row padding"
+        );
+    }
+
+    #[test]
     fn copy_bits_2bpp_to_8bpp_honors_transparent_mode_and_row_padding() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let src_pixmap = 0x326100u32;
@@ -33941,6 +34065,7 @@ mod tests {
         assert_eq!(d.screen_mode.4, 1);
         assert_eq!(bus.read_long(screen_bits_ptr), d.screen_mode.0);
         assert_eq!(bus.read_word(screen_bits_ptr + 4), 100);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 100);
         assert_eq!(bus.read_word(screen_bits_ptr + 10), 600);
         assert_eq!(bus.read_word(screen_bits_ptr + 12), 800);
         assert_eq!(bus.read_byte(d.screen_mode.0), 0x00);
@@ -33959,10 +34084,16 @@ mod tests {
         // IM:VI Table C-3 lists SetDepth as selector $0A13. Normalize the
         // longword D0 form ($000A0013) before falling back to the legacy
         // stack-selector path, otherwise the flags word at SP would be
-        // misread as a Palette Manager selector.
+        // misread as a Palette Manager selector. Imaging With QuickDraw
+        // 1994 pp. 5-34..5-35 requires a successful call to impose the
+        // requested pixel depth on the video device.
         let (mut d, mut cpu, mut bus) = setup();
         let gdh = d.ensure_main_gdevice(&mut bus);
-        let before_screen_mode = d.screen_mode;
+        let gd = bus.read_long(gdh);
+        let pm_handle = bus.read_long(gd + 22);
+        let pm = bus.read_long(pm_handle);
+        let ctab_handle = bus.read_long(pm + 42);
+        let ctab = bus.read_long(ctab_handle);
 
         cpu.write_reg(Register::D0, 0x000A_0013);
         bus.write_word(TEST_SP, 1); // flags (color)
@@ -33974,18 +34105,33 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(TEST_SP + 10), 0);
-        assert_eq!(d.screen_mode, before_screen_mode);
-
-        let gd = bus.read_long(gdh);
+        assert_eq!(d.screen_mode.1, 400);
+        assert_eq!(d.screen_mode.2, 800);
+        assert_eq!(d.screen_mode.3, 600);
+        assert_eq!(d.screen_mode.4, 4);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::SCREEN_BITS + 4),
+            400
+        );
+        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 400);
+        assert_eq!(bus.read_word(pm + 4), 0x8000 | 400);
+        assert_eq!(bus.read_word(pm + 32), 4);
+        assert_eq!(bus.read_word(pm + 36), 4);
+        assert_eq!(bus.read_word(ctab + 6), 15);
+        assert_eq!(bus.read_byte(d.screen_mode.0), 0xFF);
+        assert_eq!(
+            bus.read_byte(d.screen_mode.0 + d.screen_mode.1 * 600 - 1),
+            0xFF
+        );
         assert_eq!(bus.read_long(gd + 42), 4);
         assert_ne!(bus.read_word(gd + 20) & 1, 0);
     }
 
     #[test]
-    fn set_depth_accepts_has_depth_mode_id_without_rewiring_non_8bpp_framebuffer() {
+    fn set_depth_accepts_has_depth_mode_id_without_rewiring_unrendered_framebuffer() {
         // HasDepth's result can be passed back to SetDepth. Systemless records
         // the requested display mode on the GDevice but keeps the real
-        // framebuffer in its wired shape for non-1/8bpp requests.
+        // framebuffer in its wired shape for non-1/4/8bpp requests.
         let (mut d, mut cpu, mut bus) = setup();
         let gdh = d.ensure_main_gdevice(&mut bus);
         let before_screen_mode = d.screen_mode;

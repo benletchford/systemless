@@ -22,7 +22,7 @@ The HLE now covers the major runtime surfaces needed by interactive software:
 - Resource Manager, Segment Loader, File Manager calls, and an in-memory
   HFS-like VFS with data and resource forks.
 - QuickDraw ports, regions, text, shapes, PICT, CopyBits, color tables,
-  offscreen GWorlds, cursors, and 1bpp/8bpp framebuffers.
+  offscreen GWorlds, cursors, and 1bpp/4bpp/8bpp framebuffers.
 - Event, Menu, Window, Control, Dialog, TextEdit, Cursor, Process, Sound,
   SANE, and common Toolbox utility traps.
 - Cooperative Thread Manager contexts, yielding, current-thread queries,

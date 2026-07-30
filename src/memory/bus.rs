@@ -837,6 +837,7 @@ impl MacMemoryBus {
 
         // ScrnBase ($0824) - pointer to screen buffer
         bus.write_long(0x0824, screen_base);
+        bus.write_word(super::globals::addr::SCREEN_ROW, screen_row_bytes);
 
         // SoundBase ($0266) - pointer to the 370-word main sound buffer
         // used by the original free-form synthesizer. Keep it in the
@@ -1638,6 +1639,12 @@ impl MemoryBus for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_bus_publishes_default_screen_row_bytes() {
+        let bus = MacMemoryBus::new(1024);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 800);
+    }
 
     #[test]
     fn write_probe_accepts_temporary_writes_that_restore_original_bytes() {
