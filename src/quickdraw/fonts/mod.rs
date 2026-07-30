@@ -217,20 +217,80 @@ fn resource_word(data: &[u8], offset: usize) -> Option<u16> {
     ]))
 }
 
-/// Decode a classic `FONT`/`NFNT` bitmap strike whose resource ID uses the
-/// standard `family * 128 + pointSize` encoding. The resource bytes stay in
-/// the user's application; Systemless only expands their 1-bit glyph bitmap
-/// into the same runtime coverage representation used by its built-in faces.
+/// One entry from a font family (`FOND`) resource's association table.
+///
+/// `font_resource_id` identifies an `NFNT`, `FONT`, or `sfnt` resource;
+/// unlike old-style `FONT` IDs, an `NFNT` ID does not encode its family or
+/// point size. *Inside Macintosh: Text* (1993), pp. 4-47–4-48 and 4-95–4-96.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FondAssociation {
+    pub family_id: i16,
+    pub size: i16,
+    pub style: u16,
+    pub font_resource_id: i16,
+}
+
+/// Decode the mandatory association table that immediately follows a
+/// `FOND` resource's 52-byte `FamRec` header.
+pub(crate) fn parse_fond_associations(
+    fond_resource_id: i16,
+    bytes: &[u8],
+) -> Option<Vec<FondAssociation>> {
+    const FAM_REC_LEN: usize = 52;
+    const ASSOCIATION_LEN: usize = 6;
+    let count_minus_one = resource_word(bytes, FAM_REC_LEN)? as i16;
+    if count_minus_one < -1 {
+        return None;
+    }
+    let count = usize::try_from(i32::from(count_minus_one) + 1).ok()?;
+    let table_len = count.checked_mul(ASSOCIATION_LEN)?;
+    let table_end = FAM_REC_LEN.checked_add(2)?.checked_add(table_len)?;
+    if table_end > bytes.len() {
+        return None;
+    }
+
+    let mut associations = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = FAM_REC_LEN + 2 + index * ASSOCIATION_LEN;
+        associations.push(FondAssociation {
+            // The family number used by Font Manager clients is the FOND
+            // resource ID. FamRec.ffFamID redundantly records that value.
+            family_id: fond_resource_id,
+            size: resource_word(bytes, offset)? as i16,
+            style: resource_word(bytes, offset + 2)?,
+            font_resource_id: resource_word(bytes, offset + 4)? as i16,
+        });
+    }
+    Some(associations)
+}
+
+/// Decode a classic `FONT` bitmap strike whose resource ID uses the original
+/// `family * 128 + pointSize` encoding. `NFNT` resources normally use the
+/// arbitrary IDs recorded by a `FOND` association table and should call
+/// [`register_resource_font_strike_for_family`] instead.
 pub(crate) fn register_resource_font_strike(resource_id: i16, bytes: &[u8]) -> bool {
-    const HEADER_LEN: usize = 26;
-    if resource_id <= 0 || bytes.len() < HEADER_LEN {
+    if resource_id <= 0 {
         return false;
     }
-    let font_id = resource_id / 128;
+    let family_id = resource_id / 128;
     let size = resource_id % 128;
     if size <= 0 {
-        // Family marker resources conventionally live at family * 128 and
-        // contain no strike data.
+        return false;
+    }
+    register_resource_font_strike_for_family(family_id, size, bytes)
+}
+
+/// Decode and register a bitmap strike under the family and point size from
+/// its `FOND` association entry. The resource bytes stay in the user's
+/// application; Systemless expands their 1-bit glyph bitmap into the same
+/// runtime coverage representation used by its built-in faces.
+pub(crate) fn register_resource_font_strike_for_family(
+    family_id: i16,
+    size: i16,
+    bytes: &[u8],
+) -> bool {
+    const HEADER_LEN: usize = 26;
+    if family_id < 0 || size <= 0 || bytes.len() < HEADER_LEN {
         return false;
     }
 
@@ -361,7 +421,7 @@ pub(crate) fn register_resource_font_strike(resource_id: i16, bytes: &[u8]) -> b
     let coverage: &'static [u8] = Box::leak(coverage.into_boxed_slice());
     let ascii: &'static [Glyph] = Box::leak(ascii.into_boxed_slice());
     let face = Box::leak(Box::new(FontFace {
-        font_id,
+        font_id: family_id,
         size,
         metrics: FontMetrics {
             ascent,
@@ -375,11 +435,11 @@ pub(crate) fn register_resource_font_strike(resource_id: i16, bytes: &[u8]) -> b
     RESOURCE_FACES
         .lock()
         .expect("resource font cache poisoned")
-        .insert((font_id, size), face);
+        .insert((family_id, size), face);
     if !macroman.is_empty() {
         let glyphs: &'static [MacRomanGlyph] = Box::leak(macroman.into_boxed_slice());
         let face = Box::leak(Box::new(MacRomanFace {
-            font_id,
+            font_id: family_id,
             size,
             glyphs,
             data: coverage,
@@ -387,7 +447,7 @@ pub(crate) fn register_resource_font_strike(resource_id: i16, bytes: &[u8]) -> b
         RESOURCE_MACROMAN_FACES
             .lock()
             .expect("resource Mac Roman font cache poisoned")
-            .insert((font_id, size), face);
+            .insert((family_id, size), face);
     }
     true
 }
@@ -632,6 +692,71 @@ pub fn get_italic_glyph(
 mod tests {
     use super::*;
     use std::fs;
+
+    fn minimal_nfnt() -> Vec<u8> {
+        // One encoded character plus the missing-character glyph. The bitmap
+        // is one row by one word; location and offset/width tables follow it.
+        let mut bytes = vec![0u8; 38];
+        bytes[2..4].copy_from_slice(&32u16.to_be_bytes()); // firstChar
+        bytes[4..6].copy_from_slice(&32u16.to_be_bytes()); // lastChar
+        bytes[6..8].copy_from_slice(&1u16.to_be_bytes()); // widMax
+        bytes[14..16].copy_from_slice(&1u16.to_be_bytes()); // fRectHeight
+        bytes[16..18].copy_from_slice(&9u16.to_be_bytes()); // owTLoc: 16 + 9*2 = 34
+        bytes[18..20].copy_from_slice(&1u16.to_be_bytes()); // ascent
+        bytes[24..26].copy_from_slice(&1u16.to_be_bytes()); // rowWords
+        bytes[26] = 0xC0; // one pixel for each of the two glyphs
+        bytes[28..30].copy_from_slice(&0u16.to_be_bytes());
+        bytes[30..32].copy_from_slice(&1u16.to_be_bytes());
+        bytes[32..34].copy_from_slice(&2u16.to_be_bytes());
+        bytes[34..36].copy_from_slice(&1u16.to_be_bytes()); // offset 0, advance 1
+        bytes[36..38].copy_from_slice(&1u16.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn fond_associations_map_arbitrary_bitmap_resource_ids() {
+        let mut fond = vec![0u8; 66];
+        fond[2..4].copy_from_slice(&1234u16.to_be_bytes()); // redundant ffFamID
+        fond[52..54].copy_from_slice(&1u16.to_be_bytes()); // two entries minus one
+        fond[54..56].copy_from_slice(&12u16.to_be_bytes());
+        fond[56..58].copy_from_slice(&0u16.to_be_bytes());
+        fond[58..60].copy_from_slice(&42u16.to_be_bytes());
+        fond[60..62].copy_from_slice(&18u16.to_be_bytes());
+        fond[62..64].copy_from_slice(&1u16.to_be_bytes());
+        fond[64..66].copy_from_slice(&(-32000i16 as u16).to_be_bytes());
+
+        assert_eq!(
+            parse_fond_associations(16000, &fond),
+            Some(vec![
+                FondAssociation {
+                    family_id: 16000,
+                    size: 12,
+                    style: 0,
+                    font_resource_id: 42,
+                },
+                FondAssociation {
+                    family_id: 16000,
+                    size: 18,
+                    style: 1,
+                    font_resource_id: -32000,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn resource_strike_can_register_under_fond_family_and_size() {
+        let family_id = 30001;
+        assert!(register_resource_font_strike_for_family(
+            family_id,
+            17,
+            &minimal_nfnt(),
+        ));
+        let face = get_font_face(family_id, 17).expect("FOND-associated face should resolve");
+        assert_eq!(face.font_id, family_id);
+        assert_eq!(face.size, 17);
+        assert_eq!(face.metrics.ascent, 1);
+    }
 
     fn distinctive_override_blob() -> override_format::Blob {
         let glyphs: Vec<Glyph> = (0..override_format::GLYPH_COUNT)
