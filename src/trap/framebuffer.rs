@@ -1179,7 +1179,36 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn restore_kiosk_dialog_desktop_background(&self, bus: &mut MacMemoryBus) {
+    fn refresh_saved_under_with_desktop_pattern(&mut self, bus: &MacMemoryBus, window: u32) {
+        let (_, _, _, _, pixel_size) = self.get_screen_params();
+        let black = Self::logical_black_pixel_index(bus);
+        let white = Self::logical_white_pixel_index(bus);
+        let Some((top, left, width, height, pixels)) =
+            self.window_saved_under_pixels.get_mut(&window)
+        else {
+            return;
+        };
+
+        pixels.clear();
+        pixels.reserve(*width as usize * *height as usize);
+        for y in *top..top.saturating_add(*height) {
+            let row = STANDARD_GRAY_PATTERN[y.rem_euclid(8) as usize];
+            for x in *left..left.saturating_add(*width) {
+                let bit = (row >> (7 - x.rem_euclid(8))) & 1;
+                pixels.push(if pixel_size == 8 {
+                    if bit != 0 {
+                        black
+                    } else {
+                        white
+                    }
+                } else {
+                    bit
+                });
+            }
+        }
+    }
+
+    fn restore_kiosk_dialog_desktop_background(&mut self, bus: &mut MacMemoryBus) {
         if !self.menu_bar_hidden
             || self.fullscreen_locked
             || !self.front_window_is_dialog_like()
@@ -1199,6 +1228,12 @@ impl super::TrapDispatcher {
             // startup black stage.
             // Inside Macintosh Volume V, V-210
             self.fill_desktop_pattern_outside_rect(bus, bounds);
+            // A floating window can have captured its save-under while the
+            // startup stage was still black. Keep that snapshot coherent with
+            // the desktop pattern synthesized here so CloseWindow does not
+            // restore stale window-shaped pixels.
+            // Inside Macintosh Volume I, I-283 to I-284
+            self.refresh_saved_under_with_desktop_pattern(bus, self.front_window);
         }
     }
 
@@ -4860,6 +4895,8 @@ mod redraw_chrome_tests {
         disp.dialog_items
             .insert(PORT_PTR, vec![DialogItem::default()]);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+        disp.window_saved_under_pixels
+            .insert(PORT_PTR, (100, 180, 440, 108, vec![0xFF; 440 * 108]));
 
         disp.redraw_chrome(&mut bus);
 
@@ -4877,6 +4914,12 @@ mod redraw_chrome_tests {
             bus.read_byte(screen_base + 120 * row_bytes + 200),
             0xFF,
             "dialog bounds must not be overwritten by the desktop fill"
+        );
+        let saved = &disp.window_saved_under_pixels[&PORT_PTR].4;
+        assert_eq!(
+            &saved[..2],
+            &[0xFF, 0x00],
+            "the save-under snapshot must track the synthesized desktop pattern"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
     }
