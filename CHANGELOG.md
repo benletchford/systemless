@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/benletchford/systemless/compare/v0.9.3...v0.9.4) (2026-07-30)
+
+
+### Bug Fixes
+
+* preserve explicit palette indices during indexed blits ([#194](https://github.com/benletchford/systemless/issues/194)) ([4a2429d](https://github.com/benletchford/systemless/commit/4a2429dac44a9bfad81edbbbe2b47e2c5e88c048))
+
 ## [0.9.3](https://github.com/benletchford/systemless/compare/v0.9.2...v0.9.3) (2026-07-30)
 
 
