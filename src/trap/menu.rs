@@ -805,7 +805,7 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         pixel_size: u16,
     ) -> Option<u8> {
-        if pixel_size != 8 {
+        if !matches!(pixel_size, 4 | 8) {
             return None;
         }
 
@@ -834,7 +834,7 @@ impl super::TrapDispatcher {
         menu_id: i16,
         pixel_size: u16,
     ) -> Option<u8> {
-        if pixel_size != 8 {
+        if !matches!(pixel_size, 4 | 8) {
             return None;
         }
 
