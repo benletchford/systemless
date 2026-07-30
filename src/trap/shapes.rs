@@ -1397,17 +1397,22 @@ impl super::TrapDispatcher {
                             let dy = (y - bounds_top) as u32;
                             bus.write_bytes(pix_base + dy * pix_row_bytes + dx, &row);
                         }
+                        let screen_rect = (
+                            top.saturating_sub(bounds_top),
+                            left.saturating_sub(bounds_left),
+                            bottom.saturating_sub(bounds_top),
+                            right.saturating_sub(bounds_left),
+                        );
                         self.refresh_dialog_saved_pixels_after_screen_draw(
                             bus,
                             port,
-                            (
-                                top.saturating_sub(bounds_top),
-                                left.saturating_sub(bounds_left),
-                                bottom.saturating_sub(bounds_top),
-                                right.saturating_sub(bounds_left),
-                            ),
+                            screen_rect,
                         );
-                        self.refresh_visible_dialog_snapshot_for_port(bus, port);
+                        self.refresh_visible_dialog_snapshot_region_for_port(
+                            bus,
+                            port,
+                            screen_rect,
+                        );
                         return;
                     }
                 }
@@ -1681,17 +1686,14 @@ impl super::TrapDispatcher {
             }
         }
         if touched_screen {
-            self.refresh_dialog_saved_pixels_after_screen_draw(
-                bus,
-                port,
-                (
-                    touch_top.saturating_sub(bounds_top),
-                    touch_left.saturating_sub(bounds_left),
-                    touch_bottom.saturating_sub(bounds_top),
-                    touch_right.saturating_sub(bounds_left),
-                ),
+            let screen_rect = (
+                touch_top.saturating_sub(bounds_top),
+                touch_left.saturating_sub(bounds_left),
+                touch_bottom.saturating_sub(bounds_top),
+                touch_right.saturating_sub(bounds_left),
             );
-            self.refresh_visible_dialog_snapshot_for_port(bus, port);
+            self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, screen_rect);
+            self.refresh_visible_dialog_snapshot_region_for_port(bus, port, screen_rect);
         }
 
         if trace_menu_redraw_enabled() {

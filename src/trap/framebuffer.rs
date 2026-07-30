@@ -5418,6 +5418,111 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn refresh_visible_dialog_snapshot_region_updates_only_touched_pixels() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+
+        for y in 0..40u32 {
+            for x in 0..40u32 {
+                bus.write_byte(screen_base + y * 64 + x, 0x11);
+            }
+        }
+
+        let dialog_ptr = 0x00D1_A106;
+        let bounds = (10, 10, 30, 30);
+        let pixels = disp.save_dialog_pixels(&bus, bounds);
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            super::super::dispatch::PersistentDialogSnapshot { bounds, pixels },
+        );
+
+        let touched_probe = screen_base + 12 * 64 + 12;
+        let untouched_probe = screen_base + 20 * 64 + 20;
+        bus.write_byte(touched_probe, 0x77);
+        bus.write_byte(untouched_probe, 0x88);
+        disp.refresh_visible_dialog_snapshot_region_for_port(
+            &bus,
+            dialog_ptr,
+            (12, 12, 13, 13),
+        );
+
+        bus.write_byte(touched_probe, 0x00);
+        bus.write_byte(untouched_probe, 0x00);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(bus.read_byte(touched_probe), 0x77);
+        assert_eq!(
+            bus.read_byte(untouched_probe),
+            0x11,
+            "pixels outside the reported QuickDraw damage must retain their prior snapshot value"
+        );
+    }
+
+    #[test]
+    fn refresh_visible_dialog_snapshot_region_preserves_untouched_packed_pixels() {
+        for pixel_size in [1u16, 2, 4] {
+            let (mut disp, _cpu, mut bus) = setup_with_port();
+            let row_bytes = 64 * u32::from(pixel_size) / 8;
+            let screen_base = bus.alloc(row_bytes * 64);
+            disp.screen_mode = (screen_base, row_bytes, 64, 64, pixel_size);
+            bus.write_long(0x0824, screen_base);
+
+            let dialog_ptr = 0x00D1_A106;
+            let bounds = (8, 8, 24, 24);
+            let pixels = disp.save_dialog_pixels(&bus, bounds);
+            disp.dialog_visible_snapshots.insert(
+                dialog_ptr,
+                super::super::dispatch::PersistentDialogSnapshot { bounds, pixels },
+            );
+
+            let touched = (12u32, 12u32);
+            let untouched = (20u32, 20u32);
+            let pixels_per_byte = 8 / u32::from(pixel_size);
+            let pixel_mask = |x: u32| {
+                let shift = 8
+                    - u32::from(pixel_size)
+                    - (x % pixels_per_byte) * u32::from(pixel_size);
+                (((1u16 << pixel_size) - 1) as u8) << shift
+            };
+            let pixel_addr = |x: u32, y: u32| screen_base + y * row_bytes + x / pixels_per_byte;
+
+            bus.write_byte(pixel_addr(touched.0, touched.1), pixel_mask(touched.0));
+            bus.write_byte(
+                pixel_addr(untouched.0, untouched.1),
+                pixel_mask(untouched.0),
+            );
+            disp.refresh_visible_dialog_snapshot_region_for_port(
+                &bus,
+                dialog_ptr,
+                (
+                    touched.1 as i16,
+                    touched.0 as i16,
+                    touched.1 as i16 + 1,
+                    touched.0 as i16 + 1,
+                ),
+            );
+
+            bus.write_byte(pixel_addr(touched.0, touched.1), 0);
+            bus.write_byte(pixel_addr(untouched.0, untouched.1), 0);
+            disp.restore_visible_dialog_snapshots(&mut bus);
+
+            assert_ne!(
+                bus.read_byte(pixel_addr(touched.0, touched.1)) & pixel_mask(touched.0),
+                0,
+                "{pixel_size}-bit touched pixel should be retained"
+            );
+            assert_eq!(
+                bus.read_byte(pixel_addr(untouched.0, untouched.1)) & pixel_mask(untouched.0),
+                0,
+                "{pixel_size}-bit pixel outside the damage rect should keep its prior value"
+            );
+        }
+    }
+
+    #[test]
     fn fb_fill_rect_uses_active_ctab_brightest_entry_for_white() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
 
