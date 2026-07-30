@@ -11114,12 +11114,24 @@ impl super::TrapDispatcher {
                     if filter_proc != 0 {
                         let result_addr = self.dialog_filter_result_addr;
                         let tracking_dialog_ptr = tracking.dialog_ptr;
+                        let filter_event = self
+                            .dialog_tracking
+                            .as_mut()
+                            .and_then(|t| t.last_filter_event.take());
+                        // The scratch result belongs to the most recently
+                        // completed filter callback, not merely to whichever
+                        // ModalDialog happens to be active now. A newly opened
+                        // dialog can otherwise inherit TRUE from the filter of
+                        // the preceding dialog and return before its own filter
+                        // has received an event. IM:I I-415 defines the result
+                        // only as the response to the event passed to filterProc.
+                        let filter_result_valid = filter_event.is_some();
                         let filter_result_word = if result_addr != 0 {
                             bus.read_word(result_addr)
                         } else {
                             0
                         };
-                        let filter_returned_true = if result_addr != 0 {
+                        let filter_returned_true = if filter_result_valid && result_addr != 0 {
                             // Stack-based Pascal BOOLEAN results are encoded
                             // in bit 0 of the high-order byte, not as any
                             // nonzero word. Inside Macintosh Volume I,
@@ -11133,10 +11145,6 @@ impl super::TrapDispatcher {
                         if filter_returned_true && item_hit_ptr != 0 {
                             hit = bus.read_word(item_hit_ptr) as i16;
                         }
-                        let filter_event = self
-                            .dialog_tracking
-                            .as_mut()
-                            .and_then(|t| t.last_filter_event.take());
                         if trace_dialog_filter_enabled() {
                             eprintln!(
                                 "[DIALOG-FILTER] result dialog=${:08X} result_word=${:04X} returned_true={} item_hit={} item_hit_ptr=${:08X}",
@@ -29659,6 +29667,63 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
+    }
+
+    #[test]
+    fn modal_dialog_ignores_stale_filter_result_before_first_callback() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let item_hit_ptr = 0x300000u32;
+        let result_addr = 0x300100u32;
+
+        // A preceding dialog's filter returned TRUE. The shared callback
+        // scratch is deliberately left intact when a second dialog starts.
+        bus.write_word(result_addr, 0x0100);
+        bus.write_word(item_hit_ptr, 0);
+        disp.dialog_filter_result_addr = result_addr;
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: vec![DialogItem {
+                item_type: 4,
+                rect: (20, 30, 60, 110),
+                text: String::from("OK"),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+            default_item: 1,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0x149F0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(item_hit_ptr), 0);
+        assert!(disp.dialog_tracking.is_some());
     }
 
     #[test]
