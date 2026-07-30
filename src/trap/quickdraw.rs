@@ -6631,7 +6631,12 @@ impl super::TrapDispatcher {
                         } else if let Some(clut) = active_seeded_screen_clut.as_ref() {
                             self.allocate_color_table_handle_with_clut(bus, depth, clut, 0x8000)
                         } else {
-                            self.allocate_color_table_handle(bus, depth, source_ctab_handle, 0x8000)
+                            self.allocate_gworld_color_table_handle(
+                                bus,
+                                depth,
+                                source_ctab_handle,
+                                0x8000,
+                            )
                         };
 
                         let pixel_buf = bus.alloc(row_bytes * height);
@@ -6961,7 +6966,7 @@ impl super::TrapDispatcher {
                                             bus, depth, clut, 0x8000,
                                         )
                                     } else {
-                                        self.allocate_color_table_handle(
+                                        self.allocate_gworld_color_table_handle(
                                             bus,
                                             depth,
                                             source_ctab_handle,
@@ -14826,6 +14831,9 @@ impl super::TrapDispatcher {
     }
 
     fn build_inverse_table_bytes(clut: &[[u16; 3]; 256], res: u16) -> Vec<u8> {
+        if res == 4 && Self::uses_standard_mac_4bpp_gworld_clut(clut) {
+            return Self::standard_mac_4bpp_gworld_itable().to_vec();
+        }
         if res == 4 && Self::uses_canonical_system_8bpp_clut(clut) {
             return Self::standard_mac_8bpp_itable().to_vec();
         }
@@ -16744,6 +16752,24 @@ impl super::TrapDispatcher {
         ctab_handle
     }
 
+    fn allocate_gworld_color_table_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        depth: u32,
+        source_ctab_handle: u32,
+        ct_flags: u16,
+    ) -> u32 {
+        if depth == 4 && source_ctab_handle == 0 {
+            return self.allocate_color_table_handle_with_clut(
+                bus,
+                depth,
+                &Self::standard_mac_4bpp_gworld_clut(),
+                ct_flags,
+            );
+        }
+        self.allocate_color_table_handle(bus, depth, source_ctab_handle, ct_flags)
+    }
+
     fn allocate_color_table_handle_with_clut(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -17038,6 +17064,14 @@ impl super::TrapDispatcher {
 
         let gd_handle = bus.alloc(4);
         bus.write_long(gd_handle, gd);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = if pixmap != 0 {
+            bus.read_long(pixmap + 42)
+        } else {
+            0
+        };
+        let itable_handle = Self::ensure_gdevice_itable_handle(bus, gd_handle);
+        self.make_inverse_table(bus, ctab_handle, itable_handle, 4);
         gd_handle
     }
 
@@ -35929,7 +35963,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_gworld_depth_four_uses_canonical_four_bit_palette() {
+    fn test_new_gworld_depth_four_uses_rom_palette_and_inverse_table() {
         let (mut d, mut cpu, mut bus) = setup();
         let bounds_ptr = 0x300000u32;
         let gworld_ptr_ptr = 0x300100u32;
@@ -35949,8 +35983,8 @@ mod tests {
         let pixmap = bus.read_long(pixmap_handle);
         let ctab_handle = bus.read_long(pixmap + 42);
         let ctab = bus.read_long(ctab_handle);
-        let (canonical, entry_count) =
-            TrapDispatcher::standard_mac_indexed_clut(4).expect("4bpp system palette");
+        let canonical = TrapDispatcher::standard_mac_4bpp_gworld_clut();
+        let entry_count = 16;
 
         assert_eq!(bus.read_word(pixmap + 32), 4);
         assert_eq!(bus.read_word(ctab + 6), entry_count as u16 - 1);
@@ -35966,6 +36000,24 @@ mod tests {
                 "4bpp NewGWorld CTable entry {index}"
             );
         }
+        assert_eq!(bus.read_word(ctab + 8 + 9 * 8 + 4), 0x64AF);
+
+        let gdevice_handle = d
+            .gworld_devices
+            .get(&gworld)
+            .copied()
+            .expect("NewGWorld GDevice");
+        let gdevice = bus.read_long(gdevice_handle);
+        let itable_handle = bus.read_long(gdevice + 6);
+        let itable = bus.read_long(itable_handle);
+        assert_ne!(itable_handle, 0);
+        assert_ne!(itable, 0);
+        assert_eq!(bus.read_long(itable), bus.read_long(ctab));
+        assert_eq!(bus.read_word(itable + 4), 4);
+        assert_eq!(
+            bus.read_bytes(itable + 6, 4096),
+            *TrapDispatcher::standard_mac_4bpp_gworld_itable()
+        );
     }
 
     #[test]
