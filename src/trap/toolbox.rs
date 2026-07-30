@@ -4801,14 +4801,17 @@ impl super::TrapDispatcher {
             //
             // Formula: abs(x) + 0.5 truncated toward zero, then negate
             // if x was negative.
+            //
+            // Stack: SP+0=x(4), SP+4=result(2). Pops the four-byte parameter
+            // so MPW's following MOVE.W (SP)+ reads the INTEGER result.
             // FixRound ($A86C): Rounds Fixed to nearest integer (round-half-up)
             (true, 0x06C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let x = bus.read_long(sp) as i32 as i64;
                 let abs_rounded = ((x.abs() + 0x8000) >> 16) as i16;
                 let rounded = if x < 0 { -abs_rounded } else { abs_rounded };
-                bus.write_word(sp + 2, rounded as u16);
-                cpu.write_reg(Register::A7, sp + 2);
+                bus.write_word(sp + 4, rounded as u16);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -28927,6 +28930,29 @@ mod tests {
         // Same ratio → same Fixed result; both equal IM:IV IV-65 documented value.
         assert_eq!(raw_result, fixed_result);
         assert_eq!(raw_result, 0x0000_C910);
+    }
+
+    #[test]
+    fn fixround_consumes_fixed_parameter_and_writes_integer_result_slot() {
+        // FixRound consumes one four-byte Fixed parameter and returns a
+        // two-byte INTEGER. MPW emits CLR.W -(SP), MOVE.L x,-(SP), _FixRound,
+        // MOVE.W (SP)+,Dn, so trap return must advance A7 by four bytes to the
+        // caller-allocated result slot. Inside Macintosh Volume I, I-467.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        bus.write_long(sp, 0x0000_8000); // 0.5 Fixed parameter
+        bus.write_word(sp + 4, 0xBEEF); // INTEGER result-slot poison
+
+        let result = disp.dispatch_toolbox(true, 0x06C, &mut cpu, &mut bus);
+        assert!(result.expect("FixRound must be handled").is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 1);
+        assert_eq!(
+            bus.read_long(sp),
+            0x0000_8000,
+            "FixRound must not overwrite its Fixed parameter"
+        );
     }
 
     // SysError ($A9C9) must halt the runner so the halt PC reports the
