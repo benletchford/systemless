@@ -12,6 +12,9 @@ use std::collections::HashMap;
 /// Low-memory global variable addresses
 pub mod addr {
     // System globals
+    /// ScreenRow: rowBytes of the active screen (word).
+    /// MPW Interfaces/AIncludes/LowMemEqu.a defines `ScreenRow` at $0106.
+    pub const SCREEN_ROW: u32 = 0x0106;
     pub const MEM_TOP: u32 = 0x0108; // Top of memory (ptr)
     pub const BUF_PTR: u32 = 0x010C; // Sound/disk buffer (ptr)
     pub const HEAP_END: u32 = 0x0114; // End of heap zone (ptr)
