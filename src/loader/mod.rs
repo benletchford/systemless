@@ -16,6 +16,10 @@ pub struct ApplicationSizeResource {
 }
 
 impl ApplicationSizeResource {
+    /// `isHighLevelEventAware` is bit 6 of the 16-bit `'SIZE'` flags field.
+    /// Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32.
+    pub const HIGH_LEVEL_EVENT_AWARE: u16 = 0x0040;
+
     pub fn parse(data: &[u8]) -> Option<Self> {
         if data.len() < 10 {
             return None;
@@ -33,6 +37,10 @@ impl ApplicationSizeResource {
         } else {
             None
         }
+    }
+
+    pub fn is_high_level_event_aware(self) -> bool {
+        self.flags & Self::HIGH_LEVEL_EVENT_AWARE != 0
     }
 }
 
@@ -326,6 +334,13 @@ mod tests {
         assert_eq!(size.preferred_size, 0x0030_0000);
         assert_eq!(size.minimum_size, 0x0020_0000);
         assert_eq!(size.preferred_partition_size(), Some(0x0030_0000));
+        assert!(!size.is_high_level_event_aware());
+
+        let aware = ApplicationSizeResource {
+            flags: size.flags | ApplicationSizeResource::HIGH_LEVEL_EVENT_AWARE,
+            ..size
+        };
+        assert!(aware.is_high_level_event_aware());
     }
 
     #[test]
