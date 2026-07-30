@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.6](https://github.com/benletchford/systemless/compare/v0.9.5...v0.9.6) (2026-07-30)
+
+
+### Bug Fixes
+
+* translate indexed CopyBits across differing depths ([#208](https://github.com/benletchford/systemless/issues/208)) ([c53b5d4](https://github.com/benletchford/systemless/commit/c53b5d40696a7ebaabd31afc046938a9adc8a55e))
+
 ## [0.9.5](https://github.com/benletchford/systemless/compare/v0.9.4...v0.9.5) (2026-07-30)
 
 
