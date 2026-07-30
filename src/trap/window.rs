@@ -1103,12 +1103,25 @@ impl super::TrapDispatcher {
         let mut pixels = Vec::with_capacity(width as usize * height as usize);
         for y in top..bottom {
             for x in left..right {
-                if pixel_size == 8 {
-                    pixels.push(bus.read_byte(screen_base + y as u32 * row_bytes + x as u32));
-                } else {
-                    let byte_offset = y as u32 * row_bytes + x as u32 / 8;
-                    let bit = 7 - (x as u32 % 8);
-                    pixels.push((bus.read_byte(screen_base + byte_offset) >> bit) & 1);
+                match pixel_size {
+                    8 => {
+                        pixels.push(bus.read_byte(screen_base + y as u32 * row_bytes + x as u32));
+                    }
+                    bits @ (2 | 4) => {
+                        let pixels_per_byte = 8 / u32::from(bits);
+                        let byte_offset = y as u32 * row_bytes + x as u32 / pixels_per_byte;
+                        let shift =
+                            8 - u32::from(bits) - (x as u32 % pixels_per_byte) * u32::from(bits);
+                        pixels.push(
+                            (bus.read_byte(screen_base + byte_offset) >> shift)
+                                & ((1u8 << bits) - 1),
+                        );
+                    }
+                    _ => {
+                        let byte_offset = y as u32 * row_bytes + x as u32 / 8;
+                        let bit = 7 - (x as u32 % 8);
+                        pixels.push((bus.read_byte(screen_base + byte_offset) >> bit) & 1);
+                    }
                 }
             }
         }
@@ -1142,6 +1155,18 @@ impl super::TrapDispatcher {
                 }
                 if pixel_size == 8 {
                     bus.write_byte(screen_base + y as u32 * row_bytes + x as u32, pixel);
+                } else if matches!(pixel_size, 2 | 4) {
+                    Self::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        pixel,
+                    );
                 } else {
                     Self::fb_set_pixel(
                         bus,
@@ -3184,6 +3209,34 @@ impl super::TrapDispatcher {
                         if self.window_uses_custom_def_proc(bus, the_window) {
                             arm_custom_wdef_draw = !was_visible;
                         } else {
+                            let proc_id =
+                                self.window_proc_ids.get(&the_window).copied().unwrap_or(0);
+                            if !was_visible && matches!(proc_id, 1..=3) {
+                                if let Some((top, left, bottom, right)) =
+                                    self.window_content_global_rect(bus, the_window)
+                                {
+                                    let (
+                                        screen_base,
+                                        row_bytes,
+                                        screen_width,
+                                        screen_height,
+                                        pixel_size,
+                                    ) = self.get_screen_params();
+                                    Self::fb_fill_rect(
+                                        bus,
+                                        screen_base,
+                                        row_bytes,
+                                        pixel_size,
+                                        screen_width,
+                                        screen_height,
+                                        top,
+                                        left,
+                                        bottom,
+                                        right,
+                                        false,
+                                    );
+                                }
+                            }
                             self.draw_single_window_chrome_inline(bus, the_window, hilited);
                         }
                     }
