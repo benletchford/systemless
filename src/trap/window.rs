@@ -2574,7 +2574,7 @@ impl super::TrapDispatcher {
         // flag bit.
         let pixmap_handle = self.window_original_pixmaps[&window_ptr];
         let pixmap = bus.read_long(pixmap_handle);
-        bus.write_long(window_ptr + 2, bus.read_long(pixmap));
+        bus.write_long(window_ptr + 2, Self::offscreen_pixmap_base_ptr(bus, pixmap));
         bus.write_word(window_ptr + 6, bus.read_word(pixmap + 4) & 0x3FFF);
         for offset in 0..8 {
             bus.write_byte(window_ptr + 8 + offset, bus.read_byte(pixmap + 6 + offset));

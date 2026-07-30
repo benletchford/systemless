@@ -3442,7 +3442,7 @@ impl super::TrapDispatcher {
             if pix_map_ptr == 0 {
                 None
             } else {
-                let base = bus.read_long(pix_map_ptr) & 0x3FFF_FFFF;
+                let base = Self::offscreen_pixmap_base_ptr(bus, pix_map_ptr) & 0x3FFF_FFFF;
                 let row_bytes = (bus.read_word(pix_map_ptr.wrapping_add(4)) & 0x3FFF) as u32;
                 let bounds_top = bus.read_word(pix_map_ptr.wrapping_add(6)) as i16;
                 let bounds_left = bus.read_word(pix_map_ptr.wrapping_add(8)) as i16;

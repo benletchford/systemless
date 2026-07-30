@@ -2359,7 +2359,11 @@ impl super::TrapDispatcher {
                 }
                 return;
             }
-            (bus.read_long(pm_ptr) & 0x3FFFFFFF, pm_ptr, pm_handle) // mask off flags
+            (
+                Self::offscreen_pixmap_base_ptr(bus, pm_ptr) & 0x3FFFFFFF,
+                pm_ptr,
+                pm_handle,
+            ) // mask off flags
         } else {
             // GrafPort: portBits.baseAddr at offset 2
             (bus.read_long(port + 2), 0, 0)
@@ -2553,7 +2557,8 @@ impl super::TrapDispatcher {
                 .then(|| bus.read_long(pixmap_handle))
                 .unwrap_or(0);
             if pixmap == 0
-                || (bus.read_long(pixmap) & 0x3FFF_FFFF) == self.screen_mode.0
+                || (Self::offscreen_pixmap_base_ptr(bus, pixmap) & 0x3FFF_FFFF)
+                    == self.screen_mode.0
                 || bus.read_word(pixmap + 32) != screen_depth
             {
                 continue;
@@ -2744,7 +2749,7 @@ impl super::TrapDispatcher {
             if pm_ptr == 0 {
                 return;
             }
-            bus.read_long(pm_ptr) & 0x3FFF_FFFF
+            Self::offscreen_pixmap_base_ptr(bus, pm_ptr) & 0x3FFF_FFFF
         } else {
             bus.read_long(front_port + 2)
         };
@@ -2830,7 +2835,7 @@ impl super::TrapDispatcher {
             // CGrafPort/PixMap layout follows Imaging With QuickDraw
             // 1994, pp. 4-64..4-65: portPixMap is a PixMapHandle, with
             // baseAddr, rowBytes, bounds, pixelSize, and pmTable here.
-            let base = bus.read_long(pm_ptr) & 0x3FFF_FFFF;
+            let base = Self::offscreen_pixmap_base_ptr(bus, pm_ptr) & 0x3FFF_FFFF;
             let row_bytes = (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32;
             let top = bus.read_word(pm_ptr + 6) as i16;
             let left = bus.read_word(pm_ptr + 8) as i16;
