@@ -8149,17 +8149,13 @@ mod tests {
         assert_ne!(ctab, 0, "synthetic clut handle must be loaded");
         assert_eq!(bus.read_long(ctab), 4, "ctSeed should match the depth ID");
         assert_eq!(bus.read_word(ctab + 4), 0, "ctFlags should be zero");
-        assert_eq!(
-            bus.read_word(ctab + 6),
-            255,
-            "ctSize should hold 256 entries"
-        );
+        assert_eq!(bus.read_word(ctab + 6), 15, "ctSize should hold 16 entries");
         assert_eq!(bus.read_word(ctab + 8), 0, "entry 0 value");
         assert_eq!(bus.read_word(ctab + 10), 0xFFFF, "entry 0 red");
         assert_eq!(bus.read_word(ctab + 12), 0xFFFF, "entry 0 green");
         assert_eq!(bus.read_word(ctab + 14), 0xFFFF, "entry 0 blue");
-        let black = ctab + 8 + 255 * 8;
-        assert_eq!(bus.read_word(black), 255, "entry 255 value");
+        let black = ctab + 8 + 15 * 8;
+        assert_eq!(bus.read_word(black), 15, "entry 15 value");
         assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
         assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
         assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
