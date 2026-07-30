@@ -2789,7 +2789,8 @@ impl super::TrapDispatcher {
             (true, 0x1BD) => {
                 let sp = cpu.read_reg(Register::A7);
                 let window_id = bus.read_word(sp + 8) as i16;
-                let Some((_, wind_ptr)) = self.find_resource_any(*b"WIND", window_id) else {
+                let Some((_, wind_ptr)) = self.find_or_load_resource_any(bus, *b"WIND", window_id)
+                else {
                     // MTE 1992 p. 4-78: return NIL when the WIND template
                     // (or its defproc) cannot be read.
                     eprintln!(
@@ -2966,7 +2967,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
 
                 let window_id = bus.read_word(sp + 8) as i16;
-                let Some((_, wind_ptr)) = self.find_resource_any(*b"WIND", window_id) else {
+                let Some((_, wind_ptr)) = self.find_or_load_resource_any(bus, *b"WIND", window_id)
+                else {
                     // MTE 1992 p. 4-77: return NIL when the WIND template
                     // (or its defproc) cannot be read.
                     eprintln!(
@@ -4649,19 +4651,20 @@ mod tests {
         title: &[u8],
     ) {
         let title_len = title.len().min(255) as u8;
-        let wind_ptr = bus.alloc(18 + 1 + title_len as u32);
-        bus.write_word(wind_ptr, bounds.0 as u16);
-        bus.write_word(wind_ptr + 2, bounds.1 as u16);
-        bus.write_word(wind_ptr + 4, bounds.2 as u16);
-        bus.write_word(wind_ptr + 6, bounds.3 as u16);
-        bus.write_word(wind_ptr + 8, proc_id as u16);
-        bus.write_byte(wind_ptr + 10, if visible { 0xFF } else { 0x00 });
-        bus.write_byte(wind_ptr + 12, if go_away { 0xFF } else { 0x00 });
-        bus.write_long(wind_ptr + 14, ref_con);
-        bus.write_byte(wind_ptr + 18, title_len);
-        for (i, &byte) in title.iter().take(title_len as usize).enumerate() {
-            bus.write_byte(wind_ptr + 19 + i as u32, byte);
-        }
+        let mut wind_data = vec![0; 18 + 1 + title_len as usize];
+        wind_data[0..2].copy_from_slice(&bounds.0.to_be_bytes());
+        wind_data[2..4].copy_from_slice(&bounds.1.to_be_bytes());
+        wind_data[4..6].copy_from_slice(&bounds.2.to_be_bytes());
+        wind_data[6..8].copy_from_slice(&bounds.3.to_be_bytes());
+        wind_data[8..10].copy_from_slice(&proc_id.to_be_bytes());
+        wind_data[10] = if visible { 0xFF } else { 0x00 };
+        wind_data[12] = if go_away { 0xFF } else { 0x00 };
+        wind_data[14..18].copy_from_slice(&ref_con.to_be_bytes());
+        wind_data[18] = title_len;
+        wind_data[19..].copy_from_slice(&title[..title_len as usize]);
+
+        let wind_ptr = bus.alloc(wind_data.len() as u32);
+        bus.write_bytes(wind_ptr, &wind_data);
 
         let mut loaded = HashMap::new();
         loaded.insert((*b"WIND", window_id), wind_ptr);
@@ -4678,6 +4681,7 @@ mod tests {
             search_order: vec![0],
             current_file: 0,
         });
+        disp.remember_resource_backing_data(0, *b"WIND", window_id, wind_data);
     }
 
     fn install_wdef_resource(
@@ -6484,6 +6488,54 @@ mod tests {
 
         let port_version = bus.read_word(window_ptr + 6);
         assert_eq!(port_version, 0xC000);
+    }
+
+    fn assert_get_new_window_reloads_released_wind(trap_num: u16) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_wind_resource(
+            &mut disp,
+            &mut bus,
+            128,
+            (20, 30, 220, 330),
+            0,
+            true,
+            false,
+            0,
+            b"Reloaded",
+        );
+
+        let released_ptr = disp
+            .resources
+            .as_mut()
+            .and_then(|resources| resources.files.get_mut(&0))
+            .and_then(|file| file.loaded.insert((*b"WIND", 128), 0))
+            .expect("installed WIND pointer");
+        bus.free(released_ptr);
+
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        for i in 0..10u32 {
+            bus.write_byte(sp + i, 0);
+        }
+        bus.write_word(sp + 8, 128);
+
+        let result = dispatch(&mut disp, trap_num, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_ne!(
+            bus.read_long(TEST_SP),
+            0,
+            "window constructor must rematerialize a released WIND template"
+        );
+    }
+
+    #[test]
+    fn get_new_window_reloads_released_wind_resource() {
+        assert_get_new_window_reloads_released_wind(0x1BD);
+    }
+
+    #[test]
+    fn get_new_cwindow_reloads_released_wind_resource() {
+        assert_get_new_window_reloads_released_wind(0x246);
     }
 
     // MTE 1992 pp. 4-77..4-78: GetNewCWindow/GetNewWindow return NIL
