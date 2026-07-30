@@ -10278,7 +10278,11 @@ impl super::TrapDispatcher {
                     result,
                     "outcome=is_dialog_event",
                 );
-                bus.write_word(sp + 4, if result { 0xFFFF } else { 0 });
+                // MPW's Boolean is a one-byte value and Toolbox routines
+                // return canonical TRUE as 1. Writing a word-sized -1 here
+                // both gives exact-value callers 0xFF and overwrites the
+                // adjacent stack byte.
+                bus.write_byte(sp + 4, if result { 1 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -10529,7 +10533,9 @@ impl super::TrapDispatcher {
                     &trace_detail,
                 );
 
-                bus.write_word(sp + 12, if result { 0xFFFF } else { 0 });
+                // DialogSelect shares IsDialogEvent's one-byte Pascal
+                // Boolean ABI: canonical TRUE is 1, not a word-sized -1.
+                bus.write_byte(sp + 12, if result { 1 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 12);
                 Ok(())
             }
@@ -18914,11 +18920,13 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         // SP+0: event_ptr (4 bytes)
         bus.write_long(TEST_SP, 0x300000);
+        bus.write_byte(TEST_SP + 5, 0xA5);
 
         let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(bus.read_word(TEST_SP + 4), 0);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 0);
+        assert_eq!(bus.read_byte(TEST_SP + 5), 0xA5);
     }
 
     #[test]
@@ -18946,10 +18954,12 @@ mod tests {
         bus.write_word(event_ptr + 12, 240);
         bus.write_word(event_ptr + 14, 0x0080);
         bus.write_long(TEST_SP, event_ptr);
+        bus.write_byte(TEST_SP + 5, 0xA5);
 
         let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 4), 0xFFFF);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 1);
+        assert_eq!(bus.read_byte(TEST_SP + 5), 0xA5);
         let trace = disp.input_trace_text();
         assert!(trace.contains("A97F action=guest_event:mouseDown"));
         assert!(trace.contains("tracking=menu:idle dialog:idle control:idle"));
@@ -18984,7 +18994,7 @@ mod tests {
 
         let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 4), 0);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 0);
     }
 
     #[test]
@@ -19002,7 +19012,7 @@ mod tests {
 
         let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 4), 0xFFFF);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 1);
     }
 
     #[test]
@@ -19020,7 +19030,7 @@ mod tests {
 
         let result = disp.dispatch_dialog(true, 0x17F, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 4), 0xFFFF);
+        assert_eq!(bus.read_byte(TEST_SP + 4), 1);
     }
 
     // ---- DialogSelect ($A980) ----
@@ -19032,7 +19042,7 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 0);
     }
 
     #[test]
@@ -19074,11 +19084,13 @@ mod tests {
         bus.write_long(TEST_SP, item_hit_ptr);
         bus.write_long(TEST_SP + 4, dialog_out_ptr);
         bus.write_long(TEST_SP + 8, event_ptr);
+        bus.write_byte(TEST_SP + 13, 0xA5);
 
         let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-        assert_eq!(bus.read_word(TEST_SP + 12), 0xFFFF);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 1);
+        assert_eq!(bus.read_byte(TEST_SP + 13), 0xA5);
         assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
         let trace = disp.input_trace_text();
@@ -19086,7 +19098,7 @@ mod tests {
         assert!(trace.contains("item_hit=1 item_type=$00 disabled=false outcome=enabled_item"));
     }
 
-    fn dialog_select_enabled_user_item_hit_for_theme(theme_id: UiThemeId) -> (u16, u32, u16, u32) {
+    fn dialog_select_enabled_user_item_hit_for_theme(theme_id: UiThemeId) -> (u8, u32, u16, u32) {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_ui_theme_id(theme_id);
         let dialog_ptr = bus.alloc(170);
@@ -19129,7 +19141,7 @@ mod tests {
             .unwrap();
 
         (
-            bus.read_word(TEST_SP + 12),
+            bus.read_byte(TEST_SP + 12),
             bus.read_long(dialog_out_ptr),
             bus.read_word(item_hit_ptr),
             cpu.read_reg(Register::A7),
@@ -19138,7 +19150,7 @@ mod tests {
 
     fn dialog_select_enabled_checkbox_hit_for_theme(
         theme_id: UiThemeId,
-    ) -> (u16, u32, u16, u32, u16, u16) {
+    ) -> (u8, u32, u16, u32, u16, u16) {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_ui_theme_id(theme_id);
         let dialog_ptr = bus.alloc(170);
@@ -19201,7 +19213,7 @@ mod tests {
             .unwrap();
 
         (
-            bus.read_word(TEST_SP + 12),
+            bus.read_byte(TEST_SP + 12),
             bus.read_long(dialog_out_ptr),
             bus.read_word(item_hit_ptr),
             cpu.read_reg(Register::A7),
@@ -19375,18 +19387,18 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     struct IsDialogEventSnapshot {
-        null_event: (u16, u32),
-        key_down: (u16, u32),
-        mouse_inside: (u16, u32),
-        mouse_outside: (u16, u32),
-        update_target: (u16, u32),
-        activate_target: (u16, u32),
+        null_event: (u8, u32),
+        key_down: (u8, u32),
+        mouse_inside: (u8, u32),
+        mouse_outside: (u8, u32),
+        update_target: (u8, u32),
+        activate_target: (u8, u32),
     }
 
     #[derive(Debug, PartialEq, Eq)]
     struct DialogSelectWindowEventSnapshot {
         dialog_ptr: u32,
-        update_result: u16,
+        update_result: u8,
         update_dialog_out: u32,
         update_item_hit: u16,
         update_stack_after: u32,
@@ -19398,7 +19410,7 @@ mod tests {
         update_saved_vis_after: bool,
         update_queued_draw_procs: Vec<(u32, u32, i16)>,
         update_item_count_after: usize,
-        activate_result: u16,
+        activate_result: u8,
         activate_dialog_out: u32,
         activate_item_hit: u16,
         activate_stack_after: u32,
@@ -19406,7 +19418,7 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     struct DialogSelectEditTextMouseSnapshot {
-        mouse_result: u16,
+        mouse_result: u8,
         mouse_dialog_out: u32,
         mouse_item_hit: u16,
         mouse_stack_after: u32,
@@ -19415,7 +19427,7 @@ mod tests {
         mouse_te_text: Vec<u8>,
         mouse_te_length: u16,
         mouse_te_selection: (u16, u16),
-        null_result: u16,
+        null_result: u8,
         null_dialog_out: u32,
         null_item_hit: u16,
         null_stack_after: u32,
@@ -19634,7 +19646,7 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     struct DialogSelectEditTextKeySnapshot {
-        keydown_result: u16,
+        keydown_result: u8,
         keydown_dialog_out: u32,
         keydown_item_hit: u16,
         keydown_stack_after: u32,
@@ -19644,7 +19656,7 @@ mod tests {
         keydown_te_text: Vec<u8>,
         keydown_te_length: u16,
         keydown_te_selection: (u16, u16),
-        autokey_result: u16,
+        autokey_result: u8,
         autokey_dialog_out: u32,
         autokey_item_hit: u16,
         autokey_stack_after: u32,
@@ -19945,7 +19957,7 @@ mod tests {
             message: u32,
             where_v: i16,
             where_h: i16,
-        ) -> (u16, u32) {
+        ) -> (u8, u32) {
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_word(event_ptr, what);
             bus.write_long(event_ptr + 2, message);
@@ -19959,7 +19971,7 @@ mod tests {
             disp.dispatch_dialog(true, 0x17F, cpu, bus)
                 .unwrap()
                 .unwrap();
-            (bus.read_word(TEST_SP + 4), cpu.read_reg(Register::A7))
+            (bus.read_byte(TEST_SP + 4), cpu.read_reg(Register::A7))
         }
 
         let (mut disp, mut cpu, mut bus) = setup();
@@ -20079,7 +20091,7 @@ mod tests {
             item_hit_ptr: u32,
             what: u16,
             message: u32,
-        ) -> (u16, u32, u16, u32) {
+        ) -> (u8, u32, u16, u32) {
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_word(event_ptr, what);
             bus.write_long(event_ptr + 2, message);
@@ -20099,7 +20111,7 @@ mod tests {
                 .unwrap();
 
             (
-                bus.read_word(TEST_SP + 12),
+                bus.read_byte(TEST_SP + 12),
                 bus.read_long(dialog_out_ptr),
                 bus.read_word(item_hit_ptr),
                 cpu.read_reg(Register::A7),
@@ -20248,7 +20260,7 @@ mod tests {
             what: u16,
             where_v: i16,
             where_h: i16,
-        ) -> (u16, u32, u16, u32) {
+        ) -> (u8, u32, u16, u32) {
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_word(event_ptr, what);
             bus.write_long(event_ptr + 2, 0);
@@ -20268,7 +20280,7 @@ mod tests {
                 .unwrap();
 
             (
-                bus.read_word(TEST_SP + 12),
+                bus.read_byte(TEST_SP + 12),
                 bus.read_long(dialog_out_ptr),
                 bus.read_word(item_hit_ptr),
                 cpu.read_reg(Register::A7),
@@ -20891,7 +20903,7 @@ mod tests {
         disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
-        let keydown_result = bus.read_word(TEST_SP + 12);
+        let keydown_result = bus.read_byte(TEST_SP + 12);
         let keydown_dialog_out = bus.read_long(dialog_out_ptr);
         let keydown_item_hit = bus.read_word(item_hit_ptr);
         let keydown_stack_after = cpu.read_reg(Register::A7);
@@ -20920,7 +20932,7 @@ mod tests {
         disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
-        let autokey_result = bus.read_word(TEST_SP + 12);
+        let autokey_result = bus.read_byte(TEST_SP + 12);
         let autokey_dialog_out = bus.read_long(dialog_out_ptr);
         let autokey_item_hit = bus.read_word(item_hit_ptr);
         let autokey_stack_after = cpu.read_reg(Register::A7);
@@ -22641,7 +22653,7 @@ mod tests {
         let classic = dialog_select_enabled_user_item_hit_for_theme(UiThemeId::ClassicSystem7);
         let themed = dialog_select_enabled_user_item_hit_for_theme(UiThemeId::SystemlessDefault);
 
-        assert_eq!(classic.0, 0xFFFF);
+        assert_eq!(classic.0, 1);
         assert_eq!(classic.2, 1);
         assert_eq!(classic.3, TEST_SP + 12);
         assert_eq!(
@@ -22659,7 +22671,7 @@ mod tests {
         let classic = dialog_select_enabled_checkbox_hit_for_theme(UiThemeId::ClassicSystem7);
         let themed = dialog_select_enabled_checkbox_hit_for_theme(UiThemeId::SystemlessDefault);
 
-        assert_eq!(classic.0, 0xFFFF);
+        assert_eq!(classic.0, 1);
         assert_eq!(classic.2, 1);
         assert_eq!(classic.3, TEST_SP + 12);
         assert_eq!(classic.4, 1);
@@ -23114,7 +23126,7 @@ mod tests {
         let classic = dialog_select_edit_text_mouse_results_for_theme(UiThemeId::ClassicSystem7);
         let themed = dialog_select_edit_text_mouse_results_for_theme(UiThemeId::SystemlessDefault);
 
-        assert_eq!(classic.mouse_result, 0xFFFF);
+        assert_eq!(classic.mouse_result, 1);
         assert_ne!(classic.mouse_dialog_out, 0);
         assert_eq!(classic.mouse_item_hit, 2);
         assert_eq!(classic.mouse_stack_after, TEST_SP + 12);
@@ -23147,7 +23159,7 @@ mod tests {
         let classic = dialog_select_edit_text_key_results_for_theme(UiThemeId::ClassicSystem7);
         let themed = dialog_select_edit_text_key_results_for_theme(UiThemeId::SystemlessDefault);
 
-        assert_eq!(classic.keydown_result, 0xFFFF);
+        assert_eq!(classic.keydown_result, 1);
         assert_ne!(classic.keydown_dialog_out, 0);
         assert_eq!(classic.keydown_item_hit, 1);
         assert_eq!(classic.keydown_stack_after, TEST_SP + 12);
@@ -23157,7 +23169,7 @@ mod tests {
         assert_eq!(classic.keydown_te_text, b"HYo".to_vec());
         assert_eq!(classic.keydown_te_length, 3);
         assert_eq!(classic.keydown_te_selection, (2, 2));
-        assert_eq!(classic.autokey_result, 0xFFFF);
+        assert_eq!(classic.autokey_result, 1);
         assert_eq!(classic.autokey_dialog_out, classic.keydown_dialog_out);
         assert_eq!(classic.autokey_item_hit, 1);
         assert_eq!(classic.autokey_stack_after, TEST_SP + 12);
@@ -23183,12 +23195,12 @@ mod tests {
         let classic = is_dialog_event_results_for_theme(UiThemeId::ClassicSystem7);
         let themed = is_dialog_event_results_for_theme(UiThemeId::SystemlessDefault);
 
-        assert_eq!(classic.null_event, (0xFFFF, TEST_SP + 4));
-        assert_eq!(classic.key_down, (0xFFFF, TEST_SP + 4));
-        assert_eq!(classic.mouse_inside, (0xFFFF, TEST_SP + 4));
+        assert_eq!(classic.null_event, (1, TEST_SP + 4));
+        assert_eq!(classic.key_down, (1, TEST_SP + 4));
+        assert_eq!(classic.mouse_inside, (1, TEST_SP + 4));
         assert_eq!(classic.mouse_outside, (0, TEST_SP + 4));
-        assert_eq!(classic.update_target, (0xFFFF, TEST_SP + 4));
-        assert_eq!(classic.activate_target, (0xFFFF, TEST_SP + 4));
+        assert_eq!(classic.update_target, (1, TEST_SP + 4));
+        assert_eq!(classic.activate_target, (1, TEST_SP + 4));
         assert_eq!(
             themed, classic,
             "systemless-default must not change IsDialogEvent routing"
@@ -23559,7 +23571,7 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 0);
         assert_eq!(bus.read_long(dialog_out_ptr), 0x12345678);
         assert_eq!(bus.read_word(item_hit_ptr), 0x7F7F);
     }
@@ -23608,7 +23620,7 @@ mod tests {
 
         let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 0);
     }
 
     #[test]
@@ -23655,7 +23667,7 @@ mod tests {
 
         let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP + 12), 0xFFFF);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 1);
         assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
     }
@@ -23740,7 +23752,7 @@ mod tests {
         };
 
         dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 1, 100);
-        assert_eq!(bus.read_word(TEST_SP + 12), 0xFFFF);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 1);
         assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
         assert_eq!(bus.read_word(item_hit_ptr), 1);
         assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET), 1);
@@ -23758,7 +23770,7 @@ mod tests {
         );
 
         dispatch_dialog_select_event(&mut disp, &mut cpu, &mut bus, 0, 131);
-        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 0);
         assert_eq!(bus.read_long(dialog_out_ptr), 0xDEAD_BEEF);
         assert_eq!(bus.read_word(item_hit_ptr), 0xCAFE);
         assert_eq!(
