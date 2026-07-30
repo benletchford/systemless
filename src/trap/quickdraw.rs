@@ -8340,92 +8340,31 @@ impl super::TrapDispatcher {
 
             // ClosePicture ($A8F4)
             // Ends picture recording. Captures the picFrame region of the
-            // screen as a 1bpp bitmap and stores it in the picture handle.
+            // active indexed screen as a PackBitsRect snapshot and stores it
+            // in the picture handle.
             // PROCEDURE ClosePicture;
             // Inside Macintosh Volume I, I-189
-            // ClosePicture ($A8F4): Writes PICT bitmap data with header and bounds
+            // ClosePicture ($A8F4): Writes a valid indexed PICT v1 snapshot
             (true, 0x0F4) => {
                 if let Some((handle, top, left, bottom, right)) = self.recording_picture.take() {
-                    let w = (right - left) as u32;
-                    let h = (bottom - top) as u32;
-
-                    if w > 0 && h > 0 {
-                        let (scrn_base, scrn_rb, _, _, _) = self.screen_mode;
-                        // Row bytes for the captured bitmap (word-aligned)
-                        let cap_rb = w.div_ceil(16) * 2;
-                        // Total: 10 (PICT header) + 14 (BitMap) + 8 (srcRect) + 8 (dstRect)
-                        //        + 2 (mode) + bitmap_data
-                        let bmp_size = cap_rb * h;
-                        let pic_size = 10 + 14 + 8 + 8 + 2 + bmp_size;
-
-                        let pic = bus.alloc(pic_size);
-                        // Update handle to point to new, larger allocation
+                    if let Some(picture) =
+                        self.encode_screen_snapshot_pict(bus, top, left, bottom, right)
+                    {
+                        let old_pic = bus.read_long(handle);
+                        let pic = bus.alloc(picture.len() as u32);
+                        bus.write_bytes(pic, &picture);
                         bus.write_long(handle, pic);
-
-                        // PICT header
-                        bus.write_word(pic, pic_size as u16); // picSize
-                        bus.write_word(pic + 2, top as u16);
-                        bus.write_word(pic + 4, left as u16);
-                        bus.write_word(pic + 6, bottom as u16);
-                        bus.write_word(pic + 8, right as u16);
-
-                        // PICT v1 opcode 0x0090 = BitsRect
-                        let mut pos = pic + 10;
-                        bus.write_word(pos, 0x0090);
-                        pos += 2;
-
-                        // BitMap: baseAddr(4) + rowBytes(2) + bounds(8)
-                        let bitmap_data_start = pic + 10 + 14 + 8 + 8 + 2;
-                        bus.write_long(pos, bitmap_data_start);
-                        pos += 4; // baseAddr
-                        bus.write_word(pos, cap_rb as u16);
-                        pos += 2; // rowBytes
-                        bus.write_word(pos, 0);
-                        pos += 2; // bounds.top
-                        bus.write_word(pos, 0);
-                        pos += 2; // bounds.left
-                        bus.write_word(pos, h as u16);
-                        pos += 2; // bounds.bottom
-                        bus.write_word(pos, w as u16);
-                        pos += 2; // bounds.right
-
-                        // srcRect
-                        bus.write_word(pos, 0);
-                        pos += 2;
-                        bus.write_word(pos, 0);
-                        pos += 2;
-                        bus.write_word(pos, h as u16);
-                        pos += 2;
-                        bus.write_word(pos, w as u16);
-                        pos += 2;
-
-                        // dstRect (= picFrame)
-                        bus.write_word(pos, top as u16);
-                        pos += 2;
-                        bus.write_word(pos, left as u16);
-                        pos += 2;
-                        bus.write_word(pos, bottom as u16);
-                        pos += 2;
-                        bus.write_word(pos, right as u16);
-                        pos += 2;
-
-                        // mode = srcCopy
-                        bus.write_word(pos, 0); // pos += 2;
-
-                        // Capture screen pixels into the bitmap
-                        for row in 0..h {
-                            let src_y = top as u32 + row;
-                            for col_byte in 0..cap_rb {
-                                let src_x_base = left as u32 + col_byte * 8;
-                                let src_addr = scrn_base + src_y * scrn_rb + src_x_base / 8;
-                                let byte = bus.read_byte(src_addr);
-                                bus.write_byte(bitmap_data_start + row * cap_rb + col_byte, byte);
-                            }
+                        if old_pic != 0 {
+                            bus.free(old_pic);
                         }
 
                         eprintln!(
-                            "[TRAP] ClosePicture: captured {}x{} bitmap ({} bytes) for handle=${:08X}",
-                            w, h, bmp_size, handle
+                            "[TRAP] ClosePicture: captured {}x{} {}bpp PackBitsRect ({} bytes) for handle=${:08X}",
+                            right - left,
+                            bottom - top,
+                            self.screen_mode.4,
+                            picture.len(),
+                            handle
                         );
                     }
                 }
@@ -18912,6 +18851,141 @@ impl super::TrapDispatcher {
             pixel_size,
             ctab_handle: 0,
         }
+    }
+
+    fn push_pict_word(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_pict_long(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_packbits_literal_row(bytes: &mut Vec<u8>, row: &[u8]) {
+        let mut packed = Vec::with_capacity(row.len() + row.len().div_ceil(128));
+        for chunk in row.chunks(128) {
+            packed.push((chunk.len() - 1) as u8);
+            packed.extend_from_slice(chunk);
+        }
+        if row.len() > 250 {
+            Self::push_pict_word(bytes, packed.len() as u16);
+        } else {
+            bytes.push(packed.len() as u8);
+        }
+        bytes.extend_from_slice(&packed);
+    }
+
+    fn encode_screen_snapshot_pict(
+        &self,
+        bus: &MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> Option<Vec<u8>> {
+        let width = u32::try_from(i32::from(right) - i32::from(left)).ok()?;
+        let height = u32::try_from(i32::from(bottom) - i32::from(top)).ok()?;
+        if width == 0 || height == 0 {
+            return None;
+        }
+
+        let (screen_base, screen_row_bytes, screen_width, screen_height, pixel_size) =
+            self.screen_mode;
+        if !matches!(pixel_size, 1 | 2 | 4 | 8) {
+            return None;
+        }
+        let row_bytes = (width * u32::from(pixel_size))
+            .div_ceil(8)
+            .next_multiple_of(2);
+        let color_count = 1usize << pixel_size;
+        let source = CopyBitmapInfo {
+            base: screen_base,
+            row_bytes: screen_row_bytes,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: screen_height as i16,
+            bounds_right: screen_width as i16,
+            pixel_size: u32::from(pixel_size),
+            ctab_handle: 0,
+        };
+
+        let mut picture = Vec::with_capacity(
+            10 + 1 + 46 + 8 + color_count * 8 + 18 + (row_bytes as usize + 6) * height as usize,
+        );
+        Self::push_pict_word(&mut picture, 0); // patched after encoding
+        for value in [top, left, bottom, right] {
+            Self::push_pict_word(&mut picture, value as u16);
+        }
+
+        picture.push(0x98); // PICT v1 PackBitsRect
+        Self::push_pict_word(&mut picture, 0x8000 | row_bytes as u16);
+        for value in [0i16, 0, height as i16, width as i16] {
+            Self::push_pict_word(&mut picture, value as u16);
+        }
+        Self::push_pict_word(&mut picture, 0); // pmVersion
+        Self::push_pict_word(&mut picture, 0); // packType
+        Self::push_pict_long(&mut picture, 0); // packSize
+        Self::push_pict_long(&mut picture, 0x0048_0000); // hRes
+        Self::push_pict_long(&mut picture, 0x0048_0000); // vRes
+        Self::push_pict_word(&mut picture, 0); // pixelType: indexed
+        Self::push_pict_word(&mut picture, pixel_size);
+        Self::push_pict_word(&mut picture, 1); // cmpCount
+        Self::push_pict_word(&mut picture, pixel_size); // cmpSize
+        Self::push_pict_long(&mut picture, 0); // planeBytes
+        Self::push_pict_long(&mut picture, 0); // pmTable
+        Self::push_pict_long(&mut picture, 0); // pmReserved
+
+        Self::push_pict_long(&mut picture, 0); // ctSeed
+        Self::push_pict_word(&mut picture, 0x8000); // implicit ColorSpec indices
+        Self::push_pict_word(&mut picture, (color_count - 1) as u16);
+        for index in 0..color_count {
+            Self::push_pict_word(&mut picture, index as u16);
+            for component in self.device_clut[index] {
+                Self::push_pict_word(&mut picture, component);
+            }
+        }
+
+        for value in [0i16, 0, height as i16, width as i16] {
+            Self::push_pict_word(&mut picture, value as u16);
+        }
+        for value in [top, left, bottom, right] {
+            Self::push_pict_word(&mut picture, value as u16);
+        }
+        Self::push_pict_word(&mut picture, 0); // srcCopy
+
+        let pixels_per_byte = 8 / u32::from(pixel_size);
+        let pixel_mask = (1u8 << pixel_size) - 1;
+        let mut row = vec![0u8; row_bytes as usize];
+        for y in 0..height {
+            row.fill(0);
+            for x in 0..width {
+                let source_pixel = Self::read_bitmap_pixel(
+                    bus,
+                    &source,
+                    top.saturating_add(y as i16),
+                    left.saturating_add(x as i16),
+                )
+                .unwrap_or_default();
+                let pixel = if pixel_size == 1 {
+                    u8::from(source_pixel != 0)
+                } else {
+                    source_pixel & pixel_mask
+                };
+                let byte_index = (x / pixels_per_byte) as usize;
+                let shift =
+                    8 - u32::from(pixel_size) - (x % pixels_per_byte) * u32::from(pixel_size);
+                row[byte_index] |= pixel << shift;
+            }
+            if row_bytes < 8 {
+                picture.extend_from_slice(&row);
+            } else {
+                Self::push_packbits_literal_row(&mut picture, &row);
+            }
+        }
+        picture.push(0xFF); // EndOfPicture
+        let picture_size = u16::try_from(picture.len()).unwrap_or(0);
+        picture[0..2].copy_from_slice(&picture_size.to_be_bytes());
+        Some(picture)
     }
 
     fn read_bitmap_pixel(bus: &MacMemoryBus, info: &CopyBitmapInfo, y: i16, x: i16) -> Option<u8> {
@@ -38529,6 +38603,47 @@ mod tests {
         assert_ne!(finalized_pic_ptr, old_pic_ptr);
         assert!(bus.read_word(finalized_pic_ptr) > 10);
         assert_eq!(read_rect(&bus, finalized_pic_ptr + 2), (0, 0, 8, 16));
+    }
+
+    #[test]
+    fn closepicture_preserves_a_4bpp_screen_snapshot_for_drawpicture() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(8);
+        let original = [0x12, 0x34, 0x56, 0x78, 0x87, 0x65, 0x43, 0x21];
+        bus.write_bytes(screen_base, &original);
+        d.screen_mode = (screen_base, 4, 8, 2, 4);
+
+        let pic_frame = 0x300240u32;
+        write_rect(&mut bus, pic_frame, 0, 0, 2, 8);
+        bus.write_long(TEST_SP, pic_frame);
+        let open_result = d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus);
+        assert!(open_result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 4);
+
+        let close_result = d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus);
+        assert!(close_result.unwrap().is_ok());
+        let pic_ptr = bus.read_long(handle);
+
+        bus.write_bytes(screen_base, &[0xFF; 8]);
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            2,
+            8,
+            d.screen_mode,
+            &d.device_clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert_eq!(
+            bus.read_bytes(screen_base, 8),
+            original,
+            "ClosePicture must retain packed 4-bit pixels for a later DrawPicture"
+        );
     }
 
     #[test]

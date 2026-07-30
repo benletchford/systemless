@@ -2440,7 +2440,7 @@ fn unpack_bits_data_mapped_into(
     }
 }
 
-/// Write a pixel to the screen framebuffer (supports 1bpp and 8bpp).
+/// Write a pixel to an indexed screen framebuffer.
 fn write_pixel(
     bus: &mut MacMemoryBus,
     screen_base: u32,
@@ -2455,22 +2455,38 @@ fn write_pixel(
     if x < 0 || y < 0 || x >= screen_w || y >= screen_h {
         return;
     }
-    if pixel_size == 1 {
-        // 1bpp: each byte holds 8 pixels, MSB = leftmost
-        let byte_offset = (x as u32) / 8;
-        let bit = 7 - ((x as u32) % 8);
-        let addr = screen_base + (y as u32) * screen_rb + byte_offset;
-        let byte = bus.read_byte(addr);
-        // In 1bpp Mac, bit set = black (color_index 255), bit clear = white (0)
-        if color_index != 0 {
-            bus.write_byte(addr, byte | (1 << bit));
-        } else {
-            bus.write_byte(addr, byte & !(1 << bit));
+    match pixel_size {
+        1 => {
+            // 1bpp: each byte holds 8 pixels, MSB = leftmost
+            let byte_offset = (x as u32) / 8;
+            let bit = 7 - ((x as u32) % 8);
+            let addr = screen_base + (y as u32) * screen_rb + byte_offset;
+            let byte = bus.read_byte(addr);
+            // In 1bpp Mac, bit set = black (color_index 255), bit clear = white (0)
+            if color_index != 0 {
+                bus.write_byte(addr, byte | (1 << bit));
+            } else {
+                bus.write_byte(addr, byte & !(1 << bit));
+            }
         }
-    } else {
-        // 8bpp: one byte per pixel
-        let addr = screen_base + (y as u32) * screen_rb + (x as u32);
-        bus.write_byte(addr, color_index);
+        bits @ (2 | 4) => {
+            let pixels_per_byte = 8 / u32::from(bits);
+            let pixel = x as u32;
+            let shift = 8 - u32::from(bits) - (pixel % pixels_per_byte) * u32::from(bits);
+            let pixel_mask = (1u8 << bits) - 1;
+            let shifted_mask = pixel_mask << shift;
+            let addr = screen_base + (y as u32) * screen_rb + pixel / pixels_per_byte;
+            let byte = bus.read_byte(addr);
+            bus.write_byte(
+                addr,
+                (byte & !shifted_mask) | ((color_index & pixel_mask) << shift),
+            );
+        }
+        _ => {
+            // 8bpp: one byte per pixel
+            let addr = screen_base + (y as u32) * screen_rb + (x as u32);
+            bus.write_byte(addr, color_index);
+        }
     }
 }
 
