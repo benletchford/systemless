@@ -1649,7 +1649,8 @@ impl super::TrapDispatcher {
         let wd_ref = self
             .open_working_directory(vref, metadata.parent_dir_id, 0)
             .unwrap_or(vref);
-        let mut name = encode_mac_roman_lossy(Self::vfs_basename(&vfs_key));
+        let guest_name = Self::hfs_name_from_vfs_component(Self::vfs_basename(&vfs_key));
+        let mut name = encode_mac_roman_lossy(&guest_name);
         name.truncate(63);
 
         Some(StandardFileSelection {
@@ -1711,7 +1712,8 @@ impl super::TrapDispatcher {
                 let wd_ref = self
                     .open_working_directory(vref, metadata.parent_dir_id, 0)
                     .unwrap_or(vref);
-                let mut name = encode_mac_roman_lossy(Self::vfs_basename(&entry.path));
+                let guest_name = Self::hfs_name_from_vfs_component(Self::vfs_basename(&entry.path));
+                let mut name = encode_mac_roman_lossy(&guest_name);
                 name.truncate(63);
                 StandardFileSelection {
                     name,

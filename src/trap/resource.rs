@@ -4776,7 +4776,7 @@ impl super::TrapDispatcher {
                 // (Inside Macintosh: Files, 1992, p. 2-199), so even if a
                 // caller passes a colon pathname in ioMisc, only its final
                 // name participates in the rename.
-                let normalized_new = super::TrapDispatcher::normalize_vfs_path(&new_name);
+                let normalized_new = super::TrapDispatcher::normalize_hfs_path(&new_name);
                 let new_leaf = super::TrapDispatcher::vfs_basename(&normalized_new);
                 if new_leaf.is_empty() {
                     bus.write_word(pb + 16, (-50i16) as u16); // paramErr
@@ -4993,7 +4993,7 @@ impl super::TrapDispatcher {
                 }
                 let vfs_key = self
                     .vfs_key_for_fsspec(v_ref, dir_id, &filename)
-                    .unwrap_or_else(|| super::TrapDispatcher::normalize_vfs_path(&filename));
+                    .unwrap_or_else(|| super::TrapDispatcher::normalize_hfs_path(&filename));
 
                 // Per IM Files 1992, 2-89, PBCreate returns dupFNErr when the
                 // file already exists. Some shareware/demo titles ship a
@@ -5156,18 +5156,18 @@ impl super::TrapDispatcher {
                     self.lookup_file_entry_for_get_finfo(vref, dir_id, &filename, fdir_index)
                         .map(|entry| entry.path)
                 } else {
-                    self.find_vfs_file(&filename)
+                    self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
+                        .or_else(|| self.find_vfs_file(&filename))
                 };
 
                 if let Some(vfs_name) = lookup {
                     if let Some(metadata) = self.vfs_file_metadata(&vfs_name) {
                         self.fill_file_catalog_info(bus, pb, &vfs_name, metadata);
                         if name_ptr != 0 {
-                            Self::write_pstring(
-                                bus,
-                                name_ptr,
+                            let guest_name = super::TrapDispatcher::hfs_name_from_vfs_component(
                                 super::TrapDispatcher::vfs_basename(&vfs_name),
                             );
+                            Self::write_pstring(bus, name_ptr, &guest_name);
                         }
                     }
                     bus.write_word(pb + 16, 0); // noErr
@@ -5774,7 +5774,9 @@ impl super::TrapDispatcher {
                         let app_name = if app_path.is_empty() {
                             "Application".to_string()
                         } else {
-                            super::TrapDispatcher::vfs_basename(&app_path).to_string()
+                            super::TrapDispatcher::hfs_name_from_vfs_component(
+                                super::TrapDispatcher::vfs_basename(&app_path),
+                            )
                         };
                         let (app_type, app_creator, app_parent_dir_id) =
                             if let Some(metadata) = self.vfs_file_metadata(&app_path) {
@@ -6122,7 +6124,7 @@ impl super::TrapDispatcher {
                         let vfs_key = self
                             .vfs_key_for_fsspec(vref, dir_id, &filename)
                             .unwrap_or_else(|| {
-                                super::TrapDispatcher::normalize_vfs_path(&filename)
+                                super::TrapDispatcher::normalize_hfs_path(&filename)
                             });
                         if trace_fsspec_enabled() {
                             eprintln!(
@@ -6180,7 +6182,7 @@ impl super::TrapDispatcher {
                                 cpu.write_reg(Register::A7, sp + 10);
                                 return Some(Ok(()));
                             };
-                            let child_name = super::TrapDispatcher::normalize_vfs_path(&filename);
+                            let child_name = super::TrapDispatcher::normalize_hfs_path(&filename);
                             if child_name.is_empty() {
                                 -37i16 // bdNamErr
                             } else {
@@ -6379,7 +6381,7 @@ impl super::TrapDispatcher {
                             self.locked_files.insert(vfs_name);
                             0
                         } else if self.find_vfs_file(&filename).is_some() {
-                            let normalized = super::TrapDispatcher::normalize_vfs_path(&filename);
+                            let normalized = super::TrapDispatcher::normalize_hfs_path(&filename);
                             self.locked_files.insert(normalized);
                             0
                         } else {
@@ -6713,7 +6715,7 @@ impl super::TrapDispatcher {
                             cpu.write_reg(Register::D0, (-120i32) as u32);
                             return Some(Ok(()));
                         };
-                        let child_name = super::TrapDispatcher::normalize_vfs_path(&filename);
+                        let child_name = super::TrapDispatcher::normalize_hfs_path(&filename);
                         if child_name.is_empty() {
                             -37i16 // bdNamErr
                         } else {
@@ -6798,8 +6800,9 @@ impl super::TrapDispatcher {
                             .strip_prefix("__rsrc__")
                             .unwrap_or(&open_vfs_name)
                             .to_string();
-                        let base_name =
-                            super::TrapDispatcher::vfs_basename(&metadata_name).to_string();
+                        let base_name = super::TrapDispatcher::hfs_name_from_vfs_component(
+                            super::TrapDispatcher::vfs_basename(&metadata_name),
+                        );
                         let metadata = self.vfs_file_metadata(&metadata_name);
                         let file_len = if is_resource_fork {
                             self.vfs
@@ -7352,7 +7355,7 @@ impl super::TrapDispatcher {
             let path = self.directory_path_for_id(dir_id)?.to_string();
             return Some(super::dispatch::VfsCatalogEntry {
                 path,
-                name: directory.name.clone(),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(&directory.name),
                 is_directory: true,
             });
         }
@@ -7370,7 +7373,7 @@ impl super::TrapDispatcher {
             let path = self.directory_path_for_id(dir_id)?.to_string();
             return Some(super::dispatch::VfsCatalogEntry {
                 path,
-                name: directory.name.clone(),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(&directory.name),
                 is_directory: true,
             });
         }
@@ -7379,7 +7382,7 @@ impl super::TrapDispatcher {
             let directory = self.vfs_directories.get(&path)?;
             return Some(super::dispatch::VfsCatalogEntry {
                 path: path.clone(),
-                name: directory.name.clone(),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(&directory.name),
                 is_directory: true,
             });
         }
@@ -7387,7 +7390,9 @@ impl super::TrapDispatcher {
             self.vfs_file_metadata(&path)?;
             return Some(super::dispatch::VfsCatalogEntry {
                 path: path.clone(),
-                name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    super::TrapDispatcher::vfs_basename(&path),
+                ),
                 is_directory: false,
             });
         }
@@ -7395,7 +7400,9 @@ impl super::TrapDispatcher {
             self.vfs_file_metadata(&path)?;
             return Some(super::dispatch::VfsCatalogEntry {
                 path: path.clone(),
-                name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    super::TrapDispatcher::vfs_basename(&path),
+                ),
                 is_directory: false,
             });
         }
@@ -7424,7 +7431,9 @@ impl super::TrapDispatcher {
                 continue;
             }
             entries.push(super::dispatch::VfsCatalogEntry {
-                name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    super::TrapDispatcher::vfs_basename(&path),
+                ),
                 path,
                 is_directory: false,
             });
@@ -7450,7 +7459,9 @@ impl super::TrapDispatcher {
                 self.vfs_file_metadata(&path)?;
                 return Some(super::dispatch::VfsCatalogEntry {
                     path: path.clone(),
-                    name: super::TrapDispatcher::vfs_basename(&path).to_string(),
+                    name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                        super::TrapDispatcher::vfs_basename(&path),
+                    ),
                     is_directory: false,
                 });
             }
@@ -7564,7 +7575,9 @@ impl super::TrapDispatcher {
         Some((
             self.resolve_volume_ref_num(vref),
             parent_dir_id,
-            super::TrapDispatcher::vfs_basename(&target_key).to_string(),
+            super::TrapDispatcher::hfs_name_from_vfs_component(
+                super::TrapDispatcher::vfs_basename(&target_key),
+            ),
             target_key,
         ))
     }
@@ -7575,7 +7588,7 @@ impl super::TrapDispatcher {
         dir_id: u32,
         filename: &str,
     ) -> Option<String> {
-        let normalized = super::TrapDispatcher::normalize_vfs_path(filename);
+        let normalized = super::TrapDispatcher::normalize_hfs_path(filename);
         if normalized.is_empty() {
             return None;
         }
@@ -7614,13 +7627,31 @@ impl super::TrapDispatcher {
     /// Find a file in VFS by name, trying exact match then basename match.
     pub(crate) fn find_vfs_file(&self, name: &str) -> Option<String> {
         let normalized = super::TrapDispatcher::normalize_vfs_path(name);
+        let hfs_normalized = super::TrapDispatcher::normalize_hfs_path(name);
         // Sort key iteration so the first match is stable across runs.
         let mut sorted_keys: Vec<&String> = self.vfs.keys().collect();
         sorted_keys.sort_unstable();
+        if let Some(found) = sorted_keys
+            .iter()
+            .copied()
+            .find(|key| key.eq_ignore_ascii_case(&hfs_normalized))
+        {
+            return Some(found.clone());
+        }
         if let Some(found) = sorted_keys.iter().copied().find(|key| {
             super::TrapDispatcher::normalize_vfs_path(key).eq_ignore_ascii_case(&normalized)
         }) {
             return Some(found.clone());
+        }
+        let hfs_basename = hfs_normalized
+            .rsplit('/')
+            .next()
+            .unwrap_or(hfs_normalized.as_str());
+        for key in &sorted_keys {
+            let key_base = key.rsplit('/').next().unwrap_or(key);
+            if key_base.eq_ignore_ascii_case(hfs_basename) {
+                return Some((*key).clone());
+            }
         }
         let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
         for key in &sorted_keys {
@@ -13584,6 +13615,45 @@ mod tests {
             disp.open_files.get(&refnum),
             Some(&"Temporary Items/lcache00.tmp".to_string())
         );
+    }
+
+    #[test]
+    fn pbh_create_preserves_slash_as_a_literal_filename_character() {
+        // HFS reserves colon as the pathname separator and permits every
+        // other character, including slash, in file and directory names.
+        // Files 1992, 2-27 to 2-29.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let parent_dir_id = disp.ensure_vfs_directory("Game Folder");
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"Object IDs/Level Info");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 48, parent_dir_id);
+
+        call_trap_word(&mut disp, 0xA208, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert!(
+            disp.directory_id_for_vfs_path("Game Folder/Object IDs")
+                .is_none(),
+            "a literal slash must not synthesize a nested directory"
+        );
+
+        call_trap_word(&mut disp, 0xA20C, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Object IDs/Level Info");
+
+        bus.write_long(pb + 48, parent_dir_id);
+        bus.write_word(pb + 28, 0);
+        cpu.write_reg(Register::D0, 9);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Object IDs/Level Info");
     }
 
     #[test]
