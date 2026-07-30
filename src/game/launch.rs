@@ -60,6 +60,52 @@ pub fn pack_stuffit_for_web(file_data: &[u8]) -> Result<Vec<u8>, String> {
         SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
 
     let file_entries = collect_stuffit_payload_files(&archive)?;
+    pack_payload_files_for_web(file_entries)
+}
+
+/// Prepack one or more supported game containers into a single web pack.
+///
+/// This is useful for CD-based games whose application and read-only data
+/// volume were distributed separately. Optional path prefixes retain only the
+/// runtime files needed from large compilation discs.
+pub fn pack_game_sources_for_web(
+    sources: &[&[u8]],
+    include_prefixes: &[&str],
+) -> Result<Vec<u8>, String> {
+    let mut file_entries = Vec::new();
+    for source in sources {
+        if is_stuffit_archive(source) {
+            let archive = SitArchive::parse(source)
+                .map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+            file_entries.extend(collect_stuffit_payload_files(&archive)?);
+        } else if let Some(image) = crate::disk_image::extract_dc42_or_hfs(source)? {
+            file_entries.extend(payload_from_disk_image(image)?.files);
+        } else {
+            return Err("Game source is not a StuffIt archive or HFS disk image".to_string());
+        }
+    }
+
+    if !include_prefixes.is_empty() {
+        let normalized_prefixes = include_prefixes
+            .iter()
+            .map(|prefix| crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(prefix))
+            .collect::<Vec<_>>();
+        file_entries.retain(|entry| {
+            let path = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&entry.name);
+            normalized_prefixes
+                .iter()
+                .any(|prefix| vfs_path_matches_remove(&path, prefix))
+        });
+    }
+
+    if file_entries.is_empty() {
+        return Err("No files matched the requested game sources".to_string());
+    }
+
+    pack_payload_files_for_web(file_entries)
+}
+
+fn pack_payload_files_for_web(file_entries: Vec<PayloadFile>) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     out.extend_from_slice(WEB_PACK_MAGIC);
     out.extend_from_slice(&(file_entries.len() as u32).to_be_bytes());
@@ -1433,6 +1479,46 @@ fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_pack_sources_accept_hfs_images_and_filter_by_classic_mac_path() {
+        let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        builder.add_file("keep.dat", b"runtime data", 0o100644);
+        builder.add_file("drop.dat", b"unrelated demo", 0o100644);
+        let image = builder.build();
+
+        let packed = pack_game_sources_for_web(&[&image], &["HFS+ Disk Image:keep.dat"])
+            .expect("HFS source should pack");
+
+        assert_eq!(&packed[0..4], WEB_PACK_MAGIC);
+        assert_eq!(u32::from_be_bytes(packed[4..8].try_into().unwrap()), 1);
+        let mut offset = 8;
+        let name_len = read_u16_be(&packed, &mut offset).unwrap() as usize;
+        let name = read_exact(&packed, &mut offset, name_len).unwrap();
+        assert_eq!(name, b"HFS+ Disk Image/keep.dat");
+    }
+
+    #[test]
+    fn web_pack_sources_merge_files_from_multiple_images() {
+        let mut application_builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        application_builder.add_file("Application", b"application fork", 0o100644);
+        let application_image = application_builder.build();
+        let mut data_builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        data_builder.add_file("Level001", b"level data", 0o100644);
+        let data_image = data_builder.build();
+
+        let packed = pack_game_sources_for_web(&[&application_image, &data_image], &[])
+            .expect("multiple HFS sources should merge");
+
+        assert_eq!(&packed[0..4], WEB_PACK_MAGIC);
+        assert_eq!(u32::from_be_bytes(packed[4..8].try_into().unwrap()), 2);
+        assert!(packed
+            .windows(b"HFS+ Disk Image/Application".len())
+            .any(|window| window == b"HFS+ Disk Image/Application"));
+        assert!(packed
+            .windows(b"HFS+ Disk Image/Level001".len())
+            .any(|window| window == b"HFS+ Disk Image/Level001"));
+    }
 
     fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
         let data_offset = 16u32;

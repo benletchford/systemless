@@ -7,32 +7,50 @@ use clap::Parser;
 #[command(
     name = "systemless-pack-web",
     version,
-    about = "Pack a StuffIt archive for the Systemless web player"
+    about = "Pack StuffIt archives and HFS disk images for the Systemless web player"
 )]
 struct Cli {
-    /// StuffIt archive to pack
+    /// Primary StuffIt archive or HFS disk image to pack
     #[arg(value_name = "INPUT")]
     input: PathBuf,
 
     /// Destination for the packed archive
     #[arg(value_name = "OUTPUT")]
     output: PathBuf,
+
+    /// Additional StuffIt archive or HFS disk image to merge
+    #[arg(long = "additional-input", value_name = "INPUT")]
+    additional_inputs: Vec<PathBuf>,
+
+    /// Retain files at or below this normalized classic Mac path
+    #[arg(long = "include-prefix", value_name = "PATH")]
+    include_prefixes: Vec<String>,
 }
 
 fn main() -> Result<(), String> {
     let cli = Cli::parse();
 
-    let input_bytes =
-        fs::read(&cli.input).map_err(|e| format!("could not read {}: {e}", cli.input.display()))?;
-    let packed = systemless::game::pack_stuffit_for_web(&input_bytes)?;
+    let mut input_paths = vec![cli.input.clone()];
+    input_paths.extend(cli.additional_inputs);
+    let input_bytes = input_paths
+        .iter()
+        .map(|path| fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display())))
+        .collect::<Result<Vec<_>, _>>()?;
+    let source_refs = input_bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let include_prefixes = cli
+        .include_prefixes
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let packed = systemless::game::pack_game_sources_for_web(&source_refs, &include_prefixes)?;
     fs::write(&cli.output, &packed)
         .map_err(|e| format!("could not write {}: {e}", cli.output.display()))?;
 
     eprintln!(
-        "packed {} -> {} ({} KB -> {} KB)",
-        cli.input.display(),
+        "packed {} source(s) -> {} ({} KB -> {} KB)",
+        input_paths.len(),
         cli.output.display(),
-        input_bytes.len() / 1024,
+        input_bytes.iter().map(Vec::len).sum::<usize>() / 1024,
         packed.len() / 1024
     );
     Ok(())
@@ -50,6 +68,27 @@ mod tests {
 
         assert_eq!(cli.input, PathBuf::from("input.sit"));
         assert_eq!(cli.output, PathBuf::from("output.kpk"));
+        assert!(cli.additional_inputs.is_empty());
+        assert!(cli.include_prefixes.is_empty());
+    }
+
+    #[test]
+    fn cli_parses_additional_sources_and_include_prefixes() {
+        let cli = Cli::try_parse_from([
+            "systemless-pack-web",
+            "application.sit",
+            "game.kpk",
+            "--additional-input",
+            "cd.img",
+            "--include-prefix",
+            "Game",
+            "--include-prefix",
+            "Game CD/Data",
+        ])
+        .expect("multi-source options should parse");
+
+        assert_eq!(cli.additional_inputs, vec![PathBuf::from("cd.img")]);
+        assert_eq!(cli.include_prefixes, vec!["Game", "Game CD/Data"]);
     }
 
     #[test]
