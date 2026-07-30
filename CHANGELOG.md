@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.0](https://github.com/benletchford/systemless/compare/v0.8.8...v0.9.0) (2026-07-30)
+
+
+### Features
+
+* pack multi-source HFS game releases for web ([#171](https://github.com/benletchford/systemless/issues/171)) ([db4281e](https://github.com/benletchford/systemless/commit/db4281e553083bb5086db7376ac4c47e17867a1d))
+
+
+### Bug Fixes
+
+* deliver mouse input to custom ADB service routines ([#149](https://github.com/benletchford/systemless/issues/149)) ([956efd2](https://github.com/benletchford/systemless/commit/956efd229bb5295091874b62a1de8722ad01b029))
+* **dialog:** retain packed indexed snapshots ([#173](https://github.com/benletchford/systemless/issues/173)) ([03dd973](https://github.com/benletchford/systemless/commit/03dd973fca8e3510c7d14c6d72fbae693a1ad0e9))
+* **files:** preserve relative pathname components ([#159](https://github.com/benletchford/systemless/issues/159)) ([70e5a21](https://github.com/benletchford/systemless/commit/70e5a21e0f66d702d2db8ccd1cf1812d9ef50c37))
+* **files:** preserve slashes in HFS filenames ([#155](https://github.com/benletchford/systemless/issues/155)) ([4fa5eb2](https://github.com/benletchford/systemless/commit/4fa5eb294deab41682e7d4870aaed74f76add70e))
+* **files:** resolve the volume root through its parent ID ([#153](https://github.com/benletchford/systemless/issues/153)) ([36557bc](https://github.com/benletchford/systemless/commit/36557bcd9031f5184434101781c1a5cfef363c0d))
+* **loader:** mount MacBinary application forks ([#151](https://github.com/benletchford/systemless/issues/151)) ([eb0c1a8](https://github.com/benletchford/systemless/commit/eb0c1a845025237101a02ef2d6660e1410c8a446))
+* **quickdraw:** encode indexed ClosePicture snapshots ([#175](https://github.com/benletchford/systemless/issues/175)) ([eab646a](https://github.com/benletchford/systemless/commit/eab646a34c36dabac6678ab681a38abcf6a69f58))
+* **quickdraw:** translate screen CopyBits rectangles ([#162](https://github.com/benletchford/systemless/issues/162)) ([f34d52d](https://github.com/benletchford/systemless/commit/f34d52d38fa54a84d7489c4632dffdd000482f2d))
+* render 4-bit indexed display modes ([#170](https://github.com/benletchford/systemless/issues/170)) ([9267b22](https://github.com/benletchford/systemless/commit/9267b22761cc87097093f82e81f19227adbeaba9))
+* translate indexed colors in CopyMask ([#167](https://github.com/benletchford/systemless/issues/167)) ([22fc694](https://github.com/benletchford/systemless/commit/22fc6941a4a5ba5087e77d5ccfdfb3ded19da679))
+* use canonical Pascal booleans in Standard File replies ([#157](https://github.com/benletchford/systemless/issues/157)) ([d5e8ae0](https://github.com/benletchford/systemless/commit/d5e8ae03e95c96ca9d2732d15ac8792e351a1b8d))
+* **window:** erase newly exposed window content ([#158](https://github.com/benletchford/systemless/issues/158)) ([e4759cd](https://github.com/benletchford/systemless/commit/e4759cda5b5a3f9a1a7904d846975ae03f7e41ba))
+* **window:** redraw window pictures during update scans ([#164](https://github.com/benletchford/systemless/issues/164)) ([41a8d3f](https://github.com/benletchford/systemless/commit/41a8d3fe551db859ee76f8388561ce1d5a4e53b0))
+* **window:** refresh saved-under desktop pixels ([#166](https://github.com/benletchford/systemless/issues/166)) ([3e57ba6](https://github.com/benletchford/systemless/commit/3e57ba6b18c90e930702f8a8c543f0ace91ea811))
+
 ## [0.8.8](https://github.com/benletchford/systemless/compare/v0.8.7...v0.8.8) (2026-07-29)
 
 
