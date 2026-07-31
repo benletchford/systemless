@@ -3084,7 +3084,7 @@ impl FixtureRunner {
     /// Template B: memory-target variant.
     ///   MOVE.L (A7)+, Dn
     ///   CMP.L  (d16, An), Dn    ; 4 bytes (opcode word + d16)
-    ///   BLS.S/BLT.S/BLE.S <backward, into the loop body>
+    ///   BLS.S/BLT.S/BLE.S <back-to-SUBQ.W #4,A7 before the _TickCount>
     ///
     /// BLS and BLE exit after the memory target; BLT exits at the target.
     /// Classic compilers use both signed and unsigned comparisons. A signed
@@ -3114,12 +3114,16 @@ impl FixtureRunner {
         if disp8 == 0 {
             return false;
         }
-        // Branch target must be a short backward branch. We don't
-        // insist on an exact target since template B's body runs
-        // BEFORE the _TickCount trap (not just the SUBQ #4, A7).
+        // Only skip the canonical result-slot allocation and _TickCount trap.
+        // A branch farther back may include stateful work (for example, a
+        // calibration counter) that must execute on every iteration.
         let branch_src = pc_after_trap.wrapping_add(6);
         let target = (branch_src.wrapping_add(2) as i32).wrapping_add(disp8) as u32;
-        if target >= pc_after_trap || pc_after_trap.wrapping_sub(target) > 128 {
+        let canonical_target = pc_after_trap.wrapping_sub(4);
+        if target != canonical_target
+            || self.bus.read_word(canonical_target) != 0x594F
+            || self.bus.read_word(canonical_target.wrapping_add(2)) != 0xA975
+        {
             return false;
         }
 
@@ -10399,19 +10403,14 @@ mod tests {
         // $base+4: MOVE.L (A7)+, D0 (0x201F)
         // $base+6: CMP.L (-4, A6), D0 — opcode 0xB0AE, d16=0xFFFC
         //          (1011 000 010 101 110 = 0xB0AE; next word 0xFFFC = -4)
-        // $base+10: BLS.S *-12    (0x63F2) — target = $base+12 + (-14)
-        //           = $base - 2. So target should be BEFORE $base.
+        // $base+10: BLS.S $base   (0x63F4) — back to the canonical preamble
         // $base+12: sentinel NOP  (0x4E71)
         runner.bus.write_word(base, 0x594F);
         runner.bus.write_word(base + 2, 0xA975);
         runner.bus.write_word(base + 4, 0x201F);
         runner.bus.write_word(base + 6, 0xB0AE);
         runner.bus.write_word(base + 8, 0xFFFC);
-        // Branch target must be < pc_after_trap. pc_after_trap = base+4.
-        // Simplest: target = base + 2 → disp = target - (base+12) = -10
-        // (since branch_src = base+10, branch_src+2 = base+12).
-        // disp8 = -10 = 0xF6.
-        runner.bus.write_word(base + 10, 0x63F6);
+        runner.bus.write_word(base + 10, 0x63F4);
         runner.bus.write_word(base + 12, 0x4E71);
 
         // Memory target at -4(A6). A6 points at mid-stack; -4(A6)
@@ -10439,6 +10438,49 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
         // Template B synthesises 3 instructions (MOVE, CMP, BLS).
         assert_eq!(count, 3);
+    }
+
+    /// A memory-target loop with stateful work before `_TickCount` must not be
+    /// fast-forwarded because synthesising the exit would skip that work.
+    #[test]
+    fn spin_fastfwd_template_b_rejects_stateful_pretrap_body() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let counter = 0x0001_8000u32;
+        let a6 = 0x0001_9000u32;
+        let sp = 0x0010_0000u32;
+
+        // ADDQ.L #1,(A0,D3.L*4); SUBQ.W #4,A7; _TickCount;
+        // MOVE.L (A7)+,D0; CMP.L (-4,A6),D0; BLS.S back-to-ADDQ.
+        runner.bus.write_word(base, 0x52B0);
+        runner.bus.write_word(base + 2, 0x3C00);
+        runner.bus.write_word(base + 4, 0x594F);
+        runner.bus.write_word(base + 6, 0xA975);
+        runner.bus.write_word(base + 8, 0x201F);
+        runner.bus.write_word(base + 10, 0xB0AE);
+        runner.bus.write_word(base + 12, 0xFFFC);
+        runner.bus.write_word(base + 14, 0x63F0);
+        runner.bus.write_word(base + 16, 0x4E71);
+
+        runner.bus.write_long(counter, 7);
+        runner.bus.write_long(a6 - 4, 400);
+        runner.bus.write_long(0x016A, 100);
+        runner.bus.write_long(sp, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::A0, counter);
+        runner.cpu.write_reg(Register::D3, 0);
+        runner.cpu.write_reg(Register::A6, a6);
+        runner.cpu.write_reg(Register::A7, sp);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 8, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 100);
+        assert_eq!(runner.bus.read_long(counter), 7);
+        assert_eq!(runner.cpu.read_reg(Register::PC), 0);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(count, 0);
     }
 
     #[test]
