@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/benletchford/systemless/compare/v0.10.1...v0.10.2) (2026-07-31)
+
+
+### Bug Fixes
+
+* upgrade m68k to 0.3.1 with native JIT ([67f1ad2](https://github.com/benletchford/systemless/commit/67f1ad2a9e0685fc9967fa366ee35519f3b81ed3))
+
 ## [0.10.1](https://github.com/benletchford/systemless/compare/v0.10.0...v0.10.1) (2026-07-31)
 
 
