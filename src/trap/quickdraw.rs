@@ -61,6 +61,7 @@ const PALETTE_DEFAULT_WINDOW: u32 = u32::MAX;
 const C_NO_MEM_ERR: u32 = (-152i32) as u32;
 const PM_COURTEOUS: i16 = 0x0000;
 const PM_TOLERANT: i16 = 0x0002;
+const PM_ANIMATED: i16 = 0x0004;
 const PM_EXPLICIT: i16 = 0x0008;
 
 /// `dstWindow` value that addresses the default palette rather than a window.
@@ -4895,13 +4896,14 @@ impl super::TrapDispatcher {
                         (rgb[0], rgb[1], rgb[2])
                     };
                     self.sync_current_port_draw_state(bus);
-                    if explicit
+                    if (explicit || (usage & PM_ANIMATED) != 0)
                         && self.current_port != 0
                         && (bus.read_word(self.current_port + 6) & 0xC000) == 0xC000
                     {
-                        // Explicit palette entries name a device index, even
-                        // when another CLUT slot contains the same RGB value.
-                        // IM:V V-163 specifies dstEntry modulo MaxIndex+1.
+                        // Explicit entries name a device index directly.
+                        // Animated entries select the distinct device index
+                        // reserved for that palette entry; Systemless' single
+                        // GDevice allocation maps it to the same index.
                         bus.write_long(self.current_port + 80, (entry as u16 & 0x00FF) as u32);
                     }
                     if trace_qd_colors_enabled() {
@@ -4938,7 +4940,7 @@ impl super::TrapDispatcher {
                         (rgb[0], rgb[1], rgb[2])
                     };
                     self.sync_current_port_draw_state(bus);
-                    if explicit
+                    if (explicit || (usage & PM_ANIMATED) != 0)
                         && self.current_port != 0
                         && (bus.read_word(self.current_port + 6) & 0xC000) == 0xC000
                     {
@@ -34052,6 +34054,33 @@ mod tests {
         let fore_result = d.dispatch_quickdraw(true, 0x297, &mut cpu, &mut bus);
         assert!(fore_result.unwrap().is_ok());
         assert_eq!(bus.read_long(port + 80), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        let back_result = d.dispatch_quickdraw(true, 0x298, &mut cpu, &mut bus);
+        assert!(back_result.unwrap().is_ok());
+        assert_eq!(bus.read_long(port + 84), 1);
+    }
+
+    #[test]
+    fn pm_colors_select_reserved_indices_for_animated_entries() {
+        // Inside Macintosh Volume V (1986), pp. V-159..V-163: pmAnimated
+        // entries reserve distinct device-table slots, and PmForeColor /
+        // PmBackColor select those allocated indices even when their initial
+        // RGB values are identical.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        bus.write_word(port + 6, 0xC000);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+
+        let palette = d.create_palette_from_ctab(&mut bus, 3, 0, super::PM_ANIMATED, 0);
+        d.set_window_palette_association(port, palette, 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2);
+        let fore_result = d.dispatch_quickdraw(true, 0x297, &mut cpu, &mut bus);
+        assert!(fore_result.unwrap().is_ok());
+        assert_eq!(bus.read_long(port + 80), 2);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 1);
