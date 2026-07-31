@@ -1,8 +1,8 @@
 //! Shared game loading helpers.
 //!
-//! [`launch`] handles runner setup and ROM/archive ingestion (MacBinary,
-//! StuffIt, web-pack), VFS population, executable selection, post-load
-//! init.
+//! [`launch`] handles runner setup, application/archive ingestion (BinHex,
+//! MacBinary, StuffIt, and web packs), VFS population, executable selection,
+//! and post-load initialization.
 
 pub mod launch;
 

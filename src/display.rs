@@ -1,7 +1,7 @@
 //! Shared framebuffer rendering for all Systemless frontends.
 //!
-//! Produces RGBA `Vec<u8>` pixel buffers from emulator screen memory,
-//! supporting both 1bpp monochrome and 8bpp color modes.
+//! Produces RGBA pixel buffers from guest screen memory, supporting 1bpp
+//! monochrome plus 4bpp and 8bpp indexed-color modes.
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 

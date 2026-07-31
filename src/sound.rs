@@ -1,7 +1,7 @@
 //! Sound Manager state and mixing engine.
 //!
 //! Holds per-channel playback state and produces mixed PCM output each frame.
-//! Reference: Inside Macintosh: Sound 1994; references/executor/src/sound/sound.cpp
+//! Reference: *Inside Macintosh: Sound* (1994).
 
 /// Output sample rate in Hz.
 pub const OUTPUT_RATE: u32 = 22050;

@@ -1,15 +1,17 @@
-//! CPU Backend - m68k wrapper
+//! CPU backend built on the [`m68k`] crate.
 //!
-//! Hosts the 68k interpreter that drives the HLE Toolbox dispatch
-//! path.
+//! [`M68kCpu`] initializes the canonical guest CPU model and exposes both
+//! precise single-instruction stepping and JIT-enabled native batch execution.
+//! WebAssembly builds retain the same batch API through m68k's portable trace
+//! executor.
 
 use crate::memory::MacMemoryBus;
 
 pub use m68k::HleHandler;
 
-/// 68k CPU register identifiers — eight data registers (D0–D7),
-/// eight address registers (A0–A7, with A7 doubling as the user
-/// stack pointer), and the program counter.
+/// 68k CPU register identifiers: eight data registers (D0–D7), eight
+/// address registers (A0–A7, with A7 selecting the active stack pointer),
+/// and the program counter.
 #[derive(Debug, Clone, Copy)]
 pub enum Register {
     D0,
@@ -34,19 +36,21 @@ pub enum Register {
 /// Outcome of a single 68k instruction step. Returned by
 /// [`FixtureRunner::step`](crate::runner::FixtureRunner::step).
 pub enum StepResult {
-    /// Instruction executed normally; advance PC and continue.
+    /// The instruction completed normally and execution may continue.
     Ok,
-    /// CPU has reached a halt state (`STOP` instruction or external
-    /// stop signal). The runner should not step again until reset.
+    /// The CPU executed `STOP`, or the wrapper normalized an unsupported
+    /// terminal condition to a stopped result.
     Stopped,
-    /// Instruction was an A-line trap; the carried `u16` is the trap
-    /// word that the dispatcher should route to a handler.
+    /// The instruction was an A-line trap; the carried value is the trap word
+    /// for the dispatcher.
     Aline(u16),
 }
 
-/// Trait the trap dispatcher uses to read/write CPU state without
-/// pulling in the full 68k interpreter type — lets handlers be
-/// generic over both the production [`M68kCpu`] and test fakes.
+/// Register interface used by the trap dispatcher.
+///
+/// Keeping handlers generic over this subset lets them operate on both the
+/// production [`M68kCpu`] backend and test doubles without exposing the full
+/// m68k architectural state.
 pub trait CpuOps {
     /// Read the current value of a single register.
     fn read_reg(&self, reg: Register) -> u32;
@@ -54,32 +58,34 @@ pub trait CpuOps {
     fn write_reg(&mut self, reg: Register, value: u32);
     /// Read the condition code register (CCR) byte.
     fn get_ccr(&self) -> u8;
-    /// Set the condition code register (CCR) for SANE FCMP results.
-    /// Bits: X(4) N(3) Z(2) V(1) C(0)
+    /// Set the condition code register (CCR).
+    ///
+    /// The low five bits are X(4), N(3), Z(2), V(1), and C(0).
     fn set_ccr(&mut self, ccr: u8);
 }
 
-/// 68k CPU wrapper holding the [`m68k`] interpreter core. CPU type
-/// is fixed at construction to match the canonical machine profile
-/// ([`crate::machine_profile::REFERENCE_MACHINE_PROFILE`]).
+/// Systemless wrapper around [`m68k::CpuCore`].
+///
+/// Construction selects the CPU type from
+/// [`crate::machine_profile::REFERENCE_MACHINE_PROFILE`]. Callers with a
+/// specialized embedding may subsequently reconfigure the public core.
 pub struct M68kCpu {
-    /// Underlying [`m68k::CpuCore`] instance — registers, flags, PC.
-    /// Exposed so callers can reach interpreter-specific APIs not
-    /// surfaced by the [`CpuOps`] trait.
+    /// Complete m68k CPU state and execution API.
+    ///
+    /// This is public for diagnostics and specialized embedding beyond the
+    /// register-only [`CpuOps`] interface.
     pub core: m68k::CpuCore,
 }
 
 impl M68kCpu {
+    /// Create a CPU configured for the canonical Systemless machine profile.
     pub fn new() -> Self {
         let mut core = m68k::CpuCore::new();
         core.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
         Self { core }
     }
 
-    /// `#[inline]` — called many times per instruction. The match
-    /// compiles to a small jump table; inlining lets LLVM optimize
-    /// individual callsites (where `reg` is often a constant) down to
-    /// direct field reads.
+    /// Read one data, address, or program-counter register.
     #[inline]
     pub fn read_reg(&self, reg: Register) -> u32 {
         match reg {
@@ -103,6 +109,7 @@ impl M68kCpu {
         }
     }
 
+    /// Write one data, address, or program-counter register.
     #[inline]
     pub fn write_reg(&mut self, reg: Register, value: u32) {
         match reg {
@@ -126,18 +133,24 @@ impl M68kCpu {
         }
     }
 
+    /// Return whether the CPU is stopped by a `STOP` instruction.
     #[inline]
     pub fn is_stopped(&self) -> bool {
         self.core.is_stopped()
     }
 
+    /// Reset the CPU from the initial stack-pointer and program-counter vectors.
     pub fn reset(&mut self, bus: &mut MacMemoryBus) {
         self.core.reset(bus);
     }
 
-    /// Execute up to `max_instructions` instructions inside the m68k
-    /// core's JIT-enabled batch loop, returning on the first event the
-    /// runner must handle (trap, stop, watched PC, or budget out).
+    /// Execute at most `max_instructions` through m68k's throughput path.
+    ///
+    /// Native builds enable Cranelift compilation for eligible hot traces;
+    /// WebAssembly executes the same traces through the portable executor.
+    /// Execution returns on the first event the runner must handle: a trap,
+    /// stopped CPU, watched PC, or exhausted instruction budget.
+    ///
     /// See [`m68k::CpuCore::run_batch`] for the exit/accounting
     /// contract; the trapping instruction is *not* included in
     /// `instructions` and `core.ppc` holds its address.
@@ -151,11 +164,12 @@ impl M68kCpu {
         self.core.run_batch(bus, max_instructions, watch_pcs)
     }
 
-    /// `#[inline]` — called once per M68K instruction. The wrapper
-    /// converts `m68k::StepResult` to `systemless::StepResult`; inlining
-    /// lets LLVM fold the match into the caller's decision tree.
-    /// Consumes the result by value to avoid reference-materialize on
-    /// the hot path.
+    /// Execute one instruction through m68k's precise stepping path.
+    ///
+    /// Systemless surfaces completed instructions, A-line traps, and STOP
+    /// directly. F-line exits retain the legacy no-op behavior and return
+    /// [`StepResult::Ok`]; illegal instructions, `TRAP`, and `BKPT` exits are
+    /// reported and converted to [`StepResult::Stopped`].
     #[inline]
     pub fn step(&mut self, bus: &mut MacMemoryBus) -> StepResult {
         match self.core.step(bus) {

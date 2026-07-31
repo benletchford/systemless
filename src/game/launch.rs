@@ -1,8 +1,8 @@
 //! Shared game loading and initialization for all Systemless frontends.
 //!
-//! Consolidates ROM loading (BinHex + MacBinary + StuffIt), runner
-//! initialization, and post-load configuration so all frontends behave
-//! identically.
+//! Consolidates application loading (BinHex, MacBinary, StuffIt, and web
+//! packs), runner initialization, and post-load configuration so all
+//! frontends behave identically.
 
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
@@ -18,7 +18,7 @@ fn is_web_pack(file_data: &[u8]) -> bool {
     file_data.starts_with(WEB_PACK_MAGIC) || file_data.starts_with(LEGACY_WEB_PACK_MAGIC)
 }
 
-/// Standard RAM size for all frontends (32 MB).
+/// Standard frontend RAM size from the canonical machine profile.
 pub const RAM_SIZE: u32 = crate::machine_profile::REFERENCE_MACHINE_PROFILE.ram_size_bytes;
 
 /// Max instructions to execute per GUI/WASM frame.
@@ -38,7 +38,8 @@ pub fn new_runner() -> FixtureRunner {
     )
 }
 
-/// Load a game ROM from raw file bytes (BinHex, MacBinary, StuffIt archive, or raw resource fork).
+/// Load an application from BinHex, MacBinary, StuffIt, web-pack, or raw
+/// resource-fork bytes.
 ///
 /// Handles StuffIt archives (populates VFS with all entries, finds executable),
 /// MacBinary files, and macOS resource fork paths. Returns the LoadedApp on success.

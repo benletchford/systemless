@@ -620,7 +620,7 @@ fn vfs_fork_hash(bytes: &[u8]) -> u64 {
     }
     hash
 }
-/// Default emulated CPU speed for realtime frontends (Mac IIci-class 68030).
+/// Default emulated CPU speed from the canonical machine profile.
 pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
     crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz;
 /// Shared default realtime CPU budget used by the GUI runner and scripted
@@ -798,9 +798,9 @@ impl Default for FixtureRunnerConfig {
 
 /// Canonical entry point of the systemless library.
 ///
-/// `FixtureRunner` owns the three pieces of guest state — the [`M68kCpu`]
-/// interpreter, the [`MacMemoryBus`], and the [`TrapDispatcher`] (Toolbox
-/// + OS trap handlers) — and exposes the load / step / halt-inspect
+/// `FixtureRunner` owns the three pieces of guest state: the [`M68kCpu`]
+/// backend, the [`MacMemoryBus`], and the [`TrapDispatcher`] (Toolbox and OS
+/// trap handlers). It exposes the load, execute, and halt-inspection
 /// surface that drives them.
 ///
 /// **Lifecycle:**
@@ -841,9 +841,12 @@ pub struct FixtureRunner {
     halted_sp: Option<u32>,
     /// D0 register at the point of halt.
     halted_d0: Option<u32>,
-    /// Total guest instructions retired by the interpreter.
+    /// Total guest instructions accounted by the runner.
+    ///
+    /// This includes instructions retired by m68k, intercepted trap opcodes,
+    /// and instructions represented by proven idle-loop acceleration.
     total_instructions: u64,
-    /// Number of interpreted guest instructions per `Ticks` increment.
+    /// Number of guest instructions charged per `Ticks` increment.
     instructions_per_tick: u32,
     /// Optional cap on per-WaitNextEvent-call sleep tick advance in headless
     /// mode (when `run_steps` is called without a `tick_override`). `None`
@@ -953,15 +956,15 @@ pub struct FixtureRunner {
 
 impl FixtureRunner {
     /// Construct a fresh runner with `ram_size` bytes of guest RAM and
-    /// the given [`FixtureRunnerConfig`]. The CPU starts halted at
-    /// PC = 0; the framebuffer is whatever bytes the host allocator
-    /// hands us. Call [`load_app`](Self::load_app) (or the higher-level
+    /// the given [`FixtureRunnerConfig`]. The CPU begins at PC = 0 with reset
+    /// vectors not yet loaded, and guest RAM is zero-initialized. Call
+    /// [`load_app`](Self::load_app) (or the higher-level
     /// `systemless::game::load_game`) to populate guest memory and seed the
     /// run state, then drive the guest with [`run_steps`](Self::run_steps).
     ///
-    /// `ram_size` is typically 4 MiB to 16 MiB — most games never push
-    /// past 8 MiB. The runner allocates a single contiguous host
-    /// region of this size; bumping it costs only the upfront alloc.
+    /// The runner allocates one contiguous host region of `ram_size` bytes.
+    /// [`crate::game::RAM_SIZE`] provides the canonical profile-driven size;
+    /// tests and specialized embedders may choose a smaller allocation.
     ///
     /// The dispatcher defaults to **kiosk mode** (Mac menu bar
     /// suppressed, regardless of the guest's `MBarHeight`). Call
@@ -1192,10 +1195,11 @@ impl FixtureRunner {
         !self.dispatcher.menu_bar_hidden
     }
 
-    /// Disassemble M68K instructions starting at `pc` for `count`
-    /// instruction words. Returns one entry per word: `(pc, mnemonic,
-    /// size_in_bytes)`. The size includes any operand words consumed
-    /// by the instruction; advance `pc` by `size` to reach the next.
+    /// Disassemble `count` M68K instructions starting at `pc`.
+    ///
+    /// Returns `(pc, mnemonic, size_in_bytes)` for each instruction. The size
+    /// includes extension words; advance `pc` by `size` to reach the next
+    /// instruction.
     ///
     /// Unknown opcodes (including A-line traps and other reserved
     /// patterns) come back as `DC.W $XXXX` with size 2 — the same
@@ -1215,9 +1219,9 @@ impl FixtureRunner {
             // bus.read_word returns 0 for OOB rather than panicking,
             // so wrap-around safety is a property of the underlying
             // bus impl. Tag explicitly when the read landed at an
-            // address we know is past the framebuffer.
+            // address beyond the configured guest RAM.
             let opcode = self.bus.read_word(cur);
-            let unmapped = (cur as u64) >= (8 * 1024 * 1024);
+            let unmapped = cur >= self.bus.ram_size();
             let (mnemonic, size) = if unmapped {
                 ("<unmapped>".to_string(), 2)
             } else {
@@ -1802,11 +1806,12 @@ impl FixtureRunner {
         })
     }
 
-    /// Execute exactly one 68k instruction. Returns the per-step result
-    /// (continue / halted / unimplemented opcode). Most embedders
-    /// should call [`run_steps`](Self::run_steps) instead — it amortises
-    /// the per-step bookkeeping (tick advancement, halt detection,
-    /// trace ring filling) across the whole budget.
+    /// Execute exactly one 68k instruction through the precise CPU path.
+    ///
+    /// The result distinguishes ordinary completion, STOP, and an A-line trap.
+    /// Most embedders should call [`run_steps`](Self::run_steps) instead; it
+    /// amortizes tick advancement, halt detection, and trace collection across
+    /// the instruction budget.
     pub fn step(&mut self) -> StepResult {
         self.cpu.step(&mut self.bus)
     }
@@ -13280,6 +13285,21 @@ mod tests {
         assert!(
             out[2].1.contains("NOP"),
             "third entry must be the second NOP we seeded"
+        );
+    }
+
+    #[test]
+    fn disassemble_at_uses_the_configured_ram_boundary() {
+        let mut runner =
+            FixtureRunner::new(16 * 1024 * 1024, FixtureRunnerConfig::default());
+        let pc = 12 * 1024 * 1024;
+        runner.bus.write_word(pc, 0x4E71);
+
+        let out = runner.disassemble_at(pc, 1);
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].1.contains("NOP"),
+            "mapped RAM above 8 MiB must not be reported as unmapped"
         );
     }
 }

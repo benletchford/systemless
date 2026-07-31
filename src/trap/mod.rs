@@ -7,7 +7,7 @@
 //! - `quickdraw` — QuickDraw (port, pen, text, shapes, CopyBits, etc.)
 //! - `menu` — Menu Manager (NewMenu, DrawMenuBar, etc.)
 //! - `window` — Window Manager (NewWindow, GetNewWindow, etc.)
-//! - `dialog` — Dialog Manager + Cursor Manager stubs
+//! - `dialog` — Dialog Manager + Cursor Manager
 //! - `toolbox` — Toolbox utilities (Random, TickCount, Sound, etc.)
 //! - `shapes` — Shape computation helpers (draw_rect, draw_oval, etc.)
 //! - `text_render` — Text rendering helpers (draw_char, draw_string, etc.)

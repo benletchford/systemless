@@ -60,6 +60,11 @@ jobs:
       - name: Headless library build (no default features)
         run: cargo check --no-default-features
 
+      - name: Build API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings -D rustdoc::private_intra_doc_links
+        run: cargo doc --all-features --locked --no-deps --document-private-items
+
       # Catch packaging/metadata problems before a release ever runs.
       - name: Package dry-run
         run: cargo publish --locked --dry-run

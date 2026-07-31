@@ -2,12 +2,25 @@
 //!
 //! `systemless` runs Mac OS Toolbox apps without a real ROM by intercepting
 //! 68k A-line trap instructions (`$A000`–`$AFFF`) and dispatching them
-//! to native Rust handlers — the QuickDraw, Window Manager, Resource
-//! Manager, Sound Manager, SANE, and the rest of the Toolbox are
-//! reimplemented natively. The 68k CPU itself is interpreted by the
-//! [`m68k`] crate.
+//! to native Rust handlers. QuickDraw, the Window Manager, the Resource
+//! Manager, the Sound Manager, SANE, and the rest of the supported Toolbox
+//! surface are reimplemented in Rust. The [`m68k`] crate executes guest CPU
+//! instructions and models generation-specific architectural state.
 //!
-//! See the crate's `README.md` for the architecture overview.
+//! # Execution model
+//!
+//! [`FixtureRunner`](runner::FixtureRunner) owns the CPU, guest memory, and
+//! Toolbox dispatcher. Precise single-instruction work uses
+//! [`m68k::CpuCore::step`]. Budgeted execution uses
+//! [`m68k::CpuCore::run_batch`], with FastMem for ordinary guest RAM and
+//! Cranelift-compiled hot traces on native targets. WebAssembly uses m68k's
+//! portable trace executor; the guest-visible CPU and HLE contracts are the
+//! same in both modes.
+//!
+//! The library exposes the full [`m68k::CpuCore`] through
+//! [`M68kCpu::core`](cpu::M68kCpu::core) for diagnostics and specialized
+//! embedding, while [`cpu::CpuOps`] is the narrower register interface used by
+//! Toolbox handlers.
 //!
 //! # Quick start
 //!
@@ -31,6 +44,8 @@
 //! ```
 //!
 //! [`m68k`]: https://crates.io/crates/m68k
+
+#![deny(rustdoc::broken_intra_doc_links)]
 
 mod adb;
 pub mod audio;
