@@ -1417,6 +1417,11 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 4);
                 self.pn_size = (height, width);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0007); // PnSize
+                    Self::push_pict_word(commands, height as u16);
+                    Self::push_pict_word(commands, width as u16);
+                }
                 Ok(())
             }
 
@@ -1431,6 +1436,10 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 2);
                 self.pn_mode = mode;
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0008); // PnMode
+                    Self::push_pict_word(commands, mode as u16);
+                }
                 Ok(())
             }
 
@@ -2443,6 +2452,12 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0030); // frameRect
+                    for value in [r.top, r.left, r.bottom, r.right] {
+                        Self::push_pict_word(commands, value as u16);
+                    }
+                }
                 if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
@@ -4283,6 +4298,12 @@ impl super::TrapDispatcher {
                 let b = bus.read_word(color_ptr + 4);
                 self.fg_color = (r, g, b);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x001A); // RGBFgCol
+                    for component in [r, g, b] {
+                        Self::push_pict_word(commands, component);
+                    }
+                }
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] RGBForeColor port=${:08X} ptr=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -8340,7 +8361,7 @@ impl super::TrapDispatcher {
             // OpenPicture ($A8F3)
             // Starts recording drawing operations into a picture.
             // Drawing commands between OpenPicture and ClosePicture execute
-            // on screen and are captured as a bitmap snapshot on ClosePicture.
+            // in the current port and are also saved for later playback.
             // FUNCTION OpenPicture(picFrame: Rect): PicHandle;
             // Inside Macintosh Volume I, I-189
             // OpenPicture ($A8F3): Allocates picture handle, writes header
@@ -8364,8 +8385,14 @@ impl super::TrapDispatcher {
                 bus.write_word(pic + 6, frame_bottom as u16);
                 bus.write_word(pic + 8, frame_right as u16);
 
-                self.recording_picture =
-                    Some((handle, frame_top, frame_left, frame_bottom, frame_right));
+                self.recording_picture = Some((
+                    handle,
+                    frame_top,
+                    frame_left,
+                    frame_bottom,
+                    frame_right,
+                    Vec::new(),
+                ));
 
                 eprintln!(
                     "[TRAP] OpenPicture: handle=${:08X} frame=({},{},{},{})",
@@ -8378,17 +8405,54 @@ impl super::TrapDispatcher {
             }
 
             // ClosePicture ($A8F4)
-            // Ends picture recording. Captures the picFrame region of the
-            // active indexed screen as a PackBitsRect snapshot and stores it
-            // in the picture handle.
+            // Ends picture recording. Finalizes saved drawing commands; an
+            // empty recording retains the historical bitmap-snapshot fallback.
             // PROCEDURE ClosePicture;
             // Inside Macintosh Volume I, I-189
-            // ClosePicture ($A8F4): Writes a valid indexed PICT v1 snapshot
+            // ClosePicture ($A8F4): Finalizes a PICT v2 command stream
             (true, 0x0F4) => {
-                if let Some((handle, top, left, bottom, right)) = self.recording_picture.take() {
-                    if let Some(picture) =
-                        self.encode_screen_snapshot_pict(bus, top, left, bottom, right)
-                    {
+                if let Some((handle, top, left, bottom, right, commands)) =
+                    self.recording_picture.take()
+                {
+                    let picture = if commands.is_empty() {
+                        let mut source = self.resolve_copy_bitmap(bus, self.current_port + 2);
+                        if source.base == 0
+                            || source.base == u32::MAX
+                            || source.row_bytes == 0
+                            || source.pixel_size == 0
+                        {
+                            let (base, row_bytes, width, height, pixel_size) = self.screen_mode;
+                            source = CopyBitmapInfo {
+                                base,
+                                row_bytes,
+                                bounds_top: 0,
+                                bounds_left: 0,
+                                bounds_bottom: height as i16,
+                                bounds_right: width as i16,
+                                pixel_size: u32::from(pixel_size),
+                                ctab_handle: 0,
+                            };
+                        }
+                        let source_clut = if source.ctab_handle != 0 {
+                            self.read_port_clut(bus, source.ctab_handle)
+                        } else {
+                            self.device_clut
+                        };
+                        Self::encode_bitmap_snapshot_pict(
+                            bus,
+                            source,
+                            &source_clut,
+                            top,
+                            left,
+                            bottom,
+                            right,
+                        )
+                    } else {
+                        Some(Self::encode_recorded_picture_pict(
+                            top, left, bottom, right, commands,
+                        ))
+                    };
+                    if let Some(picture) = picture {
                         let old_pic = bus.read_long(handle);
                         let pic = bus.alloc(picture.len() as u32);
                         bus.write_bytes(pic, &picture);
@@ -8398,10 +8462,9 @@ impl super::TrapDispatcher {
                         }
 
                         eprintln!(
-                            "[TRAP] ClosePicture: captured {}x{} {}bpp PackBitsRect ({} bytes) for handle=${:08X}",
+                            "[TRAP] ClosePicture: finalized {}x{} picture ({} bytes) for handle=${:08X}",
                             right - left,
                             bottom - top,
-                            self.screen_mode.4,
                             picture.len(),
                             handle
                         );
@@ -15869,7 +15932,12 @@ impl super::TrapDispatcher {
         for (index, rgb) in updated_clut.iter_mut().enumerate().take(palette_entries) {
             let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
             let usage = bus.read_word(color_info + 6) as i16;
-            if usage & PM_EXPLICIT != 0 {
+            // A purely explicit entry observes the existing device index and
+            // ignores ciRGB. If the caller also requests pmTolerant, however,
+            // Palette Manager prioritization must install the requested RGB
+            // while PmForeColor still keeps the entry's explicit index.
+            // Inside Macintosh V (1986), pp. V-157..V-160.
+            if usage & PM_EXPLICIT != 0 && usage & PM_TOLERANT == 0 {
                 *rgb = current_clut[index];
                 continue;
             }
@@ -19105,9 +19173,32 @@ impl super::TrapDispatcher {
         bytes.extend_from_slice(&packed);
     }
 
-    fn encode_screen_snapshot_pict(
-        &self,
+    fn encode_recorded_picture_pict(
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+        commands: Vec<u8>,
+    ) -> Vec<u8> {
+        let mut picture = Vec::with_capacity(16 + commands.len());
+        Self::push_pict_word(&mut picture, 0); // patched after encoding
+        for value in [top, left, bottom, right] {
+            Self::push_pict_word(&mut picture, value as u16);
+        }
+        // PICT v2 begins with the byte-sized VersionOp understood by both
+        // QuickDraw and Systemless, followed by alignment before word opcodes.
+        picture.extend_from_slice(&[0x11, 0x02, 0xFF, 0x00]);
+        picture.extend_from_slice(&commands);
+        Self::push_pict_word(&mut picture, 0x00FF); // EndOfPicture
+        let picture_size = u16::try_from(picture.len()).unwrap_or(0);
+        picture[0..2].copy_from_slice(&picture_size.to_be_bytes());
+        picture
+    }
+
+    fn encode_bitmap_snapshot_pict(
         bus: &MacMemoryBus,
+        source: CopyBitmapInfo,
+        source_clut: &[[u16; 3]; 256],
         top: i16,
         left: i16,
         bottom: i16,
@@ -19119,8 +19210,7 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        let (screen_base, screen_row_bytes, screen_width, screen_height, pixel_size) =
-            self.screen_mode;
+        let pixel_size = u16::try_from(source.pixel_size).ok()?;
         if !matches!(pixel_size, 1 | 2 | 4 | 8) {
             return None;
         }
@@ -19128,17 +19218,6 @@ impl super::TrapDispatcher {
             .div_ceil(8)
             .next_multiple_of(2);
         let color_count = 1usize << pixel_size;
-        let source = CopyBitmapInfo {
-            base: screen_base,
-            row_bytes: screen_row_bytes,
-            bounds_top: 0,
-            bounds_left: 0,
-            bounds_bottom: screen_height as i16,
-            bounds_right: screen_width as i16,
-            pixel_size: u32::from(pixel_size),
-            ctab_handle: 0,
-        };
-
         let mut picture = Vec::with_capacity(
             10 + 1 + 46 + 8 + color_count * 8 + 18 + (row_bytes as usize + 6) * height as usize,
         );
@@ -19170,7 +19249,7 @@ impl super::TrapDispatcher {
         Self::push_pict_word(&mut picture, (color_count - 1) as u16);
         for index in 0..color_count {
             Self::push_pict_word(&mut picture, index as u16);
-            for component in self.device_clut[index] {
+            for component in source_clut[index] {
                 Self::push_pict_word(&mut picture, component);
             }
         }
@@ -34139,6 +34218,36 @@ mod tests {
     }
 
     #[test]
+    fn activatepalette_installs_tolerant_rgb_for_mixed_explicit_entries() {
+        // IM:V V-157..V-160: tolerant entries participate in palette
+        // prioritization and update the color environment. Combining that
+        // request with pmExplicit must retain stable PmForeColor indices
+        // without suppressing the tolerant RGB installation.
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4160u32;
+        let usage = super::PM_TOLERANT | super::PM_EXPLICIT;
+        let palette = d.create_palette_from_ctab(&mut bus, 1, 0, usage, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            0,
+            [0x1234, 0x5678, 0x9ABC],
+            usage,
+            0,
+        );
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d.current_port = window;
+        bus.write_long(TEST_SP, window);
+
+        let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
+    }
+
+    #[test]
     fn disposepalette_consumes_palettehandle_and_clears_palette_associations() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4200u32;
@@ -39478,6 +39587,144 @@ mod tests {
             original,
             "ClosePicture must retain packed 8-bit pixels for a later DrawPicture"
         );
+    }
+
+    #[test]
+    fn closepicture_captures_the_current_offscreen_color_port() {
+        // OpenPicture records drawing in the current graphics port, not a
+        // snapshot of the physical screen (IM:I 1985 pp. I-189..I-190).
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(16);
+        bus.write_bytes(screen_base, &[0xEE; 16]);
+        d.screen_mode = (screen_base, 8, 8, 2, 8);
+
+        let original = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        let offscreen_base = bus.alloc(original.len() as u32);
+        bus.write_bytes(offscreen_base, &original);
+        let offscreen_base_handle = bus.alloc(4);
+        bus.write_long(offscreen_base_handle, offscreen_base);
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap, offscreen_base_handle);
+        bus.write_word(pixmap + 4, 0x8008);
+        write_rect(&mut bus, pixmap + 6, 0, 0, 2, 8);
+        bus.write_word(pixmap + 32, 8);
+        bus.write_word(pixmap + 34, 1);
+        bus.write_word(pixmap + 36, 8);
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap);
+        let port = bus.alloc(170);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        write_rect(&mut bus, port + 16, 0, 0, 2, 8);
+        d.current_port = port;
+
+        let pic_frame = 0x3002C0u32;
+        write_rect(&mut bus, pic_frame, 0, 0, 2, 8);
+        bus.write_long(TEST_SP, pic_frame);
+        let open_result = d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus);
+        assert!(open_result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 4);
+
+        let close_result = d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus);
+        assert!(close_result.unwrap().is_ok());
+        let pic_ptr = bus.read_long(handle);
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            2,
+            8,
+            d.screen_mode,
+            &d.device_clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert_eq!(
+            bus.read_bytes(screen_base, 16),
+            original,
+            "ClosePicture must encode pixels from the current offscreen port"
+        );
+    }
+
+    #[test]
+    fn closepicture_replays_recorded_pen_color_and_framerect_commands() {
+        // IM:I I-189..I-190: drawing operations issued while a picture is
+        // open are saved as its definition and execute again in DrawPicture.
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(64);
+        bus.fill_zeros(screen_base, 64);
+        d.screen_mode = (screen_base, 8, 8, 8, 8);
+
+        let pic_frame = 0x300300u32;
+        write_rect(&mut bus, pic_frame, 0, 0, 8, 8);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pic_frame);
+        d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let handle = bus.read_long(TEST_SP + 4);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2); // height
+        bus.write_word(TEST_SP + 2, 2); // width
+        d.dispatch_quickdraw(true, 0x09B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0); // srcCopy
+        d.dispatch_quickdraw(true, 0x09C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let rgb = 0x300320u32;
+        bus.write_word(rgb, 0xFFFF);
+        bus.write_word(rgb + 2, 0);
+        bus.write_word(rgb + 4, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rgb);
+        d.dispatch_quickdraw(true, 0x214, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let rect = 0x300340u32;
+        write_rect(&mut bus, rect, 1, 1, 7, 7);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rect);
+        d.dispatch_quickdraw(true, 0x0A1, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let pic_ptr = bus.read_long(handle);
+
+        bus.fill_zeros(screen_base, 64);
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            8,
+            8,
+            d.screen_mode,
+            &d.device_clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert_ne!(bus.read_byte(screen_base + 1 + 8), 0);
+        assert_ne!(bus.read_byte(screen_base + 2 + 2 * 8), 0);
+        assert_eq!(bus.read_byte(screen_base + 4 + 4 * 8), 0);
     }
 
     #[test]

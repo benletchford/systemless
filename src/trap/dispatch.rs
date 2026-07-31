@@ -1721,9 +1721,10 @@ pub struct TrapDispatcher {
     /// global as the fill pattern. Used to work around games that should use a
     /// dithered city/object pattern but were compiled with `black` instead.
     pub fill_black_override: Option<[u8; 8]>,
-    /// Active picture recording state: (pic_handle, frame top, left, bottom, right).
+    /// Active picture recording state:
+    /// (pic_handle, frame top, left, bottom, right, encoded PICT v2 commands).
     /// Set by OpenPicture, cleared by ClosePicture.
-    pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16)>,
+    pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
     /// Native trap dispatch table: maps raw trap word -> native 68K handler address.
     /// Populated by SetTrapAddress ($A047/$A647). When an A-line instruction fires
     /// and a native handler exists, the dispatcher simulates a JSR to the handler
