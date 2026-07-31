@@ -5048,6 +5048,9 @@ impl super::TrapDispatcher {
                             usage,
                             tolerance,
                         );
+                        self.install_animated_palette_entry_on_active_device(
+                            window, palette, dst, rgb, usage,
+                        );
                     }
                     self.activate_associated_palette_for_window(bus, window);
                 }
@@ -14770,6 +14773,13 @@ impl super::TrapDispatcher {
                     usage,
                     tolerance,
                 );
+                self.install_animated_palette_entry_on_active_device(
+                    window,
+                    palette,
+                    dst_entry as u32,
+                    rgb,
+                    usage,
+                );
                 self.activate_associated_palette_for_window(bus, window);
                 Ok(())
             }
@@ -16043,6 +16053,35 @@ impl super::TrapDispatcher {
             bus.write_word(entry + 4, rgb[1]);
             bus.write_word(entry + 6, rgb[2]);
         }
+    }
+
+    fn install_animated_palette_entry_on_active_device(
+        &mut self,
+        window: u32,
+        palette_handle: u32,
+        entry: u32,
+        rgb: [u16; 3],
+        usage: i16,
+    ) {
+        // AnimateEntry and AnimatePalette change the device cells reserved by
+        // pmAnimated entries immediately. A pmExplicit entry still observes
+        // its existing device cell during ordinary palette activation, so the
+        // animation traps must update the changed cell before reactivation.
+        // Restrict the write to the front window's exact association: a
+        // background window may update its palette without changing the live
+        // screen until that window becomes active.
+        // Inside Macintosh Volume V (1986), V-164; Volume VI (1991), 20-13.
+        if usage & PM_ANIMATED == 0
+            || window == 0
+            || window != self.front_window
+            || self.window_palette_handle_exact(window) != palette_handle
+        {
+            return;
+        }
+
+        let device_index = (entry as usize) & 0xFF;
+        self.device_clut[device_index] = rgb;
+        self.color_manager_clut[device_index] = rgb;
     }
 
     pub(crate) fn set_window_palette_association(
@@ -34414,6 +34453,35 @@ mod tests {
         assert_eq!(d.device_clut, before);
     }
 
+    #[test]
+    fn animateentry_updates_only_the_changed_explicit_animated_device_entry() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_5100u32;
+        let usage = super::PM_ANIMATED | super::PM_EXPLICIT;
+        let palette = d.create_palette_from_ctab(&mut bus, 3, 0, usage, 0);
+        let src_rgb = bus.alloc(6);
+        let animated_rgb = [0x1234, 0x5678, 0x9ABC];
+        bus.write_word(src_rgb, animated_rgb[0]);
+        bus.write_word(src_rgb + 2, animated_rgb[1]);
+        bus.write_word(src_rgb + 4, animated_rgb[2]);
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d.current_port = window;
+
+        let before = d.device_clut;
+        bus.write_long(TEST_SP, src_rgb);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, window);
+
+        let result = d.dispatch_quickdraw(true, 0x299, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(d.device_clut[1], animated_rgb);
+        assert_eq!(d.color_manager_clut[1], animated_rgb);
+        assert_eq!(d.device_clut[0], before[0]);
+        assert_eq!(d.device_clut[2], before[2]);
+    }
+
     // ==================== ScrollRect ====================
 
     #[test]
@@ -35418,6 +35486,38 @@ mod tests {
 
         let before = TrapDispatcher::read_palette_color_info(bus, palette, 0);
         (window, palette, src_ctab, before)
+    }
+
+    #[test]
+    fn animatepalette_updates_only_the_changed_explicit_animated_device_entries() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_6100u32;
+        let usage = super::PM_ANIMATED | super::PM_EXPLICIT;
+        let palette = d.create_palette_from_ctab(&mut bus, 3, 0, usage, 0);
+        let animated_rgb = [0x1357, 0x2468, 0xBEEF];
+        let src_ctab = make_test_ctab_handle(&mut bus, &[animated_rgb], 0x3333_4444, 0);
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d.current_port = window;
+
+        let before = d.device_clut;
+        bus.write_word(TEST_SP, 1);
+        bus.write_word(TEST_SP + 2, 1);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, src_ctab);
+        bus.write_long(TEST_SP + 10, window);
+
+        let result = d.dispatch_quickdraw(true, 0x29A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+        assert_eq!(d.device_clut[1], animated_rgb);
+        assert_eq!(d.color_manager_clut[1], animated_rgb);
+        assert_eq!(d.device_clut[0], before[0]);
+        assert_eq!(d.device_clut[2], before[2]);
+        assert_eq!(
+            TrapDispatcher::read_palette_color_info(&bus, palette, 1),
+            Some((animated_rgb, usage, 0))
+        );
     }
 
     #[test]
