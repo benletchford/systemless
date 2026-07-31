@@ -47,6 +47,28 @@ impl ResourceFork {
     pub fn resources(&self) -> &HashMap<(ResourceType, i16), Resource> {
         &self.resources
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_resources(resources: Vec<(ResourceType, i16, Vec<u8>)>) -> Self {
+        Self {
+            resources: resources
+                .into_iter()
+                .map(|(res_type, id, data)| {
+                    (
+                        (res_type, id),
+                        Resource {
+                            res_type,
+                            id,
+                            reference_offset: 0,
+                            name: None,
+                            data,
+                            attrs: 0,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 impl ResourceFork {

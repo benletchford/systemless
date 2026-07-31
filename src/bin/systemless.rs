@@ -20,6 +20,9 @@ mod desktop_save_store;
 #[path = "desktop/metal_present.rs"]
 mod metal_present;
 #[cfg(target_os = "macos")]
+#[path = "desktop/native_application.rs"]
+mod native_application;
+#[cfg(target_os = "macos")]
 #[path = "desktop/native_menu.rs"]
 mod native_menu;
 
@@ -364,6 +367,12 @@ struct App {
     show_menu_bar: bool,
     #[cfg(target_os = "macos")]
     native_menu: native_menu::NativeMenuBridge,
+    #[cfg(target_os = "macos")]
+    native_app_path: Option<String>,
+    #[cfg(target_os = "macos")]
+    native_app_name: String,
+    #[cfg(target_os = "macos")]
+    native_app_icon: Option<game::ApplicationIcon>,
 }
 
 impl App {
@@ -379,6 +388,8 @@ impl App {
             .and_then(|name| name.to_str())
             .unwrap_or("Systemless")
             .to_owned();
+        #[cfg(target_os = "macos")]
+        let native_app_name = native_menu_app_name.clone();
         #[cfg(target_os = "macos")]
         let cached_content = load_cached_content_rect(&game_path);
         #[cfg(target_os = "macos")]
@@ -450,6 +461,12 @@ impl App {
             show_menu_bar,
             #[cfg(target_os = "macos")]
             native_menu: native_menu::NativeMenuBridge::new(native_menu_app_name),
+            #[cfg(target_os = "macos")]
+            native_app_path: None,
+            #[cfg(target_os = "macos")]
+            native_app_name,
+            #[cfg(target_os = "macos")]
+            native_app_icon: None,
         }
     }
 
@@ -501,15 +518,6 @@ impl App {
         }
         let app =
             game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
-        #[cfg(target_os = "macos")]
-        if let Some(executable_name) = runner
-            .dispatcher()
-            .launched_app_path()
-            .and_then(|path| path.rsplit('/').next())
-            .filter(|name| !name.is_empty())
-        {
-            self.native_menu.set_app_name(executable_name.to_owned());
-        }
         let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner);
         eprintln!(
             "[SYSTEMLESS] Desktop save dir: {}",
@@ -556,6 +564,31 @@ impl App {
         self.runner = Some(runner);
         self.save_store = Some(save_store);
         self.initialized = true;
+        #[cfg(target_os = "macos")]
+        self.sync_native_application_identity();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sync_native_application_identity(&mut self) {
+        let Some(identity) = self
+            .runner
+            .as_ref()
+            .and_then(game::loaded_application_identity)
+        else {
+            return;
+        };
+        if self.native_app_path.as_deref() == Some(identity.path.as_str()) {
+            return;
+        }
+
+        self.native_menu.set_app_name(identity.name.clone());
+        native_application::set_application_icon(identity.icon.as_ref());
+        if let Some(window) = &self.window {
+            window.set_title(&identity.name);
+        }
+        self.native_app_path = Some(identity.path);
+        self.native_app_name = identity.name;
+        self.native_app_icon = identity.icon;
     }
 
     fn sync_save_files(&mut self, force: bool) {
@@ -1554,14 +1587,20 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             #[cfg(target_os = "macos")]
+            native_application::set_application_icon(self.native_app_icon.as_ref());
+            #[cfg(target_os = "macos")]
             let initial_size = self
                 .content_rect
                 .map(|content| (content.width, content.height))
                 .unwrap_or((INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT));
             #[cfg(not(target_os = "macos"))]
             let initial_size = (INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT);
+            #[cfg(target_os = "macos")]
+            let window_title = self.native_app_name.as_str();
+            #[cfg(not(target_os = "macos"))]
+            let window_title = "Systemless - Macintosh Emulator";
             let window_attrs = Window::default_attributes()
-                .with_title("Systemless - Macintosh Emulator")
+                .with_title(window_title)
                 .with_inner_size(winit::dpi::LogicalSize::new(
                     initial_size.0 * SCALE,
                     initial_size.1 * SCALE,
@@ -1587,9 +1626,6 @@ impl ApplicationHandler for App {
 
             self.window = Some(window);
             self.surface = Some(surface);
-
-            // Initialize the game
-            self.init_game();
         }
     }
 
@@ -1733,6 +1769,9 @@ impl ApplicationHandler for App {
         self.sync_save_files(false);
 
         #[cfg(target_os = "macos")]
+        self.sync_native_application_identity();
+
+        #[cfg(target_os = "macos")]
         if let Some(snapshot) = self.runner.as_mut().map(FixtureRunner::guest_menu_snapshot) {
             self.native_menu.sync(snapshot);
         }
@@ -1776,6 +1815,10 @@ fn run_gui(game_path: PathBuf, arrows_as_numpad: bool, cpu_mhz: Option<f64>, sho
     );
 
     let mut app = App::new(game_path, arrows_as_numpad, cpu_mhz, show_menu_bar);
+    // `run_app` is the first point at which `resumed` can create a native
+    // window. Finish archive decompression and guest initialization before
+    // entering the event loop so startup never exposes an empty host window.
+    app.init_game();
     event_loop.run_app(&mut app).expect("Event loop failed");
 }
 
