@@ -3652,6 +3652,13 @@ impl super::TrapDispatcher {
                         }
                     }
 
+                    // Resizing changes the content and structure regions that
+                    // determine occlusion for this window and every window
+                    // behind it. Rebuild visRgn data instead of editing only
+                    // its bounding words, which leaves stale complex runs.
+                    // Inside Macintosh Volume I, I-287 and I-297.
+                    self.recalculate_window_vis_regions(bus);
+
                     // Derive screen origin from pixmap bounds to update hit-test bounds.
                     if the_window == self.front_window {
                         let port_version = bus.read_word(the_window + 6);
@@ -9865,6 +9872,73 @@ mod tests {
             bus.read_word(clip_rgn_data + 8) as i16,
             640,
             "clipRgn.right"
+        );
+    }
+
+    #[test]
+    fn size_window_recalculates_background_occlusion_region() {
+        // IM:I 1985 pp. I-287 and I-297: resizing a background window must
+        // recalculate its visRgn against the structure regions in front.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let back = bus.alloc(256);
+        let front = bus.alloc(256);
+        disp.menu_bar_hidden = true;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            disp.screen_mode.0,
+            0,
+            0,
+            200,
+            300,
+            "",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            disp.screen_mode.0,
+            50,
+            60,
+            90,
+            160,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        let back_vis = bus.read_long(back + 24);
+        assert!(
+            !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 70, 100),
+            "the initial background visRgn must exclude the front window"
+        );
+
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0);
+        bus.write_word(sp + 2, 250);
+        bus.write_word(sp + 4, 350);
+        bus.write_long(sp + 6, back);
+        let result = dispatch(&mut disp, 0x11D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert!(
+            !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 70, 100),
+            "the resized background must still exclude the front window"
+        );
+        assert!(
+            super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 225, 325),
+            "newly enlarged unobscured background pixels must become visible"
         );
     }
 
