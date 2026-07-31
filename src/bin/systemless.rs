@@ -77,6 +77,13 @@ const AUDIO_CALLBACK_CHUNK_SAMPLES: usize = 32;
 /// updates before it can crop the presentation. Geometry from the manual
 /// CPort already selected by the HLE is authoritative immediately.
 const CONTENT_RECT_CONFIRMATIONS: u16 = 5;
+/// After rejecting a crop, require a longer quiet-margin period before
+/// shrinking again so startup phases cannot make the native window oscillate.
+const CONTENT_RECT_RELEARN_CONFIRMATIONS: u16 = 120;
+/// A learned crop is discarded when substantial drawing persists in the area
+/// it excludes. This catches apps whose large offscreen playfield is only one
+/// part of a full-screen layout without reacting to a cursor or brief overlay.
+const CONTENT_RECT_ACTIVE_MARGIN_PERCENT: usize = 10;
 #[cfg(target_os = "macos")]
 const VIEWPORT_CACHE_FILE: &str = "viewport.json";
 const MAX_AUDIO_MIX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -291,6 +298,12 @@ struct App {
     content_rect_candidate: Option<(ContentRect, u16)>,
     #[cfg(target_os = "macos")]
     content_rect_copybits_count: u64,
+    #[cfg(target_os = "macos")]
+    content_rect_active_margin_frames: u16,
+    /// Continue looking for a valid crop after active margins forced this run
+    /// back to the full screen; a startup splash may later become letterboxed.
+    #[cfg(target_os = "macos")]
+    content_rect_relearn_after_full: bool,
     /// Previous raw guest frame used only while learning the pixel-content
     /// fallback. Repeated host presentations of one image do not confirm it.
     #[cfg(target_os = "macos")]
@@ -416,6 +429,10 @@ impl App {
             content_rect_candidate: None,
             #[cfg(target_os = "macos")]
             content_rect_copybits_count: 0,
+            #[cfg(target_os = "macos")]
+            content_rect_active_margin_frames: 0,
+            #[cfg(target_os = "macos")]
+            content_rect_relearn_after_full: false,
             #[cfg(target_os = "macos")]
             content_rect_previous_frame: Vec::new(),
             #[cfg(target_os = "macos")]
@@ -958,8 +975,45 @@ impl App {
                 self.content_rect = None;
                 self.content_rect_candidate = None;
                 self.content_rect_copybits_count = 0;
+                self.content_rect_active_margin_frames = 0;
+                self.content_rect_relearn_after_full = false;
                 self.content_rect_previous_frame.clear();
             }
+
+            let framebuffer_len = screen_mode.1.saturating_mul(u32::from(screen_mode.3));
+            let framebuffer = runner.bus().ram_slice(screen_mode.0, framebuffer_len);
+            let full_screen = ContentRect {
+                left: 0,
+                top: 0,
+                width: game_w,
+                height: game_h,
+            };
+            let visible_dialog = runner
+                .dispatcher()
+                .visible_dialog_structure_bounds(runner.bus())
+                .is_some();
+            let active_margin_crop = self.content_rect.filter(|&rect| {
+                rect != full_screen
+                    && !visible_dialog
+                    && screen_mode.4 == 8
+                    && !content_rect_has_inactive_margins_8bpp(
+                        framebuffer,
+                        screen_mode.1 as usize,
+                        usize::from(screen_mode.2),
+                        usize::from(screen_mode.3),
+                        rect,
+                    )
+            });
+            if active_margin_crop.is_some() {
+                self.content_rect_active_margin_frames =
+                    self.content_rect_active_margin_frames.saturating_add(1);
+            } else {
+                self.content_rect_active_margin_frames = 0;
+            }
+            let invalidated_crop = active_margin_crop
+                .filter(|_| self.content_rect_active_margin_frames >= CONTENT_RECT_CONFIRMATIONS);
+            let learning_content_rect =
+                self.content_rect.is_none() || self.content_rect_relearn_after_full;
 
             // A guest-drawn screen frame is stronger evidence than an
             // earlier inferred or cached crop. Keep looking for it after a
@@ -969,35 +1023,81 @@ impl App {
             let framed_rect = runner
                 .dispatcher()
                 .framed_manual_cport_presentation_rect(runner.bus())
-                .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h));
+                .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
+                .filter(|&rect| {
+                    !self.content_rect_relearn_after_full
+                        || screen_mode.4 != 8
+                        || content_rect_has_inactive_margins_8bpp(
+                            framebuffer,
+                            screen_mode.1 as usize,
+                            usize::from(screen_mode.2),
+                            usize::from(screen_mode.3),
+                            rect,
+                        )
+                });
             let authoritative_rect = framed_rect.or_else(|| {
-                self.content_rect.is_none().then(|| {
+                learning_content_rect.then(|| {
                     let dispatcher = runner.dispatcher();
                     dispatcher
                         .manual_cport_presentation_rect(runner.bus())
                         .or_else(|| dispatcher.declared_centered_presentation_rect(runner.bus()))
                         .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
+                        .filter(|&rect| {
+                            screen_mode.4 != 8
+                                || content_rect_has_inactive_margins_8bpp(
+                                    framebuffer,
+                                    screen_mode.1 as usize,
+                                    usize::from(screen_mode.2),
+                                    usize::from(screen_mode.3),
+                                    rect,
+                                )
+                        })
                 })?
             });
 
-            let framebuffer_len = screen_mode.1.saturating_mul(u32::from(screen_mode.3));
-            let framebuffer = runner.bus().ram_slice(screen_mode.0, framebuffer_len);
-            let mut accepted_rect = authoritative_rect;
-            if self.content_rect.is_none() && accepted_rect.is_none() {
+            let mut accepted_rect = invalidated_crop.map(|_| full_screen);
+            let allow_detection = !self.content_rect_relearn_after_full || !visible_dialog;
+            let mut detected = None;
+            if accepted_rect.is_none() {
+                if self.content_rect_relearn_after_full {
+                    if allow_detection {
+                        detected = authoritative_rect.map(|rect| (rect, 1));
+                    }
+                } else {
+                    accepted_rect = authoritative_rect;
+                }
+            }
+            if learning_content_rect && accepted_rect.is_none() {
                 let copybits_count = runner.dispatcher().copybits_screen_count;
-                let mut detected = None;
-                if copybits_count != self.content_rect_copybits_count {
-                    let confirmations = copybits_count
-                        .saturating_sub(self.content_rect_copybits_count)
-                        .min(u64::from(u16::MAX)) as u16;
+                if detected.is_none()
+                    && allow_detection
+                    && copybits_count != self.content_rect_copybits_count
+                {
+                    let delta = copybits_count.saturating_sub(self.content_rect_copybits_count);
+                    let confirmations = if self.content_rect_relearn_after_full {
+                        1
+                    } else {
+                        delta.min(u64::from(u16::MAX)) as u16
+                    };
                     self.content_rect_copybits_count = copybits_count;
                     detected = runner
                         .dispatcher()
                         .last_screen_copybits_rect
                         .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
+                        .filter(|&rect| {
+                            screen_mode.4 != 8
+                                || content_rect_has_inactive_margins_8bpp(
+                                    framebuffer,
+                                    screen_mode.1 as usize,
+                                    usize::from(screen_mode.2),
+                                    usize::from(screen_mode.3),
+                                    rect,
+                                )
+                        })
                         .map(|rect| (rect, confirmations));
                 }
                 if detected.is_none()
+                    && allow_detection
                     && screen_mode.4 == 8
                     && self.content_rect_previous_frame.as_slice() != framebuffer
                 {
@@ -1019,16 +1119,33 @@ impl App {
                         }
                         _ => Some((candidate, confirmations)),
                     };
+                    let required_confirmations = if self.content_rect_relearn_after_full {
+                        CONTENT_RECT_RELEARN_CONFIRMATIONS
+                    } else {
+                        CONTENT_RECT_CONFIRMATIONS
+                    };
                     accepted_rect = self
                         .content_rect_candidate
-                        .filter(|(_, count)| *count >= CONTENT_RECT_CONFIRMATIONS)
+                        .filter(|(_, count)| *count >= required_confirmations)
                         .map(|(rect, _)| rect);
+                } else if self.content_rect_relearn_after_full {
+                    self.content_rect_candidate = None;
                 }
             }
 
             if let Some(rect) = accepted_rect.filter(|rect| self.content_rect != Some(*rect)) {
                 let replacing_provisional_crop = self.content_rect.is_some();
-                if replacing_provisional_crop {
+                if let Some(previous) = invalidated_crop {
+                    eprintln!(
+                        "[SYSTEMLESS] Guest content expanded from {}x{} at ({},{}) to the full {}x{} screen after persistent margin drawing",
+                        previous.width,
+                        previous.height,
+                        previous.left,
+                        previous.top,
+                        game_w,
+                        game_h
+                    );
+                } else if replacing_provisional_crop {
                     eprintln!(
                         "[SYSTEMLESS] Guest content updated from explicit frame: {}x{} at ({},{}) inside {}x{}",
                         rect.width, rect.height, rect.left, rect.top, game_w, game_h
@@ -1041,6 +1158,8 @@ impl App {
                 }
                 self.content_rect = Some(rect);
                 self.content_rect_candidate = None;
+                self.content_rect_active_margin_frames = 0;
+                self.content_rect_relearn_after_full = invalidated_crop.is_some();
                 persist_content_rect(&self.game_path, screen_mode, rect);
                 if let Some(window) = self.window.as_ref() {
                     let current = window.inner_size();
@@ -1550,6 +1669,73 @@ fn detect_centered_content_rect_8bpp(
         width: content_width as u32,
         height: content_height as u32,
     })
+}
+
+/// Return whether the pixels excluded by a proposed crop still look like a
+/// letterbox border. A real border is dominated by one palette index; a HUD or
+/// other independently drawn screen region contains substantial variation.
+fn content_rect_has_inactive_margins_8bpp(
+    framebuffer: &[u8],
+    row_bytes: usize,
+    width: usize,
+    height: usize,
+    content: ContentRect,
+) -> bool {
+    let Ok(left) = usize::try_from(content.left) else {
+        return false;
+    };
+    let Ok(top) = usize::try_from(content.top) else {
+        return false;
+    };
+    let Ok(content_width) = usize::try_from(content.width) else {
+        return false;
+    };
+    let Ok(content_height) = usize::try_from(content.height) else {
+        return false;
+    };
+    let Some(right) = left.checked_add(content_width) else {
+        return false;
+    };
+    let Some(bottom) = top.checked_add(content_height) else {
+        return false;
+    };
+    if content_width == 0
+        || content_height == 0
+        || right > width
+        || bottom > height
+        || row_bytes < width
+        || framebuffer.len() < row_bytes.saturating_mul(height)
+    {
+        return false;
+    }
+    if left == 0 && top == 0 && right == width && bottom == height {
+        return true;
+    }
+
+    let mut histogram = [0usize; 256];
+    let mut total = 0usize;
+    let mut count_pixels = |pixels: &[u8]| {
+        for &pixel in pixels {
+            histogram[usize::from(pixel)] += 1;
+        }
+        total += pixels.len();
+    };
+    for row in 0..top {
+        count_pixels(&framebuffer[row * row_bytes..row * row_bytes + width]);
+    }
+    for row in top..bottom {
+        let pixels = &framebuffer[row * row_bytes..row * row_bytes + width];
+        count_pixels(&pixels[..left]);
+        count_pixels(&pixels[right..]);
+    }
+    for row in bottom..height {
+        count_pixels(&framebuffer[row * row_bytes..row * row_bytes + width]);
+    }
+
+    let dominant = histogram.into_iter().max().unwrap_or(0);
+    let active = total.saturating_sub(dominant);
+    total != 0
+        && active.saturating_mul(100) < total.saturating_mul(CONTENT_RECT_ACTIVE_MARGIN_PERCENT)
 }
 
 fn content_rect_from_copybits(
@@ -3149,6 +3335,37 @@ mod tests {
             detect_centered_content_rect_8bpp(&framebuffer, width, width, height),
             None,
             "a full-screen image must not be cropped"
+        );
+    }
+
+    #[test]
+    fn active_margin_validation_rejects_partial_full_screen_layouts() {
+        let width = 800usize;
+        let height = 600usize;
+        let content = ContentRect {
+            left: 68,
+            top: 0,
+            width: 664,
+            height: 600,
+        };
+        let mut framebuffer = vec![0u8; width * height];
+        for row in 0..height {
+            framebuffer[row * width + 68..row * width + 732].fill(7);
+        }
+        assert!(content_rect_has_inactive_margins_8bpp(
+            &framebuffer,
+            width,
+            width,
+            height,
+            content,
+        ));
+
+        for row in 0..height {
+            framebuffer[row * width + 732..(row + 1) * width].fill(2);
+        }
+        assert!(
+            !content_rect_has_inactive_margins_8bpp(&framebuffer, width, width, height, content,),
+            "a separately drawn side panel must keep the full screen visible"
         );
     }
 
