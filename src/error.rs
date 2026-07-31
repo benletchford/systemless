@@ -25,7 +25,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// * [`Error::Trace`] — recording-side error from the cross-runtime
 ///   parity trace sink (filesystem write, JSON serialisation, etc).
 ///   Surfaces only when a trace sink is installed via
-///   `set_trace_sink`.
+///   [`FixtureRunner::set_trace_sink`](crate::runner::FixtureRunner::set_trace_sink).
 #[derive(Debug, Error)]
 pub enum Error {
     /// The dispatcher reached an A-line trap word with no matching

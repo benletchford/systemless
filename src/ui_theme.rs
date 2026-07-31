@@ -1,4 +1,4 @@
-//! Internal UI theme contract for dialog/menu/control rendering.
+//! UI theme contract for dialog, menu, control, and text rendering.
 //!
 //! The first boundary is intentionally semantic and non-invasive: the default
 //! `classic-system7` provider represents the current renderer, while

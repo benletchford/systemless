@@ -441,7 +441,7 @@ pub trait MemoryBus {
     }
 }
 
-/// Mac memory bus with RAM, ROM, and low-memory globals
+/// Flat guest RAM with low-memory globals, allocation state, and diagnostics.
 pub struct MacMemoryBus {
     ram: RamStorage,
     ram_size: u32,

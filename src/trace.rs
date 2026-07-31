@@ -6,7 +6,7 @@
 //! event/snapshot data types and the [`TraceSink`] trait the dispatcher
 //! emits to. The concrete sink — which persists events, snapshots, and
 //! framebuffer dumps — lives outside this crate and is installed via
-//! `Runner::set_trace_sink`.
+//! [`FixtureRunner::set_trace_sink`](crate::runner::FixtureRunner::set_trace_sink).
 //!
 //! Recording is opt-in (no sink installed = no cost) and the runtime is
 //! agnostic to how a sink stores what it receives.

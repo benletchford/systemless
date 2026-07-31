@@ -3,10 +3,11 @@
 Systemless is a high-level runtime for 68k classic Macintosh applications and
 games, written in Rust.
 
-It interprets guest 68k code with the [`m68k`](https://crates.io/crates/m68k)
-crate and handles Mac OS A-line traps in native Rust. That lets packaged Mac
-applications run without a Mac ROM image, a full System install, or hardware
-emulation.
+It executes guest 68k code with the [`m68k`](https://crates.io/crates/m68k)
+crate and handles Mac OS A-line traps in native Rust. Native builds explicitly
+enable m68k's Cranelift JIT for eligible hot traces; WebAssembly uses its
+portable trace executor. That lets packaged Mac applications run without a Mac
+ROM image, a full System install, or hardware emulation.
 
 See it running in the browser: **[Marathon](https://systemless.org/marathon)**
 and **[Escape Velocity](https://systemless.org/escape-velocity)**. More demos
