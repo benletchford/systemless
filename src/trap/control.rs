@@ -15,6 +15,10 @@ fn trace_controls_enabled() -> bool {
 }
 
 impl super::TrapDispatcher {
+    const CDEF_DRAW_CNTL_MSG: i16 = 0;
+    const CDEF_TEST_CNTL_MSG: i16 = 1;
+    const CDEF_INIT_CNTL_MSG: i16 = 3;
+    const CDEF_TRAMPOLINE_SIZE: u32 = 64;
     const LOWMEM_AUX_CTL_HEAD: u32 = 0x0CD4;
     const AUX_CTL_NEXT_OFFSET: u32 = 0;
     const AUX_CTL_OWNER_OFFSET: u32 = 4;
@@ -174,6 +178,271 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
             .map(|ptr| self.get_or_create_resource_handle(bus, *b"CDEF", cdef_id, ptr))
             .unwrap_or(0)
+    }
+
+    fn control_def_proc_addr(bus: &MacMemoryBus, ctrl_ptr: u32) -> u32 {
+        let def_handle = bus.read_long(ctrl_ptr + 24);
+        if def_handle == 0 {
+            return 0;
+        }
+        let def_ptr = bus.read_long(def_handle);
+        if def_ptr != 0 {
+            def_ptr
+        } else {
+            def_handle
+        }
+    }
+
+    fn control_def_entry_looks_callable(bus: &MacMemoryBus, proc_addr: u32) -> bool {
+        if proc_addr == 0 {
+            return false;
+        }
+        matches!(
+            bus.read_word(proc_addr),
+            0x4E56 // LINK.W A6,#imm
+                | 0x48E7 // MOVEM.L regs,-(SP)
+                | 0x4EF9 // JMP abs.L
+                | 0x4EFA // JMP pc-relative
+                | 0x6000..=0x60FF // BRA/BRA.S to the real entry
+        )
+    }
+
+    fn control_uses_application_def_proc(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> bool {
+        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        let proc_addr = Self::control_def_proc_addr(bus, ctrl_ptr);
+        let callable = Self::control_def_entry_looks_callable(bus, proc_addr);
+        if trace_controls_enabled() && !matches!(proc_id, 0 | 1 | 2 | 16) {
+            eprintln!(
+                "[CONTROL] CDEF proc_id={} handle=${:08X} entry=${:08X} first=${:04X} callable={}",
+                proc_id,
+                bus.read_long(ctrl_ptr + 24),
+                proc_addr,
+                bus.read_word(proc_addr),
+                callable,
+            );
+        }
+        !matches!(proc_id, 0 | 1 | 2 | 16) && !Self::is_popup_menu_proc_id(proc_id) && callable
+    }
+
+    fn get_or_create_control_def_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        if self.control_def_trampoline != 0 {
+            return self.control_def_trampoline;
+        }
+        let tramp = bus.alloc(Self::CDEF_TRAMPOLINE_SIZE);
+        self.control_def_trampoline = tramp;
+        self.control_def_trampoline_chain.push(tramp);
+        tramp
+    }
+
+    fn write_control_def_trampoline(
+        bus: &mut MacMemoryBus,
+        tramp: u32,
+        variant: i16,
+        ctrl_handle: u32,
+        message: i16,
+        param: u32,
+        proc_addr: u32,
+        result_addr: u32,
+        saved_regs_sp: u32,
+        next_trampoline: Option<u32>,
+    ) {
+        bus.write_word(tramp, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        bus.write_word(tramp + 2, 0xF0F0);
+        bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #result,-(SP)
+        bus.write_long(tramp + 6, 0);
+        bus.write_word(tramp + 10, 0x3F3C); // MOVE.W #varCode,-(SP)
+        bus.write_word(tramp + 12, variant as u16);
+        bus.write_word(tramp + 14, 0x2F3C); // MOVE.L #theControl,-(SP)
+        bus.write_long(tramp + 16, ctrl_handle);
+        bus.write_word(tramp + 20, 0x3F3C); // MOVE.W #message,-(SP)
+        bus.write_word(tramp + 22, message as u16);
+        bus.write_word(tramp + 24, 0x2F3C); // MOVE.L #param,-(SP)
+        bus.write_long(tramp + 26, param);
+        bus.write_word(tramp + 30, 0x4EB9); // JSR abs.L
+        bus.write_long(tramp + 32, proc_addr);
+        bus.write_word(tramp + 36, 0x2017); // MOVE.L (A7),D0
+        bus.write_word(tramp + 38, 0x33C0); // MOVE.W D0,abs.L
+        bus.write_long(tramp + 40, result_addr);
+        bus.write_word(tramp + 44, 0x2E7C); // MOVEA.L #savedRegsSP,A7
+        bus.write_long(tramp + 46, saved_regs_sp);
+        bus.write_word(tramp + 50, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+        bus.write_word(tramp + 52, 0x0F0F);
+        match next_trampoline {
+            Some(next) => {
+                bus.write_word(tramp + 54, 0x4EF9); // JMP abs.L
+                bus.write_long(tramp + 56, next);
+            }
+            None => {
+                bus.write_word(tramp + 54, 0x4E75); // RTS
+                bus.write_long(tramp + 56, 0);
+            }
+        }
+    }
+
+    fn arm_control_def_call_chain<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        calls: &[(u32, i16, u32, Option<u32>)],
+    ) -> bool {
+        let callable: Vec<(u32, i16, u32, Option<u32>, i16, u32)> = calls
+            .iter()
+            .filter_map(|&(ctrl_handle, message, param, result_addr)| {
+                let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+                if ctrl_ptr == 0 || !self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                    return None;
+                }
+                let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                Some((
+                    ctrl_handle,
+                    message,
+                    param,
+                    result_addr,
+                    proc_id & 0xF,
+                    Self::control_def_proc_addr(bus, ctrl_ptr),
+                ))
+            })
+            .collect();
+        if callable.is_empty() {
+            return false;
+        }
+        let final_sp = cpu.read_reg(Register::A7);
+        let return_pc = cpu.read_reg(Register::PC);
+        let return_slot = final_sp.wrapping_sub(4);
+        let saved_regs_sp = return_slot.wrapping_sub(32);
+        self.get_or_create_control_def_trampoline(bus);
+        while self.control_def_trampoline_chain.len() < callable.len() {
+            self.control_def_trampoline_chain
+                .push(bus.alloc(Self::CDEF_TRAMPOLINE_SIZE));
+        }
+        let trampolines: Vec<u32> = self
+            .control_def_trampoline_chain
+            .iter()
+            .copied()
+            .take(callable.len())
+            .collect();
+
+        for (idx, &(ctrl_handle, message, param, result_addr, variant, proc_addr)) in
+            callable.iter().enumerate()
+        {
+            Self::write_control_def_trampoline(
+                bus,
+                trampolines[idx],
+                variant,
+                ctrl_handle,
+                message,
+                param,
+                proc_addr,
+                result_addr.unwrap_or(trampolines[idx] + 60),
+                saved_regs_sp,
+                trampolines.get(idx + 1).copied(),
+            );
+        }
+
+        bus.write_long(return_slot, return_pc);
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, trampolines[0]);
+        true
+    }
+
+    fn arm_control_def_messages<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        ctrl_handle: u32,
+        messages: &[(i16, u32, Option<u32>)],
+    ) -> bool {
+        let calls: Vec<(u32, i16, u32, Option<u32>)> = messages
+            .iter()
+            .map(|&(message, param, result_addr)| (ctrl_handle, message, param, result_addr))
+            .collect();
+        self.arm_control_def_call_chain(cpu, bus, &calls)
+    }
+
+    pub(crate) fn arm_new_dialog_control_defs<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+    ) -> bool {
+        if dialog_ptr == 0 {
+            return false;
+        }
+        let mut handles = Vec::new();
+        let mut ctrl_handle = bus.read_long(dialog_ptr + 140);
+        while ctrl_handle != 0 {
+            let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+            if ctrl_ptr == 0 {
+                break;
+            }
+            handles.push(ctrl_handle);
+            ctrl_handle = bus.read_long(ctrl_ptr);
+        }
+
+        let mut calls = Vec::new();
+        for ctrl_handle in handles.into_iter().rev() {
+            let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+            if !self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                continue;
+            }
+            calls.push((ctrl_handle, Self::CDEF_INIT_CNTL_MSG, 0, None));
+        }
+        if calls.is_empty() {
+            return false;
+        }
+        // Custom CDEFs use dialog-local contrlRect coordinates for both
+        // OpenPicture and DrawPicture, so dispatch them in the owner port.
+        self.set_current_port_state(bus, cpu, dialog_ptr, None);
+        self.arm_control_def_call_chain(cpu, bus, &calls)
+    }
+
+    pub(crate) fn arm_dialog_control_def_draws<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+    ) -> bool {
+        if dialog_ptr == 0 {
+            return false;
+        }
+        let vis_rgn = bus.read_long(dialog_ptr + 24);
+        if Self::region_handle_rect(bus, vis_rgn).is_none() {
+            return false;
+        }
+        let mut handles = Vec::new();
+        let mut ctrl_handle = bus.read_long(dialog_ptr + 140);
+        while ctrl_handle != 0 {
+            let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+            if ctrl_ptr == 0 {
+                break;
+            }
+            handles.push(ctrl_handle);
+            ctrl_handle = bus.read_long(ctrl_ptr);
+        }
+
+        let calls: Vec<_> = handles
+            .into_iter()
+            .rev()
+            .filter_map(|ctrl_handle| {
+                let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+                (self.control_uses_application_def_proc(bus, ctrl_ptr)
+                    && Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16)))
+                .then_some((ctrl_handle, Self::CDEF_DRAW_CNTL_MSG, 0, None))
+            })
+            .collect();
+        if calls.is_empty() {
+            return false;
+        }
+        self.set_current_port_state(bus, cpu, dialog_ptr, None);
+        // Establish the retained-dialog baseline before guest drawing. Each
+        // DrawPicture callback then refreshes this snapshot, so frame
+        // composition cannot restore the pre-CDEF shell over the artwork.
+        self.refresh_visible_dialog_snapshot_for_port(bus, dialog_ptr);
+        let armed = self.arm_control_def_call_chain(cpu, bus, &calls);
+        if armed {
+            self.dialog_cdefs_initially_drawn.insert(dialog_ptr);
+        }
+        armed
     }
 
     fn control_aux_reserved_value(&self, bus: &MacMemoryBus, ctrl_handle: u32) -> u32 {
@@ -2094,15 +2363,23 @@ impl super::TrapDispatcher {
                     bus.write_long(window_ptr + 140, handle);
                 }
 
-                // On a real Mac, NewControl with visible=true draws the control
-                // immediately via the CDEF's drawCntl message.
-                // Inside Macintosh Volume I, I-331
-                if visible {
+                let is_application_cdef = self.control_uses_application_def_proc(bus, ctrl_ptr);
+                // On a real Mac, NewControl initializes a custom CDEF and,
+                // when visible, immediately asks it to draw the whole control.
+                // Inside Macintosh Volume I, I-329..I-331.
+                if visible && !is_application_cdef {
                     self.draw_control(cpu, bus, ctrl_ptr);
                 }
 
                 bus.write_long(sp + 26, handle);
                 cpu.write_reg(Register::A7, sp + 26);
+                if is_application_cdef {
+                    let mut messages = vec![(Self::CDEF_INIT_CNTL_MSG, 0, None)];
+                    if visible {
+                        messages.push((Self::CDEF_DRAW_CNTL_MSG, 0, None));
+                    }
+                    self.arm_control_def_messages(cpu, bus, handle, &messages);
+                }
                 Ok(())
             }
 
@@ -2355,6 +2632,7 @@ impl super::TrapDispatcher {
                 let hilite_state = bus.read_word(sp) as u8;
                 let ctrl_handle = bus.read_long(sp + 2);
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
+                cpu.write_reg(Register::A7, sp + 6);
                 if ctrl_ptr != 0 {
                     bus.write_byte(ctrl_ptr + 17, hilite_state);
                     if trace_controls_enabled() {
@@ -2370,7 +2648,14 @@ impl super::TrapDispatcher {
                             self.control_trace_control_fields(bus, ctrl_handle),
                         );
                     }
-                    self.draw_control(cpu, bus, ctrl_ptr);
+                    if !self.arm_control_def_messages(
+                        cpu,
+                        bus,
+                        ctrl_handle,
+                        &[(Self::CDEF_DRAW_CNTL_MSG, 0, None)],
+                    ) {
+                        self.draw_control(cpu, bus, ctrl_ptr);
+                    }
                 } else if trace_controls_enabled() {
                     eprintln!(
                         "[CONTROL] HiliteControl state={} {}",
@@ -2378,7 +2663,6 @@ impl super::TrapDispatcher {
                         self.control_trace_control_fields(bus, ctrl_handle),
                     );
                 }
-                cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
             }
 
@@ -2416,7 +2700,14 @@ impl super::TrapDispatcher {
                 if ctrl_ptr != 0 {
                     let title = Self::read_pascal_string(bus, title_ptr);
                     Self::set_control_title_bytes(bus, ctrl_ptr, &title);
-                    self.draw_control(cpu, bus, ctrl_ptr);
+                    if !self.arm_control_def_messages(
+                        cpu,
+                        bus,
+                        ctrl_handle,
+                        &[(Self::CDEF_DRAW_CNTL_MSG, 0, None)],
+                    ) {
+                        self.draw_control(cpu, bus, ctrl_ptr);
+                    }
                 }
                 Ok(())
             }
@@ -2503,7 +2794,20 @@ impl super::TrapDispatcher {
                         self.control_trace_control_fields(bus, ctrl_handle),
                     );
                 }
-                self.draw_control(cpu, bus, ctrl_ptr);
+                let owner = bus.read_long(ctrl_ptr + 4);
+                let drew_initial_dialog_controls = self.dialog_items.contains_key(&owner)
+                    && !self.dialog_cdefs_initially_drawn.contains(&owner)
+                    && self.arm_dialog_control_def_draws(cpu, bus, owner);
+                if !drew_initial_dialog_controls
+                    && !self.arm_control_def_messages(
+                        cpu,
+                        bus,
+                        ctrl_handle,
+                        &[(Self::CDEF_DRAW_CNTL_MSG, 0, None)],
+                    )
+                {
+                    self.draw_control(cpu, bus, ctrl_ptr);
+                }
                 Ok(())
             }
 
@@ -2618,6 +2922,8 @@ impl super::TrapDispatcher {
                 let ctrl_handle = bus.read_long(sp + 4);
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
 
+                let is_application_cdef =
+                    ctrl_ptr != 0 && self.control_uses_application_def_proc(bus, ctrl_ptr);
                 let mut part: u16 = 0;
                 if ctrl_ptr != 0 {
                     let vis = bus.read_byte(ctrl_ptr + 16);
@@ -2641,6 +2947,15 @@ impl super::TrapDispatcher {
 
                 bus.write_word(sp + 8, part);
                 cpu.write_reg(Register::A7, sp + 8);
+                if is_application_cdef {
+                    let point = ((pt_v as u16 as u32) << 16) | u32::from(pt_h as u16);
+                    self.arm_control_def_messages(
+                        cpu,
+                        bus,
+                        ctrl_handle,
+                        &[(Self::CDEF_TEST_CNTL_MSG, point, Some(sp + 8))],
+                    );
+                }
                 Ok(())
             }
 
@@ -2887,22 +3202,36 @@ impl super::TrapDispatcher {
             (true, 0x169) => {
                 let sp = cpu.read_reg(Register::A7);
                 let window_ptr = bus.read_long(sp);
+                let mut cdef_draw_calls = Vec::new();
 
                 if window_ptr != 0 {
-                    // Collect ctrl_ptrs first to avoid borrow conflicts
+                    // Collect handles and pointers first so application CDEF
+                    // callbacks can be dispatched after the standard controls
+                    // have finished their immediate HLE redraw.
                     let mut ctrl_handle = bus.read_long(window_ptr + 140);
-                    let mut ctrl_ptrs: Vec<u32> = Vec::new();
+                    let mut controls: Vec<(u32, u32)> = Vec::new();
                     while ctrl_handle != 0 {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
                         if ctrl_ptr == 0 {
                             break;
                         }
-                        ctrl_ptrs.push(ctrl_ptr);
+                        controls.push((ctrl_handle, ctrl_ptr));
                         ctrl_handle = bus.read_long(ctrl_ptr);
                     }
 
                     // Draw controls in reverse order (last added = bottom of list = drawn first)
-                    for &ctrl_ptr in ctrl_ptrs.iter().rev() {
+                    for &(ctrl_handle, ctrl_ptr) in controls.iter().rev() {
+                        if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                            if Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16)) {
+                                cdef_draw_calls.push((
+                                    ctrl_handle,
+                                    Self::CDEF_DRAW_CNTL_MSG,
+                                    0,
+                                    None,
+                                ));
+                            }
+                            continue;
+                        }
                         let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
                         if Self::is_popup_menu_proc_id(proc_id) {
                             // popupMenuProc needs special MENU resource lookup
@@ -2945,6 +3274,7 @@ impl super::TrapDispatcher {
                 }
 
                 cpu.write_reg(Register::A7, sp + 4);
+                self.arm_control_def_call_chain(cpu, bus, &cdef_draw_calls);
                 Ok(())
             }
 
@@ -2982,18 +3312,18 @@ impl super::TrapDispatcher {
                     None => return Some(Ok(())),
                 };
                 let mut ctrl_handle = bus.read_long(window_ptr + 140);
-                let mut ctrl_ptrs: Vec<u32> = Vec::new();
+                let mut controls: Vec<(u32, u32)> = Vec::new();
                 while ctrl_handle != 0 {
                     let ctrl_ptr = bus.read_long(ctrl_handle);
                     if ctrl_ptr == 0 {
                         break;
                     }
-                    ctrl_ptrs.push(ctrl_ptr);
+                    controls.push((ctrl_handle, ctrl_ptr));
                     ctrl_handle = bus.read_long(ctrl_ptr);
                 }
                 let (ut, ul, ub, ur) = update_rect;
-                for ctrl_ptr in ctrl_ptrs.iter().rev() {
-                    let ctrl_ptr = *ctrl_ptr;
+                let mut cdef_draw_calls = Vec::new();
+                for &(ctrl_handle, ctrl_ptr) in controls.iter().rev() {
                     let ct = bus.read_word(ctrl_ptr + 8) as i16;
                     let cl = bus.read_word(ctrl_ptr + 10) as i16;
                     let cb = bus.read_word(ctrl_ptr + 12) as i16;
@@ -3002,8 +3332,20 @@ impl super::TrapDispatcher {
                     if cb <= ut || cr <= ul || ct >= ub || cl >= ur {
                         continue;
                     }
-                    self.draw_control(cpu, bus, ctrl_ptr);
+                    if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                        if Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16)) {
+                            cdef_draw_calls.push((
+                                ctrl_handle,
+                                Self::CDEF_DRAW_CNTL_MSG,
+                                0,
+                                None,
+                            ));
+                        }
+                    } else {
+                        self.draw_control(cpu, bus, ctrl_ptr);
+                    }
                 }
+                self.arm_control_def_call_chain(cpu, bus, &cdef_draw_calls);
                 Ok(())
             }
 
@@ -3165,6 +3507,11 @@ impl super::TrapDispatcher {
 
                 bus.write_long(sp + 6, handle);
                 cpu.write_reg(Register::A7, sp + 6);
+                let mut messages = vec![(Self::CDEF_INIT_CNTL_MSG, 0, None)];
+                if visibility != 0 {
+                    messages.push((Self::CDEF_DRAW_CNTL_MSG, 0, None));
+                }
+                self.arm_control_def_messages(cpu, bus, handle, &messages);
                 Ok(())
             }
 
@@ -3320,10 +3667,17 @@ impl super::TrapDispatcher {
                         let title_len = bus.read_byte(title_off) as u32;
                         let title_end = title_off.saturating_add(1).saturating_add(title_len);
                         if title_end <= bus.ram_size() {
-                            // popupMenuProc (1008) already has a direct
-                            // renderer in draw_control, so Draw1Control can
-                            // reuse the same control path as DrawControls.
-                            self.draw_control(cpu, bus, ctrl_ptr);
+                            if !self.arm_control_def_messages(
+                                cpu,
+                                bus,
+                                ctrl_handle,
+                                &[(Self::CDEF_DRAW_CNTL_MSG, 0, None)],
+                            ) {
+                                // popupMenuProc (1008) already has a direct
+                                // renderer in draw_control, so Draw1Control can
+                                // reuse the same control path as DrawControls.
+                                self.draw_control(cpu, bus, ctrl_ptr);
+                            }
                             debug_assert_eq!(self.current_gdevice, saved_gdevice);
                         }
                     }
@@ -3903,6 +4257,68 @@ mod tests {
         assert_eq!(bus.read_long(window_ptr + 140), new_head);
         assert_eq!(bus.read_long(new_ptr), old_head);
         assert_eq!(bus.read_long(new_ptr + 4), window_ptr);
+    }
+
+    #[test]
+    fn newcontrol_custom_cdef_arms_init_then_draw_pascal_callbacks() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = 0x300000u32;
+        let return_pc = 0x1234_5678;
+        let window_ptr = bus.alloc(200);
+        let bounds_ptr = bus.alloc(8);
+        let title_ptr = bus.alloc(16);
+        let proc_id = (160i16 << 4) | 5;
+        let cdef_proc = disp.install_test_resource(&mut bus, *b"CDEF", 160, &[0x4E, 0x56, 0, 0]);
+
+        for (offset, value) in [10i16, 20, 40, 100].into_iter().enumerate() {
+            bus.write_word(bounds_ptr + offset as u32 * 2, value as u16);
+        }
+        bus.write_byte(title_ptr, 4);
+        bus.write_bytes(title_ptr + 1, b"Play");
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, proc_id as u16);
+        bus.write_word(sp + 6, 1);
+        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 10, 0);
+        bus.write_word(sp + 12, 1);
+        bus.write_long(sp + 14, title_ptr);
+        bus.write_long(sp + 18, bounds_ptr);
+        bus.write_long(sp + 22, window_ptr);
+
+        disp.dispatch_control(true, 0x154, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let ctrl_handle = bus.read_long(sp + 26);
+        let tramp = disp.control_def_trampoline;
+        assert_ne!(ctrl_handle, 0);
+        assert_ne!(tramp, 0);
+        assert_eq!(cpu.read_reg(Register::PC), tramp);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+        assert_eq!(bus.read_long(sp + 22), return_pc);
+        assert_eq!(bus.read_word(tramp + 12), 5);
+        assert_eq!(bus.read_long(tramp + 16), ctrl_handle);
+        assert_eq!(
+            bus.read_word(tramp + 22),
+            super::super::TrapDispatcher::CDEF_INIT_CNTL_MSG as u16
+        );
+        assert_eq!(bus.read_long(tramp + 26), 0);
+        assert_eq!(bus.read_long(tramp + 32), cdef_proc);
+        assert_eq!(bus.read_word(tramp + 54), 0x4EF9);
+
+        let draw_tramp = bus.read_long(tramp + 56);
+        assert_ne!(draw_tramp, 0);
+        assert_eq!(bus.read_word(draw_tramp + 12), 5);
+        assert_eq!(bus.read_long(draw_tramp + 16), ctrl_handle);
+        assert_eq!(
+            bus.read_word(draw_tramp + 22),
+            super::super::TrapDispatcher::CDEF_DRAW_CNTL_MSG as u16
+        );
+        assert_eq!(bus.read_long(draw_tramp + 26), 0);
+        assert_eq!(bus.read_long(draw_tramp + 32), cdef_proc);
+        assert_eq!(bus.read_word(draw_tramp + 54), 0x4E75);
     }
 
     // IM:I I-332: DisposeControl takes one ControlHandle argument.
@@ -5296,6 +5712,82 @@ mod tests {
         assert_eq!(bus.read_long(first_ptr), 0);
     }
 
+    #[test]
+    fn drawcontrols_dispatches_visible_application_cdefs_in_control_list_draw_order() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = 0x300000u32;
+        let return_pc = 0x1234_5678;
+        let a5 = cpu.read_reg(Register::A5);
+        let qd_globals = bus.read_long(a5);
+        let window_ptr = bus.read_long(qd_globals);
+        let proc_id = (160i16 << 4) | 5;
+        let cdef_proc = disp.install_test_resource(&mut bus, *b"CDEF", 160, &[0x4E, 0x56, 0, 0]);
+
+        let first_ptr = bus.alloc(296);
+        let first_handle = bus.alloc(4);
+        bus.write_long(first_handle, first_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            first_ptr,
+            window_ptr,
+            (10, 20, 40, 80),
+            b"",
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        );
+        let second_ptr = bus.alloc(296);
+        let second_handle = bus.alloc(4);
+        bus.write_long(second_handle, second_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            second_ptr,
+            window_ptr,
+            (50, 20, 80, 80),
+            b"",
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        );
+        bus.write_long(first_ptr, 0);
+        bus.write_long(second_ptr, first_handle);
+        bus.write_long(window_ptr + 140, second_handle);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(sp, window_ptr);
+        disp.dispatch_control(true, 0x169, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let first_tramp = disp.control_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), first_tramp);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), return_pc);
+        assert_eq!(bus.read_long(first_tramp + 16), first_handle);
+        assert_eq!(
+            bus.read_word(first_tramp + 22),
+            super::super::TrapDispatcher::CDEF_DRAW_CNTL_MSG as u16
+        );
+        assert_eq!(bus.read_long(first_tramp + 32), cdef_proc);
+
+        let second_tramp = bus.read_long(first_tramp + 56);
+        assert_ne!(second_tramp, 0);
+        assert_eq!(bus.read_long(second_tramp + 16), second_handle);
+        assert_eq!(
+            bus.read_word(second_tramp + 22),
+            super::super::TrapDispatcher::CDEF_DRAW_CNTL_MSG as u16
+        );
+        assert_eq!(bus.read_long(second_tramp + 32), cdef_proc);
+        assert_eq!(bus.read_word(second_tramp + 54), 0x4E75);
+    }
+
     // FindControl semantics per IM:I (1985) I-323 and MTE (1992) 5-89.
     #[test]
     fn findcontrol_visible_active_hit_returns_inbutton_and_control_handle() {
@@ -5674,6 +6166,55 @@ mod tests {
             .unwrap();
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn testcontrol_custom_cdef_arms_test_message_with_point_and_result_slot() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = 0x300000u32;
+        let return_pc = 0x8765_4321;
+        let proc_id = (160i16 << 4) | 7;
+        let cdef_proc = disp.install_test_resource(&mut bus, *b"CDEF", 160, &[0x4E, 0x56, 0, 0]);
+        let ctrl_ptr = bus.alloc(296);
+        let ctrl_handle = bus.alloc(4);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            ctrl_ptr,
+            0,
+            (10, 20, 40, 80),
+            b"",
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        );
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_word(sp, 23);
+        bus.write_word(sp + 2, 45);
+        bus.write_long(sp + 4, ctrl_handle);
+        bus.write_word(sp + 8, 0);
+
+        disp.dispatch_control(true, 0x166, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let tramp = disp.control_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), tramp);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_long(sp + 4), return_pc);
+        assert_eq!(bus.read_word(tramp + 12), 7);
+        assert_eq!(bus.read_long(tramp + 16), ctrl_handle);
+        assert_eq!(
+            bus.read_word(tramp + 22),
+            super::super::TrapDispatcher::CDEF_TEST_CNTL_MSG as u16
+        );
+        assert_eq!(bus.read_long(tramp + 26), (23u32 << 16) | 45);
+        assert_eq!(bus.read_long(tramp + 32), cdef_proc);
+        assert_eq!(bus.read_long(tramp + 40), sp + 8);
     }
 
     #[test]

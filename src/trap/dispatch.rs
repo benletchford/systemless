@@ -1122,6 +1122,11 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline template used by the
     /// Window Manager to call a guest WDEF procedure.
     pub(crate) window_def_trampoline: u32,
+    /// Address of the lazily-allocated trampoline template used by the
+    /// Control Manager to call a guest CDEF procedure.
+    pub(crate) control_def_trampoline: u32,
+    /// Reusable trampoline cells for multi-control CDEF callback chains.
+    pub(crate) control_def_trampoline_chain: Vec<u32>,
     /// Address of the lazily-allocated trampoline used by DeferUserFn
     /// to call a callable userFunction immediately. Holds
     /// `48E7 F0F0 207C xxxx xxxx 4EB9 xxxx xxxx 4CDF 0F0F 7000 4E75`.
@@ -1725,6 +1730,8 @@ pub struct TrapDispatcher {
     /// (pic_handle, frame top, left, bottom, right, encoded PICT v2 commands).
     /// Set by OpenPicture, cleared by ClosePicture.
     pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
+    /// Complete bitmap PICT captured by CopyBits during OpenPicture.
+    pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
     /// Native trap dispatch table: maps raw trap word -> native 68K handler address.
     /// Populated by SetTrapAddress ($A047/$A647). When an A-line instruction fires
     /// and a native handler exists, the dispatcher simulates a JSR to the handler
@@ -1790,6 +1797,13 @@ pub struct TrapDispatcher {
     /// controls, snapshotted pixels). On re-entry we skip draw_dialog to
     /// preserve game-drawn custom content (e.g. PICT titles, group boxes).
     pub(crate) dialog_modal_entered: std::collections::HashSet<u32>,
+    /// Dialogs whose application CDEF draw callbacks have just completed and
+    /// whose next ModalDialog re-fire must snapshot those pixels without an
+    /// intervening HLE standard-item redraw.
+    pub(crate) dialog_cdef_draw_pending_snapshot: HashSet<u32>,
+    /// Dialogs whose application CDEF controls have completed at least one
+    /// visible whole-control draw pass.
+    pub(crate) dialog_cdefs_initially_drawn: HashSet<u32>,
     /// Editable dialog items whose initial all-selected text state has already
     /// been replaced by typed input. Keyed by (dialog_ptr, 1-based item number)
     /// so ModalDialog re-entry keeps appending instead of replacing again.
@@ -1803,6 +1817,9 @@ pub struct TrapDispatcher {
     /// ModalDialog. Drained through the same runner trampoline as modal
     /// draw procs.
     pub(crate) modeless_dialog_draw_proc_queue: VecDeque<(u32, u32, i16)>,
+    /// Dialogs whose application CDEF draw callbacks must run after any
+    /// modeless userItem callbacks queued by the same Dialog Manager redraw.
+    pub(crate) modeless_dialog_cdef_draw_queue: VecDeque<u32>,
     /// Dialog currently executing a modeless userItem draw proc.
     pub(crate) active_modeless_dialog_draw_proc: Option<u32>,
     /// Mouse click currently captured by a front modal dialog. This includes
@@ -2769,6 +2786,8 @@ impl TrapDispatcher {
             device_loop_trampoline: 0,
             list_def_trampoline: 0,
             window_def_trampoline: 0,
+            control_def_trampoline: 0,
+            control_def_trampoline_chain: Vec::new(),
             defer_user_fn_trampoline: 0,
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
@@ -2982,6 +3001,7 @@ impl TrapDispatcher {
             next_ct_seed: 1,
             fill_black_override: None,
             recording_picture: None,
+            recording_picture_bitmap: None,
             native_trap_table: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
@@ -3003,9 +3023,12 @@ impl TrapDispatcher {
             dialog_saved_pixels: HashMap::new(),
             dialog_visible_snapshots: HashMap::new(),
             dialog_modal_entered: std::collections::HashSet::new(),
+            dialog_cdef_draw_pending_snapshot: HashSet::new(),
+            dialog_cdefs_initially_drawn: HashSet::new(),
             dialog_edit_text_modified_items: HashSet::new(),
             dialog_initial_draw_deferred: HashSet::new(),
             modeless_dialog_draw_proc_queue: VecDeque::new(),
+            modeless_dialog_cdef_draw_queue: VecDeque::new(),
             active_modeless_dialog_draw_proc: None,
             retained_modal_dialog_click: None,
             pending_modal_button_dispose_dialog: None,

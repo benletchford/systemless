@@ -814,6 +814,12 @@ impl super::TrapDispatcher {
         // their item handle is a draw procedure; queue only the callbacks
         // whose display rectangles intersect the active update region.
         self.queue_modeless_dialog_draw_procs_intersecting(bus, dialog_ptr, update_rect);
+        if !self
+            .modeless_dialog_cdef_draw_queue
+            .contains(&dialog_ptr)
+        {
+            self.modeless_dialog_cdef_draw_queue.push_back(dialog_ptr);
+        }
         true
     }
 
@@ -4451,6 +4457,10 @@ impl super::TrapDispatcher {
             .retain(|(dlg, _), _| *dlg != dialog_ptr);
         self.dialog_popup_candidate_items
             .retain(|(dlg, _)| *dlg != dialog_ptr);
+        self.modeless_dialog_draw_proc_queue
+            .retain(|(dlg, _, _)| *dlg != dialog_ptr);
+        self.modeless_dialog_cdef_draw_queue
+            .retain(|dlg| *dlg != dialog_ptr);
         if self
             .pending_dialog_popup_menu
             .is_some_and(|pending| pending.dialog_ptr == dialog_ptr)
@@ -6092,18 +6102,9 @@ impl super::TrapDispatcher {
                                     hilite == 1,
                                 );
                             }
-                            _ => {
-                                self.draw_button_with_enabled(
-                                    bus,
-                                    abs_top,
-                                    abs_left,
-                                    abs_bottom,
-                                    abs_right,
-                                    &title,
-                                    auto_default_outline && item_num == default_item,
-                                    enabled,
-                                );
-                            }
+                            // Application CDEF pixels are supplied by the
+                            // guest callback after the HLE dialog shell.
+                            _ => {}
                         }
                     } else {
                         self.draw_button_with_enabled(
@@ -6305,18 +6306,9 @@ impl super::TrapDispatcher {
                                     hilite == 1,
                                 );
                             }
-                            _ => {
-                                self.draw_button_with_enabled(
-                                    bus,
-                                    abs_top,
-                                    abs_left,
-                                    abs_bottom,
-                                    abs_right,
-                                    &title,
-                                    auto_default_outline && item_num == default_item,
-                                    enabled,
-                                );
-                            }
+                            // Application CDEF pixels are supplied by the
+                            // guest callback after the HLE dialog shell.
+                            _ => {}
                         }
                     } else {
                         self.draw_button_with_enabled(
@@ -6506,16 +6498,9 @@ impl super::TrapDispatcher {
                                     hilite == 1,
                                 );
                             }
-                            _ => self.draw_button_with_enabled(
-                                bus,
-                                abs_top,
-                                abs_left,
-                                abs_bottom,
-                                abs_right,
-                                &title,
-                                auto_default_outline && item_num == default_item,
-                                enabled,
-                            ),
+                            // Preserve application CDEF pixels across the
+                            // post-callback retained-dialog resnapshot.
+                            _ => {}
                         }
                     } else {
                         self.draw_button_with_enabled(
@@ -8971,6 +8956,8 @@ impl super::TrapDispatcher {
 
         self.dialog_visible_snapshots.remove(&dialog_ptr);
         self.dialog_modal_entered.remove(&dialog_ptr);
+        self.dialog_cdef_draw_pending_snapshot.remove(&dialog_ptr);
+        self.dialog_cdefs_initially_drawn.remove(&dialog_ptr);
         if !was_front && retained_stale_saved_under && self.screen_is_hidden_menu_game_surface(bus)
         {
             let _ = self.restore_dialog_exposure_from_fullscreen_offscreen_port(bus, exposed_rect);
@@ -10063,6 +10050,8 @@ impl super::TrapDispatcher {
                     bus.write_long(sp + 10, 0);
                 }
                 cpu.write_reg(Register::A7, sp + 10);
+                let dialog_ptr = bus.read_long(sp + 10);
+                self.arm_new_dialog_control_defs(cpu, bus, dialog_ptr);
                 Ok(())
             }
 
@@ -10647,6 +10636,12 @@ impl super::TrapDispatcher {
                     // runner trampoline executes guest drawing before the
                     // caller resumes.
                     self.queue_modeless_dialog_draw_procs_intersecting(bus, dialog_ptr, None);
+                    if !self
+                        .modeless_dialog_cdef_draw_queue
+                        .contains(&dialog_ptr)
+                    {
+                        self.modeless_dialog_cdef_draw_queue.push_back(dialog_ptr);
+                    }
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -11093,6 +11088,13 @@ impl super::TrapDispatcher {
                 // Re-snapshot rendered_pixels after draw procs or filter proc completes.
                 // rendered_pixels_final is cleared when either is injected; the snapshot
                 // here captures whatever they drew before redraw_chrome can restore it.
+                let cdef_draw_pending_snapshot = self
+                    .dialog_tracking
+                    .as_ref()
+                    .map(|tracking| tracking.dialog_ptr)
+                    .is_some_and(|dialog_ptr| {
+                        self.dialog_cdef_draw_pending_snapshot.remove(&dialog_ptr)
+                    });
                 if let Some(ref tracking) = self.dialog_tracking {
                     if !tracking.rendered_pixels_final {
                         let bounds = tracking.bounds;
@@ -11102,7 +11104,7 @@ impl super::TrapDispatcher {
                         let edit_item = tracking.edit_item;
                         let dialog_ptr = tracking.dialog_ptr;
                         let popup_draws = tracking.popup_draws.clone();
-                        if !tracking.game_managed {
+                        if !tracking.game_managed && !cdef_draw_pending_snapshot {
                             if self.front_window == dialog_ptr {
                                 self.blit_window_to_screen(bus);
                             }
@@ -12446,6 +12448,21 @@ impl super::TrapDispatcher {
                             active_button: None,
                             active_user_item: None,
                         });
+                        // ModalDialog is a re-fire trap. Run application CDEF
+                        // draws after the HLE shell becomes visible, then
+                        // resume at the trap instruction so the next pass can
+                        // snapshot the guest-owned pixels before event
+                        // handling continues.
+                        let after_trap_pc = cpu.read_reg(Register::PC);
+                        cpu.write_reg(Register::PC, after_trap_pc.wrapping_sub(2));
+                        if self.arm_dialog_control_def_draws(cpu, bus, dialog_ptr) {
+                            self.dialog_cdef_draw_pending_snapshot.insert(dialog_ptr);
+                            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                tracking.rendered_pixels_final = false;
+                            }
+                        } else {
+                            cpu.write_reg(Register::PC, after_trap_pc);
+                        }
                         self.record_modal_dialog_input_trace(
                             "start",
                             dialog_ptr,
