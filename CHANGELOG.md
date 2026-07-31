@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.16](https://github.com/benletchford/systemless/compare/v0.9.15...v0.9.16) (2026-07-31)
+
+
+### Bug Fixes
+
+* preserve reserved indices for animated palette entries ([#242](https://github.com/benletchford/systemless/issues/242)) ([3538c92](https://github.com/benletchford/systemless/commit/3538c9226d4268afe36b72f114c28b4307c90ed3))
+
 ## [0.9.15](https://github.com/benletchford/systemless/compare/v0.9.14...v0.9.15) (2026-07-31)
 
 
