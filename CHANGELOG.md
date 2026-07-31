@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.18](https://github.com/benletchford/systemless/compare/v0.9.17...v0.9.18) (2026-07-31)
+
+
+### Bug Fixes
+
+* recalculate window occlusion after resizing ([919c0b2](https://github.com/benletchford/systemless/commit/919c0b268a05717c399e7b51f6c92e836d48edf2))
+
 ## [0.9.17](https://github.com/benletchford/systemless/compare/v0.9.16...v0.9.17) (2026-07-31)
 
 
