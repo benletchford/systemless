@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.15](https://github.com/benletchford/systemless/compare/v0.9.14...v0.9.15) (2026-07-31)
+
+
+### Bug Fixes
+
+* replay recorded QuickDraw pictures with their requested palettes ([6dabd84](https://github.com/benletchford/systemless/commit/6dabd84289f9a20f63f31bee10e258bc2eba0112))
+
 ## [0.9.14](https://github.com/benletchford/systemless/compare/v0.9.13...v0.9.14) (2026-07-30)
 
 
