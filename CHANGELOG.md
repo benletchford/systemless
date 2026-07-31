@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/benletchford/systemless/compare/v0.9.18...v0.10.0) (2026-07-31)
+
+
+### Features
+
+* execute application control definition procedures ([9639669](https://github.com/benletchford/systemless/commit/963966934f1c1513cb61ccf2cd81d32ddee40694))
+
 ## [0.9.18](https://github.com/benletchford/systemless/compare/v0.9.17...v0.9.18) (2026-07-31)
 
 
