@@ -3,7 +3,7 @@
 //! Hosts the 68k interpreter that drives the HLE Toolbox dispatch
 //! path.
 
-use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::memory::MacMemoryBus;
 
 pub use m68k::HleHandler;
 
@@ -67,20 +67,13 @@ pub struct M68kCpu {
     /// Exposed so callers can reach interpreter-specific APIs not
     /// surfaced by the [`CpuOps`] trait.
     pub core: m68k::CpuCore,
-    /// One-shot suppression for the synthetic custom zero-divide-handler
-    /// watch installed by [`Self::run_batch`]. After expanding the exception
-    /// frame, the next batch must execute the watched handler entry.
-    skip_format_two_handler_watch: Option<u32>,
 }
 
 impl M68kCpu {
     pub fn new() -> Self {
         let mut core = m68k::CpuCore::new();
         core.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
-        Self {
-            core,
-            skip_format_two_handler_watch: None,
-        }
+        Self { core }
     }
 
     /// `#[inline]` — called many times per instruction. The match
@@ -155,56 +148,7 @@ impl M68kCpu {
         max_instructions: u32,
         watch_pcs: &[u32],
     ) -> m68k::BatchResult {
-        let zero_divide_handler = bus.read_long(0x0014);
-        let suppress_handler_watch =
-            self.skip_format_two_handler_watch == Some(self.core.pc);
-        if suppress_handler_watch {
-            self.skip_format_two_handler_watch = None;
-        }
-        let handler_already_watched = watch_pcs.contains(&zero_divide_handler);
-        let should_intercept_zero_divide = zero_divide_handler != 0
-            && zero_divide_handler != 0x0000_00FE
-            && !suppress_handler_watch
-            && (handler_already_watched || watch_pcs.len() < 3);
-        let mut extended_watches = [0u32; 3];
-        let active_watches = if should_intercept_zero_divide && !handler_already_watched {
-            extended_watches[..watch_pcs.len()].copy_from_slice(watch_pcs);
-            extended_watches[watch_pcs.len()] = zero_divide_handler;
-            &extended_watches[..watch_pcs.len() + 1]
-        } else {
-            watch_pcs
-        };
-
-        let batch = self.core.run_batch(bus, max_instructions, active_watches);
-        if should_intercept_zero_divide
-            && matches!(
-                batch.exit,
-                m68k::BatchExit::WatchedPc { pc } if pc == zero_divide_handler
-            )
-            && bus.read_word(self.core.ppc) & 0xFFC0 == 0x4C40
-        {
-            // A 68020+ zero-divide fault uses a format-2 exception frame:
-            // SR, next PC, format/vector word, then the faulting instruction
-            // address. The m68k backend currently emits a format-0 frame for
-            // all synchronous exceptions. Classic applications can install a
-            // vector-5 handler that consumes the format-2 address field (Dark
-            // Forces does so to skip a four-byte DIVSL), so expand the frame
-            // before entering a non-default guest handler.
-            //
-            // Motorola M68000 Family Programmer's Reference Manual (1992),
-            // §6.3.4, format-2 stack frame.
-            let old_sp = self.core.a(7);
-            let saved_sr = bus.read_word(old_sp);
-            let saved_pc = bus.read_long(old_sp + 2);
-            let new_sp = old_sp.wrapping_sub(4);
-            bus.write_word(new_sp, saved_sr);
-            bus.write_long(new_sp + 2, saved_pc);
-            bus.write_word(new_sp + 6, 0x2014);
-            bus.write_long(new_sp + 8, self.core.ppc);
-            self.core.set_a(7, new_sp);
-            self.skip_format_two_handler_watch = Some(zero_divide_handler);
-        }
-        batch
+        self.core.run_batch(bus, max_instructions, watch_pcs)
     }
 
     /// `#[inline]` — called once per M68K instruction. The wrapper
@@ -297,7 +241,7 @@ mod tests {
         cpu.write_reg(Register::D1, 0);
         cpu.write_reg(Register::D2, 0);
 
-        let first = cpu.run_batch(&mut bus, 10, &[]);
+        let first = cpu.run_batch(&mut bus, 1, &[]);
         assert_eq!(first.instructions, 1);
         assert_eq!(cpu.read_reg(Register::PC), handler);
 

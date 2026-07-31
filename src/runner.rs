@@ -419,9 +419,10 @@ enum AdvanceResult {
     TooFar,
 }
 
-/// Architecturally visible processor state at a candidate idle-cycle
-/// boundary. JIT caches, prefetch bookkeeping, and remaining host batch cycles
-/// are deliberately excluded: they affect execution speed, not guest results.
+/// Processor state that can affect guest execution at a candidate idle-cycle
+/// boundary. JIT/decode caches and remaining host batch cycles are deliberately
+/// excluded, while precise prefetch and loop-mode state remain part of the
+/// proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CpuArchitecturalSnapshot {
     dar: [u32; 16],
@@ -436,18 +437,26 @@ struct CpuArchitecturalSnapshot {
     dfc: u32,
     cacr: u32,
     caar: u32,
+    cacr_pending_ops: u32,
     itt: [u32; 2],
     dtt: [u32; 2],
     ir: u32,
-    fpr: [u64; 8],
+    fpr: [m68k::fpu::FloatX80; 8],
     fpiar: u32,
     fpsr: u32,
     fpcr: u32,
-    mmu: [u32; 16],
+    mmu: [u32; 14],
+    pmmu_enabled: bool,
     int_level: u32,
     stopped: u32,
     change_of_flow: bool,
-    prefetch: [u32; 2],
+    loop_mode: bool,
+    loop_body_word: u16,
+    loop_dbcc_word: u16,
+    prefetch: [u16; 2],
+    prefetch_count: u8,
+    consume_without_prefetch: bool,
+    pending_sync_clocks: u32,
     run_mode: u32,
     fpu_just_reset: bool,
     reset_cycles: u32,
@@ -471,10 +480,11 @@ impl CpuArchitecturalSnapshot {
             dfc: cpu.dfc,
             cacr: cpu.cacr,
             caar: cpu.caar,
+            cacr_pending_ops: cpu.cacr_pending_ops,
             itt: [cpu.itt0, cpu.itt1],
             dtt: [cpu.dtt0, cpu.dtt1],
             ir: cpu.ir,
-            fpr: cpu.fpr.map(f64::to_bits),
+            fpr: cpu.fpr,
             fpiar: cpu.fpiar,
             fpsr: cpu.fpsr,
             fpcr: cpu.fpcr,
@@ -484,22 +494,27 @@ impl CpuArchitecturalSnapshot {
                 cpu.mmu_srp_aptr,
                 cpu.mmu_srp_limit,
                 cpu.mmu_tc,
-                u32::from(cpu.mmu_sr),
+                cpu.mmu_sr,
                 cpu.mmu_tt0,
                 cpu.mmu_tt1,
-                cpu.urp,
-                cpu.srp,
-                cpu.tc,
-                cpu.mmusr,
                 cpu.dacr0,
                 cpu.dacr1,
                 cpu.iacr0,
                 cpu.iacr1,
+                cpu.pcr,
+                cpu.buscr,
             ],
+            pmmu_enabled: cpu.pmmu_enabled,
             int_level: cpu.int_level,
             stopped: cpu.stopped,
             change_of_flow: cpu.change_of_flow,
-            prefetch: [cpu.pref_addr, cpu.pref_data],
+            loop_mode: cpu.loop_mode,
+            loop_body_word: cpu.loop_body_word,
+            loop_dbcc_word: cpu.loop_dbcc_word,
+            prefetch: cpu.prefetch_queue,
+            prefetch_count: cpu.prefetch_count,
+            consume_without_prefetch: cpu.consume_without_prefetch,
+            pending_sync_clocks: cpu.pending_sync_clocks,
             run_mode: cpu.run_mode,
             fpu_just_reset: cpu.fpu_just_reset,
             reset_cycles: cpu.reset_cycles,
@@ -10015,6 +10030,36 @@ mod tests {
                 runner.dispatcher.tick_count,
             );
         }
+    }
+
+    #[test]
+    fn idle_snapshot_preserves_extended_cpu_state() {
+        let mut cpu = m68k::CpuCore::new();
+        cpu.fpr[0] = m68k::fpu::FloatX80::from_extended(0x3FFF, 0x8000_0000_0000_0000);
+        let baseline = CpuArchitecturalSnapshot::capture(&cpu);
+
+        cpu.fpr[0].mantissa ^= 1;
+        assert_ne!(
+            baseline,
+            CpuArchitecturalSnapshot::capture(&cpu),
+            "80-bit FPU precision must participate in an idle-cycle proof"
+        );
+
+        cpu.fpr[0].mantissa ^= 1;
+        cpu.mmu_crp_aptr = 0x1234_5000;
+        assert_ne!(
+            baseline,
+            CpuArchitecturalSnapshot::capture(&cpu),
+            "canonical MMU state must participate in an idle-cycle proof"
+        );
+
+        cpu.mmu_crp_aptr = 0;
+        cpu.prefetch_queue[1] = 0x4E71;
+        assert_ne!(
+            baseline,
+            CpuArchitecturalSnapshot::capture(&cpu),
+            "precise prefetch state must participate in an idle-cycle proof"
+        );
     }
 
     #[test]
