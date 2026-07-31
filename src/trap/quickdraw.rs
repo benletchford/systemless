@@ -2915,6 +2915,28 @@ impl super::TrapDispatcher {
                     dst_bottom,
                     dst_right,
                 );
+                if self.recording_picture.is_some() {
+                    let mut source_clut = if src_info.pixel_size == 1 {
+                        [[0u16; 3]; 256]
+                    } else {
+                        self.read_port_clut(bus, src_info.ctab_handle)
+                    };
+                    if src_info.pixel_size == 1 {
+                        source_clut[0] = [self.bg_color.0, self.bg_color.1, self.bg_color.2];
+                        source_clut[1] = [self.fg_color.0, self.fg_color.1, self.fg_color.2];
+                    }
+                    if let Some(snapshot) = Self::encode_bitmap_copy_pict(
+                        bus,
+                        src_info,
+                        &source_clut,
+                        (src_top, src_left, src_bottom, src_right),
+                        (dst_top, dst_left, dst_bottom, dst_right),
+                        mode,
+                    ) {
+                        self.recording_picture_bitmap = Some(snapshot);
+                    }
+                    return Some(Ok(()));
+                }
                 if src_info.row_bytes == 0
                     || dst_info.row_bytes == 0
                     || src_info.pixel_size == 0
@@ -4328,6 +4350,12 @@ impl super::TrapDispatcher {
                 let b = bus.read_word(color_ptr + 4);
                 self.bg_color = (r, g, b);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x001B); // RGBBkCol
+                    for component in [r, g, b] {
+                        Self::push_pict_word(commands, component);
+                    }
+                }
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] RGBBackColor port=${:08X} ptr=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -8409,6 +8437,7 @@ impl super::TrapDispatcher {
                     frame_right,
                     Vec::new(),
                 ));
+                self.recording_picture_bitmap = None;
 
                 eprintln!(
                     "[TRAP] OpenPicture: handle=${:08X} frame=({},{},{},{})",
@@ -8430,7 +8459,9 @@ impl super::TrapDispatcher {
                 if let Some((handle, top, left, bottom, right, commands)) =
                     self.recording_picture.take()
                 {
-                    let picture = if commands.is_empty() {
+                    let picture = if let Some(snapshot) = self.recording_picture_bitmap.take() {
+                        Some(snapshot)
+                    } else if commands.is_empty() {
                         let mut source = self.resolve_copy_bitmap(bus, self.current_port + 2);
                         if source.base == 0
                             || source.base == u32::MAX
@@ -8454,14 +8485,13 @@ impl super::TrapDispatcher {
                         } else {
                             self.device_clut
                         };
-                        Self::encode_bitmap_snapshot_pict(
+                        Self::encode_bitmap_copy_pict(
                             bus,
                             source,
                             &source_clut,
-                            top,
-                            left,
-                            bottom,
-                            right,
+                            (top, left, bottom, right),
+                            (top, left, bottom, right),
+                            0,
                         )
                     } else {
                         Some(Self::encode_recorded_picture_pict(
@@ -19252,18 +19282,24 @@ impl super::TrapDispatcher {
         picture
     }
 
-    fn encode_bitmap_snapshot_pict(
+    fn encode_bitmap_copy_pict(
         bus: &MacMemoryBus,
         source: CopyBitmapInfo,
         source_clut: &[[u16; 3]; 256],
-        top: i16,
-        left: i16,
-        bottom: i16,
-        right: i16,
+        source_rect: (i16, i16, i16, i16),
+        dest_rect: (i16, i16, i16, i16),
+        mode: i16,
     ) -> Option<Vec<u8>> {
-        let width = u32::try_from(i32::from(right) - i32::from(left)).ok()?;
-        let height = u32::try_from(i32::from(bottom) - i32::from(top)).ok()?;
+        let (src_top, src_left, src_bottom, src_right) = source_rect;
+        let (dst_top, dst_left, dst_bottom, dst_right) = dest_rect;
+        let src_width = u32::try_from(i32::from(src_right) - i32::from(src_left)).ok()?;
+        let src_height = u32::try_from(i32::from(src_bottom) - i32::from(src_top)).ok()?;
+        let width = u32::try_from(i32::from(dst_right) - i32::from(dst_left)).ok()?;
+        let height = u32::try_from(i32::from(dst_bottom) - i32::from(dst_top)).ok()?;
         if width == 0 || height == 0 {
+            return None;
+        }
+        if src_width == 0 || src_height == 0 {
             return None;
         }
 
@@ -19279,7 +19315,7 @@ impl super::TrapDispatcher {
             10 + 1 + 46 + 8 + color_count * 8 + 18 + (row_bytes as usize + 6) * height as usize,
         );
         Self::push_pict_word(&mut picture, 0); // patched after encoding
-        for value in [top, left, bottom, right] {
+        for value in [dst_top, dst_left, dst_bottom, dst_right] {
             Self::push_pict_word(&mut picture, value as u16);
         }
 
@@ -19314,10 +19350,10 @@ impl super::TrapDispatcher {
         for value in [0i16, 0, height as i16, width as i16] {
             Self::push_pict_word(&mut picture, value as u16);
         }
-        for value in [top, left, bottom, right] {
+        for value in [dst_top, dst_left, dst_bottom, dst_right] {
             Self::push_pict_word(&mut picture, value as u16);
         }
-        Self::push_pict_word(&mut picture, 0); // srcCopy
+        Self::push_pict_word(&mut picture, mode as u16);
 
         let pixels_per_byte = 8 / u32::from(pixel_size);
         let pixel_mask = if pixel_size == 8 {
@@ -19329,13 +19365,10 @@ impl super::TrapDispatcher {
         for y in 0..height {
             row.fill(0);
             for x in 0..width {
-                let source_pixel = Self::read_bitmap_pixel(
-                    bus,
-                    &source,
-                    top.saturating_add(y as i16),
-                    left.saturating_add(x as i16),
-                )
-                .unwrap_or_default();
+                let source_y = src_top.saturating_add((y * src_height / height) as i16);
+                let source_x = src_left.saturating_add((x * src_width / width) as i16);
+                let source_pixel =
+                    Self::read_bitmap_pixel(bus, &source, source_y, source_x).unwrap_or_default();
                 let pixel = if pixel_size == 1 {
                     u8::from(source_pixel != 0)
                 } else {
@@ -39677,6 +39710,61 @@ mod tests {
             bus.read_bytes(screen_base, 8),
             original,
             "ClosePicture must retain packed 4-bit pixels for a later DrawPicture"
+        );
+    }
+
+    #[test]
+    fn recorded_copybits_replays_packed_4bpp_pixels_through_the_source_color_table() {
+        let (_d, _cpu, mut bus) = setup();
+        let source_base = bus.alloc(2);
+        bus.write_bytes(source_base, &[0x12, 0x34]);
+        let source = CopyBitmapInfo {
+            base: source_base,
+            row_bytes: 2,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 1,
+            bounds_right: 4,
+            pixel_size: 4,
+            ctab_handle: 0,
+        };
+        let mut clut = [[0xFFFFu16; 3]; 256];
+        for (index, color) in clut.iter_mut().take(16).enumerate() {
+            let component = (index as u16) * 0x1111;
+            *color = [component, component, component];
+        }
+        let picture = TrapDispatcher::encode_bitmap_copy_pict(
+            &bus,
+            source,
+            &clut,
+            (0, 0, 1, 4),
+            (0, 0, 1, 4),
+            0,
+        )
+        .expect("packed CopyBits should produce a replayable picture");
+        let pic_ptr = bus.alloc(picture.len() as u32);
+        bus.write_bytes(pic_ptr, &picture);
+        let screen_base = bus.alloc(4);
+        bus.fill_zeros(screen_base, 4);
+
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            1,
+            4,
+            (screen_base, 4, 4, 1, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert_eq!(
+            bus.read_bytes(screen_base, 4),
+            vec![1, 2, 3, 4],
+            "OpenPicture/CopyBits artwork must retain packed pixels and its indexed colors"
         );
     }
 

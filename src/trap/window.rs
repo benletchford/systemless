@@ -3204,6 +3204,12 @@ impl super::TrapDispatcher {
                         if resolved_user_item_proc {
                             self.queue_modeless_dialog_draw_procs(bus, the_window);
                         }
+                        if !self
+                            .modeless_dialog_cdef_draw_queue
+                            .contains(&the_window)
+                        {
+                            self.modeless_dialog_cdef_draw_queue.push_back(the_window);
+                        }
                     } else {
                         let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
                         if self.window_uses_custom_def_proc(bus, the_window) {

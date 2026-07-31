@@ -5613,6 +5613,19 @@ impl FixtureRunner {
                 return true;
             }
         }
+        while let Some(dialog_ptr) = self
+            .dispatcher
+            .modeless_dialog_cdef_draw_queue
+            .pop_front()
+        {
+            if self.dispatcher.arm_dialog_control_def_draws(
+                &mut self.cpu,
+                &mut self.bus,
+                dialog_ptr,
+            ) {
+                return true;
+            }
+        }
         false
     }
 
