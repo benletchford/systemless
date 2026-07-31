@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.3](https://github.com/benletchford/systemless/compare/v0.10.2...v0.10.3) (2026-07-31)
+
+
+### Bug Fixes
+
+* upgrade m68k to 0.3.2 and correct Rustdocs ([43ddd9c](https://github.com/benletchford/systemless/commit/43ddd9c271704151733624d8f85ee7fab7a3ff03))
+
 ## [0.10.2](https://github.com/benletchford/systemless/compare/v0.10.1...v0.10.2) (2026-07-31)
 
 
