@@ -10,10 +10,10 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSSize};
 use systemless::game::{ApplicationIcon, ApplicationIconRepresentation};
 
-/// Classic Finder icons are artwork, whereas a modern macOS application icon
-/// is a complete canvas. Give the 32px/16px artwork transparent breathing room
-/// instead of letting AppKit enlarge it to fill the entire Dock tile.
-const APPLICATION_ICON_CANVAS_SCALE: usize = 2;
+/// Classic icons are visually denser than modern macOS icons. Keep the guest
+/// artwork at 80% of the canvas so it matches neighboring Dock icon footprints.
+const APPLICATION_ICON_CANVAS_NUMERATOR: usize = 5;
+const APPLICATION_ICON_CANVAS_DENOMINATOR: usize = 4;
 
 /// Replace the running process's Dock/application-switcher icon.
 ///
@@ -26,11 +26,7 @@ pub fn set_application_icon(icon: Option<&ApplicationIcon>) {
 }
 
 fn make_image(icon: &ApplicationIcon) -> Option<objc2::rc::Retained<NSImage>> {
-    let largest = icon.representations.iter().max_by_key(|representation| {
-        u32::from(representation.width) * u32::from(representation.height)
-    })?;
-    let image_width = usize::from(largest.width).checked_mul(APPLICATION_ICON_CANVAS_SCALE)?;
-    let image_height = usize::from(largest.height).checked_mul(APPLICATION_ICON_CANVAS_SCALE)?;
+    let (image_width, image_height) = image_dimensions(icon)?;
     let image = unsafe {
         NSImage::initWithSize(
             NSImage::alloc(),
@@ -71,6 +67,22 @@ fn make_image(icon: &ApplicationIcon) -> Option<objc2::rc::Retained<NSImage>> {
     added.then_some(image)
 }
 
+fn image_dimensions(icon: &ApplicationIcon) -> Option<(usize, usize)> {
+    let largest = icon.representations.iter().max_by_key(|representation| {
+        u32::from(representation.width) * u32::from(representation.height)
+    })?;
+    Some((
+        canvas_dimension(usize::from(largest.width))?,
+        canvas_dimension(usize::from(largest.height))?,
+    ))
+}
+
+fn canvas_dimension(source: usize) -> Option<usize> {
+    source
+        .checked_mul(APPLICATION_ICON_CANVAS_NUMERATOR)?
+        .checked_div(APPLICATION_ICON_CANVAS_DENOMINATOR)
+}
+
 fn padded_representation(
     representation: &ApplicationIconRepresentation,
 ) -> Option<(usize, usize, Vec<u8>)> {
@@ -81,8 +93,8 @@ fn padded_representation(
         return None;
     }
 
-    let width = source_width.checked_mul(APPLICATION_ICON_CANVAS_SCALE)?;
-    let height = source_height.checked_mul(APPLICATION_ICON_CANVAS_SCALE)?;
+    let width = canvas_dimension(source_width)?;
+    let height = canvas_dimension(source_height)?;
     let mut rgba = vec![0; width.checked_mul(height)?.checked_mul(4)?];
     let left = (width - source_width) / 2;
     let top = (height - source_height) / 2;
@@ -99,23 +111,42 @@ fn padded_representation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use systemless::game::ApplicationIconRepresentation;
 
     #[test]
-    fn classic_icon_artwork_is_centered_on_a_double_sized_canvas() {
+    fn classic_icon_uses_eighty_percent_of_canvas() {
+        let icon = ApplicationIcon {
+            representations: vec![
+                ApplicationIconRepresentation {
+                    width: 32,
+                    height: 32,
+                    rgba: vec![0; 32 * 32 * 4],
+                },
+                ApplicationIconRepresentation {
+                    width: 16,
+                    height: 16,
+                    rgba: vec![0; 16 * 16 * 4],
+                },
+            ],
+        };
+
+        assert_eq!(image_dimensions(&icon), Some((40, 40)));
+        assert_eq!(canvas_dimension(16), Some(20));
+    }
+
+    #[test]
+    fn classic_icon_artwork_is_centered_on_canvas() {
         let representation = ApplicationIconRepresentation {
-            width: 2,
-            height: 2,
-            rgba: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            width: 16,
+            height: 16,
+            rgba: vec![255; 16 * 16 * 4],
         };
 
         let (width, height, rgba) = padded_representation(&representation).unwrap();
 
-        assert_eq!((width, height), (4, 4));
-        assert_eq!(&rgba[0..20], &[0; 20]);
-        assert_eq!(&rgba[20..28], &[1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(&rgba[28..36], &[0; 8]);
-        assert_eq!(&rgba[36..44], &[9, 10, 11, 12, 13, 14, 15, 16]);
-        assert_eq!(&rgba[44..], &[0; 20]);
+        assert_eq!((width, height), (20, 20));
+        assert_eq!(&rgba[..(2 * width + 2) * 4], vec![0; (2 * width + 2) * 4]);
+        assert_eq!(&rgba[(2 * width + 2) * 4..(2 * width + 3) * 4], &[255; 4]);
     }
 
     #[test]
