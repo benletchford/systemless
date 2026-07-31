@@ -6666,6 +6666,7 @@ impl super::TrapDispatcher {
                         let pixel_buf = bus.alloc(row_bytes * height);
                         let pixel_buf_handle = bus.alloc(4);
                         bus.write_long(pixel_buf_handle, pixel_buf);
+                        self.ptr_to_handle.insert(pixel_buf, pixel_buf_handle);
                         let pixmap = bus.alloc(50);
                         bus.write_long(pixmap, pixel_buf_handle);
                         bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000);
@@ -6795,7 +6796,7 @@ impl super::TrapDispatcher {
                     // Imaging With QuickDraw 1994, 6-26
                     0x0001 => {
                         let pmh = bus.read_long(sp);
-                        let locked = self.lock_gworld_pixels(pmh);
+                        let locked = self.lock_gworld_pixels(bus, pmh);
                         bus.write_word(sp + 4, if locked { 0x0100 } else { 0x0000 });
                         cpu.write_reg(Register::A7, sp + 4);
                     }
@@ -6804,7 +6805,7 @@ impl super::TrapDispatcher {
                     // Imaging With QuickDraw 1994, 6-27
                     0x0002 => {
                         let pmh = bus.read_long(sp);
-                        self.unlock_gworld_pixels(pmh);
+                        self.unlock_gworld_pixels(bus, pmh);
                         cpu.write_reg(Register::A7, sp + 4);
                     }
                     // UpdateGWorld ($00160003)
@@ -6844,8 +6845,20 @@ impl super::TrapDispatcher {
                         let pixmap_handle = bus.read_long(port + 2);
                         let pixmap = bus.read_long(pixmap_handle);
                         let old_ctab_handle = bus.read_long(pixmap + 42);
-                        let old_base_handle = Self::offscreen_pixmap_base_handle(bus, pixmap);
                         let old_base = Self::offscreen_pixmap_base_ptr(bus, pixmap);
+                        let stored_base_handle =
+                            Self::offscreen_pixmap_base_handle(bus, pixmap);
+                        let old_base_handle = if stored_base_handle != 0 {
+                            stored_base_handle
+                        } else {
+                            self.ptr_to_handle
+                                .get(&old_base)
+                                .copied()
+                                .filter(|&handle| bus.read_long(handle) == old_base)
+                                .unwrap_or(0)
+                        };
+                        let pixels_were_locked =
+                            stored_base_handle == 0 && old_base_handle != 0;
                         let old_rb_raw = bus.read_word(pixmap + 4);
                         let old_row_bytes = (old_rb_raw & 0x3FFF) as u32;
                         let old_top = bus.read_word(pixmap + 6) as i16;
@@ -6961,7 +6974,12 @@ impl super::TrapDispatcher {
 
                             // Update PixMap fields
                             if old_base_handle != 0 {
+                                self.ptr_to_handle.remove(&old_base);
                                 bus.write_long(old_base_handle, new_base);
+                                self.ptr_to_handle.insert(new_base, old_base_handle);
+                                if pixels_were_locked {
+                                    bus.write_long(pixmap, new_base);
+                                }
                             } else {
                                 bus.write_long(pixmap, new_base);
                             }
@@ -7435,7 +7453,7 @@ impl super::TrapDispatcher {
             (true, 0x304) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pmh = bus.read_long(sp);
-                let locked = self.lock_gworld_pixels(pmh);
+                let locked = self.lock_gworld_pixels(bus, pmh);
                 bus.write_word(sp + 4, if locked { 0x0100 } else { 0x0000 });
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -7456,17 +7474,13 @@ impl super::TrapDispatcher {
             // Stack: SP+0 pm PixMapHandle (4 bytes). Pop 4 bytes.
             // No result (PROCEDURE).
             //
-            // HLE compromise: paired with LockPixels above —
-            // Systemless doesn't model lock state, so UnlockPixels is
-            // a true no-op. Per IM:VI 17-13 "calling UnlockPixels
-            // on purged pixels does no harm" matches Systemless's
-            // unconditional no-op on any handle (including NIL,
-            // including dangling-after-DisposeGWorld).
-            // UnlockPixels ($AB05): Pops 4 bytes (PixMapHandle) per IM:VI 17-13 + Imaging With QuickDraw 6-45 PROCEDURE sig. Paired with LockPixels ($AB04) — HLE has no lock state so UnlockPixels is a true no-op; matches IM:VI 17-13 "calling UnlockPixels on purged pixels does no harm" semantic for unconditional no-op on any handle.
+            // LockPixels exposes the fixed pixel pointer through baseAddr;
+            // UnlockPixels restores the movable handle representation.
+            // Calling this on NIL or purged pixels remains harmless.
             (true, 0x305) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pmh = bus.read_long(sp);
-                self.unlock_gworld_pixels(pmh);
+                self.unlock_gworld_pixels(bus, pmh);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -17200,6 +17214,7 @@ impl super::TrapDispatcher {
             return C_NO_MEM_ERR;
         }
         bus.write_long(pixel_buf_handle, pixel_buf);
+        self.ptr_to_handle.insert(pixel_buf, pixel_buf_handle);
         let pixmap = bus.alloc(50);
         if pixmap == 0 {
             return C_NO_MEM_ERR;
@@ -17243,11 +17258,22 @@ impl super::TrapDispatcher {
 
         let pixmap_ptr = bus.read_long(offscreen_pixmap);
         if pixmap_ptr != 0 {
-            let pixel_buf_handle = Self::offscreen_pixmap_base_handle(bus, pixmap_ptr);
+            let pixel_buf = Self::offscreen_pixmap_base_ptr(bus, pixmap_ptr);
+            let stored_pixel_buf_handle =
+                Self::offscreen_pixmap_base_handle(bus, pixmap_ptr);
+            let pixel_buf_handle = if stored_pixel_buf_handle != 0 {
+                stored_pixel_buf_handle
+            } else {
+                self.ptr_to_handle
+                    .get(&pixel_buf)
+                    .copied()
+                    .filter(|&handle| bus.read_long(handle) == pixel_buf)
+                    .unwrap_or(0)
+            };
             if pixel_buf_handle != 0 {
+                self.ptr_to_handle.remove(&pixel_buf);
                 Self::free_handle_and_target(bus, pixel_buf_handle);
             } else {
-                let pixel_buf = bus.read_long(pixmap_ptr);
                 if pixel_buf != 0 {
                     bus.free(pixel_buf);
                 }
@@ -17358,18 +17384,47 @@ impl super::TrapDispatcher {
         self.set_gworld_pixels_state(pmh, state);
     }
 
-    fn lock_gworld_pixels(&mut self, pmh: u32) -> bool {
-        if pmh != 0 {
-            const PIXELS_LOCKED: u32 = 1 << 7;
-            let state = self.gworld_pixels_state(pmh) | PIXELS_LOCKED;
-            self.set_gworld_pixels_state(pmh, state);
+    fn lock_gworld_pixels(&mut self, bus: &mut MacMemoryBus, pmh: u32) -> bool {
+        if pmh == 0 {
+            return true;
         }
+
+        let pm = bus.read_long(pmh);
+        if pm != 0 {
+            let base_handle = Self::offscreen_pixmap_base_handle(bus, pm);
+            if base_handle != 0 {
+                let base = bus.read_long(base_handle);
+                if base == 0 {
+                    return false;
+                }
+                self.ptr_to_handle.insert(base, base_handle);
+                bus.write_long(pm, base);
+            }
+        }
+
+        const PIXELS_LOCKED: u32 = 1 << 7;
+        let state = self.gworld_pixels_state(pmh) | PIXELS_LOCKED;
+        self.set_gworld_pixels_state(pmh, state);
         true
     }
 
-    fn unlock_gworld_pixels(&mut self, pmh: u32) {
+    fn unlock_gworld_pixels(&mut self, bus: &mut MacMemoryBus, pmh: u32) {
         if pmh == 0 {
             return;
+        }
+
+        let pm = bus.read_long(pmh);
+        if pm != 0 {
+            let base = Self::offscreen_pixmap_base_ptr(bus, pm);
+            let base_handle = self
+                .ptr_to_handle
+                .get(&base)
+                .copied()
+                .filter(|&handle| bus.read_long(handle) == base)
+                .unwrap_or(0);
+            if base_handle != 0 {
+                bus.write_long(pm, base_handle);
+            }
         }
 
         const PIXELS_LOCKED: u32 = 1 << 7;
@@ -36314,6 +36369,9 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         let base_1 = bus.read_long(TEST_SP + 4);
         assert_ne!(base_1, 0);
+        let pm_1 = bus.read_long(pmh_1);
+        let base_handle_1 = TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm_1);
+        assert_eq!(d.ptr_to_handle.get(&base_1), Some(&base_handle_1));
 
         cpu.write_reg(Register::D0, 0x000D);
         cpu.write_reg(Register::A7, TEST_SP);
@@ -37236,6 +37294,15 @@ mod tests {
             TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm_ptr),
             expected_base
         );
+
+        cpu.write_reg(Register::A0, expected_base);
+        let recovered = d.dispatch_memory(false, 0x28, &mut cpu, &mut bus);
+        assert!(recovered.unwrap().is_ok());
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            base_handle,
+            "RecoverHandle(GetPixBaseAddr(pm)) must return the offscreen base handle"
+        );
     }
 
     #[test]
@@ -37268,6 +37335,42 @@ mod tests {
             TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm_ptr),
             expected_base
         );
+    }
+
+    #[test]
+    fn lockpixels_exposes_base_pointer_until_unlockpixels_restores_handle() {
+        // IWQD 1994 pp. 6-44..6-45: LockPixels dereferences the offscreen
+        // base handle into a pointer, and UnlockPixels recovers the handle.
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds_ptr = 0x300000u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 16, 16);
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, 0);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        let create = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(create.unwrap().is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let pmh = bus.read_long(gworld + 2);
+        let pm = bus.read_long(pmh);
+        let base_handle = bus.read_long(pm);
+        let base = bus.read_long(base_handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pmh);
+        let lock = d.dispatch_quickdraw(true, 0x304, &mut cpu, &mut bus);
+        assert!(lock.unwrap().is_ok());
+        assert_eq!(bus.read_long(pm), base);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pmh);
+        let unlock = d.dispatch_quickdraw(true, 0x305, &mut cpu, &mut bus);
+        assert!(unlock.unwrap().is_ok());
+        assert_eq!(bus.read_long(pm), base_handle);
     }
 
     #[test]
@@ -37776,8 +37879,11 @@ mod tests {
         assert!(update.unwrap().is_ok());
 
         let new_base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm);
+        let base_handle = TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm);
         let flags = cpu.read_reg(Register::D0);
         assert_ne!(new_base, old_base);
+        assert_eq!(d.ptr_to_handle.get(&old_base), None);
+        assert_eq!(d.ptr_to_handle.get(&new_base), Some(&base_handle));
         assert_eq!(flags & (1 << 20), 1 << 20);
         assert_eq!(flags & (1 << 19), 1 << 19);
         for i in 0..16 {
