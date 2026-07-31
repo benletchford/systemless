@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/benletchford/systemless/compare/v0.11.0...v0.11.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* update explicit animated palette entries ([#263](https://github.com/benletchford/systemless/issues/263)) ([9635b25](https://github.com/benletchford/systemless/commit/9635b254b92c3cb7f7712a2d9b654bb9d9c018ab))
+
 ## [0.11.0](https://github.com/benletchford/systemless/compare/v0.10.3...v0.11.0) (2026-07-31)
 
 
