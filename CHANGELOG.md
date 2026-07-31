@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.0](https://github.com/benletchford/systemless/compare/v0.10.3...v0.11.0) (2026-07-31)
+
+
+### Features
+
+* use guest application icons on macOS ([5deef33](https://github.com/benletchford/systemless/commit/5deef33fbf462db5151fc8ceca70a23da30007ee))
+
+
+### Bug Fixes
+
+* preserve classic application presentation and timing ([530ff09](https://github.com/benletchford/systemless/commit/530ff0942fca3a37ac392a202daa72c1855ee740))
+* scale classic application icons appropriately on macOS ([6eb8597](https://github.com/benletchford/systemless/commit/6eb8597df92c973e6b3a3202d428ef6964e04675))
+
 ## [0.10.3](https://github.com/benletchford/systemless/compare/v0.10.2...v0.10.3) (2026-07-31)
 
 
