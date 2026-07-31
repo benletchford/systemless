@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.17](https://github.com/benletchford/systemless/compare/v0.9.16...v0.9.17) (2026-07-31)
+
+
+### Bug Fixes
+
+* expose offscreen pixel pointers while locked ([c309d76](https://github.com/benletchford/systemless/commit/c309d76e405c690ede416b9a35969dd50e4d911d))
+
 ## [0.9.16](https://github.com/benletchford/systemless/compare/v0.9.15...v0.9.16) (2026-07-31)
 
 
