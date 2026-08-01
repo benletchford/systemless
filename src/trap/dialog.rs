@@ -4,7 +4,7 @@ use super::dispatch::{
     DialogItem, DialogPopupDraw, DialogPopupTrackingState, DialogTrackingState,
     PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent, RetainedModalDialogClickState,
 };
-use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
+use super::types::{decode_mac_roman_for_render, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -8077,8 +8077,12 @@ impl super::TrapDispatcher {
         }
 
         let substituted = self.apply_param_text(text);
-        let text_bytes = substituted.as_bytes();
-        let lines = self.te_wrap_lines(font_id, self.tx_size, text_bytes, max_width);
+        // DialogItem stores decoded host text, while TextEdit measures and
+        // breaks the original guest encoding. Convert back before layout so a
+        // Mac Roman character such as the $C9 ellipsis remains one byte rather
+        // than being measured as its multi-byte UTF-8 representation.
+        let text_bytes = encode_mac_roman_lossy(&substituted);
+        let lines = self.te_wrap_lines(font_id, self.tx_size, &text_bytes, max_width);
 
         for (start, end) in lines {
             let mut trimmed_end = end;
@@ -8090,10 +8094,7 @@ impl super::TrapDispatcher {
                 // IM:I I-405 to I-406: statText draws like editText text
                 // inside the display rectangle, including wrap and clipping,
                 // but without the editText frame.
-                let line: String = text_bytes[start..trimmed_end]
-                    .iter()
-                    .map(|&byte| byte as char)
-                    .collect();
+                let line = decode_mac_roman_for_render(&text_bytes[start..trimmed_end]);
                 Self::fb_draw_string(
                     bus,
                     screen_base,

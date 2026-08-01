@@ -51,6 +51,20 @@ gui = [
 # Off by default so it stays out of the published public API and docs.
 test-support = []
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ab_glyph = "0.2.32"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.114"
+web-sys = { version = "0.3.91", features = [
+    "CanvasRenderingContext2d",
+    "Document",
+    "HtmlCanvasElement",
+    "ImageData",
+    "TextMetrics",
+    "Window",
+] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.5.2", optional = true }
 objc2-app-kit = { version = "0.2.2", optional = true, features = ["NSApplication", "NSBitmapImageRep", "NSCell", "NSGraphics", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem"] }

@@ -1,16 +1,24 @@
-//! Original systemless bitmap fonts + Mac font-family routing.
+//! Classic Mac font-family routing and runtime glyph faces.
 //!
-//! Text renders by blitting pre-computed 8-bit coverage bitmaps out of
-//! the [`pixel_font`] modules — no runtime rasterization, no hinting
-//! decisions, no threshold knobs, no CLUT-closest-match. Every glyph
-//! pixel is exactly 0 or 255, so the downstream `ShapeOp::Glyph`
-//! partial-alpha branch never fires.
+//! QuickDraw ultimately consumes one platform-independent [`FontFace`]:
+//! metrics plus monochrome glyph bitmaps. The selection path handles four
+//! compatibility cases, in precedence order:
 //!
-//! Each face is authored as hand-editable ASCII art in a `pixel_font`
-//! module and lowered to static glyph tables by `const fn` at compile
-//! time — no offline baker, no external font asset. The systemless
-//! faces are named after Australian native plants and stand in for the
-//! classic Mac families, which survive only as internal compatibility
+//! 1. an exact bitmap strike embedded in the guest's resource fork;
+//! 2. an exact compatible strike from Systemless's original bitmap catalogue;
+//! 3. an exact requested size rasterized from an accepted host outline; and
+//! 4. a scaled compatible bitmap when no exact-size face exists.
+//!
+//! Keeping every source in the same representation makes text measurement
+//! and drawing select identical metrics. Coverage bytes are always 0 or 255,
+//! so this does not silently enable a later Mac OS font-smoothing policy.
+//!
+//! The bundled faces are authored as hand-editable ASCII art in a
+//! [`pixel_font`] module and lowered to static glyph tables by `const fn` at
+//! compile time—no offline baker or bundled third-party font asset. Host
+//! outlines remain installed system assets and are never redistributed.
+//! Systemless's faces are named after Australian native plants and stand in
+//! for classic Mac families, which survive only as internal compatibility
 //! identifiers:
 //!
 //! | Mac font family (compat ID)                        | systemless face |
@@ -29,6 +37,7 @@
 //! notice.
 
 pub mod heuristics;
+mod host_outline;
 pub mod override_format;
 pub mod pixel_font;
 
@@ -607,13 +616,33 @@ pub fn get_font_face_scaled(font_id: i16, size: i16) -> (&'static FontFace, i16)
 }
 
 fn get_font_face_scaled_impl(font_id: i16, size: i16) -> (&'static FontFace, i16) {
+    // Case 1: an application-provided resource strike or explicit user
+    // override.
+    //
+    // Case 2: an exact built-in strike for this compatibility ID. Both are
+    // already in the renderer's native bitmap representation.
     if let Some(face) = get_font_face(font_id, size) {
         return (face, 1);
     }
     if let Some(fb) = fallback_font_id(font_id) {
+        // A classic family can map to an original Systemless face. Preserve
+        // an exact strike before consulting the host so applications that
+        // expect the established bitmap metrics do not change layout.
         if let Some(face) = get_font_face(fb, size) {
             return (face, 1);
         }
+        // Case 3: *Inside Macintosh: Text* (1993), pp. 4-18–4-23 says
+        // selection is performed on a size basis. An outline can produce the
+        // requested size directly; only when no exact outline is available do
+        // we apply the documented bitmap scaling search (2x, 1/2x, next
+        // larger, next smaller). The host provider currently maps only the
+        // standard Times family and never redistributes host font data.
+        if let Some(face) = host_outline::get(font_id, size) {
+            return (face, 1);
+        }
+        // Case 4: there is no exact face. Reuse an integer-related bitmap
+        // strike and let the existing glyph blitter scale it, matching the
+        // fallback behavior used before host outline support was added.
         for scale in [2i16, 3] {
             let base_size = size / scale;
             if base_size * scale == size {
@@ -656,13 +685,25 @@ pub fn get_macroman_glyph(
             return Some((&hit.glyph, face.data));
         }
     }
-    let face = MACROMAN_TABLE
+    if let Some(face) = MACROMAN_TABLE
         .iter()
-        .find(|f| f.font_id == font_id && f.size == size)?;
-    face.glyphs
-        .iter()
-        .find(|e| e.mac_code == mac_code)
-        .map(|e| (&e.glyph, face.data))
+        .find(|f| f.font_id == font_id && f.size == size)
+    {
+        if let Some(hit) = face.glyphs.iter().find(|entry| entry.mac_code == mac_code) {
+            return Some((&hit.glyph, face.data));
+        }
+    }
+
+    // Extended characters must come from the same face as ASCII text. A
+    // resource or exact bitmap face therefore keeps precedence; use a host
+    // glyph only when the host outline is the face selected at this size.
+    let host = host_outline::get(font_id, size)?;
+    let (selected, scale) = get_font_face_scaled_impl(font_id, size);
+    if scale == 1 && std::ptr::eq(selected, host) {
+        host_outline::get_macroman(font_id, size, mac_code)
+    } else {
+        None
+    }
 }
 
 pub fn get_italic_glyph(
@@ -798,6 +839,27 @@ mod tests {
         let face = get_font_face_or_default(FONT_CHICAGO, 12);
         assert_eq!(face.font_id, FONT_CHICAGO);
         assert_eq!(face.size, 12);
+    }
+
+    #[test]
+    fn exact_times_compatible_bitmap_precedes_host_outline() {
+        let (face, scale) = get_font_face_scaled(FONT_TIMES, 18);
+        assert_eq!(face.font_id, FONT_NEWYORK);
+        assert_eq!(face.size, 18);
+        assert_eq!(scale, 1);
+    }
+
+    #[test]
+    fn missing_times_bitmap_uses_exact_size_host_outline_when_available() {
+        let Some(host) = host_outline::get(FONT_TIMES, 24) else {
+            // A host without an accepted family exercises the bundled bitmap
+            // fallback instead; absence is supported rather than a failure.
+            return;
+        };
+        let (selected, scale) = get_font_face_scaled(FONT_TIMES, 24);
+        assert!(std::ptr::eq(selected, host));
+        assert_eq!(selected.size, 24);
+        assert_eq!(scale, 1);
     }
 
     #[test]
