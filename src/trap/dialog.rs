@@ -13046,6 +13046,11 @@ impl super::TrapDispatcher {
                     0
                 };
 
+                // GetPicture is a thin GetResource('PICT', picID) wrapper;
+                // preserve GetResource's ResErr contract for both hits and
+                // misses so a stale error from an earlier resource lookup
+                // cannot invalidate a returned PicHandle.
+                bus.write_word(0x0A60, 0);
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -34311,6 +34316,24 @@ mod tests {
 
         let handle = bus.read_long(TEST_SP + 2);
         assert_eq!(handle, 0); // NIL when no PICT resource loaded
+    }
+
+    #[test]
+    fn get_picture_clears_stale_reserr_on_success() {
+        // GetPicture is documented as a GetResource('PICT', picID) wrapper
+        // (Inside Macintosh Volume I, I-475). Like the generic GetResource
+        // implementation, a successful lookup must leave ResErr at noErr;
+        // stale resNotFound would make callers reject a valid PicHandle.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pict_data = [0x00, 0x11, 0x22, 0x33];
+        disp.install_test_resource(&mut bus, *b"PICT", 10000, &pict_data);
+        bus.write_word(0x0A60, (-192i16) as u16);
+        bus.write_word(TEST_SP, 10000);
+
+        let result = disp.dispatch_dialog(true, 0x1BC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_ne!(bus.read_long(TEST_SP + 2), 0);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
     }
 
     #[test]
