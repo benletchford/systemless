@@ -28,7 +28,11 @@ const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 const DEFAULT_LOAD_ADDRESS: u32 = 0x0001_0000;
-const LARGE_SIZE_RELOCATION_MINIMUM: u32 = 2 * 1024 * 1024;
+// SIZE-partition applications commonly compare A5 against GetZone directly
+// when checking their minimum launch memory. Keep the A5 world above the
+// visible application zone whenever the declared minimum reaches the
+// documented 750K floor used by classic games such as Spectre Supreme.
+const SIZE_RELOCATION_MINIMUM: u32 = 750 * 1024;
 const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
@@ -731,14 +735,12 @@ fn load_address_for_size_partition(
     let Some(size) = size_resource else {
         return configured_load_address;
     };
-    if size.preferred_partition_size().is_none()
-        || size.minimum_size <= LARGE_SIZE_RELOCATION_MINIMUM
+    if size.preferred_partition_size().is_none() || size.minimum_size < SIZE_RELOCATION_MINIMUM
     {
         return configured_load_address;
     }
 
-    let desired_a5 =
-        APP_HEAP_FLOOR.saturating_add(size.minimum_size.saturating_sub(APP_STACK_SAFETY_MARGIN));
+    let desired_a5 = APP_HEAP_FLOOR.saturating_add(size.minimum_size);
     let default_a5 = configured_load_address.saturating_add(header.below_a5);
     if desired_a5 <= default_a5 {
         return configured_load_address;
@@ -2458,6 +2460,16 @@ impl FixtureRunner {
             .write_word(shield_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
         self.bus
             .write_long(addr::J_SHIELD_CURSOR, shield_cursor_trampoline);
+
+        // JInitCrsr ($0814): low-level cursor initialization vector. Some
+        // classic games call this private vector directly after handling a
+        // mouse click. InitCursor takes no arguments, so the direct JSR can
+        // return through a normal RTS after the A-line HLE runs.
+        let init_cursor_trampoline = self.bus.alloc(4);
+        self.bus.write_word(init_cursor_trampoline, 0xA850); // InitCursor
+        self.bus.write_word(init_cursor_trampoline + 2, 0x4E75); // RTS
+        self.bus
+            .write_long(addr::J_INIT_CRSR, init_cursor_trampoline);
 
         // JSwapFont ($08E0): private Font Manager vector used by QuickDraw to
         // call FMSwapFont directly. Executor's clean-room low-memory table
@@ -7199,7 +7211,7 @@ mod tests {
             "relocated app image must leave room for the visible app-zone header"
         );
         assert!(
-            app.a5_base - APP_HEAP_FLOOR >= minimum_partition - APP_STACK_SAFETY_MARGIN,
+            app.a5_base - APP_HEAP_FLOOR >= minimum_partition,
             "large SIZE partitions should place A5 high enough for direct A5-zone memory checks"
         );
         assert!(
@@ -7209,7 +7221,7 @@ mod tests {
     }
 
     #[test]
-    fn load_app_leaves_exact_2mb_size_partition_at_default_address() {
+    fn load_app_relocates_exact_2mb_size_partition() {
         let below_a5 = 0x68E8;
         let code0 = minimal_code0(0x0D18, below_a5, 0, 0);
         let size = size_resource_bytes(0x5880, 0x0020_0000, 0x0020_0000);
@@ -7219,8 +7231,35 @@ mod tests {
 
         let app = runner.load_app(&fork).expect("load app");
 
-        assert_eq!(app_image_start_for_loaded_app(&app), DEFAULT_LOAD_ADDRESS);
-        assert_eq!(app.a5_base, DEFAULT_LOAD_ADDRESS + below_a5);
+        assert!(
+            app_image_start_for_loaded_app(&app) > APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE,
+            "2 MB SIZE partitions must relocate the A5 world above the application zone"
+        );
+        assert!(
+            app.a5_base - APP_HEAP_FLOOR >= 2 * 1024 * 1024,
+            "relocated A5 must expose the declared 2 MB partition span"
+        );
+    }
+
+    #[test]
+    fn load_app_relocates_spectre_style_750k_size_partition() {
+        let below_a5 = 0x71BC;
+        let code0 = minimal_code0(0x0E00, below_a5, 0, 0);
+        let size = size_resource_bytes(0x5880, 1_843_200, 750 * 1024);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert!(
+            app_image_start_for_loaded_app(&app) > APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE,
+            "750K SIZE partitions must relocate the A5 world above the application zone"
+        );
+        assert!(
+            app.a5_base - APP_HEAP_FLOOR >= 750 * 1024,
+            "relocated A5 must expose Spectre's declared 750K partition span"
+        );
     }
 
     #[test]
@@ -8272,6 +8311,56 @@ mod tests {
         let initial_sp = 0x007F_FE00u32;
         runner.bus.write_word(call_site, 0x2078); // MOVEA.L ($0804).W,A0
         runner.bus.write_word(call_site + 2, 0x0804);
+        runner.bus.write_word(call_site + 4, 0x4E90); // JSR (A0)
+        runner.bus.write_word(call_site + 6, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, call_site);
+        runner.cpu.write_reg(Register::A7, initial_sp);
+        runner.dispatcher.cursor_level = -1;
+        runner.dispatcher.cursor_visible = false;
+
+        let (steps, running) = runner.run_steps(4, None);
+
+        assert!(running);
+        assert_eq!(steps, 4);
+        assert_eq!(runner.cpu.read_reg(Register::PC), call_site + 6);
+        assert_eq!(runner.cpu.read_reg(Register::A7), initial_sp);
+        assert_eq!(runner.dispatcher.cursor_level(), 0);
+        assert!(runner.dispatcher.cursor_visible());
+    }
+
+    #[test]
+    fn init_app_seeds_callable_init_cursor_low_memory_vector() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let entry = runner
+            .bus
+            .read_long(crate::memory::globals::addr::J_INIT_CRSR);
+        assert_ne!(entry, 0);
+        assert_eq!(
+            [runner.bus.read_word(entry), runner.bus.read_word(entry + 2)],
+            [0xA850, 0x4E75],
+            "JInitCrsr should target InitCursor followed by RTS"
+        );
+
+        let call_site = 0x0002_0000u32;
+        let initial_sp = 0x007F_FE00u32;
+        runner.bus.write_word(call_site, 0x2078); // MOVEA.L ($0814).W,A0
+        runner.bus.write_word(call_site + 2, 0x0814);
         runner.bus.write_word(call_site + 4, 0x4E90); // JSR (A0)
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
         runner.cpu.write_reg(Register::PC, call_site);
