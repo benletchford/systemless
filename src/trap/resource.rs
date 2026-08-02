@@ -928,6 +928,47 @@ impl super::TrapDispatcher {
         None
     }
 
+    fn reload_named_resource_if_needed(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        refnum: u16,
+        res_type: [u8; 4],
+        res_id: i16,
+        ptr: u32,
+    ) -> Option<u32> {
+        // More Macintosh Toolbox 1993, 1-79: with SetResLoad(FALSE),
+        // resource-returning routines may return an empty handle; preserve
+        // that contract while restoring released resources when automatic
+        // loading is enabled.
+        if ptr != 0 || !self.res_load {
+            return Some(ptr);
+        }
+
+        self.reload_resource_data_from_file(bus, refnum, res_type, res_id)
+    }
+
+    pub(crate) fn find_named_resource_current_loaded(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_type: [u8; 4],
+        name: &str,
+    ) -> Option<(u16, i16, u32)> {
+        let (refnum, res_id, ptr) = self.find_named_resource_current(res_type, name)?;
+        let ptr = self.reload_named_resource_if_needed(bus, refnum, res_type, res_id, ptr)?;
+        Some((refnum, res_id, ptr))
+    }
+
+    pub(crate) fn find_named_resource_any_loaded(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_type: [u8; 4],
+        name: &str,
+    ) -> Option<(u16, i16, u32)> {
+        let (refnum, res_id, ptr) = self.find_named_resource_any(res_type, name)?;
+        let ptr = self.reload_named_resource_if_needed(bus, refnum, res_type, res_id, ptr)?;
+        Some((refnum, res_id, ptr))
+    }
+
     pub(crate) fn find_or_load_resource_any(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2261,7 +2302,7 @@ impl super::TrapDispatcher {
 
                 // Look up by (type, name) in the named resources index
                 let handle =
-                    self.find_named_resource_current(res_type, &name)
+                    self.find_named_resource_current_loaded(bus, res_type, &name)
                         .map(|(refnum, id, ptr)| {
                             self.get_or_create_resource_handle_in_file(
                                 bus, res_type, id, ptr, refnum,
@@ -3247,11 +3288,12 @@ impl super::TrapDispatcher {
                     // Inside Macintosh: Operating System Utilities 1994,
                     // p. 1-16 / p. 1-24: bit 0 is
                     // gestaltEditionMgrPresent, bit 1 is
-                    // gestaltEditionMgrTranslationAware. Systemless does not
-                    // implement Edition Manager services, so report the
-                    // selector as known but absent.
+                    // gestaltEditionMgrTranslationAware. Pack11 provides
+                    // the Edition Manager package bootstrap, so advertise
+                    // the manager as present but not Translation Manager
+                    // aware.
                     b"edtn" => {
-                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::A0, 1);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltPPCToolboxAttr ('ppc ') -> PPC Toolbox present.
@@ -10023,6 +10065,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn get1_named_resource_reloads_after_release() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data = [0x42, 0x43, 0x44, 0x45];
+        let data_ptr = setup_resources(&mut disp, &mut bus, b"TEST", 500, &data);
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .named
+            .insert((*b"TEST", "ReloadMe".to_string()), (500, data_ptr));
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .names_by_id
+            .insert((*b"TEST", 500), "ReloadMe".to_string());
+
+        let name_ptr = 0x300000u32;
+        write_pstring(&mut bus, name_ptr, b"ReloadMe");
+        bus.write_long(TEST_SP, name_ptr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"TEST"));
+        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
+        let first_handle = bus.read_long(TEST_SP + 8);
+        assert_eq!(bus.read_long(first_handle), data_ptr);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, first_handle);
+        call(&mut disp, true, 0x1A3, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_long(first_handle), 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, name_ptr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"TEST"));
+        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
+        let second_handle = bus.read_long(TEST_SP + 8);
+        let second_ptr = bus.read_long(second_handle);
+        assert_ne!(second_handle, first_handle);
+        assert_ne!(second_ptr, 0);
+        assert_eq!(bus.read_bytes(second_ptr, data.len()), data);
+    }
+
     // ================================================================
     // 7b. GetResInfo (0x1A8) — named resource metadata
     // ================================================================
@@ -12532,7 +12620,7 @@ mod tests {
         cpu.write_reg(Register::A0, 0xBEEF);
         cpu.write_reg(Register::D0, u32::from_be_bytes(*b"edtn"));
         call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
-        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::A0), 1);
         assert_eq!(cpu.read_reg(Register::D0), 0);
 
         cpu.write_reg(Register::A0, 0xBEEF);

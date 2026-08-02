@@ -8241,7 +8241,7 @@ impl super::TrapDispatcher {
                 eprintln!("[TRAP] GetNamedResource('{}', \"{}\")", type_str, name);
 
                 let handle =
-                    self.find_named_resource_any(res_type, &name)
+                    self.find_named_resource_any_loaded(bus, res_type, &name)
                         .map(|(refnum, id, ptr)| {
                             self.get_or_create_resource_handle_in_file(
                                 bus, res_type, id, ptr, refnum,
@@ -21159,6 +21159,47 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_ne!(bus.read_long(sp + 8), 0);
+    }
+
+    #[test]
+    fn get_named_resource_reloads_after_release() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data = [0x42, 0x43, 0x44, 0x45];
+        let data_ptr = disp.install_named_test_resource_in_file(
+            &mut bus,
+            0,
+            *b"TEST",
+            500,
+            "ReloadMe",
+            &data,
+        );
+        let name_addr = 0x300000u32;
+        bus.write_byte(name_addr, 8);
+        bus.write_bytes(name_addr + 1, b"ReloadMe");
+
+        let sp = TEST_SP;
+        bus.write_long(sp, name_addr);
+        bus.write_long(sp + 4, u32::from_be_bytes(*b"TEST"));
+        let result = disp.dispatch_toolbox(true, 0x1A1, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let first_handle = bus.read_long(sp + 8);
+        assert_eq!(bus.read_long(first_handle), data_ptr);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, first_handle);
+        let result = disp.dispatch_resource(true, 0x1A3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, name_addr);
+        bus.write_long(sp + 4, u32::from_be_bytes(*b"TEST"));
+        let result = disp.dispatch_toolbox(true, 0x1A1, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let second_handle = bus.read_long(sp + 8);
+        let second_ptr = bus.read_long(second_handle);
+        assert_ne!(second_handle, first_handle);
+        assert_ne!(second_ptr, 0);
+        assert_eq!(bus.read_bytes(second_ptr, data.len()), data);
     }
 
     // GetResAttrs ($A9A6) — handler now lives in resource.rs (see
