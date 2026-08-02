@@ -450,6 +450,8 @@ pub struct MacMemoryBus {
     heap_ptr: u32,
     /// Systemless-owned executable/data stubs grow downward outside the guest heap.
     synthetic_ptr: u32,
+    /// Guest writes cannot modify synthesized ROM-like instruction stubs.
+    readonly_code_ranges: Vec<(u32, u32)>,
     /// Free list: maps aligned_size → stack of recycled addresses
     free_blocks: HashMap<u32, Vec<u32>>,
     /// Tracks the aligned size of each allocation (address → aligned_size)
@@ -774,7 +776,12 @@ impl MacMemoryBus {
     /// byte-at-a-time (preserving the overlap-handling order from
     /// Inside Macintosh II-44) when the fast path doesn't apply.
     pub fn block_move(&mut self, src: u32, dst: u32, count: u32) {
-        if count == 0 {
+        // `Size` is a signed Macintosh LONGINT. A negative byte count is
+        // invalid; treating its bit pattern as an unsigned length would let
+        // a malformed guest call overwrite the entire emulated address
+        // space. The ROM routine leaves the destination untouched for this
+        // case, while the trap wrapper reports noErr in D0.
+        if (count as i32) <= 0 {
             return;
         }
         #[cfg(debug_assertions)]
@@ -786,7 +793,11 @@ impl MacMemoryBus {
         let count_usize = count as usize;
         let src_end = (src as u64).saturating_add(count as u64);
         let dst_end = (dst as u64).saturating_add(count as u64);
-        if fast && src_end <= self.ram_size as u64 && dst_end <= self.ram_size as u64 {
+        if fast
+            && !self.readonly_code_overlaps(dst, count)
+            && src_end <= self.ram_size as u64
+            && dst_end <= self.ram_size as u64
+        {
             let ram_size_usize = self.ram_size as usize;
             if let Some(ram) = self.ram.slice_at_mut(0, ram_size_usize) {
                 let src_range = (src as usize)..(src as usize + count_usize);
@@ -824,6 +835,7 @@ impl MacMemoryBus {
             globals: LowMemGlobals::new(),
             heap_ptr: 0x200000, // Start heap at 2MB
             synthetic_ptr: screen_buffer_start,
+            readonly_code_ranges: Vec::new(),
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -902,6 +914,7 @@ impl MacMemoryBus {
             globals,
             heap_ptr: 0x200000,
             synthetic_ptr: screen_buffer_start,
+            readonly_code_ranges: Vec::new(),
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -1059,6 +1072,26 @@ impl MacMemoryBus {
         self.synthetic_ptr = ptr;
         self.fill_bytes(ptr, aligned, 0);
         ptr
+    }
+
+    pub(crate) fn protect_readonly_code(&mut self, address: u32, len: u32) {
+        if len != 0 {
+            self.readonly_code_ranges
+                .push((address, address.saturating_add(len)));
+        }
+    }
+
+    pub(crate) fn write_readonly_code_word(&mut self, address: u32, value: u16) {
+        if (address as u64) + 2 <= self.ram_size as u64 {
+            self.ram.write_word_in_bounds(address as usize, value);
+        }
+    }
+
+    fn readonly_code_overlaps(&self, address: u32, len: u32) -> bool {
+        let end = (address as u64).saturating_add(len as u64);
+        self.readonly_code_ranges.iter().any(|&(start, stop)| {
+            (start as u64) < end && (stop as u64) > address as u64
+        })
     }
 
     /// Allocate memory from the heap with a stronger start-address alignment.
@@ -1349,6 +1382,9 @@ impl MemoryBus for MacMemoryBus {
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        if self.readonly_code_overlaps(address, 1) {
+            return;
+        }
         self.record_write_probe_byte(address);
         maybe_log_mem_write(address, 1, value as u32);
 
@@ -1509,6 +1545,9 @@ impl MemoryBus for MacMemoryBus {
     /// needs per-byte dispatch through `write_byte`.
     #[inline]
     fn write_word(&mut self, address: u32, value: u16) {
+        if self.readonly_code_overlaps(address, 2) {
+            return;
+        }
         maybe_log_mem_write(address, 2, value as u32);
 
         // Fast path: watchpoint disarmed + tracer disabled + write fully in-bounds.
@@ -1531,6 +1570,9 @@ impl MemoryBus for MacMemoryBus {
     /// Same fast-path optimisation as `write_word`.
     #[inline]
     fn write_long(&mut self, address: u32, value: u32) {
+        if self.readonly_code_overlaps(address, 4) {
+            return;
+        }
         maybe_log_mem_write(address, 4, value);
 
         #[cfg(debug_assertions)]
@@ -1591,6 +1633,9 @@ impl MemoryBus for MacMemoryBus {
     /// trigger; same for the FB-write tracer.
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
+        if self.readonly_code_overlaps(address, data.len() as u32) {
+            return;
+        }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
@@ -1609,6 +1654,9 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_zeros(&mut self, address: u32, len: u32) {
+        if self.readonly_code_overlaps(address, len) {
+            return;
+        }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
@@ -1628,6 +1676,9 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
+        if self.readonly_code_overlaps(address, len) {
+            return;
+        }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()

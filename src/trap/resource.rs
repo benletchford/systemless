@@ -2311,15 +2311,17 @@ impl super::TrapDispatcher {
 
                 if let Some(h) = handle {
                     eprintln!("[TRAP] Get1NamedResource -> handle ${:08X}", h);
+                    cpu.write_reg(Register::A0, h);
                     bus.write_long(sp + 8, h);
                     cpu.write_reg(Register::A7, sp + 8);
                     cpu.write_reg(Register::D0, 0);
                     bus.write_word(0x0A60, 0); // ResErr = noErr
                 } else {
                     eprintln!("[TRAP] Get1NamedResource -> NULL (not found)");
+                    cpu.write_reg(Register::A0, 0);
                     bus.write_long(sp + 8, 0);
                     cpu.write_reg(Register::A7, sp + 8);
-                    cpu.write_reg(Register::D0, -192i32 as u32);
+                    cpu.write_reg(Register::D0, 0);
                     bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound
                 }
                 Ok(())
@@ -2401,8 +2403,68 @@ impl super::TrapDispatcher {
                 let pc = cpu.read_reg(Register::PC); // past A9F0
                 let a9f0_addr = pc.wrapping_sub(2);
 
+                let trampoline_segment = cpu.read_reg(Register::D0) as i16;
+                let is_loadseg_trampoline = self
+                    .tool_trap_trampolines
+                    .get(&0xA9F0)
+                    .copied()
+                    .is_some_and(|addr| addr == a9f0_addr);
+
                 let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
                 let original_trap_return = self.current_trap_caller;
+
+                // A native segment-loader shim can tail-call the previous
+                // `_LoadSeg` address returned by GetToolTrapAddress. The
+                // auto-pop trampoline has no CODE jump-table bytes of its
+                // own, but the native handler's link frame retains the
+                // original caller return address at A6+4. Recover the
+                // Think C entry from that saved return address, patch the
+                // resident segment, and let the normal auto-pop epilogue
+                // return to the shim continuation.
+                if is_loadseg_trampoline && auto_pop_old_trap {
+                    let native_return =
+                        bus.read_long(cpu.read_reg(Register::A6).wrapping_add(4));
+                    // The native shim tail-jumps through the saved old trap.
+                    // Its return PC is the start of the next MPW jump-table
+                    // entry: the first word is the routine offset, followed
+                    // by the usual MOVE.W/_LoadSeg glue. The shim's D0 is the
+                    // zero-based CODE resource number to load.
+                    let entry = native_return;
+                    if native_return != 0 && self.segment_map.contains_key(&trampoline_segment) {
+                        if trace_loadseg_enabled() {
+                            eprintln!(
+                                "[TRAP] LoadSeg(seg={}, fmt=mpw-native-oldtrap) entry=${:08X} return=${:08X}",
+                                trampoline_segment, entry, native_return
+                            );
+                        }
+                        // Re-enter the patched entry rather than the raw
+                        // offset word at the native return address. The
+                        // auto-pop epilogue would otherwise restore that
+                        // same raw address after finish_loadseg returns.
+                        self.preserve_auto_pop_pc_once = true;
+                        return Some(self.finish_loadseg(
+                            bus,
+                            cpu,
+                            trampoline_segment,
+                            entry,
+                            true,
+                        ));
+                    }
+                }
+
+                // A standalone trampoline call has no enclosing native
+                // handler frame from which to recover a jump-table entry.
+                // CODE is already resident in that case, so preserve the
+                // caller's return path as a successful no-op.
+                if is_loadseg_trampoline && self.segment_map.contains_key(&trampoline_segment) {
+                    if trace_loadseg_enabled() {
+                        eprintln!(
+                            "[TRAP] LoadSeg(seg={}, fmt=resident-trampoline) entry=${:08X}",
+                            trampoline_segment, a9f0_addr
+                        );
+                    }
+                    return Some(Ok(()));
+                }
 
                 // Detect format: in standard format, [A9F0-4] = 3F3C (MOVE.W).
                 // In Think C format, A9F0 is at entry+0 and [A9F0+2] = 0x0000.
@@ -10063,6 +10125,62 @@ mod tests {
             handle, 0,
             "handle should be non-zero for found named resource"
         );
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            handle,
+            "found named resource handle should be returned in A0"
+        );
+    }
+
+    #[test]
+    fn get1_named_resource_empty_name_finds_unnamed_resource() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = bus.alloc(4);
+        bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40]);
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"CODE", 25), data_ptr)]),
+                    named: HashMap::new(),
+                    names_by_id: HashMap::new(),
+                    attrs: HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        let name_addr = 0x200000u32;
+        write_pstring(&mut bus, name_addr, b"");
+        bus.write_long(TEST_SP, name_addr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"CODE"));
+
+        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(handle, 0);
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn get1_named_resource_miss_returns_nil_in_a0() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let name_addr = 0x200000u32;
+        write_pstring(&mut bus, name_addr, b"Missing");
+
+        bus.write_long(TEST_SP, name_addr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"STR "));
+
+        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(TEST_SP + 8), 0);
     }
 
     #[test]
@@ -11062,6 +11180,25 @@ mod tests {
         assert_eq!(bus.read_word(old_trap_stub), 0xADF0);
         assert_eq!(bus.read_word(old_trap_stub + 2), 0x0000);
         assert_eq!(bus.read_word(old_trap_stub + 4), 0x4EB9);
+    }
+
+    #[test]
+    fn loadseg_auto_pop_trampoline_accepts_resident_segment_in_d0() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.register_segments(HashMap::from([(25i16, 0x220000u32)]));
+
+        let trampoline = disp.get_or_create_tool_trap_trampoline(&mut bus, 0xA9F0);
+        let return_pc = 0x280000u32;
+        bus.write_long(TEST_SP, return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, trampoline + 2);
+        cpu.write_reg(Register::D0, 25);
+
+        call_trap_word(&mut disp, 0xADF0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::D0), 25);
     }
 
     #[test]

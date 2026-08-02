@@ -8255,13 +8255,15 @@ impl super::TrapDispatcher {
                 if let Some(handle) = handle {
                     eprintln!("[TRAP] GetNamedResource -> handle ${:08X}", handle);
                     bus.write_word(0x0A60, 0); // ResErr = noErr
+                    cpu.write_reg(Register::A0, handle);
                     cpu.write_reg(Register::D0, 0);
                     bus.write_long(sp + 8, handle);
                     cpu.write_reg(Register::A7, sp + 8);
                 } else {
                     eprintln!("[TRAP] GetNamedResource -> NULL (not found)");
                     bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound
-                    cpu.write_reg(Register::D0, (-192i32) as u32);
+                    cpu.write_reg(Register::A0, 0);
+                    cpu.write_reg(Register::D0, 0);
                     bus.write_long(sp + 8, 0);
                     cpu.write_reg(Register::A7, sp + 8);
                 }
@@ -15526,6 +15528,17 @@ impl super::TrapDispatcher {
             if index >= 1 && (index as usize) <= candidates.len() {
                 let (res_id, _refnum, ptr) = candidates[(index - 1) as usize];
                 let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
+                // GetIndResource may return a resource whose data is already
+                // resident even while SetResLoad(FALSE) is active. The
+                // archive loader materializes resource bytes up front, so
+                // `ptr` is an in-memory resident allocation rather than an
+                // on-disk-only placeholder. Preserve that pointer for the
+                // indexed lookup; callers such as MacApp dereference seg!
+                // and mem! handles immediately after enumeration.
+                if !self.res_load && bus.read_long(handle) == 0 && ptr != 0 {
+                    bus.write_long(handle, ptr);
+                    self.ptr_to_handle.insert(ptr, handle);
+                }
                 eprintln!(
                     "[TRAP] {}('{}', {}) -> id={} handle=${:08X}",
                     trap_name, type_str, index, res_id, handle
@@ -21160,6 +21173,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn get_ind_resource_returns_resident_data_when_loading_is_disabled() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = bus.alloc(8);
+        bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
+        disp.res_load = false;
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"seg!", 1), data_ptr)]),
+                    ..ResourceFileMap::default()
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"seg!"));
+        bus.write_long(TEST_SP + 6, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x19D, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        assert_eq!(bus.read_long(handle), data_ptr);
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
     // GetNamedResource ($A9A1)
     #[test]
     fn test_get_named_resource_searches_resource_chain() {
@@ -21206,7 +21253,9 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(0x0A60), 0);
-        assert_ne!(bus.read_long(sp + 8), 0);
+        let handle = bus.read_long(sp + 8);
+        assert_ne!(handle, 0);
+        assert_eq!(cpu.read_reg(Register::A0), handle);
     }
 
     #[test]

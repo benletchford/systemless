@@ -5369,10 +5369,16 @@ impl TrapDispatcher {
     ) -> u32 {
         let canonical_trap_word = 0xA800 | (trap_word & 0x03FF);
         if let Some(&addr) = self.tool_trap_trampolines.get(&canonical_trap_word) {
+            // The returned address represents a ROM trap entry. Re-seed the
+            // synthetic instruction on every lookup so guest code that
+            // temporarily writes through the saved address cannot corrupt a
+            // later JSR through the same trap pointer.
+            bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
             return addr;
         }
-        let addr = bus.alloc(2);
-        bus.write_word(addr, canonical_trap_word | 0x0400);
+        let addr = bus.alloc_synthetic(2);
+        bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
+        bus.protect_readonly_code(addr, 2);
         self.tool_trap_trampolines.insert(canonical_trap_word, addr);
         addr
     }
@@ -5385,11 +5391,31 @@ impl TrapDispatcher {
         let res_type = Self::normalize_ostype(res_type);
         let resources = self.resources.as_ref()?;
         let refnum = self.current_resource_refnum();
-        resources
-            .files
-            .get(&refnum)
-            .and_then(|file| file.named.get(&(res_type, name.to_string())).copied())
-            .map(|(id, ptr)| (refnum, id, ptr))
+        let file = resources.files.get(&refnum)?;
+        if let Some((id, ptr)) = file.named.get(&(res_type, name.to_string())).copied() {
+            return Some((refnum, id, ptr));
+        }
+        if name.is_empty() {
+            // Unnamed resources have no entry in `named`, but the Resource
+            // Manager treats their name as the empty Str255 for a named
+            // lookup. Keep the result deterministic in the same resource-map
+            // ID order used by the on-disk loader.
+            let mut unnamed: Vec<(i16, u32)> = file
+                .loaded
+                .iter()
+                .filter_map(|(&(candidate_type, id), &ptr)| {
+                    (candidate_type == res_type
+                        && !file.names_by_id.contains_key(&(candidate_type, id)))
+                    .then_some((id, ptr))
+                })
+                .collect();
+            unnamed.sort_unstable_by_key(|(id, _)| *id);
+            return unnamed
+                .into_iter()
+                .next()
+                .map(|(id, ptr)| (refnum, id, ptr));
+        }
+        None
     }
 
     /// Collect every named resource of `res_type` reachable through the
@@ -5449,6 +5475,21 @@ impl TrapDispatcher {
             for ((rt, n), (id, ptr)) in &file.named {
                 if *rt == res_type && n.to_lowercase() == needle_lower {
                     return Some((refnum, *id, *ptr));
+                }
+            }
+            if name.is_empty() {
+                let mut unnamed: Vec<(i16, u32)> = file
+                    .loaded
+                    .iter()
+                    .filter_map(|(&(candidate_type, id), &ptr)| {
+                        (candidate_type == res_type
+                            && !file.names_by_id.contains_key(&(candidate_type, id)))
+                        .then_some((id, ptr))
+                    })
+                    .collect();
+                unnamed.sort_unstable_by_key(|(id, _)| *id);
+                if let Some((id, ptr)) = unnamed.into_iter().next() {
+                    return Some((refnum, id, ptr));
                 }
             }
         }
@@ -5987,8 +6028,10 @@ impl TrapDispatcher {
         };
         if !auto_pop {
             if let Some(&handler_addr) = self.native_trap_table.get(&base_trap) {
-                // Simulate JSR to native handler: push return PC, jump to handler
-                let return_pc = cpu.read_reg(Register::PC); // past A-line instruction
+                // Simulate JSR to native handler: push return PC, jump to
+                // handler. The CPU core has already advanced PC past the
+                // two-byte A-line opcode before dispatch reaches here.
+                let return_pc = cpu.read_reg(Register::PC);
                 let sp = cpu.read_reg(Register::A7);
                 let new_sp = sp.wrapping_sub(4);
                 bus.write_long(new_sp, return_pc);
@@ -6099,7 +6142,9 @@ impl Default for TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::{CpuOps, Register};
     use crate::trap::menu::MenuTrackingState;
+    use crate::trap::test_helpers::setup;
     use std::collections::VecDeque;
 
     fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
@@ -6168,6 +6213,23 @@ mod tests {
         bytes[56..58].copy_from_slice(&0u16.to_be_bytes()); // plain style
         bytes[58..60].copy_from_slice(&(font_resource_id as u16).to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn native_trap_dispatch_returns_past_the_a_line_opcode() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let trap_pc = 0x0020_0000u32;
+        let handler_addr = 0x0021_0000u32;
+        let sp = 0x003F_FF00u32;
+        dispatcher.native_trap_table.insert(0xA9F0, handler_addr);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+
+        dispatcher.dispatch(0xA9F0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), handler_addr);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(bus.read_long(sp - 4), trap_pc + 2);
     }
 
     #[test]

@@ -510,6 +510,15 @@ impl super::TrapDispatcher {
             // NewPtr / NewPtrClear / NewPtrSys ($A01E): Allocates via `bus.alloc()`, returns ptr in A0; CLEAR variant ($A31E) zeros memory per IM:II II-37
             (false, 0x1E) => {
                 let size = cpu.read_reg(Register::D0);
+                // `Size` is a signed Macintosh LONGINT. Reject negative
+                // requests before converting them into an unsigned heap
+                // allocation; otherwise an error value can wrap the bump
+                // pointer and scribble across guest memory.
+                if (size as i32) < 0 {
+                    cpu.write_reg(Register::A0, 0);
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
+                    return Some(Ok(()));
+                }
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
@@ -539,6 +548,13 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume II, II-27
             (false, 0x22) => {
                 let size = cpu.read_reg(Register::D0);
+                // `Size` is a signed Macintosh LONGINT; negative sizes are
+                // invalid and must not be passed to the unsigned allocator.
+                if (size as i32) < 0 {
+                    cpu.write_reg(Register::A0, 0);
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
+                    return Some(Ok(()));
+                }
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
@@ -4406,6 +4422,34 @@ mod tests {
     }
 
     #[test]
+    fn negative_new_ptr_size_returns_mem_full_without_heap_wrap() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_long(addr::J_CRSR_TASK, 0x1234_5678);
+        cpu.write_reg(Register::D0, (-108i32) as u32);
+
+        let result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), (-108i32) as u32);
+        assert_eq!(bus.read_long(addr::J_CRSR_TASK), 0x1234_5678);
+    }
+
+    #[test]
+    fn negative_new_handle_size_returns_mem_full_without_heap_wrap() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_long(addr::J_CRSR_TASK, 0x1234_5678);
+        cpu.write_reg(Register::D0, (-108i32) as u32);
+
+        let result = dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), (-108i32) as u32);
+        assert_eq!(bus.read_long(addr::J_CRSR_TASK), 0x1234_5678);
+    }
+
+    #[test]
     fn new_ptr_extends_stale_application_zone_past_successful_allocation() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let app_zone = 0x0020_0000;
@@ -6659,6 +6703,7 @@ mod tests {
             first_addr, 0,
             "tool-trap trampoline address should be nonzero"
         );
+        bus.write_word(first_addr, 0);
 
         cpu.write_reg(Register::D0, 0xA89F);
         let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
@@ -6674,6 +6719,11 @@ mod tests {
             cpu.read_reg(Register::A0),
             first_addr,
             "tool-trap trampoline lookup should be stable"
+        );
+        assert_eq!(
+            bus.read_word(first_addr),
+            0xAC9F,
+            "repeated lookup should restore the ROM-like auto-pop trap word"
         );
         assert_eq!(
             cpu.read_reg(Register::A7),
@@ -6743,6 +6793,25 @@ mod tests {
                 "BlockMove should behave like memmove for overlapping ranges"
             );
         }
+    }
+
+    #[test]
+    fn test_block_move_negative_count_is_noop() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let src = 0x300000u32;
+        let dst = 0x310000u32;
+        bus.write_bytes(src, &[0xDE, 0xAD, 0xBE, 0xEF]);
+        bus.write_bytes(dst, &[0x11, 0x22, 0x33, 0x44]);
+
+        cpu.write_reg(Register::A0, src);
+        cpu.write_reg(Register::A1, dst);
+        cpu.write_reg(Register::D0, 0xFFFF_FF81);
+
+        let result = dispatcher.dispatch_memory(false, 0x2E, &mut cpu, &mut bus);
+        assert!(result.is_some(), "BlockMove should be handled");
+        assert!(result.unwrap().is_ok(), "BlockMove should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_bytes(dst, 4), vec![0x11, 0x22, 0x33, 0x44]);
     }
 
     #[test]
