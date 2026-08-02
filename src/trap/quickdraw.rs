@@ -6025,6 +6025,78 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                if d0_selector == 0x0C19 || d0_selector == 0x1219 {
+                    // GetGray has two selector encodings in the wild. The
+                    // documented Palette Manager table uses $1219, while
+                    // C callers commonly use the compact $0C19 frame with
+                    // pointer arguments. The latter is the form emitted by
+                    // Warcraft II's Color QuickDraw startup path:
+                    //   SP+0  foreGround (RGBColor *)
+                    //   SP+4  backGround (RGBColor *)
+                    //   SP+8  device (GDHandle)
+                    //   SP+12 Boolean result slot
+                    // Inside Macintosh: Imaging With QuickDraw 1994,
+                    // pp. 4-81..4-82, defines the midpoint behavior and the
+                    // TRUE/FALSE result contract.
+                    let foreground = bus.read_long(sp);
+                    let background = bus.read_long(sp + 4);
+                    let _device = bus.read_long(sp + 8);
+                    if foreground != 0 && background != 0 {
+                        for offset in [0, 2, 4] {
+                            let back = bus.read_word(background + offset);
+                            let fore = bus.read_word(foreground + offset);
+                            bus.write_word(foreground + offset, (back / 2) + (fore / 2));
+                        }
+                    }
+                    bus.write_word(sp + 12, 0x0100);
+                    cpu.write_reg(Register::D0, 0x0100);
+                    cpu.write_reg(Register::A7, sp + 12);
+                    return Some(Ok(()));
+                }
+
+                if matches!(d0_selector, 0x040D | 0x040E | 0x040F | 0x0410) {
+                    // The MPW C frame emitted by the target passes a
+                    // ColorSpec pointer for all four routines. A ColorSpec
+                    // with value == 0 represents an RGB color; Systemless
+                    // has one active color grafPort, so palette-entry state
+                    // is not needed to preserve these startup calls.
+                    //
+                    // Inside Macintosh Volume VI (1991), pp. 20-21 to
+                    // 20-22; Table C-3 selectors $040D-$0410.
+                    let color_ptr = bus.read_long(sp);
+                    if matches!(d0_selector, 0x040D | 0x040E) {
+                        let color = if d0_selector == 0x040D {
+                            self.fg_color
+                        } else {
+                            self.bg_color
+                        };
+                        if color_ptr != 0 {
+                            bus.write_word(color_ptr, 0);
+                            bus.write_word(color_ptr + 2, color.0);
+                            bus.write_word(color_ptr + 4, color.1);
+                            bus.write_word(color_ptr + 6, color.2);
+                        }
+                    } else {
+                        if color_ptr != 0 {
+                            let value = bus.read_word(color_ptr);
+                            if value == 0 {
+                                let color = (
+                                    bus.read_word(color_ptr + 2),
+                                    bus.read_word(color_ptr + 4),
+                                    bus.read_word(color_ptr + 6),
+                                );
+                                if d0_selector == 0x040F {
+                                    self.fg_color = color;
+                                } else {
+                                    self.bg_color = color;
+                                }
+                            }
+                        }
+                    }
+                    cpu.write_reg(Register::A7, sp + 4);
+                    return Some(Ok(()));
+                }
+
                 // HasDepth / SetDepth use THREEWORDINLINE(0x303C, sel, 0xAAA2)
                 // which emits MOVE.W #sel, D0 then _PaletteDispatch.
                 // Real ROM convention: selector in D0, no selector word on stack.
@@ -15670,7 +15742,19 @@ impl super::TrapDispatcher {
     fn is_public_palette_dispatch_selector(selector: u16) -> bool {
         matches!(
             selector,
-            0x0002 | 0x0003 | 0x0015 | 0x0417 | 0x0616 | 0x0A13 | 0x0A14 | 0x1219
+            0x0002
+                | 0x0003
+                | 0x0015
+                | 0x040D
+                | 0x040E
+                | 0x040F
+                | 0x0410
+                | 0x0417
+                | 0x0616
+                | 0x0A13
+                | 0x0A14
+                | 0x0C19
+                | 0x1219
         )
     }
 
@@ -35666,6 +35750,96 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(d.device_clut[42], [0xAAAA, 0xBBBB, 0xCCCC]);
         assert_eq!(d.color_manager_clut[42], [0xAAAA, 0xBBBB, 0xCCCC]);
+    }
+
+    #[test]
+    fn palettedispatch_d0_compact_getgray_writes_midpoint_and_boolean_result() {
+        // The compact C calling convention uses selector $0C19 and passes
+        // pointers to both RGBColor records. Its 12-byte argument frame is
+        // followed by a two-byte Boolean result slot.
+        let (mut d, mut cpu, mut bus) = setup();
+        let background = bus.alloc(6);
+        let foreground = bus.alloc(6);
+        for (offset, value) in [(0, 0x0000), (2, 0x4000), (4, 0xFFFF)] {
+            bus.write_word(background + offset, value);
+        }
+        for (offset, value) in [(0, 0xFFFF), (2, 0x8000), (4, 0x0000)] {
+            bus.write_word(foreground + offset, value);
+        }
+
+        cpu.write_reg(Register::D0, 0x0C19);
+        bus.write_long(TEST_SP, foreground);
+        bus.write_long(TEST_SP + 4, background);
+        bus.write_long(TEST_SP + 8, 0x00DE_ADBE);
+        bus.write_word(TEST_SP + 12, 0xBEEF);
+
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0x0100);
+        assert_eq!(bus.read_word(foreground), 0x7FFF);
+        assert_eq!(bus.read_word(foreground + 2), 0x6000);
+        assert_eq!(bus.read_word(foreground + 4), 0x7FFF);
+    }
+
+    #[test]
+    fn palettedispatch_d0_save_fore_and_back_write_colorspecs() {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.fg_color = (0x1111, 0x2222, 0x3333);
+        d.bg_color = (0xAAAA, 0xBBBB, 0xCCCC);
+        let foreground = bus.alloc(8);
+        let background = bus.alloc(8);
+
+        for (selector, pointer, color) in [
+            (0x040D, foreground, d.fg_color),
+            (0x040E, background, d.bg_color),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pointer);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+            assert_eq!(bus.read_word(pointer), 0);
+            assert_eq!(bus.read_word(pointer + 2), color.0);
+            assert_eq!(bus.read_word(pointer + 4), color.1);
+            assert_eq!(bus.read_word(pointer + 6), color.2);
+        }
+    }
+
+    #[test]
+    fn palettedispatch_d0_restore_fore_and_back_read_colorspecs() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let foreground = bus.alloc(8);
+        let background = bus.alloc(8);
+        for (pointer, color) in [
+            (foreground, (0x1111, 0x2222, 0x3333)),
+            (background, (0xAAAA, 0xBBBB, 0xCCCC)),
+        ] {
+            bus.write_word(pointer, 0);
+            bus.write_word(pointer + 2, color.0);
+            bus.write_word(pointer + 4, color.1);
+            bus.write_word(pointer + 6, color.2);
+        }
+
+        for (selector, pointer, expected) in [
+            (0x040F, foreground, (0x1111, 0x2222, 0x3333)),
+            (0x0410, background, (0xAAAA, 0xBBBB, 0xCCCC)),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pointer);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+            let actual = if selector == 0x040F {
+                d.fg_color
+            } else {
+                d.bg_color
+            };
+            assert_eq!(actual, expected);
+        }
     }
 
     fn prepare_animatepalette_negative_span_case(

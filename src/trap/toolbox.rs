@@ -14836,12 +14836,17 @@ impl super::TrapDispatcher {
             //
             // Regression coverage:
             //   src/trap/toolbox.rs::tests::icondispatch_*
-            // IconDispatch ($ABC9): MMTB 1993 ch.5 14879+15191. D0 selector. Gestalt 'icon' → gestaltIconUtilitiesPresent. HLE: selector $0000 returns noErr and pops the inline selector frame; unsupported selectors return paramErr (-50) and still pop the same frame. Apps fall back to legacy $A9BB/$AA1F monochrome/color icon traps.
+            // IconDispatch ($ABC9): MMTB 1993 ch.5 14879+15191. D0 selector. Gestalt 'icon' → gestaltIconUtilitiesPresent. HLE: selector $0000 returns noErr and pops the inline selector frame; unsupported selectors return paramErr (-50) and still pop the same frame. Warcraft II's private $0613 and $0500 probes carry 12- and 10-byte frames respectively, while the public no-op probe uses the established 8-byte frame. Apps fall back to legacy $A9BB/$AA1F monochrome/color icons.
             (true, 0x3C9) => {
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
+                let pop_bytes = match selector {
+                    0x0613 => 12,
+                    0x0500 => 10,
+                    _ => 8,
+                };
                 match selector {
-                    0 => return_noerr_and_pop(cpu, 8),
-                    _ => return_error_and_pop(cpu, 8, -50),
+                    0 => return_noerr_and_pop(cpu, pop_bytes),
+                    _ => return_error_and_pop(cpu, pop_bytes, -50),
                 }
             }
 
@@ -23331,6 +23336,21 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A0), 0x4444_5555);
         assert_eq!(cpu.read_reg(Register::A1), 0x6666_7777);
         assert_eq!(cpu.read_reg(Register::A7), sp_before + 8);
+    }
+
+    #[test]
+    fn icondispatch_private_selectors_pop_their_observed_frames() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        for (selector, pop_bytes) in [(0x0613, 12), (0x0500, 10)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + pop_bytes);
+        }
     }
 
     #[test]
