@@ -243,6 +243,18 @@ impl super::TrapDispatcher {
             && address >= base
     }
 
+    fn native_loadseg_handler_is_jump_table(&self, bus: &MacMemoryBus) -> bool {
+        self.native_trap_table
+            .get(&0xA9F0)
+            .copied()
+            .is_some_and(|handler| {
+                // The native CRT shim is installed through a loaded jump-table
+                // entry. A stale/resource pointer can also appear in the trap
+                // table, but it must not be fed into old-trap recovery.
+                bus.read_word(handler) == 0x4EF9 && bus.read_long(handler + 2) != 0
+            })
+    }
+
     /// Minimal serialized resource fork containing an empty resource map.
     fn empty_resource_fork_bytes() -> Vec<u8> {
         let mut bytes = vec![0u8; 46];
@@ -2412,6 +2424,9 @@ impl super::TrapDispatcher {
 
                 let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
                 let original_trap_return = self.current_trap_caller;
+                let native_loadseg_handler = self.native_loadseg_handler_is_jump_table(bus);
+                let native_return =
+                    bus.read_long(cpu.read_reg(Register::A6).wrapping_add(4));
 
                 // A native segment-loader shim can tail-call the previous
                 // `_LoadSeg` address returned by GetToolTrapAddress. The
@@ -2421,9 +2436,7 @@ impl super::TrapDispatcher {
                 // Think C entry from that saved return address, patch the
                 // resident segment, and let the normal auto-pop epilogue
                 // return to the shim continuation.
-                if is_loadseg_trampoline && auto_pop_old_trap {
-                    let native_return =
-                        bus.read_long(cpu.read_reg(Register::A6).wrapping_add(4));
+                if is_loadseg_trampoline && auto_pop_old_trap && native_loadseg_handler {
                     // The native shim tail-jumps through the saved old trap.
                     // Its return PC is the start of the next MPW jump-table
                     // entry: the first word is the routine offset, followed
@@ -2456,7 +2469,10 @@ impl super::TrapDispatcher {
                 // handler frame from which to recover a jump-table entry.
                 // CODE is already resident in that case, so preserve the
                 // caller's return path as a successful no-op.
-                if is_loadseg_trampoline && self.segment_map.contains_key(&trampoline_segment) {
+                if is_loadseg_trampoline
+                    && (native_loadseg_handler || native_return == 0)
+                    && self.segment_map.contains_key(&trampoline_segment)
+                {
                     if trace_loadseg_enabled() {
                         eprintln!(
                             "[TRAP] LoadSeg(seg={}, fmt=resident-trampoline) entry=${:08X}",
@@ -11199,6 +11215,25 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(cpu.read_reg(Register::PC), return_pc);
         assert_eq!(cpu.read_reg(Register::D0), 25);
+    }
+
+    #[test]
+    fn loadseg_recovery_requires_a_jmp_l_native_handler() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let handler = 0x300000u32;
+        disp.native_trap_table.insert(0xA9F0, handler);
+
+        assert!(!disp.native_loadseg_handler_is_jump_table(&bus));
+
+        bus.write_word(handler, 0x4EB9);
+        bus.write_long(handler + 2, 0x310000);
+        assert!(!disp.native_loadseg_handler_is_jump_table(&bus));
+
+        bus.write_word(handler, 0x4EF9);
+        assert!(disp.native_loadseg_handler_is_jump_table(&bus));
+
+        bus.write_long(handler + 2, 0);
+        assert!(!disp.native_loadseg_handler_is_jump_table(&bus));
     }
 
     #[test]
