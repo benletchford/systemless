@@ -1287,7 +1287,8 @@ impl super::TrapDispatcher {
             // diverge: FreeMem returns the SUM of free blocks
             // (potentially fragmented), MaxMem returns the
             // largest single contiguous free block (smaller than
-            // FreeMem when the heap is fragmented), CompactMem
+            // FreeMem when the heap is fragmented) plus the
+            // application-zone growth allowance in A0, CompactMem
             // returns the largest block AFTER compacting purgeable
             // resources. In our flat allocator there's no
             // fragmentation to expose, so the three traps share
@@ -1310,11 +1311,22 @@ impl super::TrapDispatcher {
             // contiguous block in D0, total free in A0
             // FUNCTION MaxMem(VAR grow: Size): Size;
             // Inside Macintosh Volume II, II-39
-            // MaxMem ($A01D): Per IM:II II-39 returns largest contiguous free block in D0 and total free in A0 (assembly-language convention); Systemless returns free_heap_estimate in D0 and the same value in A0 (no fragmentation modeled, so largest contiguous == total free). $A11D variant (with grow zone) dispatches to the same arm via the OS-trap low-byte (0x1D) decode.
+            // MaxMem ($A01D): Per IM:II II-39 and Memory 1992 2-74, the
+            // largest contiguous block is returned in D0 and the number of
+            // bytes by which the application zone can grow is returned in
+            // A0. Systemless launches expand the application zone to its
+            // ApplLimit during startup, so A0 is normally zero; retain the
+            // low-memory calculation for tests or clients that leave a gap
+            // between bkLim and ApplLimit. $A11D dispatches to this arm via
+            // the OS-trap low-byte (0x1D) decode.
             (false, 0x1D) => {
                 let free = free_heap_estimate(bus);
                 cpu.write_reg(Register::D0, free);
-                cpu.write_reg(Register::A0, free);
+                let zone = bus.read_long(addr::APP_L_ZONE);
+                let bk_lim = if zone != 0 { bus.read_long(zone) } else { 0 };
+                let appl_limit = bus.read_long(addr::APPL_LIMIT);
+                let grow = appl_limit.saturating_sub(bk_lim);
+                cpu.write_reg(Register::A0, grow);
                 Ok(())
             }
 
@@ -8760,8 +8772,26 @@ mod tests {
         );
         assert_eq!(
             cpu.read_reg(Register::A0),
-            24 * 1024 * 1024,
-            "MaxMem should return 24MB clamp floor in A0"
+            0,
+            "MaxMem should return zero application-zone growth after MaxApplZone"
+        );
+    }
+
+    #[test]
+    fn test_max_mem_returns_application_zone_growth_in_a0() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let zone = 0x180000;
+        bus.write_long(crate::memory::globals::addr::APP_L_ZONE, zone);
+        bus.write_long(zone, zone + 0x1000); // bkLim
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, zone + 0x3000);
+
+        let result = dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus);
+        assert!(result.is_some(), "MaxMem should be handled");
+        assert!(result.unwrap().is_ok(), "MaxMem should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            0x2000,
+            "MaxMem should return the application-zone growth allowance in A0"
         );
     }
 
