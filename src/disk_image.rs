@@ -23,8 +23,26 @@ const HFSPLUS_FILE_USER_INFO_OFFSET: usize = 48;
 #[derive(Debug)]
 pub struct DiskImageContents {
     pub volume_name: String,
+    pub volume_info: DiskImageVolumeInfo,
+    pub driver_name: String,
     pub dirs: Vec<String>,
     pub files: Vec<DiskImageFile>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DiskImageVolumeInfo {
+    pub attributes: u16,
+    pub file_count: u16,
+    pub allocation_block_count: u16,
+    pub allocation_block_size: u32,
+    pub clump_size: u32,
+    pub free_blocks: u16,
+    pub bitmap_start: u16,
+    pub allocation_pointer: u16,
+    pub allocation_start: u16,
+    pub next_catalog_id: u32,
+    pub created_date: u32,
+    pub modified_date: u32,
 }
 
 #[derive(Debug)]
@@ -60,6 +78,7 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
 
     let volume = HfsVolume::parse(bytes).map_err(|e| format!("failed to parse HFS image: {e}"))?;
     let volume_name = clean_component(&volume.volume_name).unwrap_or_else(|| "Disk Image".into());
+    let volume_info = hfs_volume_info(filesystem, volume.files.len());
     let mut dirs = vec![volume_name.clone()];
 
     for dir in &volume.dirs {
@@ -96,9 +115,47 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
     dirs.dedup();
     Ok(Some(DiskImageContents {
         volume_name,
+        volume_info,
+        driver_name: ".AppleCD".to_string(),
         dirs,
         files,
     }))
+}
+
+fn hfs_volume_info(bytes: &[u8], file_count: usize) -> DiskImageVolumeInfo {
+    let read_u16 = |offset: usize| {
+        bytes
+            .get(offset..offset + 2)
+            .map(|raw| u16::from_be_bytes([raw[0], raw[1]]))
+            .unwrap_or(0)
+    };
+    let read_u32 = |offset: usize| {
+        bytes
+            .get(offset..offset + 4)
+            .map(|raw| u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
+            .unwrap_or(0)
+    };
+    DiskImageVolumeInfo {
+        attributes: read_u16(1024 + 10),
+        file_count: {
+            let catalog_count = read_u16(1024 + 12);
+            if catalog_count == 0 {
+                file_count.min(u16::MAX as usize) as u16
+            } else {
+                catalog_count
+            }
+        },
+        allocation_block_count: read_u16(1024 + 18),
+        allocation_block_size: read_u32(1024 + 20),
+        clump_size: read_u32(1024 + 24),
+        free_blocks: read_u16(1024 + 34),
+        bitmap_start: read_u16(1024 + 14),
+        allocation_pointer: read_u16(1024 + 16),
+        allocation_start: read_u16(1024 + 28),
+        next_catalog_id: read_u32(1024 + 30),
+        created_date: read_u32(1024 + 2),
+        modified_date: read_u32(1024 + 6),
+    }
 }
 
 fn raw_filesystem_signature(bytes: &[u8]) -> Option<u16> {
@@ -178,6 +235,8 @@ fn extract_hfsplus(bytes: &[u8]) -> Result<DiskImageContents, String> {
     dirs.dedup();
     Ok(DiskImageContents {
         volume_name,
+        volume_info: DiskImageVolumeInfo::default(),
+        driver_name: ".AppleCD".to_string(),
         dirs,
         files,
     })
