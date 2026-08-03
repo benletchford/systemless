@@ -3011,6 +3011,69 @@ impl super::TrapDispatcher {
         new_ptr
     }
 
+    fn scriptutil_replace_text(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        base_handle: u32,
+        substitution_handle: u32,
+        key_ptr: u32,
+    ) -> i16 {
+        const NIL_HANDLE_ERR: i16 = -109;
+        const MEM_FULL_ERR: i16 = -108;
+        const MEM_WZ_ERR: i16 = -111;
+
+        if base_handle == 0 || substitution_handle == 0 {
+            return NIL_HANDLE_ERR;
+        }
+
+        let base_ptr = bus.read_long(base_handle);
+        let substitution_ptr = bus.read_long(substitution_handle);
+        if base_ptr == 0 || substitution_ptr == 0 {
+            return MEM_WZ_ERR;
+        }
+
+        let Some(base_size) = bus.get_alloc_size(base_ptr) else {
+            return MEM_WZ_ERR;
+        };
+        let Some(substitution_size) = bus.get_alloc_size(substitution_ptr) else {
+            return MEM_WZ_ERR;
+        };
+        let key = if key_ptr == 0 {
+            Vec::new()
+        } else {
+            bus.read_pstring(key_ptr)
+        };
+        if key.is_empty() {
+            return 0;
+        }
+
+        let base = bus.read_bytes(base_ptr, base_size as usize);
+        let substitution = bus.read_bytes(substitution_ptr, substitution_size as usize);
+        let mut replaced = Vec::with_capacity(base.len());
+        let mut substitutions = 0i16;
+        let mut offset = 0;
+        while offset < base.len() {
+            if offset + key.len() <= base.len() && base[offset..].starts_with(&key) {
+                replaced.extend_from_slice(&substitution);
+                substitutions = substitutions.saturating_add(1);
+                offset += key.len();
+            } else {
+                replaced.push(base[offset]);
+                offset += 1;
+            }
+        }
+
+        if substitutions == 0 {
+            return 0;
+        }
+
+        let wrote = self.write_bytes_to_handle(bus, base_handle, &replaced);
+        if !replaced.is_empty() && wrote == 0 {
+            return MEM_FULL_ERR;
+        }
+        substitutions
+    }
+
     fn sync_scrap_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
         let handle = *self.scrap_handle.get_or_insert_with(|| {
             let handle = bus.alloc(4);
@@ -13631,6 +13694,25 @@ impl super::TrapDispatcher {
                     0x8208_FFE0 => {
                         bus.write_word(sp + 12, 0); // smNotTruncated
                         cpu.write_reg(Register::A7, sp + 12);
+                        return Some(Ok(()));
+                    }
+                    // ReplaceText ($820CFFDC): FUNCTION ReplaceText(
+                    //   baseText, substitutionText: Handle; key: Str15): Integer.
+                    // Stack: selector(4), key pointer(4), substitution handle(4),
+                    // base handle(4), result(2). Pop selector and arguments.
+                    // Inside Macintosh: Text 1993, pp. 5-76..5-77 and Table D-3.
+                    0x820C_FFDC => {
+                        let key_ptr = bus.read_long(sp + 4);
+                        let substitution_handle = bus.read_long(sp + 8);
+                        let base_handle = bus.read_long(sp + 12);
+                        let result = self.scriptutil_replace_text(
+                            bus,
+                            base_handle,
+                            substitution_handle,
+                            key_ptr,
+                        );
+                        bus.write_word(sp + 16, result as u16);
+                        cpu.write_reg(Register::A7, sp + 16);
                         return Some(Ok(()));
                     }
                     // TruncText ($820CFFDE): FUNCTION TruncText(width: INTEGER;
@@ -27692,6 +27774,42 @@ mod tests {
         assert_eq!(bus.read_word(sp + 16), 0); // smNotTruncated
         assert_eq!(bus.read_word(length_ptr), 12);
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    }
+
+    // ScriptUtil ($A8B5) selector $820CFFDC ReplaceText
+    // Text 1993 pp. 5-76..5-77 and Table D-3.
+    #[test]
+    fn scriptutil_replacetext_replaces_all_keys_and_resizes_base_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let key_ptr = bus.alloc(16);
+        let substitution_ptr = bus.alloc(4);
+        let substitution_handle = bus.alloc(4);
+        let base_ptr = bus.alloc(6);
+        let base_handle = bus.alloc(4);
+
+        bus.write_pstring(key_ptr, b"^0");
+        bus.write_bytes(substitution_ptr, b"LONG");
+        bus.write_long(substitution_handle, substitution_ptr);
+        bus.write_bytes(base_ptr, b"A^0B^0");
+        bus.write_long(base_handle, base_ptr);
+
+        bus.write_long(sp, 0x820C_FFDC); // ReplaceText encoded selector
+        bus.write_long(sp + 4, key_ptr);
+        bus.write_long(sp + 8, substitution_handle);
+        bus.write_long(sp + 12, base_handle);
+        bus.write_word(sp + 16, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(sp + 16), 2);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        let updated_ptr = bus.read_long(base_handle);
+        assert_ne!(updated_ptr, 0);
+        assert_eq!(bus.get_alloc_size(updated_ptr), Some(10));
+        assert_eq!(bus.read_bytes(updated_ptr, 10), b"ALONGBLONG");
     }
 
     // ScriptUtil ($A8B5) encoded selector fallback
