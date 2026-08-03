@@ -3868,6 +3868,94 @@ impl super::TrapDispatcher {
                                 }
                                 bus.write_byte(dst_addr, dst_pixel);
                             }
+                            (src_bits @ (16 | 24 | 32), 8) => {
+                                // Color QuickDraw stores direct pixels as RGB values and
+                                // converts them through the destination device's CLUT when
+                                // copying to an indexed PixMap. A 16-bit RGBDirect pixel is
+                                // 0RRRRRGGGGGBBBBB; 24-bit and 32-bit pixels carry RGB in
+                                // the low three bytes, with the 32-bit high byte unused.
+                                // Imaging With QuickDraw (1994), pp. 4-14..4-16.
+                                let bytes_per_pixel = src_bits / 8;
+                                let src_addr = src_info.base
+                                    + src_y_off * src_info.row_bytes
+                                    + src_x_off * bytes_per_pixel;
+                                let src_rgb = match src_bits {
+                                    16 => {
+                                        let packed = u16::from(read_src_byte(bus, src_addr)) << 8
+                                            | u16::from(read_src_byte(bus, src_addr + 1));
+                                        let expand5 = |component: u16| {
+                                            component << 11
+                                                | component << 6
+                                                | component << 1
+                                                | component >> 4
+                                        };
+                                        [
+                                            expand5((packed >> 10) & 0x1F),
+                                            expand5((packed >> 5) & 0x1F),
+                                            expand5(packed & 0x1F),
+                                        ]
+                                    }
+                                    24 => [
+                                        u16::from(read_src_byte(bus, src_addr)) * 0x0101,
+                                        u16::from(read_src_byte(bus, src_addr + 1)) * 0x0101,
+                                        u16::from(read_src_byte(bus, src_addr + 2)) * 0x0101,
+                                    ],
+                                    32 => [
+                                        u16::from(read_src_byte(bus, src_addr + 1)) * 0x0101,
+                                        u16::from(read_src_byte(bus, src_addr + 2)) * 0x0101,
+                                        u16::from(read_src_byte(bus, src_addr + 3)) * 0x0101,
+                                    ],
+                                    _ => unreachable!(),
+                                };
+                                let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
+                                let dst_pixel = bus.read_byte(dst_addr);
+                                let dst_rgb = dst_clut.unwrap()[dst_pixel as usize];
+                                let new_rgb = match mode_base {
+                                    0 => Some(src_rgb),
+                                    1 => Some([
+                                        src_rgb[0] | dst_rgb[0],
+                                        src_rgb[1] | dst_rgb[1],
+                                        src_rgb[2] | dst_rgb[2],
+                                    ]),
+                                    2 => Some([
+                                        src_rgb[0] ^ dst_rgb[0],
+                                        src_rgb[1] ^ dst_rgb[1],
+                                        src_rgb[2] ^ dst_rgb[2],
+                                    ]),
+                                    3 => Some([
+                                        (!src_rgb[0]) & dst_rgb[0],
+                                        (!src_rgb[1]) & dst_rgb[1],
+                                        (!src_rgb[2]) & dst_rgb[2],
+                                    ]),
+                                    4 => Some([!src_rgb[0], !src_rgb[1], !src_rgb[2]]),
+                                    5 => Some([
+                                        (!src_rgb[0]) | dst_rgb[0],
+                                        (!src_rgb[1]) | dst_rgb[1],
+                                        (!src_rgb[2]) | dst_rgb[2],
+                                    ]),
+                                    6 => Some([
+                                        !(src_rgb[0] ^ dst_rgb[0]),
+                                        !(src_rgb[1] ^ dst_rgb[1]),
+                                        !(src_rgb[2] ^ dst_rgb[2]),
+                                    ]),
+                                    7 => Some([
+                                        src_rgb[0] & dst_rgb[0],
+                                        src_rgb[1] & dst_rgb[1],
+                                        src_rgb[2] & dst_rgb[2],
+                                    ]),
+                                    36 => (src_rgb != copy_bg_rgb).then_some(src_rgb),
+                                    _ => Some(src_rgb),
+                                };
+                                if let Some(rgb) = new_rgb {
+                                    let pixel = self.palette_index_for_rgb(
+                                        bus,
+                                        dst_ctab_handle,
+                                        dst_clut.unwrap(),
+                                        rgb,
+                                    );
+                                    bus.write_byte(dst_addr, pixel);
+                                }
+                            }
                             (src_bits, dst_bits)
                                 if src_bits >= 8 && dst_bits >= 8 && src_bits == dst_bits =>
                             {
@@ -31435,6 +31523,46 @@ mod tests {
     }
 
     #[test]
+    fn copy_bits_direct_rgb16_to_indexed8_maps_through_destination_clut() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100u32;
+        let dst_pixmap = 0x300200u32;
+        let src_base = 0x301000u32;
+        let dst_base = 0x302000u32;
+        let src_rect = 0x303000u32;
+        let dst_rect = 0x303010u32;
+
+        write_pixmap_direct(&mut bus, src_pixmap, src_base, 3, 1, 16);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 3, 1, 0);
+        bus.write_word(src_base, 0x7C00); // red
+        bus.write_word(src_base + 2, 0x03E0); // green
+        bus.write_word(src_base + 4, 0x001F); // blue
+        bus.write_bytes(dst_base, &[0, 0, 0]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 3);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 3);
+
+        bus.write_long(TEST_SP, 0); // maskRgn
+        bus.write_word(TEST_SP + 4, 0); // mode = srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 22);
+        assert_eq!(
+            bus.read_bytes(dst_base, 3),
+            vec![
+                TrapDispatcher::nearest_palette_index(&d.color_manager_clut, [0xFFFF, 0, 0]),
+                TrapDispatcher::nearest_palette_index(&d.color_manager_clut, [0, 0xFFFF, 0]),
+                TrapDispatcher::nearest_palette_index(&d.color_manager_clut, [0, 0, 0xFFFF]),
+            ],
+            "RGBDirect pixels copied to an indexed PixMap must be quantized through the destination CLUT"
+        );
+    }
+
+    #[test]
     fn copy_bits_identity_screen_blit_refreshes_visible_dialog_snapshot() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let dialog_ptr = 0x181000u32;
@@ -31989,6 +32117,28 @@ mod tests {
         bus.write_word(pixmap_ptr + 34, 1);
         bus.write_word(pixmap_ptr + 36, 8);
         bus.write_long(pixmap_ptr + 42, ctab_handle);
+    }
+
+    fn write_pixmap_direct(
+        bus: &mut crate::memory::MacMemoryBus,
+        pixmap_ptr: u32,
+        base_addr: u32,
+        width: u16,
+        height: u16,
+        pixel_size: u16,
+    ) {
+        let row_bytes = width * (pixel_size / 8);
+        bus.write_long(pixmap_ptr, base_addr);
+        bus.write_word(pixmap_ptr + 4, 0x8000 | row_bytes);
+        bus.write_word(pixmap_ptr + 6, 0);
+        bus.write_word(pixmap_ptr + 8, 0);
+        bus.write_word(pixmap_ptr + 10, height);
+        bus.write_word(pixmap_ptr + 12, width);
+        bus.write_word(pixmap_ptr + 30, 16); // RGBDirect
+        bus.write_word(pixmap_ptr + 32, pixel_size);
+        bus.write_word(pixmap_ptr + 34, 3);
+        bus.write_word(pixmap_ptr + 36, if pixel_size == 16 { 5 } else { 8 });
+        bus.write_long(pixmap_ptr + 42, 0);
     }
 
     fn write_pixmap_indexed(

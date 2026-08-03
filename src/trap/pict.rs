@@ -2482,6 +2482,37 @@ fn write_pixel(
                 (byte & !shifted_mask) | ((color_index & pixel_mask) << shift),
             );
         }
+        16 => {
+            // RGBDirect pixels use one unused high bit followed by 5-bit red,
+            // green, and blue components. The PICT parser has already mapped
+            // the source color through the destination CLUT, so encode that
+            // logical color as a direct pixel here instead of writing one byte
+            // per pixel. Imaging With QuickDraw (1994), pp. 4-14..4-16.
+            let [red, green, blue] = super::TrapDispatcher::standard_mac_8bpp_clut()
+                [color_index as usize];
+            let pixel = ((red >> 11) << 10) | ((green >> 11) << 5) | (blue >> 11);
+            let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 2;
+            bus.write_word(addr, pixel);
+        }
+        24 => {
+            let [red, green, blue] = super::TrapDispatcher::standard_mac_8bpp_clut()
+                [color_index as usize];
+            let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 3;
+            bus.write_byte(addr, (red >> 8) as u8);
+            bus.write_byte(addr + 1, (green >> 8) as u8);
+            bus.write_byte(addr + 2, (blue >> 8) as u8);
+        }
+        32 => {
+            let [red, green, blue] = super::TrapDispatcher::standard_mac_8bpp_clut()
+                [color_index as usize];
+            let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 4;
+            bus.write_long(
+                addr,
+                (u32::from(red >> 8) << 16)
+                    | (u32::from(green >> 8) << 8)
+                    | u32::from(blue >> 8),
+            );
+        }
         _ => {
             // 8bpp: one byte per pixel
             let addr = screen_base + (y as u32) * screen_rb + (x as u32);
@@ -2519,6 +2550,58 @@ fn write_pixel_clipped(
             screen_h,
             pixel_size,
         );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_pixel_clipped_with_clut(
+    bus: &mut MacMemoryBus,
+    screen_base: u32,
+    screen_rb: u32,
+    x: i32,
+    y: i32,
+    color_index: u8,
+    screen_w: i32,
+    screen_h: i32,
+    pixel_size: u16,
+    dst_clip: Option<&DstClip>,
+    direct_clut: &[[u16; 3]; 256],
+) {
+    if !dst_clip_contains(dst_clip, x, y) || x < 0 || y < 0 || x >= screen_w || y >= screen_h {
+        return;
+    }
+    let [red, green, blue] = direct_clut[color_index as usize];
+    let addr = screen_base + (y as u32) * screen_rb;
+    match pixel_size {
+        16 => {
+            let pixel = ((red >> 11) << 10) | ((green >> 11) << 5) | (blue >> 11);
+            bus.write_word(addr + (x as u32) * 2, pixel);
+        }
+        24 => {
+            let pixel_addr = addr + (x as u32) * 3;
+            bus.write_byte(pixel_addr, (red >> 8) as u8);
+            bus.write_byte(pixel_addr + 1, (green >> 8) as u8);
+            bus.write_byte(pixel_addr + 2, (blue >> 8) as u8);
+        }
+        32 => {
+            bus.write_long(
+                addr + (x as u32) * 4,
+                (u32::from(red >> 8) << 16)
+                    | (u32::from(green >> 8) << 8)
+                    | u32::from(blue >> 8),
+            );
+        }
+        _ => write_pixel(
+            bus,
+            screen_base,
+            screen_rb,
+            x,
+            y,
+            color_index,
+            screen_w,
+            screen_h,
+            pixel_size,
+        ),
     }
 }
 
@@ -6061,7 +6144,7 @@ fn parse_direct_bits_rect(
                             + dst_left as i32;
                         let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
                             + dst_top as i32;
-                        write_pixel_clipped(
+                        write_pixel_clipped_with_clut(
                             bus,
                             screen_base,
                             screen_rb,
@@ -6072,6 +6155,7 @@ fn parse_direct_bits_rect(
                             screen_h,
                             scrn_ps,
                             dst_clip,
+                            device_clut,
                         );
                     }
                 }
@@ -6111,7 +6195,7 @@ fn parse_direct_bits_rect(
                             + dst_left as i32;
                         let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
                             + dst_top as i32;
-                        write_pixel_clipped(
+                        write_pixel_clipped_with_clut(
                             bus,
                             screen_base,
                             screen_rb,
@@ -6122,6 +6206,7 @@ fn parse_direct_bits_rect(
                             screen_h,
                             scrn_ps,
                             dst_clip,
+                            device_clut,
                         );
                     }
                 }
@@ -6139,7 +6224,8 @@ mod tests {
         build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
         dst_clip_row_spans, peek_initial_packbits_clut, try_blit_packbits_8bpp_src_copy_fast,
-        try_blit_row_8bpp_src_copy_fast, DstClip, DstClipRegion, PictIndexedTransfer, PixMapInfo,
+        try_blit_row_8bpp_src_copy_fast, write_pixel_clipped_with_clut, DstClip, DstClipRegion,
+        PictIndexedTransfer, PixMapInfo,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
@@ -7193,6 +7279,58 @@ mod tests {
         assert!(ok);
         assert_eq!(bus.read_byte(screen_base), 42);
         assert_eq!(bus.read_byte(screen_base + row_bytes), 255);
+    }
+
+    #[test]
+    fn direct_pict_pixels_encode_against_the_destination_clut() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let mut clut = [[0u16; 3]; 256];
+        clut[7] = [0xFFFF, 0x8000, 0x0000];
+
+        write_pixel_clipped_with_clut(
+            &mut bus,
+            screen_base,
+            16,
+            0,
+            0,
+            7,
+            1,
+            1,
+            16,
+            None,
+            &clut,
+        );
+        write_pixel_clipped_with_clut(
+            &mut bus,
+            screen_base + 2,
+            3,
+            0,
+            0,
+            7,
+            1,
+            1,
+            24,
+            None,
+            &clut,
+        );
+        write_pixel_clipped_with_clut(
+            &mut bus,
+            screen_base + 5,
+            4,
+            0,
+            0,
+            7,
+            1,
+            1,
+            32,
+            None,
+            &clut,
+        );
+
+        assert_eq!(bus.read_word(screen_base), 0x7C00 | 0x0200);
+        assert_eq!(bus.read_bytes(screen_base + 2, 3), vec![0xFF, 0x80, 0x00]);
+        assert_eq!(bus.read_long(screen_base + 5), 0x00FF_8000);
     }
 
     /// fillRect ($0x34) honors FillPat (0x0A) rather than PnPat (0x09) —
