@@ -129,6 +129,12 @@ pub mod addr {
     /// MPW Universal Interfaces Quickdraw.h declares this callback as four
     /// Pascal INTEGER arguments: left, top, right, and bottom.
     pub const J_SHIELD_CURSOR: u32 = 0x0808;
+    /// JInitCrsr: low-level cursor initialization vector.
+    ///
+    /// MPW Interfaces/AIncludes/LowMemEqu.a declares `JInitCrsr EQU $814`.
+    /// Applications may call the vector directly instead of issuing the
+    /// `_InitCursor` trap.
+    pub const J_INIT_CRSR: u32 = 0x0814;
     /// JSwapFont: address of the Font Manager's FMSwapFont routine (ProcPtr).
     ///
     /// This private vector is called directly by QuickDraw text code. Executor's
