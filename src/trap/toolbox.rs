@@ -8255,13 +8255,15 @@ impl super::TrapDispatcher {
                 if let Some(handle) = handle {
                     eprintln!("[TRAP] GetNamedResource -> handle ${:08X}", handle);
                     bus.write_word(0x0A60, 0); // ResErr = noErr
+                    cpu.write_reg(Register::A0, handle);
                     cpu.write_reg(Register::D0, 0);
                     bus.write_long(sp + 8, handle);
                     cpu.write_reg(Register::A7, sp + 8);
                 } else {
                     eprintln!("[TRAP] GetNamedResource -> NULL (not found)");
                     bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound
-                    cpu.write_reg(Register::D0, (-192i32) as u32);
+                    cpu.write_reg(Register::A0, 0);
+                    cpu.write_reg(Register::D0, 0);
                     bus.write_long(sp + 8, 0);
                     cpu.write_reg(Register::A7, sp + 8);
                 }
@@ -21160,6 +21162,75 @@ mod tests {
         }
     }
 
+    #[test]
+    fn get_ind_resource_keeps_unloaded_data_empty_when_loading_is_disabled() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = bus.alloc(8);
+        bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
+        disp.res_load = false;
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"seg!", 1), data_ptr)]),
+                    ..ResourceFileMap::default()
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"seg!"));
+        bus.write_long(TEST_SP + 6, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x19D, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        assert_eq!(bus.read_long(handle), 0);
+        assert!(!disp.resident_resources.contains(&(0, *b"seg!", 1)));
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn get_ind_resource_preserves_data_loaded_before_set_res_load_false() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = bus.alloc(8);
+        bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"seg!", 1), data_ptr)]),
+                    ..ResourceFileMap::default()
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        for res_load in [true, false] {
+            disp.res_load = res_load;
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 1);
+            bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"seg!"));
+            bus.write_long(TEST_SP + 6, 0);
+
+            let result = disp.dispatch_toolbox(true, 0x19D, &mut cpu, &mut bus);
+            assert!(result.is_some() && result.unwrap().is_ok());
+            let handle = bus.read_long(TEST_SP + 6);
+            assert_ne!(handle, 0);
+            assert_eq!(bus.read_long(handle), data_ptr);
+        }
+        assert!(disp.resident_resources.contains(&(0, *b"seg!", 1)));
+    }
+
     // GetNamedResource ($A9A1)
     #[test]
     fn test_get_named_resource_searches_resource_chain() {
@@ -21206,7 +21277,9 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(0x0A60), 0);
-        assert_ne!(bus.read_long(sp + 8), 0);
+        let handle = bus.read_long(sp + 8);
+        assert_ne!(handle, 0);
+        assert_eq!(cpu.read_reg(Register::A0), handle);
     }
 
     #[test]

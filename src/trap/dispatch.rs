@@ -717,6 +717,16 @@ pub(crate) struct LoadSegGetResourceState {
     pub a_regs: [u32; 8],
 }
 
+/// Original A-line call state retained while a handler installed through
+/// SetTrapAddress runs. A handler may call the old trap address later, after
+/// changing its stack frame, so old-trap recovery cannot infer this state
+/// from A6 or from the handler's instruction shape.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeTrapCallState {
+    pub return_pc: u32,
+    pub argument_sp: u32,
+}
+
 /// Stack size handed to a cooperative thread when `NewThread` is passed 0
 /// and the size reported by `GetDefaultThreadStackSize`. The 68K Thread
 /// Manager's own default is a small multiple of a page; 32K comfortably
@@ -1025,6 +1035,9 @@ pub struct TrapDispatcher {
     /// Canonical resource bytes keyed by (resource-file refnum, type, id).
     /// Used to reload unloaded resources without reparsing the whole fork.
     pub(crate) resource_backing_data: HashMap<(u16, [u8; 4], i16), Vec<u8>>,
+    /// Resource-map entries whose data is currently resident in a guest
+    /// master pointer. Parser backing allocations do not imply residency.
+    pub(crate) resident_resources: HashSet<(u16, [u8; 4], i16)>,
     /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
     pub(crate) movie_states: HashMap<u32, MovieState>,
     /// Maps a movie-controller component instance to the Movie it drives, set
@@ -1748,6 +1761,10 @@ pub struct TrapDispatcher {
     /// instead of running HLE code. This allows CRT-installed handlers (LoadSeg,
     /// UnloadSeg, ExitToShell) to run natively with proper code relocation.
     pub(crate) native_trap_table: HashMap<u16, u32>,
+    /// Most recent original call for each active native trap handler. Entries
+    /// are replaced by a newer call and consumed when a handler invokes its
+    /// saved old trap address.
+    pub(crate) pending_native_trap_calls: HashMap<u16, NativeTrapCallState>,
     /// Re-entrancy guard for the CopyBits `grafProcs.bitsProc` bottleneck:
     /// `(bitsProc address, stack pointer at the tail call)`. A custom bitsProc
     /// normally reaches the real transfer by calling CopyBits again; without
@@ -2771,6 +2788,7 @@ impl TrapDispatcher {
             detached_handle_files: HashMap::new(),
             resources: None,
             resource_backing_data: HashMap::new(),
+            resident_resources: HashSet::new(),
             movie_states: HashMap::new(),
             movie_by_controller: HashMap::new(),
             movie_error: 0,
@@ -3015,6 +3033,7 @@ impl TrapDispatcher {
             recording_picture: None,
             recording_picture_bitmap: None,
             native_trap_table: HashMap::new(),
+            pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
             timer_current_subtick: 0,
@@ -5005,6 +5024,8 @@ impl TrapDispatcher {
         }
         self.clear_resource_file_backing_data(refnum);
         self.clear_resource_file_handle_index(refnum);
+        self.resident_resources
+            .retain(|(entry_refnum, _, _)| *entry_refnum != refnum);
 
         if !closed {
             return false;
@@ -5369,10 +5390,16 @@ impl TrapDispatcher {
     ) -> u32 {
         let canonical_trap_word = 0xA800 | (trap_word & 0x03FF);
         if let Some(&addr) = self.tool_trap_trampolines.get(&canonical_trap_word) {
+            // The returned address represents a ROM trap entry. Re-seed the
+            // synthetic instruction on every lookup so guest code that
+            // temporarily writes through the saved address cannot corrupt a
+            // later JSR through the same trap pointer.
+            bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
             return addr;
         }
-        let addr = bus.alloc(2);
-        bus.write_word(addr, canonical_trap_word | 0x0400);
+        let addr = bus.alloc_synthetic(2);
+        bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
+        bus.protect_readonly_code(addr, 2);
         self.tool_trap_trampolines.insert(canonical_trap_word, addr);
         addr
     }
@@ -5987,9 +6014,18 @@ impl TrapDispatcher {
         };
         if !auto_pop {
             if let Some(&handler_addr) = self.native_trap_table.get(&base_trap) {
-                // Simulate JSR to native handler: push return PC, jump to handler
-                let return_pc = cpu.read_reg(Register::PC); // past A-line instruction
+                // Simulate JSR to native handler: push return PC, jump to
+                // handler. The CPU core has already advanced PC past the
+                // two-byte A-line opcode before dispatch reaches here.
+                let return_pc = cpu.read_reg(Register::PC);
                 let sp = cpu.read_reg(Register::A7);
+                self.pending_native_trap_calls.insert(
+                    base_trap,
+                    NativeTrapCallState {
+                        return_pc,
+                        argument_sp: sp,
+                    },
+                );
                 let new_sp = sp.wrapping_sub(4);
                 bus.write_long(new_sp, return_pc);
                 cpu.write_reg(Register::A7, new_sp);
@@ -6099,7 +6135,9 @@ impl Default for TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::{CpuOps, Register};
     use crate::trap::menu::MenuTrackingState;
+    use crate::trap::test_helpers::setup;
     use std::collections::VecDeque;
 
     fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
@@ -6168,6 +6206,23 @@ mod tests {
         bytes[56..58].copy_from_slice(&0u16.to_be_bytes()); // plain style
         bytes[58..60].copy_from_slice(&(font_resource_id as u16).to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn native_trap_dispatch_returns_past_the_a_line_opcode() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let trap_pc = 0x0020_0000u32;
+        let handler_addr = 0x0021_0000u32;
+        let sp = 0x003F_FF00u32;
+        dispatcher.native_trap_table.insert(0xA9F0, handler_addr);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+
+        dispatcher.dispatch(0xA9F0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), handler_addr);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(bus.read_long(sp - 4), trap_pc + 2);
     }
 
     #[test]

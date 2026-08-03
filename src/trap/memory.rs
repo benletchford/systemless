@@ -510,6 +510,15 @@ impl super::TrapDispatcher {
             // NewPtr / NewPtrClear / NewPtrSys ($A01E): Allocates via `bus.alloc()`, returns ptr in A0; CLEAR variant ($A31E) zeros memory per IM:II II-37
             (false, 0x1E) => {
                 let size = cpu.read_reg(Register::D0);
+                // `Size` is a signed Macintosh LONGINT. Reject negative
+                // requests before converting them into an unsigned heap
+                // allocation; otherwise an error value can wrap the bump
+                // pointer and scribble across guest memory.
+                if (size as i32) < 0 {
+                    cpu.write_reg(Register::A0, 0);
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
+                    return Some(Ok(()));
+                }
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
@@ -539,6 +548,13 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume II, II-27
             (false, 0x22) => {
                 let size = cpu.read_reg(Register::D0);
+                // `Size` is a signed Macintosh LONGINT; negative sizes are
+                // invalid and must not be passed to the unsigned allocator.
+                if (size as i32) < 0 {
+                    cpu.write_reg(Register::A0, 0);
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
+                    return Some(Ok(()));
+                }
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
@@ -614,6 +630,7 @@ impl super::TrapDispatcher {
                     }
                 }
                 self.detached_handles.remove(&handle);
+                self.forget_resource_residency_for_handle(handle);
                 self.forget_resource_handle_index_for_handle(handle);
                 self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
@@ -986,6 +1003,7 @@ impl super::TrapDispatcher {
                     .tool_trap_trampolines
                     .values()
                     .any(|&addr| addr == handler_addr);
+                self.pending_native_trap_calls.remove(&trap_table_key);
                 if is_legacy_fakeptr || is_trampoline {
                     self.native_trap_table.remove(&trap_table_key);
                 } else {
@@ -1271,7 +1289,8 @@ impl super::TrapDispatcher {
             // diverge: FreeMem returns the SUM of free blocks
             // (potentially fragmented), MaxMem returns the
             // largest single contiguous free block (smaller than
-            // FreeMem when the heap is fragmented), CompactMem
+            // FreeMem when the heap is fragmented) plus the
+            // application-zone growth allowance in A0, CompactMem
             // returns the largest block AFTER compacting purgeable
             // resources. In our flat allocator there's no
             // fragmentation to expose, so the three traps share
@@ -1294,11 +1313,22 @@ impl super::TrapDispatcher {
             // contiguous block in D0, total free in A0
             // FUNCTION MaxMem(VAR grow: Size): Size;
             // Inside Macintosh Volume II, II-39
-            // MaxMem ($A01D): Per IM:II II-39 returns largest contiguous free block in D0 and total free in A0 (assembly-language convention); Systemless returns free_heap_estimate in D0 and the same value in A0 (no fragmentation modeled, so largest contiguous == total free). $A11D variant (with grow zone) dispatches to the same arm via the OS-trap low-byte (0x1D) decode.
+            // MaxMem ($A01D): Per IM:II II-39 and Memory 1992 2-74, the
+            // largest contiguous block is returned in D0 and the number of
+            // bytes by which the application zone can grow is returned in
+            // A0. Systemless launches expand the application zone to its
+            // ApplLimit during startup, so A0 is normally zero; retain the
+            // low-memory calculation for tests or clients that leave a gap
+            // between bkLim and ApplLimit. $A11D dispatches to this arm via
+            // the OS-trap low-byte (0x1D) decode.
             (false, 0x1D) => {
                 let free = free_heap_estimate(bus);
                 cpu.write_reg(Register::D0, free);
-                cpu.write_reg(Register::A0, free);
+                let zone = bus.read_long(addr::APP_L_ZONE);
+                let bk_lim = if zone != 0 { bus.read_long(zone) } else { 0 };
+                let appl_limit = bus.read_long(addr::APPL_LIMIT);
+                let grow = appl_limit.saturating_sub(bk_lim);
+                cpu.write_reg(Register::A0, grow);
                 Ok(())
             }
 
@@ -3557,6 +3587,7 @@ impl super::TrapDispatcher {
                             bus.free(master_ptr);
                         }
                     }
+                    self.forget_resource_residency_for_handle(handle);
                     bus.write_long(handle, 0); // set master pointer to NIL
                     cpu.write_reg(Register::D0, 0); // noErr
                 }
@@ -4403,6 +4434,34 @@ mod tests {
             0,
             "NewPtr should set D0 to 0 (noErr)"
         );
+    }
+
+    #[test]
+    fn negative_new_ptr_size_returns_mem_full_without_heap_wrap() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_long(addr::J_CRSR_TASK, 0x1234_5678);
+        cpu.write_reg(Register::D0, (-108i32) as u32);
+
+        let result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), (-108i32) as u32);
+        assert_eq!(bus.read_long(addr::J_CRSR_TASK), 0x1234_5678);
+    }
+
+    #[test]
+    fn negative_new_handle_size_returns_mem_full_without_heap_wrap() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_long(addr::J_CRSR_TASK, 0x1234_5678);
+        cpu.write_reg(Register::D0, (-108i32) as u32);
+
+        let result = dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), (-108i32) as u32);
+        assert_eq!(bus.read_long(addr::J_CRSR_TASK), 0x1234_5678);
     }
 
     #[test]
@@ -6659,6 +6718,7 @@ mod tests {
             first_addr, 0,
             "tool-trap trampoline address should be nonzero"
         );
+        bus.write_word(first_addr, 0);
 
         cpu.write_reg(Register::D0, 0xA89F);
         let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
@@ -6674,6 +6734,11 @@ mod tests {
             cpu.read_reg(Register::A0),
             first_addr,
             "tool-trap trampoline lookup should be stable"
+        );
+        assert_eq!(
+            bus.read_word(first_addr),
+            0xAC9F,
+            "repeated lookup should restore the ROM-like auto-pop trap word"
         );
         assert_eq!(
             cpu.read_reg(Register::A7),
@@ -6743,6 +6808,25 @@ mod tests {
                 "BlockMove should behave like memmove for overlapping ranges"
             );
         }
+    }
+
+    #[test]
+    fn test_block_move_negative_count_is_noop() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let src = 0x300000u32;
+        let dst = 0x310000u32;
+        bus.write_bytes(src, &[0xDE, 0xAD, 0xBE, 0xEF]);
+        bus.write_bytes(dst, &[0x11, 0x22, 0x33, 0x44]);
+
+        cpu.write_reg(Register::A0, src);
+        cpu.write_reg(Register::A1, dst);
+        cpu.write_reg(Register::D0, 0xFFFF_FF81);
+
+        let result = dispatcher.dispatch_memory(false, 0x2E, &mut cpu, &mut bus);
+        assert!(result.is_some(), "BlockMove should be handled");
+        assert!(result.unwrap().is_ok(), "BlockMove should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_bytes(dst, 4), vec![0x11, 0x22, 0x33, 0x44]);
     }
 
     #[test]
@@ -8691,8 +8775,26 @@ mod tests {
         );
         assert_eq!(
             cpu.read_reg(Register::A0),
-            24 * 1024 * 1024,
-            "MaxMem should return 24MB clamp floor in A0"
+            0,
+            "MaxMem should return zero application-zone growth after MaxApplZone"
+        );
+    }
+
+    #[test]
+    fn test_max_mem_returns_application_zone_growth_in_a0() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let zone = 0x180000;
+        bus.write_long(crate::memory::globals::addr::APP_L_ZONE, zone);
+        bus.write_long(zone, zone + 0x1000); // bkLim
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, zone + 0x3000);
+
+        let result = dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus);
+        assert!(result.is_some(), "MaxMem should be handled");
+        assert!(result.unwrap().is_ok(), "MaxMem should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            0x2000,
+            "MaxMem should return the application-zone growth allowance in A0"
         );
     }
 
