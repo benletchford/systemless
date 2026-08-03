@@ -150,6 +150,7 @@ impl super::TrapDispatcher {
         let resource_ptr = self
             .find_resource_any(*b"wctb", table_id)
             .map(|(_, ptr)| ptr)
+            .or_else(|| self.synthesize_system_wctb(bus, 0))
             .unwrap_or(0);
         if resource_ptr == 0 {
             return 0;

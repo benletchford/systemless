@@ -1222,6 +1222,10 @@ pub struct TrapDispatcher {
     /// resource fork, but some installers call `GetResource('clut', depth)`
     /// directly instead of `GetCTable`.
     pub(crate) system_clut_cache: HashMap<i16, u32>,
+    /// Cache of the synthesized System-file default `'wctb'` resource.
+    /// The Window Manager and some applications fetch this resource directly
+    /// instead of relying only on GetNewCWindow's implicit default.
+    pub(crate) system_wctb_cache: HashMap<i16, u32>,
     /// Cache of synthetic System-file `'KCHR'` resource pointers. The
     /// U.S. Roman keyboard-layout resource ID 0 is present in every
     /// System file and is used directly by apps that call KeyTranslate.
@@ -2836,6 +2840,7 @@ impl TrapDispatcher {
             system_str_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
+            system_wctb_cache: HashMap::new(),
             system_kchr_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
             system_mdef_cache: HashMap::new(),
@@ -5175,6 +5180,59 @@ impl TrapDispatcher {
             bus.write_word(entry + 6, b);
         }
         self.system_clut_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate (and cache) the default System-file window color table.
+    /// System 7.5.3 stores this compiled `'wctb'` resource at ID 0; its
+    /// entries are the standard colors used by GetNewCWindow when an
+    /// application does not provide a window-specific table. Macintosh
+    /// Toolbox Essentials (1992), pp. 4-127..4-129.
+    pub(crate) fn synthesize_system_wctb(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_wctb_cache.get(&res_id) {
+            return Some(ptr);
+        }
+        if res_id != 0 {
+            return None;
+        }
+
+        // A compiled 'wctb' starts with six reserved bytes followed by the
+        // entry count minus one. The bytes are copied verbatim by the Window
+        // Manager before it replaces the first four bytes with a live seed.
+        const COLORS: [[u16; 3]; 13] = [
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            [0x0000, 0x0000, 0x0000],
+            [0x0000, 0x0000, 0x0000],
+            [0x0000, 0x0000, 0x0000],
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            [0x0000, 0x0000, 0x0000],
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            [0x0000, 0x0000, 0x0000],
+            [0xCCCC, 0xCCCC, 0xFFFF],
+            [0x0000, 0x0000, 0x0000],
+            [0xCCCC, 0xCCCC, 0xFFFF],
+            [0x3333, 0x3333, 0x6666],
+        ];
+        let ptr = bus.alloc(8 + COLORS.len() as u32 * 8);
+        if ptr == 0 {
+            return None;
+        }
+        bus.write_long(ptr, 0);
+        bus.write_word(ptr + 4, 0);
+        bus.write_word(ptr + 6, COLORS.len() as u16 - 1);
+        for (index, [red, green, blue]) in COLORS.into_iter().enumerate() {
+            let entry = ptr + 8 + index as u32 * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, red);
+            bus.write_word(entry + 4, green);
+            bus.write_word(entry + 6, blue);
+        }
+        self.system_wctb_cache.insert(res_id, ptr);
         Some(ptr)
     }
 

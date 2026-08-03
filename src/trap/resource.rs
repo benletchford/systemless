@@ -1704,6 +1704,19 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"wctb" {
+                    if let Some(ptr) = self.synthesize_system_wctb(bus, res_id) {
+                        let handle = self
+                            .get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, 0);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"MDEF" {
                     if let Some(ptr) = self.synthesize_system_mdef(bus, res_id) {
                         let handle = self
@@ -8257,6 +8270,38 @@ mod tests {
         assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
         assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
         assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
+    }
+
+    #[test]
+    fn get_resource_synthesizes_default_system_wctb_zero() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let sp = TEST_SP;
+        bus.write_word(sp, 0u16);
+        bus.write_long(sp + 2, u32::from_be_bytes(*b"wctb"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 6, "SP should advance by 6");
+        let handle = bus.read_long(new_sp);
+        assert_ne!(handle, 0, "synthetic system wctb must return a handle");
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(0x0A60), 0, "ResErr should be noErr");
+
+        let wctb = bus.read_long(handle);
+        assert_ne!(wctb, 0, "synthetic system wctb handle must be loaded");
+        assert_eq!(bus.read_word(wctb + 6), 12, "default table has 13 entries");
+        assert_eq!(bus.read_word(wctb + 8), 0, "first entry index");
+        assert_eq!(bus.read_word(wctb + 10), 0xFFFF, "first entry red");
+        assert_eq!(bus.read_word(wctb + 12), 0xFFFF, "first entry green");
+        assert_eq!(bus.read_word(wctb + 14), 0xFFFF, "first entry blue");
+        let last = wctb + 8 + 12 * 8;
+        assert_eq!(bus.read_word(last), 12, "last entry index");
+        assert_eq!(bus.read_word(last + 2), 0x3333, "last entry red");
+        assert_eq!(bus.read_word(last + 4), 0x3333, "last entry green");
+        assert_eq!(bus.read_word(last + 6), 0x6666, "last entry blue");
     }
 
     #[test]
