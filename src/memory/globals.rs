@@ -152,6 +152,8 @@ pub mod addr {
     pub const SCREEN_BITS: u32 = 0x083C;
 
     // File Manager globals
+    pub const UTABLE_BASE: u32 = 0x011C; // Base address of the Device Manager unit table
+    pub const UNIT_TABLE_ENTRY_COUNT: u32 = 0x01D2; // Number of entries in the unit table
     pub const SF_SAVE_DISK: u32 = 0x0214; // Negative of volume reference number (word) - Inside Macintosh Volume IV, IV-72
     pub const FCB_S_PTR: u32 = 0x034E; // FCB array pointer
     pub const DEF_VCB_PTR: u32 = 0x0352; // Default VCB pointer

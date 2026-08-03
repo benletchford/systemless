@@ -1914,6 +1914,9 @@ impl FixtureRunner {
         let vfs_metadata = self.dispatcher.vfs_metadata.clone();
         let vfs_directories = self.dispatcher.vfs_directories.clone();
         let vfs_directory_paths = self.dispatcher.vfs_directory_paths.clone();
+        let vfs_volumes = self.dispatcher.vfs_volumes.clone();
+        let vfs_volume_names = self.dispatcher.vfs_volume_names.clone();
+        let next_vfs_volume_ref_num = self.dispatcher.next_vfs_volume_ref_num;
         let locked_files = self.dispatcher.locked_files.clone();
         let next_vfs_dir_id = self.dispatcher.next_vfs_dir_id;
         let next_vfs_file_id = self.dispatcher.next_vfs_file_id;
@@ -1935,6 +1938,9 @@ impl FixtureRunner {
         replacement.dispatcher.vfs_metadata = vfs_metadata;
         replacement.dispatcher.vfs_directories = vfs_directories;
         replacement.dispatcher.vfs_directory_paths = vfs_directory_paths;
+        replacement.dispatcher.vfs_volumes = vfs_volumes;
+        replacement.dispatcher.vfs_volume_names = vfs_volume_names;
+        replacement.dispatcher.next_vfs_volume_ref_num = next_vfs_volume_ref_num;
         replacement.dispatcher.locked_files = locked_files;
         replacement.dispatcher.next_vfs_dir_id = next_vfs_dir_id;
         replacement.dispatcher.next_vfs_file_id = next_vfs_file_id;
@@ -2027,6 +2033,32 @@ impl FixtureRunner {
         }
     }
 
+    fn install_read_only_volume_unit(
+        &mut self,
+        unit_table_ptr: u32,
+        unit_index: usize,
+        volume_ref_num: i16,
+        driver_name: &str,
+        unit_count: &mut u16,
+    ) {
+        let entry_addr = unit_table_ptr.saturating_add((unit_index as u32) * 4);
+        let driver_header = self.bus.alloc(64);
+        let dce_ptr = self.bus.alloc(32);
+        let dce_handle = self.bus.alloc(4);
+        if driver_header == 0 || dce_ptr == 0 || dce_handle == 0 {
+            return;
+        }
+
+        self.bus.fill_bytes(driver_header, 64, 0);
+        self.bus.fill_bytes(dce_ptr, 32, 0);
+        self.bus.write_long(dce_ptr, driver_header); // dCtlDriver
+        self.bus.write_word(dce_ptr + 24, volume_ref_num as u16); // dCtlRefNum
+        self.bus.write_long(dce_handle, dce_ptr);
+        self.bus.write_long(entry_addr, dce_handle);
+        self.write_fixed_pstring(driver_header + 18, driver_name, 31);
+        *unit_count = (*unit_count).max((unit_index as u16).saturating_add(1));
+    }
+
     fn seed_current_application_file_manager_state(&mut self) {
         use crate::memory::globals::addr;
 
@@ -2077,6 +2109,48 @@ impl FixtureRunner {
         self.bus.write_word(addr::VCB_Q_HDR, 0);
         self.bus.write_long(addr::VCB_Q_HDR + 2, vcb_ptr);
         self.bus.write_long(addr::VCB_Q_HDR + 6, vcb_ptr);
+
+        // Files 1985, II-191: UTableBase points to a table of handles to
+        // Device Manager control entries. Read-only disk-image volumes still
+        // need a stable unit-table identity because legacy applications often
+        // inspect the mounted volume's driver before opening its files.
+        let unit_table_ptr = self.bus.alloc(128);
+        if unit_table_ptr != 0 {
+            self.bus.fill_bytes(unit_table_ptr, 128, 0);
+            let mut unit_count = 0u16;
+            let mut mounted_units = vec![(
+                crate::trap::dispatch::BOOT_VOLUME_REF_NUM,
+                crate::trap::dispatch::TrapDispatcher::boot_volume_name().to_string(),
+            )];
+            mounted_units.extend(
+                self.dispatcher
+                    .vfs_volumes
+                    .values()
+                    .map(|volume| (volume.ref_num, volume.driver_name.clone()))
+                    .collect::<Vec<_>>(),
+            );
+            for (volume_ref_num, volume_name) in mounted_units {
+                if volume_ref_num >= 0 {
+                    continue;
+                }
+                let driver_ref_num =
+                    crate::trap::dispatch::TrapDispatcher::vfs_driver_ref_num(volume_ref_num);
+                let unit_index = (-driver_ref_num - 1) as usize;
+                if unit_index >= 32 {
+                    continue;
+                }
+                self.install_read_only_volume_unit(
+                    unit_table_ptr,
+                    unit_index,
+                    driver_ref_num,
+                    &volume_name,
+                    &mut unit_count,
+                );
+            }
+            self.bus.write_long(addr::UTABLE_BASE, unit_table_ptr);
+            self.bus
+                .write_word(addr::UNIT_TABLE_ENTRY_COUNT, unit_count);
+        }
 
         let fcb_buffer = self.bus.alloc(HFS_FCB_BUFFER_SIZE as u32);
         if fcb_buffer == 0 {
