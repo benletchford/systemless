@@ -6030,7 +6030,7 @@ impl super::TrapDispatcher {
                             String::new()
                         };
 
-                        let (spec_v_ref_num, spec_dir_id, spec_name, target_key) = if requested_name
+                        let (spec_v_ref_num, spec_dir_id, spec_name, _target_key) = if requested_name
                             .is_empty()
                         {
                             (
@@ -6078,18 +6078,15 @@ impl super::TrapDispatcher {
                         // still filling a valid FSSpec. Files 1992, 2-34 to 2-35.
                         let exists = if requested_name.is_empty() {
                             self.directory_entry_for_id(spec_dir_id).is_some()
-                        } else if let Some(ref key) = target_key {
-                            self.vfs.keys().any(|path| path.eq_ignore_ascii_case(key))
-                                || self
-                                    .vfs_rsrc
-                                    .keys()
-                                    .any(|path| path.eq_ignore_ascii_case(key))
-                                || self
-                                    .vfs_directories
-                                    .keys()
-                                    .any(|path| path.eq_ignore_ascii_case(key))
                         } else {
-                            false
+                            self.find_vfs_file_in_directory(spec_dir_id, &requested_name)
+                                .is_some()
+                                || self
+                                    .find_vfs_rsrc_file_in_directory(spec_dir_id, &requested_name)
+                                    .is_some()
+                                || self
+                                    .find_vfs_directory_in_directory(spec_dir_id, &requested_name)
+                                    .is_some()
                         };
                         eprintln!(
                             "[FSSPEC] FSMakeFSSpec request_vRefNum={} resolved_vRefNum={} request_dirID={} resolved_dirID={} name='{}' specDirID={} specName='{}' exists={}",

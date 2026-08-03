@@ -116,6 +116,20 @@ pub(crate) fn encode_mac_roman_lossy(value: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Return the UTF-8 interpretation of a Mac Roman-decoded filename when the
+/// original bytes also form valid UTF-8. Some host-filesystem bridges expose
+/// Unicode filenames to a classic application as their UTF-8 bytes, while
+/// the File Manager ABI still presents those bytes as a Mac Roman Str63.
+/// Keep this as a lookup fallback so native Mac Roman names retain priority.
+pub(crate) fn mac_roman_utf8_alias(value: &str) -> Option<String> {
+    if value.is_ascii() {
+        return None;
+    }
+    let bytes = encode_mac_roman_lossy(value);
+    let alias = std::str::from_utf8(&bytes).ok()?.to_string();
+    (alias != value).then_some(alias)
+}
+
 #[allow(dead_code)]
 impl StringBuffer {
     pub fn new(width: i16, height: i16, baseline_y: i16) -> Self {
@@ -191,7 +205,10 @@ pub fn read_fsspec_name(bus: &MacMemoryBus, spec_ptr: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_mac_roman, decode_mac_roman_for_render, encode_mac_roman_lossy};
+    use super::{
+        decode_mac_roman, decode_mac_roman_for_render, encode_mac_roman_lossy,
+        mac_roman_utf8_alias,
+    };
 
     #[test]
     fn mac_roman_round_trips_classic_filename_symbols() {
@@ -208,5 +225,15 @@ mod tests {
             "Choose Monitor..."
         );
         assert_eq!(decode_mac_roman_for_render(b"Marathon\xD5s"), "Marathon's");
+    }
+
+    #[test]
+    fn mac_roman_filename_can_recover_utf8_host_alias() {
+        let decoded = decode_mac_roman(b"Derrat Sorcerum\xE2\x84\xA2 Demo");
+
+        assert_eq!(
+            mac_roman_utf8_alias(&decoded),
+            Some("Derrat Sorcerum™ Demo".to_string())
+        );
     }
 }

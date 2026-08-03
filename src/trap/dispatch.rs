@@ -4,7 +4,7 @@
 //! `impl TrapDispatcher` blocks with `dispatch_*` methods that return
 //! `Option<Result<()>>` — `Some` if the trap was handled, `None` to pass through.
 
-use super::types::UnderlineInfo;
+use super::types::{mac_roman_utf8_alias, UnderlineInfo};
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
 use crate::machine_profile::reference_machine_profile;
@@ -3446,6 +3446,29 @@ impl TrapDispatcher {
             .join("/")
     }
 
+    fn normalized_hfs_path_variants(name: &str) -> Vec<String> {
+        let normalized = Self::normalize_hfs_path(name);
+        let mut variants = vec![normalized.clone()];
+        if let Some(alias) = mac_roman_utf8_alias(name) {
+            let alias = Self::normalize_hfs_path(&alias);
+            if alias != normalized {
+                variants.push(alias);
+            }
+        }
+        // A full HFS pathname may include the boot volume name even though
+        // the VFS stores the volume root implicitly. Files 1992, 2-28.
+        let boot_volume_prefix = format!("{}/", Self::boot_volume_name());
+        for variant in variants.clone() {
+            if let Some(path_without_volume) = variant.strip_prefix(&boot_volume_prefix) {
+                let path_without_volume = path_without_volume.to_string();
+                if !path_without_volume.is_empty() && !variants.contains(&path_without_volume) {
+                    variants.push(path_without_volume);
+                }
+            }
+        }
+        variants
+    }
+
     pub(crate) fn hfs_name_from_vfs_component(component: &str) -> String {
         component
             .chars()
@@ -3965,15 +3988,24 @@ impl TrapDispatcher {
     pub(crate) fn find_vfs_file_in_directory(&mut self, dir_id: u32, name: &str) -> Option<String> {
         self.ensure_vfs_catalog();
         let normalized = Self::normalize_hfs_path(name);
+        let normalized_variants = Self::normalized_hfs_path_variants(name);
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
+            for normalized_variant in &normalized_variants {
+                let candidate = if dir_path.is_empty() {
+                    normalized_variant.clone()
+                } else {
+                    format!("{dir_path}/{normalized_variant}")
+                };
+                if let Some(found) = Self::find_case_insensitive_key(self.vfs.keys(), &candidate) {
+                    return Some(found);
+                }
+            }
+
             let candidate = if dir_path.is_empty() {
                 normalized.clone()
             } else {
                 format!("{dir_path}/{normalized}")
             };
-            if let Some(found) = Self::find_case_insensitive_key(self.vfs.keys(), &candidate) {
-                return Some(found);
-            }
 
             // Fallback: search inside subdirectories whose names start with
             // the requested filename.  StuffIt archives sometimes nest a file
@@ -4023,9 +4055,13 @@ impl TrapDispatcher {
                 }
             }
         }
-        if normalized.contains('/') {
-            if let Some(found) = Self::find_case_insensitive_key(self.vfs.keys(), &normalized) {
-                return Some(found);
+        for normalized_variant in &normalized_variants {
+            if normalized_variant.contains('/') {
+                if let Some(found) =
+                    Self::find_case_insensitive_key(self.vfs.keys(), normalized_variant)
+                {
+                    return Some(found);
+                }
             }
         }
         None
@@ -4038,20 +4074,28 @@ impl TrapDispatcher {
     ) -> Option<String> {
         self.ensure_vfs_catalog();
         let normalized = Self::normalize_hfs_path(name);
+        let normalized_variants = Self::normalized_hfs_path_variants(name);
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
-            let candidate = if dir_path.is_empty() {
-                normalized.clone()
-            } else {
-                format!("{dir_path}/{normalized}")
-            };
-            if let Some(found) = Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &candidate) {
-                return Some(found);
+            for normalized_variant in &normalized_variants {
+                let candidate = if dir_path.is_empty() {
+                    normalized_variant.clone()
+                } else {
+                    format!("{dir_path}/{normalized_variant}")
+                };
+                if let Some(found) =
+                    Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &candidate)
+                {
+                    return Some(found);
+                }
             }
         }
-        if normalized.contains('/') {
-            if let Some(found) = Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &normalized)
-            {
-                return Some(found);
+        for normalized_variant in &normalized_variants {
+            if normalized_variant.contains('/') {
+                if let Some(found) =
+                    Self::find_case_insensitive_key(self.vfs_rsrc.keys(), normalized_variant)
+                {
+                    return Some(found);
+                }
             }
         }
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
@@ -4078,6 +4122,7 @@ impl TrapDispatcher {
     ) -> Option<String> {
         self.ensure_vfs_catalog();
         let normalized = Self::normalize_hfs_path(name);
+        let normalized_variants = Self::normalized_hfs_path_variants(name);
         if normalized.is_empty() {
             return None;
         }
@@ -4094,25 +4139,31 @@ impl TrapDispatcher {
         let mut sorted_keys: Vec<&String> = self.vfs_directories.keys().collect();
         sorted_keys.sort_unstable();
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
-            let candidate = if dir_path.is_empty() {
-                normalized.clone()
-            } else {
-                format!("{dir_path}/{normalized}")
-            };
-            if let Some(found) = sorted_keys
-                .iter()
-                .copied()
-                .find(|path| path.eq_ignore_ascii_case(&candidate))
-            {
-                return Some(found.clone());
+            for normalized_variant in &normalized_variants {
+                let candidate = if dir_path.is_empty() {
+                    normalized_variant.clone()
+                } else {
+                    format!("{dir_path}/{normalized_variant}")
+                };
+                if let Some(found) = sorted_keys
+                    .iter()
+                    .copied()
+                    .find(|path| path.eq_ignore_ascii_case(&candidate))
+                {
+                    return Some(found.clone());
+                }
             }
         }
-        if normalized.contains('/') {
-            return sorted_keys
-                .iter()
-                .copied()
-                .find(|path| path.eq_ignore_ascii_case(&normalized))
-                .cloned();
+        for normalized_variant in &normalized_variants {
+            if normalized_variant.contains('/') {
+                if let Some(found) = sorted_keys
+                    .iter()
+                    .copied()
+                    .find(|path| path.eq_ignore_ascii_case(normalized_variant))
+                {
+                    return Some(found.clone());
+                }
+            }
         }
         sorted_keys
             .iter()
@@ -6442,6 +6493,34 @@ mod tests {
         assert_eq!(
             TrapDispatcher::normalize_hfs_path("Unix:Folder:100%/Done"),
             format!("Folder/100%{VFS_HFS_LITERAL_SLASH}Done")
+        );
+    }
+
+    #[test]
+    fn find_vfs_file_in_directory_matches_utf8_host_filename_alias() {
+        let mut disp = TrapDispatcher::new();
+        disp.vfs.insert(
+            "Derrat Sorcerum™ Demo/Derrat Sorcerum™ Demo v1.0.3".to_string(),
+            vec![1, 2, 3],
+        );
+        let dir_id = disp.ensure_vfs_directory("Derrat Sorcerum™ Demo");
+        let requested_name =
+            super::super::types::decode_mac_roman(b"Derrat Sorcerum\xE2\x84\xA2 Demo v1.0.3");
+
+        assert_eq!(
+            disp.find_vfs_file_in_directory(dir_id, &requested_name),
+            Some("Derrat Sorcerum™ Demo/Derrat Sorcerum™ Demo v1.0.3".to_string())
+        );
+    }
+
+    #[test]
+    fn find_vfs_directory_in_directory_matches_volume_qualified_path() {
+        let mut disp = TrapDispatcher::new();
+        disp.ensure_vfs_directory("Derrat Sorcerum™ Demo");
+
+        assert_eq!(
+            disp.find_vfs_directory_in_directory(2, "MacintoshHD:Derrat Sorcerum™ Demo:"),
+            Some("Derrat Sorcerum™ Demo".to_string())
         );
     }
 
