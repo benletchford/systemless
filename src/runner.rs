@@ -28,9 +28,7 @@ const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 const DEFAULT_LOAD_ADDRESS: u32 = 0x0001_0000;
-const QD_GLOBALS_RESERVE: u32 = 48 * 1024;
-const A5_CLEAR_RESERVE: u32 = 0x40000;
-const SYNTHETIC_RUNTIME_RESERVE: u32 = 0x1000;
+const LARGE_SIZE_RELOCATION_MINIMUM: u32 = 2 * 1024 * 1024;
 const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
@@ -720,101 +718,42 @@ fn app_visible_zone_start_for_loaded_app(app: &LoadedApp) -> u32 {
     }
 }
 
-fn direct_loaded_image_span(fork: &ResourceFork, header: &Code0Header, code0_size: u32) -> u32 {
-    let a5_base = header.below_a5;
-    let globals_end = a5_base
-        .saturating_add(header.above_a5)
-        .saturating_add(QD_GLOBALS_RESERVE);
-    let globals_zero_end = globals_end.saturating_add(A5_CLEAR_RESERVE);
-    let code0_user = globals_end.saturating_add(4);
-    let jt_base = a5_base.saturating_add(header.jump_table_offset);
-    let mut max_jt_end = jt_base.saturating_add((header.num_entries() as u32).saturating_mul(8));
-    let mut code_resources = fork.get_all_code();
-
-    for code in &code_resources {
-        if code.id == 0 || code.data.len() < 4 {
-            continue;
-        }
-        let Some(segment_header) = CodeSegmentHeader::parse(&code.data) else {
-            continue;
-        };
-        let (Some(table_offset), Some(entry_count)) = (
-            segment_header.jump_table_start_offset(),
-            segment_header.jump_table_entry_count(),
-        ) else {
-            continue;
-        };
-        max_jt_end = max_jt_end.max(
-            jt_base
-                .saturating_add(table_offset)
-                .saturating_add(entry_count.saturating_mul(8)),
-        );
-    }
-
-    code_resources.sort_by_key(|code| code.id);
-    let reserved_boundary = code0_user.saturating_add(code0_size).max(max_jt_end);
-    let mut current_load_ptr = reserved_boundary.saturating_add(4) & !3;
-    for code in code_resources {
-        if code.id == 0 {
-            continue;
-        }
-        current_load_ptr = align4(
-            current_load_ptr
-                .saturating_add(4)
-                .saturating_add(code.data.len() as u32)
-                .saturating_add(4),
-        );
-    }
-
-    align4(globals_zero_end.max(current_load_ptr))
-}
-
-fn select_application_partition_size(
-    size_resource: Option<ApplicationSizeResource>,
-    partition_override: Option<u32>,
-    available: u32,
-) -> Option<u32> {
-    if let Some(requested) = partition_override {
-        return (requested <= available).then_some(requested);
-    }
-    let size = size_resource?;
-    if size.preferred_size > 0
-        && size.preferred_size >= size.minimum_size
-        && size.preferred_size <= available
-    {
-        return Some(size.preferred_size);
-    }
-    (size.minimum_size > 0 && size.minimum_size <= available).then_some(size.minimum_size)
-}
-
-fn load_address_for_application_partition(
+fn load_address_for_size_partition(
     configured_load_address: u32,
+    header: &Code0Header,
     size_resource: Option<ApplicationSizeResource>,
-    partition_override: Option<u32>,
-    allocation_limit: u32,
-    image_span: u32,
-) -> Option<(u32, Option<u32>)> {
+    ram_size: u32,
+) -> u32 {
     if configured_load_address != DEFAULT_LOAD_ADDRESS {
-        return Some((configured_load_address, None));
-    }
-    if size_resource.is_none() && partition_override.is_none() {
-        return Some((configured_load_address, None));
+        return configured_load_address;
     }
 
-    let available = allocation_limit.saturating_sub(APP_HEAP_FLOOR);
-    let partition_size =
-        select_application_partition_size(size_resource, partition_override, available)?;
-    let partition_end = APP_HEAP_FLOOR.checked_add(partition_size)?;
-    let load_address = partition_end.checked_sub(image_span)? & !3;
-    let minimum_stack_base = APP_HEAP_FLOOR
-        .saturating_add(APP_ZONE_HEADER_SIZE)
-        .saturating_add(APP_STACK_SAFETY_MARGIN)
-        .saturating_add(16);
-    if load_address <= minimum_stack_base {
-        return None;
+    let Some(size) = size_resource else {
+        return configured_load_address;
+    };
+    if size.preferred_partition_size().is_none()
+        || size.minimum_size <= LARGE_SIZE_RELOCATION_MINIMUM
+    {
+        return configured_load_address;
     }
 
-    Some((load_address, Some(partition_size)))
+    let desired_a5 =
+        APP_HEAP_FLOOR.saturating_add(size.minimum_size.saturating_sub(APP_STACK_SAFETY_MARGIN));
+    let default_a5 = configured_load_address.saturating_add(header.below_a5);
+    if desired_a5 <= default_a5 {
+        return configured_load_address;
+    }
+
+    // Leave space above the relocated image for stack/screen buffers in
+    // small synthetic runners. The standard frontends use 32 MB, so large
+    // SIZE-partition apps still get the Mac-like high A5 placement.
+    let max_reasonable_load = ram_size.saturating_sub(2 * 1024 * 1024);
+    let relocated_load = align4(desired_a5.saturating_sub(header.below_a5));
+    if relocated_load < max_reasonable_load {
+        relocated_load
+    } else {
+        configured_load_address
+    }
 }
 
 /// Configuration knobs for [`FixtureRunner`]. Use
@@ -1889,18 +1828,8 @@ impl FixtureRunner {
     /// directly only when you've already parsed the resource fork
     /// yourself (e.g. building a custom test fixture).
     pub fn load_app(&mut self, fork: &ResourceFork) -> Option<LoadedApp> {
-        let app = load_app_generic(
-            fork,
-            &mut self.bus,
-            self.config.load_address,
-            self.application_partition_size,
-        )?;
-        let heap_start = app_visible_zone_start_for_loaded_app(&app);
-        if app.initial_sp != self.bus.ram_size() - 16 {
-            self.bus
-                .cap_heap_at(app.initial_sp.saturating_sub(APP_STACK_SAFETY_MARGIN));
-            self.bus.protect_synthetic_above(app.loaded_image_end);
-        }
+        let app = load_app_generic(fork, &mut self.bus, self.config.load_address)?;
+        let heap_start = app_heap_start_for_loaded_app(&app);
 
         // Resource data is allocated after direct CODE/global loading. Reserve
         // the app-zone header at the actual heap start so early app resources
@@ -2295,14 +2224,16 @@ impl FixtureRunner {
 
         // Memory Manager zone globals
         // Inside Macintosh Volume II, II-19 and II-29..II-30.
-        // SIZE-selected applications place their fixed A5/image area at the
-        // high end of the partition, leaving the ordinary heap at its low end.
-        // Legacy images that overlap the heap floor still move the visible
-        // zone above the directly loaded bytes.
+        // Keep actual Systemless allocations above the direct-loaded image,
+        // while the guest-visible application zone can remain at the normal
+        // floor when the loader has placed the application image above it.
+        // Real Mac CODE/resources live inside the app heap; Systemless writes
+        // them directly and then protects them by bumping the allocator.
+        let allocation_heap_start = app_heap_start_for_loaded_app(app);
         let visible_zone_start = app_visible_zone_start_for_loaded_app(app);
         let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
         let initial_heap_end = visible_zone_start + zone_header_size;
-        let minimum_safe_appl_limit = self.bus.heap_bump_ptr().max(initial_heap_end);
+        let minimum_safe_appl_limit = self.bus.heap_bump_ptr().max(allocation_heap_start);
         let stack_base = app.initial_sp;
         let default_appl_limit = stack_base - APP_STACK_SAFETY_MARGIN;
         let requested_partition_size = self.application_partition_size.or_else(|| {
@@ -2315,11 +2246,10 @@ impl FixtureRunner {
                 // allocates the application partition from the app's 'SIZE'
                 // resource preferred size when available. A scripted override
                 // represents the same Finder-style preferred-memory setting
-                // applied to a temporary launch. Use the same setting for the
-                // observable heap limit so FreeMem/MaxMem/process info see the
-                // selected partition pressure. The fixed image determines the
-                // actual stack base, so the result is capped by
-                // `default_appl_limit`.
+                // applied to a temporary launch. Systemless keeps the physical
+                // stack at the top of guest RAM, but narrows the observable
+                // heap limit so FreeMem/MaxMem/process info see the same
+                // partition pressure.
                 partition_size
                     .checked_sub(APP_STACK_SAFETY_MARGIN)
                     .and_then(|heap_span| visible_zone_start.checked_add(heap_span))
@@ -2383,7 +2313,7 @@ impl FixtureRunner {
         // available memory. zcbFree (offset +12) must reflect free bytes.
         // Reserve heap space so alloc() doesn't overwrite the zone header.
         self.bus
-            .reserve_heap_until(visible_zone_start.saturating_add(zone_header_size));
+            .reserve_heap_until(allocation_heap_start.saturating_add(zone_header_size));
         let zone_size = appl_limit.saturating_sub(visible_zone_start);
         let free_bytes = zone_size.saturating_sub(zone_header_size);
         self.bus.write_long(visible_zone_start, appl_limit); // bkLim: end of zone
@@ -2399,7 +2329,7 @@ impl FixtureRunner {
         eprintln!(
             "[INIT] Zone header: start=${:08X} allocStart=${:08X} bkLim=${:08X} zcbFree={} ({:.1}MB)",
             visible_zone_start,
-            self.bus.heap_bump_ptr(),
+            allocation_heap_start,
             appl_limit,
             free_bytes,
             free_bytes as f64 / (1024.0 * 1024.0)
@@ -6466,7 +6396,6 @@ fn load_app_generic<M: MemoryBus>(
     fork: &ResourceFork,
     bus: &mut M,
     configured_load_address: u32,
-    partition_override: Option<u32>,
 ) -> Option<LoadedApp> {
     // 1. Load CODE 0 Header
     let code0 = fork.get_code(0)?;
@@ -6474,15 +6403,12 @@ fn load_app_generic<M: MemoryBus>(
     let size_resource = fork
         .get(*b"SIZE", -1)
         .and_then(|res| ApplicationSizeResource::parse(&res.data));
-    let image_span = direct_loaded_image_span(fork, &header, code0.data.len() as u32);
-    let (load_address, selected_partition_size) = load_address_for_application_partition(
+    let load_address = load_address_for_size_partition(
         configured_load_address,
+        &header,
         size_resource,
-        partition_override,
-        bus.allocation_limit()
-            .saturating_sub(SYNTHETIC_RUNTIME_RESERVE),
-        image_span,
-    )?;
+        bus.ram_size(),
+    );
     if trace_load_enabled() {
         eprintln!(
             "[LOAD] CODE 0 header: above_a5={}, below_a5={}, jt_size={}, jt_offset={}",
@@ -6499,14 +6425,6 @@ fn load_app_generic<M: MemoryBus>(
                 );
             }
         }
-        if let Some(partition_size) = selected_partition_size {
-            eprintln!(
-                "[LOAD] Selected application partition: start=${:08X} size={} end=${:08X}",
-                APP_HEAP_FLOOR,
-                partition_size,
-                APP_HEAP_FLOOR.saturating_add(partition_size)
-            );
-        }
         if let Some(size) = size_resource {
             eprintln!(
                 "[LOAD] SIZE -1 flags=${:04X} highLevelEventAware={} preferred={} minimum={}",
@@ -6522,10 +6440,11 @@ fn load_app_generic<M: MemoryBus>(
     // For classic Mac apps, above_a5 defines the space needed above A5.
     // However, some apps place QuickDraw globals at higher offsets (e.g., A5+39KB).
     // Add 48KB reserve to accommodate most classic apps.
-    let globals_end = a5_base + header.above_a5 + QD_GLOBALS_RESERVE;
+    let qd_globals_reserve = 48 * 1024; // 48KB reserve for QD globals
+    let globals_end = a5_base + header.above_a5 + qd_globals_reserve;
 
     // Clear A5 world
-    let globals_zero_end = globals_end + A5_CLEAR_RESERVE;
+    let globals_zero_end = globals_end + 0x40000;
     bus.fill_zeros(load_address, globals_zero_end.saturating_sub(load_address));
     bus.write_long(0x0904, a5_base); // CurrentA5
     bus.write_word(0x0934, header.jump_table_offset as u16); // CurJTOffset - Inside Macintosh Volume II, II-62
@@ -6838,15 +6757,8 @@ fn load_app_generic<M: MemoryBus>(
         eprintln!("[LOAD] Loaded image end=${:08X}", loaded_image_end);
     }
 
-    // In a SIZE-selected partition, the fixed A5/image area occupies the
-    // high end and the stack begins immediately below it, growing down toward
-    // the heap. Legacy/no-SIZE launches retain the historical top-of-RAM stack.
-    // Memory (1992), pp. 1-7 to 1-9; Processes (1994), pp. 1-5 to 1-6.
-    let stack_top = if selected_partition_size.is_some() {
-        load_address - 16
-    } else {
-        bus.ram_size() - 16
-    };
+    // Stack at top of RAM
+    let stack_top = bus.ram_size() - 16;
 
     Some(LoadedApp {
         code0_header: header,
@@ -7297,13 +7209,17 @@ mod tests {
             "relocated app image must leave room for the visible app-zone header"
         );
         assert!(
-            app.a5_base - APP_HEAP_FLOOR >= minimum_partition,
-            "the preferred partition should place its fixed A5 world above the minimum boundary"
+            app.a5_base - APP_HEAP_FLOOR >= minimum_partition - APP_STACK_SAFETY_MARGIN,
+            "large SIZE partitions should place A5 high enough for direct A5-zone memory checks"
+        );
+        assert!(
+            app.a5_base - APP_HEAP_FLOOR >= 750 * 1024,
+            "Spectre-style startup gates compare A5 - GetZone against a 750K floor"
         );
     }
 
     #[test]
-    fn load_app_relocates_exact_2mb_size_partition() {
+    fn load_app_leaves_exact_2mb_size_partition_at_default_address() {
         let below_a5 = 0x68E8;
         let code0 = minimal_code0(0x0D18, below_a5, 0, 0);
         let size = size_resource_bytes(0x5880, 0x0020_0000, 0x0020_0000);
@@ -7313,60 +7229,46 @@ mod tests {
 
         let app = runner.load_app(&fork).expect("load app");
 
-        assert!(
-            app_image_start_for_loaded_app(&app) > APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE,
-            "2 MB SIZE partitions must relocate the A5 world above the application zone"
-        );
-        let partition_end = APP_HEAP_FLOOR + 2 * 1024 * 1024;
-        assert!(app.loaded_image_end <= partition_end);
-        assert_eq!(app.initial_sp, app_image_start_for_loaded_app(&app) - 16);
-        assert!(app.initial_sp - APP_STACK_SAFETY_MARGIN > APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE);
+        assert_eq!(app_image_start_for_loaded_app(&app), DEFAULT_LOAD_ADDRESS);
+        assert_eq!(app.a5_base, DEFAULT_LOAD_ADDRESS + below_a5);
     }
 
     #[test]
-    fn load_app_uses_preferred_partition_without_a_size_threshold() {
-        let below_a5 = 0x2000;
-        let code0 = minimal_code0(0, below_a5, 0, 0);
-        let preferred = 640 * 1024;
-        let size = size_resource_bytes(0x5880, preferred, 512 * 1024);
-        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+    fn size_partition_does_not_cap_shared_resource_fork_materialization() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let size = size_resource_bytes(0x5880, 4_194_304, 3_584_000);
+        let large_resource = vec![0xA5; 6_481_428];
+        let fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, &code0),
+            (*b"SHAP", 128, &large_resource),
+            (*b"SIZE", -1, &size),
+        ]);
         let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
         let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
 
         let app = runner.load_app(&fork).expect("load app");
+        runner.init_app(&app);
 
-        assert!(
-            app_image_start_for_loaded_app(&app) > APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE,
-            "valid SIZE partitions must place the A5 world above the application zone"
+        // Systemless currently materializes resource-fork data in the shared
+        // bus. A classic resource map can instead leave nonpreloaded data on
+        // disk until requested, so a guest SIZE limit cannot bound this shared
+        // storage until it has a separate arena. More Macintosh Toolbox
+        // (1993), pp. 1-8 to 1-9.
+        let (_, resource_ptr) = runner
+            .dispatcher
+            .find_resource_any(*b"SHAP", 128)
+            .expect("large resource registered");
+        assert_ne!(
+            resource_ptr, 0,
+            "large resource data must remain allocatable"
         );
-        assert!(app.loaded_image_end <= APP_HEAP_FLOOR + preferred);
-        assert_eq!(app.initial_sp, app_image_start_for_loaded_app(&app) - 16);
-    }
-
-    #[test]
-    fn load_app_falls_back_to_minimum_partition_when_preferred_does_not_fit() {
-        let code0 = minimal_code0(0, 0x2000, 0, 0);
-        let minimum = 1024 * 1024;
-        let size = size_resource_bytes(0x5880, 2 * 1024 * 1024, minimum);
-        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
-        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
-        let mut runner = FixtureRunner::new(4 * 1024 * 1024, FixtureRunnerConfig::default());
-
-        let app = runner.load_app(&fork).expect("minimum partition should fit");
-
-        assert!(app.loaded_image_end <= APP_HEAP_FLOOR + minimum);
-        assert_eq!(app.initial_sp, app_image_start_for_loaded_app(&app) - 16);
-    }
-
-    #[test]
-    fn load_app_rejects_size_partition_when_minimum_does_not_fit() {
-        let code0 = minimal_code0(0, 0x2000, 0, 0);
-        let size = size_resource_bytes(0x5880, 2 * 1024 * 1024, 1_750_000);
-        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
-        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
-        let mut runner = FixtureRunner::new(4 * 1024 * 1024, FixtureRunnerConfig::default());
-
-        assert!(runner.load_app(&fork).is_none());
+        assert_eq!(runner.bus.read_byte(resource_ptr), 0xA5);
+        assert_eq!(
+            runner
+                .bus
+                .read_byte(resource_ptr + large_resource.len() as u32 - 1),
+            0xA5
+        );
     }
 
     #[test]
@@ -7388,15 +7290,15 @@ mod tests {
         let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
 
         let app = runner.load_app(&fork).expect("load app");
+        let allocation_heap_start = app_heap_start_for_loaded_app(&app);
         let (_, marker_ptr) = runner
             .dispatcher
             .find_resource_any(*b"BGAS", 128)
             .expect("BGAS resource loaded");
         assert!(
-            marker_ptr >= APP_HEAP_FLOOR + APP_ZONE_HEADER_SIZE,
-            "preloaded resources must allocate above the application-zone header"
+            marker_ptr >= allocation_heap_start + APP_ZONE_HEADER_SIZE,
+            "preloaded resources must still allocate above the relocated image"
         );
-        assert!(marker_ptr < app.initial_sp - APP_STACK_SAFETY_MARGIN);
 
         runner.init_app(&app);
 
@@ -7411,8 +7313,8 @@ mod tests {
             runner.bus.read_long(addr::APPL_LIMIT)
         );
         assert!(
-            app.a5_base > runner.bus.read_long(addr::THE_ZONE),
-            "the A5 world should be above the application heap"
+            app.a5_base - runner.bus.read_long(addr::THE_ZONE) >= 750 * 1024,
+            "GetZone-visible partition span should satisfy direct startup memory gates"
         );
         assert_eq!(runner.bus.read_bytes(marker_ptr, marker.len()), marker);
     }
