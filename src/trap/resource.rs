@@ -3764,7 +3764,9 @@ impl super::TrapDispatcher {
                     bus.write_word(pb + 16, 0); // noErr
                     cpu.write_reg(Register::D0, 0);
                     eprintln!("[TRAP] PBOpen -> refnum={} vfs=\"{}\"", refnum, vfs_name);
-                } else if Self::is_synthetic_driver_name(&filename) {
+                } else if Self::is_synthetic_driver_name(&filename)
+                    || self.has_vfs_driver_name(&filename)
+                {
                     let refnum = self.next_refnum;
                     self.next_refnum += 1;
                     self.synthetic_drivers.insert(refnum, filename.clone());
@@ -4037,20 +4039,29 @@ impl super::TrapDispatcher {
             // dispatcher masks `trap & 0x00FF`, so $A214 PBHGetVol and $A014
             // PBGetVol land on the same low byte and share this arm.
             //
-            // trap-doc: $A014 | PBGetVol | Partial | File Manager & Gestalt — OS Traps | Fills ioVRefNum (-1) and ioNamePtr from boot volume (IM:Files 1992, 2-162)
+            // trap-doc: $A014 | PBGetVol | Partial | File Manager & Gestalt — OS Traps | Fills ioVRefNum and ioNamePtr from the current volume (IM:Files 1992, 2-162)
             // PBHGetVol ($A214): HFS variant aliased onto $A014
             (false, 0x14) => {
                 let pb = cpu.read_reg(Register::A0);
+                let volume_ref_num = self.resolve_volume_ref_num(self.app_wd_refnum);
+                let volume_name = self
+                    .vfs_volume_for_ref_num(volume_ref_num)
+                    .map(|volume| volume.name.as_str())
+                    .unwrap_or(super::TrapDispatcher::boot_volume_name());
                 bus.write_word(pb + 22, self.app_wd_refnum as u16);
                 let name_ptr = bus.read_long(pb + 18);
                 if name_ptr != 0 {
-                    Self::write_pstring(bus, name_ptr, super::TrapDispatcher::boot_volume_name());
+                    Self::write_pstring(bus, name_ptr, volume_name);
                 }
                 // HGetVol fields: ioWDProcID and ioWDVRefNum and ioWDDirID
                 // Always populate these so both PBGetVol and HGetVol callers work.
                 bus.write_long(pb + 28, 0); // ioWDProcID
-                bus.write_word(pb + 32, super::TrapDispatcher::boot_volume_ref_num_u16()); // ioWDVRefNum
-                bus.write_long(pb + 48, self.default_dir_id); // ioWDDirID
+                bus.write_word(pb + 32, volume_ref_num as u16); // ioWDVRefNum
+                let dir_id = self
+                    .working_directory_info(self.app_wd_refnum)
+                    .map(|wd| wd.dir_id)
+                    .unwrap_or(self.default_dir_id);
+                bus.write_long(pb + 48, dir_id); // ioWDDirID
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -4066,43 +4077,96 @@ impl super::TrapDispatcher {
             // PBHGetVInfo and $A007 PBGetVInfo land on the same low
             // byte and share this arm.
             //
-            // PBGetVInfo ($A007): Returns boot volume info and nontrivial free-space figures
+            // PBGetVInfo ($A007): Returns mounted volume info and free-space figures
             // PBHGetVInfo ($A207): HFS variant aliased onto $A007
             (false, 0x07) => {
                 let pb = cpu.read_reg(Register::A0);
                 let volume_index = bus.read_word(pb + 28) as i16;
-                if volume_index > 1 {
+                let volume_info = if volume_index <= 1 {
+                    Some((
+                        super::TrapDispatcher::boot_volume_name().to_string(),
+                        super::TrapDispatcher::boot_volume_ref_num(),
+                        0u16,
+                    ))
+                } else {
+                    let mut mounted = self.vfs_volumes.values().collect::<Vec<_>>();
+                    mounted.sort_by_key(|volume| std::cmp::Reverse(volume.ref_num));
+                    mounted
+                        .get((volume_index - 2) as usize)
+                        .map(|volume| (volume.name.clone(), volume.ref_num, volume.attributes))
+                };
+                let Some((volume_name, volume_ref_num, volume_attributes)) = volume_info else {
                     // Files 1992, 2-145: positive ioVolIndex values walk the
                     // mounted-volume queue, and enumeration ends with nsvErr.
-                    // Systemless currently exposes one mounted boot volume.
                     const NSV_ERR: i16 = -35;
                     bus.write_word(pb + 16, NSV_ERR as u16);
                     cpu.write_reg(Register::D0, NSV_ERR as i32 as u32);
                     return Some(Ok(()));
-                }
+                };
+
+                let mounted_info = self.vfs_volume_for_ref_num(volume_ref_num);
+                let volume_file_count = mounted_info
+                    .map(|volume| volume.file_count)
+                    .filter(|count| *count != 0)
+                    .unwrap_or(100);
+                let allocation_block_count = mounted_info
+                    .map(|volume| volume.allocation_block_count)
+                    .filter(|count| *count != 0)
+                    .unwrap_or(BOOT_VOLUME_ALLOCATION_BLOCKS);
+                let allocation_block_size = mounted_info
+                    .map(|volume| volume.allocation_block_size)
+                    .filter(|size| *size != 0)
+                    .unwrap_or(BOOT_VOLUME_ALLOCATION_BLOCK_SIZE);
+                let clump_size = mounted_info
+                    .map(|volume| volume.clump_size)
+                    .filter(|size| *size != 0)
+                    .unwrap_or(BOOT_VOLUME_ALLOCATION_BLOCK_SIZE);
+                let free_blocks = mounted_info
+                    .map(|volume| volume.free_blocks)
+                    .filter(|count| *count != 0)
+                    .unwrap_or(BOOT_VOLUME_FREE_BLOCKS);
+                let created_date = mounted_info.map(|volume| volume.created_date).unwrap_or(0);
+                let modified_date = mounted_info.map(|volume| volume.modified_date).unwrap_or(0);
+                let bitmap_start = mounted_info.map(|volume| volume.bitmap_start).unwrap_or(0);
+                let allocation_pointer = mounted_info
+                    .map(|volume| volume.allocation_pointer)
+                    .unwrap_or(0);
+                let allocation_start = mounted_info
+                    .map(|volume| volume.allocation_start)
+                    .unwrap_or(0);
+                let next_catalog_id = mounted_info
+                    .map(|volume| volume.next_catalog_id)
+                    .unwrap_or(0);
+                let volume_ordinal = (-volume_ref_num - 1).max(0) as u16;
+                let volume_driver_ref =
+                    super::TrapDispatcher::vfs_driver_ref_num(volume_ref_num);
 
                 let name_ptr = bus.read_long(pb + 18);
                 if name_ptr != 0 {
-                    Self::write_pstring(bus, name_ptr, super::TrapDispatcher::boot_volume_name());
+                    Self::write_pstring(bus, name_ptr, &volume_name);
                 }
-                bus.write_word(pb + 22, super::TrapDispatcher::boot_volume_ref_num_u16());
-                bus.write_long(pb + 30, 0); // ioVCrDate
-                bus.write_long(pb + 34, 0); // ioVLsMod
-                bus.write_word(pb + 38, 0); // ioVAtrb
-                bus.write_word(pb + 40, 100); // ioVNmFls (files on volume)
-                bus.write_word(pb + 42, 0); // ioVBitMap
-                bus.write_word(pb + 44, 0); // ioAllocPtr
+                bus.write_word(pb + 22, volume_ref_num as u16);
+                bus.write_long(pb + 30, created_date); // ioVCrDate
+                bus.write_long(pb + 34, modified_date); // ioVLsMod
+                bus.write_word(pb + 38, volume_attributes); // ioVAtrb
+                bus.write_word(pb + 40, volume_file_count); // ioVNmFls (files on volume)
+                bus.write_word(pb + 42, bitmap_start); // ioVBitMap
+                bus.write_word(pb + 44, allocation_pointer); // ioAllocPtr
 
                 // Files 1992, 2-46 and 2-144: callers multiply the unsigned
                 // ioVFrBlk block count by ioVAlBlkSiz to determine free bytes.
                 // Report a modest 64 MB boot volume so installers and demos
                 // that require scratch space do not reject the system disk.
-                bus.write_word(pb + 46, BOOT_VOLUME_ALLOCATION_BLOCKS); // ioVNmAlBlks
-                bus.write_long(pb + 48, BOOT_VOLUME_ALLOCATION_BLOCK_SIZE); // ioVAlBlkSiz
-                bus.write_long(pb + 52, BOOT_VOLUME_ALLOCATION_BLOCK_SIZE); // ioVClpSiz
-                bus.write_word(pb + 56, 0); // ioAlBlSt
-                bus.write_long(pb + 58, 0); // ioVNxtCNID
-                bus.write_word(pb + 62, BOOT_VOLUME_FREE_BLOCKS); // ioVFrBlk
+                bus.write_word(pb + 46, allocation_block_count); // ioVNmAlBlks
+                bus.write_long(pb + 48, allocation_block_size); // ioVAlBlkSiz
+                bus.write_long(pb + 52, clump_size); // ioVClpSiz
+                bus.write_word(pb + 56, allocation_start); // ioAlBlSt
+                bus.write_long(pb + 58, next_catalog_id); // ioVNxtCNID
+                bus.write_word(pb + 62, free_blocks); // ioVFrBlk
+                bus.write_word(pb + 64, 0x4244); // ioVSigWord (HFS)
+                bus.write_word(pb + 66, volume_ordinal.saturating_add(1)); // ioVDrvInfo
+                bus.write_word(pb + 68, volume_driver_ref as u16); // ioVRefNum (driver)
+                bus.write_word(pb + 70, 0); // ioVFSID (File Manager)
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -4248,6 +4312,7 @@ impl super::TrapDispatcher {
                 let vref = bus.read_word(pb + 22) as i16;
                 let known_by_vref = vref == 0
                     || vref == Self::boot_volume_ref_num()
+                    || self.vfs_volumes.contains_key(&vref)
                     || self.working_directories.contains_key(&vref);
                 let known_by_name = !name.is_empty()
                     && name.eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name());
@@ -5416,6 +5481,8 @@ impl super::TrapDispatcher {
                 } else if requested_vref == Self::boot_volume_ref_num() {
                     // ioVRefNum = -1: boot volume, use root directory (dirID 2).
                     2
+                } else if let Some(volume) = self.vfs_volume_for_ref_num(requested_vref) {
+                    volume.root_dir_id
                 } else {
                     // Unrecognised volume reference number: nsvErr (-35).
                     // IM:Files 1992, 2-162: "nsvErr — No such volume."
@@ -6762,11 +6829,11 @@ impl super::TrapDispatcher {
                             working_directory.proc_id
                         );
                         if name_ptr != 0 {
-                            Self::write_pstring(
-                                bus,
-                                name_ptr,
-                                super::TrapDispatcher::boot_volume_name(),
-                            );
+                            let volume_name = self
+                                .vfs_volume_for_ref_num(working_directory.volume_ref_num)
+                                .map(|volume| volume.name.as_str())
+                                .unwrap_or(super::TrapDispatcher::boot_volume_name());
+                            Self::write_pstring(bus, name_ptr, volume_name);
                         }
                         bus.write_word(pb + 22, returned_vref as u16);
                         bus.write_long(pb + 28, working_directory.proc_id);
@@ -6795,6 +6862,18 @@ impl super::TrapDispatcher {
                     selector, name_ptr, filename, vref, dir_id, fdir_index
                 );
                 let resolved_vref = self.resolve_volume_ref_num(vref);
+
+                if selector == 0x18 {
+                    // PBCatSearch ($A260, selector $0018): report an
+                    // exhausted read-only catalog search until the full HFS
+                    // catalog cursor is implemented. This is important for
+                    // callers that otherwise retry forever on a zero-match
+                    // noErr response.
+                    bus.write_long(pb + 32, 0); // ioActMatchCount
+                    bus.write_word(pb + 16, (-39i16) as u16); // eofErr
+                    cpu.write_reg(Register::D0, (-39i32) as u32);
+                    return Some(Ok(()));
+                }
 
                 if selector == 6 {
                     // PBDirCreate ($A260, selector 6)
@@ -6931,7 +7010,11 @@ impl super::TrapDispatcher {
                         if name_ptr != 0 {
                             Self::write_pstring(bus, name_ptr, &base_name);
                         }
-                        bus.write_word(pb + 22, super::TrapDispatcher::boot_volume_ref_num_u16()); // ioVRefNum
+                        let file_volume_ref = self
+                            .vfs_volume_for_path(&metadata_name)
+                            .map(|volume| volume.ref_num)
+                            .unwrap_or(super::TrapDispatcher::boot_volume_ref_num());
+                        bus.write_word(pb + 22, file_volume_ref as u16); // ioVRefNum
                         bus.write_word(pb + 30, 0); // filler1
                         bus.write_long(pb + 32, file_id); // ioFCBFlNm
                         bus.write_word(pb + 36, flags); // ioFCBFlags
@@ -6939,7 +7022,7 @@ impl super::TrapDispatcher {
                         bus.write_long(pb + 40, file_len as u32); // ioFCBEOF
                         bus.write_long(pb + 44, file_len as u32); // ioFCBPLen
                         bus.write_long(pb + 48, current_pos as u32); // ioFCBCrPs
-                        bus.write_word(pb + 52, super::TrapDispatcher::boot_volume_ref_num_u16()); // ioFCBVRefNum
+                        bus.write_word(pb + 52, file_volume_ref as u16); // ioFCBVRefNum
                         bus.write_long(pb + 54, 0); // ioFCBClpSiz
                         bus.write_long(pb + 58, parent_dir_id); // ioFCBParID
                         eprintln!(

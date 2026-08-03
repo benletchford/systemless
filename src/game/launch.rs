@@ -785,6 +785,7 @@ fn insert_forks_into_vfs(
 struct Payload {
     dirs: Vec<String>,
     files: Vec<PayloadFile>,
+    volumes: Vec<(String, crate::disk_image::DiskImageVolumeInfo, String)>,
     skipped_disk_image_errors: Vec<String>,
 }
 
@@ -1128,6 +1129,7 @@ fn payload_from_forks(
         return Ok(Payload {
             dirs: Vec::new(),
             files: vec![file],
+            volumes: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
         });
     }
@@ -1187,6 +1189,7 @@ fn payload_from_forks(
             creator,
             finder_flags,
         }],
+        volumes: Vec::new(),
         skipped_disk_image_errors,
     })
 }
@@ -1216,6 +1219,7 @@ fn payload_from_disk_image(image: crate::disk_image::DiskImageContents) -> Resul
     Ok(Payload {
         dirs: image.dirs,
         files,
+        volumes: vec![(image.volume_name, image.volume_info, image.driver_name)],
         skipped_disk_image_errors: Vec::new(),
     })
 }
@@ -1228,6 +1232,25 @@ fn insert_payload_into_vfs(
     for dir in payload.dirs {
         let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&dir);
         runner.dispatcher_mut().ensure_vfs_directory(&normalized);
+    }
+
+    for (volume, info, driver_name) in payload.volumes {
+        runner.dispatcher_mut().mount_vfs_volume_with_driver_info(
+            &volume,
+            &driver_name,
+            info.attributes,
+            info.file_count,
+            info.allocation_block_count,
+            info.allocation_block_size,
+            info.clump_size,
+            info.free_blocks,
+            info.bitmap_start,
+            info.allocation_pointer,
+            info.allocation_start,
+            info.next_catalog_id,
+            info.created_date,
+            info.modified_date,
+        );
     }
 
     for file in payload.files {
@@ -1388,12 +1411,12 @@ fn maybe_select_executable(
     // it wins outright over the size/APPL heuristic, which is needed for
     // archives that contain multiple bootable executables and where size
     // alone cannot distinguish the user-facing runtime from tooling.
-    let override_match = executable_name_override()
-        .map(|needle| name.contains(needle.as_str()))
-        .unwrap_or(false);
-    let prev_override_match = match (executable_entry.as_ref(), executable_name_override()) {
-        (Some(prev), Some(needle)) => prev.name.contains(needle.as_str()),
-        _ => false,
+    let override_rank = executable_name_override()
+        .map(|needle| executable_override_rank(name, &needle))
+        .unwrap_or(3);
+    let prev_override_rank = match (executable_entry.as_ref(), executable_name_override()) {
+        (Some(prev), Some(needle)) => executable_override_rank(&prev.name, &needle),
+        _ => 3,
     };
 
     let candidate = ExecutableCandidate {
@@ -1405,10 +1428,8 @@ fn maybe_select_executable(
         creator,
     };
 
-    let take = if override_match && !prev_override_match {
-        true
-    } else if !override_match && prev_override_match {
-        false
+    let take = if override_rank != prev_override_rank {
+        override_rank < prev_override_rank
     } else {
         match executable_entry.as_ref() {
             Some(prev) => candidate.selection_key() > prev.selection_key(),
@@ -1425,6 +1446,18 @@ fn executable_name_override() -> Option<String> {
     std::env::var("SYSTEMLESS_LOAD_EXECUTABLE")
         .ok()
         .filter(|s| !s.is_empty())
+}
+
+fn executable_override_rank(name: &str, needle: &str) -> u8 {
+    if name == needle {
+        0
+    } else if name.ends_with(&format!("/{needle}")) {
+        1
+    } else if name.contains(needle) {
+        2
+    } else {
+        3
+    }
 }
 
 #[derive(Clone, Debug)]
