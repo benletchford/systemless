@@ -375,6 +375,13 @@ pub trait MemoryBus {
     /// Get the total RAM size
     fn ram_size(&self) -> u32;
 
+    /// Highest address available for ordinary guest allocations. The default
+    /// is the end of RAM; buses with framebuffer or synthetic reservations can
+    /// expose their lower allocation ceiling.
+    fn allocation_limit(&self) -> u32 {
+        self.ram_size()
+    }
+
     /// Read a Pascal string (length-prefixed) from memory. Delegates
     /// to [`Self::read_bytes`] for the data so the underlying slice
     /// fast path on [`MacMemoryBus`] applies.
@@ -448,10 +455,14 @@ pub struct MacMemoryBus {
     globals: LowMemGlobals,
     /// Heap allocation pointer (grows upward from 0x200000)
     heap_ptr: u32,
+    /// Upper bound for ordinary guest heap allocations.
+    heap_limit: u32,
     /// Systemless-owned executable/data stubs grow downward outside the guest heap.
     synthetic_ptr: u32,
     /// Guest writes cannot modify synthesized ROM-like instruction stubs.
     readonly_code_ranges: Vec<(u32, u32)>,
+    /// Lower bound for Systemless-owned downward allocations.
+    synthetic_floor: u32,
     /// Free list: maps aligned_size → stack of recycled addresses
     free_blocks: HashMap<u32, Vec<u32>>,
     /// Tracks the aligned size of each allocation (address → aligned_size)
@@ -834,8 +845,10 @@ impl MacMemoryBus {
             ram_size: ram_size as u32,
             globals: LowMemGlobals::new(),
             heap_ptr: 0x200000, // Start heap at 2MB
+            heap_limit: screen_buffer_start,
             synthetic_ptr: screen_buffer_start,
             readonly_code_ranges: Vec::new(),
+            synthetic_floor: 0,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -913,8 +926,10 @@ impl MacMemoryBus {
             ram_size: ram_size as u32,
             globals,
             heap_ptr: 0x200000,
+            heap_limit: screen_buffer_start,
             synthetic_ptr: screen_buffer_start,
             readonly_code_ranges: Vec::new(),
+            synthetic_floor: 0,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -990,6 +1005,18 @@ impl MacMemoryBus {
         self.heap_ptr = self.heap_ptr.max(aligned);
     }
 
+    /// Prevent ordinary guest allocations from growing into a fixed image or
+    /// stack region owned by the application partition.
+    pub(crate) fn cap_heap_at(&mut self, end_addr: u32) {
+        self.heap_limit = self.heap_limit.min(end_addr);
+    }
+
+    /// Prevent downward-growing Systemless callback storage from overwriting
+    /// the application's fixed image.
+    pub(crate) fn protect_synthetic_above(&mut self, start_addr: u32) {
+        self.synthetic_floor = self.synthetic_floor.max(start_addr);
+    }
+
     pub fn alloc(&mut self, size: u32) -> u32 {
         let aligned = Self::allocation_bucket_size(size); // 4-byte align, unique zero-size blocks
 
@@ -1039,10 +1066,11 @@ impl MacMemoryBus {
         let ptr = self.heap_ptr;
         let new_ptr = ptr + aligned;
 
-        if new_ptr >= self.synthetic_ptr {
+        let allocation_limit = self.heap_limit.min(self.synthetic_ptr);
+        if new_ptr >= allocation_limit {
             eprintln!(
                 "[ALLOC] Out of memory: requesting {} bytes, heap at ${:08X}, limit ${:08X}",
-                size, ptr, self.synthetic_ptr
+                size, ptr, allocation_limit
             );
             return 0; // Return NULL; callers must check and set memFullErr
         }
@@ -1062,10 +1090,11 @@ impl MacMemoryBus {
         let Some(ptr) = self.synthetic_ptr.checked_sub(aligned) else {
             return 0;
         };
-        if ptr <= self.heap_ptr {
+        let allocation_floor = self.heap_ptr.max(self.synthetic_floor);
+        if ptr <= allocation_floor {
             eprintln!(
-                "[ALLOC] Out of synthetic memory: requesting {} bytes, heap at ${:08X}, synthetic at ${:08X}",
-                size, self.heap_ptr, self.synthetic_ptr
+                "[ALLOC] Out of synthetic memory: requesting {} bytes, floor at ${:08X}, synthetic at ${:08X}",
+                size, allocation_floor, self.synthetic_ptr
             );
             return 0;
         }
@@ -1145,10 +1174,11 @@ impl MacMemoryBus {
         let ptr = (self.heap_ptr + alignment - 1) & !(alignment - 1);
         let new_ptr = ptr + aligned;
 
-        if new_ptr >= self.synthetic_ptr {
+        let allocation_limit = self.heap_limit.min(self.synthetic_ptr);
+        if new_ptr >= allocation_limit {
             eprintln!(
                 "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
-                size, alignment, self.heap_ptr, self.synthetic_ptr
+                size, alignment, self.heap_ptr, allocation_limit
             );
             return 0;
         }
@@ -1699,6 +1729,10 @@ impl MemoryBus for MacMemoryBus {
     fn ram_size(&self) -> u32 {
         self.ram_size
     }
+
+    fn allocation_limit(&self) -> u32 {
+        self.synthetic_ptr
+    }
 }
 
 #[cfg(test)]
@@ -1837,6 +1871,26 @@ mod tests {
         assert!(synthetic > second_guest);
         assert_eq!(bus.read_bytes(synthetic, 24), vec![0; 24]);
         assert_eq!(bus.get_alloc_size(synthetic), None);
+    }
+
+    #[test]
+    fn partition_boundaries_keep_heap_and_synthetic_allocations_out_of_the_image() {
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        let heap_limit = 0x0020_0080;
+        let image_end = bus.allocation_limit() - 0x1000;
+        bus.cap_heap_at(heap_limit);
+        bus.protect_synthetic_above(image_end);
+
+        assert_eq!(bus.alloc(0x40), 0x0020_0000);
+        assert_eq!(bus.alloc(0x40), 0, "the guest heap must stop at its partition limit");
+
+        let synthetic = bus.alloc_synthetic(0x0FFC);
+        assert!(synthetic >= image_end);
+        assert_eq!(
+            bus.alloc_synthetic(4),
+            0,
+            "synthetic callbacks must not grow downward into the fixed image"
+        );
     }
 
     #[test]
