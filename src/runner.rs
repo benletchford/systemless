@@ -892,6 +892,12 @@ pub struct FixtureRunner {
     /// must not be re-entered by our synthetic tick advancement while the callback
     /// is still unwinding back to interrupted guest code.
     active_interrupt_callback: Option<ActiveInterruptCallback>,
+    /// Tracking trap PC to re-fire after an asynchronous callback returns.
+    ///
+    /// A timer/VBL callback can be injected while MenuSelect or ModalDialog
+    /// is being re-fired. Keep the callback's normal return frame intact and
+    /// resume the tracking trap only after that frame has been restored.
+    deferred_tracking_refire_pc: Option<u32>,
     /// Audio output backend (None = no audio output).
     audio: Option<Box<dyn crate::audio::AudioBackend>>,
     /// Accumulated audio samples for external consumers (e.g. WASM).
@@ -1004,6 +1010,7 @@ impl FixtureRunner {
             adb_callback_trampoline: 0,
             adb_packet_buffer: 0,
             active_interrupt_callback: None,
+            deferred_tracking_refire_pc: None,
             audio: None,
             audio_buffer: Vec::new(),
             sound_doubleback_trampoline: 0,
@@ -3433,8 +3440,13 @@ impl FixtureRunner {
                         self.dispatcher
                             .finalize_dialog_draw_procs_if_idle(&mut self.bus);
                     }
+                    let deferred_tracking_refire_pc = self.deferred_tracking_refire_pc.take();
                     self.active_interrupt_callback = None;
                     self.refill_foreground_budget_after_async_return();
+                    if let Some(refire_pc) = deferred_tracking_refire_pc {
+                        self.cpu.write_reg(Register::PC, refire_pc);
+                        continue;
+                    }
                     if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
                     {
                         continue;
@@ -3990,6 +4002,16 @@ impl FixtureRunner {
                             // match too.
                             let is_tracking_refire = self.dispatcher.is_tracking_refire(opcode);
                             if is_tracking_refire {
+                                // An asynchronous callback may have been
+                                // injected while this tracking trap was
+                                // executing. Do not rewind PC over the
+                                // callback's synthetic return frame: let the
+                                // callback return normally, then re-fire the
+                                // tracking trap from its original address.
+                                if self.active_interrupt_callback.is_some() {
+                                    self.deferred_tracking_refire_pc = Some(pc);
+                                    continue;
+                                }
                                 // In GUI mode, freeze ticks so the game clock doesn't
                                 // advance while the host renders intermediate frames.
                                 // In headless mode (scripted harnesses), let the budget
@@ -11072,6 +11094,54 @@ mod tests {
         // dialog flow plays music through this path.
         assert!(!tracking_refire_should_freeze_ticks(0xA991));
         assert!(!tracking_refire_should_freeze_ticks(0xAD91));
+    }
+
+    #[test]
+    fn tracking_refire_survives_async_callback_injection() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, sp);
+        let mut tracking = dialog_tracking_for_test(0, 0);
+        tracking.flash_remaining = 6;
+        tracking.flash_delay = 3;
+        runner.dispatcher.dialog_tracking = Some(tracking);
+
+        // Model a timer/VBL callback that was injected after the tracking
+        // trap's A-line instruction advanced PC to base + 2. The callback
+        // must return to that post-trap PC before the runner re-fires A991.
+        runner.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source: ActiveInterruptCallbackSource::Timer,
+            resume_pc: base + 2,
+            resume_sp: sp,
+            d_regs: [0; 8],
+            a_regs: [0, 0, 0, 0, 0, 0, 0, sp],
+            sr: 0x2000,
+            ccr: 0,
+            restore_port: None,
+        });
+
+        let (steps, running) = runner.run_steps(2, None);
+
+        assert!(running);
+        assert_eq!(steps, 2);
+        assert!(
+            runner.active_interrupt_callback.is_none(),
+            "active={:?} deferred={:?} pc=${:08X} sp=${:08X}",
+            runner.active_interrupt_callback.map(|active| (
+                active.source,
+                active.resume_pc,
+                active.resume_sp
+            )),
+            runner.deferred_tracking_refire_pc,
+            runner.cpu.read_reg(Register::PC),
+            runner.cpu.read_reg(Register::A7),
+        );
+        assert!(runner.deferred_tracking_refire_pc.is_none());
+        assert_eq!(runner.cpu.read_reg(Register::PC), base);
     }
 
     #[test]
