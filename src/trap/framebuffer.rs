@@ -4161,6 +4161,20 @@ impl super::TrapDispatcher {
                 }
                 if front_is_dialog && dialog_ptr != front_window {
                     None
+                } else if let (Some(dialog_index), Some(front_index)) = (
+                    self.window_list
+                        .iter()
+                        .position(|&window| window == dialog_ptr),
+                    self.window_list
+                        .iter()
+                        .position(|&window| window == front_window),
+                ) {
+                    // A retained modeless-dialog snapshot is only visible when
+                    // its Window Manager list position is in front of the
+                    // current front window. If it was sent behind a document,
+                    // replaying the saved pixels here would overpaint the
+                    // document after its port was composited.
+                    (dialog_index <= front_index).then_some(snapshot.clone())
                 } else {
                     Some(snapshot.clone())
                 }
@@ -5324,6 +5338,39 @@ mod redraw_chrome_tests {
             bus.read_byte(probe),
             0x77,
             "a retained snapshot must not overwrite pixels painted after DrawDialog"
+        );
+    }
+
+    #[test]
+    fn restore_visible_dialog_snapshots_skips_dialogs_sent_behind_front_window() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let dialog_ptr = 0x00D1_A106;
+        let front_window = 0x00D1_A107;
+        let bounds = (10, 10, 30, 30);
+        let dialog_pixels = disp.save_dialog_pixels(&bus, bounds);
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            super::super::dispatch::PersistentDialogSnapshot {
+                bounds,
+                pixels: dialog_pixels,
+            },
+        );
+        disp.window_list = vec![front_window, dialog_ptr];
+        disp.front_window = front_window;
+
+        let probe = screen_base + 18 * 64 + 18;
+        bus.write_byte(probe, 0x77);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x77,
+            "a dialog sent behind the front document must not be replayed on top"
         );
     }
 
