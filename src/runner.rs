@@ -6335,6 +6335,12 @@ fn apply_mpw_far_segment_relocations<M: MemoryBus>(
         return;
     };
 
+    // The resource data pointer follows the four-byte block-size word that
+    // the Memory Manager keeps immediately before a loaded CODE resource.
+    // MPW's segment-relative relocation addend is based at that block start,
+    // while the instruction bytes themselves begin at `segment_addr`.
+    let segment_load_address = segment_addr.wrapping_sub(4);
+
     let mut a5_relocation_count = 0usize;
     match header.a5_relocation_offsets(data) {
         Some(offsets) => {
@@ -6361,7 +6367,7 @@ fn apply_mpw_far_segment_relocations<M: MemoryBus>(
             pc_relocation_count = offsets.len();
             for offset in offsets {
                 let addr = segment_addr.wrapping_add(offset);
-                let relocated = bus.read_long(addr).wrapping_add(segment_addr);
+                let relocated = bus.read_long(addr).wrapping_add(segment_load_address);
                 bus.write_long(addr, relocated);
             }
         }
@@ -6381,7 +6387,7 @@ fn apply_mpw_far_segment_relocations<M: MemoryBus>(
     );
     bus.write_long(
         segment_addr + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET,
-        segment_addr,
+        segment_load_address,
     );
 
     if trace_load_enabled() {
@@ -7388,8 +7394,8 @@ mod tests {
 
         assert_eq!(
             runner.bus.read_long(code1_base + 0x2A),
-            code1_base + 0x100,
-            "PC relocation stream must add the loaded segment address"
+            code1_base + 0xFC,
+            "PC relocation stream must add the CODE block address before its four-byte size word"
         );
         assert_eq!(
             runner.bus.read_long(code1_base + 0x32),
@@ -7406,7 +7412,7 @@ mod tests {
             runner
                 .bus
                 .read_long(code1_base + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET),
-            code1_base
+            code1_base - 4
         );
     }
 
