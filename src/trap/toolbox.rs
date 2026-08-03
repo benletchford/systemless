@@ -9422,17 +9422,21 @@ impl super::TrapDispatcher {
             // Converts a Fixed value to an Extended (80-bit SANE).
             // FUNCTION Fix2X(x: Fixed): Extended;
             // Operating System Utilities 1994, p. 3-45
-            // Pascal convention for function returning Float80 (10 bytes):
+            // MPW 68K convention for an Extended result: the caller passes
+            // the result buffer address after the Fixed argument.
             //   SP+0: x (Fixed, 4 bytes)
-            //   SP+4: 10 bytes reserved for Extended return
-            // Callee pops 4 bytes (x), leaves extended at SP.
+            //   SP+4: result buffer (Ptr)
+            // The trap writes the 10-byte result through that pointer and
+            // leaves A7 at the result-pointer slot, matching the ordinary
+            // Pascal function-result-slot convention used by the Toolbox.
             // Fix2X ($A843): Converts Fixed to 80-bit Extended SANE per OS Utils 3-45.
             (true, 0x043) => {
                 let sp = cpu.read_reg(Register::A7);
                 let x = bus.read_long(sp) as i32;
                 let val = x as f64 / 65536.0;
                 let ext = super::extended80::Extended80::from(val);
-                ext.write_to_bus(bus, sp + 4);
+                let result_ptr = bus.read_long(sp + 4);
+                ext.write_to_bus(bus, result_ptr);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -9441,21 +9445,23 @@ impl super::TrapDispatcher {
             // Converts an Extended (80-bit SANE) to a Fixed value.
             // FUNCTION X2Fix(x: Extended): Fixed;
             // Operating System Utilities 1994, p. 3-45
-            // Pascal convention for function returning Fixed (4 bytes):
-            //   SP+0: x (Extended, 10 bytes)
-            //   SP+10: 4 bytes reserved for Fixed return
-            // Callee pops 10 bytes (x), leaves Fixed at SP.
+            // MPW 68K convention for an Extended argument: the caller passes
+            // a pointer to the 10-byte value, followed by the 4-byte result
+            // slot.
+            //   SP+0: x (Extended Ptr)
+            //   SP+4: Fixed result slot
             // X2Fix ($A844): Converts Extended to Fixed with saturation
             // semantics per OS Utils 3-45.
             (true, 0x044) => {
                 let sp = cpu.read_reg(Register::A7);
-                let ext = super::extended80::Extended80::read_from_bus(bus, sp);
+                let ext_ptr = bus.read_long(sp);
+                let ext = super::extended80::Extended80::read_from_bus(bus, ext_ptr);
                 let val = f64::from(ext);
                 let fixed = (val * 65536.0)
                     .round()
                     .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-                bus.write_long(sp + 10, fixed as u32);
-                cpu.write_reg(Register::A7, sp + 10);
+                bus.write_long(sp + 4, fixed as u32);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -9463,17 +9469,18 @@ impl super::TrapDispatcher {
             // Converts a Fract value to an Extended (80-bit SANE).
             // FUNCTION Frac2X(x: Fract): Extended;
             // Operating System Utilities 1994, p. 3-46
-            // Pascal convention for function returning Float80 (10 bytes):
+            // MPW 68K convention for an Extended result: the caller passes
+            // the result buffer address after the Fract argument.
             //   SP+0: x (Fract, 4 bytes)
-            //   SP+4: 10 bytes reserved for Extended return
-            // Callee pops 4 bytes (x), leaves extended at SP.
+            //   SP+4: result buffer (Ptr)
             // Frac2X ($A845): Converts Fract to 80-bit Extended SANE per OS Utils 3-46.
             (true, 0x045) => {
                 let sp = cpu.read_reg(Register::A7);
                 let x = bus.read_long(sp) as i32;
                 let val = x as f64 / (1u64 << 30) as f64;
                 let ext = super::extended80::Extended80::from(val);
-                ext.write_to_bus(bus, sp + 4);
+                let result_ptr = bus.read_long(sp + 4);
+                ext.write_to_bus(bus, result_ptr);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -9482,21 +9489,23 @@ impl super::TrapDispatcher {
             // Converts an Extended (80-bit SANE) to a Fract value.
             // FUNCTION X2Frac(x: Extended): Fract;
             // Operating System Utilities 1994, p. 3-46
-            // Pascal convention for function returning Fract (4 bytes):
-            //   SP+0: x (Extended, 10 bytes)
-            //   SP+10: 4 bytes reserved for Fract return
-            // Callee pops 10 bytes (x), leaves Fract at SP.
+            // MPW 68K convention for an Extended argument: the caller passes
+            // a pointer to the 10-byte value, followed by the 4-byte result
+            // slot.
+            //   SP+0: x (Extended Ptr)
+            //   SP+4: Fract result slot
             // X2Frac ($A846): Converts Extended to Fract with saturation
             // semantics per OS Utils 3-46.
             (true, 0x046) => {
                 let sp = cpu.read_reg(Register::A7);
-                let ext = super::extended80::Extended80::read_from_bus(bus, sp);
+                let ext_ptr = bus.read_long(sp);
+                let ext = super::extended80::Extended80::read_from_bus(bus, ext_ptr);
                 let val = f64::from(ext);
                 let fract = (val * (1u64 << 30) as f64)
                     .round()
                     .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-                bus.write_long(sp + 10, fract as u32);
-                cpu.write_reg(Register::A7, sp + 10);
+                bus.write_long(sp + 4, fract as u32);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -28030,20 +28039,20 @@ mod tests {
     // Fix2X ($A843)
     // Operating System Utilities 1994, p. 3-45.
     #[test]
-    fn fix2x_returns_extended_equivalent_and_pops_fixed_argument() {
+    fn fix2x_writes_extended_result_through_pointer_and_pops_fixed_argument() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        let result_ptr = sp + 0x100;
 
         bus.write_long(sp, 0x0001_C000); // 1.75 Fixed
-        for i in 0..10 {
-            bus.write_byte(sp + 4 + i, 0);
-        }
+        bus.write_long(sp + 4, result_ptr);
+        bus.write_bytes(result_ptr, &[0; 10]);
 
         let result = disp.dispatch_toolbox(true, 0x043, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        let ext = Extended80::read_from_bus(&bus, sp + 4);
+        let ext = Extended80::read_from_bus(&bus, result_ptr);
         assert!((f64::from(ext) - 1.75).abs() < 1e-12);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
@@ -28051,54 +28060,58 @@ mod tests {
     // X2Fix ($A844)
     // Operating System Utilities 1994, p. 3-45.
     #[test]
-    fn x2fix_returns_best_fixed_approximation_and_saturates_out_of_range() {
+    fn x2fix_reads_extended_pointer_writes_result_slot_and_saturates_out_of_range() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        let ext_ptr = sp + 0x100;
 
-        Extended80::from(1.75).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        bus.write_long(sp, ext_ptr);
+        Extended80::from(1.75).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let exact = disp.dispatch_toolbox(true, 0x044, &mut cpu, &mut bus);
         assert!(exact.is_some());
         assert!(exact.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x0001_C000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x0001_C000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         cpu.write_reg(Register::A7, sp);
-        Extended80::from(40000.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        bus.write_long(sp, ext_ptr);
+        Extended80::from(40000.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let high = disp.dispatch_toolbox(true, 0x044, &mut cpu, &mut bus);
         assert!(high.is_some());
         assert!(high.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x7FFF_FFFF);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x7FFF_FFFF);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         cpu.write_reg(Register::A7, sp);
-        Extended80::from(-40000.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        bus.write_long(sp, ext_ptr);
+        Extended80::from(-40000.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let low = disp.dispatch_toolbox(true, 0x044, &mut cpu, &mut bus);
         assert!(low.is_some());
         assert!(low.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x8000_0000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x8000_0000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     // Frac2X ($A845)
     // Operating System Utilities 1994, p. 3-46.
     #[test]
-    fn frac2x_returns_extended_equivalent_and_pops_fract_argument() {
+    fn frac2x_writes_extended_result_through_pointer_and_pops_fract_argument() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        let result_ptr = sp + 0x100;
 
         bus.write_long(sp, 0x7000_0000); // 1.75 Fract
-        for i in 0..10 {
-            bus.write_byte(sp + 4 + i, 0);
-        }
+        bus.write_long(sp + 4, result_ptr);
+        bus.write_bytes(result_ptr, &[0; 10]);
 
         let result = disp.dispatch_toolbox(true, 0x045, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        let ext = Extended80::read_from_bus(&bus, sp + 4);
+        let ext = Extended80::read_from_bus(&bus, result_ptr);
         assert!((f64::from(ext) - 1.75).abs() < 1e-12);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
@@ -28106,35 +28119,39 @@ mod tests {
     // X2Frac ($A846)
     // Operating System Utilities 1994, p. 3-46.
     #[test]
-    fn x2frac_returns_best_fract_approximation_and_saturates_out_of_range() {
+    fn x2frac_reads_extended_pointer_writes_result_slot_and_saturates_out_of_range() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        let ext_ptr = sp + 0x100;
 
-        Extended80::from(1.75).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        bus.write_long(sp, ext_ptr);
+        Extended80::from(1.75).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let exact = disp.dispatch_toolbox(true, 0x046, &mut cpu, &mut bus);
         assert!(exact.is_some());
         assert!(exact.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x7000_0000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x7000_0000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         cpu.write_reg(Register::A7, sp);
-        Extended80::from(3.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        bus.write_long(sp, ext_ptr);
+        Extended80::from(3.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let high = disp.dispatch_toolbox(true, 0x046, &mut cpu, &mut bus);
         assert!(high.is_some());
         assert!(high.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x7FFF_FFFF);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x7FFF_FFFF);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         cpu.write_reg(Register::A7, sp);
-        Extended80::from(-3.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        bus.write_long(sp, ext_ptr);
+        Extended80::from(-3.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let low = disp.dispatch_toolbox(true, 0x046, &mut cpu, &mut bus);
         assert!(low.is_some());
         assert!(low.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x8000_0000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x8000_0000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     // FracCos ($A847)

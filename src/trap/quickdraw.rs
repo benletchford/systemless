@@ -8187,15 +8187,27 @@ impl super::TrapDispatcher {
                             }
                         }
                     }
-                    // Always use the stable Color Manager CLUT for PICT rendering.
-                    // Using device_clut during seeded-palette fades would bake
-                    // transient palette indices into the framebuffer that become
-                    // wrong after the palette reverts to standard system colors.
-                    // Inside Macintosh: Imaging With QuickDraw 1994, p. 7-14
-                    let selected_draw_port_clut = recent_resource_ctable_clut
-                        .as_ref()
-                        .or(preseeded_draw_clut.as_ref())
-                        .unwrap_or(&port_clut);
+                    let device_clut_snapshot = self.device_clut;
+                    // Use an explicitly supplied PICT/resource palette when
+                    // one is present. Otherwise, packed indexed PICTs must be
+                    // matched against the live hardware CLUT: their pixel
+                    // values are written directly to the destination's
+                    // 4-bit framebuffer, so the logical Color Manager table
+                    // can select an index whose hardware color is different.
+                    // Keep the stable Color Manager CLUT for 8bpp PICTs so
+                    // seeded-palette fades do not bake transient indices into
+                    // the framebuffer. Imaging With QuickDraw 1994, p. 7-14.
+                    let selected_draw_port_clut = if let Some(clut) =
+                        recent_resource_ctable_clut.as_ref()
+                    {
+                        clut
+                    } else if let Some(clut) = preseeded_draw_clut.as_ref() {
+                        clut
+                    } else if port_ps == 4 {
+                        &device_clut_snapshot
+                    } else {
+                        &port_clut
+                    };
                     // PICT color matching must only consider indices the
                     // destination depth can represent. `read_port_clut`
                     // overlays a short 2/4-bit CTable on the logical 8-bit
