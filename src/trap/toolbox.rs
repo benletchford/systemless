@@ -8244,13 +8244,20 @@ impl super::TrapDispatcher {
                 let name = String::from_utf8_lossy(&name_bytes).to_string();
                 eprintln!("[TRAP] GetNamedResource('{}', \"{}\")", type_str, name);
 
-                let handle =
-                    self.find_named_resource_any_loaded(bus, res_type, &name)
-                        .map(|(refnum, id, ptr)| {
-                            self.get_or_create_resource_handle_in_file(
-                                bus, res_type, id, ptr, refnum,
-                            )
-                        });
+                let handle = self
+                    .find_named_resource_any_loaded(bus, res_type, &name)
+                    .map(|(refnum, id, ptr)| {
+                        // The archive loader materializes resource bytes up
+                        // front, so a named lookup can find a resident
+                        // resource even while SetResLoad(FALSE) is active.
+                        // Record that residency before creating the Handle;
+                        // the Resource Manager helper then preserves the
+                        // materialized master pointer.
+                        if ptr != 0 {
+                            self.resident_resources.insert((refnum, res_type, id));
+                        }
+                        self.get_or_create_resource_handle_in_file(bus, res_type, id, ptr, refnum)
+                    });
 
                 if let Some(handle) = handle {
                     eprintln!("[TRAP] GetNamedResource -> handle ${:08X}", handle);
@@ -21280,6 +21287,44 @@ mod tests {
         let handle = bus.read_long(sp + 8);
         assert_ne!(handle, 0);
         assert_eq!(cpu.read_reg(Register::A0), handle);
+    }
+
+    #[test]
+    fn get_named_resource_preserves_data_loaded_before_set_res_load_false() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = bus.alloc(8);
+        bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
+        disp.res_load = false;
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"FILE", 270), data_ptr)]),
+                    named: HashMap::from([((*b"FILE", "CODE".to_string()), (270, data_ptr))]),
+                    ..ResourceFileMap::default()
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        let name_addr = 0x200000u32;
+        bus.write_byte(name_addr, 4);
+        bus.write_bytes(name_addr + 1, b"CODE");
+        bus.write_long(TEST_SP, name_addr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"FILE"));
+        bus.write_long(TEST_SP + 8, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x1A1, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(handle, 0);
+        assert_eq!(bus.read_long(handle), data_ptr);
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(0x0A60), 0);
     }
 
     #[test]
