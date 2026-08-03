@@ -19,6 +19,11 @@ const HFSPLUS_FORK_DATA: u8 = 0x00;
 const HFSPLUS_FORK_RESOURCE: u8 = 0xFF;
 const HFSPLUS_CATALOG_FILE_RECORD: u16 = 0x0002;
 const HFSPLUS_FILE_USER_INFO_OFFSET: usize = 48;
+const MFS_SECTOR_SIZE: usize = 512;
+const MFS_MDB_SECTOR: usize = 2;
+const MFS_MDB_SIZE: usize = 1024;
+const MFS_MDB_VOLUME_INFO_SIZE: usize = 64;
+const MFS_EOF_BLOCK: u16 = 1;
 
 #[derive(Debug)]
 pub struct DiskImageContents {
@@ -54,7 +59,8 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
         Some(HFS_PLUS_SIGNATURE | HFSX_SIGNATURE) => {
             return extract_hfsplus(filesystem).map(Some);
         }
-        Some(HFS_SIGNATURE | MFS_SIGNATURE) => {}
+        Some(MFS_SIGNATURE) => return extract_mfs(filesystem).map(Some),
+        Some(HFS_SIGNATURE) => {}
         Some(_) | None => {}
     }
 
@@ -137,6 +143,329 @@ fn dc42_data_range(bytes: &[u8]) -> Option<(usize, usize)> {
 
     let data_end = DC42_HEADER_LEN.checked_add(data_size)?;
     (data_end <= bytes.len()).then_some((DC42_HEADER_LEN, data_end))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MfsVolumeHeader {
+    dir_start_sector: usize,
+    dir_length_sectors: usize,
+    allocation_block_count: usize,
+    allocation_block_size: usize,
+    allocation_start_sector: usize,
+    volume_name_offset: usize,
+    volume_name_length: usize,
+}
+
+fn extract_mfs(bytes: &[u8]) -> Result<DiskImageContents, String> {
+    let header = parse_mfs_volume_header(bytes)?;
+    let volume_name_bytes = bytes
+        .get(
+            header.volume_name_offset + 1
+                ..header.volume_name_offset + 1 + header.volume_name_length,
+        )
+        .ok_or_else(|| "MFS volume name extends beyond the volume information block".to_string())?;
+    let volume_name = clean_component(&crate::trap::decode_mac_roman(volume_name_bytes))
+        .unwrap_or_else(|| "MFS Disk Image".into());
+
+    let allocation_map = read_mfs_allocation_map(bytes, &header)?;
+    let dir_start = header
+        .dir_start_sector
+        .checked_mul(MFS_SECTOR_SIZE)
+        .ok_or_else(|| "MFS directory offset overflow".to_string())?;
+    let dir_length = header
+        .dir_length_sectors
+        .checked_mul(MFS_SECTOR_SIZE)
+        .ok_or_else(|| "MFS directory length overflow".to_string())?;
+    let dir_end = dir_start
+        .checked_add(dir_length)
+        .ok_or_else(|| "MFS directory end overflow".to_string())?;
+    if dir_end > bytes.len() {
+        return Err(format!(
+            "MFS directory extends beyond the volume: end {dir_end}, size {}",
+            bytes.len()
+        ));
+    }
+
+    let mut dirs = vec![volume_name.clone()];
+    let mut files = Vec::new();
+    let file_count = read_mfs_u16(bytes, 12, "file count")? as usize;
+    let mut offset = dir_start;
+    let mut parsed_files = 0usize;
+    while offset < dir_end && parsed_files < file_count {
+        let flags = *bytes
+            .get(offset)
+            .ok_or_else(|| "MFS directory entry is out of bounds".to_string())?;
+        if flags & 0x80 == 0 {
+            break;
+        }
+
+        const MFS_FILE_ENTRY_HEADER_SIZE: usize = 51;
+        let entry_end = offset
+            .checked_add(MFS_FILE_ENTRY_HEADER_SIZE)
+            .ok_or_else(|| "MFS file entry offset overflow".to_string())?;
+        if entry_end > dir_end {
+            return Err("MFS file entry header extends beyond the directory".into());
+        }
+        let name_length = bytes[offset + 50] as usize;
+        if name_length > 31 {
+            return Err(format!("MFS file name is too long: {name_length} bytes"));
+        }
+        let unaligned_entry_length = MFS_FILE_ENTRY_HEADER_SIZE
+            .checked_add(name_length)
+            .ok_or_else(|| "MFS file entry length overflow".to_string())?;
+        let entry_length = (unaligned_entry_length + 1) & !1;
+        let entry_end = offset
+            .checked_add(entry_length)
+            .ok_or_else(|| "MFS file entry end overflow".to_string())?;
+        if entry_end > dir_end {
+            return Err("MFS file name extends beyond the directory".into());
+        }
+
+        let name_bytes = &bytes[offset + 51..offset + 51 + name_length];
+        let Some(name) = clean_component(&crate::trap::decode_mac_roman(name_bytes)) else {
+            offset = entry_end;
+            parsed_files += 1;
+            continue;
+        };
+        let path = prefixed_path(&volume_name, &name);
+        let data = read_mfs_fork(
+            bytes,
+            &header,
+            &allocation_map,
+            read_mfs_u16_at(bytes, offset + 22, "data fork start block")?,
+            read_mfs_u32_at(bytes, offset + 24, "data fork length")?,
+            read_mfs_u32_at(bytes, offset + 28, "data fork allocation length")?,
+            &path,
+            "data",
+        )?;
+        let rsrc = read_mfs_fork(
+            bytes,
+            &header,
+            &allocation_map,
+            read_mfs_u16_at(bytes, offset + 32, "resource fork start block")?,
+            read_mfs_u32_at(bytes, offset + 34, "resource fork length")?,
+            read_mfs_u32_at(bytes, offset + 38, "resource fork allocation length")?,
+            &path,
+            "resource",
+        )?;
+
+        files.push(DiskImageFile {
+            path,
+            data,
+            rsrc,
+            file_type: bytes[offset + 2..offset + 6]
+                .try_into()
+                .map_err(|_| "MFS Finder type is malformed".to_string())?,
+            creator: bytes[offset + 6..offset + 10]
+                .try_into()
+                .map_err(|_| "MFS Finder creator is malformed".to_string())?,
+            finder_flags: read_mfs_u16_at(bytes, offset + 10, "Finder flags")?,
+        });
+        offset = entry_end;
+        parsed_files += 1;
+    }
+
+    dirs.sort_unstable();
+    dirs.dedup();
+    Ok(DiskImageContents {
+        volume_name,
+        dirs,
+        files,
+    })
+}
+
+fn parse_mfs_volume_header(bytes: &[u8]) -> Result<MfsVolumeHeader, String> {
+    let mdb = MFS_MDB_SECTOR
+        .checked_mul(MFS_SECTOR_SIZE)
+        .ok_or_else(|| "MFS volume information offset overflow".to_string())?;
+    if bytes.len() < mdb + MFS_MDB_SIZE {
+        return Err(format!(
+            "MFS volume information block is truncated: size {}, need {}",
+            bytes.len(),
+            mdb + MFS_MDB_SIZE
+        ));
+    }
+    if read_mfs_u16_at(bytes, mdb, "signature")? != MFS_SIGNATURE {
+        return Err("MFS signature is missing".into());
+    }
+
+    let dir_start_sector = read_mfs_u16_at(bytes, mdb + 14, "directory start sector")? as usize;
+    let dir_length_sectors = read_mfs_u16_at(bytes, mdb + 16, "directory length")? as usize;
+    let allocation_block_count =
+        read_mfs_u16_at(bytes, mdb + 18, "allocation block count")? as usize;
+    let allocation_block_size = read_mfs_u32_at(bytes, mdb + 20, "allocation block size")? as usize;
+    let allocation_start_sector =
+        read_mfs_u16_at(bytes, mdb + 28, "allocation start sector")? as usize;
+    let volume_name_offset = mdb + 36;
+    let volume_name_length = bytes[volume_name_offset] as usize;
+
+    if allocation_block_count == 0 {
+        return Err("MFS volume has no allocation blocks".into());
+    }
+    if allocation_block_size == 0 || allocation_block_size % MFS_SECTOR_SIZE != 0 {
+        return Err(format!(
+            "MFS allocation block size is invalid: {allocation_block_size}"
+        ));
+    }
+    if volume_name_length > 27 {
+        return Err(format!(
+            "MFS volume name is too long: {volume_name_length} bytes"
+        ));
+    }
+    let allocation_bytes = allocation_block_count
+        .checked_mul(allocation_block_size)
+        .ok_or_else(|| "MFS allocation area length overflow".to_string())?;
+    let allocation_start = allocation_start_sector
+        .checked_mul(MFS_SECTOR_SIZE)
+        .ok_or_else(|| "MFS allocation area offset overflow".to_string())?;
+    let allocation_end = allocation_start
+        .checked_add(allocation_bytes)
+        .ok_or_else(|| "MFS allocation area end overflow".to_string())?;
+    if allocation_end > bytes.len() {
+        return Err(format!(
+            "MFS allocation area extends beyond the volume: end {allocation_end}, size {}",
+            bytes.len()
+        ));
+    }
+    let directory_end = dir_start_sector
+        .checked_add(dir_length_sectors)
+        .and_then(|sectors| sectors.checked_mul(MFS_SECTOR_SIZE))
+        .ok_or_else(|| "MFS directory range overflow".to_string())?;
+    if directory_end > bytes.len() {
+        return Err(format!(
+            "MFS directory extends beyond the volume: end {directory_end}, size {}",
+            bytes.len()
+        ));
+    }
+
+    Ok(MfsVolumeHeader {
+        dir_start_sector,
+        dir_length_sectors,
+        allocation_block_count,
+        allocation_block_size,
+        allocation_start_sector,
+        volume_name_offset,
+        volume_name_length,
+    })
+}
+
+fn read_mfs_allocation_map(bytes: &[u8], header: &MfsVolumeHeader) -> Result<Vec<u16>, String> {
+    let mdb = MFS_MDB_SECTOR * MFS_SECTOR_SIZE;
+    let map_length = header.allocation_block_count.div_ceil(2) * 3;
+    let map = bytes
+        .get(mdb + MFS_MDB_VOLUME_INFO_SIZE..mdb + MFS_MDB_VOLUME_INFO_SIZE + map_length)
+        .ok_or_else(|| "MFS allocation block map is truncated".to_string())?;
+    let mut entries = Vec::with_capacity(header.allocation_block_count);
+    for index in 0..header.allocation_block_count {
+        let triplet = &map[(index / 2) * 3..(index / 2) * 3 + 3];
+        let value = if index % 2 == 0 {
+            u16::from(triplet[0]) << 4 | u16::from(triplet[1] >> 4)
+        } else {
+            u16::from(triplet[1] & 0x0F) << 8 | u16::from(triplet[2])
+        };
+        entries.push(value);
+    }
+    Ok(entries)
+}
+
+fn read_mfs_fork(
+    bytes: &[u8],
+    header: &MfsVolumeHeader,
+    allocation_map: &[u16],
+    start_block: u16,
+    logical_length: u32,
+    allocation_length: u32,
+    path: &str,
+    fork_name: &str,
+) -> Result<Vec<u8>, String> {
+    let logical_length = usize::try_from(logical_length)
+        .map_err(|_| format!("MFS {fork_name} fork is too large for {path}"))?;
+    let allocation_length = usize::try_from(allocation_length)
+        .map_err(|_| format!("MFS {fork_name} allocation is too large for {path}"))?;
+    if logical_length == 0 {
+        return Ok(Vec::new());
+    }
+    if start_block < 2 {
+        return Err(format!(
+            "MFS {fork_name} fork for {path} has no valid start block"
+        ));
+    }
+    if logical_length > allocation_length {
+        return Err(format!(
+            "MFS {fork_name} fork for {path} is longer than its allocation"
+        ));
+    }
+
+    let mut data = Vec::with_capacity(logical_length);
+    let mut seen = vec![false; allocation_map.len()];
+    let mut current_block = start_block;
+    while data.len() < logical_length {
+        let index = usize::from(current_block)
+            .checked_sub(2)
+            .ok_or_else(|| format!("MFS {fork_name} fork for {path} has an invalid block chain"))?;
+        if index >= allocation_map.len() {
+            return Err(format!(
+                "MFS {fork_name} fork for {path} points outside the allocation map"
+            ));
+        }
+        if seen[index] {
+            return Err(format!(
+                "MFS {fork_name} fork for {path} contains an allocation cycle"
+            ));
+        }
+        seen[index] = true;
+
+        let block_offset = header
+            .allocation_start_sector
+            .checked_mul(MFS_SECTOR_SIZE)
+            .and_then(|offset| offset.checked_add(index * header.allocation_block_size))
+            .ok_or_else(|| format!("MFS {fork_name} block offset overflow for {path}"))?;
+        let block_end = block_offset
+            .checked_add(header.allocation_block_size)
+            .ok_or_else(|| format!("MFS {fork_name} block end overflow for {path}"))?;
+        if block_end > bytes.len() {
+            return Err(format!(
+                "MFS {fork_name} fork for {path} points beyond the volume"
+            ));
+        }
+        let count = (logical_length - data.len()).min(header.allocation_block_size);
+        data.extend_from_slice(&bytes[block_offset..block_offset + count]);
+        if data.len() == logical_length {
+            break;
+        }
+
+        let next_block = allocation_map[index];
+        if next_block == MFS_EOF_BLOCK {
+            return Err(format!(
+                "MFS {fork_name} fork for {path} ends before its logical length"
+            ));
+        }
+        if next_block < 2 {
+            return Err(format!(
+                "MFS {fork_name} fork for {path} has a free-block link"
+            ));
+        }
+        current_block = next_block;
+    }
+    Ok(data)
+}
+
+fn read_mfs_u16(bytes: &[u8], offset: usize, field: &str) -> Result<u16, String> {
+    read_mfs_u16_at(bytes, MFS_MDB_SECTOR * MFS_SECTOR_SIZE + offset, field)
+}
+
+fn read_mfs_u16_at(bytes: &[u8], offset: usize, field: &str) -> Result<u16, String> {
+    let value = bytes
+        .get(offset..offset + 2)
+        .ok_or_else(|| format!("MFS {field} is truncated"))?;
+    Ok(u16::from_be_bytes([value[0], value[1]]))
+}
+
+fn read_mfs_u32_at(bytes: &[u8], offset: usize, field: &str) -> Result<u32, String> {
+    let value = bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| format!("MFS {field} is truncated"))?;
+    Ok(u32::from_be_bytes([value[0], value[1], value[2], value[3]]))
 }
 
 fn extract_hfsplus(bytes: &[u8]) -> Result<DiskImageContents, String> {
@@ -674,6 +1003,53 @@ mod tests {
     }
 
     #[test]
+    fn extracts_mfs_data_and_resource_forks_with_finder_metadata() {
+        let bytes = mfs_test_image();
+
+        let image = extract_dc42_or_hfs(&bytes)
+            .expect("MFS extraction should succeed")
+            .expect("MFS signature should be detected");
+
+        assert_eq!(image.volume_name, "Test Volume");
+        assert_eq!(image.dirs, vec!["Test Volume".to_string()]);
+        let file = image
+            .files
+            .iter()
+            .find(|file| file.path == "Test Volume/Test App")
+            .expect("synthetic MFS file should be present");
+        assert_eq!(file.data, b"hello");
+        assert_eq!(file.rsrc, b"PICT");
+        assert_eq!(file.file_type, *b"APPL");
+        assert_eq!(file.creator, *b"TEST");
+        assert_eq!(file.finder_flags, 0x0400);
+    }
+
+    #[test]
+    fn rejects_mfs_fork_that_ends_before_its_logical_length() {
+        let mut bytes = mfs_test_image();
+        bytes[2048 + 24..2048 + 28].copy_from_slice(&1025u32.to_be_bytes());
+        bytes[2048 + 28..2048 + 32].copy_from_slice(&2048u32.to_be_bytes());
+
+        let error = extract_dc42_or_hfs(&bytes).expect_err("truncated MFS fork should fail");
+        assert!(error.contains("ends before its logical length"), "{error}");
+    }
+
+    #[test]
+    fn rejects_mfs_fork_allocation_cycles() {
+        let mut bytes = mfs_test_image();
+        bytes[2048 + 24..2048 + 28].copy_from_slice(&2049u32.to_be_bytes());
+        bytes[2048 + 28..2048 + 32].copy_from_slice(&3072u32.to_be_bytes());
+        bytes[2048 + 32..2048 + 34].copy_from_slice(&0u16.to_be_bytes());
+        bytes[2048 + 34..2048 + 38].copy_from_slice(&0u32.to_be_bytes());
+        bytes[2048 + 38..2048 + 42].copy_from_slice(&0u32.to_be_bytes());
+        set_mfs_abm(&mut bytes, 2, 3);
+        set_mfs_abm(&mut bytes, 3, 2);
+
+        let error = extract_dc42_or_hfs(&bytes).expect_err("cyclic MFS fork should fail");
+        assert!(error.contains("allocation cycle"), "{error}");
+    }
+
+    #[test]
     fn rejects_dc42_like_data_without_filesystem_signature() {
         let bytes = dc42_with_payload_signature(0);
 
@@ -691,6 +1067,54 @@ mod tests {
         bytes[82..84].copy_from_slice(&[0x01, 0x00]);
         bytes[HEADER_LEN + 1024..HEADER_LEN + 1026].copy_from_slice(&signature.to_be_bytes());
         bytes
+    }
+
+    fn mfs_test_image() -> Vec<u8> {
+        const IMAGE_SIZE: usize = 24 * 1024;
+        const MDB: usize = MFS_MDB_SECTOR * MFS_SECTOR_SIZE;
+        const DIRECTORY: usize = 4 * MFS_SECTOR_SIZE;
+        const ALLOCATION_START: usize = 16 * MFS_SECTOR_SIZE;
+
+        let mut bytes = vec![0u8; IMAGE_SIZE];
+        bytes[MDB..MDB + 2].copy_from_slice(&MFS_SIGNATURE.to_be_bytes());
+        bytes[MDB + 12..MDB + 14].copy_from_slice(&1u16.to_be_bytes());
+        bytes[MDB + 14..MDB + 16].copy_from_slice(&4u16.to_be_bytes());
+        bytes[MDB + 16..MDB + 18].copy_from_slice(&12u16.to_be_bytes());
+        bytes[MDB + 18..MDB + 20].copy_from_slice(&8u16.to_be_bytes());
+        bytes[MDB + 20..MDB + 24].copy_from_slice(&1024u32.to_be_bytes());
+        bytes[MDB + 28..MDB + 30].copy_from_slice(&16u16.to_be_bytes());
+        bytes[MDB + 36] = 11;
+        bytes[MDB + 37..MDB + 48].copy_from_slice(b"Test Volume");
+        set_mfs_abm(&mut bytes, 2, MFS_EOF_BLOCK);
+        set_mfs_abm(&mut bytes, 3, MFS_EOF_BLOCK);
+
+        bytes[DIRECTORY] = 0x80;
+        bytes[DIRECTORY + 2..DIRECTORY + 6].copy_from_slice(b"APPL");
+        bytes[DIRECTORY + 6..DIRECTORY + 10].copy_from_slice(b"TEST");
+        bytes[DIRECTORY + 10..DIRECTORY + 12].copy_from_slice(&0x0400u16.to_be_bytes());
+        bytes[DIRECTORY + 22..DIRECTORY + 24].copy_from_slice(&2u16.to_be_bytes());
+        bytes[DIRECTORY + 24..DIRECTORY + 28].copy_from_slice(&5u32.to_be_bytes());
+        bytes[DIRECTORY + 28..DIRECTORY + 32].copy_from_slice(&1024u32.to_be_bytes());
+        bytes[DIRECTORY + 32..DIRECTORY + 34].copy_from_slice(&3u16.to_be_bytes());
+        bytes[DIRECTORY + 34..DIRECTORY + 38].copy_from_slice(&4u32.to_be_bytes());
+        bytes[DIRECTORY + 38..DIRECTORY + 42].copy_from_slice(&1024u32.to_be_bytes());
+        bytes[DIRECTORY + 50] = 8;
+        bytes[DIRECTORY + 51..DIRECTORY + 59].copy_from_slice(b"Test App");
+        bytes[ALLOCATION_START..ALLOCATION_START + 5].copy_from_slice(b"hello");
+        bytes[ALLOCATION_START + 1024..ALLOCATION_START + 1028].copy_from_slice(b"PICT");
+        bytes
+    }
+
+    fn set_mfs_abm(bytes: &mut [u8], block: u16, value: u16) {
+        let index = usize::from(block - 2);
+        let offset = MFS_MDB_SECTOR * MFS_SECTOR_SIZE + MFS_MDB_VOLUME_INFO_SIZE + (index / 2) * 3;
+        if index % 2 == 0 {
+            bytes[offset] = (value >> 4) as u8;
+            bytes[offset + 1] = (bytes[offset + 1] & 0x0F) | ((value as u8 & 0x0F) << 4);
+        } else {
+            bytes[offset + 1] = (bytes[offset + 1] & 0xF0) | ((value >> 8) as u8 & 0x0F);
+            bytes[offset + 2] = value as u8;
+        }
     }
 
     fn hfsplus_catalog_file_record(name: &str) -> Vec<u8> {
