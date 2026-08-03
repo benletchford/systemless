@@ -8981,14 +8981,27 @@ impl super::TrapDispatcher {
         self.untrack_window(bus, dialog_ptr);
 
         if was_front {
-            if let Some((prev_window, prev_bounds, prev_proc_id, prev_title)) =
+            if let Some((mut prev_window, mut prev_bounds, prev_proc_id, prev_title)) =
                 self.window_stack.pop()
             {
-                self.set_current_port_state(bus, cpu, prev_window, None);
-                self.front_window = prev_window;
-                self.window_bounds = prev_bounds;
-                self.window_proc_id = prev_proc_id;
-                self.window_title = prev_title;
+                if prev_window == 0 && self.front_window != 0 {
+                    // The saved dialog state can legitimately contain NIL
+                    // when the dialog was created before the application
+                    // opened its document window. `untrack_window` has
+                    // already promoted the first visible remaining window;
+                    // use that promotion instead of restoring NIL and
+                    // leaving FrontWindow inconsistent with the window list.
+                    prev_window = self.front_window;
+                    self.set_current_port_state(bus, cpu, prev_window, None);
+                    self.sync_cached_front_window_render_state(bus);
+                    prev_bounds = self.window_bounds;
+                } else {
+                    self.set_current_port_state(bus, cpu, prev_window, None);
+                    self.front_window = prev_window;
+                    self.window_bounds = prev_bounds;
+                    self.window_proc_id = prev_proc_id;
+                    self.window_title = prev_title;
+                }
                 if prev_window != 0 {
                     bus.write_byte(prev_window + 111, 0xFF);
                     if self.window_visible(bus, prev_window) {
@@ -25496,6 +25509,37 @@ mod tests {
                 .iter()
                 .any(|event| event.what == 6 && event.message == prev_window),
             "CloseDialog must queue updateEvt for the newly exposed front window"
+        );
+    }
+
+    #[test]
+    fn close_dialog_with_nil_saved_front_promotes_visible_window() {
+        // A dialog can be created while no document window is active, then
+        // the application can open a visible document behind it before
+        // disposing the dialog. Do not restore the stale NIL snapshot over
+        // the Window Manager's visible-window promotion.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let visible_window = 0x181000u32;
+        seed_window_regions(&mut bus, dialog_ptr, (0, 0, 100, 220));
+        seed_window_regions(&mut bus, visible_window, (0, 0, 342, 512));
+
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_bounds = (100, 120, 220, 320);
+        disp.window_list = vec![dialog_ptr, visible_window];
+        disp.window_stack
+            .push((0, (0, 0, 0, 0), -1, String::new()));
+        bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.front_window, visible_window);
+        assert_eq!(disp.current_port, visible_window);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::THE_PORT),
+            visible_window
         );
     }
 

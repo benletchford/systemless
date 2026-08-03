@@ -2078,7 +2078,7 @@ impl super::TrapDispatcher {
         self.saved_draw_old_regions.remove(&window_ptr);
     }
 
-    fn sync_cached_front_window_render_state(&mut self, bus: &MacMemoryBus) {
+    pub(crate) fn sync_cached_front_window_render_state(&mut self, bus: &MacMemoryBus) {
         let front_window = self.front_window;
         if front_window == 0 || !self.window_visible(bus, front_window) {
             self.window_bounds = (0, 0, 0, 0);
