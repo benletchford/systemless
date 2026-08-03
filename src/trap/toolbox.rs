@@ -2806,6 +2806,19 @@ impl super::TrapDispatcher {
         matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
     }
 
+    fn scriptutil_visible_length(bus: &MacMemoryBus, text_ptr: u32, text_length: u32) -> u32 {
+        let available_length = bus.ram_size().saturating_sub(text_ptr);
+        let mut visible_length = text_length.min(available_length);
+        while visible_length > 0
+            && Self::scriptutil_is_roman_break_space(
+                bus.read_byte(text_ptr.wrapping_add(visible_length - 1)),
+            )
+        {
+            visible_length -= 1;
+        }
+        visible_length
+    }
+
     fn scriptutil_last_space_break(
         bus: &MacMemoryBus,
         text_ptr: u32,
@@ -13650,6 +13663,21 @@ impl super::TrapDispatcher {
                     // Inside Macintosh: Text 1993, pp. 5-79..5-81 and Table D-3.
                     0x821C_FFFE => {
                         return Some(self.handle_scriptutil_styled_line_break(bus, cpu, sp));
+                    }
+                    // VisibleLength ($84080028): FUNCTION VisibleLength(
+                    //   textPtr: Ptr; textLength: LongInt): LongInt.
+                    // Pascal pushes the first argument deepest, so the
+                    // text pointer is at sp+8 and the length at sp+4.
+                    // Inside Macintosh Volume VI (1991), p. 14-132; Text
+                    // (1993), pp. 3-37 and 14-46.
+                    0x8408_0028 => {
+                        let text_length = bus.read_long(sp + 4);
+                        let text_ptr = bus.read_long(sp + 8);
+                        let visible_length =
+                            Self::scriptutil_visible_length(bus, text_ptr, text_length);
+                        bus.write_long(sp + 12, visible_length);
+                        cpu.write_reg(Register::A7, sp + 12);
+                        return Some(Ok(()));
                     }
                     _ => {}
                 }
@@ -27553,6 +27581,29 @@ mod tests {
 
         assert_eq!(bus.read_bytes(offsets_ptr, 12), vec![0; 12]);
         assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+    }
+
+    // ScriptUtil ($A8B5) encoded selector $84080028 VisibleLength
+    // Inside Macintosh Volume VI 1991, p. 14-132; Text 1993, pp. 3-37 and 14-46.
+    #[test]
+    fn scriptutil_visiblelength_returns_trimmed_length_and_pops_encoded_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let text_ptr = 0x365000u32;
+        let text = b"HELLO \t\r\n";
+
+        bus.write_bytes(text_ptr, text);
+        bus.write_long(sp, 0x8408_0028); // 4-byte result, 8-byte args
+        bus.write_long(sp + 4, text.len() as u32); // textLength (last arg)
+        bus.write_long(sp + 8, text_ptr); // textPtr (first arg)
+        bus.write_long(sp + 12, 0xDEAD_BEEF); // LongInt result slot
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_long(sp + 12), 5);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
     }
 
     // ScriptUtil ($A8B5) encoded selector $821CFFFE StyledLineBreak
