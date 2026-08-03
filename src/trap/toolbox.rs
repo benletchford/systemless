@@ -160,6 +160,103 @@ fn scan_sane_decimal(
     bus.write_word(valid_prefix_ptr, if valid_prefix { 0xFFFF } else { 0 });
 }
 
+/// Format a 68K SANE decimal record using the `decform` record supplied to
+/// Dec2Str. The decimal record stores significant digits and a base-10
+/// exponent, so fixed formatting can be performed without routing through
+/// the host floating-point formatter.
+fn format_sane_decimal(bus: &MacMemoryBus, decimal_ptr: u32, decform_ptr: u32) -> Vec<u8> {
+    let negative = bus.read_byte(decimal_ptr) != 0;
+    let exponent = bus.read_word(decimal_ptr + 2) as i16 as i32;
+    let length = usize::from(bus.read_byte(decimal_ptr + 4)).min(20);
+    let mut digits = bus.read_bytes(decimal_ptr + 5, length);
+    if digits.is_empty() {
+        digits.push(b'0');
+    }
+
+    let style = bus.read_byte(decform_ptr);
+    let requested_digits = bus.read_word(decform_ptr + 2) as i16 as i32;
+    let text = if style == 1 && requested_digits >= 0 {
+        let places = requested_digits.min(80);
+        let scaled_point = digits.len() as i32 + exponent + places;
+        let kept_len = scaled_point.max(0) as usize;
+        let mut scaled = if kept_len <= digits.len() {
+            digits[..kept_len].to_vec()
+        } else {
+            let mut value = digits.clone();
+            value.resize(kept_len, b'0');
+            value
+        };
+        if scaled.is_empty() {
+            scaled.push(b'0');
+        }
+
+        // Dec2Str rounds the first discarded decimal digit. For a scaled
+        // point before the first significant digit, the discarded value is
+        // smaller than one unit in the requested format and stays zero.
+        if scaled_point >= 0
+            && (scaled_point as usize) < digits.len()
+            && digits[scaled_point as usize] >= b'5'
+        {
+            let mut carry = true;
+            for digit in scaled.iter_mut().rev() {
+                if !carry {
+                    break;
+                }
+                if *digit == b'9' {
+                    *digit = b'0';
+                } else {
+                    *digit += 1;
+                    carry = false;
+                }
+            }
+            if carry {
+                scaled.insert(0, b'1');
+            }
+        }
+
+        let point = scaled.len() as i32 - places;
+        let mut formatted = Vec::new();
+        if point <= 0 {
+            formatted.extend_from_slice(b"0.");
+            formatted.extend(std::iter::repeat_n(b'0', (-point) as usize));
+            formatted.extend_from_slice(&scaled);
+        } else if point as usize >= scaled.len() {
+            formatted.extend_from_slice(&scaled);
+            formatted.extend(std::iter::repeat_n(b'0', point as usize - scaled.len()));
+        } else {
+            formatted.extend_from_slice(&scaled[..point as usize]);
+            formatted.push(b'.');
+            formatted.extend_from_slice(&scaled[point as usize..]);
+        }
+        formatted
+    } else {
+        let point = digits.len() as i32 + exponent;
+        let mut formatted = Vec::new();
+        if point <= 0 {
+            formatted.extend_from_slice(b"0.");
+            formatted.extend(std::iter::repeat_n(b'0', (-point) as usize));
+            formatted.extend_from_slice(&digits);
+        } else if point as usize >= digits.len() {
+            formatted.extend_from_slice(&digits);
+            formatted.extend(std::iter::repeat_n(b'0', point as usize - digits.len()));
+        } else {
+            formatted.extend_from_slice(&digits[..point as usize]);
+            formatted.push(b'.');
+            formatted.extend_from_slice(&digits[point as usize..]);
+        }
+        formatted
+    };
+
+    if negative {
+        let mut signed = Vec::with_capacity(text.len() + 1);
+        signed.push(b'-');
+        signed.extend_from_slice(&text);
+        signed
+    } else {
+        text
+    }
+}
+
 fn standard_file_cancel_reply(bus: &mut MacMemoryBus, reply_ptr: u32) {
     if reply_ptr != 0 {
         // SFReply and StandardFileReply both start with the cancel flag.
@@ -11809,10 +11906,11 @@ impl super::TrapDispatcher {
 
             // Pack7 / DecStr68K ($A9EE) — integer and SANE decimal scanners.
             // Selectors 0/1 are the Binary-Decimal Conversion Package.
-            // Selector 2 is the SANE FPSTR2DEC scanner published by Apple's
-            // MPW SANEMacs.a interface.
+            // Selectors 2/3/4 are the SANE FPSTR2DEC, FDEC2STR, and
+            // FCSTR2DEC operations published by Apple's MPW SANEMacs.a.
             // PROCEDURE NumToString(theNumber: LONGINT; VAR theString: Str255);
             // PROCEDURE StringToNum(theString: Str255; VAR theNumber: LONGINT);
+            // PROCEDURE Dec2Str(f: decform; d: decimal; VAR s: DecStr);
             // Inside Macintosh Volume I, I-489
             // Pack7 (NumToString/StringToNum) ($A9EE): Selector 0: NumToString (D0→Str255 at A0), Selector 1: StringToNum (Str255 at A0→D0)
             (true, 0x1EE) => {
@@ -11851,6 +11949,20 @@ impl super::TrapDispatcher {
                         let bytes = bus.read_pstring(string_ptr);
                         scan_sane_decimal(bus, &bytes, index_ptr, decimal_ptr, valid_prefix_ptr);
                         cpu.write_reg(Register::A7, sp + 18);
+                    }
+                    3 => {
+                        // FDEC2STR: the MPW SANE wrapper passes the output
+                        // DecStr pointer, decimal-record pointer, and
+                        // decform pointer after the selector. The wrapper
+                        // converts the returned Pascal string to C form.
+                        // Inside Macintosh Volume IV, IV-69; MPW
+                        // SANEMacs.a FODEC2STR.
+                        let string_ptr = bus.read_long(sp + 2);
+                        let decimal_ptr = bus.read_long(sp + 6);
+                        let decform_ptr = bus.read_long(sp + 10);
+                        let bytes = format_sane_decimal(bus, decimal_ptr, decform_ptr);
+                        bus.write_pstring(string_ptr, &bytes);
+                        cpu.write_reg(Register::A7, sp + 14);
                     }
                     4 => {
                         // FCSTR2DEC / CStr2Dec: scan a NUL-terminated C
@@ -24982,6 +25094,40 @@ mod tests {
         assert_eq!(bus.read_byte(decimal_ptr + 4), 4);
         assert_eq!(bus.read_bytes(decimal_ptr + 5, 4), b"1250");
         assert_eq!(bus.read_byte(decimal_ptr + 25), 0);
+    }
+
+    #[test]
+    fn pack7_dec2str_selector_0003_formats_fixed_decimal_and_pops_mpw_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let string_ptr = 0x5400;
+        let decimal_ptr = 0x5500;
+        let decform_ptr = 0x5600;
+
+        // SANE decimal record for 12.50: significant digits 1250 and
+        // exponent -2. FIXEDDECIMAL with two fractional digits preserves
+        // the trailing zero in the Pascal result.
+        bus.write_byte(decimal_ptr, 0);
+        bus.write_word(decimal_ptr + 2, (-2i16) as u16);
+        bus.write_byte(decimal_ptr + 4, 4);
+        bus.write_bytes(decimal_ptr + 5, b"1250");
+        bus.write_byte(decform_ptr, 1); // FIXEDDECIMAL
+        bus.write_word(decform_ptr + 2, 2);
+        bus.write_byte(string_ptr, 0xCC);
+
+        // MPW SANEMacs.a FDEC2STR frame:
+        // selector, DecStr*, decimal*, decform*.
+        bus.write_word(sp, 3);
+        bus.write_long(sp + 2, string_ptr);
+        bus.write_long(sp + 6, decimal_ptr);
+        bus.write_long(sp + 10, decform_ptr);
+
+        let result = disp.dispatch_toolbox(true, 0x1EE, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_pstring(string_ptr), b"12.50");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
     }
 
     #[test]
