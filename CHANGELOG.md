@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.4](https://github.com/benletchford/systemless/compare/v0.11.3...v0.11.4) (2026-08-03)
+
+
+### Bug Fixes
+
+* restore resource allocation for classic games ([#300](https://github.com/benletchford/systemless/issues/300)) ([ba6c642](https://github.com/benletchford/systemless/commit/ba6c64253184df0cb87d14116e39b8ab59ad780f))
+
 ## [0.11.3](https://github.com/benletchford/systemless/compare/v0.11.2...v0.11.3) (2026-08-03)
 
 
