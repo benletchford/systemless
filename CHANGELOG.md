@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.2](https://github.com/benletchford/systemless/compare/v0.11.1...v0.11.2) (2026-08-03)
+
+
+### Bug Fixes
+
+* clear stale resource errors after GetPicture lookups ([0c2758e](https://github.com/benletchford/systemless/commit/0c2758e17e8caeb54763f262ea6f8f5718557f69))
+* restore promoted window after dialog disposal ([475bcb2](https://github.com/benletchford/systemless/commit/475bcb2448b3ac1b2a4513988a4f91165038cd6a))
+* restore resource and Edition Manager startup state ([5b25c29](https://github.com/benletchford/systemless/commit/5b25c29f10953cc642d75ea9e4ca73db941c09fc))
+
+
+### Performance Improvements
+
+* buffer common 8-bit CopyMask rows ([66a05ff](https://github.com/benletchford/systemless/commit/66a05ffb91d170e003912d78f87905f4542cb8f7))
+
 ## [0.11.1](https://github.com/benletchford/systemless/compare/v0.11.0...v0.11.1) (2026-07-31)
 
 
