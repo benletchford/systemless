@@ -587,6 +587,21 @@ impl App {
 
     #[cfg(target_os = "macos")]
     fn sync_native_application_identity(&mut self) {
+        // Icon discovery parses the application's resource fork and decodes
+        // its BNDL/FREF/ICN# family. The launched path is the cache key and is
+        // available without doing that work, so reject the normal unchanged-
+        // application case before rebuilding the full identity every frame.
+        // A foreground application switch changes `launched_app_path` and
+        // therefore still refreshes the native name, icon, and window title.
+        let application_unchanged = self
+            .runner
+            .as_ref()
+            .and_then(|runner| runner.dispatcher().launched_app_path())
+            .is_some_and(|path| self.native_app_path.as_deref() == Some(path));
+        if application_unchanged {
+            return;
+        }
+
         let Some(identity) = self
             .runner
             .as_ref()
@@ -594,9 +609,6 @@ impl App {
         else {
             return;
         };
-        if self.native_app_path.as_deref() == Some(identity.path.as_str()) {
-            return;
-        }
 
         self.native_menu.set_app_name(identity.name.clone());
         native_application::set_application_icon(identity.icon.as_ref());
