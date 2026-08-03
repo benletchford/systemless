@@ -717,6 +717,16 @@ pub(crate) struct LoadSegGetResourceState {
     pub a_regs: [u32; 8],
 }
 
+/// Original A-line call state retained while a handler installed through
+/// SetTrapAddress runs. A handler may call the old trap address later, after
+/// changing its stack frame, so old-trap recovery cannot infer this state
+/// from A6 or from the handler's instruction shape.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeTrapCallState {
+    pub return_pc: u32,
+    pub argument_sp: u32,
+}
+
 /// Stack size handed to a cooperative thread when `NewThread` is passed 0
 /// and the size reported by `GetDefaultThreadStackSize`. The 68K Thread
 /// Manager's own default is a small multiple of a page; 32K comfortably
@@ -1025,6 +1035,9 @@ pub struct TrapDispatcher {
     /// Canonical resource bytes keyed by (resource-file refnum, type, id).
     /// Used to reload unloaded resources without reparsing the whole fork.
     pub(crate) resource_backing_data: HashMap<(u16, [u8; 4], i16), Vec<u8>>,
+    /// Resource-map entries whose data is currently resident in a guest
+    /// master pointer. Parser backing allocations do not imply residency.
+    pub(crate) resident_resources: HashSet<(u16, [u8; 4], i16)>,
     /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
     pub(crate) movie_states: HashMap<u32, MovieState>,
     /// Maps a movie-controller component instance to the Movie it drives, set
@@ -1748,6 +1761,10 @@ pub struct TrapDispatcher {
     /// instead of running HLE code. This allows CRT-installed handlers (LoadSeg,
     /// UnloadSeg, ExitToShell) to run natively with proper code relocation.
     pub(crate) native_trap_table: HashMap<u16, u32>,
+    /// Most recent original call for each active native trap handler. Entries
+    /// are replaced by a newer call and consumed when a handler invokes its
+    /// saved old trap address.
+    pub(crate) pending_native_trap_calls: HashMap<u16, NativeTrapCallState>,
     /// Re-entrancy guard for the CopyBits `grafProcs.bitsProc` bottleneck:
     /// `(bitsProc address, stack pointer at the tail call)`. A custom bitsProc
     /// normally reaches the real transfer by calling CopyBits again; without
@@ -2771,6 +2788,7 @@ impl TrapDispatcher {
             detached_handle_files: HashMap::new(),
             resources: None,
             resource_backing_data: HashMap::new(),
+            resident_resources: HashSet::new(),
             movie_states: HashMap::new(),
             movie_by_controller: HashMap::new(),
             movie_error: 0,
@@ -3015,6 +3033,7 @@ impl TrapDispatcher {
             recording_picture: None,
             recording_picture_bitmap: None,
             native_trap_table: HashMap::new(),
+            pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
             timer_current_subtick: 0,
@@ -5005,6 +5024,8 @@ impl TrapDispatcher {
         }
         self.clear_resource_file_backing_data(refnum);
         self.clear_resource_file_handle_index(refnum);
+        self.resident_resources
+            .retain(|(entry_refnum, _, _)| *entry_refnum != refnum);
 
         if !closed {
             return false;
@@ -5391,31 +5412,11 @@ impl TrapDispatcher {
         let res_type = Self::normalize_ostype(res_type);
         let resources = self.resources.as_ref()?;
         let refnum = self.current_resource_refnum();
-        let file = resources.files.get(&refnum)?;
-        if let Some((id, ptr)) = file.named.get(&(res_type, name.to_string())).copied() {
-            return Some((refnum, id, ptr));
-        }
-        if name.is_empty() {
-            // Unnamed resources have no entry in `named`, but the Resource
-            // Manager treats their name as the empty Str255 for a named
-            // lookup. Keep the result deterministic in the same resource-map
-            // ID order used by the on-disk loader.
-            let mut unnamed: Vec<(i16, u32)> = file
-                .loaded
-                .iter()
-                .filter_map(|(&(candidate_type, id), &ptr)| {
-                    (candidate_type == res_type
-                        && !file.names_by_id.contains_key(&(candidate_type, id)))
-                    .then_some((id, ptr))
-                })
-                .collect();
-            unnamed.sort_unstable_by_key(|(id, _)| *id);
-            return unnamed
-                .into_iter()
-                .next()
-                .map(|(id, ptr)| (refnum, id, ptr));
-        }
-        None
+        resources
+            .files
+            .get(&refnum)
+            .and_then(|file| file.named.get(&(res_type, name.to_string())).copied())
+            .map(|(id, ptr)| (refnum, id, ptr))
     }
 
     /// Collect every named resource of `res_type` reachable through the
@@ -5475,21 +5476,6 @@ impl TrapDispatcher {
             for ((rt, n), (id, ptr)) in &file.named {
                 if *rt == res_type && n.to_lowercase() == needle_lower {
                     return Some((refnum, *id, *ptr));
-                }
-            }
-            if name.is_empty() {
-                let mut unnamed: Vec<(i16, u32)> = file
-                    .loaded
-                    .iter()
-                    .filter_map(|(&(candidate_type, id), &ptr)| {
-                        (candidate_type == res_type
-                            && !file.names_by_id.contains_key(&(candidate_type, id)))
-                        .then_some((id, ptr))
-                    })
-                    .collect();
-                unnamed.sort_unstable_by_key(|(id, _)| *id);
-                if let Some((id, ptr)) = unnamed.into_iter().next() {
-                    return Some((refnum, id, ptr));
                 }
             }
         }
@@ -6033,6 +6019,13 @@ impl TrapDispatcher {
                 // two-byte A-line opcode before dispatch reaches here.
                 let return_pc = cpu.read_reg(Register::PC);
                 let sp = cpu.read_reg(Register::A7);
+                self.pending_native_trap_calls.insert(
+                    base_trap,
+                    NativeTrapCallState {
+                        return_pc,
+                        argument_sp: sp,
+                    },
+                );
                 let new_sp = sp.wrapping_sub(4);
                 bus.write_long(new_sp, return_pc);
                 cpu.write_reg(Register::A7, new_sp);

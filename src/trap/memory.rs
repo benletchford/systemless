@@ -630,6 +630,7 @@ impl super::TrapDispatcher {
                     }
                 }
                 self.detached_handles.remove(&handle);
+                self.forget_resource_residency_for_handle(handle);
                 self.forget_resource_handle_index_for_handle(handle);
                 self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
@@ -1002,6 +1003,7 @@ impl super::TrapDispatcher {
                     .tool_trap_trampolines
                     .values()
                     .any(|&addr| addr == handler_addr);
+                self.pending_native_trap_calls.remove(&trap_table_key);
                 if is_legacy_fakeptr || is_trampoline {
                     self.native_trap_table.remove(&trap_table_key);
                 } else {
@@ -3585,6 +3587,7 @@ impl super::TrapDispatcher {
                             bus.free(master_ptr);
                         }
                     }
+                    self.forget_resource_residency_for_handle(handle);
                     bus.write_long(handle, 0); // set master pointer to NIL
                     cpu.write_reg(Register::D0, 0); // noErr
                 }

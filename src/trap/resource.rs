@@ -243,18 +243,6 @@ impl super::TrapDispatcher {
             && address >= base
     }
 
-    fn native_loadseg_handler_is_jump_table(&self, bus: &MacMemoryBus) -> bool {
-        self.native_trap_table
-            .get(&0xA9F0)
-            .copied()
-            .is_some_and(|handler| {
-                // The native CRT shim is installed through a loaded jump-table
-                // entry. A stale/resource pointer can also appear in the trap
-                // table, but it must not be fed into old-trap recovery.
-                bus.read_word(handler) == 0x4EF9 && bus.read_long(handler + 2) != 0
-            })
-    }
-
     /// Minimal serialized resource fork containing an empty resource map.
     fn empty_resource_fork_bytes() -> Vec<u8> {
         let mut bytes = vec![0u8; 46];
@@ -765,6 +753,7 @@ impl super::TrapDispatcher {
         refnum: u16,
     ) -> u32 {
         let key = (refnum, res_type, res_id);
+        let recorded_resident = self.resident_resources.contains(&key);
         if let Some(handle) = self.resource_handles_by_key.get(&key).copied() {
             if let Some((existing_ptr, existing_type, existing_id)) =
                 self.loaded_handles.get(&handle).copied()
@@ -780,11 +769,12 @@ impl super::TrapDispatcher {
                     // later lookup with loading enabled should fill it and restore
                     // the reverse ptr->handle ownership so RecoverHandle keeps
                     // working after the refill.
-                    if self.res_load && bus.read_long(handle) == 0 {
+                    if bus.read_long(handle) == 0 && (self.res_load || recorded_resident) {
                         bus.write_long(handle, existing_ptr);
                         self.add_resource_materialization_tick_cost(bus, existing_ptr);
                     }
-                    if existing_ptr != 0 {
+                    if bus.read_long(handle) != 0 && existing_ptr != 0 {
+                        self.resident_resources.insert(key);
                         self.ptr_to_handle.insert(existing_ptr, handle);
                     }
                     return handle;
@@ -798,11 +788,13 @@ impl super::TrapDispatcher {
         // an empty handle (master pointer NIL) for resource data that is not
         // already in memory. Keep the true data pointer in loaded_handles so
         // LoadResource can populate the master pointer later.
-        bus.write_long(handle, if self.res_load { ptr } else { 0 });
+        let materialize = self.res_load || recorded_resident;
+        bus.write_long(handle, if materialize { ptr } else { 0 });
         self.loaded_handles.insert(handle, (ptr, res_type, res_id));
         self.resource_handle_files.insert(handle, refnum);
         self.remember_resource_handle_index(handle, key.0, key.1, key.2);
-        if self.res_load && ptr != 0 {
+        if materialize && ptr != 0 {
+            self.resident_resources.insert(key);
             self.ptr_to_handle.insert(ptr, handle);
             self.add_resource_materialization_tick_cost(bus, ptr);
         }
@@ -1018,11 +1010,26 @@ impl super::TrapDispatcher {
 
     fn restore_loaded_resource_handle(&mut self, handle: u32, ptr: u32) {
         self.ptr_to_handle.insert(ptr, handle);
+        if let (Some((_, res_type, res_id)), Some(refnum)) = (
+            self.loaded_handles.get(&handle).copied(),
+            self.resource_handle_files.get(&handle).copied(),
+        ) {
+            self.resident_resources.insert((refnum, res_type, res_id));
+        }
         self.detached_handles.remove(&handle);
         if let Some(refnum) = self.detached_handle_files.remove(&handle) {
             // A reload should repair any stale detached-file bookkeeping so
             // later Resource Manager queries still see a live resource.
             self.resource_handle_files.insert(handle, refnum);
+        }
+    }
+
+    pub(crate) fn forget_resource_residency_for_handle(&mut self, handle: u32) {
+        if let (Some((_, res_type, res_id)), Some(refnum)) = (
+            self.loaded_handles.get(&handle).copied(),
+            self.resource_handle_files.get(&handle).copied(),
+        ) {
+            self.resident_resources.remove(&(refnum, res_type, res_id));
         }
     }
 
@@ -1858,6 +1865,7 @@ impl super::TrapDispatcher {
                         // immutable backing bytes so a later GetResource can reload the
                         // original fork data, but do not let the file's live map keep
                         // pointing at this now-private buffer.
+                        self.forget_resource_residency_for_handle(handle);
                         self.forget_resource_live_map_entry_for_handle(handle);
                         self.forget_resource_handle_index_for_handle(handle);
                         self.loaded_handles.remove(&handle);
@@ -1939,6 +1947,7 @@ impl super::TrapDispatcher {
                     }
                     let attrs = self.resource_attributes_for_handle(handle).unwrap_or(0);
                     if (attrs & Self::RES_CHANGED_ATTR) == 0 {
+                        self.forget_resource_residency_for_handle(handle);
                         let resource_record = self.resource_record_for_handle(handle);
                         let can_reload = resource_record
                             .map(|(refnum, record_type, record_id)| {
@@ -2415,7 +2424,6 @@ impl super::TrapDispatcher {
                 let pc = cpu.read_reg(Register::PC); // past A9F0
                 let a9f0_addr = pc.wrapping_sub(2);
 
-                let trampoline_segment = cpu.read_reg(Register::D0) as i16;
                 let is_loadseg_trampoline = self
                     .tool_trap_trampolines
                     .get(&0xA9F0)
@@ -2424,72 +2432,18 @@ impl super::TrapDispatcher {
 
                 let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
                 let original_trap_return = self.current_trap_caller;
-                let native_loadseg_handler = self.native_loadseg_handler_is_jump_table(bus);
-                let native_return =
-                    bus.read_long(cpu.read_reg(Register::A6).wrapping_add(4));
-
-                // A native segment-loader shim can tail-call the previous
-                // `_LoadSeg` address returned by GetToolTrapAddress. The
-                // auto-pop trampoline has no CODE jump-table bytes of its
-                // own, but the native handler's link frame retains the
-                // original caller return address at A6+4. Recover the
-                // Think C entry from that saved return address, patch the
-                // resident segment, and let the normal auto-pop epilogue
-                // return to the shim continuation.
-                if is_loadseg_trampoline && auto_pop_old_trap && native_loadseg_handler {
-                    // The native shim tail-jumps through the saved old trap.
-                    // Its return PC is the start of the next MPW jump-table
-                    // entry: the first word is the routine offset, followed
-                    // by the usual MOVE.W/_LoadSeg glue. The shim's D0 is the
-                    // zero-based CODE resource number to load.
-                    let entry = native_return;
-                    if native_return != 0 && self.segment_map.contains_key(&trampoline_segment) {
-                        if trace_loadseg_enabled() {
-                            eprintln!(
-                                "[TRAP] LoadSeg(seg={}, fmt=mpw-native-oldtrap) entry=${:08X} return=${:08X}",
-                                trampoline_segment, entry, native_return
-                            );
-                        }
-                        // Re-enter the patched entry rather than the raw
-                        // offset word at the native return address. The
-                        // auto-pop epilogue would otherwise restore that
-                        // same raw address after finish_loadseg returns.
-                        self.preserve_auto_pop_pc_once = true;
-                        return Some(self.finish_loadseg(
-                            bus,
-                            cpu,
-                            trampoline_segment,
-                            entry,
-                            true,
-                        ));
-                    }
-                }
-
-                // A standalone trampoline call has no enclosing native
-                // handler frame from which to recover a jump-table entry.
-                // CODE is already resident in that case, so preserve the
-                // caller's return path as a successful no-op.
-                if is_loadseg_trampoline
-                    && (native_loadseg_handler || native_return == 0)
-                    && self.segment_map.contains_key(&trampoline_segment)
-                {
-                    if trace_loadseg_enabled() {
-                        eprintln!(
-                            "[TRAP] LoadSeg(seg={}, fmt=resident-trampoline) entry=${:08X}",
-                            trampoline_segment, a9f0_addr
-                        );
-                    }
-                    return Some(Ok(()));
-                }
+                let native_call = (is_loadseg_trampoline && auto_pop_old_trap)
+                    .then(|| self.pending_native_trap_calls.remove(&0xA9F0))
+                    .flatten();
 
                 // Detect format: in standard format, [A9F0-4] = 3F3C (MOVE.W).
                 // In Think C format, A9F0 is at entry+0 and [A9F0+2] = 0x0000.
                 //
                 // Native LoadSeg handlers save the previous trap address via
                 // GetTrapAddress and later jump to its auto-pop form (e.g.
-                // $ADF0). At that point PC names the tiny old-trap stub, not
-                // the original jump-table entry. Use the auto-pop return
-                // address to recover the caller's entry instead.
+                // $ADF0). The dispatcher records the original A-line return
+                // PC and argument SP before entering any installed handler,
+                // so recovery does not depend on that handler's stack frame.
                 let old_trap_standard = auto_pop_old_trap
                     && original_trap_return.is_some_and(|return_pc| {
                         bus.read_word(return_pc.wrapping_sub(6)) == 0x3F3C
@@ -2502,33 +2456,57 @@ impl super::TrapDispatcher {
                         (bus.read_word(trap_addr) & !0x0400u16) == 0xA9F0
                             && bus.read_word(trap_addr + 2) == 0x0000
                     });
+                let native_old_trap_standard = native_call.as_ref().is_some_and(|call| {
+                    bus.read_word(call.return_pc.wrapping_sub(6)) == 0x3F3C
+                        && (bus.read_word(call.return_pc.wrapping_sub(2)) & !0x0400u16) == 0xA9F0
+                });
+                let native_old_trap_think = native_call.as_ref().is_some_and(|call| {
+                    let trap_addr = call.return_pc.wrapping_sub(2);
+                    (bus.read_word(trap_addr) & !0x0400u16) == 0xA9F0
+                        && bus.read_word(trap_addr + 2) == 0x0000
+                });
 
                 let word_before_seg = bus.read_word(a9f0_addr.wrapping_sub(4));
                 let is_standard = old_trap_standard || word_before_seg == 0x3F3C;
 
-                let (seg_num, entry_addr, fmt, refresh_from_resource) = if old_trap_standard {
-                    let return_pc = original_trap_return.unwrap();
-                    let sn = bus.read_word(sp) as i16;
-                    cpu.write_reg(Register::A7, sp + 2);
-                    (sn, return_pc.wrapping_sub(8), "mpw-oldtrap", true)
-                } else if old_trap_think {
-                    let return_pc = original_trap_return.unwrap();
-                    let entry = return_pc.wrapping_sub(2);
-                    let sn = bus.read_word(entry + 6) as i16;
-                    (sn, entry, "thinkc-oldtrap", true)
-                } else if is_standard {
-                    // Standard: seg# was pushed by MOVE.W, pop it
-                    let sn = bus.read_word(sp) as i16;
-                    cpu.write_reg(Register::A7, sp + 2);
-                    // Entry starts 6 bytes before A9F0
-                    (sn, a9f0_addr.wrapping_sub(6), "mpw", false)
-                } else {
-                    // Think C: A9F0 at entry+0, seg# at entry+6, offset at entry+4
-                    // Stack has JSR return address (don't pop segment number)
-                    let entry = a9f0_addr; // A9F0 IS entry+0
-                    let sn = bus.read_word(entry + 6) as i16;
-                    (sn, entry, "thinkc", false)
-                };
+                let (seg_num, entry_addr, fmt, refresh_from_resource) =
+                    if native_old_trap_standard {
+                        let call = native_call.as_ref().unwrap();
+                        let sn = bus.read_word(call.argument_sp) as i16;
+                        (
+                            sn,
+                            call.return_pc.wrapping_sub(8),
+                            "mpw-native-oldtrap",
+                            true,
+                        )
+                    } else if native_old_trap_think {
+                        let call = native_call.as_ref().unwrap();
+                        let entry = call.return_pc.wrapping_sub(2);
+                        let sn = bus.read_word(entry + 6) as i16;
+                        (sn, entry, "thinkc-native-oldtrap", true)
+                    } else if old_trap_standard {
+                        let return_pc = original_trap_return.unwrap();
+                        let sn = bus.read_word(sp) as i16;
+                        cpu.write_reg(Register::A7, sp + 2);
+                        (sn, return_pc.wrapping_sub(8), "mpw-oldtrap", true)
+                    } else if old_trap_think {
+                        let return_pc = original_trap_return.unwrap();
+                        let entry = return_pc.wrapping_sub(2);
+                        let sn = bus.read_word(entry + 6) as i16;
+                        (sn, entry, "thinkc-oldtrap", true)
+                    } else if is_standard {
+                        // Standard: seg# was pushed by MOVE.W, pop it
+                        let sn = bus.read_word(sp) as i16;
+                        cpu.write_reg(Register::A7, sp + 2);
+                        // Entry starts 6 bytes before A9F0
+                        (sn, a9f0_addr.wrapping_sub(6), "mpw", false)
+                    } else {
+                        // Think C: A9F0 at entry+0, seg# at entry+6, offset at entry+4
+                        // Stack has JSR return address (don't pop segment number)
+                        let entry = a9f0_addr; // A9F0 IS entry+0
+                        let sn = bus.read_word(entry + 6) as i16;
+                        (sn, entry, "thinkc", false)
+                    };
 
                 let trace_loadseg = trace_loadseg_enabled();
                 if trace_loadseg {
@@ -10149,40 +10127,6 @@ mod tests {
     }
 
     #[test]
-    fn get1_named_resource_empty_name_finds_unnamed_resource() {
-        let (mut disp, mut cpu, mut bus) = setup();
-        let data_ptr = bus.alloc(4);
-        bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40]);
-        disp.resources = Some(LoadedResources {
-            files: HashMap::from([(
-                0,
-                ResourceFileMap {
-                    loaded: HashMap::from([((*b"CODE", 25), data_ptr)]),
-                    named: HashMap::new(),
-                    names_by_id: HashMap::new(),
-                    attrs: HashMap::new(),
-                    map_attrs: 0,
-                },
-            )]),
-            names: HashMap::new(),
-            search_order: vec![0],
-            current_file: 0,
-        });
-
-        let name_addr = 0x200000u32;
-        write_pstring(&mut bus, name_addr, b"");
-        bus.write_long(TEST_SP, name_addr);
-        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"CODE"));
-
-        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
-
-        let handle = bus.read_long(TEST_SP + 8);
-        assert_ne!(handle, 0);
-        assert_eq!(cpu.read_reg(Register::A0), handle);
-        assert_eq!(bus.read_word(0x0A60), 0);
-    }
-
-    #[test]
     fn get1_named_resource_miss_returns_nil_in_a0() {
         let (mut disp, mut cpu, mut bus) = setup();
         let name_addr = 0x200000u32;
@@ -11199,41 +11143,47 @@ mod tests {
     }
 
     #[test]
-    fn loadseg_auto_pop_trampoline_accepts_resident_segment_in_d0() {
+    fn loadseg_native_old_trap_recovers_the_recorded_original_call() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.register_segments(HashMap::from([(25i16, 0x220000u32)]));
+        let seg_addr = 0x220000u32;
+        bus.write_word(seg_addr, 0x0000);
+        bus.write_word(seg_addr + 2, 0x0000);
+        disp.register_segments(HashMap::from([(2i16, seg_addr)]));
+
+        let entry_addr = 0x240000u32;
+        bus.write_word(entry_addr, 0x0010);
+        bus.write_word(entry_addr + 2, 0x3F3C);
+        bus.write_word(entry_addr + 4, 0x0002);
+        bus.write_word(entry_addr + 6, 0xA9F0);
+
+        // SetTrapAddress accepts an arbitrary routine entry. Its first
+        // instruction and stack-frame convention are deliberately irrelevant
+        // to recovery of the original A-line call.
+        let handler = 0x300000u32;
+        bus.write_word(handler, 0x4E71); // NOP
+        disp.native_trap_table.insert(0xA9F0, handler);
+        cpu.write_reg(Register::PC, entry_addr + 8);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2);
+
+        disp.dispatch(0xA9F0, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), handler);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 4);
 
         let trampoline = disp.get_or_create_tool_trap_trampoline(&mut bus, 0xA9F0);
-        let return_pc = 0x280000u32;
-        bus.write_long(TEST_SP, return_pc);
-        cpu.write_reg(Register::A7, TEST_SP);
+        let handler_sp = TEST_SP - 0x100;
+        bus.write_long(handler_sp, 0x310000);
+        cpu.write_reg(Register::A7, handler_sp);
         cpu.write_reg(Register::PC, trampoline + 2);
-        cpu.write_reg(Register::D0, 25);
 
         call_trap_word(&mut disp, 0xADF0, &mut cpu, &mut bus).unwrap();
 
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(cpu.read_reg(Register::PC), return_pc);
-        assert_eq!(cpu.read_reg(Register::D0), 25);
-    }
-
-    #[test]
-    fn loadseg_recovery_requires_a_jmp_l_native_handler() {
-        let (mut disp, _cpu, mut bus) = setup();
-        let handler = 0x300000u32;
-        disp.native_trap_table.insert(0xA9F0, handler);
-
-        assert!(!disp.native_loadseg_handler_is_jump_table(&bus));
-
-        bus.write_word(handler, 0x4EB9);
-        bus.write_long(handler + 2, 0x310000);
-        assert!(!disp.native_loadseg_handler_is_jump_table(&bus));
-
-        bus.write_word(handler, 0x4EF9);
-        assert!(disp.native_loadseg_handler_is_jump_table(&bus));
-
-        bus.write_long(handler + 2, 0);
-        assert!(!disp.native_loadseg_handler_is_jump_table(&bus));
+        assert_eq!(cpu.read_reg(Register::PC), entry_addr + 2);
+        assert_eq!(cpu.read_reg(Register::A7), handler_sp + 4);
+        assert_eq!(bus.read_word(entry_addr), 2);
+        assert_eq!(bus.read_word(entry_addr + 2), 0x4EF9);
+        assert_eq!(bus.read_long(entry_addr + 4), seg_addr + 4 + 0x0010);
+        assert!(!disp.pending_native_trap_calls.contains_key(&0xA9F0));
     }
 
     #[test]
