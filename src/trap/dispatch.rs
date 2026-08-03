@@ -606,6 +606,8 @@ pub(crate) struct ControlTrackingState {
 pub(crate) struct PortDrawState {
     pub fg_color: (u16, u16, u16),
     pub bg_color: (u16, u16, u16),
+    pub pm_fg_color: Option<(u32, i16)>,
+    pub pm_bg_color: Option<(u32, i16)>,
     pub bk_pat: [u8; 8],
     pub pn_loc: (i16, i16),
     pub pn_size: (i16, i16),
@@ -622,6 +624,8 @@ impl Default for PortDrawState {
         Self {
             fg_color: (0, 0, 0),
             bg_color: (0xFFFF, 0xFFFF, 0xFFFF),
+            pm_fg_color: None,
+            pm_bg_color: None,
             bk_pat: [0x00; 8],
             pn_loc: (0, 0),
             pn_size: (1, 1),
@@ -1316,6 +1320,12 @@ pub struct TrapDispatcher {
     pub(crate) fg_color: (u16, u16, u16),
     /// Current background color (RGBColor: R, G, B)
     pub(crate) bg_color: (u16, u16, u16),
+    /// Palette handle and entry retained by PmForeColor/RestoreFore.
+    /// SaveFore serializes these GrafVars fields through ColorSpec when set.
+    pub(crate) pm_fg_color: Option<(u32, i16)>,
+    /// Palette handle and entry retained by PmBackColor/RestoreBack.
+    /// SaveBack serializes these GrafVars fields through ColorSpec when set.
+    pub(crate) pm_bg_color: Option<(u32, i16)>,
     /// Requested colors for PixPats initialized by MakeRGBPat, keyed by
     /// PixPatHandle. The ROM expands these into depth-specific pattern data;
     /// HLE keeps the source RGB so color fills can resolve it for the current
@@ -2843,6 +2853,8 @@ impl TrapDispatcher {
             output_dir: None,
             fg_color: (0, 0, 0),
             bg_color: (0xFFFF, 0xFFFF, 0xFFFF),
+            pm_fg_color: None,
+            pm_bg_color: None,
             makergbpat_colors: HashMap::new(),
             // Default HiliteRGB used before an application calls HiliteColor.
             // The System 7.5.3 BasiliskII reference resolves this to EV's

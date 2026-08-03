@@ -3460,6 +3460,8 @@ impl super::TrapDispatcher {
         super::dispatch::PortDrawState {
             fg_color: self.fg_color,
             bg_color: self.bg_color,
+            pm_fg_color: self.pm_fg_color,
+            pm_bg_color: self.pm_bg_color,
             bk_pat: self.bk_pat,
             pn_loc: self.pn_loc,
             pn_size: self.pn_size,
@@ -3475,6 +3477,8 @@ impl super::TrapDispatcher {
     fn restore_qd_state(&mut self, state: super::dispatch::PortDrawState) {
         self.fg_color = state.fg_color;
         self.bg_color = state.bg_color;
+        self.pm_fg_color = state.pm_fg_color;
+        self.pm_bg_color = state.pm_bg_color;
         self.bk_pat = state.bk_pat;
         self.pn_loc = state.pn_loc;
         self.pn_size = state.pn_size;
@@ -14810,12 +14814,11 @@ impl super::TrapDispatcher {
             // CodeFragmentDispatch (CFM) ($AA5A): PPC SS 1994 ch.6 1770. D0 selector. Gestalt 'cfrg' → gestaltCFMPresent=0. HLE: D0=0, registers + stack preserved (68K-only — fat binaries fall back to 68K fork).
             (true, 0x25A) => return_noerr(cpu),
 
-            // IconDispatch ($ABC9) — Icon Utilities
-            // Inside Macintosh: More Macintosh Toolbox (1993),
-            // pp. 5-18 and 5-71:
-            // Icon Utilities availability is gated by
-            // `gestaltIconUtilitiesAttr`, and the routines are invoked
-            // through `_IconDispatch` with routine selectors.
+            // IconDispatch ($ABC9)
+            // Dispatches Icon Utilities routines selected in D0.
+            // Selector-specific Pascal frames; the low byte records argument words.
+            // More Macintosh Toolbox (1993), pp. 5-18 and 5-71.
+            // Icon Utilities availability is gated by `gestaltIconUtilitiesAttr`.
             // Selector convention: D0 = routine number; routines
             // include PlotIconID, NewIconSuite, AddIconToSuite,
             // GetIconFromSuite, ForEachIconDo, GetIconCacheData,
@@ -14827,21 +14830,66 @@ impl super::TrapDispatcher {
             // routed through IconDispatch.
             // Gestalt: `gestaltIconUtilitiesAttr = 'icon'`.
             //
-            // HLE behaviour: D0=0 (noErr), all other registers
-            // preserved, and the dispatcher advances A7 by 8 bytes
-            // on return. Apps that probe Gestalt see "absent" and
-            // fall back to the legacy trap surface for monochrome /
-            // color icons (which Systemless implements via $A9BB
-            // GetIcon / $AA1E GetCIcon / etc.).
+            // The selector's low byte is the Pascal argument count in words.
+            // Some 68K glue presents that public selector byte-swapped in D0;
+            // normalize only values from the published table, then derive the
+            // frame size instead of special-casing individual routines.
             //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::icondispatch_*
-            // IconDispatch ($ABC9): MMTB 1993 ch.5 14879+15191. D0 selector. Gestalt 'icon' → gestaltIconUtilitiesPresent. HLE: selector $0000 returns noErr and pops the inline selector frame; unsupported selectors return paramErr (-50) and still pop the same frame. Apps fall back to legacy $A9BB/$AA1F monochrome/color icon traps.
+            // Regression coverage: src/trap/toolbox.rs::tests::icondispatch_*
+            // Unsupported public selectors return paramErr (-50) after consuming
+            // the selector-derived frame; $0000 retains the noErr probe behavior.
             (true, 0x3C9) => {
-                let selector = cpu.read_reg(Register::D0) & 0xFFFF;
-                match selector {
-                    0 => return_noerr_and_pop(cpu, 8),
-                    _ => return_error_and_pop(cpu, 8, -50),
+                let raw_selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
+                let is_public = |selector| {
+                    matches!(
+                        selector,
+                        0x0702
+                            | 0x1702
+                            | 0x0203
+                            | 0x1603
+                            | 0x1904
+                            | 0x1A04
+                            | 0x1B04
+                            | 0x1C04
+                            | 0x0005
+                            | 0x0105
+                            | 0x0B05
+                            | 0x0306
+                            | 0x0406
+                            | 0x0606
+                            | 0x0806
+                            | 0x0906
+                            | 0x0D06
+                            | 0x1006
+                            | 0x1306
+                            | 0x1D06
+                            | 0x1E06
+                            | 0x1F06
+                            | 0x0E07
+                            | 0x1107
+                            | 0x1407
+                            | 0x0A08
+                            | 0x0508
+                            | 0x0F09
+                            | 0x1209
+                            | 0x1509
+                    )
+                };
+                let selector = if is_public(raw_selector) {
+                    raw_selector
+                } else if is_public(raw_selector.swap_bytes()) {
+                    raw_selector.swap_bytes()
+                } else {
+                    raw_selector
+                };
+                let pop_bytes = if is_public(selector) {
+                    u32::from(selector & 0x00FF) * 2
+                } else {
+                    8
+                };
+                match raw_selector {
+                    0 => return_noerr_and_pop(cpu, pop_bytes),
+                    _ => return_error_and_pop(cpu, pop_bytes, -50),
                 }
             }
 
@@ -23293,7 +23341,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0000_050B); // representative unsupported selector
+        cpu.write_reg(Register::D0, 0x0000_BEEF); // unsupported in either byte order
         bus.write_long(sp, 0x1122_3344);
         bus.write_long(sp + 4, 0x5566_7788);
 
@@ -23331,6 +23379,21 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A0), 0x4444_5555);
         assert_eq!(cpu.read_reg(Register::A1), 0x6666_7777);
         assert_eq!(cpu.read_reg(Register::A7), sp_before + 8);
+    }
+
+    #[test]
+    fn icondispatch_public_selectors_derive_frames_after_byte_order_normalization() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        for (selector, pop_bytes) in [(0x1306, 12), (0x0613, 12), (0x0005, 10), (0x0500, 10)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + pop_bytes);
+        }
     }
 
     #[test]

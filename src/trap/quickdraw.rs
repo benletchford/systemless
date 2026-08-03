@@ -4252,6 +4252,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let color = bus.read_long(sp);
                 self.fg_color = Self::legacy_qd_color_to_rgb(color);
+                self.pm_fg_color = None;
                 self.sync_current_port_draw_state(bus);
                 if trace_qd_colors_enabled() {
                     eprintln!(
@@ -4284,6 +4285,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let color = bus.read_long(sp);
                 self.bg_color = Self::legacy_qd_color_to_rgb(color);
+                self.pm_bg_color = None;
                 self.sync_current_port_draw_state(bus);
                 if trace_qd_colors_enabled() {
                     eprintln!(
@@ -4320,6 +4322,7 @@ impl super::TrapDispatcher {
                 let g = bus.read_word(color_ptr + 2);
                 let b = bus.read_word(color_ptr + 4);
                 self.fg_color = (r, g, b);
+                self.pm_fg_color = None;
                 self.sync_current_port_draw_state(bus);
                 if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
                     Self::push_pict_word(commands, 0x001A); // RGBFgCol
@@ -4349,6 +4352,7 @@ impl super::TrapDispatcher {
                 let g = bus.read_word(color_ptr + 2);
                 let b = bus.read_word(color_ptr + 4);
                 self.bg_color = (r, g, b);
+                self.pm_bg_color = None;
                 self.sync_current_port_draw_state(bus);
                 if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
                     Self::push_pict_word(commands, 0x001B); // RGBBkCol
@@ -4914,7 +4918,9 @@ impl super::TrapDispatcher {
             (true, 0x297) => {
                 let sp = cpu.read_reg(Register::A7);
                 let entry = bus.read_word(sp) as i16;
-                if let Some((rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry) {
+                if let Some((palette, rgb, usage)) =
+                    self.palette_entry_rgb_for_current_window(bus, entry)
+                {
                     let explicit = (usage & PM_EXPLICIT) != 0;
                     self.fg_color = if explicit {
                         let index = (entry as usize) & 0xFF;
@@ -4923,6 +4929,7 @@ impl super::TrapDispatcher {
                     } else {
                         (rgb[0], rgb[1], rgb[2])
                     };
+                    self.pm_fg_color = Some((palette, entry));
                     self.sync_current_port_draw_state(bus);
                     if (explicit || (usage & PM_ANIMATED) != 0)
                         && self.current_port != 0
@@ -4958,7 +4965,9 @@ impl super::TrapDispatcher {
             (true, 0x298) => {
                 let sp = cpu.read_reg(Register::A7);
                 let entry = bus.read_word(sp) as i16;
-                if let Some((rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry) {
+                if let Some((palette, rgb, usage)) =
+                    self.palette_entry_rgb_for_current_window(bus, entry)
+                {
                     let explicit = (usage & PM_EXPLICIT) != 0;
                     self.bg_color = if explicit {
                         let index = (entry as usize) & 0xFF;
@@ -4967,6 +4976,7 @@ impl super::TrapDispatcher {
                     } else {
                         (rgb[0], rgb[1], rgb[2])
                     };
+                    self.pm_bg_color = Some((palette, entry));
                     self.sync_current_port_draw_state(bus);
                     if (explicit || (usage & PM_ANIMATED) != 0)
                         && self.current_port != 0
@@ -6022,6 +6032,132 @@ impl super::TrapDispatcher {
                     // version. No args on stack. Callee just
                     // populates the 2-byte result slot at SP+0.
                     bus.write_word(sp, 1);
+                    return Some(Ok(()));
+                }
+
+                if d0_selector == 0x0C19 || d0_selector == 0x1219 {
+                    // GetGray (PaletteDispatch selectors $0C19 and $1219)
+                    // Finds a device-representable intermediate color.
+                    // FUNCTION GetGray(device: GDHandle; backGround: RGBColor;
+                    //                  VAR foreGround: RGBColor): Boolean;
+                    // Both selector encodings use the same pointer frame:
+                    //   SP+0  foreGround (RGBColor *)
+                    //   SP+4  backGround (RGBColor *)
+                    //   SP+8  device (GDHandle)
+                    //   SP+12 Boolean result slot
+                    // Imaging With QuickDraw (1994), pp. 4-81 to 4-82.
+                    let foreground = bus.read_long(sp);
+                    let background = bus.read_long(sp + 4);
+                    let device = bus.read_long(sp + 8);
+                    let mut found = false;
+                    if Self::guest_range_in_ram(bus, foreground, 6)
+                        && Self::guest_range_in_ram(bus, background, 6)
+                    {
+                        let foreground_rgb = [
+                            bus.read_word(foreground),
+                            bus.read_word(foreground + 2),
+                            bus.read_word(foreground + 4),
+                        ];
+                        let background_rgb = [
+                            bus.read_word(background),
+                            bus.read_word(background + 2),
+                            bus.read_word(background + 4),
+                        ];
+                        if let Some(intermediate) = self.gdevice_intermediate_color(
+                            bus,
+                            device,
+                            background_rgb,
+                            foreground_rgb,
+                        ) {
+                            bus.write_word(foreground, intermediate[0]);
+                            bus.write_word(foreground + 2, intermediate[1]);
+                            bus.write_word(foreground + 4, intermediate[2]);
+                            found = true;
+                        }
+                    }
+                    let boolean = if found { 0x0100 } else { 0 };
+                    bus.write_word(sp + 12, boolean as u16);
+                    cpu.write_reg(Register::D0, boolean);
+                    cpu.write_reg(Register::A7, sp + 12);
+                    return Some(Ok(()));
+                }
+
+                if matches!(d0_selector, 0x040D | 0x040E | 0x040F | 0x0410) {
+                    // SaveFore/SaveBack serialize either direct RGB state
+                    // (value 0) or the GrafVars palette handle plus entry
+                    // index over ColorSpec.rgb (value 1). RestoreFore and
+                    // RestoreBack reverse that overlay.
+                    // Inside Macintosh Volume VI (1991), pp. 20-21 to
+                    // 20-22; Table C-3 selectors $040D-$0410.
+                    let color_ptr = bus.read_long(sp);
+                    if matches!(d0_selector, 0x040D | 0x040E) {
+                        let color = if d0_selector == 0x040D {
+                            self.fg_color
+                        } else {
+                            self.bg_color
+                        };
+                        let palette_color = if d0_selector == 0x040D {
+                            self.pm_fg_color
+                        } else {
+                            self.pm_bg_color
+                        };
+                        if color_ptr != 0 {
+                            if let Some((palette, entry)) = palette_color {
+                                bus.write_word(color_ptr, 1);
+                                bus.write_long(color_ptr + 2, palette);
+                                bus.write_word(color_ptr + 6, entry as u16);
+                            } else {
+                                bus.write_word(color_ptr, 0);
+                                bus.write_word(color_ptr + 2, color.0);
+                                bus.write_word(color_ptr + 4, color.1);
+                                bus.write_word(color_ptr + 6, color.2);
+                            }
+                        }
+                    } else if color_ptr != 0 {
+                        let value = bus.read_word(color_ptr);
+                        let foreground = d0_selector == 0x040F;
+                        if value == 0 {
+                            let color = (
+                                bus.read_word(color_ptr + 2),
+                                bus.read_word(color_ptr + 4),
+                                bus.read_word(color_ptr + 6),
+                            );
+                            if foreground {
+                                self.fg_color = color;
+                                self.pm_fg_color = None;
+                            } else {
+                                self.bg_color = color;
+                                self.pm_bg_color = None;
+                            }
+                        } else if value == 1 {
+                            let palette = bus.read_long(color_ptr + 2);
+                            let entry = bus.read_word(color_ptr + 6) as i16;
+                            if foreground {
+                                self.pm_fg_color = Some((palette, entry));
+                            } else {
+                                self.pm_bg_color = Some((palette, entry));
+                            }
+                            if entry >= 0 {
+                                if let Some((rgb, usage, _tolerance)) =
+                                    Self::read_palette_color_info(bus, palette, entry as u16)
+                                {
+                                    let color = if usage & (PM_EXPLICIT | PM_ANIMATED) != 0 {
+                                        let [r, g, b] = self.device_clut[(entry as usize) & 0xFF];
+                                        (r, g, b)
+                                    } else {
+                                        (rgb[0], rgb[1], rgb[2])
+                                    };
+                                    if foreground {
+                                        self.fg_color = color;
+                                    } else {
+                                        self.bg_color = color;
+                                    }
+                                }
+                            }
+                        }
+                        self.sync_current_port_draw_state(bus);
+                    }
+                    cpu.write_reg(Register::A7, sp + 4);
                     return Some(Ok(()));
                 }
 
@@ -15670,8 +15806,137 @@ impl super::TrapDispatcher {
     fn is_public_palette_dispatch_selector(selector: u16) -> bool {
         matches!(
             selector,
-            0x0002 | 0x0003 | 0x0015 | 0x0417 | 0x0616 | 0x0A13 | 0x0A14 | 0x1219
+            0x0002
+                | 0x0003
+                | 0x0015
+                | 0x040D
+                | 0x040E
+                | 0x040F
+                | 0x0410
+                | 0x0417
+                | 0x0616
+                | 0x0A13
+                | 0x0A14
+                | 0x0C19
+                | 0x1219
         )
+    }
+
+    fn closest_available_color(target: [u16; 3], colors: &[[u16; 3]]) -> Option<usize> {
+        colors
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, color)| {
+                let dr = i64::from(color[0]) - i64::from(target[0]);
+                let dg = i64::from(color[1]) - i64::from(target[1]);
+                let db = i64::from(color[2]) - i64::from(target[2]);
+                dr * dr + dg * dg + db * db
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn quantize_direct_component(component: u16, bits: u16) -> u16 {
+        if bits >= 16 {
+            return component;
+        }
+        let levels = (1u32 << bits) - 1;
+        let level = (u32::from(component) * levels + 0x7FFF) / 0xFFFF;
+        ((level * 0xFFFF + levels / 2) / levels) as u16
+    }
+
+    /// Return the best device-representable color strictly between the two
+    /// requested colors. GetGray leaves the foreground unchanged when device
+    /// quantization cannot produce a distinguishable third color.
+    ///
+    /// Imaging With QuickDraw (1994), pp. 4-81 to 4-82.
+    fn gdevice_intermediate_color(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        device: u32,
+        background: [u16; 3],
+        foreground: [u16; 3],
+    ) -> Option<[u16; 3]> {
+        let device = if device != 0 {
+            device
+        } else if self.current_gdevice != 0 {
+            self.current_gdevice
+        } else {
+            self.ensure_main_gdevice(bus)
+        };
+        if !Self::guest_range_in_ram(bus, device, 4) {
+            return None;
+        }
+        let gd = bus.read_long(device);
+        if !Self::guest_range_in_ram(bus, gd, 46) {
+            return None;
+        }
+        let pixmap_handle = bus.read_long(gd + 22);
+        if !Self::guest_range_in_ram(bus, pixmap_handle, 4) {
+            return None;
+        }
+        let pixmap = bus.read_long(pixmap_handle);
+        if !Self::guest_range_in_ram(bus, pixmap, 46) {
+            return None;
+        }
+
+        let midpoint = [
+            ((u32::from(background[0]) + u32::from(foreground[0])) / 2) as u16,
+            ((u32::from(background[1]) + u32::from(foreground[1])) / 2) as u16,
+            ((u32::from(background[2]) + u32::from(foreground[2])) / 2) as u16,
+        ];
+        let pixel_type = bus.read_word(pixmap + 30);
+        let pixel_size = bus.read_word(pixmap + 32);
+        if pixel_type == 16 || pixel_size > 8 {
+            let component_bits = bus.read_word(pixmap + 36).clamp(1, 16);
+            let quantize = |rgb: [u16; 3]| {
+                [
+                    Self::quantize_direct_component(rgb[0], component_bits),
+                    Self::quantize_direct_component(rgb[1], component_bits),
+                    Self::quantize_direct_component(rgb[2], component_bits),
+                ]
+            };
+            let candidate = quantize(midpoint);
+            return (candidate != quantize(background) && candidate != quantize(foreground))
+                .then_some(candidate);
+        }
+
+        let ctab_handle = bus.read_long(pixmap + 42);
+        if !Self::guest_range_in_ram(bus, ctab_handle, 4) {
+            return None;
+        }
+        let ctab = bus.read_long(ctab_handle);
+        if !Self::guest_range_in_ram(bus, ctab, 8) {
+            return None;
+        }
+        let depth_entries = if pixel_size < 8 {
+            1usize << pixel_size
+        } else {
+            256
+        };
+        let last_entry = bus.read_word(ctab + 6) as i16;
+        if last_entry < 0 {
+            return None;
+        }
+        let entries = (last_entry as usize + 1).min(depth_entries).min(256);
+        let entries_base = ctab.checked_add(8)?;
+        if entries == 0 || !Self::guest_range_in_ram(bus, entries_base, (entries * 8) as u32) {
+            return None;
+        }
+        let colors: Vec<[u16; 3]> = (0..entries)
+            .map(|index| {
+                let entry = entries_base + index as u32 * 8;
+                [
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ]
+            })
+            .collect();
+        let background_index = Self::closest_available_color(background, &colors)?;
+        let foreground_index = Self::closest_available_color(foreground, &colors)?;
+        let midpoint_index = Self::closest_available_color(midpoint, &colors)?;
+        (midpoint_index != background_index && midpoint_index != foreground_index)
+            .then_some(colors[midpoint_index])
     }
 
     fn record_gdevice_depth_mode(
@@ -16313,7 +16578,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         entry: i16,
-    ) -> Option<([u16; 3], i16)> {
+    ) -> Option<(u32, [u16; 3], i16)> {
         if entry < 0 {
             return None;
         }
@@ -16323,7 +16588,7 @@ impl super::TrapDispatcher {
         }
         let (rgb, usage, _tolerance) =
             Self::read_palette_color_info(bus, palette_handle, entry as u16)?;
-        Some((rgb, usage))
+        Some((palette_handle, rgb, usage))
     }
 
     fn palette_entry_to_device_index(&self, bus: &MacMemoryBus, entry: i16) -> u32 {
@@ -16331,7 +16596,8 @@ impl super::TrapDispatcher {
             return 0;
         }
 
-        if let Some((rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry) {
+        if let Some((_palette, rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry)
+        {
             if (usage & PM_EXPLICIT) != 0 {
                 return u32::from((entry as u16) & 0x00FF);
             }
@@ -17840,6 +18106,8 @@ impl super::TrapDispatcher {
         PortDrawState {
             fg_color: self.fg_color,
             bg_color: self.bg_color,
+            pm_fg_color: self.pm_fg_color,
+            pm_bg_color: self.pm_bg_color,
             bk_pat: self.bk_pat,
             pn_loc: self.pn_loc,
             pn_size: self.pn_size,
@@ -17870,6 +18138,8 @@ impl super::TrapDispatcher {
             .unwrap_or_default();
         self.fg_color = state.fg_color;
         self.bg_color = state.bg_color;
+        self.pm_fg_color = state.pm_fg_color;
+        self.pm_bg_color = state.pm_bg_color;
         self.bk_pat = state.bk_pat;
         self.pn_loc = state.pn_loc;
         self.pn_size = state.pn_size;
@@ -17910,6 +18180,8 @@ impl super::TrapDispatcher {
             bus.read_word(port + 44),
             bus.read_word(port + 46),
         );
+        self.pm_fg_color = cached.pm_fg_color;
+        self.pm_bg_color = cached.pm_bg_color;
         self.bk_pat = cached.bk_pat;
         self.pn_loc = (
             bus.read_word(port + 48) as i16,
@@ -35666,6 +35938,217 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(d.device_clut[42], [0xAAAA, 0xBBBB, 0xCCCC]);
         assert_eq!(d.color_manager_clut[42], [0xAAAA, 0xBBBB, 0xCCCC]);
+    }
+
+    #[test]
+    fn palettedispatch_d0_compact_getgray_writes_best_available_device_color() {
+        // The compact C calling convention uses selector $0C19 and passes
+        // pointers to both RGBColor records. Its 12-byte argument frame is
+        // followed by a two-byte Boolean result slot.
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdevice = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdevice);
+        let pixmap = bus.read_long(bus.read_long(gd + 22));
+        let ctab = bus.read_long(bus.read_long(pixmap + 42));
+        bus.write_word(pixmap + 32, 2);
+        bus.write_word(ctab + 6, 2);
+        for (index, rgb) in [
+            [0x0000, 0x4000, 0xFFFF],
+            [0x8000, 0x6000, 0x8000],
+            [0xFFFF, 0x8000, 0x0000],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let entry = ctab + 8 + index as u32 * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
+        let background = bus.alloc(6);
+        let foreground = bus.alloc(6);
+        for (offset, value) in [(0, 0x0000), (2, 0x4000), (4, 0xFFFF)] {
+            bus.write_word(background + offset, value);
+        }
+        for (offset, value) in [(0, 0xFFFF), (2, 0x8000), (4, 0x0000)] {
+            bus.write_word(foreground + offset, value);
+        }
+
+        cpu.write_reg(Register::D0, 0x0C19);
+        bus.write_long(TEST_SP, foreground);
+        bus.write_long(TEST_SP + 4, background);
+        bus.write_long(TEST_SP + 8, gdevice);
+        bus.write_word(TEST_SP + 12, 0xBEEF);
+
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0x0100);
+        assert_eq!(bus.read_word(foreground), 0x8000);
+        assert_eq!(bus.read_word(foreground + 2), 0x6000);
+        assert_eq!(bus.read_word(foreground + 4), 0x8000);
+    }
+
+    #[test]
+    fn palettedispatch_d0_getgray_leaves_foreground_when_device_has_no_third_color() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdevice = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdevice);
+        let pixmap = bus.read_long(bus.read_long(gd + 22));
+        let ctab = bus.read_long(bus.read_long(pixmap + 42));
+        bus.write_word(pixmap + 32, 1);
+        bus.write_word(ctab + 6, 1);
+        for (index, rgb) in [[0x0000; 3], [0xFFFF; 3]].into_iter().enumerate() {
+            let entry = ctab + 8 + index as u32 * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
+        let background = bus.alloc(6);
+        let foreground = bus.alloc(6);
+        for offset in [0, 2, 4] {
+            bus.write_word(background + offset, 0);
+            bus.write_word(foreground + offset, 0xFFFF);
+        }
+
+        cpu.write_reg(Register::D0, 0x1219);
+        bus.write_long(TEST_SP, foreground);
+        bus.write_long(TEST_SP + 4, background);
+        bus.write_long(TEST_SP + 8, gdevice);
+        bus.write_word(TEST_SP + 12, 0xBEEF);
+
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        for offset in [0, 2, 4] {
+            assert_eq!(bus.read_word(foreground + offset), 0xFFFF);
+        }
+    }
+
+    #[test]
+    fn palettedispatch_d0_save_fore_and_back_write_colorspecs() {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.fg_color = (0x1111, 0x2222, 0x3333);
+        d.bg_color = (0xAAAA, 0xBBBB, 0xCCCC);
+        let foreground = bus.alloc(8);
+        let background = bus.alloc(8);
+
+        for (selector, pointer, color) in [
+            (0x040D, foreground, d.fg_color),
+            (0x040E, background, d.bg_color),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pointer);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+            assert_eq!(bus.read_word(pointer), 0);
+            assert_eq!(bus.read_word(pointer + 2), color.0);
+            assert_eq!(bus.read_word(pointer + 4), color.1);
+            assert_eq!(bus.read_word(pointer + 6), color.2);
+        }
+    }
+
+    #[test]
+    fn palettedispatch_d0_restore_fore_and_back_read_colorspecs() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let foreground = bus.alloc(8);
+        let background = bus.alloc(8);
+        for (pointer, color) in [
+            (foreground, (0x1111, 0x2222, 0x3333)),
+            (background, (0xAAAA, 0xBBBB, 0xCCCC)),
+        ] {
+            bus.write_word(pointer, 0);
+            bus.write_word(pointer + 2, color.0);
+            bus.write_word(pointer + 4, color.1);
+            bus.write_word(pointer + 6, color.2);
+        }
+
+        for (selector, pointer, expected) in [
+            (0x040F, foreground, (0x1111, 0x2222, 0x3333)),
+            (0x0410, background, (0xAAAA, 0xBBBB, 0xCCCC)),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pointer);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+            let actual = if selector == 0x040F {
+                d.fg_color
+            } else {
+                d.bg_color
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn palettedispatch_save_and_restore_preserve_palette_handle_and_entry() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let palette = d.create_palette_from_ctab(&mut bus, 4, 0, super::PM_TOLERANT, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        let foreground_rgb = [0x1111, 0x2222, 0x3333];
+        let background_rgb = [0xAAAA, 0xBBBB, 0xCCCC];
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            2,
+            foreground_rgb,
+            super::PM_TOLERANT,
+            0,
+        );
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            3,
+            background_rgb,
+            super::PM_TOLERANT,
+            0,
+        );
+        d.pm_fg_color = Some((palette, 2));
+        d.pm_bg_color = Some((palette, 3));
+        let foreground = bus.alloc(8);
+        let background = bus.alloc(8);
+
+        for (selector, pointer, entry) in [(0x040D, foreground, 2), (0x040E, background, 3)] {
+            cpu.write_reg(Register::D0, selector);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pointer);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(bus.read_word(pointer), 1);
+            assert_eq!(bus.read_long(pointer + 2), palette);
+            assert_eq!(bus.read_word(pointer + 6), entry);
+        }
+
+        d.pm_fg_color = None;
+        d.pm_bg_color = None;
+        d.fg_color = (0, 0, 0);
+        d.bg_color = (0, 0, 0);
+        for (selector, pointer) in [(0x040F, foreground), (0x0410, background)] {
+            cpu.write_reg(Register::D0, selector);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pointer);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+        }
+        assert_eq!(d.pm_fg_color, Some((palette, 2)));
+        assert_eq!(d.pm_bg_color, Some((palette, 3)));
+        assert_eq!(
+            d.fg_color,
+            (foreground_rgb[0], foreground_rgb[1], foreground_rgb[2])
+        );
+        assert_eq!(
+            d.bg_color,
+            (background_rgb[0], background_rgb[1], background_rgb[2])
+        );
     }
 
     fn prepare_animatepalette_negative_span_case(
