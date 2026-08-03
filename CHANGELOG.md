@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.3](https://github.com/benletchford/systemless/compare/v0.11.2...v0.11.3) (2026-08-03)
+
+
+### Bug Fixes
+
+* preserve resident resources and stable trap startup state ([0a0595f](https://github.com/benletchford/systemless/commit/0a0595fc866509658c1135004e3de224cd7f3aea))
+* support Spectre Supreme startup and menu input ([e2844d8](https://github.com/benletchford/systemless/commit/e2844d8acc896d8e8c9fe95bdf128d590d0f339c))
+* support Warcraft II palette and icon probes ([d1060f8](https://github.com/benletchford/systemless/commit/d1060f8b6dc49b1db951d3006ea99b35846b9c53))
+
 ## [0.11.2](https://github.com/benletchford/systemless/compare/v0.11.1...v0.11.2) (2026-08-03)
 
 
