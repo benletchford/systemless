@@ -3602,6 +3602,15 @@ impl TrapDispatcher {
         self.vfs_volume_by_name(root)
     }
 
+    /// Return whether a VFS path belongs to an extracted disk-image volume.
+    /// Resource-fork mirrors use a `__rsrc__` prefix, so strip it before
+    /// resolving the volume root. The synthetic boot volume remains writable;
+    /// extracted image volumes are read-only by construction.
+    pub(crate) fn vfs_path_is_read_only(&self, path: &str) -> bool {
+        let path = path.strip_prefix("__rsrc__").unwrap_or(path);
+        self.vfs_volume_for_path(path).is_some()
+    }
+
     pub(crate) fn boot_volume_ref_num_u16() -> u16 {
         BOOT_VOLUME_REF_NUM as u16
     }

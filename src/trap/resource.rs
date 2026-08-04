@@ -3748,6 +3748,16 @@ impl super::TrapDispatcher {
 
                 // Look up in VFS (try exact match, then basename match)
                 if let Some(vfs_name) = self.find_vfs_file(&filename) {
+                    let read_only = self.vfs_path_is_read_only(&vfs_name);
+                    let requests_write = matches!(permission, 2 | 3 | 4);
+                    if requests_write && read_only {
+                        // Extracted disk-image volumes are mounted read-only;
+                        // fsCurPerm follows the volume permission and explicit
+                        // write modes fail with wPrErr.
+                        bus.write_word(pb + 16, (-44i16) as u16);
+                        cpu.write_reg(Register::D0, (-44i32) as u32);
+                        return Some(Ok(()));
+                    }
                     let refnum = self.next_refnum;
                     self.next_refnum += 1;
                     self.open_files.insert(refnum, vfs_name.clone());
@@ -3756,7 +3766,7 @@ impl super::TrapDispatcher {
                     // (3), and fsRdWrShPerm (4) explicitly request it.
                     // PBGetFCBInfo exposes the granted mode through bit 8 of
                     // ioFCBFlags (Files 1992, 2-108).
-                    if matches!(permission, 0 | 2 | 3 | 4) {
+                    if matches!(permission, 0 | 2 | 3 | 4) && !read_only {
                         self.write_refnums.insert(refnum);
                     }
                     self.file_positions.insert(refnum, 0);
@@ -3927,6 +3937,13 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 };
 
+                if self.vfs_path_is_read_only(&filename) {
+                    bus.write_long(pb + 40, 0);
+                    bus.write_word(pb + 16, (-44i16) as u16); // wPrErr
+                    cpu.write_reg(Register::D0, (-44i32) as u32);
+                    return Some(Ok(()));
+                }
+
                 let (new_pos, host_sync_bytes) = {
                     let file_buf = self.vfs.entry(filename.clone()).or_default();
                     let file_len = file_buf.len();
@@ -4082,18 +4099,70 @@ impl super::TrapDispatcher {
             (false, 0x07) => {
                 let pb = cpu.read_reg(Register::A0);
                 let volume_index = bus.read_word(pb + 28) as i16;
-                let volume_info = if volume_index <= 1 {
+                let requested_vref = bus.read_word(pb + 22) as i16;
+                let requested_name = Self::read_pb_filename(bus, bus.read_long(pb + 18));
+                let boot_volume = || {
                     Some((
                         super::TrapDispatcher::boot_volume_name().to_string(),
                         super::TrapDispatcher::boot_volume_ref_num(),
                         0u16,
                     ))
-                } else {
-                    let mut mounted = self.vfs_volumes.values().collect::<Vec<_>>();
-                    mounted.sort_by_key(|volume| std::cmp::Reverse(volume.ref_num));
-                    mounted
-                        .get((volume_index - 2) as usize)
+                };
+                let volume_info = if volume_index == 0 {
+                    // Files 1992, 2-145: ioVolIndex == 0 selects a volume by
+                    // ioNamePtr or ioVRefNum instead of enumerating the VCB
+                    // queue. Do not silently turn an unknown vRefNum into the
+                    // boot volume; callers use nsvErr to detect a bad volume.
+                    if !requested_name.is_empty() {
+                        if requested_name
+                            .eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name())
+                        {
+                            boot_volume()
+                        } else {
+                            self.vfs_volume_by_name(&requested_name).map(|volume| {
+                                (volume.name.clone(), volume.ref_num, volume.attributes)
+                            })
+                        }
+                    } else {
+                        let volume_ref_num = if requested_vref == 0 {
+                            Some(self.resolve_volume_ref_num(self.app_wd_refnum))
+                        } else if requested_vref == super::TrapDispatcher::boot_volume_ref_num()
+                            || self.vfs_volumes.contains_key(&requested_vref)
+                        {
+                            Some(requested_vref)
+                        } else {
+                            self.working_directories
+                                .get(&requested_vref)
+                                .map(|working_directory| working_directory.volume_ref_num)
+                        };
+                        volume_ref_num.and_then(|volume_ref_num| {
+                            if volume_ref_num == super::TrapDispatcher::boot_volume_ref_num() {
+                                boot_volume()
+                            } else {
+                                self.vfs_volume_for_ref_num(volume_ref_num).map(|volume| {
+                                    (volume.name.clone(), volume.ref_num, volume.attributes)
+                                })
+                            }
+                        })
+                    }
+                } else if volume_index > 0 {
+                    let mut mounted = self
+                        .vfs_volumes
+                        .values()
                         .map(|volume| (volume.name.clone(), volume.ref_num, volume.attributes))
+                        .collect::<Vec<_>>();
+                    mounted.sort_by_key(|(_, ref_num, _)| std::cmp::Reverse(*ref_num));
+                    let mut volumes = vec![
+                        (
+                            super::TrapDispatcher::boot_volume_name().to_string(),
+                            super::TrapDispatcher::boot_volume_ref_num(),
+                            0u16,
+                        ),
+                    ];
+                    volumes.extend(mounted);
+                    volumes.get((volume_index - 1) as usize).cloned()
+                } else {
+                    None
                 };
                 let Some((volume_name, volume_ref_num, volume_attributes)) = volume_info else {
                     // Files 1992, 2-145: positive ioVolIndex values walk the
@@ -5158,6 +5227,12 @@ impl super::TrapDispatcher {
                     .vfs_key_for_fsspec(v_ref, dir_id, &filename)
                     .unwrap_or_else(|| super::TrapDispatcher::normalize_hfs_path(&filename));
 
+                if self.vfs_path_is_read_only(&vfs_key) {
+                    bus.write_word(pb + 16, (-44i16) as u16); // wPrErr
+                    cpu.write_reg(Register::D0, (-44i32) as u32);
+                    return Some(Ok(()));
+                }
+
                 // Per IM Files 1992, 2-89, PBCreate returns dupFNErr when the
                 // file already exists. Some shareware/demo titles ship a
                 // marker file (e.g. Meteor Storm's "MS UserKey") inside their
@@ -5259,6 +5334,11 @@ impl super::TrapDispatcher {
                 }
 
                 if let Some(vfs_name) = self.find_vfs_file(&filename) {
+                    if self.vfs_path_is_read_only(&vfs_name) {
+                        bus.write_word(pb + 16, (-44i16) as u16); // wPrErr
+                        cpu.write_reg(Register::D0, (-44i32) as u32);
+                        return Some(Ok(()));
+                    }
                     self.vfs.remove(&vfs_name);
                     self.vfs_rsrc.remove(&vfs_name);
                     self.remove_vfs_entry_metadata(&vfs_name);
@@ -5370,6 +5450,11 @@ impl super::TrapDispatcher {
                     .find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                     .or_else(|| self.find_vfs_file(&filename))
                 {
+                    if self.vfs_path_is_read_only(&vfs_name) {
+                        bus.write_word(pb + 16, (-44i16) as u16); // wPrErr
+                        cpu.write_reg(Register::D0, (-44i32) as u32);
+                        return Some(Ok(()));
+                    }
                     let file_type = bus.read_long(pb + 32);
                     let creator = bus.read_long(pb + 36);
                     let finder_flags = bus.read_word(pb + 40);
@@ -5465,8 +5550,23 @@ impl super::TrapDispatcher {
                     0
                 };
 
-                let mut target_volume_ref_num = self.resolve_volume_ref_num(requested_vref);
-                let mut target_dir_id = if let Some(working_directory) =
+                let named_volume = (!name.is_empty()).then(|| {
+                    if name.eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name()) {
+                        Some((
+                            super::TrapDispatcher::boot_volume_ref_num(),
+                            2u32,
+                        ))
+                    } else {
+                        self.vfs_volume_by_name(&name)
+                            .map(|volume| (volume.ref_num, volume.root_dir_id))
+                    }
+                }).flatten();
+                let mut target_volume_ref_num = named_volume
+                    .map(|(volume_ref_num, _)| volume_ref_num)
+                    .unwrap_or_else(|| self.resolve_volume_ref_num(requested_vref));
+                let mut target_dir_id = if let Some((_, root_dir_id)) = named_volume {
+                    root_dir_id
+                } else if let Some(working_directory) =
                     self.working_directories.get(&requested_vref)
                 {
                     target_volume_ref_num = working_directory.volume_ref_num;
@@ -6220,12 +6320,18 @@ impl super::TrapDispatcher {
                             // the BasiliskII/extfs noErr open behavior, but
                             // still records which access paths requested write
                             // permission.
+                            let read_only = self.vfs_path_is_read_only(&vfs_name);
                             let wants_write = matches!(permission, 2 | 3 | 4);
+                            if wants_write && read_only {
+                                bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
+                                cpu.write_reg(Register::A7, sp + 10);
+                                return Some(Ok(()));
+                            }
 
                             let refnum = self.next_refnum;
                             self.next_refnum += 1;
                             self.open_files.insert(refnum, vfs_name.clone());
-                            if wants_write {
+                            if wants_write && !read_only {
                                 self.write_refnums.insert(refnum);
                             }
                             self.file_positions.insert(refnum, 0);
@@ -6298,6 +6404,12 @@ impl super::TrapDispatcher {
                             );
                         }
 
+                        if self.vfs_path_is_read_only(&vfs_key) {
+                            bus.write_word(sp + 14, (-44i16) as u16); // wPrErr
+                            cpu.write_reg(Register::A7, sp + 14);
+                            return Some(Ok(()));
+                        }
+
                         // dupFNErr (-48): file already exists in VFS.
                         // IM:Files 8528; matches BasiliskII empirical behaviour.
                         let already_exists = self.vfs.contains_key(&vfs_key)
@@ -6347,6 +6459,11 @@ impl super::TrapDispatcher {
                                 cpu.write_reg(Register::A7, sp + 10);
                                 return Some(Ok(()));
                             };
+                            if self.vfs_path_is_read_only(&parent_path) {
+                                bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
+                                cpu.write_reg(Register::A7, sp + 10);
+                                return Some(Ok(()));
+                            }
                             let child_name = super::TrapDispatcher::normalize_hfs_path(&filename);
                             if child_name.is_empty() {
                                 -37i16 // bdNamErr
@@ -6408,18 +6525,29 @@ impl super::TrapDispatcher {
                         let filename = read_fsspec_name(bus, spec_ptr);
                         let vref = bus.read_word(spec_ptr) as i16;
                         let dir_id = bus.read_long(spec_ptr + 2);
+                        let mut read_only = false;
                         let found_in_vfs = if let Some(vfs_name) =
                             self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                         {
-                            self.vfs.remove(&vfs_name);
-                            self.vfs_rsrc.remove(&vfs_name);
-                            self.remove_vfs_entry_metadata(&vfs_name);
-                            true
+                            read_only = self.vfs_path_is_read_only(&vfs_name);
+                            if read_only {
+                                false
+                            } else {
+                                self.vfs.remove(&vfs_name);
+                                self.vfs_rsrc.remove(&vfs_name);
+                                self.remove_vfs_entry_metadata(&vfs_name);
+                                true
+                            }
                         } else if let Some(vfs_name) = self.find_vfs_file(&filename) {
-                            self.vfs.remove(&vfs_name);
-                            self.vfs_rsrc.remove(&vfs_name);
-                            self.remove_vfs_entry_metadata(&vfs_name);
-                            true
+                            read_only = self.vfs_path_is_read_only(&vfs_name);
+                            if read_only {
+                                false
+                            } else {
+                                self.vfs.remove(&vfs_name);
+                                self.vfs_rsrc.remove(&vfs_name);
+                                self.remove_vfs_entry_metadata(&vfs_name);
+                                true
+                            }
                         } else {
                             false
                         };
@@ -6436,7 +6564,9 @@ impl super::TrapDispatcher {
 
                         // fnfErr (-43) when file not found anywhere.
                         // IM:Files 8603: result code fnfErr.
-                        let err: i16 = if found_in_vfs || found_on_host {
+                        let err: i16 = if read_only {
+                            -44 // wPrErr
+                        } else if found_in_vfs || found_on_host {
                             0
                         } else {
                             -43
@@ -6518,15 +6648,27 @@ impl super::TrapDispatcher {
                         let filename = read_fsspec_name(bus, spec_ptr);
                         let vref = bus.read_word(spec_ptr) as i16;
                         let dir_id = bus.read_long(spec_ptr + 2);
-                        if let Some(vfs_name) =
+                        let result = if let Some(vfs_name) =
                             self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                         {
-                            let file_type = bus.read_long(finfo_ptr);
-                            let creator = bus.read_long(finfo_ptr + 4);
-                            let finder_flags = bus.read_word(finfo_ptr + 8);
-                            self.set_vfs_entry_finfo(&vfs_name, file_type, creator, finder_flags);
-                        }
-                        bus.write_word(sp + 8, 0); // noErr
+                            if self.vfs_path_is_read_only(&vfs_name) {
+                                -44i16 // wPrErr
+                            } else {
+                                let file_type = bus.read_long(finfo_ptr);
+                                let creator = bus.read_long(finfo_ptr + 4);
+                                let finder_flags = bus.read_word(finfo_ptr + 8);
+                                self.set_vfs_entry_finfo(
+                                    &vfs_name,
+                                    file_type,
+                                    creator,
+                                    finder_flags,
+                                );
+                                0
+                            }
+                        } else {
+                            -43i16 // fnfErr
+                        };
+                        bus.write_word(sp + 8, result as u16);
                         cpu.write_reg(Register::A7, sp + 8);
                         Ok(())
                     }
@@ -6606,6 +6748,12 @@ impl super::TrapDispatcher {
                         }
 
                         if let Some(vfs_key) = rsrc_key {
+                            if wants_write && self.vfs_path_is_read_only(&vfs_key) {
+                                bus.write_word(sp + 6, (-44i16) as u16); // wPrErr
+                                cpu.write_reg(Register::D0, (-44i32) as u32);
+                                cpu.write_reg(Register::A7, sp + 6);
+                                return Some(Ok(()));
+                            }
                             // Dedupe: re-opening the same fork must reuse
                             // the existing refnum, not re-allocate every
                             // resource, and must not change CurResFile.
@@ -13641,6 +13789,42 @@ mod tests {
         assert_eq!(bus.read_pstring(name_buf), b"unchanged");
     }
 
+    #[test]
+    fn pb_hget_vinfo_zero_index_selects_named_read_only_volume() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let volume_ref = disp.mount_vfs_volume_with_driver_info(
+            "Legend CD",
+            ".AppleCD",
+            0x0080,
+            4,
+            1024,
+            512,
+            512,
+            900,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_pstring(name_buf, b"Legend CD");
+        bus.write_word(pb + 22, 0x1234);
+        bus.write_word(pb + 28, 0); // ioVolIndex: lookup by name
+
+        call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 22), volume_ref as u16);
+        assert_eq!(bus.read_pstring(name_buf), b"Legend CD");
+        assert_eq!(bus.read_word(pb + 38), 0x0080, "ioVAtrb");
+    }
+
     // ================================================================
     // 21. PBGetEOF (0x11)
     // ================================================================
@@ -14883,6 +15067,88 @@ mod tests {
             bus.read_word(addr::SF_SAVE_DISK),
             (-super::super::dispatch::BOOT_VOLUME_REF_NUM) as u16
         );
+    }
+
+    #[test]
+    fn pbsetvol_volume_name_selects_named_volume_root() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let volume_ref = disp.mount_vfs_volume_with_driver_info(
+            "Legend CD",
+            ".AppleCD",
+            0,
+            1,
+            1024,
+            512,
+            512,
+            900,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        let root_dir_id = disp
+            .vfs_volume_for_ref_num(volume_ref)
+            .expect("mounted volume")
+            .root_dir_id;
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_pstring(name_buf, b"Legend CD");
+        bus.write_word(pb + 22, 0); // name selects the volume
+
+        call(&mut disp, false, 0x15, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(disp.default_dir_id, root_dir_id);
+        assert_eq!(disp.resolve_volume_ref_num(disp.app_wd_refnum), volume_ref);
+        assert_eq!(bus.read_word(addr::SF_SAVE_DISK), (-volume_ref) as u16);
+    }
+
+    #[test]
+    fn extracted_volume_rejects_write_open_and_fswrite() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let volume_ref = disp.mount_vfs_volume_with_driver_info(
+            "Legend CD",
+            ".AppleCD",
+            0,
+            1,
+            1024,
+            512,
+            512,
+            900,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        let file_name = "Legend CD/Legend";
+        disp.vfs.insert(file_name.to_string(), vec![1, 2, 3]);
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Legend CD/Legend");
+        bus.write_word(pb + 22, volume_ref as u16);
+        bus.write_byte(pb + 27, 3); // fsRdWrPerm
+        call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -44, "wPrErr");
+
+        bus.write_byte(pb + 27, 1); // fsRdPerm
+        call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let ref_num = bus.read_word(pb + 24);
+        bus.write_word(pb + 24, ref_num);
+        bus.write_long(pb + 32, 0x310000);
+        bus.write_long(pb + 36, 1);
+        bus.write_byte(0x310000, 9);
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -44, "wPrErr");
+        assert_eq!(disp.vfs.get(file_name), Some(&vec![1, 2, 3]));
     }
 
     #[test]
