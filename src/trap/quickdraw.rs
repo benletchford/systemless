@@ -40,6 +40,16 @@ struct PixelTarget {
     ctab_handle: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct RawPixPat {
+    pub(super) data_ptr: u32,
+    pub(super) row_bytes: u32,
+    pub(super) width: i32,
+    pub(super) height: i32,
+    pub(super) pixel_size: u16,
+    pub(super) clut: [[u16; 3]; 256],
+}
+
 pub(super) struct RegionMembershipCache {
     pub(super) top: i16,
     pub(super) rows: Vec<Vec<i16>>,
@@ -22298,6 +22308,98 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(super) fn decode_raw_pixpat(
+        &self,
+        bus: &MacMemoryBus,
+        pp_handle: u32,
+    ) -> Option<RawPixPat> {
+        if pp_handle == 0 {
+            return None;
+        }
+        let pp_ptr = bus.read_long(pp_handle);
+        if pp_ptr == 0 {
+            return None;
+        }
+
+        // Compiled 'ppat' resources keep offsets from the PixPat record;
+        // NewPixPat/MakeRGBPat records keep live handles and deliberately
+        // remain on their existing paths.
+        let pat_map_offset = bus.read_long(pp_ptr + 2);
+        let pat_data_offset = bus.read_long(pp_ptr + 6);
+        if !(28..=0x10000).contains(&pat_map_offset)
+            || !(pat_map_offset + 50..=0x200000).contains(&pat_data_offset)
+        {
+            return None;
+        }
+
+        let pat_map_ptr = pp_ptr + pat_map_offset;
+        let read_map = |base_offset: u32| {
+            let row_bytes = u32::from(bus.read_word(pat_map_ptr + base_offset) & 0x3FFF);
+            let top = bus.read_word(pat_map_ptr + base_offset + 2) as i16;
+            let left = bus.read_word(pat_map_ptr + base_offset + 4) as i16;
+            let bottom = bus.read_word(pat_map_ptr + base_offset + 6) as i16;
+            let right = bus.read_word(pat_map_ptr + base_offset + 8) as i16;
+            let pixel_size = bus.read_word(pat_map_ptr + base_offset + 28);
+            let table_offset = bus.read_long(pat_map_ptr + base_offset + 38);
+            (
+                row_bytes,
+                top,
+                left,
+                bottom,
+                right,
+                pixel_size,
+                table_offset,
+            )
+        };
+        let map_valid = |candidate: &(u32, i16, i16, i16, i16, u16, u32)| {
+            let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *candidate;
+            row_bytes != 0
+                && bottom > top
+                && right > left
+                && matches!(pixel_size, 1 | 2 | 4 | 8)
+                && table_offset != 0
+                && table_offset <= 0x200000
+        };
+        let raw_map = read_map(0);
+        let live_map = read_map(4);
+        let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = if map_valid(&raw_map)
+        {
+            raw_map
+        } else if map_valid(&live_map) {
+            live_map
+        } else {
+            return None;
+        };
+        let clut = self.read_raw_pixpat_color_table(bus, pp_ptr + table_offset)?;
+
+        Some(RawPixPat {
+            data_ptr: pp_ptr + pat_data_offset,
+            row_bytes,
+            width: i32::from(right) - i32::from(left),
+            height: i32::from(bottom) - i32::from(top),
+            pixel_size,
+            clut,
+        })
+    }
+
+    pub(super) fn raw_pixpat_index_at(
+        bus: &MacMemoryBus,
+        pixpat: &RawPixPat,
+        y: i16,
+        x: i16,
+    ) -> Option<u8> {
+        let tile_x = i32::from(x).rem_euclid(pixpat.width) as u32;
+        let tile_y = i32::from(y).rem_euclid(pixpat.height) as u32;
+        Self::raw_pixpat_pixel_value(
+            bus,
+            pixpat.data_ptr,
+            pixpat.row_bytes,
+            pixpat.pixel_size,
+            tile_x,
+            tile_y,
+        )
+    }
+
     fn fill_rect_with_raw_pixpat(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -30398,6 +30500,69 @@ mod tests {
         assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 1, 1), 8);
         assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 2, 1), 7);
         assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 3, 1), 8);
+    }
+
+    #[test]
+    fn installed_raw_color_pixpats_drive_paint_and_erase_rect() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
+        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
+        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        d.pn_mode = 2; // srcXor is ignored for multicolor pixel patterns.
+
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pp_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x20A, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 0, 0, 2, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rect);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0A2, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let expected = [[7, 8, 9, 8], [9, 8, 7, 8]];
+        for (y, row) in expected.iter().enumerate() {
+            for (x, expected_pixel) in row.iter().enumerate() {
+                assert_eq!(
+                    read_surface_pixel(&bus, screen_base, row_bytes, x as u32, y as u32),
+                    *expected_pixel,
+                    "PaintRect must tile the installed PenPixPat color data"
+                );
+            }
+        }
+
+        bus.fill_zeros(screen_base, row_bytes * 64);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pp_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x20B, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rect);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0A3, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        for (y, row) in expected.iter().enumerate() {
+            for (x, expected_pixel) in row.iter().enumerate() {
+                assert_eq!(
+                    read_surface_pixel(&bus, screen_base, row_bytes, x as u32, y as u32),
+                    *expected_pixel,
+                    "EraseRect must tile the installed BackPixPat color data"
+                );
+            }
+        }
     }
 
     #[test]

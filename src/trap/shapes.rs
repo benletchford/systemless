@@ -1331,6 +1331,7 @@ impl super::TrapDispatcher {
         // Designing Cards and Drivers 3rd Ed. 1992, p. 245-248
         let fg_idx;
         let bg_idx;
+        let mut indexed_clut = None;
         if matches!(pixel_size, 2 | 4 | 8) && is_color {
             let pix_map_handle = bus.read_long(port.wrapping_add(2));
             let port_ctab_handle = if pix_map_handle != 0 {
@@ -1369,6 +1370,7 @@ impl super::TrapDispatcher {
             } else {
                 self.read_port_clut(bus, ctab_handle)
             };
+            indexed_clut = Some(port_clut);
             let resolved_color_fields = self
                 .resolved_port_color_fields
                 .get(&port)
@@ -1417,7 +1419,22 @@ impl super::TrapDispatcher {
             bg_idx = 0;
         }
 
-        if pixel_size == 8 && full_rect_coverage && !has_complex_port_clip {
+        let installed_raw_pixpat = if pixel_size == 8 && is_color {
+            let handle = match op {
+                ShapeOp::Paint | ShapeOp::Frame => bus.read_long(port.wrapping_add(58)),
+                ShapeOp::Erase => bus.read_long(port.wrapping_add(32)),
+                _ => 0,
+            };
+            self.decode_raw_pixpat(bus, handle)
+        } else {
+            None
+        };
+
+        if pixel_size == 8
+            && full_rect_coverage
+            && !has_complex_port_clip
+            && installed_raw_pixpat.is_none()
+        {
             if let Some(fill_idx) = self.solid_src_copy_fill_index(
                 &op,
                 fg_idx,
@@ -1552,6 +1569,18 @@ impl super::TrapDispatcher {
                         continue;
                     }
                     let addr = pix_base + byte_offset;
+                    if let (Some(pixpat), Some(dst_clut)) =
+                        (installed_raw_pixpat.as_ref(), indexed_clut.as_ref())
+                    {
+                        if let Some(source_index) = Self::raw_pixpat_index_at(bus, pixpat, y, x) {
+                            let rgb = pixpat.clut[usize::from(source_index)];
+                            bus.write_byte(
+                                addr,
+                                shape_palette_index_for_rgb(rgb, pixel_size, dst_clut),
+                            );
+                        }
+                        continue;
+                    }
                     match op {
                         ShapeOp::Paint | ShapeOp::Frame => {
                             let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
