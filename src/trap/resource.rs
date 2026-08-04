@@ -2484,6 +2484,7 @@ impl super::TrapDispatcher {
                     if native_old_trap_standard {
                         let call = native_call.as_ref().unwrap();
                         let sn = bus.read_word(call.argument_sp) as i16;
+                        cpu.write_reg(Register::A7, call.argument_sp.wrapping_add(2));
                         (
                             sn,
                             call.return_pc.wrapping_sub(8),
@@ -2494,6 +2495,7 @@ impl super::TrapDispatcher {
                         let call = native_call.as_ref().unwrap();
                         let entry = call.return_pc.wrapping_sub(2);
                         let sn = bus.read_word(entry + 6) as i16;
+                        cpu.write_reg(Register::A7, call.argument_sp);
                         (sn, entry, "thinkc-native-oldtrap", true)
                     } else if old_trap_standard {
                         let return_pc = original_trap_return.unwrap();
@@ -11241,6 +11243,7 @@ mod tests {
         cpu.write_reg(Register::PC, entry_addr + 8);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 2);
+        bus.write_word(TEST_SP + 2, 0xBEEF);
 
         disp.dispatch(0xA9F0, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::PC), handler);
@@ -11255,10 +11258,52 @@ mod tests {
         call_trap_word(&mut disp, 0xADF0, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::PC), entry_addr + 2);
-        assert_eq!(cpu.read_reg(Register::A7), handler_sp + 4);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(bus.read_word(TEST_SP + 2), 0xBEEF);
         assert_eq!(bus.read_word(entry_addr), 2);
         assert_eq!(bus.read_word(entry_addr + 2), 0x4EF9);
         assert_eq!(bus.read_long(entry_addr + 4), seg_addr + 4 + 0x0010);
+        assert!(!disp.pending_native_trap_calls.contains_key(&0xA9F0));
+    }
+
+    #[test]
+    fn loadseg_native_old_trap_restores_the_recorded_think_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let seg_addr = 0x220000u32;
+        bus.write_word(seg_addr, 0x0000);
+        bus.write_word(seg_addr + 2, 0x0000);
+        disp.register_segments(HashMap::from([(2i16, seg_addr)]));
+
+        let entry_addr = 0x240000u32;
+        bus.write_word(entry_addr, 0xA9F0);
+        bus.write_word(entry_addr + 2, 0x0000);
+        bus.write_word(entry_addr + 4, 0x0010);
+        bus.write_word(entry_addr + 6, 0x0002);
+
+        let handler = 0x300000u32;
+        bus.write_word(handler, 0x4E71); // NOP
+        disp.native_trap_table.insert(0xA9F0, handler);
+        cpu.write_reg(Register::PC, entry_addr + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0xBEEF);
+
+        disp.dispatch(0xA9F0, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), handler);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 4);
+
+        let trampoline = disp.get_or_create_tool_trap_trampoline(&mut bus, 0xA9F0);
+        let handler_sp = TEST_SP - 0x100;
+        bus.write_long(handler_sp, 0x310000);
+        cpu.write_reg(Register::A7, handler_sp);
+        cpu.write_reg(Register::PC, trampoline + 2);
+
+        call_trap_word(&mut disp, 0xADF0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), entry_addr);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(TEST_SP), 0xBEEF);
+        assert_eq!(bus.read_word(entry_addr), 0x4EF9);
+        assert_eq!(bus.read_long(entry_addr + 2), seg_addr + 4 + 0x0010);
         assert!(!disp.pending_native_trap_calls.contains_key(&0xA9F0));
     }
 
