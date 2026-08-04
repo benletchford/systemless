@@ -1274,6 +1274,7 @@ impl super::TrapDispatcher {
                 // None silently); cleans up CGrafPort tracking.
                 self.cport_ports.remove(&port_ptr);
                 self.cport_original_pixmaps.remove(&port_ptr);
+                self.resolved_port_color_fields.remove(&port_ptr);
                 Ok(())
             }
 
@@ -4254,6 +4255,7 @@ impl super::TrapDispatcher {
                 self.fg_color = Self::legacy_qd_color_to_rgb(color);
                 self.pm_fg_color = None;
                 self.sync_current_port_draw_state(bus);
+                self.resolve_current_port_color_pixels(bus, true, false);
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] ForeColor port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -4287,6 +4289,7 @@ impl super::TrapDispatcher {
                 self.bg_color = Self::legacy_qd_color_to_rgb(color);
                 self.pm_bg_color = None;
                 self.sync_current_port_draw_state(bus);
+                self.resolve_current_port_color_pixels(bus, false, true);
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] BackColor port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -4324,6 +4327,7 @@ impl super::TrapDispatcher {
                 self.fg_color = (r, g, b);
                 self.pm_fg_color = None;
                 self.sync_current_port_draw_state(bus);
+                self.resolve_current_port_color_pixels(bus, true, false);
                 if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
                     Self::push_pict_word(commands, 0x001A); // RGBFgCol
                     for component in [r, g, b] {
@@ -4354,6 +4358,7 @@ impl super::TrapDispatcher {
                 self.bg_color = (r, g, b);
                 self.pm_bg_color = None;
                 self.sync_current_port_draw_state(bus);
+                self.resolve_current_port_color_pixels(bus, false, true);
                 if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
                     Self::push_pict_word(commands, 0x001B); // RGBBkCol
                     for component in [r, g, b] {
@@ -4940,6 +4945,12 @@ impl super::TrapDispatcher {
                         // reserved for that palette entry; Systemless' single
                         // GDevice allocation maps it to the same index.
                         bus.write_long(self.current_port + 80, (entry as u16 & 0x00FF) as u32);
+                        *self
+                            .resolved_port_color_fields
+                            .entry(self.current_port)
+                            .or_default() |= 0x01;
+                    } else {
+                        self.resolve_current_port_color_pixels(bus, true, false);
                     }
                     if trace_qd_colors_enabled() {
                         eprintln!(
@@ -4983,6 +4994,12 @@ impl super::TrapDispatcher {
                         && (bus.read_word(self.current_port + 6) & 0xC000) == 0xC000
                     {
                         bus.write_long(self.current_port + 84, (entry as u16 & 0x00FF) as u32);
+                        *self
+                            .resolved_port_color_fields
+                            .entry(self.current_port)
+                            .or_default() |= 0x02;
+                    } else {
+                        self.resolve_current_port_color_pixels(bus, false, true);
                     }
                     if trace_qd_colors_enabled() {
                         eprintln!(
@@ -17983,6 +18000,7 @@ impl super::TrapDispatcher {
             self.manual_cport_screen_witness.clear();
         }
         self.port_draw_states.remove(&port);
+        self.resolved_port_color_fields.remove(&port);
     }
 
     pub(super) fn effective_destination_ctab_handle(
@@ -18481,6 +18499,38 @@ impl super::TrapDispatcher {
         self.sync_port_draw_state(bus, self.current_port);
     }
 
+    fn resolve_current_port_color_pixels(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        foreground: bool,
+        background: bool,
+    ) {
+        let port = self.current_port;
+        if port == 0
+            || !self.port_allows_draw_state_memory_sync(bus, port)
+            || (bus.read_word(port + 6) & 0xC000) != 0xC000
+        {
+            return;
+        }
+
+        if foreground {
+            let pixel = Self::nearest_palette_index(
+                &self.device_clut,
+                [self.fg_color.0, self.fg_color.1, self.fg_color.2],
+            );
+            bus.write_long(port + 80, u32::from(pixel));
+            *self.resolved_port_color_fields.entry(port).or_default() |= 0x01;
+        }
+        if background {
+            let pixel = Self::nearest_palette_index(
+                &self.device_clut,
+                [self.bg_color.0, self.bg_color.1, self.bg_color.2],
+            );
+            bus.write_long(port + 84, u32::from(pixel));
+            *self.resolved_port_color_fields.entry(port).or_default() |= 0x02;
+        }
+    }
+
     fn sync_port_draw_state(&self, bus: &mut MacMemoryBus, port: u32) {
         if port == 0 {
             return;
@@ -18527,24 +18577,7 @@ impl super::TrapDispatcher {
         bus.write_word(port + 70, encode_text_face_style(self.tx_face));
         bus.write_word(port + 72, self.tx_mode as u16);
         bus.write_word(port + 74, self.tx_size as u16);
-        let (fg_pixel, bg_pixel) = if is_cgrafport {
-            // A CGrafPort's fgColor/bkColor fields contain the pixel values
-            // supplied by the Color Manager, while rgbFgColor/rgbBkColor
-            // retain the requested colors.  Inside Macintosh Volume V,
-            // pp. V-48 and V-163.  Keeping the old QuickDraw constants here
-            // made every non-black/white PmForeColor selection look like
-            // pixel zero to software that inspects the port record.
-            (
-                u32::from(Self::nearest_palette_index(
-                    &self.device_clut,
-                    [self.fg_color.0, self.fg_color.1, self.fg_color.2],
-                )),
-                u32::from(Self::nearest_palette_index(
-                    &self.device_clut,
-                    [self.bg_color.0, self.bg_color.1, self.bg_color.2],
-                )),
-            )
-        } else {
+        if !is_cgrafport {
             let fg_legacy = if self.fg_color == (0, 0, 0) {
                 0x00000021
             } else if self.fg_color == (0xFFFF, 0xFFFF, 0xFFFF) {
@@ -18559,10 +18592,14 @@ impl super::TrapDispatcher {
             } else {
                 0
             };
-            (fg_legacy, bg_legacy)
-        };
-        bus.write_long(port + 80, fg_pixel);
-        bus.write_long(port + 84, bg_pixel);
+            bus.write_long(port + 80, fg_legacy);
+            bus.write_long(port + 84, bg_legacy);
+        }
+        // A CGrafPort's fgColor/bkColor fields are resolved pixel values,
+        // independent from rgbFgColor/rgbBkColor. Applications and the Color
+        // Manager may update those pixels directly, so unrelated pen or text
+        // synchronization must preserve them. Inside Macintosh Volume V,
+        // pp. V-48 and V-163.
     }
 
     fn known_port(&self, port: u32) -> bool {
@@ -33271,6 +33308,40 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(d.fg_color, (0xF2D7, 0x0856, 0x84EC));
+    }
+
+    #[test]
+    fn fore_color_resolves_the_cgrafport_foreground_pixel() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        bus.write_word(port + 6, 0xC000);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[42] = [0xF2D7, 0x0856, 0x84EC];
+        bus.write_long(TEST_SP, 139);
+
+        let result = d.dispatch_quickdraw(true, 0x062, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(port + 80), 42);
+    }
+
+    #[test]
+    fn unrelated_cgrafport_state_sync_preserves_resolved_color_pixels() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        bus.write_word(port + 6, 0xC000);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        bus.write_long(port + 80, 95);
+        bus.write_long(port + 84, 181);
+
+        d.pn_loc = (12, 34);
+        d.sync_current_port_draw_state(&mut bus);
+
+        assert_eq!(bus.read_long(port + 80), 95);
+        assert_eq!(bus.read_long(port + 84), 181);
+        assert_eq!(bus.read_word(port + 48), 12);
+        assert_eq!(bus.read_word(port + 50), 34);
     }
 
     #[test]

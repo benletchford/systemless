@@ -1658,6 +1658,10 @@ pub struct TrapDispatcher {
     pub(crate) current_port: u32,
     /// Per-port pen/color/text state restored by SetPort and SetGWorld.
     pub(crate) port_draw_states: HashMap<u32, PortDrawState>,
+    /// Bit 0/1 mark CGrafPort fgColor/bkColor fields that QuickDraw has
+    /// resolved through a color-setting call. Once resolved, guest writes to
+    /// those indexed pixel fields remain authoritative for drawing.
+    pub(crate) resolved_port_color_fields: HashMap<u32, u8>,
     /// Associated GDevice handle for each offscreen GWorld port.
     pub(crate) gworld_devices: HashMap<u32, u32>,
     /// Compatibility map for `&port->portBits` addresses (key = `port + 2`)
@@ -2997,6 +3001,7 @@ impl TrapDispatcher {
             current_gdevice: 0,
             current_port: 0,
             port_draw_states: HashMap::new(),
+            resolved_port_color_fields: HashMap::new(),
             gworld_devices: HashMap::new(),
             disposed_gworld_portbits: HashMap::new(),
             gworld_pixel_states: HashMap::new(),
