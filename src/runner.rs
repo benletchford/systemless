@@ -1387,9 +1387,7 @@ impl FixtureRunner {
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
         self.dispatcher.set_mouse_position(v, h);
         self.sync_mouse_position_lowmem();
-        if !self.wake_pending_wait_next_event_if_input_available() {
-            self.wake_pending_wait_next_event_with_null_event_for_polling_input();
-        }
+        self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
     }
 
@@ -4628,51 +4626,6 @@ impl FixtureRunner {
         // have to wait for the next foreground CPU step to observe the wake.
         // Macintosh Toolbox Essentials 1992, p. 2-22.
         self.deliver_pending_wait_next_event_if_available()
-    }
-
-    fn wake_pending_wait_next_event_with_null_event_for_polling_input(&mut self) -> bool {
-        if self.active_interrupt_callback.is_some() {
-            return false;
-        }
-        if self.dispatcher.pending_wait_sleep_ticks == 0 {
-            return false;
-        }
-        let Some(pending) = self.dispatcher.pending_wait_next_event_return.take() else {
-            return false;
-        };
-
-        if let (Some(resume_pc), Some(resume_sp)) = (pending.resume_pc, pending.resume_sp) {
-            let current_pc = self.cpu.read_reg(Register::PC);
-            let current_sp = self.cpu.read_reg(Register::A7);
-            if current_pc != resume_pc || current_sp != resume_sp {
-                self.dispatcher.pending_wait_sleep_ticks = 0;
-                if crate::trap::dispatch::trace_input_enabled() {
-                    eprintln!(
-                        "[INPUT] dropping stale WaitNextEvent polling wake parked pc=${:08X} sp=${:08X}; current pc=${:08X} sp=${:08X}",
-                        resume_pc, resume_sp, current_pc, current_sp
-                    );
-                }
-                return false;
-            }
-        }
-
-        let (where_v, where_h) = self.dispatcher.mouse_position();
-        let modifiers = self.dispatcher.current_event_modifiers();
-        self.dispatcher.write_event_record(
-            &mut self.bus,
-            pending.event_ptr,
-            0,
-            0,
-            where_v,
-            where_h,
-            modifiers,
-        );
-        self.bus.write_word(pending.result_ptr, 0);
-        self.dispatcher.pending_wait_sleep_ticks = 0;
-        if crate::trap::dispatch::trace_input_enabled() {
-            eprintln!("[INPUT] WaitNextEvent sleep woke with null event for polling input");
-        }
-        true
     }
 
     fn wake_foreground_after_input(&mut self) {
@@ -12445,7 +12398,7 @@ mod tests {
     }
 
     #[test]
-    fn set_mouse_position_wakes_pending_wait_next_event_with_null_for_polling_loop() {
+    fn set_mouse_position_leaves_pending_wait_next_event_asleep_without_event() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let program_start = 0x0001_0000;
         let event_ptr = 0x0020_0000;
@@ -12482,31 +12435,34 @@ mod tests {
 
         assert_eq!(
             runner.bus.read_word(event_ptr),
-            0,
-            "mouse movement with no mouseRgn event should wake WNE as a null event for polling loops"
+            0xFFFF,
+            "mouse movement with no mouseRgn event should not rewrite the parked event record"
         );
-        assert_eq!(runner.bus.read_long(event_ptr + 2), 0);
-        assert_eq!(runner.bus.read_word(event_ptr + 10), 123u16);
-        assert_eq!(runner.bus.read_word(event_ptr + 12), 456u16);
+        assert_eq!(runner.bus.read_long(event_ptr + 2), 0xABCD_EF01);
+        assert_eq!(runner.bus.read_word(event_ptr + 10), 1);
+        assert_eq!(runner.bus.read_word(event_ptr + 12), 2);
         assert_eq!(
             runner.bus.read_word(result_ptr),
-            0,
-            "WaitNextEvent should return FALSE when the wake is only for polling input"
+            0xFFFF,
+            "the pending WaitNextEvent result must remain untouched"
         );
-        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 0);
-        assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 60);
+        assert!(runner.dispatcher.pending_wait_next_event_return.is_some());
+        assert_eq!(runner.bus.read_word(0x0828), 123u16);
+        assert_eq!(runner.bus.read_word(0x082A), 456u16);
 
         let (steps, running) = runner.run_steps(1, Some(110));
         assert!(running);
         assert_eq!(
-            steps, 1,
-            "polling wake should let foreground code resume before the old sleep expires"
+            steps, 0,
+            "foreground code must remain suspended while WaitNextEvent is asleep"
         );
         assert_eq!(
             runner.bus.read_long(0x016A),
-            100,
-            "polling wake must not spend the next slice only advancing ticks"
+            110,
+            "the original WaitNextEvent sleep should continue toward expiry"
         );
+        assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, 50);
     }
 
     #[test]
