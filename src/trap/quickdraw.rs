@@ -16613,6 +16613,32 @@ impl super::TrapDispatcher {
         u32::from((entry as u16) & 0x00FF)
     }
 
+    /// Overlay the entries of a guest ColorTable on the current Color Manager
+    /// CLUT. A ColorSpec is four consecutive big-endian words: the logical
+    /// index followed by red, green, and blue. Reading the contiguous array in
+    /// one operation avoids four memory-bus dispatches for every entry while
+    /// still consulting guest memory on every call. The latter is important:
+    /// applications may animate or directly modify an offscreen ColorTable.
+    fn read_color_table_ptr_clut(&self, bus: &MacMemoryBus, ctab_ptr: u32) -> [[u16; 3]; 256] {
+        let entry_count = usize::from(bus.read_word(ctab_ptr.wrapping_add(6)).min(255)) + 1;
+        let byte_count = entry_count * 8;
+        let mut entries = [0u8; 256 * 8];
+        bus.read_bytes_into(ctab_ptr.wrapping_add(8), &mut entries[..byte_count]);
+
+        // Treat guest ColorTables as overrides on top of the Color Manager CLUT.
+        // Some scratch/offscreen tables do not populate every logical index;
+        // zero-filling the rest would collapse unrelated indices to black.
+        let mut clut = self.color_manager_clut;
+        for entry in entries[..byte_count].chunks_exact(8) {
+            let value = u16::from_be_bytes([entry[0], entry[1]]) as usize;
+            let red = u16::from_be_bytes([entry[2], entry[3]]);
+            let green = u16::from_be_bytes([entry[4], entry[5]]);
+            let blue = u16::from_be_bytes([entry[6], entry[7]]);
+            clut[value.min(255)] = [red, green, blue];
+        }
+        clut
+    }
+
     /// Read a 256-entry CLUT from a CTabHandle in guest memory.
     /// Falls back to the device CLUT if the handle is NULL.
     /// Imaging With QuickDraw 1994, p. 4-82
@@ -16632,22 +16658,7 @@ impl super::TrapDispatcher {
         if ctab_ptr == 0 {
             return self.color_manager_clut;
         }
-        let ct_size = bus.read_word(ctab_ptr + 6) as u32;
-        // Treat guest ColorTables as overrides on top of the Color Manager CLUT.
-        // Marathon builds scratch/offscreen tables that do not always populate
-        // every entry; zero-filling the rest collapses unrelated indices to black
-        // during 8bpp CopyBits palette remapping.
-        let mut clut = self.color_manager_clut;
-        for i in 0..=ct_size.min(255) {
-            let entry = ctab_ptr + 8 + i * 8;
-            let value = bus.read_word(entry) as usize;
-            let r = bus.read_word(entry + 2);
-            let g = bus.read_word(entry + 4);
-            let b = bus.read_word(entry + 6);
-            let idx = value.min(255);
-            clut[idx] = [r, g, b];
-        }
-        clut
+        self.read_color_table_ptr_clut(bus, ctab_ptr)
     }
 
     fn read_indexed_destination_clut(
@@ -16680,18 +16691,7 @@ impl super::TrapDispatcher {
         if ctab_ptr == 0 {
             return self.color_manager_clut;
         }
-        let ct_size = bus.read_word(ctab_ptr + 6) as u32;
-        let mut clut = self.color_manager_clut;
-        for i in 0..=ct_size.min(255) {
-            let entry = ctab_ptr + 8 + i * 8;
-            let value = bus.read_word(entry) as usize;
-            let r = bus.read_word(entry + 2);
-            let g = bus.read_word(entry + 4);
-            let b = bus.read_word(entry + 6);
-            let idx = value.min(255);
-            clut[idx] = [r, g, b];
-        }
-        clut
+        self.read_color_table_ptr_clut(bus, ctab_ptr)
     }
 
     pub(super) fn uses_canonical_system_8bpp_clut(clut: &[[u16; 3]; 256]) -> bool {
@@ -24746,6 +24746,15 @@ mod tests {
         let clut = d.read_port_clut(&bus, ctab_handle);
 
         assert_eq!(clut[5], [0x1111, 0x2222, 0x3333]);
+
+        // ColorTables are movable guest objects and applications can update
+        // their entries directly. Bulk decoding must not turn into an
+        // implicit stale cache between QuickDraw calls.
+        bus.write_word(entry + 2, 0xAAAA);
+        bus.write_word(entry + 4, 0xBBBB);
+        bus.write_word(entry + 6, 0xCCCC);
+        let updated_clut = d.read_port_clut(&bus, ctab_handle);
+        assert_eq!(updated_clut[5], [0xAAAA, 0xBBBB, 0xCCCC]);
     }
 
     #[test]
