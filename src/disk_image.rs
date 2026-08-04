@@ -15,6 +15,9 @@ const HFS_SIGNATURE: u16 = 0x4244;
 const HFS_PLUS_SIGNATURE: u16 = 0x482B;
 const HFSX_SIGNATURE: u16 = 0x4858;
 const MFS_SIGNATURE: u16 = 0xD2D7;
+const DRIVER_DESCRIPTOR_SIGNATURE: u16 = 0x4552;
+const APPLE_PARTITION_MAP_SIGNATURE: u16 = 0x504D;
+const APPLE_HFS_PARTITION_TYPE: &[u8] = b"Apple_HFS";
 const HFSPLUS_FORK_DATA: u8 = 0x00;
 const HFSPLUS_FORK_RESOURCE: u8 = 0xFF;
 const HFSPLUS_CATALOG_FILE_RECORD: u16 = 0x0002;
@@ -60,6 +63,7 @@ pub fn looks_like_dc42_or_hfs(bytes: &[u8]) -> bool {
         || dc42_data_range(bytes)
             .and_then(|(start, end)| raw_filesystem_signature(&bytes[start..end]))
             .is_some()
+        || apple_hfs_partition_range(bytes).is_some()
 }
 
 pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
@@ -76,7 +80,8 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
         Some(_) | None => {}
     }
 
-    let volume = HfsVolume::parse(bytes).map_err(|e| format!("failed to parse HFS image: {e}"))?;
+    let volume =
+        HfsVolume::parse(filesystem).map_err(|e| format!("failed to parse HFS image: {e}"))?;
     let volume_name = clean_component(&volume.volume_name).unwrap_or_else(|| "Disk Image".into());
     let volume_info = hfs_volume_info(filesystem, volume.files.len());
     let mut dirs = vec![volume_name.clone()];
@@ -172,7 +177,75 @@ fn raw_filesystem_signature(bytes: &[u8]) -> Option<u16> {
 fn filesystem_payload(bytes: &[u8]) -> &[u8] {
     dc42_data_range(bytes)
         .and_then(|(start, end)| bytes.get(start..end))
+        .or_else(|| apple_hfs_partition_range(bytes).and_then(|(start, end)| bytes.get(start..end)))
         .unwrap_or(bytes)
+}
+
+/// Locate the first classic HFS partition in an Apple Partition Map image.
+/// The driver descriptor record supplies the physical block size; each
+/// partition-map entry then identifies the partition start, length, and type.
+/// Inside Macintosh: Devices (1994), pp. 3-13–3-15, 3-25–3-27.
+fn apple_hfs_partition_range(bytes: &[u8]) -> Option<(usize, usize)> {
+    let block_size = read_u16_at(bytes, 2)? as usize;
+    if read_u16_at(bytes, 0)? != DRIVER_DESCRIPTOR_SIGNATURE
+        || block_size < 512
+        || block_size % 512 != 0
+    {
+        return None;
+    }
+
+    let first_entry = block_size;
+    if read_u16_at(bytes, first_entry)? != APPLE_PARTITION_MAP_SIGNATURE {
+        return None;
+    }
+    let map_block_count = read_u32_at(bytes, first_entry + 4)? as usize;
+    if map_block_count == 0 {
+        return None;
+    }
+
+    for map_index in 1..=map_block_count {
+        let entry = block_size.checked_mul(map_index)?;
+        let entry_end = entry.checked_add(512)?;
+        if entry_end > bytes.len() {
+            break;
+        }
+        if read_u16_at(bytes, entry)? != APPLE_PARTITION_MAP_SIGNATURE {
+            continue;
+        }
+        let partition_type = bytes.get(entry + 48..entry + 80)?;
+        if !partition_type.starts_with(APPLE_HFS_PARTITION_TYPE) {
+            continue;
+        }
+
+        let partition_start_blocks = read_u32_at(bytes, entry + 8)? as usize;
+        let partition_block_count = read_u32_at(bytes, entry + 12)? as usize;
+        let data_start_blocks = read_u32_at(bytes, entry + 80)? as usize;
+        let filesystem_start_blocks = partition_start_blocks.checked_add(data_start_blocks)?;
+        let start = filesystem_start_blocks.checked_mul(block_size)?;
+        let end = partition_start_blocks
+            .checked_add(partition_block_count)?
+            .checked_mul(block_size)?;
+        if start >= end || end > bytes.len() {
+            continue;
+        }
+
+        let filesystem = bytes.get(start..end)?;
+        if raw_filesystem_signature(filesystem) == Some(HFS_SIGNATURE) {
+            return Some((start, end));
+        }
+    }
+
+    None
+}
+
+fn read_u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
+    let raw = bytes.get(offset..offset + 2)?;
+    Some(u16::from_be_bytes([raw[0], raw[1]]))
+}
+
+fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    let raw = bytes.get(offset..offset + 4)?;
+    Some(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
 
 fn dc42_data_range(bytes: &[u8]) -> Option<(usize, usize)> {
@@ -609,6 +682,46 @@ mod tests {
 
             assert!(looks_like_dc42_or_hfs(&bytes));
         }
+    }
+
+    #[test]
+    fn detects_hfs_volume_inside_apple_partition_map() {
+        const BLOCK_SIZE: usize = 512;
+        const PARTITION_START: usize = 64;
+        const PARTITION_BLOCKS: usize = 4;
+        let mut bytes = vec![0; (PARTITION_START + PARTITION_BLOCKS) * BLOCK_SIZE];
+        let image_blocks = bytes.len() as u32 / BLOCK_SIZE as u32;
+
+        bytes[0..2].copy_from_slice(&DRIVER_DESCRIPTOR_SIGNATURE.to_be_bytes());
+        bytes[2..4].copy_from_slice(&(BLOCK_SIZE as u16).to_be_bytes());
+        bytes[4..8].copy_from_slice(&image_blocks.to_be_bytes());
+
+        let map_entry = BLOCK_SIZE;
+        bytes[map_entry..map_entry + 2]
+            .copy_from_slice(&APPLE_PARTITION_MAP_SIGNATURE.to_be_bytes());
+        bytes[map_entry + 4..map_entry + 8].copy_from_slice(&2u32.to_be_bytes());
+        bytes[map_entry + 8..map_entry + 12].copy_from_slice(&1u32.to_be_bytes());
+        bytes[map_entry + 12..map_entry + 16].copy_from_slice(&2u32.to_be_bytes());
+        bytes[map_entry + 48..map_entry + 48 + 19].copy_from_slice(b"Apple_partition_map");
+
+        let hfs_entry = BLOCK_SIZE * 2;
+        bytes[hfs_entry..hfs_entry + 2]
+            .copy_from_slice(&APPLE_PARTITION_MAP_SIGNATURE.to_be_bytes());
+        bytes[hfs_entry + 4..hfs_entry + 8].copy_from_slice(&2u32.to_be_bytes());
+        bytes[hfs_entry + 8..hfs_entry + 12]
+            .copy_from_slice(&(PARTITION_START as u32).to_be_bytes());
+        bytes[hfs_entry + 12..hfs_entry + 16]
+            .copy_from_slice(&(PARTITION_BLOCKS as u32).to_be_bytes());
+        bytes[hfs_entry + 48..hfs_entry + 48 + APPLE_HFS_PARTITION_TYPE.len()]
+            .copy_from_slice(APPLE_HFS_PARTITION_TYPE);
+        bytes[PARTITION_START * BLOCK_SIZE + 1024..PARTITION_START * BLOCK_SIZE + 1026]
+            .copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
+
+        assert_eq!(
+            apple_hfs_partition_range(&bytes),
+            Some((PARTITION_START * BLOCK_SIZE, bytes.len()))
+        );
+        assert!(looks_like_dc42_or_hfs(&bytes));
     }
 
     #[test]
