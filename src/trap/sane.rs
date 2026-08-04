@@ -657,11 +657,22 @@ impl super::TrapDispatcher {
                     Extended80::from(r)
                 }
                 0x12 if (opcode & 0x8000) != 0 => {
-                    // Basilisk/System 7.5's Pack5 path consumes this two-address
-                    // call but leaves DST unchanged. Abuse relies on that observed
-                    // behavior when building its palette fade tables.
-                    cpu.set_ccr(0x08);
-                    dst_val
+                    // FXPWRY: dst^src. The high-bit Pack5 form carries two
+                    // extended operands and stores the result in dst.
+                    let base = f64::from(dst_val);
+                    let exponent = f64::from(src_val);
+                    let r = libm::pow(base, exponent);
+                    if trace_sane_nan {
+                        report_nan_if_enabled(
+                            trap_pc,
+                            trap_caller,
+                            "FXPWRY",
+                            base,
+                            Some(exponent),
+                            r,
+                        );
+                    }
+                    Extended80::from(r)
                 }
                 _ => Self::apply_elems_op(trace_sane_nan, trap_pc, trap_caller, op, src_val),
             };
@@ -1369,12 +1380,14 @@ mod tests {
     }
 
     #[test]
-    fn pack5_high_bit_8012_consumes_two_addresses_and_preserves_destination() {
+    fn pack5_high_bit_8012_raises_destination_to_source_power() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        disp.write_fp_extended(&mut bus, DST_ADDR, 2.0);
-        disp.write_fp_extended(&mut bus, SRC_ADDR, 3.0);
+        let base = 0.623_529_411_764_705_9;
+        let exponent = 1.500_706_818_165_993_7;
+        disp.write_fp_extended(&mut bus, DST_ADDR, base);
+        disp.write_fp_extended(&mut bus, SRC_ADDR, exponent);
 
         bus.write_word(sp, 0x8012);
         bus.write_long(sp + 2, DST_ADDR);
@@ -1383,9 +1396,12 @@ mod tests {
         disp.dispatch_sane(true, 0x1EC, &mut cpu, &mut bus);
 
         let result = disp.read_fp_extended(&bus, DST_ADDR);
-        assert!((result - 2.0).abs() < 1e-10, "expected 2.0, got {}", result);
+        let expected = libm::pow(base, exponent);
+        assert!(
+            (result - expected).abs() < 1e-10,
+            "expected {expected}, got {result}"
+        );
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-        assert_eq!(cpu.ccr, 0x08);
     }
 
     #[test]
