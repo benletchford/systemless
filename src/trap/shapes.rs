@@ -128,6 +128,22 @@ fn shape_palette_index_for_rgb(
     super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], clut)
 }
 
+fn indexed_shape_color_index(
+    port_pixel: u32,
+    effective_rgb: (u16, u16, u16),
+    pixel_size: u16,
+    clut: &[[u16; 3]; 256],
+    port_pixel_is_resolved: bool,
+    generated_rgb: bool,
+) -> u8 {
+    if generated_rgb || !port_pixel_is_resolved {
+        let (r, g, b) = effective_rgb;
+        shape_palette_index_for_rgb([r, g, b], pixel_size, clut)
+    } else {
+        (port_pixel as u8) & ((1u16 << pixel_size) - 1) as u8
+    }
+}
+
 fn ctab_rgb_for_value(bus: &MacMemoryBus, ctab_handle: u32, wanted_value: u8) -> Option<[u16; 3]> {
     if ctab_handle == 0 {
         return None;
@@ -1353,10 +1369,35 @@ impl super::TrapDispatcher {
             } else {
                 self.read_port_clut(bus, ctab_handle)
             };
-            let (r, g, b) = effective_fg_color;
-            fg_idx = shape_palette_index_for_rgb([r, g, b], pixel_size, &port_clut);
-            let (r, g, b) = effective_bg_color;
-            bg_idx = shape_palette_index_for_rgb([r, g, b], pixel_size, &port_clut);
+            let resolved_color_fields = self
+                .resolved_port_color_fields
+                .get(&port)
+                .copied()
+                .unwrap_or(0);
+            // A CGrafPort stores the already-resolved destination pixel in
+            // fgColor/bkColor. Applications may edit those fields directly,
+            // while rgbFgColor/rgbBkColor retain the logical colors. Re-running
+            // the RGB inverse lookup here loses that distinction, especially
+            // while an indexed palette is being animated. Generated RGB pixel
+            // patterns are the exception because their color does not come
+            // from the port fields.
+            // Inside Macintosh Volume V, pp. V-48 and V-163
+            fg_idx = indexed_shape_color_index(
+                bus.read_long(port + 80),
+                effective_fg_color,
+                pixel_size,
+                &port_clut,
+                (resolved_color_fields & 0x01) != 0,
+                generated_pen_rgb.is_some(),
+            );
+            bg_idx = indexed_shape_color_index(
+                bus.read_long(port + 84),
+                effective_bg_color,
+                pixel_size,
+                &port_clut,
+                (resolved_color_fields & 0x02) != 0,
+                generated_back_rgb.is_some(),
+            );
             if trace_dialog_text_enabled() && matches!(op, ShapeOp::Glyph(_)) {
                 eprintln!(
                     "[DIALOG-TEXT] Glyph colors port=${:08X} fgRGB=({:04X},{:04X},{:04X}) bgRGB=({:04X},{:04X},{:04X}) fgIdx={} bgIdx={}",
@@ -1740,7 +1781,8 @@ impl super::TrapDispatcher {
 mod tests {
     use super::{
         apply_boolean_transfer_1, apply_boolean_transfer_8, blend_rgb, fg_bg_low_contrast,
-        lighten_stem_alpha, normalize_boolean_transfer_mode, shape_palette_index_for_rgb,
+        indexed_shape_color_index, lighten_stem_alpha, normalize_boolean_transfer_mode,
+        shape_palette_index_for_rgb,
     };
 
     #[test]
@@ -1764,6 +1806,36 @@ mod tests {
         assert_eq!(
             shape_palette_index_for_rgb([0x6666, 0xFFFF, 0xFFFF], 8, &clut),
             12
+        );
+    }
+
+    #[test]
+    fn indexed_cgrafport_shapes_honor_the_resolved_port_pixel() {
+        let mut clut = [[0, 0, 0]; 256];
+        clut[95] = [0x0000, 0x7B60, 0x0000];
+        clut[181] = [0xAB90, 0x7C50, 0x9570];
+
+        assert_eq!(
+            indexed_shape_color_index(
+                95,
+                (0xF2D7, 0x0856, 0x84EC),
+                8,
+                &clut,
+                true,
+                false,
+            ),
+            95
+        );
+        assert_eq!(
+            indexed_shape_color_index(
+                95,
+                (0xF2D7, 0x0856, 0x84EC),
+                8,
+                &clut,
+                true,
+                true,
+            ),
+            181
         );
     }
 
