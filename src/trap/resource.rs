@@ -32,6 +32,23 @@ const NO_OUTSTANDING_HLE_ERR: i16 = -608;
 const CONNECTION_INVALID_ERR: i16 = -609;
 const NO_PORT_ERR: i16 = -903;
 
+#[derive(Clone, Debug)]
+struct CatSearchEntry {
+    name: String,
+    vref_num: i16,
+    parent_dir_id: u32,
+    is_directory: bool,
+    file_type: u32,
+    creator: u32,
+    finder_flags: u16,
+    data_length: u32,
+    resource_length: u32,
+    created_date: u32,
+    modified_date: u32,
+    backup_date: u32,
+    locked: bool,
+}
+
 fn trace_menu_pict_enabled() -> bool {
     *TRACE_MENU_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_PICT").is_some())
 }
@@ -7016,14 +7033,14 @@ impl super::TrapDispatcher {
                 let resolved_vref = self.resolve_volume_ref_num(vref);
 
                 if selector == 0x18 {
-                    // PBCatSearch ($A260, selector $0018): report an
-                    // exhausted read-only catalog search until the full HFS
-                    // catalog cursor is implemented. This is important for
-                    // callers that otherwise retry forever on a zero-match
-                    // noErr response.
-                    bus.write_long(pb + 32, 0); // ioActMatchCount
-                    bus.write_word(pb + 16, (-39i16) as u16); // eofErr
-                    cpu.write_reg(Register::D0, (-39i32) as u32);
+                    // PBCatSearch ($A260, selector $0018). The read-only VFS
+                    // presents a deterministic catalog view and preserves
+                    // ioCatPosition across bounded calls.
+                    // FUNCTION PBCatSearch(paramBlock: HParmBlkPtr; async: Boolean): OSErr;
+                    // Inside Macintosh: Files 1992, 2-204 to 2-206.
+                    let result = self.perform_cat_search(bus, pb, resolved_vref);
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
                     return Some(Ok(()));
                 }
 
@@ -7675,6 +7692,190 @@ impl super::TrapDispatcher {
         // ioDrParID: parent directory ID.
         // Files 1992, 2-192
         bus.write_long(pb + 100, directory.parent_dir_id);
+    }
+
+    fn cat_search_entries(&mut self) -> Vec<CatSearchEntry> {
+        self.ensure_vfs_catalog();
+        let mut entries = Vec::new();
+
+        for (path, directory) in &self.vfs_directories {
+            let name = if path.is_empty() {
+                Self::boot_volume_name().to_string()
+            } else {
+                super::TrapDispatcher::hfs_name_from_vfs_component(
+                    super::TrapDispatcher::vfs_basename(path),
+                )
+            };
+            let vref_num = self
+                .vfs_volume_for_path(path)
+                .map(|volume| volume.ref_num)
+                .unwrap_or(super::TrapDispatcher::boot_volume_ref_num());
+            entries.push(CatSearchEntry {
+                name,
+                vref_num,
+                parent_dir_id: directory.parent_dir_id,
+                is_directory: true,
+                file_type: u32::from_be_bytes(*b"fold"),
+                creator: u32::from_be_bytes(*b"MACS"),
+                finder_flags: 0,
+                data_length: 0,
+                resource_length: 0,
+                created_date: 0,
+                modified_date: 0,
+                backup_date: 0,
+                locked: false,
+            });
+        }
+
+        for (path, metadata) in &self.vfs_metadata {
+            let vref_num = self
+                .vfs_volume_for_path(path)
+                .map(|volume| volume.ref_num)
+                .unwrap_or(super::TrapDispatcher::boot_volume_ref_num());
+            entries.push(CatSearchEntry {
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    super::TrapDispatcher::vfs_basename(path),
+                ),
+                vref_num,
+                parent_dir_id: metadata.parent_dir_id,
+                is_directory: false,
+                file_type: metadata.file_type,
+                creator: metadata.creator,
+                finder_flags: metadata.finder_flags,
+                data_length: self.vfs.get(path).map_or(0, |data| data.len() as u32),
+                resource_length: self.vfs_rsrc.get(path).map_or(0, |data| data.len() as u32),
+                created_date: metadata.created_date,
+                modified_date: metadata.modified_date,
+                backup_date: 0,
+                locked: self.locked_files.contains(path),
+            });
+        }
+
+        entries.sort_by_key(|entry| {
+            (
+                entry.vref_num,
+                entry.parent_dir_id,
+                entry.name.to_ascii_lowercase(),
+                entry.is_directory,
+            )
+        });
+        entries
+    }
+
+    fn cat_search_entry_matches(
+        bus: &MacMemoryBus,
+        entry: &CatSearchEntry,
+        search_bits: u32,
+        info1: u32,
+        info2: u32,
+    ) -> bool {
+        let mut matches = true;
+        let lower_name = if info1 != 0 {
+            Self::read_pb_filename(bus, bus.read_long(info1 + 18)).to_ascii_lowercase()
+        } else {
+            String::new()
+        };
+        if search_bits & 1 != 0 && !lower_name.is_empty() {
+            matches &= entry.name.to_ascii_lowercase().contains(&lower_name);
+        }
+        if search_bits & 2 != 0 && !lower_name.is_empty() {
+            matches &= entry.name.eq_ignore_ascii_case(&lower_name);
+        }
+
+        if search_bits & 4 != 0 && info1 != 0 && info2 != 0 {
+            let actual = u32::from((entry.is_directory as u8) << 4 | entry.locked as u8);
+            let desired = u32::from(bus.read_byte(info1 + 30));
+            let mask = u32::from(bus.read_byte(info2 + 30)) & 0x11;
+            matches &= (actual ^ desired) & mask == 0;
+        }
+
+        if search_bits & 8 != 0 && info1 != 0 && info2 != 0 {
+            let actual_type = entry.file_type;
+            let expected_type = bus.read_long(info1 + 32);
+            let type_mask = bus.read_long(info2 + 32);
+            let actual_creator = entry.creator;
+            let expected_creator = bus.read_long(info1 + 36);
+            let creator_mask = bus.read_long(info2 + 36);
+            let actual_flags = u32::from(entry.finder_flags);
+            let expected_flags = u32::from(bus.read_word(info1 + 40));
+            let flags_mask = u32::from(bus.read_word(info2 + 40));
+            matches &= (actual_type ^ expected_type) & type_mask == 0;
+            matches &= (actual_creator ^ expected_creator) & creator_mask == 0;
+            matches &= (actual_flags ^ expected_flags) & flags_mask == 0;
+        }
+
+        let range_matches = |bit: u32, offset: u32, value: u32| {
+            if search_bits & bit == 0 || info1 == 0 || info2 == 0 {
+                true
+            } else {
+                value >= bus.read_long(info1 + offset) && value <= bus.read_long(info2 + offset)
+            }
+        };
+        matches &= range_matches(32, 54, entry.data_length);
+        matches &= range_matches(64, 58, entry.data_length);
+        matches &= range_matches(128, 64, entry.resource_length);
+        matches &= range_matches(256, 68, entry.resource_length);
+        matches &= range_matches(512, 72, entry.created_date);
+        matches &= range_matches(1024, 76, entry.modified_date);
+        matches &= range_matches(2048, 80, entry.backup_date);
+        matches &= range_matches(8192, 100, entry.parent_dir_id);
+
+        if search_bits & 16384 != 0 {
+            !matches
+        } else {
+            matches
+        }
+    }
+
+    fn write_cat_search_fsspec(bus: &mut MacMemoryBus, spec_ptr: u32, entry: &CatSearchEntry) {
+        bus.write_word(spec_ptr, entry.vref_num as u16);
+        bus.write_long(spec_ptr + 2, entry.parent_dir_id);
+        let bytes = encode_mac_roman_lossy(&entry.name);
+        let len = bytes.len().min(63);
+        bus.write_byte(spec_ptr + 6, len as u8);
+        for (index, byte) in bytes.into_iter().take(len).enumerate() {
+            bus.write_byte(spec_ptr + 7 + index as u32, byte);
+        }
+    }
+
+    fn perform_cat_search(&mut self, bus: &mut MacMemoryBus, pb: u32, vref_num: i16) -> i16 {
+        let match_ptr = bus.read_long(pb + 24);
+        let requested_count = bus.read_long(pb + 28) as usize;
+        let search_bits = bus.read_long(pb + 36);
+        let info1 = bus.read_long(pb + 40);
+        let info2 = bus.read_long(pb + 44);
+        let start = bus.read_long(pb + 52) as usize;
+        if match_ptr == 0 {
+            bus.write_long(pb + 32, 0);
+            return -50; // paramErr
+        }
+
+        let entries = self
+            .cat_search_entries()
+            .into_iter()
+            .filter(|entry| entry.vref_num == vref_num)
+            .collect::<Vec<_>>();
+        let start = start.min(entries.len());
+        let limit = requested_count.max(1);
+        let mut actual_count = 0usize;
+        let mut next = start;
+        while next < entries.len() && actual_count < limit {
+            let entry = &entries[next];
+            if Self::cat_search_entry_matches(bus, entry, search_bits, info1, info2) {
+                Self::write_cat_search_fsspec(bus, match_ptr + (actual_count as u32) * 70, entry);
+                actual_count += 1;
+            }
+            next += 1;
+        }
+
+        bus.write_long(pb + 32, actual_count as u32);
+        if next < entries.len() {
+            bus.write_long(pb + 52, next as u32);
+            0 // noErr: the caller can resume at ioCatPosition.
+        } else {
+            bus.write_long(pb + 52, entries.len() as u32);
+            -39 // eofErr: the catalog is exhausted.
+        }
     }
 
     fn lookup_catalog_entry(
@@ -14259,6 +14460,52 @@ mod tests {
         assert_eq!(
             disp.directory_path_for_id(created_dir_id),
             Some("System Folder/Preferences/Sierra")
+        );
+    }
+
+    #[test]
+    fn fsdispatch_pbcatsearch_returns_matching_fsspec() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.insert("SearchMe".to_string(), vec![1, 2, 3]);
+        disp.set_vfs_entry_metadata("SearchMe", *b"TEXT", *b"TEST", 0);
+        disp.vfs.insert("ZZZ".to_string(), vec![4]);
+        disp.set_vfs_entry_metadata("ZZZ", *b"TEXT", *b"TEST", 0);
+
+        let pb = 0x300000u32;
+        let match_ptr = 0x310000u32;
+        let info1 = 0x320000u32;
+        let info2 = 0x320100u32;
+        let name_ptr = 0x320200u32;
+        write_pstring(&mut bus, name_ptr, b"SearchMe");
+        bus.write_long(info1 + 18, name_ptr);
+        bus.write_byte(info1 + 30, 0); // file, not directory
+        bus.write_long(info1 + 32, u32::from_be_bytes(*b"TEXT"));
+        bus.write_long(info1 + 36, u32::from_be_bytes(*b"TEST"));
+        bus.write_long(info2 + 32, u32::MAX);
+        bus.write_long(info2 + 36, u32::MAX);
+        bus.write_byte(info2 + 30, 0x10); // mask the directory bit
+
+        cpu.write_reg(Register::A0, pb);
+        cpu.write_reg(Register::D0, 0x18); // PBCatSearch selector
+        bus.write_long(pb + 24, match_ptr);
+        bus.write_long(pb + 28, 1); // one FSSpec requested
+        bus.write_long(pb + 36, 2 | 4 | 8); // full name, attributes, Finder info
+        bus.write_long(pb + 40, info1);
+        bus.write_long(pb + 44, info2);
+        bus.write_long(pb + 52, 0); // start at the beginning of the catalog
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_word(match_ptr), (-1i16) as u16);
+        assert_eq!(bus.read_long(match_ptr + 2), 2);
+        assert_eq!(bus.read_pstring(match_ptr + 6), b"SearchMe");
+        assert_ne!(
+            bus.read_long(pb + 52),
+            0,
+            "search should advance the cursor"
         );
     }
 
