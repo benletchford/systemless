@@ -339,6 +339,86 @@ fn memory_manager_trap_updates_dispatcher_ccr(is_tool: bool, trap_num: u16) -> b
 }
 
 impl super::TrapDispatcher {
+    /// Install a video-device gamma table from a `VDGammaRecord`.
+    ///
+    /// Universal Interfaces 3.4 `Video.h` defines `VDGammaRecord.csGTable`
+    /// as a `GammaTbl` pointer and the six-word variable-length table header.
+    /// BasiliskII `video.cpp::set_gamma_table` supplies the validation and
+    /// channel-layout oracle used here.
+    fn install_device_gamma(&mut self, bus: &MacMemoryBus, vd_gamma_ptr: u32) -> u32 {
+        if vd_gamma_ptr == 0 || vd_gamma_ptr.saturating_add(4) > bus.ram_size() {
+            return PARAM_ERR;
+        }
+        if bus
+            .get_alloc_size(vd_gamma_ptr)
+            .is_some_and(|size| size < 4)
+        {
+            return PARAM_ERR;
+        }
+
+        let gamma_ptr = bus.read_long(vd_gamma_ptr);
+        if gamma_ptr == 0 {
+            let identity = std::array::from_fn(|index| index as u8);
+            self.device_gamma = [identity; 3];
+            return NO_ERR;
+        }
+
+        let Some(header_end) = gamma_ptr.checked_add(12) else {
+            return PARAM_ERR;
+        };
+        if header_end > bus.ram_size() {
+            return PARAM_ERR;
+        }
+
+        let version = bus.read_word(gamma_ptr);
+        let gamma_type = bus.read_word(gamma_ptr + 2);
+        let formula_size = u32::from(bus.read_word(gamma_ptr + 4));
+        let channel_count = u32::from(bus.read_word(gamma_ptr + 6));
+        let data_count = u32::from(bus.read_word(gamma_ptr + 8));
+        let data_width = u32::from(bus.read_word(gamma_ptr + 10));
+
+        if version != 0
+            || gamma_type != 0
+            || !matches!(channel_count, 1 | 3)
+            || data_width > 8
+            || data_count != (1u32 << data_width)
+        {
+            return PARAM_ERR;
+        }
+
+        let Some(data_base) = header_end.checked_add(formula_size) else {
+            return PARAM_ERR;
+        };
+        let Some(data_len) = channel_count.checked_mul(data_count) else {
+            return PARAM_ERR;
+        };
+        let Some(table_end) = data_base.checked_add(data_len) else {
+            return PARAM_ERR;
+        };
+        if table_end > bus.ram_size() {
+            return PARAM_ERR;
+        }
+        if bus
+            .get_alloc_size(gamma_ptr)
+            .is_some_and(|size| table_end - gamma_ptr > size)
+        {
+            return PARAM_ERR;
+        }
+
+        let shift = 8 - data_width;
+        let mut installed = [[0u8; 256]; 3];
+        for (channel, output) in installed.iter_mut().enumerate() {
+            let source_channel = if channel_count == 1 { 0 } else { channel as u32 };
+            let source_base = data_base + source_channel * data_count;
+            for (input, value) in output.iter_mut().enumerate() {
+                let source_index = (input as u32) >> shift;
+                *value = bus.read_byte(source_base + source_index);
+            }
+        }
+        self.device_gamma = installed;
+        NO_ERR
+    }
+
     fn sync_vbl_links(&mut self, bus: &mut MacMemoryBus) {
         if self.system_vbl_queue_anchor == 0 {
             let anchor = bus.alloc_synthetic(14);
@@ -1999,6 +2079,7 @@ impl super::TrapDispatcher {
             // and cscSetEntries (csCode=3) via VDSetEntryRecord; returns noErr.
             (false, 0x04) => {
                 let pb = cpu.read_reg(Register::A0);
+                let mut control_result = NO_ERR;
                 if pb != 0 {
                     let cs_code = bus.read_word(pb + 26) as i16;
                     // cscSetMode (csCode=2): switch mode/page and return base address.
@@ -2130,76 +2211,28 @@ impl super::TrapDispatcher {
                         }
                     }
 
-                    // cscSetGamma (csCode=4): install a per-channel gamma
-                    // correction table. csParam[0..3] stores a Ptr to a
-                    // GammaTbl in Pascal format (version, type, formula size,
-                    // chan count, data count, data width, data bytes).
-                    //
-                    // Systemless does NOT yet install a runtime gamma — we have
-                    // a fixed Mac HiRes linear-interpolated gamma LUT in
-                    // `display.rs`. Stub returns noErr.
-                    //
-                    // Designing Cards and Drivers 3rd Ed 1992, p. 245-248
-                    // Inside Macintosh: Devices 1994, p. 6-71
-                    if cs_code == 4 && trace_video_driver_enabled() {
-                        let gamma_ptr = bus.read_long(pb + 28);
-                        let g_version = if gamma_ptr != 0 {
-                            bus.read_word(gamma_ptr) as i16
-                        } else {
-                            -1
-                        };
-                        let g_type = if gamma_ptr != 0 {
-                            bus.read_word(gamma_ptr + 2) as i16
-                        } else {
-                            -1
-                        };
-                        let g_formula_size = if gamma_ptr != 0 {
-                            bus.read_word(gamma_ptr + 4) as i16
-                        } else {
-                            -1
-                        };
-                        let g_chan_cnt = if gamma_ptr != 0 {
-                            bus.read_word(gamma_ptr + 6) as i16
-                        } else {
-                            -1
-                        };
-                        let g_data_cnt = if gamma_ptr != 0 {
-                            bus.read_word(gamma_ptr + 8) as i16
-                        } else {
-                            -1
-                        };
-                        let g_data_width = if gamma_ptr != 0 {
-                            bus.read_word(gamma_ptr + 10) as i16
-                        } else {
-                            -1
-                        };
-                        eprintln!(
-                                "[VIDEO] cscSetGamma gamma_ptr=${:08X} version={} type={} formulaSize={} chanCnt={} dataCnt={} dataWidth={}",
-                                gamma_ptr,
-                                g_version,
-                                g_type,
-                                g_formula_size,
-                                g_chan_cnt,
-                                g_data_cnt,
-                                g_data_width,
+                    // cscSetGamma (csCode=4): csParam points to a
+                    // VDGammaRecord whose first longword is the GammaTbl Ptr.
+                    // Universal Interfaces 3.4 Video.h (`VDGammaRecord`,
+                    // `GammaTbl`); BasiliskII video.cpp `set_gamma_table`.
+                    if cs_code == 4 {
+                        let vd_gamma_ptr = bus.read_long(pb + 28);
+                        control_result = self.install_device_gamma(bus, vd_gamma_ptr);
+                        if trace_video_driver_enabled() {
+                            let gamma_ptr = if vd_gamma_ptr != 0 {
+                                bus.read_long(vd_gamma_ptr)
+                            } else {
+                                0
+                            };
+                            eprintln!(
+                                "[VIDEO] cscSetGamma record=${:08X} table=${:08X} result={}",
+                                vd_gamma_ptr, gamma_ptr, control_result as i32,
                             );
-                        // Preview first 16 data bytes for confirmation
-                        if gamma_ptr != 0 && g_data_cnt > 0 && g_data_width == 8 {
-                            let data_base = gamma_ptr + 12 + g_formula_size.max(0) as u32;
-                            let preview_n = g_data_cnt.min(16) as u32;
-                            let mut bytes = Vec::with_capacity(preview_n as usize);
-                            for i in 0..preview_n {
-                                bytes.push(bus.read_byte(data_base + i));
-                            }
-                            eprintln!("[VIDEO]   gamma data[0..{}] = {:02X?}", preview_n, bytes);
                         }
                     }
-                    // Succeed without applying — keeps Marathon from
-                    // thinking its gamma setup failed. Actual gamma
-                    // application pending full implementation.
-                    bus.write_word(pb + 16, 0); // ioResult = noErr
+                    bus.write_word(pb + 16, control_result as u16);
                 }
-                cpu.write_reg(Register::D0, 0);
+                cpu.write_reg(Register::D0, control_result);
                 Ok(())
             }
 
@@ -9397,6 +9430,166 @@ mod tests {
             0x00ABCDEF,
             "SetMode should not write csBaseAddr past a short stack parameter block"
         );
+    }
+
+    #[test]
+    fn control_set_gamma_installs_one_channel_table_from_vdgamma_record() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = bus.alloc(4);
+        let table = bus.alloc(12 + 2 + 16);
+
+        bus.write_word(table, 0); // gVersion
+        bus.write_word(table + 2, 0); // gType
+        bus.write_word(table + 4, 2); // gFormulaSize
+        bus.write_word(table + 6, 1); // gChanCnt
+        bus.write_word(table + 8, 16); // gDataCnt
+        bus.write_word(table + 10, 4); // gDataWidth
+        bus.write_word(table + 12, 0xA5A5); // skipped formula bytes
+        for index in 0..16u32 {
+            bus.write_byte(table + 14 + index, (index * 17) as u8);
+        }
+        bus.write_long(record, table);
+        bus.write_word(pb + 26, 4); // cscSetGamma
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        for channel in &dispatcher.device_gamma {
+            assert_eq!(channel[0x00], 0x00);
+            assert_eq!(channel[0x1F], 0x11);
+            assert_eq!(channel[0xAB], 0xAA);
+            assert_eq!(channel[0xFF], 0xFF);
+        }
+    }
+
+    #[test]
+    fn control_set_gamma_keeps_three_channels_distinct() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = bus.alloc(4);
+        let table = bus.alloc(12 + 3 * 256);
+
+        bus.write_word(table, 0);
+        bus.write_word(table + 2, 0);
+        bus.write_word(table + 4, 0);
+        bus.write_word(table + 6, 3);
+        bus.write_word(table + 8, 256);
+        bus.write_word(table + 10, 8);
+        for index in 0..256u32 {
+            bus.write_byte(table + 12 + index, index as u8);
+            bus.write_byte(table + 12 + 256 + index, 255 - index as u8);
+            bus.write_byte(table + 12 + 512 + index, 0x42);
+        }
+        bus.write_long(record, table);
+        bus.write_word(pb + 26, 4);
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(dispatcher.device_gamma[0][0xA5], 0xA5);
+        assert_eq!(dispatcher.device_gamma[1][0xA5], 0x5A);
+        assert_eq!(dispatcher.device_gamma[2][0xA5], 0x42);
+        dispatcher.device_clut[7] = [0xA5A5; 3];
+        let raw_clut = dispatcher.device_clut;
+        let palette = crate::display::argb_palette_from_clut_with_gamma(
+            &dispatcher.device_clut,
+            &dispatcher.device_gamma,
+        );
+        assert_eq!(palette[7], 0xFFA55A42);
+        assert_eq!(dispatcher.device_clut, raw_clut);
+    }
+
+    #[test]
+    fn control_set_gamma_rejects_malformed_table_without_changing_state() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = bus.alloc(4);
+        let table = bus.alloc(12 + 16);
+        let before = dispatcher.device_gamma;
+
+        bus.write_word(table, 0);
+        bus.write_word(table + 2, 0);
+        bus.write_word(table + 4, 0);
+        bus.write_word(table + 6, 2); // unsupported channel count
+        bus.write_word(table + 8, 16);
+        bus.write_word(table + 10, 4);
+        bus.write_long(record, table);
+        bus.write_word(pb + 26, 4);
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-50i32) as u32);
+        assert_eq!(bus.read_word(pb + 16), (-50i16) as u16);
+        assert_eq!(dispatcher.device_gamma, before);
+    }
+
+    #[test]
+    fn control_set_gamma_rejects_truncated_allocated_table() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = bus.alloc(4);
+        let table = bus.alloc(12 + 8);
+        let before = dispatcher.device_gamma;
+
+        bus.write_word(table, 0);
+        bus.write_word(table + 2, 0);
+        bus.write_word(table + 4, 0);
+        bus.write_word(table + 6, 1);
+        bus.write_word(table + 8, 16);
+        bus.write_word(table + 10, 4);
+        bus.write_long(record, table);
+        bus.write_word(pb + 26, 4);
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-50i32) as u32);
+        assert_eq!(dispatcher.device_gamma, before);
+    }
+
+    #[test]
+    fn control_set_gamma_null_table_restores_linear_ramp() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = bus.alloc(4);
+        dispatcher.device_gamma = [[0x42; 256]; 3];
+
+        bus.write_long(record, 0);
+        bus.write_word(pb + 26, 4);
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        for channel in &dispatcher.device_gamma {
+            assert_eq!(channel[0x00], 0x00);
+            assert_eq!(channel[0x7F], 0x7F);
+            assert_eq!(channel[0xFF], 0xFF);
+        }
     }
 
     #[test]

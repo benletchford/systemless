@@ -19,6 +19,16 @@ const LETTERBOX_MIN_FLOOD_RATIO_DEN: usize = 4;
 const LETTERBOX_EDGE_TRIM_LIMIT: usize = 32;
 
 pub type RgbaPalette = [u32; 256];
+
+/// Per-channel display transfer tables applied after truncating a 16-bit
+/// QuickDraw color component to its most-significant byte.
+pub type DisplayGamma = [[u8; 256]; 3];
+
+/// Return the modeled display transfer table used before a guest installs one
+/// through the video driver's `cscSetGamma` control call.
+pub fn default_display_gamma() -> DisplayGamma {
+    [MAC_ROM_GAMMA_LUT; 3]
+}
 const UNUSED_RGBA_PALETTE: RgbaPalette = [0; 256];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,9 +89,19 @@ pub fn render_screen(
     screen_mode: (u32, u32, u16, u16, u16),
     device_clut: &[[u16; 3]; 256],
 ) -> Vec<u8> {
+    render_screen_with_gamma(bus, screen_mode, device_clut, &default_display_gamma())
+}
+
+/// Render the current screen using the active video-device gamma table.
+pub fn render_screen_with_gamma(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    device_gamma: &DisplayGamma,
+) -> Vec<u8> {
     let (_, _, scrn_w, scrn_h, _) = screen_mode;
     let mut pixels = Vec::with_capacity(scrn_w as usize * scrn_h as usize * 4);
-    render_screen_into(bus, screen_mode, device_clut, &mut pixels);
+    render_screen_into_with_gamma(bus, screen_mode, device_clut, device_gamma, &mut pixels);
     pixels
 }
 
@@ -92,8 +112,26 @@ pub fn render_screen_into(
     device_clut: &[[u16; 3]; 256],
     pixels: &mut Vec<u8>,
 ) {
+    render_screen_into_with_gamma(
+        bus,
+        screen_mode,
+        device_clut,
+        &default_display_gamma(),
+        pixels,
+    );
+}
+
+/// Render the current screen into a reusable RGBA buffer using the active
+/// video-device gamma table.
+pub fn render_screen_into_with_gamma(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    device_gamma: &DisplayGamma,
+    pixels: &mut Vec<u8>,
+) {
     if matches!(screen_mode.4, 4 | 8) {
-        let palette = rgba_palette_from_clut(device_clut);
+        let palette = rgba_palette_from_clut_with_gamma(device_clut, device_gamma);
         render_screen_with_rgba_palette_into(bus, screen_mode, &palette, pixels);
     } else {
         render_screen_with_rgba_palette_into(bus, screen_mode, &UNUSED_RGBA_PALETTE, pixels);
@@ -101,9 +139,16 @@ pub fn render_screen_into(
 }
 
 pub fn rgba_palette_from_clut(device_clut: &[[u16; 3]; 256]) -> RgbaPalette {
+    rgba_palette_from_clut_with_gamma(device_clut, &default_display_gamma())
+}
+
+pub fn rgba_palette_from_clut_with_gamma(
+    device_clut: &[[u16; 3]; 256],
+    device_gamma: &DisplayGamma,
+) -> RgbaPalette {
     let mut palette = [0u32; 256];
     for (index, slot) in palette.iter_mut().enumerate() {
-        let [r, g, b] = clut_to_rgba8(device_clut, index as u8);
+        let [r, g, b] = clut_to_rgba8_with_gamma(device_clut, device_gamma, index as u8);
         *slot = rgba_word(r, g, b);
     }
     palette
@@ -530,6 +575,25 @@ pub fn screen_pixel_rgb(
     x: u32,
     y: u32,
 ) -> Option<[u8; 3]> {
+    screen_pixel_rgb_with_gamma(
+        bus,
+        screen_mode,
+        device_clut,
+        &default_display_gamma(),
+        x,
+        y,
+    )
+}
+
+/// Sample one screen pixel using the active video-device gamma table.
+pub fn screen_pixel_rgb_with_gamma(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    device_gamma: &DisplayGamma,
+    x: u32,
+    y: u32,
+) -> Option<[u8; 3]> {
     let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
     let w = scrn_w as u32;
     let h = scrn_h as u32;
@@ -541,7 +605,11 @@ pub fn screen_pixel_rgb(
         8 => {
             let addr = scrn_base + y * row_bytes + x;
             let pixel = bus.read_byte(addr);
-            Some(clut_to_rgba8(device_clut, pixel))
+            Some(clut_to_rgba8_with_gamma(
+                device_clut,
+                device_gamma,
+                pixel,
+            ))
         }
         4 => {
             let addr = scrn_base + y * row_bytes + x / 2;
@@ -551,7 +619,11 @@ pub fn screen_pixel_rgb(
             } else {
                 packed & 0x0F
             };
-            Some(clut_to_rgba8(device_clut, pixel))
+            Some(clut_to_rgba8_with_gamma(
+                device_clut,
+                device_gamma,
+                pixel,
+            ))
         }
         1 => {
             let addr = scrn_base + y * row_bytes + x / 8;
@@ -577,6 +649,23 @@ pub fn render_screen_argb(
     device_clut: &[[u16; 3]; 256],
     pixels: &mut Vec<u32>,
 ) {
+    render_screen_argb_with_gamma(
+        bus,
+        screen_mode,
+        device_clut,
+        &default_display_gamma(),
+        pixels,
+    );
+}
+
+/// Render the current screen to ARGB using the active video-device gamma table.
+pub fn render_screen_argb_with_gamma(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    device_clut: &[[u16; 3]; 256],
+    device_gamma: &DisplayGamma,
+    pixels: &mut Vec<u32>,
+) {
     let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
     let w = scrn_w as usize;
     let h = scrn_h as usize;
@@ -591,7 +680,7 @@ pub fn render_screen_argb(
 
     let fb = bus.ram_slice(scrn_base, row_bytes * scrn_h as u32);
 
-    let palette = argb_palette_from_clut(device_clut);
+    let palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
     match pixel_size {
         8 => {
             for gy in 0..h {
@@ -639,13 +728,20 @@ pub fn render_screen_argb(
 /// presenters use this same conversion so their palette output is bit-for-bit
 /// identical to the software renderer.
 pub fn argb_palette_from_clut(device_clut: &[[u16; 3]; 256]) -> [u32; 256] {
+    argb_palette_from_clut_with_gamma(device_clut, &default_display_gamma())
+}
+
+pub fn argb_palette_from_clut_with_gamma(
+    device_clut: &[[u16; 3]; 256],
+    device_gamma: &DisplayGamma,
+) -> [u32; 256] {
     let mut palette = [0u32; 256];
     for (dst, rgb) in palette.iter_mut().zip(device_clut.iter()) {
         let [r, g, b] = *rgb;
         *dst = 0xFF000000
-            | (u32::from(clut_component_to_u8(r)) << 16)
-            | (u32::from(clut_component_to_u8(g)) << 8)
-            | u32::from(clut_component_to_u8(b));
+            | (u32::from(clut_component_to_u8_with_gamma(r, &device_gamma[0])) << 16)
+            | (u32::from(clut_component_to_u8_with_gamma(g, &device_gamma[1])) << 8)
+            | u32::from(clut_component_to_u8_with_gamma(b, &device_gamma[2]));
     }
     palette
 }
@@ -1354,11 +1450,19 @@ pub fn clut_to_argb(clut: &[[u16; 3]; 256], index: u8) -> u32 {
 }
 
 fn clut_to_rgba8(clut: &[[u16; 3]; 256], index: u8) -> [u8; 3] {
+    clut_to_rgba8_with_gamma(clut, &default_display_gamma(), index)
+}
+
+fn clut_to_rgba8_with_gamma(
+    clut: &[[u16; 3]; 256],
+    device_gamma: &DisplayGamma,
+    index: u8,
+) -> [u8; 3] {
     let [r, g, b] = clut[index as usize];
     [
-        clut_component_to_u8(r),
-        clut_component_to_u8(g),
-        clut_component_to_u8(b),
+        clut_component_to_u8_with_gamma(r, &device_gamma[0]),
+        clut_component_to_u8_with_gamma(g, &device_gamma[1]),
+        clut_component_to_u8_with_gamma(b, &device_gamma[2]),
     ]
 }
 
@@ -1367,23 +1471,18 @@ fn rgba_word(r: u8, g: u8, b: u8) -> u32 {
     u32::from_le_bytes([r, g, b, 0xFF])
 }
 
+#[cfg(test)]
 fn clut_component_to_u8(component: u16) -> u8 {
-    MAC_ROM_GAMMA_LUT[(component >> 8) as usize]
+    clut_component_to_u8_with_gamma(component, &MAC_ROM_GAMMA_LUT)
 }
 
-/// Mac ROM gamma LUT applied after `>> 8` truncation of 16-bit CLUT entries.
-/// Matches BasiliskII's video gamma path (the `SetEntries` handler's
-/// `have_gamma` branch).
-/// Values empirically derived from paired-pixel observations
-/// on 01_ambrosia_splash — every Systemless palette top-byte mapped 100% of the
-/// time to the Basilisk-rendered value below. 16 observed pairs linearly
-/// interpolated to 256 entries.
-///
-/// The authoritative "Mac HiRes Std Gamma" LUT from BasiliskII's
-/// `slot_rom.cpp` `defaultGamma` resource was tested as a swap-in. Result
-/// was a small regression — EV's effective gamma does not match the
-/// standard HiRes gamma on non-grid inputs. Kept the linear-interpolated
-/// LUT.
+fn clut_component_to_u8_with_gamma(component: u16, gamma: &[u8; 256]) -> u8 {
+    gamma[(component >> 8) as usize]
+}
+
+/// Modeled default display transfer table, applied after truncating 16-bit
+/// Color QuickDraw components to their most-significant byte. Runtime
+/// `cscSetGamma` tables replace this default in device state.
 const MAC_ROM_GAMMA_LUT: [u8; 256] = [
     0x00, 0x02, 0x05, 0x07, 0x09, 0x0B, 0x0E, 0x10, 0x12, 0x15, 0x17, 0x19, 0x1C, 0x1E, 0x20, 0x22,
     0x25, 0x27, 0x28, 0x2A, 0x2B, 0x2D, 0x2E, 0x2F, 0x31, 0x32, 0x34, 0x35, 0x37, 0x38, 0x39, 0x3B,
@@ -1406,20 +1505,18 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 #[cfg(test)]
 mod tests {
     use super::{
-        argb_palette_from_clut, clut_component_to_u8, clut_to_argb,
+        argb_palette_from_clut, argb_palette_from_clut_with_gamma, clut_component_to_u8,
+        clut_to_argb,
         normalize_centered_compact_mac_viewport_margins_rgba, render_cursor, render_cursor_argb,
         render_screen_argb, render_screen_into, render_screen_with_rgba_palette_into,
-        rgba_palette_from_clut, screen_pixel_rgb, CursorImage,
+        rgba_palette_from_clut, screen_pixel_rgb, screen_pixel_rgb_with_gamma, CursorImage,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
 
     #[test]
-    fn clut_component_applies_mac_rom_gamma() {
-        // Endpoints fixed to raw values.
+    fn clut_component_applies_the_modeled_device_default() {
         assert_eq!(clut_component_to_u8(0x0000), 0x00);
         assert_eq!(clut_component_to_u8(0xFFFF), 0xFF);
-        // Mac palette grid values map to the 16 pairs observed from
-        // `01_ambrosia_splash` (empirical derivation).
         assert_eq!(clut_component_to_u8(0x4444), 0x66);
         assert_eq!(clut_component_to_u8(0x6666), 0x87);
         assert_eq!(clut_component_to_u8(0xAAAA), 0xC0);
@@ -1433,6 +1530,20 @@ mod tests {
         let argb = clut_to_argb(&clut, 7);
         assert_eq!(argb, 0xFF66A5DA);
         assert_eq!(argb_palette_from_clut(&clut)[7], argb);
+    }
+
+    #[test]
+    fn argb_palette_applies_each_installed_gamma_channel() {
+        let mut clut = [[0u16; 3]; 256];
+        clut[7] = [0x1212, 0x3434, 0x5656];
+        let mut gamma = [[0u8; 256]; 3];
+        gamma[0][0x12] = 0xA1;
+        gamma[1][0x34] = 0xB2;
+        gamma[2][0x56] = 0xC3;
+
+        let palette = argb_palette_from_clut_with_gamma(&clut, &gamma);
+
+        assert_eq!(palette[7], 0xFFA1B2C3);
     }
 
     #[test]
@@ -1655,6 +1766,15 @@ mod tests {
         assert_eq!(
             screen_pixel_rgb(&bus, (base, 4, 2, 1, 8), &clut, 2, 0),
             None
+        );
+
+        let mut gamma = [[0u8; 256]; 3];
+        gamma[0][0x44] = 0x11;
+        gamma[1][0x88] = 0x22;
+        gamma[2][0xCC] = 0x33;
+        assert_eq!(
+            screen_pixel_rgb_with_gamma(&bus, (base, 4, 2, 1, 8), &clut, &gamma, 1, 0),
+            Some([0x11, 0x22, 0x33])
         );
     }
 

@@ -976,6 +976,7 @@ impl App {
 
         let screen_mode = runner.dispatcher().screen_mode;
         let device_clut = runner.dispatcher().device_clut;
+        let device_gamma = runner.dispatcher().device_gamma;
         let cursor = runner.dispatcher().cursor().cloned();
         let mouse_pos = runner.dispatcher().mouse_position();
 
@@ -1310,7 +1311,10 @@ impl App {
                 }
             }
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
-            let palette = display::argb_palette_from_clut(&device_clut);
+            let palette = display::argb_palette_from_clut_with_gamma(
+                &device_clut,
+                &device_gamma,
+            );
             if let Some(surface) = self.surface.as_mut() {
                 let presented_directly = surface
                     .present_guest_frame(
@@ -1338,7 +1342,13 @@ impl App {
         }
 
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
-        display::render_screen_argb(runner.bus(), screen_mode, &device_clut, &mut frame_argb);
+        display::render_screen_argb_with_gamma(
+            runner.bus(),
+            screen_mode,
+            &device_clut,
+            &device_gamma,
+            &mut frame_argb,
+        );
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
         }
@@ -2032,10 +2042,11 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
         return;
     }
 
-    let rgba = display::render_screen(
+    let rgba = display::render_screen_with_gamma(
         runner.bus(),
         runner.dispatcher().screen_mode,
         &runner.dispatcher().device_clut,
+        &runner.dispatcher().device_gamma,
     );
 
     let img = image::RgbImage::from_fn(w, h, |x, y| {
