@@ -14507,6 +14507,29 @@ mod tests {
             0,
             "search should advance the cursor"
         );
+
+        let other_vref = disp.mount_vfs_volume_with_driver_info(
+            "OtherVolume",
+            "OtherVolume",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        bus.write_word(pb + 22, other_vref as u16);
+        bus.write_long(pb + 52, 0);
+        cpu.write_reg(Register::D0, 0x18);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(bus.read_long(pb + 32), 0);
     }
 
     #[test]
