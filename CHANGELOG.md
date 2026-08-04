@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.5](https://github.com/benletchford/systemless/compare/v0.11.4...v0.11.5) (2026-08-04)
+
+
+### Performance Improvements
+
+* **macos:** cache native application identity by path ([3274502](https://github.com/benletchford/systemless/commit/327450269aee81bfb25226b1e035b27b0de3f2f5))
+* **quickdraw:** bulk-decode guest color tables ([7201fd0](https://github.com/benletchford/systemless/commit/7201fd0e54804a55010727f09303591d1d577965))
+
 ## [0.11.4](https://github.com/benletchford/systemless/compare/v0.11.3...v0.11.4) (2026-08-03)
 
 
