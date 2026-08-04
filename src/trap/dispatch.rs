@@ -1704,6 +1704,10 @@ pub struct TrapDispatcher {
     /// Initialized to the standard Mac 8-bit system palette. Updated by SetEntries trap
     /// and low-level video driver cscSetEntries. Used for DISPLAY rendering only.
     pub device_clut: [[u16; 3]; 256],
+    /// Per-channel transfer tables installed by the video driver's
+    /// `cscSetGamma` control call. These affect presentation only; the device
+    /// and Color Manager CLUTs retain the guest's uncorrected 16-bit values.
+    pub device_gamma: crate::display::DisplayGamma,
     /// Color Manager CLUT for 8bpp mode. Updated only by high-level SetEntries ($AA3F)
     /// and ActivatePalette — NOT by low-level video driver palette fades.
     /// Used by QuickDraw shape drawing (PaintRect, etc.) for RGB→index mapping,
@@ -2224,7 +2228,12 @@ impl TrapDispatcher {
             frame, self.tick_count, self.trap_count, safe_label
         );
         let path = dir.join(&filename);
-        let mut rgba = crate::display::render_screen(bus, self.screen_mode, &self.device_clut);
+        let mut rgba = crate::display::render_screen_with_gamma(
+            bus,
+            self.screen_mode,
+            &self.device_clut,
+            &self.device_gamma,
+        );
         if let Some(cursor) = self.cursor() {
             crate::display::render_cursor(
                 &mut rgba,
@@ -3027,6 +3036,7 @@ impl TrapDispatcher {
                 )
             },
             device_clut: Self::standard_mac_8bpp_clut(),
+            device_gamma: crate::display::default_display_gamma(),
             color_manager_clut: Self::standard_mac_8bpp_clut(),
             inverse_table_cache: Vec::new(),
             clut_protected: [false; 256],
