@@ -34,6 +34,7 @@ mod sound;
 mod text_render;
 mod toolbox;
 mod types;
+pub(crate) use types::decode_mac_roman;
 mod window;
 
 pub use dispatch::TrapDispatcher;

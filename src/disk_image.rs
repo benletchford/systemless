@@ -83,7 +83,12 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
 
     let volume =
         HfsVolume::parse(filesystem).map_err(|e| format!("failed to parse HFS image: {e}"))?;
-    let volume_name = clean_component(&volume.volume_name).unwrap_or_else(|| "Disk Image".into());
+    // hfs-reader currently replaces MacRoman bytes outside ASCII in the
+    // volume name. Read the MDB Pascal string directly so games and clients
+    // retain identities such as the original Tetris disks' bullet separator.
+    let volume_name = hfs_volume_name(filesystem)
+        .or_else(|| clean_component(&volume.volume_name))
+        .unwrap_or_else(|| "Disk Image".into());
     let volume_info = hfs_volume_info(filesystem, volume.files.len());
     let mut dirs = vec![volume_name.clone()];
 
@@ -126,6 +131,20 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
         dirs,
         files,
     }))
+}
+
+fn hfs_volume_name(bytes: &[u8]) -> Option<String> {
+    const MDB_OFFSET: usize = 1024;
+    const VOLUME_NAME_OFFSET: usize = MDB_OFFSET + 36;
+    if raw_filesystem_signature(bytes) != Some(HFS_SIGNATURE) {
+        return None;
+    }
+    let length = *bytes.get(VOLUME_NAME_OFFSET)? as usize;
+    if !(1..=27).contains(&length) {
+        return None;
+    }
+    let raw = bytes.get(VOLUME_NAME_OFFSET + 1..VOLUME_NAME_OFFSET + 1 + length)?;
+    clean_component(&crate::trap::decode_mac_roman(raw))
 }
 
 fn hfs_volume_info(bytes: &[u8], file_count: usize) -> DiskImageVolumeInfo {
@@ -694,6 +713,16 @@ mod tests {
         bytes[1024..1026].copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
 
         assert!(looks_like_dc42_or_hfs(&bytes));
+    }
+
+    #[test]
+    fn preserves_mac_roman_hfs_volume_names() {
+        let mut bytes = vec![0; 2048];
+        bytes[1024..1026].copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
+        bytes[1060] = 8;
+        bytes[1061..1069].copy_from_slice(b"Tetris\xA52");
+
+        assert_eq!(hfs_volume_name(&bytes).as_deref(), Some("Tetris•2"));
     }
 
     #[test]
