@@ -12371,6 +12371,54 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            // ========== ControlStripDispatch ($AAF2) ==========
+            // Control Strip utility routines are dispatched by a selector in
+            // D0. Universal Interfaces 3.4, ControlStrip.h encodes the
+            // selector as `(argument_words << 8) | routine`, and the
+            // PowerBook 520/520c/540/540c Developer Note, Control Strip
+            // Module Reference, p. 86, specifies paramErr for an
+            // unimplemented routine.
+            //
+            // Systemless has no Control Strip surface. Availability queries
+            // therefore report FALSE, show/hide is a no-op, and unsupported
+            // selectors return paramErr in D0 while consuming their encoded
+            // Pascal argument frame. The dispatcher returns values in D0;
+            // ControlStrip.h's inline entry points do not reserve a separate
+            // result slot on the stack.
+            // ControlStripDispatch ($AAF2): SBIsControlStripVisible ($0000)
+            // returns FALSE without changing A7; SBShowHideControlStrip
+            // ($0101) consumes one word-sized Boolean and returns no error;
+            // unknown selectors return paramErr after consuming their packed
+            // argument words.
+            (true, 0x2F2) => {
+                let sp = cpu.read_reg(Register::A7);
+                let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
+                let arg_bytes = u32::from((selector >> 8) as u8) * 2;
+
+                match selector {
+                    // pascal Boolean SBIsControlStripVisible(void)
+                    0x0000 => {
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // pascal void SBShowHideControlStrip(Boolean showIt)
+                    0x0101 => {
+                        cpu.write_reg(Register::A7, sp + 2);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // pascal Boolean SBSafeToAccessStartupDisk(void)
+                    0x0002 => {
+                        // The emulated VFS has no spindle-up delay, so the
+                        // startup disk is always safe to access.
+                        cpu.write_reg(Register::D0, 1);
+                    }
+                    _ => {
+                        cpu.write_reg(Register::A7, sp + arg_bytes);
+                        cpu.write_reg(Register::D0, (-50i16) as i32 as u32);
+                    }
+                }
+                Ok(())
+            }
+
             // ========== CursorDeviceDispatch ($AADB) ==========
             // Cursor Device Manager dispatcher. Universal Interfaces 3.4
             // CursorDevices.h declares selectors 0..13 as OSErr Pascal
@@ -28360,6 +28408,79 @@ mod tests {
         assert!(zero.unwrap().is_ok());
         assert_eq!(bus.read_long(sp + 8), 0x7FFF_FFFF);
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    // ControlStripDispatch ($AAF2) — selector in D0, Pascal arguments on
+    // the stack. Universal Interfaces 3.4, ControlStrip.h.
+    #[test]
+    fn controlstripdispatch_visibility_query_returns_false_without_touching_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000);
+        bus.write_word(sp, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2F2, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_word(sp), 0xBEEF);
+    }
+
+    #[test]
+    fn controlstripdispatch_show_hide_consumes_one_boolean_word() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0101);
+        bus.write_word(sp, 0x017F); // showIt = TRUE, with a nonzero pad byte
+        bus.write_word(sp + 2, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2F2, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(bus.read_word(sp + 2), 0xBEEF);
+    }
+
+    #[test]
+    fn controlstripdispatch_startup_disk_query_reports_ready_without_touching_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0002);
+        bus.write_word(sp, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x2F2, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 1);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_word(sp), 0xBEEF);
+    }
+
+    #[test]
+    fn controlstripdispatch_unknown_selector_returns_paramerr_and_consumes_encoded_args() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0700); // seven argument words, unsupported selector
+        for offset in (0..14).step_by(2) {
+            bus.write_word(sp + offset, 0xCAFE);
+        }
+
+        let result = disp.dispatch_toolbox(true, 0x2F2, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), (-50i16) as i32 as u32);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(bus.read_word(sp + 12), 0xCAFE);
     }
 
     // CursorDeviceDispatch ($AADB) — selector in D0, Pascal args on stack.
