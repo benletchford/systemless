@@ -6003,6 +6003,7 @@ impl super::TrapDispatcher {
 
             // HighLevelFSDispatch ($AA52)
             // HighLevelFSDispatch ($AA52): Selectors: 1=FSMakeFSSpec, 2=FSpOpenDF,
+            // 3=FSpOpenRF,
             // 4=FSpCreate, 5=FSpDirCreate, 6=FSpDelete, 9=FSpSetFLock,
             // 10=FSpRstFLock, 13=FSpOpenResFile, 14=FSpCreateResFile
             (true, 0x252) => {
@@ -6172,6 +6173,54 @@ impl super::TrapDispatcher {
                             bus.write_word(sp + 10, (-43i16) as u16); // fnfErr
                             cpu.write_reg(Register::A7, sp + 10);
                         }
+                        Ok(())
+                    }
+                    3 => {
+                        // FSpOpenRF ($AA52, selector 3)
+                        // Opens the resource fork of a file specified by an FSSpec.
+                        // FUNCTION FSpOpenRF(spec: FSSpec; permission: SignedByte;
+                        //   VAR refNum: INTEGER): OSErr;
+                        // Files 1992, 2-327..2-329.
+                        let sp = cpu.read_reg(Register::A7);
+                        let ref_num_ptr = bus.read_long(sp);
+                        let permission = file_permission_from_stack_word(bus.read_word(sp + 4));
+                        let spec_ptr = bus.read_long(sp + 6);
+                        let filename = read_fsspec_name(bus, spec_ptr);
+                        let vref = bus.read_word(spec_ptr) as i16;
+                        let dir_id = bus.read_long(spec_ptr + 2);
+                        let wants_write = matches!(permission, 2 | 3 | 4);
+                        eprintln!(
+                            "[TRAP] FSpOpenRF(\"{}\", perm={}) ref_num_ptr=${:08X}",
+                            filename, permission, ref_num_ptr
+                        );
+
+                        let Some(vfs_key) = self
+                            .find_vfs_rsrc_file_for_hfs_lookup(vref, dir_id, &filename)
+                            .or_else(|| self.find_vfs_rsrc_file(&filename))
+                        else {
+                            eprintln!("[TRAP] FSpOpenRF(\"{}\") -> fnfErr", filename);
+                            bus.write_word(sp + 10, (-43i16) as u16); // fnfErr
+                            cpu.write_reg(Register::A7, sp + 10);
+                            return Some(Ok(()));
+                        };
+
+                        let rsrc_data = self.vfs_rsrc.get(&vfs_key).cloned().unwrap_or_default();
+                        let rsrc_key = format!("__rsrc__{vfs_key}");
+                        self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data);
+                        let refnum = self.next_refnum;
+                        self.next_refnum += 1;
+                        self.open_files.insert(refnum, rsrc_key.clone());
+                        if wants_write {
+                            self.write_refnums.insert(refnum);
+                        }
+                        self.file_positions.insert(refnum, 0);
+                        eprintln!(
+                            "[TRAP] FSpOpenRF -> refnum={} vfs=\"{}\"",
+                            refnum, rsrc_key
+                        );
+                        bus.write_word(ref_num_ptr, refnum);
+                        bus.write_word(sp + 10, 0); // noErr
+                        cpu.write_reg(Register::A7, sp + 10);
                         Ok(())
                     }
                     4 => {
@@ -11949,6 +11998,40 @@ mod tests {
         );
         // Result at new SP should be 0
         assert_eq!(bus.read_word(new_sp), 0);
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspopenrf_opens_resource_fork_access_path() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs_rsrc
+            .insert("OpenMe.rsrc".to_string(), vec![0x52, 0x53, 0x52, 0x43]);
+
+        let spec_ptr = 0x300000u32;
+        write_fsspec(&mut bus, spec_ptr, 1, 2, b"OpenMe.rsrc");
+        let ref_num_ptr = 0x300200u32;
+
+        let sp = TEST_SP;
+        bus.write_long(sp, ref_num_ptr);
+        bus.write_word(sp + 4, 1); // fsRdPerm
+        bus.write_long(sp + 6, spec_ptr);
+        cpu.write_reg(Register::D0, 3); // selector = FSpOpenRF
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(new_sp, TEST_SP + 10);
+        let refnum = bus.read_word(ref_num_ptr);
+        assert!(refnum >= 100, "resource-fork refnum should be allocated");
+        assert_eq!(bus.read_word(new_sp), 0);
+        assert_eq!(
+            disp.open_files.get(&refnum).map(String::as_str),
+            Some("__rsrc__OpenMe.rsrc")
+        );
+        assert_eq!(
+            disp.vfs.get("__rsrc__OpenMe.rsrc"),
+            Some(&vec![0x52, 0x53, 0x52, 0x43])
+        );
     }
 
     #[test]
