@@ -1554,6 +1554,10 @@ pub struct TrapDispatcher {
     pub(crate) input_trace_log: Vec<String>,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
     pub(crate) event_queue: VecDeque<QueuedEvent>,
+    /// A mouseDown consumed by ModalDialog can return to the application
+    /// before the physical release arrives. Keep ownership of that release
+    /// even if the application disposes the dialog in the meantime.
+    pub(crate) pending_modal_dialog_mouse_up: bool,
     /// One-shot update events recovered after FlushEvents drops queue entries
     /// while the Window Manager update region remains dirty.
     pub(crate) flushed_update_events: VecDeque<QueuedEvent>,
@@ -2971,6 +2975,7 @@ impl TrapDispatcher {
             input_trace_enabled: false,
             input_trace_log: Vec::new(),
             event_queue: VecDeque::new(),
+            pending_modal_dialog_mouse_up: false,
             flushed_update_events: VecDeque::new(),
             system_event_mask: 0xFFEF, // everyEvent - keyUpMask
             sent_open_app_event: false,
@@ -4392,6 +4397,14 @@ impl TrapDispatcher {
         self.mouse_pos = (v, h);
         self.mouse_button = false;
         self.adb.note_mouse_state(self.mouse_pos, self.mouse_button);
+        // The classic mouse has one button, so the first physical release
+        // after a ModalDialog-owned press is its matching mouseUp. Consume it
+        // at injection time so event masks or FlushEvents cannot leave stale
+        // ownership behind to swallow a later, unrelated click.
+        if self.pending_modal_dialog_mouse_up {
+            self.pending_modal_dialog_mouse_up = false;
+            return;
+        }
         let modifiers = self.current_event_modifiers();
         self.event_queue.push_back(QueuedEvent {
             what: 2, // mouseUp

@@ -9445,10 +9445,21 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn consume_dialog_mouse_up(&mut self) {
-        if let Some(idx) = self.event_queue.iter().position(|e| e.what == 2) {
+    fn consume_dialog_mouse_up(&mut self) -> bool {
+        let next_mouse_event = self
+            .event_queue
+            .iter()
+            .position(|event| matches!(event.what, 1 | 2));
+        if let Some(idx) = next_mouse_event.filter(|idx| self.event_queue[*idx].what == 2) {
             self.event_queue.remove(idx);
+            true
+        } else {
+            false
         }
+    }
+
+    fn consume_or_retain_dialog_mouse_up(&mut self) {
+        self.pending_modal_dialog_mouse_up = !self.consume_dialog_mouse_up();
     }
 
     fn dialog_item_screen_rect(
@@ -11267,7 +11278,7 @@ impl super::TrapDispatcher {
                                 self.pending_modal_button_dispose_dialog = Some(saved_dialog_ptr);
                             }
                             if handled_mouse_down {
-                                self.consume_dialog_mouse_up();
+                                self.consume_or_retain_dialog_mouse_up();
                             }
                             if trace_dialog_filter_enabled() {
                                 let actual_hit = bus.read_word(item_hit_ptr) as i16;
@@ -11606,7 +11617,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved_dialog_ptr, saved.saved_pixels);
-                                                self.consume_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up();
                                                 // Don't restore pixels — dialog stays visible
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
@@ -11661,7 +11672,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved_dialog_ptr, saved.saved_pixels);
-                                                self.consume_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up();
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
@@ -11715,7 +11726,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
-                                                self.consume_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up();
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
@@ -11786,7 +11797,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
-                                                self.consume_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up();
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
@@ -29917,6 +29928,102 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert!(disp.event_queue.iter().all(|event| event.what != 2));
+        assert!(!disp.pending_modal_dialog_mouse_up);
+    }
+
+    #[test]
+    fn modal_dialog_resource_control_retains_mouse_up_ownership_after_disposal() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let previous_window = bus.alloc(170);
+        let item_hit_ptr = 0x300000u32;
+
+        seed_window_regions(&mut bus, dialog_ptr, (100, 200, 200, 360));
+        seed_window_regions(&mut bus, previous_window, (0, 0, 342, 512));
+        disp.front_window = dialog_ptr;
+        disp.current_port = dialog_ptr;
+        disp.window_list = vec![dialog_ptr, previous_window];
+        disp.window_stack.push((
+            previous_window,
+            (0, 0, 342, 512),
+            0,
+            String::from("Map"),
+        ));
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 7,
+                rect: (20, 30, 60, 110),
+                text: String::from("OK"),
+                ..DialogItem::default()
+            }],
+        );
+        disp.dialog_modal_entered.insert(dialog_ptr);
+
+        bus.write_word(item_hit_ptr, 0);
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds: (100, 200, 200, 360),
+            title: String::new(),
+            proc_id: 2,
+            items: disp.dialog_items[&dialog_ptr].clone(),
+            default_item: 1,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: Vec::new(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: true,
+            filter_proc: 0,
+            game_managed: true,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+        disp.push_mouse_down(130, 240);
+
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+        assert!(disp.event_queue.iter().all(|event| event.what != 1));
+        assert!(disp.pending_modal_dialog_mouse_up);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.pending_modal_dialog_mouse_up);
+
+        disp.push_mouse_up(130, 240);
+        let (what, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        assert_eq!(what, 0);
+        assert!(!has_event);
+        assert!(!disp.pending_modal_dialog_mouse_up);
+
+        disp.push_mouse_down(150, 260);
+        disp.push_mouse_up(150, 260);
+        let (what, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        assert_eq!(what, 1);
+        assert!(has_event);
+        let (what, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        assert_eq!(what, 2);
+        assert!(has_event);
     }
 
     #[test]
