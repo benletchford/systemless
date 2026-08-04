@@ -19507,84 +19507,20 @@ impl super::TrapDispatcher {
     }
 
     fn fill_kiosk_letterbox_for_copybits(&self, bus: &mut MacMemoryBus, rect: ScreenCopyBitsRect) {
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) = self.screen_mode;
         let src_width = rect.src_right.saturating_sub(rect.src_left);
         let src_height = rect.src_bottom.saturating_sub(rect.src_top);
         let dst_width = rect.dst_right.saturating_sub(rect.dst_left);
         let dst_height = rect.dst_bottom.saturating_sub(rect.dst_top);
-        let large = dst_width >= (screen_width as i16 / 2).max(1)
-            && dst_height >= (screen_height as i16 / 2).max(1);
-        let centered = rect.dst_left >= 0
-            && rect.dst_top >= 0
-            && (screen_width as i16 - rect.dst_right - rect.dst_left).abs() <= 1
-            && (screen_height as i16 - rect.dst_bottom - rect.dst_top).abs() <= 1;
-        if !self.menu_bar_hidden
-            || !large
-            || !centered
-            || src_width != dst_width
-            || src_height != dst_height
-            || (dst_width >= screen_width as i16 && dst_height >= screen_height as i16)
-        {
+        if src_width != dst_width || src_height != dst_height {
             return;
         }
 
-        // A game can install a palette where the conventional index 255 is
-        // no longer black. Derive the margin index from the active hardware
-        // CLUT after the blit has completed; doing this before an overlapping
-        // screen-to-screen CopyBits would destroy source pixels.
-        let black_index = self
-            .device_clut
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
-            .map(|(index, _)| index as u8)
-            .unwrap_or(255);
-        for (top, left, bottom, right) in [
-            (0, 0, rect.dst_top, screen_width as i16),
-            (
-                rect.dst_bottom,
-                0,
-                screen_height as i16,
-                screen_width as i16,
-            ),
-            (rect.dst_top, 0, rect.dst_bottom, rect.dst_left),
-            (
-                rect.dst_top,
-                rect.dst_right,
-                rect.dst_bottom,
-                screen_width as i16,
-            ),
-        ] {
-            if pixel_size == 8 {
-                Self::fb_fill_rect_index(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width as i16,
-                    screen_height as i16,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    black_index,
-                );
-            } else {
-                Self::fb_fill_rect(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width as i16,
-                    screen_height as i16,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    true,
-                );
-            }
-        }
+        // Run after the blit so overlapping screen-to-screen copies cannot
+        // lose source pixels while the margins are cleared.
+        self.fill_kiosk_stage_around_rect(
+            bus,
+            (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
+        );
     }
 
     /// Address of a replacement `grafProcs.bitsProc` on the current port, or
