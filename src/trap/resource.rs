@@ -6861,7 +6861,11 @@ impl super::TrapDispatcher {
                     let proc_id = bus.read_long(pb + 28);
                     let requested_dir_id = bus.read_long(pb + 48);
                     let base_dir_id = self.resolve_directory_id(vref, requested_dir_id);
-                    let effective_dir_id = if name.is_empty() {
+                    // A PBOpenWD caller may pass ":" to name the directory
+                    // already identified by ioWDDirID. In a partial HFS
+                    // pathname, a lone colon is the current directory, not
+                    // a child directory literally named ":".
+                    let effective_dir_id = if name.is_empty() || name == ":" {
                         base_dir_id
                     } else if let Some(path) =
                         self.find_vfs_directory_in_directory(base_dir_id, &name)
@@ -14203,6 +14207,34 @@ mod tests {
     // ================================================================
     // 26b. FSDispatch ($A260) selector 6 — PBDirCreate
     // ================================================================
+    #[test]
+    fn fsdispatch_pbopenwd_colon_selects_requested_directory() {
+        // Files 1992, 2-201: a lone colon means the directory identified by
+        // ioWDDirID, so PBOpenWD must not search for a child named ":".
+        let (mut disp, mut cpu, mut bus) = setup();
+        let resources_dir_id = disp.ensure_vfs_directory("Game/H&E Resources");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b":");
+        bus.write_word(pb + 16, 0x3FFF); // ioResult poison
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 28, 0x454E_4C54); // arbitrary working-directory user ID
+        bus.write_long(pb + 48, resources_dir_id);
+        cpu.write_reg(Register::D0, 1); // HFSDispatch selector: PBOpenWD
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        let wd_ref = bus.read_word(pb + 22) as i16;
+        assert_ne!(wd_ref, super::super::dispatch::BOOT_VOLUME_REF_NUM);
+        assert_eq!(bus.read_long(pb + 48), resources_dir_id);
+        assert_eq!(
+            disp.working_directory_info(wd_ref).map(|wd| wd.dir_id),
+            Some(resources_dir_id)
+        );
+    }
+
     #[test]
     fn fsdispatch_pbdircreate_creates_child_directory_and_returns_dirid() {
         // PBDirCreate is PBHCreate for directories: it creates a new
