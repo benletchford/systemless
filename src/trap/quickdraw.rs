@@ -21692,6 +21692,10 @@ impl super::TrapDispatcher {
 
         let target_is_screen = self.set_entries_target_is_screen(bus);
         let is_full_replace = start == 0 && count == 255;
+        let previous_frame_was_dimmed = Self::clut_is_dimmed_derivative_of(
+            &self.device_clut,
+            &self.color_manager_clut,
+        );
 
         // Normal path: install the supplied RGB values into device_clut
         // unconditionally. Per Inside Macintosh Volume V, V-143 the caller's
@@ -21716,12 +21720,24 @@ impl super::TrapDispatcher {
         // lock cm to a dimmed transient and produce washed-out color
         // matching.
         //
-        let dimmed_scale_of_current = !strict_palette
+        // Fade code commonly derives each frame from the logical palette, but
+        // low-intensity integer rounding can stop looking like one uniform
+        // scale near black. Once a genuine scaled frame has started a fade,
+        // keep later component-wise-dimmer frames transient as well. The
+        // stable Color Manager table remains the inverse-table baseline used
+        // to draw the next scene while the hardware CLUT is dark.
+        let transient_fade_table = !strict_palette
             && is_full_replace
-            && Self::table_uniform_scale_of_clut(bus, table_ptr, &self.color_manager_clut)
-                .is_some_and(|scale| scale < 0.98);
+            && (Self::table_uniform_scale_of_clut(bus, table_ptr, &self.color_manager_clut)
+                .is_some_and(|scale| scale < 0.999)
+                || (previous_frame_was_dimmed
+                    && Self::table_is_dimmed_derivative_of_clut(
+                        bus,
+                        table_ptr,
+                        &self.color_manager_clut,
+                    )));
 
-        if target_is_screen && is_full_replace && !dimmed_scale_of_current {
+        if target_is_screen && is_full_replace && !transient_fade_table {
             if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
                 let cm_before = self.color_manager_clut[0];
                 let dev0 = self.device_clut[0];
@@ -21857,6 +21873,43 @@ impl super::TrapDispatcher {
         }
 
         scale
+    }
+
+    fn clut_is_dimmed_derivative_of(
+        candidate: &[[u16; 3]; 256],
+        baseline: &[[u16; 3]; 256],
+    ) -> bool {
+        let mut visibly_dimmed = false;
+        for (candidate_rgb, baseline_rgb) in candidate.iter().zip(baseline) {
+            for channel in 0..3 {
+                let got = candidate_rgb[channel];
+                let base = baseline_rgb[channel];
+                if got > base.saturating_add(0x0200) {
+                    return false;
+                }
+                if base >= 0x1000 && got.saturating_add(0x0200) < base {
+                    visibly_dimmed = true;
+                }
+            }
+        }
+        visibly_dimmed
+    }
+
+    fn table_is_dimmed_derivative_of_clut(
+        bus: &MacMemoryBus,
+        table_ptr: u32,
+        baseline: &[[u16; 3]; 256],
+    ) -> bool {
+        let mut candidate = [[0u16; 3]; 256];
+        for (index, rgb) in candidate.iter_mut().enumerate() {
+            let entry = table_ptr + (index as u32) * 8;
+            *rgb = [
+                bus.read_word(entry + 2),
+                bus.read_word(entry + 4),
+                bus.read_word(entry + 6),
+            ];
+        }
+        Self::clut_is_dimmed_derivative_of(&candidate, baseline)
     }
 
     fn palette_exact_match_index(
@@ -40058,6 +40111,73 @@ mod tests {
         assert_eq!(d.device_clut[42], expected42);
         assert_eq!(d.color_manager_clut[7], expected7);
         assert_eq!(d.color_manager_clut[42], expected42);
+    }
+
+    #[test]
+    fn test_setentries_keeps_quantized_fade_frames_out_of_logical_palette() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        d.ensure_main_gdevice(&mut bus);
+        let table_ptr = 0x336800u32;
+        let baseline = TrapDispatcher::standard_mac_8bpp_clut();
+        d.device_clut = baseline;
+        d.color_manager_clut = baseline;
+        d.seeded_picture_palette_until_tick = 0;
+
+        for (index, rgb) in baseline.iter().enumerate() {
+            let entry = table_ptr + (index as u32) * 8;
+            bus.write_word(entry, index as u16);
+            for channel in 0..3 {
+                bus.write_word(
+                    entry + 2 + (channel as u32) * 2,
+                    ((u32::from(rgb[channel]) * 98) / 100) as u16,
+                );
+            }
+        }
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+        assert_eq!(d.color_manager_clut, baseline);
+
+        for (index, rgb) in baseline.iter().enumerate() {
+            let entry = table_ptr + (index as u32) * 8;
+            for channel in 0..3 {
+                bus.write_word(entry + 2 + (channel as u32) * 2, rgb[channel] / 16);
+            }
+        }
+        // Model the unequal low-end truncation produced by a real fade loop.
+        bus.write_word(table_ptr + 8 + 6, 0);
+        assert!(TrapDispatcher::table_uniform_scale_of_clut(&bus, table_ptr, &baseline).is_none());
+
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+
+        assert_eq!(d.device_clut[1][2], 0);
+        assert_eq!(d.color_manager_clut, baseline);
+    }
+
+    #[test]
+    fn test_setentries_still_publishes_a_static_nonuniform_dark_palette() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        d.ensure_main_gdevice(&mut bus);
+        let table_ptr = 0x336C00u32;
+        let baseline = TrapDispatcher::standard_mac_8bpp_clut();
+        d.device_clut = baseline;
+        d.color_manager_clut = baseline;
+        d.seeded_picture_palette_until_tick = 0;
+
+        for (index, rgb) in baseline.iter().enumerate() {
+            let entry = table_ptr + (index as u32) * 8;
+            bus.write_word(entry, index as u16);
+            for channel in 0..3 {
+                bus.write_word(entry + 2 + (channel as u32) * 2, rgb[channel] / 16);
+            }
+        }
+        bus.write_word(table_ptr + 8 + 6, 0);
+        assert!(TrapDispatcher::table_uniform_scale_of_clut(&bus, table_ptr, &baseline).is_none());
+        assert!(!TrapDispatcher::clut_is_dimmed_derivative_of(&baseline, &baseline));
+        assert!(d.set_entries_target_is_screen(&bus));
+
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+
+        assert_eq!(d.color_manager_clut, d.device_clut);
+        assert_ne!(d.color_manager_clut, baseline);
     }
 
     #[test]
