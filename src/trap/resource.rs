@@ -6339,15 +6339,14 @@ impl super::TrapDispatcher {
                             // permission.
                             let read_only = self.vfs_path_is_read_only(&vfs_name);
                             let wants_write = matches!(permission, 2 | 3 | 4);
-                            if wants_write && read_only {
-                                bus.write_word(sp + 10, (-44i16) as u16); // wPrErr
-                                cpu.write_reg(Register::A7, sp + 10);
-                                return Some(Ok(()));
-                            }
-
                             let refnum = self.next_refnum;
                             self.next_refnum += 1;
                             self.open_files.insert(refnum, vfs_name.clone());
+                            // Files 1992, 2-17 to 2-18: fsRdWrPerm is retried
+                            // as browsing access when exclusive access is not
+                            // available. Preserve the successful read path,
+                            // but do not grant FSWrite access to a read-only
+                            // extracted volume.
                             if wants_write && !read_only {
                                 self.write_refnums.insert(refnum);
                             }
@@ -12490,6 +12489,61 @@ mod tests {
         assert!(
             disp.write_refnums.contains(&refnum),
             "packed fsWrPerm must still be tracked as write-open"
+        );
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspopendf_read_only_volume_retries_as_browsing_access() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let volume_ref = disp.mount_vfs_volume_with_driver_info(
+            "Legend CD",
+            ".AppleCD",
+            0x0080,
+            1,
+            1024,
+            512,
+            512,
+            900,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        let file_name = "Legend CD/Lode Runner Puzzles";
+        disp.vfs.insert(file_name.to_string(), vec![1, 2, 3]);
+        disp.ensure_vfs_file_metadata(file_name);
+        let root_dir_id = disp
+            .vfs_volume_for_ref_num(volume_ref)
+            .expect("mounted volume")
+            .root_dir_id;
+
+        let spec_ptr = 0x300000u32;
+        write_fsspec(
+            &mut bus,
+            spec_ptr,
+            volume_ref as u16,
+            root_dir_id,
+            b"Lode Runner Puzzles",
+        );
+        let ref_num_ptr = 0x300200u32;
+        let sp = TEST_SP;
+        bus.write_long(sp, ref_num_ptr);
+        bus.write_word(sp + 4, 3); // fsRdWrPerm
+        bus.write_long(sp + 6, spec_ptr);
+        cpu.write_reg(Register::D0, 2);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        let new_sp = cpu.read_reg(Register::A7);
+        let refnum = bus.read_word(ref_num_ptr);
+        assert_eq!(new_sp, TEST_SP + 10);
+        assert_eq!(bus.read_word(new_sp), 0);
+        assert_eq!(disp.open_files.get(&refnum), Some(&file_name.to_string()));
+        assert!(
+            !disp.write_refnums.contains(&refnum),
+            "browsing fallback must remain read-only"
         );
     }
 
