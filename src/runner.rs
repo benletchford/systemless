@@ -2958,9 +2958,6 @@ impl FixtureRunner {
         wake_tick: u32,
         tick_cap: Option<u32>,
     ) -> bool {
-        let Some(cap) = tick_cap else {
-            return false;
-        };
         let tick = self.dispatcher.tick_count;
         let cpu = CpuArchitecturalSnapshot::capture(&self.cpu.core);
 
@@ -2972,11 +2969,11 @@ impl FixtureRunner {
                 && memory_unchanged;
             if exact_repeat {
                 self.idle_cycle_last_seen = Some((trap_pc, tick));
-                if tick >= cap {
+                if tick_cap.is_some_and(|cap| tick >= cap) {
                     self.park_proven_idle_cycle(trap_pc, wake_tick);
                     return true;
                 }
-                match self.advance_until_tick(wake_tick, Some(cap)) {
+                match self.advance_until_tick(wake_tick, tick_cap) {
                     AdvanceResult::CapHit => {
                         self.park_proven_idle_cycle(trap_pc, wake_tick);
                         return true;
@@ -3023,6 +3020,14 @@ impl FixtureRunner {
             // Avoid switching between multiple event sites while a complete
             // cycle is being measured.
             if probe.trap_pc != trap_pc {
+                return false;
+            }
+        } else if let Some((anchor_pc, anchor_tick)) = self.idle_cycle_last_seen {
+            // Preserve the first same-tick null-event site as the proof
+            // anchor across other permitted polling sites. A nested event
+            // loop may alternate A → B → A; replacing the anchor at B would
+            // prevent the complete A-to-A cycle from ever being observed.
+            if anchor_pc != trap_pc && anchor_tick == self.dispatcher.tick_count {
                 return false;
             }
         }
@@ -10392,6 +10397,33 @@ mod tests {
         assert_eq!(runner.dispatcher.tick_count, 110);
         assert!(runner.idle_cycle_sleep.is_none());
         assert!(runner.bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn exact_null_event_cycle_supports_alternating_sites_headlessly() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let site_a = 0x0002_0000u32;
+        let site_b = 0x0002_1000u32;
+        runner.cpu.write_reg(Register::PC, site_a + 2);
+        runner.cpu.core.ppc = site_a;
+        runner.cpu.core.ir = 0xA970;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(site_a, None));
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(site_b, None));
+        assert_eq!(runner.idle_cycle_last_seen, Some((site_a, 100)));
+
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(site_a, None));
+        assert!(runner.idle_cycle_probe.is_some());
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(site_b, None));
+        assert!(runner.idle_cycle_probe.is_some());
+
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(site_a, None));
+        assert_eq!(runner.guest_tick(), 101);
+        assert!(runner.idle_cycle_probe.is_none());
+        assert!(runner.idle_cycle_sleep.is_none());
     }
 
     #[test]
