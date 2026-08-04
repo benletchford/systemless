@@ -2383,11 +2383,22 @@ impl super::TrapDispatcher {
                 let new_sp = sp + 4;
                 cpu.write_reg(Register::A7, new_sp);
                 if self.loaded_handles.contains_key(&handle) {
-                    let refnum = self
+                    let internal_refnum = self
                         .resource_handle_files
                         .get(&handle)
                         .copied()
                         .unwrap_or(0);
+                    // The initial application resource map is stored under
+                    // internal key 0, while the guest-visible resource fork
+                    // has the FCB refnum recorded in CurApRefNum (normally 2).
+                    // HomeResFile must return the actual file refnum, not the
+                    // Resource Manager's internal key. Inside Macintosh
+                    // Volume I, p. I-117.
+                    let refnum = if internal_refnum == 0 {
+                        bus.read_word(addr::CUR_APREF_NUM)
+                    } else {
+                        internal_refnum
+                    };
                     bus.write_word(new_sp, refnum);
                     bus.write_word(0x0A60, 0);
                 } else {
@@ -11000,6 +11011,22 @@ mod tests {
         assert_eq!(new_sp, TEST_SP + 4);
         let refnum = bus.read_word(new_sp);
         assert_eq!(refnum, 128);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn home_res_file_translates_the_internal_application_map_key_to_its_fcb_refnum() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = 0x1234u32;
+        disp.loaded_handles.insert(handle, (0x200000, *b"CODE", 1));
+        disp.resource_handle_files.insert(handle, 0);
+        bus.write_word(addr::CUR_APREF_NUM, 2);
+        bus.write_long(TEST_SP, handle);
+
+        call(&mut disp, true, 0x1A4, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_word(TEST_SP + 4), 2);
         assert_eq!(bus.read_word(0x0A60), 0);
     }
 
