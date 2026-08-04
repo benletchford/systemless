@@ -58,6 +58,7 @@ mod error;
 pub mod game;
 pub mod loader;
 pub mod machine_profile;
+mod mac_roman;
 pub mod managers;
 pub mod memory;
 pub mod menu_model;

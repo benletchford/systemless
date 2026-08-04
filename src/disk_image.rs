@@ -11,6 +11,8 @@ use std::{
 
 use hfs_reader::HfsVolume;
 
+use crate::mac_roman::decode_mac_roman;
+
 const HFS_SIGNATURE: u16 = 0x4244;
 const HFS_PLUS_SIGNATURE: u16 = 0x482B;
 const HFSX_SIGNATURE: u16 = 0x4858;
@@ -23,6 +25,8 @@ const HFSPLUS_FORK_DATA: u8 = 0x00;
 const HFSPLUS_FORK_RESOURCE: u8 = 0xFF;
 const HFSPLUS_CATALOG_FILE_RECORD: u16 = 0x0002;
 const HFSPLUS_FILE_USER_INFO_OFFSET: usize = 48;
+const HFS_MDB_VOLUME_NAME_OFFSET: usize = 1024 + 36;
+const HFS_MAX_VOLUME_NAME_LEN: usize = 27;
 
 #[derive(Debug)]
 pub struct DiskImageContents {
@@ -65,7 +69,9 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
 
     let volume =
         HfsVolume::parse(filesystem).map_err(|e| format!("failed to parse HFS image: {e}"))?;
-    let volume_name = clean_component(&volume.volume_name).unwrap_or_else(|| "Disk Image".into());
+    let volume_name = hfs_volume_name_from_mdb(filesystem)
+        .or_else(|| clean_component(&volume.volume_name))
+        .unwrap_or_else(|| "Disk Image".into());
     let mut dirs = vec![volume_name.clone()];
 
     for dir in &volume.dirs {
@@ -123,6 +129,22 @@ fn filesystem_payload(bytes: &[u8]) -> &[u8] {
         .and_then(|(start, end)| bytes.get(start..end))
         .or_else(|| apple_hfs_partition_range(bytes).and_then(|(start, end)| bytes.get(start..end)))
         .unwrap_or(bytes)
+}
+
+fn hfs_volume_name_from_mdb(filesystem: &[u8]) -> Option<String> {
+    if raw_filesystem_signature(filesystem) != Some(HFS_SIGNATURE) {
+        return None;
+    }
+    // The HFS master directory block stores its authoritative volume name as
+    // a Str27 Pascal string. Decode those bytes directly because hfs-reader's
+    // host-path representation has already replaced non-ASCII characters.
+    let name_len = *filesystem.get(HFS_MDB_VOLUME_NAME_OFFSET)? as usize;
+    if name_len == 0 || name_len > HFS_MAX_VOLUME_NAME_LEN {
+        return None;
+    }
+    let name_start = HFS_MDB_VOLUME_NAME_OFFSET + 1;
+    let name = filesystem.get(name_start..name_start.checked_add(name_len)?)?;
+    clean_component(&decode_mac_roman(name))
 }
 
 /// Locate the first supported HFS-family partition in an Apple Partition Map image.
@@ -629,6 +651,31 @@ fn clean_component(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_hfs_mdb_volume_name_as_mac_roman() {
+        let mut filesystem = vec![0; HFS_MDB_VOLUME_NAME_OFFSET + 9];
+        filesystem[1024..1026].copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
+        filesystem[HFS_MDB_VOLUME_NAME_OFFSET] = 8;
+        filesystem[HFS_MDB_VOLUME_NAME_OFFSET + 1..].copy_from_slice(b"TETRIS\xA51");
+
+        assert_eq!(
+            hfs_volume_name_from_mdb(&filesystem).as_deref(),
+            Some("TETRIS•1")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_hfs_mdb_volume_name_bounds() {
+        let mut filesystem = vec![0; HFS_MDB_VOLUME_NAME_OFFSET + 2];
+        filesystem[1024..1026].copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
+
+        filesystem[HFS_MDB_VOLUME_NAME_OFFSET] = 28;
+        assert_eq!(hfs_volume_name_from_mdb(&filesystem), None);
+
+        filesystem[HFS_MDB_VOLUME_NAME_OFFSET] = 2;
+        assert_eq!(hfs_volume_name_from_mdb(&filesystem), None);
+    }
 
     #[test]
     fn detects_raw_hfs_volume_signature() {
