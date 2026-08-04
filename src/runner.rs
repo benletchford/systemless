@@ -2647,6 +2647,21 @@ impl FixtureRunner {
 
         let w1 = self.bus.read_word(pc_after_trap.wrapping_add(2));
 
+        // Template F: compare this TickCount result with a saved register and
+        // repeat while they are equal. Older compilers commonly emit this for
+        // a one-tick delay:
+        //   MOVE.L (A7)+,Dn; CMP.L Dn,Dm; BEQ.S <back-to-SUBQ #4,A7>
+        if (w1 & 0xF1F8) == 0xB080 && (w1 & 7) as usize == dn {
+            return self.try_spin_template_f(pc_after_trap, w1, tick_cap);
+        }
+
+        // Template G stores the sampled tick in a frame local, subtracts a
+        // stable tick origin, and compares the elapsed value with a signed
+        // word delay. This is another common classic-compiler delay shape.
+        if (w1 & 0xF1F8) == 0x2140 && (w1 & 7) as usize == dn {
+            return self.try_spin_template_g(pc_after_trap, dn, w1, tick_cap);
+        }
+
         // Template A: SUBQ.L #imm, Dn; CMP.L Dn, Dm; BHI.S <back-to-SUBQ-#4,A7>
         if (w1 & 0xF1F8) == 0x5180 && (w1 & 0x0007) as usize == dn {
             return self.try_spin_template_a(pc_after_trap, dn, w1, tick_cap, count);
@@ -2663,6 +2678,142 @@ impl FixtureRunner {
         }
 
         false
+    }
+
+    /// Template F: saved-register one-tick wait.
+    ///   SUBQ #4,A7; _TickCount; MOVE.L (A7)+,Dn
+    ///   CMP.L Dn,Dm; BEQ.S back-to-SUBQ
+    ///
+    /// Leave the post-trap instructions for exact CPU execution after moving
+    /// the captured result to the first tick that makes BEQ fall through.
+    fn try_spin_template_f(
+        &mut self,
+        pc_after_trap: u32,
+        w_cmp: u16,
+        tick_cap: Option<u32>,
+    ) -> bool {
+        let dm = ((w_cmp >> 9) & 7) as usize;
+        let branch_pc = pc_after_trap.wrapping_add(4);
+        let w_branch = self.bus.read_word(branch_pc);
+        if (w_branch & 0xFF00) != 0x6700 || (w_branch & 0x00FF) == 0 {
+            return false;
+        }
+        let displacement = (w_branch & 0xFF) as i8 as i32;
+        let target = (branch_pc.wrapping_add(2) as i32).wrapping_add(displacement) as u32;
+        let canonical_target = pc_after_trap.wrapping_sub(4);
+        if target != canonical_target
+            || !matches!(self.bus.read_word(canonical_target), 0x594F | 0x598F)
+            || self.bus.read_word(canonical_target.wrapping_add(2)) != 0xA975
+        {
+            return false;
+        }
+
+        let sp = self.cpu.core.a(7);
+        let captured_tick = self.bus.read_long(sp);
+        if captured_tick != self.cpu.core.d(dm) {
+            return false;
+        }
+        let target_tick = captured_tick.wrapping_add(1);
+        match self.advance_until_tick(target_tick, tick_cap) {
+            AdvanceResult::CapHit => {
+                self.bus.write_long(sp, self.dispatcher.tick_count);
+                true
+            }
+            AdvanceResult::Advanced => {
+                self.bus.write_long(sp, self.dispatcher.tick_count);
+                false
+            }
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
+        }
+    }
+
+    /// Template G: elapsed-tick delay through a frame local.
+    ///   SUBQ #4,A7; _TickCount; MOVE.L (A7)+,Dn
+    ///   MOVE.L Dn,(d16,Am); MOVE.L (d16,Am),Dn
+    ///   SUB.L (d16,Ab),Dn; MOVEA.W (d16,Af),An
+    ///   CMPA.L Dn,An; BGT.S back-to-SUBQ
+    ///
+    /// The loop exits when `TickCount - base >= signed_delay`. All post-trap
+    /// instructions remain for the CPU so stack, local, registers, and flags
+    /// are produced by the guest exactly once at the synthetic exit tick.
+    fn try_spin_template_g(
+        &mut self,
+        pc_after_trap: u32,
+        dn: usize,
+        w_store: u16,
+        tick_cap: Option<u32>,
+    ) -> bool {
+        let local_an = ((w_store >> 9) & 7) as usize;
+        let local_disp = self.bus.read_word(pc_after_trap.wrapping_add(4));
+
+        let w_reload = self.bus.read_word(pc_after_trap.wrapping_add(6));
+        if (w_reload & 0xF1F8) != 0x2028
+            || ((w_reload >> 9) & 7) as usize != dn
+            || (w_reload & 7) as usize != local_an
+            || self.bus.read_word(pc_after_trap.wrapping_add(8)) != local_disp
+        {
+            return false;
+        }
+
+        let w_sub = self.bus.read_word(pc_after_trap.wrapping_add(10));
+        if (w_sub & 0xF1F8) != 0x90A8 || ((w_sub >> 9) & 7) as usize != dn {
+            return false;
+        }
+        let base_disp = self.bus.read_word(pc_after_trap.wrapping_add(12)) as i16 as i32;
+        let base_an = (w_sub & 7) as usize;
+
+        let w_delay = self.bus.read_word(pc_after_trap.wrapping_add(14));
+        if (w_delay & 0xF1F8) != 0x3068 || (w_delay & 7) as usize != local_an {
+            return false;
+        }
+        let delay_an = ((w_delay >> 9) & 7) as usize;
+        let delay_disp = self.bus.read_word(pc_after_trap.wrapping_add(16)) as i16 as i32;
+
+        let w_cmp = self.bus.read_word(pc_after_trap.wrapping_add(18));
+        if (w_cmp & 0xF1F8) != 0xB1C0
+            || ((w_cmp >> 9) & 7) as usize != delay_an
+            || (w_cmp & 7) as usize != dn
+        {
+            return false;
+        }
+
+        let branch_pc = pc_after_trap.wrapping_add(20);
+        let w_branch = self.bus.read_word(branch_pc);
+        if (w_branch & 0xFF00) != 0x6E00 || (w_branch & 0x00FF) == 0 {
+            return false;
+        }
+        let displacement = (w_branch & 0xFF) as i8 as i32;
+        let target = (branch_pc.wrapping_add(2) as i32).wrapping_add(displacement) as u32;
+        let canonical_target = pc_after_trap.wrapping_sub(4);
+        if target != canonical_target
+            || !matches!(self.bus.read_word(canonical_target), 0x594F | 0x598F)
+            || self.bus.read_word(canonical_target.wrapping_add(2)) != 0xA975
+        {
+            return false;
+        }
+
+        let base_addr = (self.cpu.core.a(base_an) as i32).wrapping_add(base_disp) as u32;
+        let base_tick = self.bus.read_long(base_addr);
+        let delay_addr = (self.cpu.core.a(local_an) as i32).wrapping_add(delay_disp) as u32;
+        let delay = self.bus.read_word(delay_addr) as i16 as i32;
+        let sp = self.cpu.core.a(7);
+        let captured_tick = self.bus.read_long(sp);
+        let elapsed = captured_tick.wrapping_sub(base_tick) as i32;
+        if delay <= elapsed {
+            return false;
+        }
+        let target_tick = base_tick.wrapping_add(delay as u32);
+        match self.advance_until_tick(target_tick, tick_cap) {
+            AdvanceResult::CapHit => {
+                self.bus.write_long(sp, self.dispatcher.tick_count);
+                true
+            }
+            AdvanceResult::Advanced => {
+                self.bus.write_long(sp, self.dispatcher.tick_count);
+                false
+            }
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
+        }
     }
 
     /// Cancel only a same-slice observation. A proven sleep has its own write
@@ -10425,6 +10576,138 @@ mod tests {
         assert!(runner.idle_cycle_probe.is_none());
         assert!(runner.idle_cycle_last_seen.is_none());
         assert!(runner.bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn spin_fastfwd_template_f_saved_register_beq_variant() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+
+        // SUBQ.L #4,A7; _TickCount; MOVE.L (A7)+,D0
+        // CMP.L D0,D7; BEQ.S back-to-SUBQ
+        runner.bus.write_word(base, 0x598F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0xBE80);
+        runner.bus.write_word(base + 8, 0x67F6);
+        runner.bus.write_word(base + 10, 0x4E71);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::D7, 100);
+        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.bus.write_long(sp - 4, 100);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 101);
+        assert_eq!(runner.bus.read_long(sp - 4), 101);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(count, 0, "post-trap body remains for exact CPU execution");
+
+        for _ in 0..3 {
+            assert!(matches!(
+                runner.cpu.step(&mut runner.bus),
+                crate::cpu::StepResult::Ok
+            ));
+        }
+        assert_eq!(runner.cpu.read_reg(Register::D0), 101);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 10);
+    }
+
+    #[test]
+    fn spin_fastfwd_template_f_rejects_stateful_branch_target() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+
+        // The branch includes an ADDQ before the canonical TickCount preamble,
+        // so skipping the loop would incorrectly discard stateful work.
+        runner.bus.write_word(base, 0x52B8);
+        runner.bus.write_word(base + 2, 0x0002);
+        runner.bus.write_word(base + 4, 0x594F);
+        runner.bus.write_word(base + 6, 0xA975);
+        runner.bus.write_word(base + 8, 0x201F);
+        runner.bus.write_word(base + 10, 0xBE80);
+        runner.bus.write_word(base + 12, 0x67F2);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        runner.cpu.write_reg(Register::D7, 100);
+        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.bus.write_long(sp - 4, 100);
+
+        let mut count = 0usize;
+        runner.try_tickcount_spin_fastfwd(base + 8, None, &mut count);
+
+        assert_eq!(runner.guest_tick(), 100);
+        assert_eq!(runner.bus.read_long(sp - 4), 100);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn spin_fastfwd_template_g_elapsed_frame_local_variant() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let a5 = 0x0001_8000u32;
+        let a6 = 0x0010_1000u32;
+        let sp = 0x0010_0000u32;
+
+        // SUBQ.L #4,A7; _TickCount; MOVE.L (A7)+,D0
+        // MOVE.L D0,-4(A6); MOVE.L -4(A6),D0
+        // SUB.L -36(A5),D0; MOVEA.W 8(A6),A0
+        // CMPA.L D0,A0; BGT.S back-to-SUBQ
+        runner.bus.write_word(base, 0x598F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0x2D40);
+        runner.bus.write_word(base + 8, 0xFFFC);
+        runner.bus.write_word(base + 10, 0x202E);
+        runner.bus.write_word(base + 12, 0xFFFC);
+        runner.bus.write_word(base + 14, 0x90AD);
+        runner.bus.write_word(base + 16, 0xFFDC);
+        runner.bus.write_word(base + 18, 0x306E);
+        runner.bus.write_word(base + 20, 0x0008);
+        runner.bus.write_word(base + 22, 0xB1C0);
+        runner.bus.write_word(base + 24, 0x6EE6);
+        runner.bus.write_word(base + 26, 0x4E71);
+
+        runner.bus.write_long(a5 - 36, 400);
+        runner.bus.write_word(a6 + 8, 5);
+        runner.bus.write_long(0x016A, 401);
+        runner.dispatcher.tick_count = 401;
+        runner.cpu.write_reg(Register::A5, a5);
+        runner.cpu.write_reg(Register::A6, a6);
+        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.bus.write_long(sp - 4, 401);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 405);
+        assert_eq!(runner.bus.read_long(sp - 4), 405);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(count, 0, "post-trap body remains for exact CPU execution");
+
+        for _ in 0..7 {
+            assert!(matches!(
+                runner.cpu.step(&mut runner.bus),
+                crate::cpu::StepResult::Ok
+            ));
+        }
+        assert_eq!(runner.bus.read_long(a6 - 4), 405);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 5);
+        assert_eq!(runner.cpu.read_reg(Register::A0), 5);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.cpu.read_reg(Register::PC), base + 26);
     }
 
     /// Regression gate for the TickCount spin fast-forward template A
