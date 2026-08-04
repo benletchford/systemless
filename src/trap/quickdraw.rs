@@ -21349,7 +21349,10 @@ impl super::TrapDispatcher {
             // greenColor (341) uses 0x8000 for green to match System 7.5.3
             // ROM rather than Executor's diverging 0x64AF.
             69 => (0xFC00, 0xF37D, 0x052F),  // yellowColor
-            137 => (0xF2D7, 0x0856, 0x84EC), // magentaColor
+            // System 7.5.3 normalizes 139 to the same cGrafPort fgColor and
+            // rgbFgColor as the documented magentaColor constant 137. The
+            // extra legacy color-plane bit must not turn into CLUT index 139.
+            137 | 139 => (0xF2D7, 0x0856, 0x84EC), // magentaColor
             205 => (0xDD6B, 0x08C2, 0x06A2), // redColor
             273 => (0x0241, 0xAB54, 0xEAFF), // cyanColor
             341 => (0x0000, 0x8000, 0x11B0), // greenColor
@@ -33256,6 +33259,18 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(d.fg_color, (0x1111, 0x2222, 0x3333));
+    }
+
+    #[test]
+    fn fore_color_normalizes_legacy_magenta_plane_alias() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        bus.write_long(TEST_SP, 139);
+
+        let result = d.dispatch_quickdraw(true, 0x062, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(d.fg_color, (0xF2D7, 0x0856, 0x84EC));
     }
 
     #[test]
