@@ -985,6 +985,129 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Fill the exposed framebuffer around a large centered presentation
+    /// rectangle with the darkest active indexed color. Systemless suppresses
+    /// the classic desktop in kiosk mode, so centered game surfaces sit on a
+    /// black stage while their pixels remain untouched.
+    pub(super) fn fill_kiosk_stage_around_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        let large = width >= (screen_width / 2).max(1) && height >= (screen_height / 2).max(1);
+        let centered = left >= 0
+            && top >= 0
+            && (screen_width - right - left).abs() <= 1
+            && (screen_height - bottom - top).abs() <= 1;
+        if !self.menu_bar_hidden
+            || !large
+            || !centered
+            || (width >= screen_width && height >= screen_height)
+        {
+            return false;
+        }
+
+        let black_index = self
+            .device_clut
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
+            .map(|(index, _)| index as u8)
+            .unwrap_or(255);
+        for (margin_top, margin_left, margin_bottom, margin_right) in [
+            (0, 0, top, screen_width),
+            (bottom, 0, screen_height, screen_width),
+            (top, 0, bottom, left),
+            (top, right, bottom, screen_width),
+        ] {
+            if pixel_size == 8 {
+                Self::fb_fill_rect_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    margin_top,
+                    margin_left,
+                    margin_bottom,
+                    margin_right,
+                    black_index,
+                );
+            } else {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    margin_top,
+                    margin_left,
+                    margin_bottom,
+                    margin_right,
+                    true,
+                );
+            }
+        }
+        true
+    }
+
+    pub(super) fn kiosk_stage_margins_are_uniform(
+        &self,
+        bus: &MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if pixel_size != 8 {
+            return false;
+        }
+        let (top, left, bottom, right) = rect;
+        if top < 0
+            || left < 0
+            || bottom > screen_height
+            || right > screen_width
+            || top >= bottom
+            || left >= right
+        {
+            return false;
+        }
+
+        let mut margin_index = None;
+        let mut pixels = vec![0; screen_width as usize];
+        for y in 0..screen_height {
+            let ranges = if y < top || y >= bottom {
+                [(0, screen_width), (0, 0)]
+            } else {
+                [(0, left), (right, screen_width)]
+            };
+            for (start, end) in ranges {
+                let length = end.saturating_sub(start) as usize;
+                if length == 0 {
+                    continue;
+                }
+                bus.read_bytes_into(
+                    screen_base + y as u32 * row_bytes + start as u32,
+                    &mut pixels[..length],
+                );
+                for &pixel in &pixels[..length] {
+                    match margin_index {
+                        Some(expected) if pixel != expected => return false,
+                        None => margin_index = Some(pixel),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        margin_index.is_some()
+    }
+
     /// Fill a rectangle in the framebuffer
     pub(crate) fn fb_fill_rect(
         bus: &mut MacMemoryBus,
@@ -4494,13 +4617,14 @@ impl super::TrapDispatcher {
                 self.invert_menu_item(bus, tracking.highlighted_item);
             }
         }
+        self.fill_kiosk_stage_for_centered_game_surface(bus, self.front_window);
         self.capture_gui_frame(bus, "redraw_chrome");
     }
 }
 
 #[cfg(test)]
 mod redraw_chrome_tests {
-    use super::super::dispatch::DialogItem;
+    use super::super::dispatch::{DialogItem, ScreenCopyBitsRect};
     use super::super::test_helpers::setup_with_port;
     use super::super::TrapDispatcher;
     use crate::memory::MemoryBus;
@@ -4543,6 +4667,150 @@ mod redraw_chrome_tests {
         disp.restore_screen_rect_pixels(&mut bus, saved.0, saved.1, saved.2, saved.3, &saved.4);
         assert_eq!(bus.read_byte(screen_base), 0xA5);
         assert_eq!(bus.read_byte(screen_base + 1), 0x5A);
+    }
+
+    #[test]
+    fn redraw_chrome_finishes_centered_plain_game_window_on_black_stage() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0);
+        TrapDispatcher::fb_fill_rect_index(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            60,
+            80,
+            540,
+            720,
+            42,
+        );
+
+        // A 640x480 plainDBox front window centered on the 800x600 screen.
+        // Its BitMap shares the screen, so redraw_chrome's compositor leaves
+        // these already-composed pixels in place before applying the stage.
+        bus.write_word(PORT_PTR + 8, (-60i16) as u16);
+        bus.write_word(PORT_PTR + 10, (-80i16) as u16);
+        bus.write_word(PORT_PTR + 12, 540);
+        bus.write_word(PORT_PTR + 14, 720);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 480);
+        bus.write_word(PORT_PTR + 22, 640);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (60, 80, 540, 720);
+        disp.window_proc_id = 2;
+        disp.window_proc_ids.insert(PORT_PTR, 2);
+        disp.menu_bar_hidden = true;
+        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[37] = [0, 0, 0];
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(bus.read_byte(screen_base), 37);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 40), 37);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 400), 42);
+        assert_eq!(bus.read_byte(screen_base + 599 * row_bytes + 799), 37);
+    }
+
+    #[test]
+    fn redraw_chrome_does_not_stage_centered_document_window() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, _screen_w, screen_h, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0);
+        bus.write_word(PORT_PTR + 8, (-60i16) as u16);
+        bus.write_word(PORT_PTR + 10, (-80i16) as u16);
+        bus.write_word(PORT_PTR + 12, 540);
+        bus.write_word(PORT_PTR + 14, 720);
+        bus.write_word(PORT_PTR + 20, 480);
+        bus.write_word(PORT_PTR + 22, 640);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (60, 80, 540, 720);
+        disp.window_proc_id = 0;
+        disp.window_proc_ids.insert(PORT_PTR, 0);
+        disp.menu_bar_hidden = true;
+        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[37] = [0, 0, 0];
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: 60,
+            dst_left: 80,
+            dst_bottom: 540,
+            dst_right: 720,
+        });
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(bus.read_byte(screen_base), 0);
+    }
+
+    #[test]
+    fn redraw_chrome_stages_last_centered_copybits_surface_with_stale_window_record() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0);
+        TrapDispatcher::fb_fill_rect_index(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            100,
+            80,
+            500,
+            720,
+            42,
+        );
+
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, 0);
+        bus.write_word(PORT_PTR + 12, screen_h);
+        bus.write_word(PORT_PTR + 14, screen_w);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, screen_h);
+        bus.write_word(PORT_PTR + 22, screen_w);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (0, 0, screen_h as i16, screen_w as i16);
+        disp.window_proc_id = 2;
+        disp.window_proc_ids.remove(&PORT_PTR);
+        disp.menu_bar_hidden = true;
+        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[37] = [0, 0, 0];
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 200,
+            src_right: 320,
+            dst_top: 100,
+            dst_left: 80,
+            dst_bottom: 500,
+            dst_right: 720,
+        });
+
+        assert!(disp.kiosk_stage_margins_are_uniform(&bus, (100, 80, 500, 720)));
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(bus.read_byte(screen_base), 37);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 40), 37);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 400), 42);
+        assert_eq!(bus.read_byte(screen_base + 599 * row_bytes + 799), 37);
+        bus.write_byte(screen_base + 1, 38);
+        assert!(!disp.kiosk_stage_margins_are_uniform(&bus, (100, 80, 500, 720)));
     }
 
     fn track_manual_cport(disp: &mut TrapDispatcher, bus: &crate::memory::MacMemoryBus, port: u32) {

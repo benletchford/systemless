@@ -1232,6 +1232,36 @@ impl super::TrapDispatcher {
         true
     }
 
+    pub(super) fn fill_kiosk_stage_for_centered_game_surface(
+        &self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+    ) {
+        let valid_front_window = window_ptr != 0
+            && window_ptr == self.front_window
+            && self.window_visible(bus, window_ptr);
+        let plain_game_window = valid_front_window && self.window_proc_id(window_ptr) == 2;
+        if plain_game_window {
+            if self
+                .fill_kiosk_stage_around_rect(bus, self.window_global_port_rect(bus, window_ptr))
+            {
+                return;
+            }
+        } else if valid_front_window {
+            return;
+        }
+
+        // A game may replace or dispose its WindowRecord after presenting a
+        // centered surface with CopyBits. Keep that explicit guest destination
+        // as the aperture when its exposed bands remain one uniform index.
+        if let Some(rect) = self.last_screen_copybits_rect {
+            let destination = (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right);
+            if self.kiosk_stage_margins_are_uniform(bus, destination) {
+                self.fill_kiosk_stage_around_rect(bus, destination);
+            }
+        }
+    }
+
     fn move_window_to_global(
         &mut self,
         bus: &mut MacMemoryBus,
