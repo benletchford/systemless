@@ -198,9 +198,10 @@ fn apple_hfs_partition_range(bytes: &[u8]) -> Option<(usize, usize)> {
 }
 
 fn fixed_apm_field_equals(field: &[u8], expected: &[u8]) -> bool {
-    field.len() >= expected.len()
-        && field.get(..expected.len()) == Some(expected)
-        && field[expected.len()..].iter().all(|&byte| byte == 0)
+    field
+        .iter()
+        .position(|&byte| byte == 0)
+        .is_some_and(|terminator| field.get(..terminator) == Some(expected))
 }
 
 fn read_u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -724,6 +725,50 @@ mod tests {
 
         assert!(apple_hfs_partition_range(&bytes).is_none());
         assert!(!looks_like_dc42_or_hfs(&bytes));
+    }
+
+    #[test]
+    fn accepts_exact_apple_hfs_type_with_data_after_the_c_string() {
+        const PARTITION_START: usize = 16;
+        const PARTITION_BLOCKS: usize = 8;
+        let mut bytes = apm_fixture(PARTITION_START + PARTITION_BLOCKS + 2, 2);
+        write_apm_partition(
+            &mut bytes,
+            2,
+            PARTITION_START,
+            PARTITION_BLOCKS,
+            0,
+            PARTITION_BLOCKS,
+            APPLE_HFS_PARTITION_TYPE,
+        );
+        let type_tail = 2 * APM_BLOCK_SIZE + 48 + APPLE_HFS_PARTITION_TYPE.len() + 1;
+        bytes[type_tail] = 0xA5;
+        bytes[PARTITION_START * APM_BLOCK_SIZE + 1024..PARTITION_START * APM_BLOCK_SIZE + 1026]
+            .copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
+
+        assert!(apple_hfs_partition_range(&bytes).is_some());
+    }
+
+    #[test]
+    fn apm_partition_types_are_exact_case_terminated_c_strings() {
+        let mut exact = [0u8; 32];
+        exact[..APPLE_HFS_PARTITION_TYPE.len()].copy_from_slice(APPLE_HFS_PARTITION_TYPE);
+        assert!(fixed_apm_field_equals(&exact, APPLE_HFS_PARTITION_TYPE));
+
+        let mut mixed_case = exact;
+        mixed_case[0] = b'a';
+        assert!(!fixed_apm_field_equals(
+            &mixed_case,
+            APPLE_HFS_PARTITION_TYPE
+        ));
+
+        let mut unterminated = [b'X'; 32];
+        unterminated[..APPLE_HFS_PARTITION_TYPE.len()]
+            .copy_from_slice(APPLE_HFS_PARTITION_TYPE);
+        assert!(!fixed_apm_field_equals(
+            &unterminated,
+            APPLE_HFS_PARTITION_TYPE
+        ));
     }
 
     const APM_BLOCK_SIZE: usize = 512;
