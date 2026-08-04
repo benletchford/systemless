@@ -385,13 +385,19 @@ impl super::TrapDispatcher {
 
     fn trap_address_table_key(&self, trap_word: u16) -> u16 {
         match self.current_trap_word & 0x0FFF {
-            // NGetTrapAddress/NSetTrapAddress NEWTOOL variants.
+            // `_GetTrapAddress newTool` / `_SetTrapAddress newTool`.
             // Inside Macintosh: Operating System Utilities 1994, pp. 8-27
             // and 8-30: trapNum may be an A-line instruction or trap number;
             // irrelevant high bits are masked according to the trap type.
             0x647 | 0x746 => 0xA800 | (trap_word & 0x03FF),
-            // NEWOS / OS-table variants mask to the low 8-bit OS table.
-            0x146 | 0x247 | 0x346 => 0xA000 | (trap_word & 0x00FF),
+            // `_GetTrapAddress newOS` / `_SetTrapAddress newOS` mask to
+            // the low 8-bit Operating System table.
+            0x247 | 0x346 => 0xA000 | (trap_word & 0x00FF),
+            // Legacy GetTrapAddress ($A146) and SetTrapAddress ($A047)
+            // ignore the high-order bits and infer the table from the trap
+            // number: $00-$4F, $54, and $57 are OS traps; all others are
+            // Toolbox traps. Inside Macintosh: Operating System Utilities
+            // 1994, pp. 8-32 to 8-33.
             _ => {
                 let trap_num = trap_word & 0x03FF;
                 if matches!(trap_num, 0x000..=0x04F | 0x054 | 0x057) {
@@ -829,12 +835,12 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // GetTrapAddress ($A046/$A146/$A346/$A746)
-            // Returns the address of a trap handler. Used by apps to check
-            // if a trap is implemented (comparing against _Unimplemented).
-            // Register-based: D0.W = trap number -> A0 = trap address
-            // Inside Macintosh Volume II, II-384
-            //
+            // GetTrapAddress ($A146), GetOSTrapAddress ($A346), and
+            // GetToolTrapAddress ($A746): Return the handler address in A0
+            // for the D0.W trap word/number. The legacy form infers its table
+            // from the trap number; the newer forms select it explicitly.
+            // Inside Macintosh: Operating System Utilities 1994, pp. 8-26
+            // to 8-28 and 8-32 to 8-33.
             // Tool traps get a 2-byte trampoline stub (auto-pop variant
             // of the trap word) so games that `JSR (A0)` through the
             // returned address re-enter the trap dispatcher cleanly
@@ -842,7 +848,6 @@ impl super::TrapDispatcher {
             // OS traps fall back to the simple `$00F0xxxx` fake-ptr
             // because they have no auto-pop semantics. See
             // `TrapDispatcher::get_or_create_tool_trap_trampoline`.
-            // GetTrapAddress ($A046): Checks native_trap_table; tool traps return a callable trampoline (auto-pop variant), OS traps return $F0xxxx fake-ptr per IM:II II-384
             (false, 0x46) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_variant = self.current_trap_word & 0x0FFF;
@@ -6592,6 +6597,46 @@ mod tests {
             addr,
             0x00F00000 | 0x0044,
             "GetTrapAddress should return 0x00F00000 | trap_num in A0"
+        );
+    }
+
+    #[test]
+    fn legacy_gettrapaddress_classifies_toolbox_trap_words_by_number() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.current_trap_word = 0xA146;
+        dispatcher.native_trap_table.insert(0xA0A0, 0x0000_ADF2);
+        cpu.write_reg(Register::D0, 0xA9A0);
+
+        let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetTrapAddress should be handled");
+        assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
+
+        let addr = cpu.read_reg(Register::A0);
+        assert_ne!(
+            addr, 0x0000_ADF2,
+            "legacy GetTrapAddress must not resolve Toolbox trap $A9A0 through the OS table"
+        );
+        assert_eq!(
+            bus.read_word(addr),
+            0xADA0,
+            "legacy GetTrapAddress must return a callable auto-pop Toolbox trampoline"
+        );
+    }
+
+    #[test]
+    fn getostrapaddress_explicitly_uses_the_os_table() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.current_trap_word = 0xA346;
+        dispatcher.native_trap_table.insert(0xA0A0, 0x0000_ADF2);
+        cpu.write_reg(Register::D0, 0xA9A0);
+
+        let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GetOSTrapAddress should be handled");
+        assert!(result.unwrap().is_ok(), "GetOSTrapAddress should succeed");
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            0x0000_ADF2,
+            "GetOSTrapAddress must mask the supplied trap word to the OS table"
         );
     }
 
