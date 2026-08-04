@@ -6207,9 +6207,18 @@ impl super::TrapDispatcher {
                             filename, permission, ref_num_ptr
                         );
 
+                        if vref != 0 && self.working_directory_info(vref).is_none() {
+                            eprintln!(
+                                "[TRAP] FSpOpenRF(\"{}\") -> nsvErr (vRefNum={})",
+                                filename, vref
+                            );
+                            bus.write_word(sp + 10, (-35i16) as u16); // nsvErr
+                            cpu.write_reg(Register::A7, sp + 10);
+                            return Some(Ok(()));
+                        }
+
                         let Some(vfs_key) = self
                             .find_vfs_rsrc_file_for_hfs_lookup(vref, dir_id, &filename)
-                            .or_else(|| self.find_vfs_rsrc_file(&filename))
                         else {
                             eprintln!("[TRAP] FSpOpenRF(\"{}\") -> fnfErr", filename);
                             bus.write_word(sp + 10, (-43i16) as u16); // fnfErr
@@ -12080,7 +12089,13 @@ mod tests {
             .insert("OpenMe.rsrc".to_string(), vec![0x52, 0x53, 0x52, 0x43]);
 
         let spec_ptr = 0x300000u32;
-        write_fsspec(&mut bus, spec_ptr, 1, 2, b"OpenMe.rsrc");
+        write_fsspec(
+            &mut bus,
+            spec_ptr,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            2,
+            b"OpenMe.rsrc",
+        );
         let ref_num_ptr = 0x300200u32;
 
         let sp = TEST_SP;
@@ -12104,6 +12119,61 @@ mod tests {
             disp.vfs.get("__rsrc__OpenMe.rsrc"),
             Some(&vec![0x52, 0x53, 0x52, 0x43])
         );
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspopenrf_does_not_escape_the_fsspec_directory() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs_rsrc
+            .insert("Alpha/Duplicate".to_string(), vec![0xA1]);
+        disp.vfs_rsrc
+            .insert("Beta/Duplicate".to_string(), vec![0xB2]);
+        let empty_dir_id = disp.ensure_vfs_directory("Empty");
+
+        let spec_ptr = 0x300000u32;
+        write_fsspec(
+            &mut bus,
+            spec_ptr,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            empty_dir_id,
+            b"Duplicate",
+        );
+        let ref_num_ptr = 0x300200u32;
+        bus.write_word(ref_num_ptr, 0x7FFF);
+        bus.write_long(TEST_SP, ref_num_ptr);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, spec_ptr);
+        cpu.write_reg(Register::D0, 3);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, -43); // fnfErr
+        assert_eq!(bus.read_word(ref_num_ptr), 0x7FFF);
+        assert!(disp.open_files.is_empty());
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspopenrf_rejects_an_unknown_volume() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs_rsrc
+            .insert("Duplicate".to_string(), vec![0xA1]);
+
+        let spec_ptr = 0x300000u32;
+        write_fsspec(&mut bus, spec_ptr, 1234, 2, b"Duplicate");
+        let ref_num_ptr = 0x300200u32;
+        bus.write_word(ref_num_ptr, 0x7FFF);
+        bus.write_long(TEST_SP, ref_num_ptr);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, spec_ptr);
+        cpu.write_reg(Register::D0, 3);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, -35); // nsvErr
+        assert_eq!(bus.read_word(ref_num_ptr), 0x7FFF);
+        assert!(disp.open_files.is_empty());
     }
 
     #[test]
