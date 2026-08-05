@@ -21678,6 +21678,9 @@ impl super::TrapDispatcher {
 
         let target_is_screen = self.set_entries_target_is_screen(bus);
         let is_full_replace = start == 0 && count == 255;
+        let sequence_uses_client_ids = is_full_replace
+            && (1..=count as u32)
+                .all(|index| bus.read_word(table_ptr + index * 8) == bus.read_word(table_ptr));
         let previous_frame_was_dimmed = Self::clut_is_dimmed_derivative_of(
             &self.device_clut,
             &self.color_manager_clut,
@@ -21690,6 +21693,15 @@ impl super::TrapDispatcher {
         // substitutes a scaled `color_manager_clut`.
         //
         self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
+        // Sequence-mode ColorSpec.value fields are client IDs after the ROM's
+        // Color Manager processing, not physical CLUT indices. When such a
+        // table ends a hardware fade, the ROM restores the stable physical
+        // palette while retaining the new logical GDevice colors. Treating
+        // the logical table as a fresh hardware palette reinterprets already
+        // indexed artwork through unrelated colors.
+        if target_is_screen && previous_frame_was_dimmed && sequence_uses_client_ids {
+            self.device_clut = self.color_manager_clut;
+        }
 
         // Publish `device_clut → color_manager_clut` only on a full-replace
         // SetEntries (start=0, count=255) that represents a fresh palette
@@ -21723,7 +21735,11 @@ impl super::TrapDispatcher {
                         &self.color_manager_clut,
                     )));
 
-        if target_is_screen && is_full_replace && !transient_fade_table {
+        if target_is_screen
+            && is_full_replace
+            && !transient_fade_table
+            && !(previous_frame_was_dimmed && sequence_uses_client_ids)
+        {
             if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
                 let cm_before = self.color_manager_clut[0];
                 let dev0 = self.device_clut[0];
@@ -40365,6 +40381,56 @@ mod tests {
 
         assert_eq!(d.color_manager_clut, d.device_clut);
         assert_ne!(d.color_manager_clut, baseline);
+    }
+
+    #[test]
+    fn test_setentries_client_id_sequence_after_fade_restores_stable_physical_palette() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        d.ensure_main_gdevice(&mut bus);
+        let baseline = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut = baseline;
+        d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        let table_ptr = 0x336E00u32;
+        for index in 0..256u32 {
+            let entry = table_ptr + index * 8;
+            bus.write_word(entry, 0); // Color Manager client ID, not a CLUT index
+            bus.write_word(entry + 2, (index as u16) << 8);
+            bus.write_word(entry + 4, ((255 - index) as u16) << 8);
+            bus.write_word(entry + 6, 0x5500);
+        }
+
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+
+        assert_eq!(d.device_clut, baseline);
+        assert_eq!(d.color_manager_clut, baseline);
+        let ctab_handle = d.current_gdevice_ctab_handle(&bus);
+        let ctab = bus.read_long(ctab_handle);
+        let entry_42 = ctab + 8 + 42 * 8;
+        assert_eq!(bus.read_word(entry_42 + 2), 0x2A00);
+        assert_eq!(bus.read_word(entry_42 + 4), 0xD500);
+        assert_eq!(bus.read_word(entry_42 + 6), 0x5500);
+    }
+
+    #[test]
+    fn test_setentries_index_sequence_after_fade_installs_fresh_physical_palette() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        d.ensure_main_gdevice(&mut bus);
+        let baseline = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut = baseline;
+        d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        let table_ptr = 0x337E00u32;
+        for index in 0..256u32 {
+            let entry = table_ptr + index * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, (index as u16) << 8);
+            bus.write_word(entry + 4, ((255 - index) as u16) << 8);
+            bus.write_word(entry + 6, 0x5500);
+        }
+
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+
+        assert_eq!(d.device_clut[42], [0x2A00, 0xD500, 0x5500]);
+        assert_eq!(d.color_manager_clut[42], [0x2A00, 0xD500, 0x5500]);
     }
 
     #[test]
