@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/benletchford/systemless/compare/v0.12.0...v0.12.1) (2026-08-05)
+
+
+### Build System
+
+* update m68k to 0.7.1 ([#406](https://github.com/benletchford/systemless/issues/406)) ([63b69b7](https://github.com/benletchford/systemless/commit/63b69b7fb04a44aa7a19c79390fa38ce5ba7e9c8))
+
 ## [0.12.0](https://github.com/benletchford/systemless/compare/v0.11.5...v0.12.0) (2026-08-05)
 
 
