@@ -6144,6 +6144,9 @@ impl super::TrapDispatcher {
             if abs_top >= bottom || abs_bottom <= top || abs_left >= right || abs_right <= left {
                 continue;
             }
+            if !self.dialog_control_visible(bus, dialog_ptr, item_num) {
+                continue;
+            }
 
             let enabled = (item.item_type & 0x80) == 0;
             if trace_items {
@@ -6355,8 +6358,13 @@ impl super::TrapDispatcher {
                 continue;
             }
 
+            let base_type = item.item_type & 0x7F;
+            if matches!(base_type, 4..=7) && !self.dialog_control_visible(bus, dialog_ptr, item_num)
+            {
+                continue;
+            }
             let enabled = (item.item_type & 0x80) == 0;
-            match item.item_type & 0x7F {
+            match base_type {
                 4 => self.draw_button_with_enabled(
                     bus,
                     abs_top,
@@ -9529,6 +9537,19 @@ impl super::TrapDispatcher {
         self.dialog_control_handle_for_item(dialog_ptr, item_no)
             .map(|handle| bus.read_long(handle))
             .is_some_and(|ctrl_ptr| ctrl_ptr != 0 && bus.read_byte(ctrl_ptr + 17) == 255)
+    }
+
+    fn dialog_control_visible(&self, bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> bool {
+        let Some(control_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no) else {
+            // Some internal drawing tests and synthesized shells do not
+            // materialize ControlRecords. Preserve their DITL-only fallback.
+            return true;
+        };
+        let control_ptr = bus.read_long(control_handle);
+        // contrlVis is nonzero for every visible control; HideControl writes
+        // zero, and DrawDialog redraws dialog controls through the Control
+        // Manager. Inside Macintosh Volume I, I-329 and I-417.
+        control_ptr != 0 && bus.read_byte(control_ptr + 16) != 0
     }
 
     fn begin_dialog_popup_tracking(
@@ -24062,6 +24083,44 @@ mod tests {
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 67, 69),
             "selected radio item should draw the central dot"
+        );
+    }
+
+    #[test]
+    fn draw_dialog_honors_live_standard_control_visibility() {
+        // HideControl sets contrlVis to zero and DrawDialog redraws the
+        // dialog's controls through the Control Manager (IM:I I-329/I-417).
+        // The live ControlRecord therefore remains authoritative over the
+        // original DITL presentation state.
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 120, 220);
+        let (mut disp, _cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        let dialog_ptr = bus.alloc(170);
+        let items = vec![DialogItem {
+            item_type: 4,
+            rect: (20, 20, 40, 100),
+            text: "Live".to_string(),
+            ..Default::default()
+        }];
+        let control_handle =
+            disp.create_standard_dialog_control_handle(&mut bus, dialog_ptr, 1, &items[0]);
+        let control_ptr = bus.read_long(control_handle);
+
+        bus.write_byte(control_ptr + 16, 0);
+        disp.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, dialog_ptr);
+        assert_eq!(
+            count_set_pixels(&bus, screen_base, row_bytes, 60, 60, 80, 140),
+            0,
+            "DrawDialog must not reintroduce a control whose contrlVis is zero"
+        );
+
+        bus.write_byte(control_ptr + 16, 1);
+        disp.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, dialog_ptr);
+        assert!(
+            count_set_pixels(&bus, screen_base, row_bytes, 60, 60, 80, 140) > 0,
+            "any nonzero contrlVis value must keep the control visible"
         );
     }
 
