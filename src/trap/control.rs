@@ -994,6 +994,79 @@ impl super::TrapDispatcher {
         self.control_proc_ids.insert(ctrl_ptr, proc_id);
     }
 
+    pub(crate) fn create_control_record(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        title: &[u8],
+        visible: bool,
+        value: i16,
+        min: i16,
+        max: i16,
+        proc_id: i16,
+        ref_con: u32,
+    ) -> (u32, u32) {
+        let ctrl_ptr = bus.alloc(296);
+        let handle = bus.alloc(4);
+        if ctrl_ptr == 0 || handle == 0 {
+            return (0, 0);
+        }
+        bus.write_long(handle, ctrl_ptr);
+        self.initialize_control_record(
+            bus, ctrl_ptr, window_ptr, bounds, title, visible, value, min, max, proc_id, ref_con,
+        );
+        self.ensure_control_aux_record(bus, handle);
+        if window_ptr != 0 {
+            let old_head = bus.read_long(window_ptr + 140);
+            bus.write_long(ctrl_ptr, old_head);
+            bus.write_long(window_ptr + 140, handle);
+        }
+        (handle, ctrl_ptr)
+    }
+
+    pub(crate) fn dispose_control_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ctrl_handle: u32,
+    ) {
+        if ctrl_handle == 0 {
+            return;
+        }
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        if ctrl_ptr != 0 {
+            let owner = bus.read_long(ctrl_ptr + 4);
+            if owner != 0 {
+                let mut prev_handle = 0u32;
+                let mut cur_handle = bus.read_long(owner + 140);
+                while cur_handle != 0 {
+                    let cur_ptr = bus.read_long(cur_handle);
+                    if cur_ptr == 0 {
+                        break;
+                    }
+                    if cur_handle == ctrl_handle {
+                        let next = bus.read_long(cur_ptr);
+                        if prev_handle == 0 {
+                            bus.write_long(owner + 140, next);
+                        } else {
+                            let prev_ptr = bus.read_long(prev_handle);
+                            if prev_ptr != 0 {
+                                bus.write_long(prev_ptr, next);
+                            }
+                        }
+                        break;
+                    }
+                    prev_handle = cur_handle;
+                    cur_handle = bus.read_long(cur_ptr);
+                }
+            }
+            self.release_control_aux_record(bus, ctrl_handle);
+            self.control_proc_ids.remove(&ctrl_ptr);
+            bus.free(ctrl_ptr);
+        }
+        bus.free(ctrl_handle);
+    }
+
     fn create_popup_control_private_data(&mut self, bus: &mut MacMemoryBus, menu_id: i16) -> u32 {
         let menu_handle = self.create_popup_menu_handle(bus, menu_id);
         if menu_handle == 0 {
@@ -2370,21 +2443,9 @@ impl super::TrapDispatcher {
                 };
                 let title = Self::read_pascal_string(bus, title_ptr);
 
-                let ctrl_ptr = bus.alloc(296);
-                let handle = bus.alloc(4);
-                bus.write_long(handle, ctrl_ptr);
-
-                self.initialize_control_record(
-                    bus, ctrl_ptr, window_ptr, bounds, &title, visible, value, min, max, proc_id,
-                    ref_con,
+                let (handle, ctrl_ptr) = self.create_control_record(
+                    bus, window_ptr, bounds, &title, visible, value, min, max, proc_id, ref_con,
                 );
-                self.ensure_control_aux_record(bus, handle);
-
-                if window_ptr != 0 {
-                    let old_head = bus.read_long(window_ptr + 140);
-                    bus.write_long(ctrl_ptr, old_head);
-                    bus.write_long(window_ptr + 140, handle);
-                }
 
                 let is_application_cdef = self.control_uses_application_def_proc(bus, ctrl_ptr);
                 // On a real Mac, NewControl initializes a custom CDEF and,
@@ -2417,44 +2478,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let ctrl_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                if ctrl_handle != 0 {
-                    let ctrl_ptr = bus.read_long(ctrl_handle);
-                    if ctrl_ptr != 0 {
-                        // Remove from window's control list by reading
-                        // contrlOwner (offset 4) to find the parent window,
-                        // then unlinking this control from the chain.
-                        // Inside Macintosh Volume I, I-316.
-                        let owner = bus.read_long(ctrl_ptr + 4);
-                        if owner != 0 {
-                            // Window's controlList handle is at offset 140
-                            let mut prev_handle = 0u32;
-                            let mut cur_handle = bus.read_long(owner + 140);
-                            while cur_handle != 0 {
-                                let cur_ptr = bus.read_long(cur_handle);
-                                if cur_ptr == 0 {
-                                    break;
-                                }
-                                if cur_handle == ctrl_handle {
-                                    // Unlink: next = contrlData.nextControl at offset 0
-                                    let next = bus.read_long(cur_ptr);
-                                    if prev_handle == 0 {
-                                        bus.write_long(owner + 140, next);
-                                    } else {
-                                        let prev_ptr = bus.read_long(prev_handle);
-                                        bus.write_long(prev_ptr, next);
-                                    }
-                                    break;
-                                }
-                                prev_handle = cur_handle;
-                                cur_handle = bus.read_long(cur_ptr);
-                            }
-                        }
-                        self.release_control_aux_record(bus, ctrl_handle);
-                        self.control_proc_ids.remove(&ctrl_ptr);
-                        bus.free(ctrl_ptr);
-                    }
-                    bus.free(ctrl_handle);
-                }
+                self.dispose_control_handle(bus, ctrl_handle);
                 Ok(())
             }
 
