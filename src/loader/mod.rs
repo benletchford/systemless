@@ -7,7 +7,8 @@ use std::collections::HashMap;
 /// Application `'SIZE'` resource data used by the Process Manager to
 /// choose the app's launch partition. The standard application resource
 /// is ID -1 and stores a 16-bit mode flag word followed by preferred
-/// and minimum partition sizes.
+/// and minimum partition sizes. Finder may write an ID 0 resource that
+/// overrides the developer-provided ID -1 resource at launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplicationSizeResource {
     pub flags: u16,
@@ -444,7 +445,8 @@ pub struct LoadedApp {
     /// Initial stack pointer (top of below-A5 region) the runner
     /// seeds A7 with before the first instruction.
     pub initial_sp: u32,
-    /// Parsed application `'SIZE'` resource ID -1, when present.
+    /// Parsed application `'SIZE'` launch settings, preferring a valid ID 0
+    /// resource over the developer-provided ID -1 resource.
     pub size_resource: Option<ApplicationSizeResource>,
 }
 

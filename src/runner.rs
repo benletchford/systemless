@@ -6531,9 +6531,15 @@ fn load_app_generic<M: MemoryBus>(
     // 1. Load CODE 0 Header
     let code0 = fork.get_code(0)?;
     let header = Code0Header::parse(&code0.data)?;
-    let size_resource = fork
-        .get(*b"SIZE", -1)
-        .and_then(|res| ApplicationSizeResource::parse(&res.data));
+    let size_resource = [0, -1].into_iter().find_map(|id| {
+        fork.get(*b"SIZE", id)
+            .and_then(|res| ApplicationSizeResource::parse(&res.data))
+            .filter(|size| size.preferred_partition_size().is_some())
+            .map(|size| (id, size))
+    });
+    let (size_resource_id, size_resource) = size_resource
+        .map(|(id, size)| (Some(id), Some(size)))
+        .unwrap_or((None, None));
     let load_address = load_address_for_size_partition(
         configured_load_address,
         &header,
@@ -6556,9 +6562,10 @@ fn load_app_generic<M: MemoryBus>(
                 );
             }
         }
-        if let Some(size) = size_resource {
+        if let (Some(id), Some(size)) = (size_resource_id, size_resource) {
             eprintln!(
-                "[LOAD] SIZE -1 flags=${:04X} highLevelEventAware={} preferred={} minimum={}",
+                "[LOAD] SIZE {} flags=${:04X} highLevelEventAware={} preferred={} minimum={}",
+                id,
                 size.flags,
                 size.is_high_level_event_aware(),
                 size.preferred_size,
@@ -7316,6 +7323,56 @@ mod tests {
             app.size_resource,
             Some(ApplicationSizeResource {
                 flags: 0x0080,
+                preferred_size: 0x0030_0000,
+                minimum_size: 0x0020_0000,
+            })
+        );
+    }
+
+    #[test]
+    fn load_app_prefers_valid_size_resource_id_zero() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let original = size_resource_bytes(0x0040, 0x0030_0000, 0x0020_0000);
+        let finder_override = size_resource_bytes(0x0080, 0x0050_0000, 0x0040_0000);
+        let fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, &code0),
+            (*b"SIZE", -1, &original),
+            (*b"SIZE", 0, &finder_override),
+        ]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(16 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert_eq!(
+            app.size_resource,
+            Some(ApplicationSizeResource {
+                flags: 0x0080,
+                preferred_size: 0x0050_0000,
+                minimum_size: 0x0040_0000,
+            })
+        );
+    }
+
+    #[test]
+    fn load_app_falls_back_to_size_resource_id_minus_one_when_id_zero_is_invalid() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let original = size_resource_bytes(0x0040, 0x0030_0000, 0x0020_0000);
+        let invalid_override = size_resource_bytes(0x0080, 0x0010_0000, 0x0020_0000);
+        let fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, &code0),
+            (*b"SIZE", -1, &original),
+            (*b"SIZE", 0, &invalid_override),
+        ]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert_eq!(
+            app.size_resource,
+            Some(ApplicationSizeResource {
+                flags: 0x0040,
                 preferred_size: 0x0030_0000,
                 minimum_size: 0x0020_0000,
             })
