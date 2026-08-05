@@ -474,7 +474,6 @@ impl super::TrapDispatcher {
     const STANDARD_CONTROL_MARK_SIZE: i16 = 12;
     const STANDARD_CONTROL_MARK_LEFT_INSET: i16 = 2;
     const STANDARD_CONTROL_TITLE_GAP: i16 = 4;
-    const INACTIVE_STANDARD_CONTROL_TITLE_RGB: [u16; 3] = [0xA1A1, 0xA1A1, 0xA1A1];
     const CLASSIC_RADIO_OUTLINE_12: [&'static str; 12] = [
         "....####....",
         "..##....##..",
@@ -7961,8 +7960,7 @@ impl super::TrapDispatcher {
             // game calls HiliteControl(255), their titles follow inactive
             // Control Manager rendering; itemDisable alone stays visually
             // active in classic dialogs.
-            let [r, g, b] = Self::INACTIVE_STANDARD_CONTROL_TITLE_RGB;
-            let gray_index = super::pict::closest_clut_index(r, g, b, &self.device_clut);
+            let ink = self.inactive_control_title_index();
             Self::fb_draw_string_styled_index(
                 bus,
                 screen_base,
@@ -7976,7 +7974,7 @@ impl super::TrapDispatcher {
                 font_id,
                 font_size,
                 0,
-                gray_index,
+                ink,
             );
             return;
         }
@@ -24606,7 +24604,7 @@ mod tests {
         dispatcher.set_screen_mode_for_test(screen_base, row_bytes, 160, 140, 8);
         dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
         dispatcher.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
-        dispatcher.device_clut[42] = [0xA1A1, 0xA1A1, 0xA1A1];
+        dispatcher.device_clut[42] = [0x7FFF, 0x7FFF, 0x7FFF];
         dispatcher.device_clut[255] = [0, 0, 0];
         for offset in 0..(row_bytes * 140) {
             bus.write_byte(screen_base + offset, 0);
@@ -24676,6 +24674,34 @@ mod tests {
             assert_eq!(
                 black, 0,
                 "inactive standard DITL {label} title must not leave black glyph pixels"
+            );
+        }
+
+        dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        dispatcher.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        dispatcher.device_clut[255] = [0, 0, 0];
+        for offset in 0..(row_bytes * 140) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+        dispatcher.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, dialog_ptr);
+        for (label, item) in [("checkbox", &items[0]), ("radio", &items[1])] {
+            let label_left = bounds.1
+                + item.rect.1
+                + TrapDispatcher::STANDARD_CONTROL_MARK_LEFT_INSET
+                + TrapDispatcher::STANDARD_CONTROL_MARK_SIZE
+                + TrapDispatcher::STANDARD_CONTROL_TITLE_GAP;
+            assert!(
+                count_pixel_index(
+                    &bus,
+                    screen_base,
+                    row_bytes,
+                    bounds.0 + item.rect.0,
+                    label_left,
+                    bounds.0 + item.rect.2,
+                    bounds.1 + item.rect.3,
+                    1,
+                ) > 6,
+                "inactive standard DITL {label} title should use a visible palette blend without a gray ramp"
             );
         }
     }
