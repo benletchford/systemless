@@ -4224,6 +4224,37 @@ fn map_src_coord(
     Some(i32::from(dst_start) + (rel * dst_span) / src_span)
 }
 
+fn map_src_pixel_span(
+    src_coord: i32,
+    src_start: i16,
+    src_end: i16,
+    pic_dst_start: i16,
+    pic_dst_end: i16,
+    frame_start: i16,
+    dst_start: i16,
+    scale: f64,
+) -> Option<(i32, i32, i32)> {
+    let src_span = i32::from(src_end) - i32::from(src_start);
+    let pic_dst_span = i32::from(pic_dst_end) - i32::from(pic_dst_start);
+    let rel = src_coord - i32::from(src_start);
+    if src_span <= 0 || pic_dst_span <= 0 || rel < 0 || rel >= src_span {
+        return None;
+    }
+
+    let centered_edge = |source_edge: i32| {
+        ((source_edge as f64 * pic_dst_span as f64 / src_span as f64) - 0.5)
+            .ceil()
+            .clamp(0.0, pic_dst_span as f64) as i32
+    };
+    let pic_start = i32::from(pic_dst_start) + centered_edge(rel);
+    let pic_end = i32::from(pic_dst_start) + centered_edge(rel + 1);
+    let screen_start = (((pic_start - i32::from(frame_start)) as f64 * scale) - 0.5).ceil() as i32
+        + i32::from(dst_start);
+    let screen_end = (((pic_end - i32::from(frame_start)) as f64 * scale) - 0.5).ceil() as i32
+        + i32::from(dst_start);
+    Some((pic_start, screen_start, screen_end))
+}
+
 /// Parse BitsRect / BitsRgn (1bpp bitmap, opcode 0x0090/0x0091)
 fn parse_bits_rect(
     bus: &mut MacMemoryBus,
@@ -5005,6 +5036,18 @@ fn blit_row(
             }
         }
         8 => {
+            let Some((pic_y, y_start, y_end)) = map_src_pixel_span(
+                src_y,
+                src_top,
+                src_bottom,
+                pic_dst_top,
+                pic_dst_bottom,
+                frame_top,
+                dst_top,
+                scale_y,
+            ) else {
+                return;
+            };
             for px in 0..width {
                 let byte_idx = px as usize;
                 if byte_idx < row_data.len() {
@@ -5012,65 +5055,77 @@ fn blit_row(
                     if mode_base == 36 && src_pixel == 0 {
                         continue;
                     }
-                    let Some(pic_x) = map_x(px) else {
+                    let src_x = i32::from(pm.bounds_left) + px as i32;
+                    let Some((pic_x, x_start, x_end)) = map_src_pixel_span(
+                        src_x,
+                        src_left,
+                        src_right,
+                        pic_dst_left,
+                        pic_dst_right,
+                        frame_left,
+                        dst_left,
+                        scale_x,
+                    ) else {
                         continue;
                     };
                     if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
                         continue;
                     }
-                    let x =
-                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
-                    let Some(pixel) = pict_indexed_transfer_pixel(
-                        bus,
-                        src_pixel,
-                        indexed_transfer,
-                        screen_base,
-                        screen_rb,
-                        x,
-                        base_y,
-                        screen_w,
-                        screen_h,
-                        scrn_ps,
-                        device_clut,
-                    ) else {
-                        continue;
-                    };
-                    if trace_pict_samples_enabled() {
-                        for (label, sample_x, sample_y) in [
-                            ("center", 400i32, 300i32),
-                            ("title_right", 580, 350),
-                            ("title_low", 400, 430),
-                        ] {
-                            if x == sample_x && base_y == sample_y {
-                                let src_rgb = device_clut[pixel as usize];
-                                eprintln!(
-                                    "[PICT] sample {} dst=({}, {}) src_row={} src_px={} src_idx={} dst_idx={} dst_rgb=({:04X},{:04X},{:04X})",
-                                    label,
-                                    x,
-                                    base_y,
-                                    row,
-                                    px,
-                                    src_pixel,
-                                    pixel,
-                                    src_rgb[0],
-                                    src_rgb[1],
-                                    src_rgb[2],
-                                );
+                    for y in y_start..y_end {
+                        for x in x_start..x_end {
+                            let Some(pixel) = pict_indexed_transfer_pixel(
+                                bus,
+                                src_pixel,
+                                indexed_transfer,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                screen_w,
+                                screen_h,
+                                scrn_ps,
+                                device_clut,
+                            ) else {
+                                continue;
+                            };
+                            if trace_pict_samples_enabled() {
+                                for (label, sample_x, sample_y) in [
+                                    ("center", 400i32, 300i32),
+                                    ("title_right", 580, 350),
+                                    ("title_low", 400, 430),
+                                ] {
+                                    if x == sample_x && y == sample_y {
+                                        let src_rgb = device_clut[pixel as usize];
+                                        eprintln!(
+                                            "[PICT] sample {} dst=({}, {}) src_row={} src_px={} src_idx={} dst_idx={} dst_rgb=({:04X},{:04X},{:04X})",
+                                            label,
+                                            x,
+                                            y,
+                                            row,
+                                            px,
+                                            src_pixel,
+                                            pixel,
+                                            src_rgb[0],
+                                            src_rgb[1],
+                                            src_rgb[2],
+                                        );
+                                    }
+                                }
                             }
+                            write_pixel_clipped(
+                                bus,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                pixel,
+                                screen_w,
+                                screen_h,
+                                scrn_ps,
+                                dst_clip,
+                            );
                         }
                     }
-                    write_pixel_clipped(
-                        bus,
-                        screen_base,
-                        screen_rb,
-                        x,
-                        base_y,
-                        pixel,
-                        screen_w,
-                        screen_h,
-                        scrn_ps,
-                        dst_clip,
-                    );
                 }
             }
         }
@@ -6136,7 +6191,7 @@ fn parse_direct_bits_rect(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pict_indexed_transfer_table, build_src_to_dst_table,
+        blit_row, build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
         dst_clip_row_spans, peek_initial_packbits_clut, try_blit_packbits_8bpp_src_copy_fast,
         try_blit_row_8bpp_src_copy_fast, DstClip, DstClipRegion, PictIndexedTransfer, PixMapInfo,
@@ -6404,6 +6459,70 @@ mod tests {
         ));
 
         assert_eq!(bus.read_byte(screen_base), 0b0101_0101);
+    }
+
+    #[test]
+    fn eight_bit_scaled_blit_fills_every_enlarged_destination_pixel() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_bytes(screen_base, &[0xEE; 15]);
+        let pm = PixMapInfo {
+            row_bytes: 3,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 2,
+            bounds_right: 3,
+            pixel_size: 8,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        let src_to_dst = std::array::from_fn(|index| index as u8);
+        let indexed_transfer = std::array::from_fn(|index| PictIndexedTransfer::Write(index as u8));
+        let device_clut = [[0u16; 3]; 256];
+        let mut scratch = Vec::new();
+
+        for (row, pixels) in [[1, 2, 3], [4, 5, 6]].iter().enumerate() {
+            blit_row(
+                &mut bus,
+                pixels,
+                0,
+                &pm,
+                &device_clut,
+                &src_to_dst,
+                true,
+                &indexed_transfer,
+                row as u32,
+                0,
+                0,
+                2,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                3,
+                5,
+                1.0,
+                1.0,
+                screen_base,
+                5,
+                5,
+                3,
+                8,
+                0,
+                0,
+                None,
+                None,
+                &mut scratch,
+            );
+        }
+
+        assert_eq!(
+            bus.read_bytes(screen_base, 15),
+            vec![1, 1, 2, 3, 3, 4, 4, 5, 6, 6, 4, 4, 5, 6, 6]
+        );
     }
 
     #[test]
