@@ -51,7 +51,7 @@ impl super::TrapDispatcher {
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
     const WDEF_FIRST_APPLICATION_RESOURCE_ID: i16 = 128;
-    const WDEF_TRAMPOLINE_SIZE: u32 = 58;
+    const WDEF_TRAMPOLINE_SIZE: u32 = 68;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
     const AUX_WIN_CTABLE_OFFSET: u32 = 8;
@@ -463,6 +463,7 @@ impl super::TrapDispatcher {
         proc_addr: u32,
         return_slot: u32,
         next_trampoline: Option<u32>,
+        restore_cgraf_fields: Option<(u32, u32)>,
     ) {
         bus.write_word(tramp, 0x48E7);
         bus.write_word(tramp + 2, 0xF0F0);
@@ -488,8 +489,20 @@ impl super::TrapDispatcher {
                 bus.write_long(tramp + 48, next);
             }
             None => {
-                bus.write_word(tramp + 46, 0x4E75); // RTS
-                bus.write_long(tramp + 48, 0);
+                if let Some((graf_vars, color_fields)) = restore_cgraf_fields {
+                    // MOVE.L #grafVars,window+8
+                    bus.write_word(tramp + 46, 0x23FC);
+                    bus.write_long(tramp + 48, graf_vars);
+                    bus.write_long(tramp + 52, window_ptr + 8);
+                    // MOVE.L #chExtra/pnLocHFrac,window+12
+                    bus.write_word(tramp + 56, 0x23FC);
+                    bus.write_long(tramp + 58, color_fields);
+                    bus.write_long(tramp + 62, window_ptr + 12);
+                    bus.write_word(tramp + 66, 0x4E75); // RTS
+                } else {
+                    bus.write_word(tramp + 46, 0x4E75); // RTS
+                    bus.write_long(tramp + 48, 0);
+                }
             }
         }
     }
@@ -522,6 +535,31 @@ impl super::TrapDispatcher {
         let wmgr_port = self.ensure_color_window_manager_port(bus);
         self.set_current_port_state(bus, cpu, wmgr_port, None);
 
+        // Pre-Color QuickDraw WDEFs receive WindowPeek and commonly read the
+        // classic inline portBits.bounds at offsets +8..+15 to turn portRect
+        // into global strucRgn/contRgn coordinates. A CWindowRecord stores
+        // grafVars/chExtra/pnLocHFrac there instead. System 7 preserves this
+        // legacy WDEF contract, so expose the authoritative portPixMap bounds
+        // only for the duration of the callback chain and restore the color
+        // fields in the final trampoline before guest execution resumes.
+        let restore_cgraf_fields = if (bus.read_word(window_ptr + 6) & 0xC000) != 0 {
+            let pixmap_handle = bus.read_long(window_ptr + 2);
+            let pixmap = bus.read_long(pixmap_handle);
+            if pixmap != 0 {
+                let saved = (
+                    bus.read_long(window_ptr + 8),
+                    bus.read_long(window_ptr + 12),
+                );
+                bus.write_long(window_ptr + 8, bus.read_long(pixmap + 6));
+                bus.write_long(window_ptr + 12, bus.read_long(pixmap + 10));
+                Some(saved)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let final_sp = cpu.read_reg(Register::A7);
         let return_pc = cpu.read_reg(Register::PC);
         let return_slot = final_sp.wrapping_sub(4);
@@ -538,6 +576,11 @@ impl super::TrapDispatcher {
 
         for (idx, &(message, param)) in messages.iter().enumerate() {
             let next = trampolines.get(idx + 1).copied();
+            let final_restore = if next.is_none() {
+                restore_cgraf_fields
+            } else {
+                None
+            };
             Self::write_window_def_trampoline(
                 bus,
                 trampolines[idx],
@@ -548,6 +591,7 @@ impl super::TrapDispatcher {
                 proc_addr,
                 return_slot,
                 next,
+                final_restore,
             );
         }
 
@@ -5400,6 +5444,14 @@ mod tests {
             bus.read_long(window_ptr + super::super::TrapDispatcher::WINDOW_DEF_PROC_OFFSET);
         assert_ne!(def_handle, 0);
         assert_eq!(bus.read_long(def_handle), wdef_proc);
+        let pixmap_handle = bus.read_long(window_ptr + 2);
+        let pixmap = bus.read_long(pixmap_handle);
+        assert_eq!(
+            bus.read_long(window_ptr + 8),
+            bus.read_long(pixmap + 6),
+            "legacy WDEF callback should temporarily see portPixMap bounds"
+        );
+        assert_eq!(bus.read_long(window_ptr + 12), bus.read_long(pixmap + 10));
         assert_eq!(
             bus.read_word(tramp + 12),
             3,
@@ -5447,7 +5499,21 @@ mod tests {
         assert_eq!(bus.read_long(draw_tramp + 26), 0);
         assert_eq!(bus.read_long(draw_tramp + 32), wdef_proc);
         assert_eq!(bus.read_long(draw_tramp + 38), (sp + 6).wrapping_sub(32));
-        assert_eq!(bus.read_word(draw_tramp + 46), 0x4E75);
+        assert_eq!(bus.read_word(draw_tramp + 46), 0x23FC);
+        assert_eq!(
+            bus.read_long(draw_tramp + 48),
+            0,
+            "final callback should restore grafVars"
+        );
+        assert_eq!(bus.read_long(draw_tramp + 52), window_ptr + 8);
+        assert_eq!(bus.read_word(draw_tramp + 56), 0x23FC);
+        assert_eq!(
+            bus.read_long(draw_tramp + 58),
+            0,
+            "final callback should restore chExtra and pnLocHFrac"
+        );
+        assert_eq!(bus.read_long(draw_tramp + 62), window_ptr + 12);
+        assert_eq!(bus.read_word(draw_tramp + 66), 0x4E75);
         assert_eq!(
             disp.current_port, disp.window_manager_cport,
             "wDraw should run in the color Window Manager port"
