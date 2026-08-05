@@ -18523,9 +18523,37 @@ impl super::TrapDispatcher {
             return;
         }
 
+        // A CGrafPort's fgColor/bkColor fields contain pixels resolved for
+        // that port's destination. An offscreen PixMap can retain a color
+        // table whose indices differ from the live, animated screen palette;
+        // resolving every RGB color through the device table writes a valid
+        // screen index with the wrong meaning into the offscreen buffer.
+        // Imaging With QuickDraw 1994, pp. 4-82 and 4-95.
+        let pixmap_handle = bus.read_long(port + 2);
+        let pixmap = if pixmap_handle != 0 {
+            bus.read_long(pixmap_handle)
+        } else {
+            0
+        };
+        let resolution_clut = if pixmap != 0 {
+            let base = Self::offscreen_pixmap_base_ptr(bus, pixmap);
+            let row_bytes = (bus.read_word(pixmap + 4) & 0x3FFF) as u32;
+            let pixel_size = bus.read_word(pixmap + 32);
+            let screen_backed = base == self.screen_mode.0
+                && row_bytes == self.screen_mode.1
+                && pixel_size == self.screen_mode.4;
+            if screen_backed {
+                self.device_clut
+            } else {
+                self.read_port_clut(bus, bus.read_long(pixmap + 42))
+            }
+        } else {
+            self.device_clut
+        };
+
         if foreground {
             let pixel = Self::nearest_palette_index(
-                &self.device_clut,
+                &resolution_clut,
                 [self.fg_color.0, self.fg_color.1, self.fg_color.2],
             );
             bus.write_long(port + 80, u32::from(pixel));
@@ -18533,7 +18561,7 @@ impl super::TrapDispatcher {
         }
         if background {
             let pixel = Self::nearest_palette_index(
-                &self.device_clut,
+                &resolution_clut,
                 [self.bg_color.0, self.bg_color.1, self.bg_color.2],
             );
             bus.write_long(port + 84, u32::from(pixel));
@@ -33441,6 +33469,56 @@ mod tests {
 
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_long(port + 80), 42);
+    }
+
+    #[test]
+    fn rgb_fore_color_resolves_against_an_offscreen_pixmap_color_table() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        let pixmap_handle = bus.alloc(4);
+        let pixmap = bus.alloc(50);
+        let pixels = bus.alloc(8);
+        let ctab_handle = bus.alloc(4);
+        let ctab = bus.alloc(8 + 256 * 8);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(ctab_handle, ctab);
+        bus.fill_zeros(pixmap, 50);
+        bus.fill_zeros(ctab, 8 + 256 * 8);
+        bus.write_long(pixmap, pixels);
+        bus.write_word(pixmap + 4, 0x8008);
+        bus.write_word(pixmap + 10, 1);
+        bus.write_word(pixmap + 12, 8);
+        bus.write_word(pixmap + 32, 8);
+        bus.write_word(pixmap + 34, 1);
+        bus.write_word(pixmap + 36, 8);
+        bus.write_long(pixmap + 42, ctab_handle);
+        bus.write_word(ctab + 6, 255);
+        for index in 0..256u32 {
+            bus.write_word(ctab + 8 + index * 8, index as u16);
+        }
+        let green = [0x0000, 0x9900, 0x0000];
+        let green_entry = ctab + 8 + 23 * 8;
+        bus.write_word(green_entry + 2, green[0]);
+        bus.write_word(green_entry + 4, green[1]);
+        bus.write_word(green_entry + 6, green[2]);
+
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[0] = green;
+
+        let color = bus.alloc(6);
+        bus.write_word(color, green[0]);
+        bus.write_word(color + 2, green[1]);
+        bus.write_word(color + 4, green[2]);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, color);
+
+        let result = d.dispatch_quickdraw(true, 0x214, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(port + 80), 23);
     }
 
     #[test]
