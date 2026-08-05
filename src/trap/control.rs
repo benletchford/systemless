@@ -27,7 +27,31 @@ impl super::TrapDispatcher {
     const AUX_CTL_RESERVED_OFFSET: u32 = 14;
     const AUX_CTL_REFCON_OFFSET: u32 = 18;
     const AUX_CTL_RECORD_SIZE: u32 = 22;
-    const INACTIVE_CONTROL_TITLE_RGB: [u16; 3] = [0xA1A1, 0xA1A1, 0xA1A1];
+    /// Resolve the standard CDEF's `grayishTextOr` title ink for an 8-bit
+    /// color device. Color QuickDraw blends the foreground and background;
+    /// the standard controls use black and white, producing 50% gray before
+    /// the live device CLUT maps it to an indexed color.
+    ///
+    /// Prefer the darker entry when two palette colors are equidistant. A
+    /// custom CLUT containing only neutral white/black endpoints must not map
+    /// a non-empty inactive title to its white dialog background.
+    /// Inside Macintosh: Text 1993, pp. 3-25 to 3-26.
+    pub(crate) fn inactive_control_title_index(&self) -> u8 {
+        const BLENDED_COMPONENT: i64 = 0x7FFF;
+        self.device_clut
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, rgb)| {
+                let red = BLENDED_COMPONENT - i64::from(rgb[0]);
+                let green = BLENDED_COMPONENT - i64::from(rgb[1]);
+                let blue = BLENDED_COMPONENT - i64::from(rgb[2]);
+                (
+                    red * red + green * green + blue * blue,
+                    u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]),
+                )
+            })
+            .map_or(255, |(index, _)| index as u8)
+    }
 
     // The drawCntl contract defines invisibility as contrlVis == 0; callers
     // that write the packed ControlRecord directly may use another nonzero
@@ -1489,8 +1513,7 @@ impl super::TrapDispatcher {
             // resolve against the same live device CLUT used by screenshots
             // instead of TheGDevice, which games may leave on an offscreen
             // palette while redrawing dialogs.
-            let [r, g, b] = Self::INACTIVE_CONTROL_TITLE_RGB;
-            let gray_index = super::pict::closest_clut_index(r, g, b, &self.device_clut);
+            let ink = self.inactive_control_title_index();
             Self::fb_draw_string_styled_index(
                 bus,
                 screen_base,
@@ -1504,7 +1527,7 @@ impl super::TrapDispatcher {
                 font_id,
                 font_size,
                 0,
-                gray_index,
+                ink,
             );
             return;
         }
@@ -4958,7 +4981,7 @@ mod tests {
         disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 128, 8);
         disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
         disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
-        disp.device_clut[42] = [0xA1A1, 0xA1A1, 0xA1A1];
+        disp.device_clut[42] = [0x7FFF, 0x7FFF, 0x7FFF];
         disp.device_clut[255] = [0, 0, 0];
         bus.write_long(0x0824, screen_base);
         bus.write_word(0x0828, row_bytes as u16);
@@ -4988,9 +5011,9 @@ mod tests {
         // matching screen export, not this current-GDevice table.
         let gray_entry = ctab + 8 + 17 * 8;
         bus.write_word(gray_entry, 17);
-        bus.write_word(gray_entry + 2, 0xA1A1);
-        bus.write_word(gray_entry + 4, 0xA1A1);
-        bus.write_word(gray_entry + 6, 0xA1A1);
+        bus.write_word(gray_entry + 2, 0x7FFF);
+        bus.write_word(gray_entry + 4, 0x7FFF);
+        bus.write_word(gray_entry + 6, 0x7FFF);
         let black_entry = ctab + 8 + 255 * 8;
         bus.write_word(black_entry, 255);
         bus.write_word(black_entry + 2, 0);
@@ -5008,6 +5031,7 @@ mod tests {
         bus.write_word(window_ptr + 20, 128);
         bus.write_word(window_ptr + 22, 128);
 
+        let mut control_ptrs = Vec::new();
         for (proc_id, rect, value) in [(1, (20, 20, 40, 118), 1), (2, (52, 20, 72, 118), 1)] {
             let ctrl_ptr = bus.alloc(296);
             disp.initialize_control_record(
@@ -5015,6 +5039,7 @@ mod tests {
             );
             bus.write_byte(ctrl_ptr + 17, 255);
             disp.draw_control(&mut cpu, &mut bus, ctrl_ptr);
+            control_ptrs.push(ctrl_ptr);
         }
 
         let checkbox_gray = count_pixel_index(&bus, screen_base, row_bytes, 20, 35, 40, 118, 42);
@@ -5038,6 +5063,24 @@ mod tests {
             radio_black, 0,
             "inactive radio title must not leave black glyph pixels"
         );
+
+        // A custom palette with only neutral white/black endpoints still
+        // maps grayishTextOr's blend to a visible tinted intermediate entry.
+        disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut[255] = [0, 0, 0];
+        for offset in 0..(row_bytes * 128) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+        for ctrl_ptr in control_ptrs {
+            disp.draw_control(&mut cpu, &mut bus, ctrl_ptr);
+        }
+        for (label, top) in [("checkbox", 20), ("radio", 52)] {
+            assert!(
+                count_pixel_index(&bus, screen_base, row_bytes, top, 35, top + 20, 118, 1) > 12,
+                "inactive {label} title should use a visible palette blend without a gray ramp"
+            );
+        }
     }
 
     /// An active push-button title must resolve its ink against the colour
