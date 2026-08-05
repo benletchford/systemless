@@ -3084,6 +3084,115 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn list_scrollbar_limits(
+        state: &super::dispatch::ListState,
+        vertical: bool,
+    ) -> (i16, i16, i16) {
+        let (data_start, data_end, visible_start, visible_end) = if vertical {
+            (
+                state.data_bounds.0,
+                state.data_bounds.2,
+                state.visible.0,
+                state.visible.2,
+            )
+        } else {
+            (
+                state.data_bounds.1,
+                state.data_bounds.3,
+                state.visible.1,
+                state.visible.3,
+            )
+        };
+        let page = (visible_end - visible_start).max(1);
+        let max = (data_end - page).max(data_start);
+        (visible_start.clamp(data_start, max), data_start, max)
+    }
+
+    fn set_list_visible_origin(
+        state: &mut super::dispatch::ListState,
+        row: i16,
+        column: i16,
+    ) {
+        let row_page = (state.visible.2 - state.visible.0).max(1);
+        let col_page = (state.visible.3 - state.visible.1).max(1);
+        let max_row = (state.data_bounds.2 - row_page).max(state.data_bounds.0);
+        let max_col = (state.data_bounds.3 - col_page).max(state.data_bounds.1);
+        let top = row.clamp(state.data_bounds.0, max_row);
+        let left = column.clamp(state.data_bounds.1, max_col);
+        state.visible = (
+            top,
+            left,
+            (top + row_page).min(state.data_bounds.2),
+            (left + col_page).min(state.data_bounds.3),
+        );
+    }
+
+    fn list_scrollbar_bounds(
+        state: &super::dispatch::ListState,
+        vertical: bool,
+    ) -> (i16, i16, i16, i16) {
+        if vertical {
+            (
+                state.view_rect.0 - 1,
+                state.view_rect.3,
+                state.view_rect.2 + 1,
+                state.view_rect.3 + 16,
+            )
+        } else {
+            (
+                state.view_rect.2,
+                state.view_rect.1 - 1,
+                state.view_rect.2 + 16,
+                state.view_rect.3 + 1,
+            )
+        }
+    }
+
+    fn sync_list_scrollbar_record(
+        bus: &mut MacMemoryBus,
+        control_handle: u32,
+        state: &super::dispatch::ListState,
+        vertical: bool,
+    ) {
+        if control_handle == 0 {
+            return;
+        }
+        let control = bus.read_long(control_handle);
+        if control == 0 {
+            return;
+        }
+        Self::write_rect_words(
+            bus,
+            control + 8,
+            Self::list_scrollbar_bounds(state, vertical),
+        );
+        let (value, min, max) = Self::list_scrollbar_limits(state, vertical);
+        bus.write_word(control + 18, value as u16);
+        bus.write_word(control + 20, min as u16);
+        bus.write_word(control + 22, max as u16);
+    }
+
+    fn create_list_scrollbar(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        state: &super::dispatch::ListState,
+        vertical: bool,
+    ) -> (u32, u32) {
+        let (value, min, max) = Self::list_scrollbar_limits(state, vertical);
+        self.create_control_record(
+            bus,
+            state.port,
+            Self::list_scrollbar_bounds(state, vertical),
+            &[],
+            state.draw_enabled,
+            value,
+            min,
+            max,
+            16,
+            0,
+        )
+    }
+
     fn sync_list_state_to_guest(
         bus: &mut MacMemoryBus,
         list_handle: u32,
@@ -3108,6 +3217,18 @@ impl super::TrapDispatcher {
             bus,
             list_ptr + Self::LIST_DATA_BOUNDS_OFFSET,
             state.data_bounds,
+        );
+        Self::sync_list_scrollbar_record(
+            bus,
+            bus.read_long(list_ptr + Self::LIST_VSCROLL_OFFSET),
+            state,
+            true,
+        );
+        Self::sync_list_scrollbar_record(
+            bus,
+            bus.read_long(list_ptr + Self::LIST_HSCROLL_OFFSET),
+            state,
+            false,
         );
 
         let rows = (state.data_bounds.2 - state.data_bounds.0).max(0) as i32;
@@ -9938,10 +10059,10 @@ impl super::TrapDispatcher {
                     //   theWindow: WindowPtr; drawIt, hasGrow, scrollHoriz, scrollVert: BOOLEAN): ListHandle;
                     // Inside Macintosh Volume IV, IV-269 to IV-270
                     0x44 => {
-                        let draw_it = Self::stack_bool_slot(bus, sp + 2);
-                        let has_grow = Self::stack_bool_slot(bus, sp + 4);
-                        let scroll_h = Self::stack_bool_slot(bus, sp + 6);
-                        let scroll_v = Self::stack_bool_slot(bus, sp + 8);
+                        let scroll_v = Self::stack_bool_slot(bus, sp + 2);
+                        let scroll_h = Self::stack_bool_slot(bus, sp + 4);
+                        let has_grow = Self::stack_bool_slot(bus, sp + 6);
+                        let draw_it = Self::stack_bool_slot(bus, sp + 8);
                         let window = bus.read_long(sp + 10);
                         let proc_id = bus.read_word(sp + 14) as i16;
                         let cell_size = Self::read_stack_point(bus, sp + 16);
@@ -9989,6 +10110,16 @@ impl super::TrapDispatcher {
                             last_click: Self::list_no_click_cell(),
                             last_click_tick: 0,
                         };
+                        let (v_scroll, v_scroll_ptr) = if scroll_v {
+                            self.create_list_scrollbar(bus, &state, true)
+                        } else {
+                            (0, 0)
+                        };
+                        let (h_scroll, h_scroll_ptr) = if scroll_h {
+                            self.create_list_scrollbar(bus, &state, false)
+                        } else {
+                            (0, 0)
+                        };
 
                         if list_ptr != 0 {
                             Self::write_rect_words(
@@ -10012,8 +10143,8 @@ impl super::TrapDispatcher {
                                 list_ptr + Self::LIST_VISIBLE_OFFSET,
                                 visible,
                             );
-                            bus.write_long(list_ptr + Self::LIST_VSCROLL_OFFSET, 0);
-                            bus.write_long(list_ptr + Self::LIST_HSCROLL_OFFSET, 0);
+                            bus.write_long(list_ptr + Self::LIST_VSCROLL_OFFSET, v_scroll);
+                            bus.write_long(list_ptr + Self::LIST_HSCROLL_OFFSET, h_scroll);
                             bus.write_byte(list_ptr + Self::LIST_SEL_FLAGS_OFFSET, 0);
                             bus.write_byte(list_ptr + Self::LIST_ACTIVE_OFFSET, 1);
                             bus.write_byte(list_ptr + Self::LIST_RESERVED_OFFSET, 0);
@@ -10059,6 +10190,14 @@ impl super::TrapDispatcher {
                         if list_handle != 0 {
                             self.list_states.insert(list_handle, state);
                         }
+                        if draw_it {
+                            if v_scroll_ptr != 0 {
+                                self.draw_control(cpu, bus, v_scroll_ptr);
+                            }
+                            if h_scroll_ptr != 0 {
+                                self.draw_control(cpu, bus, h_scroll_ptr);
+                            }
+                        }
 
                         if trace_list_manager_enabled() {
                             eprintln!(
@@ -10097,6 +10236,23 @@ impl super::TrapDispatcher {
                         let draw_it = Self::stack_bool_slot(bus, sp + 6);
                         if let Some(state) = self.list_states.get_mut(&list_handle) {
                             state.draw_enabled = draw_it;
+                        }
+                        let list_ptr = Self::list_record_ptr(bus, list_handle);
+                        if list_ptr != 0 {
+                            for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
+                                let handle = bus.read_long(list_ptr + offset);
+                                let control = if handle != 0 {
+                                    bus.read_long(handle)
+                                } else {
+                                    0
+                                };
+                                if control != 0 {
+                                    bus.write_byte(control + 16, if draw_it { 255 } else { 0 });
+                                    if draw_it {
+                                        self.draw_control(cpu, bus, control);
+                                    }
+                                }
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 8);
                         Ok(())
@@ -10588,9 +10744,48 @@ impl super::TrapDispatcher {
                         Ok(())
                     }
 
-                    // LAutoScroll/LActivate/LScroll/LSize are accepted as no-ops for now.
+                    // LScroll shifts the visible cell origin and keeps the
+                    // standard scroll-bar values synchronized.
+                    0x50 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let d_rows = bus.read_word(sp + 6) as i16;
+                        let d_cols = bus.read_word(sp + 8) as i16;
+                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                            Self::set_list_visible_origin(
+                                state,
+                                state.visible.0.saturating_add(d_rows),
+                                state.visible.1.saturating_add(d_cols),
+                            );
+                            Self::sync_list_state_to_guest(bus, list_handle, state);
+                        }
+                        cpu.write_reg(Register::A7, sp + 10);
+                        Ok(())
+                    }
+
+                    // LSize updates the list view and its attached controls.
+                    0x60 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let height = bus.read_word(sp + 6) as i16;
+                        let width = bus.read_word(sp + 8) as i16;
+                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                            let old_origin = (state.visible.0, state.visible.1);
+                            state.view_rect.2 = state.view_rect.0.saturating_add(height.max(0));
+                            state.view_rect.3 = state.view_rect.1.saturating_add(width.max(0));
+                            state.visible = Self::compute_list_visible_rect(
+                                state.view_rect,
+                                state.data_bounds,
+                                state.cell_size,
+                            );
+                            Self::set_list_visible_origin(state, old_origin.0, old_origin.1);
+                            Self::sync_list_state_to_guest(bus, list_handle, state);
+                        }
+                        cpu.write_reg(Register::A7, sp + 10);
+                        Ok(())
+                    }
+
+                    // LAutoScroll/LActivate remain accepted for stack discipline.
                     // Inside Macintosh Volume IV, IV-274 to IV-276
-                    0x00 | 0x10 | 0x50 | 0x60 => self.pack0_fallback(cpu, bus, sp, selector),
+                    0x00 | 0x10 => self.pack0_fallback(cpu, bus, sp, selector),
 
                     // LDispose (selector 40 / $28)
                     // Disposes of the list.
@@ -10604,7 +10799,17 @@ impl super::TrapDispatcher {
                         } else {
                             0
                         };
+                        let (v_scroll, h_scroll) = if list_ptr != 0 {
+                            (
+                                bus.read_long(list_ptr + Self::LIST_VSCROLL_OFFSET),
+                                bus.read_long(list_ptr + Self::LIST_HSCROLL_OFFSET),
+                            )
+                        } else {
+                            (0, 0)
+                        };
                         self.list_states.remove(&list_handle);
+                        self.dispose_control_handle(bus, v_scroll);
+                        self.dispose_control_handle(bus, h_scroll);
                         if list_ptr != 0 {
                             bus.free(list_ptr);
                         }
@@ -10747,7 +10952,17 @@ impl super::TrapDispatcher {
                         } else {
                             0
                         };
+                        let (v_scroll, h_scroll) = if list_ptr != 0 {
+                            (
+                                bus.read_long(list_ptr + Self::LIST_VSCROLL_OFFSET),
+                                bus.read_long(list_ptr + Self::LIST_HSCROLL_OFFSET),
+                            )
+                        } else {
+                            (0, 0)
+                        };
                         self.list_states.remove(&list_handle);
+                        self.dispose_control_handle(bus, v_scroll);
+                        self.dispose_control_handle(bus, h_scroll);
                         if list_ptr != 0 {
                             bus.free(list_ptr);
                         }
@@ -10764,6 +10979,28 @@ impl super::TrapDispatcher {
                     // IM:IV-269 + MTb 4-83 (alias LSetDrawingMode).
                     // Stack: sel(2) + lHandle(4) + drawIt(2) = 8.
                     0x002C => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let draw_it = Self::stack_bool_slot(bus, sp + 6);
+                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                            state.draw_enabled = draw_it;
+                        }
+                        let list_ptr = Self::list_record_ptr(bus, list_handle);
+                        if list_ptr != 0 {
+                            for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
+                                let handle = bus.read_long(list_ptr + offset);
+                                let control = if handle != 0 {
+                                    bus.read_long(handle)
+                                } else {
+                                    0
+                                };
+                                if control != 0 {
+                                    bus.write_byte(control + 16, if draw_it { 255 } else { 0 });
+                                    if draw_it {
+                                        self.draw_control(cpu, bus, control);
+                                    }
+                                }
+                            }
+                        }
                         cpu.write_reg(Register::A7, sp + 8);
                     }
                     // PROCEDURE LDraw(theCell: Cell;
@@ -10843,10 +11080,10 @@ impl super::TrapDispatcher {
                     // Pack1 now mirrors the Pack0 list-record setup so
                     // callers can obtain a live list handle.
                     0x0044 => {
-                        let draw_it = Self::stack_bool_slot(bus, sp + 2);
-                        let has_grow = Self::stack_bool_slot(bus, sp + 4);
-                        let scroll_h = Self::stack_bool_slot(bus, sp + 6);
-                        let scroll_v = Self::stack_bool_slot(bus, sp + 8);
+                        let scroll_v = Self::stack_bool_slot(bus, sp + 2);
+                        let scroll_h = Self::stack_bool_slot(bus, sp + 4);
+                        let has_grow = Self::stack_bool_slot(bus, sp + 6);
+                        let draw_it = Self::stack_bool_slot(bus, sp + 8);
                         let window = bus.read_long(sp + 10);
                         let proc_id = bus.read_word(sp + 14) as i16;
                         let cell_size = Self::read_stack_point(bus, sp + 16);
@@ -10895,6 +11132,17 @@ impl super::TrapDispatcher {
                             last_click_tick: 0,
                         };
 
+                        let (v_scroll, v_scroll_ptr) = if scroll_v {
+                            self.create_list_scrollbar(bus, &state, true)
+                        } else {
+                            (0, 0)
+                        };
+                        let (h_scroll, h_scroll_ptr) = if scroll_h {
+                            self.create_list_scrollbar(bus, &state, false)
+                        } else {
+                            (0, 0)
+                        };
+
                         if list_ptr != 0 {
                             Self::write_rect_words(
                                 bus,
@@ -10917,8 +11165,8 @@ impl super::TrapDispatcher {
                                 list_ptr + Self::LIST_VISIBLE_OFFSET,
                                 visible,
                             );
-                            bus.write_long(list_ptr + Self::LIST_VSCROLL_OFFSET, 0);
-                            bus.write_long(list_ptr + Self::LIST_HSCROLL_OFFSET, 0);
+                            bus.write_long(list_ptr + Self::LIST_VSCROLL_OFFSET, v_scroll);
+                            bus.write_long(list_ptr + Self::LIST_HSCROLL_OFFSET, h_scroll);
                             bus.write_byte(list_ptr + Self::LIST_SEL_FLAGS_OFFSET, 0);
                             bus.write_byte(list_ptr + Self::LIST_ACTIVE_OFFSET, 1);
                             bus.write_byte(list_ptr + Self::LIST_RESERVED_OFFSET, 0);
@@ -10963,6 +11211,14 @@ impl super::TrapDispatcher {
 
                         if list_handle != 0 {
                             self.list_states.insert(list_handle, state);
+                        }
+                        if draw_it {
+                            if v_scroll_ptr != 0 {
+                                self.draw_control(cpu, bus, v_scroll_ptr);
+                            }
+                            if h_scroll_ptr != 0 {
+                                self.draw_control(cpu, bus, h_scroll_ptr);
+                            }
                         }
 
                         if trace_list_manager_enabled() {
@@ -11023,6 +11279,17 @@ impl super::TrapDispatcher {
                     // IM:IV-263, 269. Stack: sel(2) + lHandle(4)
                     // + dRows(2) + dCols(2) = 10.
                     0x0050 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let d_rows = bus.read_word(sp + 6) as i16;
+                        let d_cols = bus.read_word(sp + 8) as i16;
+                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                            Self::set_list_visible_origin(
+                                state,
+                                state.visible.0.saturating_add(d_rows),
+                                state.visible.1.saturating_add(d_cols),
+                            );
+                            Self::sync_list_state_to_guest(bus, list_handle, state);
+                        }
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     // FUNCTION LSearch(dataPtr: Ptr; dataLen: INTEGER;
@@ -11060,6 +11327,21 @@ impl super::TrapDispatcher {
                     // IM:IV-263, 269. Stack: sel(2) + lHandle(4)
                     // + listHeight(2) + listWidth(2) = 10.
                     0x0060 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let height = bus.read_word(sp + 6) as i16;
+                        let width = bus.read_word(sp + 8) as i16;
+                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                            let old_origin = (state.visible.0, state.visible.1);
+                            state.view_rect.2 = state.view_rect.0.saturating_add(height.max(0));
+                            state.view_rect.3 = state.view_rect.1.saturating_add(width.max(0));
+                            state.visible = Self::compute_list_visible_rect(
+                                state.view_rect,
+                                state.data_bounds,
+                                state.cell_size,
+                            );
+                            Self::set_list_visible_origin(state, old_origin.0, old_origin.1);
+                            Self::sync_list_state_to_guest(bus, list_handle, state);
+                        }
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     // PROCEDURE LUpdate(theRgn: RgnHandle;
@@ -21927,10 +22209,10 @@ mod tests {
         bus.write_word(data_bounds_ptr + 6, 1);
 
         bus.write_word(sp, 0x0044); // LNew selector
-        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
-        bus.write_word(sp + 4, 0); // hasGrow = FALSE
-        bus.write_word(sp + 6, 0); // scrollHoriz = FALSE
-        bus.write_word(sp + 8, 0); // scrollVert = FALSE
+        bus.write_word(sp + 2, 0); // scrollVert = FALSE
+        bus.write_word(sp + 4, 0); // scrollHoriz = FALSE
+        bus.write_word(sp + 6, 0); // hasGrow = FALSE
+        bus.write_word(sp + 8, 0x0100); // drawIt = TRUE
         bus.write_long(sp + 10, window_ptr);
         bus.write_word(sp + 14, 0); // default LDEF
         bus.write_word(sp + 16, 0); // cSize.v => default
@@ -21958,6 +22240,91 @@ mod tests {
             1,
             "lActive should default to TRUE"
         );
+    }
+
+    #[test]
+    fn lnew_pascal_boolean_order_creates_the_requested_vertical_scrollbar() {
+        for trap in [0x1E7, 0x1E8] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let sp = TEST_SP;
+            let view_rect_ptr = 0x350000u32;
+            let data_bounds_ptr = 0x350100u32;
+            let window_ptr = 0x210000u32;
+            bus.write_word(view_rect_ptr, 0);
+            bus.write_word(view_rect_ptr + 2, 0);
+            bus.write_word(view_rect_ptr + 4, 40);
+            bus.write_word(view_rect_ptr + 6, 80);
+            bus.write_word(data_bounds_ptr, 0);
+            bus.write_word(data_bounds_ptr + 2, 0);
+            bus.write_word(data_bounds_ptr + 4, 10);
+            bus.write_word(data_bounds_ptr + 6, 1);
+
+            bus.write_word(sp, 0x0044);
+            bus.write_word(sp + 2, 0x0100); // scrollVert = TRUE
+            bus.write_word(sp + 4, 0); // scrollHoriz = FALSE
+            bus.write_word(sp + 6, 0); // hasGrow = FALSE
+            bus.write_word(sp + 8, 0); // drawIt = FALSE
+            bus.write_long(sp + 10, window_ptr);
+            bus.write_word(sp + 14, 0);
+            bus.write_word(sp + 16, 10);
+            bus.write_word(sp + 18, 80);
+            bus.write_long(sp + 20, data_bounds_ptr);
+            bus.write_long(sp + 24, view_rect_ptr);
+            bus.write_long(sp + 28, 0);
+
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            let list_handle = bus.read_long(sp + 28);
+            let list_ptr = bus.read_long(list_handle);
+            let v_scroll = bus.read_long(list_ptr + 28);
+            assert_ne!(v_scroll, 0);
+            assert_eq!(bus.read_long(list_ptr + 32), 0);
+            let control = bus.read_long(v_scroll);
+            assert_eq!(bus.read_long(control + 4), window_ptr);
+            assert_eq!(bus.read_word(control + 8) as i16, -1);
+            assert_eq!(bus.read_word(control + 10) as i16, 80);
+            assert_eq!(bus.read_word(control + 12) as i16, 41);
+            assert_eq!(bus.read_word(control + 14) as i16, 96);
+            assert_eq!(bus.read_byte(control + 16), 0);
+            assert_eq!(bus.read_word(control + 18), 0);
+            assert_eq!(bus.read_word(control + 20), 0);
+            assert_eq!(bus.read_word(control + 22), 6);
+            assert_eq!(bus.read_long(window_ptr + 140), v_scroll);
+            assert!(!disp.list_states.get(&list_handle).unwrap().draw_enabled);
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0050); // LScroll
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, 3); // dRows
+            bus.write_word(sp + 8, 0); // dCols
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(list_ptr + 20), 3);
+            assert_eq!(bus.read_word(control + 18), 3);
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0060); // LSize
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, 20); // listHeight
+            bus.write_word(sp + 8, 80); // listWidth
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(control + 12), 21);
+            assert_eq!(bus.read_word(control + 18), 3);
+            assert_eq!(bus.read_word(control + 22), 8);
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0028);
+            bus.write_long(sp + 2, list_handle);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_long(window_ptr + 140), 0);
+        }
     }
 
     // Pack0 / List Manager ($A9E7) — LAddRow selector $0008
@@ -22593,10 +22960,10 @@ mod tests {
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 0x0044); // LNew
-        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 2, 0); // scrollVert = FALSE
         bus.write_word(sp + 4, 0);
         bus.write_word(sp + 6, 0);
-        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 8, 0x0100); // drawIt = TRUE
         bus.write_long(sp + 10, window_ptr);
         bus.write_word(sp + 14, 128); // custom LDEF id: fallback renderer still applies
         bus.write_word(sp + 16, 12);
@@ -22706,10 +23073,10 @@ mod tests {
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 0x0044); // LNew
-        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 2, 0); // scrollVert = FALSE
         bus.write_word(sp + 4, 0);
         bus.write_word(sp + 6, 0);
-        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 8, 0x0100); // drawIt = TRUE
         bus.write_long(sp + 10, window_ptr);
         bus.write_word(sp + 14, 128);
         bus.write_word(sp + 16, 12);
@@ -22767,10 +23134,10 @@ mod tests {
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 0x0044); // LNew
-        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 2, 0); // scrollVert = FALSE
         bus.write_word(sp + 4, 0);
         bus.write_word(sp + 6, 0);
-        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 8, 0x0100); // drawIt = TRUE
         bus.write_long(sp + 10, window_ptr);
         bus.write_word(sp + 14, 128);
         bus.write_word(sp + 16, 12);
@@ -22871,10 +23238,10 @@ mod tests {
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 0x0044); // LNew
-        bus.write_word(sp + 2, 0x0100); // drawIt = TRUE
+        bus.write_word(sp + 2, 0); // scrollVert = FALSE
         bus.write_word(sp + 4, 0);
         bus.write_word(sp + 6, 0);
-        bus.write_word(sp + 8, 0);
+        bus.write_word(sp + 8, 0x0100); // drawIt = TRUE
         bus.write_long(sp + 10, window_ptr);
         bus.write_word(sp + 14, 128);
         bus.write_word(sp + 16, 10);
