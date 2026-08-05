@@ -1,0 +1,25 @@
+name: Repository policy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  issue-evidence:
+    name: Reject repository-hosted issue evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check issue evidence policy
+        shell: bash
+        run: |
+          evidence_dir="$(find . -type d -name issue-evidence -print -quit)"
+          if [[ -n "$evidence_dir" ]]; then
+            echo "Attach issue-only media to its GitHub conversation; do not commit $evidence_dir/." >&2
+            exit 1
+          fi
