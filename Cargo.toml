@@ -17,7 +17,7 @@ default-run = "systemless"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-m68k = { version = "0.3.2", features = ["jit"] }
+m68k = { version = "0.7.1", features = ["jit"] }
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
