@@ -3193,6 +3193,32 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn draw_list_scrollbars<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        list_handle: u32,
+    ) {
+        let list_ptr = Self::list_record_ptr(bus, list_handle);
+        if list_ptr == 0 {
+            return;
+        }
+
+        // LUpdate redraws the list's controls when necessary in addition to
+        // its intersecting cells. Inside Macintosh Volume IV, IV-276.
+        for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
+            let control_handle = bus.read_long(list_ptr + offset);
+            let control = if control_handle != 0 {
+                bus.read_long(control_handle)
+            } else {
+                0
+            };
+            if control != 0 {
+                self.draw_control(cpu, bus, control);
+            }
+        }
+    }
+
     fn sync_list_state_to_guest(
         bus: &mut MacMemoryBus,
         list_handle: u32,
@@ -10733,6 +10759,7 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         if let Some(state) = self.list_states.get(&list_handle).cloned() {
                             if state.draw_enabled {
+                                self.draw_list_scrollbars(cpu, bus, list_handle);
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
                                 {
                                     return Some(Ok(()));
@@ -11349,6 +11376,23 @@ impl super::TrapDispatcher {
                     // IM:IV-263, 269. Stack: sel(2) + lHandle(4)
                     // + theRgn(4) = 10.
                     0x0064 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                            if state.draw_enabled {
+                                self.draw_list_scrollbars(cpu, bus, list_handle);
+                                if self.draw_list_with_ldef(
+                                    cpu,
+                                    bus,
+                                    list_handle,
+                                    &state,
+                                    None,
+                                    10,
+                                ) {
+                                    return Some(Ok(()));
+                                }
+                                self.draw_list_fallback(cpu, bus, &state, None);
+                            }
+                        }
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     _ => {
@@ -22324,6 +22368,100 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(bus.read_long(window_ptr + 140), 0);
+        }
+    }
+
+    #[test]
+    fn lupdate_redraws_the_list_scrollbar_beside_rview() {
+        for trap in [0x1E7, 0x1E8] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let sp = TEST_SP;
+            let screen_base = 0x300000u32;
+            let row_bytes = 256u32;
+            let window_ptr = 0x210000u32;
+            let view_rect_ptr = 0x350000u32;
+            let data_bounds_ptr = 0x350100u32;
+
+            disp.set_screen_mode_for_test(screen_base, row_bytes, 256, 192, 8);
+            bus.write_long(0x0824, screen_base);
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+            disp.init_cgraf_window(
+                &mut bus,
+                &mut cpu,
+                window_ptr,
+                screen_base,
+                20,
+                30,
+                120,
+                190,
+                "",
+                0,
+                true,
+                false,
+                false,
+                0,
+            );
+
+            bus.write_word(view_rect_ptr, 10);
+            bus.write_word(view_rect_ptr + 2, 10);
+            bus.write_word(view_rect_ptr + 4, 50);
+            bus.write_word(view_rect_ptr + 6, 90);
+            bus.write_word(data_bounds_ptr, 0);
+            bus.write_word(data_bounds_ptr + 2, 0);
+            bus.write_word(data_bounds_ptr + 4, 8);
+            bus.write_word(data_bounds_ptr + 6, 1);
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0044); // LNew
+            bus.write_word(sp + 2, 0x0100); // scrollVert = TRUE
+            bus.write_word(sp + 4, 0); // scrollHoriz = FALSE
+            bus.write_word(sp + 6, 0); // hasGrow = FALSE
+            bus.write_word(sp + 8, 0); // drawIt = FALSE
+            bus.write_long(sp + 10, window_ptr);
+            bus.write_word(sp + 14, 0);
+            bus.write_word(sp + 16, 10);
+            bus.write_word(sp + 18, 80);
+            bus.write_long(sp + 20, data_bounds_ptr);
+            bus.write_long(sp + 24, view_rect_ptr);
+            bus.write_long(sp + 28, 0);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let list_handle = bus.read_long(sp + 28);
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x002C); // LDoDraw
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, 0x0100);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            // rView is local to a window at (20,30), so its vertical scroll
+            // bar occupies screen coordinates (29,120)-(71,136). Simulate an
+            // update pass erasing that strip before List Manager redraws it.
+            for y in 29u32..71 {
+                for x in 120u32..136 {
+                    bus.write_byte(screen_base + y * row_bytes + x, 0x7F);
+                }
+            }
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0064); // LUpdate
+            bus.write_long(sp + 2, list_handle);
+            bus.write_long(sp + 6, 0); // update region
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            let changed = (29u32..71)
+                .flat_map(|y| (120u32..136).map(move |x| (y, x)))
+                .filter(|&(y, x)| bus.read_byte(screen_base + y * row_bytes + x) != 0x7F)
+                .count();
+            assert!(
+                changed > 40,
+                "LUpdate should redraw the attached scrollbar in the window-local strip"
+            );
         }
     }
 
