@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.12.0](https://github.com/benletchford/systemless/compare/v0.11.5...v0.12.0) (2026-08-05)
+
+
+### Features
+
+* extract HFS volumes from Apple Partition Map images ([55b5319](https://github.com/benletchford/systemless/commit/55b5319ac4100aca2410d006badf8444b1542097))
+
+
+### Bug Fixes
+
+* blend inactive control titles through the live palette ([#387](https://github.com/benletchford/systemless/issues/387)) ([eecd7a4](https://github.com/benletchford/systemless/commit/eecd7a44506c3cae4b9b00380f659fd4d6145d39))
+* center-sample scaled indexed PICT pixels ([eed018f](https://github.com/benletchford/systemless/commit/eed018fb914933eef8a99146e5ac6f87628803af))
+* classify legacy GetTrapAddress targets by trap number ([3f2a6cc](https://github.com/benletchford/systemless/commit/3f2a6ccecb2819fc3fc212f8932c73549a2800fa))
+* compute fractional SANE powers ([#370](https://github.com/benletchford/systemless/issues/370)) ([fcbb3e3](https://github.com/benletchford/systemless/commit/fcbb3e37bb9a6bc8c23ee4dcbfaaea36f1136382))
+* create List Manager scrollbars from the documented LNew frame ([#391](https://github.com/benletchford/systemless/issues/391)) ([3c1a302](https://github.com/benletchford/systemless/commit/3c1a302f825c3df66a45282e649c59122c3b169e))
+* defer tracking refire until asynchronous callbacks return ([b703a88](https://github.com/benletchford/systemless/commit/b703a888a0ad69599688a5e1e454cf1e43d0c607))
+* fill kiosk margins around centered game surfaces ([#357](https://github.com/benletchford/systemless/issues/357)) ([17afc8d](https://github.com/benletchford/systemless/commit/17afc8def41b9bdd243e8f755b51c73106222d65))
+* handle Control Strip Dispatch selectors safely ([4e45f22](https://github.com/benletchford/systemless/commit/4e45f22f7e385058d68422bd20028f769c4c7a9a))
+* honor live control visibility when redrawing dialogs ([#386](https://github.com/benletchford/systemless/issues/386)) ([a2f949b](https://github.com/benletchford/systemless/commit/a2f949bfa0e157c7ca2d6daae92f19ece2400688))
+* honor resolved color GrafPort pixel fields ([#356](https://github.com/benletchford/systemless/issues/356)) ([5ff3fe4](https://github.com/benletchford/systemless/commit/5ff3fe4a3d0a14b24cb25883a00a48cfa7ee1ac1))
+* implement HighLevelHFSDispatch FSpOpenRF ([3d07591](https://github.com/benletchford/systemless/commit/3d075913af604dd83b11f2ac3ad6c4076ab1f631))
+* install per-device gamma tables for indexed display output ([#367](https://github.com/benletchford/systemless/issues/367)) ([4ba0d2a](https://github.com/benletchford/systemless/commit/4ba0d2aa4374306b48cd11fe2ca12fce577d2647))
+* keep FSpOpenRF lookups within the FSSpec ([#362](https://github.com/benletchford/systemless/issues/362)) ([890b85c](https://github.com/benletchford/systemless/commit/890b85cf6a2e2f08b0268f8122add987120213b9))
+* keep WaitNextEvent asleep for eventless mouse movement ([#363](https://github.com/benletchford/systemless/issues/363)) ([da3db94](https://github.com/benletchford/systemless/commit/da3db94044e25c2f67dfbc078e567e12b0a06bcd))
+* normalize the legacy magenta color-plane alias ([#355](https://github.com/benletchford/systemless/issues/355)) ([ef276d4](https://github.com/benletchford/systemless/commit/ef276d4e6f42438411bb9f0ca99538114d3f63b0))
+* prefer Finder SIZE launch overrides ([#392](https://github.com/benletchford/systemless/issues/392)) ([2470f3e](https://github.com/benletchford/systemless/commit/2470f3ee7668ad60819da1970d6658a9618638fe))
+* preserve legacy WDEF bounds for color windows ([#389](https://github.com/benletchford/systemless/issues/389)) ([b0c7b14](https://github.com/benletchford/systemless/commit/b0c7b14bfb209fe3890998654e0221545e0ab138))
+* preserve logical palettes across quantized fades ([#353](https://github.com/benletchford/systemless/issues/353)) ([2d904a4](https://github.com/benletchford/systemless/commit/2d904a4080e424d0296b181df282c2e7cf9a73ee))
+* preserve MacRoman HFS volume names ([#364](https://github.com/benletchford/systemless/issues/364)) ([7fd95cc](https://github.com/benletchford/systemless/commit/7fd95cc6ab80cb9391550b6b38f2c190dac2d4cf))
+* preserve the physical palette after client-ID SetEntries fades ([#388](https://github.com/benletchford/systemless/issues/388)) ([2f0f448](https://github.com/benletchford/systemless/commit/2f0f448c525e8ae9d78d4576dac3c31d9b8f0511))
+* render installed multicolor pixel patterns ([#366](https://github.com/benletchford/systemless/issues/366)) ([24c8afa](https://github.com/benletchford/systemless/commit/24c8afa737fb55b93222cc61ab365f45659954fe))
+* resolve offscreen port colors against their pixmap table ([#390](https://github.com/benletchford/systemless/issues/390)) ([bd7baa4](https://github.com/benletchford/systemless/commit/bd7baa4dbeadea240a109409c3d87bd48f80f636))
+* restore the native LoadSeg caller stack ([#359](https://github.com/benletchford/systemless/issues/359)) ([4530150](https://github.com/benletchford/systemless/commit/45301509568c1653431120cd67b85ec430647c09))
+* retain ModalDialog click ownership through release ([#365](https://github.com/benletchford/systemless/issues/365)) ([e55b5dc](https://github.com/benletchford/systemless/commit/e55b5dcd44dffc430614ebf7d813d309e82a667b))
+* return the application FCB refnum from HomeResFile ([73f09d4](https://github.com/benletchford/systemless/commit/73f09d4202f900d83a6952227dd05008056fa40a))
+* stop APM type matching at the string terminator ([#361](https://github.com/benletchford/systemless/issues/361)) ([497637b](https://github.com/benletchford/systemless/commit/497637bf7fd4311033e1e00b383158bde3b1bd70))
+
+
+### Performance Improvements
+
+* fast-forward additional TickCount delay loops ([#351](https://github.com/benletchford/systemless/issues/351)) ([b4b7f8a](https://github.com/benletchford/systemless/commit/b4b7f8a142fd0b21d19a229aaf53ce0cd7f91656))
+* fast-forward headless null-event cycles ([#352](https://github.com/benletchford/systemless/issues/352)) ([146d09c](https://github.com/benletchford/systemless/commit/146d09c1d80a97da91a6adde76395cfbbfd333f9))
+
 ## [0.11.5](https://github.com/benletchford/systemless/compare/v0.11.4...v0.11.5) (2026-08-04)
 
 
