@@ -19553,12 +19553,19 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let destination = (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right);
+        // CopyBits owns only its destination rectangle; a large centered blit
+        // may still be an overlay within a larger application composition.
+        // On indexed color screens, require uniform exposed bands before
+        // replacing them with kiosk-stage black. Imaging With QuickDraw
+        // (1994), pp. 3-112 to 3-114.
+        if self.screen_mode.4 == 8 && !self.kiosk_stage_margins_are_uniform(bus, destination) {
+            return;
+        }
+
         // Run after the blit so overlapping screen-to-screen copies cannot
         // lose source pixels while the margins are cleared.
-        self.fill_kiosk_stage_around_rect(
-            bus,
-            (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
-        );
+        self.fill_kiosk_stage_around_rect(bus, destination);
     }
 
     /// Address of a replacement `grafProcs.bitsProc` on the current port, or
@@ -23191,6 +23198,65 @@ mod tests {
         assert_eq!(
             bus.read_byte(screen_base + (u32::from(height) - 1) * row_bytes + u32::from(width) - 1),
             37
+        );
+    }
+
+    #[test]
+    fn centered_copybits_preserves_nonuniform_application_surround() {
+        let (mut d, _cpu, mut bus) = setup();
+        let (screen_base, row_bytes, _width, height, _) = d.screen_mode;
+        let framebuffer_len = row_bytes * u32::from(height);
+        bus.fill_bytes(screen_base, framebuffer_len, 37);
+        for (offset, pixel) in [
+            (139 * row_bytes + 400, 0x11),
+            (460 * row_bytes + 400, 0x22),
+            (300 * row_bytes + 149, 0x33),
+            (300 * row_bytes + 650, 0x44),
+        ] {
+            bus.write_byte(screen_base + offset, pixel);
+        }
+        let before = bus.read_bytes(screen_base, framebuffer_len as usize);
+        d.menu_bar_hidden = true;
+        d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        d.device_clut[37] = [0, 0, 0];
+
+        d.fill_kiosk_letterbox_for_copybits(
+            &mut bus,
+            ScreenCopyBitsRect {
+                src_top: 0,
+                src_left: 0,
+                src_bottom: 320,
+                src_right: 500,
+                dst_top: 140,
+                dst_left: 150,
+                dst_bottom: 460,
+                dst_right: 650,
+            },
+        );
+
+        assert!(
+            bus.read_bytes(screen_base, framebuffer_len as usize) == before,
+            "a centered overlay must not erase a nonuniform application-painted surround"
+        );
+    }
+
+    #[test]
+    fn centered_kiosk_copybits_keeps_monochrome_black_margins() {
+        let (mut d, _cpu, mut bus) = setup();
+        let (screen_base, _, width, height, _) = d.screen_mode;
+        let row_bytes = u32::from(width as u16).div_ceil(8);
+        d.screen_mode.1 = row_bytes;
+        d.screen_mode.4 = 1;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x00);
+        d.menu_bar_hidden = true;
+
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+
+        assert_eq!(bus.read_byte(screen_base), 0xFF);
+        assert_eq!(
+            bus.read_byte(screen_base + 300 * row_bytes + 400 / 8),
+            0x00,
+            "the monochrome CopyBits destination must remain untouched"
         );
     }
 
