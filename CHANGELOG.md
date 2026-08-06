@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/benletchford/systemless/compare/v0.12.1...v0.12.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* redraw List Manager scrollbars during updates ([9c9c28b](https://github.com/benletchford/systemless/commit/9c9c28bcebdda855ec40b214a8bfc127ef5a4997))
+
 ## [0.12.1](https://github.com/benletchford/systemless/compare/v0.12.0...v0.12.1) (2026-08-05)
 
 
