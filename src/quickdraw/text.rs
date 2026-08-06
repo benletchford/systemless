@@ -54,12 +54,18 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
         {
             return Some(hit);
         }
+        if let Some(hit) = crate::quickdraw::fonts::pixel_font::menu_symbols::get_glyph(ch) {
+            return Some(hit);
+        }
         return get_macroman_glyph(font_id, size, 0x11);
     }
     if ch == '\u{2713}' {
         if let Some(hit) =
             override_symbol_glyph(font_id, size, override_format::CHECKMARK_SYMBOL_GLYPH_INDEX)
         {
+            return Some(hit);
+        }
+        if let Some(hit) = crate::quickdraw::fonts::pixel_font::menu_symbols::get_glyph(ch) {
             return Some(hit);
         }
         return get_macroman_glyph(font_id, size, 0x12);
@@ -123,4 +129,24 @@ pub fn get_glyph_italic(
 
 pub fn get_underline_thickness(_font_id: i16, _size: i16) -> i16 {
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_glyph;
+
+    #[test]
+    fn built_in_system_font_renders_menu_symbols() {
+        for (symbol, name) in [('\u{2318}', "Command"), ('\u{2713}', "checkmark")] {
+            let (glyph, data) = get_glyph(0, 12, symbol)
+                .unwrap_or_else(|| panic!("{name} symbol should resolve to a bitmap glyph"));
+            let glyph_len = usize::from(glyph.width) * usize::from(glyph.height);
+            assert!(
+                data[glyph.data_offset..glyph.data_offset + glyph_len]
+                    .iter()
+                    .any(|pixel| *pixel != 0),
+                "{name} symbol should contain visible pixels"
+            );
+        }
+    }
 }

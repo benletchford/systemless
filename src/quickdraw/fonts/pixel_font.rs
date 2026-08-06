@@ -30,6 +30,7 @@ pub mod geneva18;
 pub mod geneva24;
 pub mod geneva9;
 pub mod london18;
+pub mod menu_symbols;
 pub mod monaco10;
 pub mod monaco12;
 pub mod monaco9;

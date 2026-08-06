@@ -9436,6 +9436,13 @@ mod tests {
             .expect(
                 "classic command-key glyph should have a pixel outside the provider command marker",
             );
+        let command_left = rect.3 - 25;
+        let command_symbol_pixel = (row_top..row_bottom)
+            .flat_map(|y| (command_left..(command_left + 7)).map(move |x| (x, y)))
+            .find(|(x, y)| {
+                screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, *x, *y)
+            })
+            .expect("classic command-key equivalent should draw the Command symbol itself");
 
         assert!(
             screen_pixel_is_set(
@@ -9456,6 +9463,16 @@ mod tests {
                 command_pixel.1
             ),
             "systemless-default row chrome should preserve the full command-key equivalent"
+        );
+        assert!(
+            screen_pixel_is_set(
+                &themed_bus,
+                themed_base,
+                themed_row_bytes,
+                command_symbol_pixel.0,
+                command_symbol_pixel.1
+            ),
+            "systemless-default row chrome should preserve the Command symbol itself"
         );
 
         clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
@@ -9491,6 +9508,16 @@ mod tests {
                 command_pixel.1
             ),
             "highlighted systemless-default row chrome should preserve the full command-key equivalent"
+        );
+        assert!(
+            screen_pixel_is_set(
+                &themed_bus,
+                themed_base,
+                themed_row_bytes,
+                command_symbol_pixel.0,
+                command_symbol_pixel.1
+            ),
+            "highlighted systemless-default row chrome should preserve the Command symbol itself"
         );
     }
 
