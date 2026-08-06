@@ -6715,23 +6715,27 @@ impl super::TrapDispatcher {
         // tracking, so gating this on modal-entry lost that drawing.
         // Inside Macintosh Volume I, I-405 (userItem contents are
         // application-owned and must be preserved across dialog redraws).
-        let modal_tracking_matches = self
+        let modal_tracking = self
             .dialog_tracking
             .as_ref()
-            .is_some_and(|tracking| tracking.dialog_ptr == port);
+            .filter(|tracking| tracking.dialog_ptr == port)
+            .map(|tracking| (tracking.bounds, tracking.last_filter_event.is_some()));
         self.refresh_visible_dialog_snapshot_for_port(bus, port);
         // ModalDialog's re-fire restores `rendered_pixels` over the dialog on
         // every call, so when the drawing target is the active modal dialog,
         // fold the fresh content into that snapshot too or the next re-fire
         // immediately erases it.
-        if modal_tracking_matches {
-            let bounds = self.dialog_tracking.as_ref().map(|t| t.bounds);
-            if let Some(bounds) = bounds {
-                let rendered = self.save_dialog_pixels(bus, bounds);
-                if let Some(tracking) = self.dialog_tracking.as_mut() {
-                    tracking.rendered_pixels = rendered;
-                    tracking.rendered_pixels_final = true;
-                }
+        if let Some((bounds, filter_capture_pending)) = modal_tracking {
+            let rendered = self.save_dialog_pixels(bus, bounds);
+            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                tracking.rendered_pixels = rendered;
+                // A filter can perform several QuickDraw operations while it
+                // handles one event. A bulk operation such as drawing text is
+                // not necessarily its final output, so leave the snapshot
+                // stale until ModalDialog resumes and captures the completed
+                // callback. Macintosh Toolbox Essentials (1992), pp. 6-135,
+                // 6-142.
+                tracking.rendered_pixels_final = !filter_capture_pending;
             }
         }
     }
@@ -25068,6 +25072,105 @@ mod tests {
             0x99,
             "game-managed dialogs should create snapshots from app-owned bulk drawing"
         );
+    }
+
+    #[test]
+    fn bulk_draw_during_dialog_filter_defers_modal_snapshot_finalization() {
+        // MTE 1992 pp. 6-135 and 6-142: a modal filter may update a
+        // dialog with application-owned drawing before it returns. Capturing
+        // an intermediate text operation must not make later QuickDraw output
+        // in the same callback disappear from ModalDialog's final snapshot.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((64 * 64) as u32);
+        bus.write_bytes(screen_base, &vec![0x00; 64 * 64]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+
+        let dialog_ptr = 0x200000u32;
+        let bounds = (10, 10, 30, 30);
+        let snapshot_width = (bounds.3 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let snapshot_height =
+            (bounds.2 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        disp.front_window = dialog_ptr;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (2, 2, 8, 12),
+                ..Default::default()
+            }],
+        );
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: vec![0x00; snapshot_width * snapshot_height],
+            },
+        );
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds,
+            title: String::new(),
+            proc_id: 2,
+            items: disp.dialog_items[&dialog_ptr].clone(),
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Vec::new(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: vec![0x00; snapshot_width * snapshot_height],
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::new(),
+            draw_procs_done: true,
+            rendered_pixels_final: false,
+            filter_proc: 0,
+            game_managed: true,
+            last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+                what: 6,
+                message: dialog_ptr,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            }),
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        let bulk_probe = screen_base + 15 * 64 + 15;
+        bus.write_byte(bulk_probe, 0x44);
+        disp.refresh_visible_dialog_snapshot_after_bulk_port_draw(&bus, dialog_ptr);
+        assert!(
+            !disp.dialog_tracking.as_ref().unwrap().rendered_pixels_final,
+            "an intermediate bulk draw must not finalize an active filter callback"
+        );
+
+        let later_probe = screen_base + 16 * 64 + 16;
+        bus.write_byte(later_probe, 0x77);
+        disp.refresh_visible_dialog_snapshot_region_for_port(&bus, dialog_ptr, (16, 16, 17, 17));
+        disp.dialog_tracking.as_mut().unwrap().last_filter_event = None;
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert!(tracking.rendered_pixels_final);
+        let bulk_index = (15 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
+            * snapshot_width
+            + (15 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
+        let later_index = (16 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
+            * snapshot_width
+            + (16 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
+        assert_eq!(tracking.rendered_pixels[bulk_index], 0x44);
+        assert_eq!(tracking.rendered_pixels[later_index], 0x77);
     }
 
     #[test]
