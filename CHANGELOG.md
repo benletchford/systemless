@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.6](https://github.com/benletchford/systemless/compare/v0.12.5...v0.12.6) (2026-08-06)
+
+
+### Bug Fixes
+
+* render menu command symbols with built-in fonts ([c07ccae](https://github.com/benletchford/systemless/commit/c07ccae59d2cd05f60852ee2e0d249be7ee1898a))
+
 ## [0.12.5](https://github.com/benletchford/systemless/compare/v0.12.4...v0.12.5) (2026-08-06)
 
 
