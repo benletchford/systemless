@@ -1284,14 +1284,35 @@ impl super::TrapDispatcher {
         let valid_front_window = window_ptr != 0
             && window_ptr == self.front_window
             && self.window_visible(bus, window_ptr);
-        let plain_game_window = valid_front_window && self.window_proc_id(window_ptr) == 2;
-        if plain_game_window {
-            if self
-                .fill_kiosk_stage_around_rect(bus, self.window_global_port_rect(bus, window_ptr))
-            {
+        if valid_front_window {
+            let front_proc_id = self.window_proc_id(window_ptr);
+            let front_rect = self.window_global_port_rect(bus, window_ptr);
+            if front_proc_id == 2 && self.fill_kiosk_stage_around_rect(bus, front_rect) {
                 return;
             }
-        } else if valid_front_window {
+
+            if !Self::window_is_document_proc(front_proc_id) {
+                if let (Some(rect), Some(front_structure)) = (
+                    self.last_screen_copybits_rect,
+                    self.window_structure_rect(bus, window_ptr),
+                ) {
+                    let destination =
+                        (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right);
+                    // The structure region includes the frame and content. Checking only the
+                    // content port could let the kiosk fill overwrite a dialog border or shadow.
+                    // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-12
+                    let contains_front = destination.0 <= front_structure.0
+                        && destination.1 <= front_structure.1
+                        && destination.2 >= front_structure.2
+                        && destination.3 >= front_structure.3;
+                    if contains_front
+                        && self.kiosk_stage_margins_are_uniform(bus, destination)
+                        && self.fill_kiosk_stage_around_rect(bus, destination)
+                    {
+                        return;
+                    }
+                }
+            }
             return;
         }
 
