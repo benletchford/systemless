@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.7](https://github.com/benletchford/systemless/compare/v0.12.6...v0.12.7) (2026-08-06)
+
+
+### Bug Fixes
+
+* clear stale list selections after blank clicks ([ee99175](https://github.com/benletchford/systemless/commit/ee99175b1e1da6372f75c1f4a56c27dfffc5233d))
+
 ## [0.12.6](https://github.com/benletchford/systemless/compare/v0.12.5...v0.12.6) (2026-08-06)
 
 
