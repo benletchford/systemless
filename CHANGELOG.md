@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.5](https://github.com/benletchford/systemless/compare/v0.12.4...v0.12.5) (2026-08-06)
+
+
+### Bug Fixes
+
+* defer modal dialog snapshots until filter callbacks finish ([6e61aa3](https://github.com/benletchford/systemless/commit/6e61aa3fbb6ae80f6696f98333fd4d109232646d))
+
 ## [0.12.4](https://github.com/benletchford/systemless/compare/v0.12.3...v0.12.4) (2026-08-06)
 
 
