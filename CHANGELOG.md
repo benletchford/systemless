@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/benletchford/systemless/compare/v0.12.3...v0.12.4) (2026-08-06)
+
+
+### Bug Fixes
+
+* preserve painted margins around centered blits ([09fccda](https://github.com/benletchford/systemless/commit/09fccdafc376254acf29cf19acab7eb4db88f889))
+
 ## [0.12.3](https://github.com/benletchford/systemless/compare/v0.12.2...v0.12.3) (2026-08-06)
 
 
