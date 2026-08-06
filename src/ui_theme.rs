@@ -1978,27 +1978,9 @@ fn draw_systemless_menu_item_chrome(
         );
     }
 
-    if state.checked {
-        ctx.frame_rect(
-            ThemeRect {
-                top: state.rect.top + 3,
-                left: state.rect.left + 5,
-                bottom: state.rect.bottom - 3,
-                right: state.rect.left + 13,
-            },
-            palette.selection,
-        );
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.bottom - 7,
-                left: state.rect.left + 7,
-                bottom: state.rect.bottom - 5,
-                right: state.rect.left + 11,
-            },
-            palette.selection,
-        );
-    }
-
+    // Row chrome must not replace the application's mark or Command-key
+    // equivalent. The Menu Manager draws those semantic characteristics
+    // afterward. Macintosh Toolbox Essentials (1992), pp. 3-12 and 3-16.
     if state.has_icon {
         ctx.fill_rect(
             ThemeRect {
@@ -2015,18 +1997,6 @@ fn draw_systemless_menu_item_chrome(
                 left: state.rect.left + 12,
                 bottom: state.rect.bottom - 7,
                 right: state.rect.left + 19,
-            },
-            palette.selection,
-        );
-    }
-
-    if state.has_command_key {
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.top + 4,
-                left: state.rect.right - 15,
-                bottom: state.rect.bottom - 4,
-                right: state.rect.right - 13,
             },
             palette.selection,
         );
@@ -2879,7 +2849,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_items_preview_routes_semantic_states_through_theme_provider() {
+    fn menu_items_preview_routes_row_states_through_theme_provider() {
         let classic = render_menu_items_preview(UiThemeId::ClassicSystem7);
         let themed = render_menu_items_preview(UiThemeId::SystemlessDefault);
 

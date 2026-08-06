@@ -4677,7 +4677,7 @@ impl super::TrapDispatcher {
             let has_command_key = Self::menu_item_has_command_key(item);
             // MTE 1992, 3-12: standard menu items can carry an icon,
             // mark, command-key equivalent, text style, and dimmed state.
-            let provider_item_chrome = self.draw_theme_menu_item_chrome(
+            let provider_row_chrome = self.draw_theme_menu_item_chrome(
                 bus,
                 item_top,
                 left + 1,
@@ -4719,7 +4719,7 @@ impl super::TrapDispatcher {
             };
 
             if is_separator {
-                if provider_item_chrome {
+                if provider_row_chrome {
                     item_top = item_bottom;
                     continue;
                 }
@@ -4768,7 +4768,7 @@ impl super::TrapDispatcher {
             // Draw mark character if present (0x12 = checkmark, others rendered as-is).
             // Inside Macintosh Volume I, I-358
             let mut text_left = left + 15;
-            if item.mark != 0 && !is_hierarchical && !provider_item_chrome {
+            if item.mark != 0 && !is_hierarchical {
                 // Map Mac Roman mark byte to a renderable string.
                 // Mac character 0x12 (18) is the standard checkmark in Chicago.
                 let mark_str: std::borrow::Cow<str> = if item.mark == 0x12 {
@@ -4926,12 +4926,11 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // MTE 1992 pp. 3-134 to 3-138 and HIG 1992 pp. 64 to
-            // 74 define marks and command-key indicators as menu item
-            // characteristics. A non-classic theme may replace those
-            // indicators, but app item text and explicit app icons still
-            // draw through the compatibility content path.
-            if has_command_key && !provider_item_chrome {
+            // MTE 1992 pp. 3-12 and 3-16 define marks and Command-key
+            // equivalents as application-owned menu item characteristics.
+            // Theme providers draw row chrome without replacing those
+            // semantic indicators.
+            if has_command_key {
                 let cmd_str = format!("\u{2318}{}", item.key_equiv as char);
                 // The standard MDEF places single-character command-key
                 // equivalents in a fixed right-side column instead of
@@ -4979,7 +4978,7 @@ impl super::TrapDispatcher {
             // The pattern is `$AA $55 …` aligned to the port origin, so its
             // bits are on where x + y is even and the glyph keeps only those
             // pixels. IM:V 1986 p. V-142; Imaging With QuickDraw 1994 p. 3-9.
-            if dim_with_pattern && !provider_item_chrome {
+            if dim_with_pattern && !provider_row_chrome {
                 for y in item_top..item_bottom {
                     for x in (left + 1)..(right - 1) {
                         if (x + y) % 2 != 0 {
@@ -9349,7 +9348,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_menu_dropdown_systemless_theme_owns_mark_and_command_indicators() {
+    fn draw_menu_dropdown_systemless_theme_preserves_mark_and_command_indicators() {
         let rect = (20, 20, 56, 140);
         let row_top = rect.0 + 1;
         let row_bottom = row_top + 16;
@@ -9373,7 +9372,7 @@ mod tests {
             &mut classic_bus,
             classic_menu,
             0x302B40,
-            "Open/O",
+            "Open/1",
         );
         classic.menus[0].items[0].mark = b'W';
         classic.draw_menu_dropdown(&mut classic_bus, 0, rect);
@@ -9398,7 +9397,7 @@ mod tests {
             &mut themed_bus,
             themed_menu,
             0x302B40,
-            "Open/O",
+            "Open/1",
         );
         themed.menus[0].items[0].mark = b'W';
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
@@ -9439,44 +9438,59 @@ mod tests {
             );
 
         assert!(
-            !screen_pixel_is_set(
+            screen_pixel_is_set(
                 &themed_bus,
                 themed_base,
                 themed_row_bytes,
                 mark_pixel.0,
                 mark_pixel.1
             ),
-            "systemless-default should not draw the classic mark glyph once the provider owns marks"
+            "systemless-default row chrome should preserve the menu item's mark glyph"
         );
         assert!(
-            !screen_pixel_is_set(
+            screen_pixel_is_set(
                 &themed_bus,
                 themed_base,
                 themed_row_bytes,
                 command_pixel.0,
                 command_pixel.1
             ),
-            "systemless-default should not draw the classic command-key glyph once the provider owns command indicators"
+            "systemless-default row chrome should preserve the full command-key equivalent"
+        );
+
+        clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
+        themed.menu_tracking = Some(MenuTrackingState {
+            active_menu: 0,
+            highlighted_item: 1,
+            saved_pixels: Vec::new(),
+            dropdown_rect: rect,
+            stack_ptr: TEST_SP,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_result: 0,
+            submenu: None,
+        });
+        themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
+
+        assert!(
+            screen_pixel_is_set(
+                &themed_bus,
+                themed_base,
+                themed_row_bytes,
+                mark_pixel.0,
+                mark_pixel.1
+            ),
+            "highlighted systemless-default row chrome should preserve the menu item's mark glyph"
         );
         assert!(
             screen_pixel_is_set(
                 &themed_bus,
                 themed_base,
                 themed_row_bytes,
-                rect.1 + 8,
-                row_top + 3
+                command_pixel.0,
+                command_pixel.1
             ),
-            "systemless-default provider should still draw its mark indicator"
-        );
-        assert!(
-            screen_pixel_is_set(
-                &themed_bus,
-                themed_base,
-                themed_row_bytes,
-                rect.3 - 16,
-                row_top + 5
-            ),
-            "systemless-default provider should still draw its command-key indicator"
+            "highlighted systemless-default row chrome should preserve the full command-key equivalent"
         );
     }
 
