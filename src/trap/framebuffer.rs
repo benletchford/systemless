@@ -1079,6 +1079,33 @@ impl super::TrapDispatcher {
             return false;
         }
 
+        // Reject common composed-screen cases before walking every exposed
+        // pixel. A disagreement between any two samples proves the margins
+        // are nonuniform; agreement is not treated as proof, so the complete
+        // scan below remains the authority before any pixels are replaced.
+        let middle_y = top + (bottom - top) / 2;
+        let middle_x = left + (right - left) / 2;
+        let samples = [
+            (0, 0),
+            (0, screen_width - 1),
+            (screen_height - 1, 0),
+            (screen_height - 1, screen_width - 1),
+            (top - 1, middle_x),
+            (bottom, middle_x),
+            (middle_y, left - 1),
+            (middle_y, right),
+        ];
+        let first_sample = bus.read_byte(screen_base);
+        if samples.iter().any(|&(y, x)| {
+            y >= 0
+                && x >= 0
+                && y < screen_height
+                && x < screen_width
+                && bus.read_byte(screen_base + y as u32 * row_bytes + x as u32) != first_sample
+        }) {
+            return false;
+        }
+
         let mut margin_index = None;
         let mut pixels = vec![0; screen_width as usize];
         for y in 0..screen_height {
