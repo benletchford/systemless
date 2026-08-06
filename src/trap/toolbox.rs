@@ -10663,7 +10663,7 @@ impl super::TrapDispatcher {
                     // Inside Macintosh Volume IV, IV-273
                     0x18 => {
                         let list_handle = bus.read_long(sp + 2);
-                        let _modifiers = bus.read_word(sp + 6);
+                        let modifiers = bus.read_word(sp + 6);
                         let point = Self::read_stack_point(bus, sp + 8);
                         let result_addr = sp + 12;
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
@@ -10672,36 +10672,48 @@ impl super::TrapDispatcher {
                         let mut draw_cells = Vec::new();
 
                         if let Some(state) = self.list_states.get_mut(&list_handle) {
-                            if let Some(cell) = Self::list_cell_from_point(state, point) {
-                                let previous_selected = state.selected.clone();
-                                let single_select = list_ptr != 0
-                                    && (bus.read_byte(list_ptr + Self::LIST_SEL_FLAGS_OFFSET)
-                                        & 0x80)
-                                        != 0;
-                                if single_select {
-                                    state.selected.clear();
-                                }
+                            let previous_selected = state.selected.clone();
+                            let point_in_view = point.0 >= state.view_rect.0
+                                && point.0 < state.view_rect.2
+                                && point.1 >= state.view_rect.1
+                                && point.1 < state.view_rect.3;
+                            let cell = Self::list_cell_from_point(state, point);
+                            let ordinary_click = modifiers & 0x0300 == 0;
+                            let single_select = list_ptr != 0
+                                && (bus.read_byte(list_ptr + Self::LIST_SEL_FLAGS_OFFSET) & 0x80)
+                                    != 0;
+
+                            // An ordinary click deselects every current cell before
+                            // selecting the receiving cell. A blank part of rView has
+                            // no receiving cell, so the selection remains empty.
+                            // Inside Macintosh Volume IV (1986), p. IV-266.
+                            if point_in_view
+                                && (ordinary_click || (cell.is_some() && single_select))
+                            {
+                                state.selected.clear();
+                            }
+
+                            if let Some(cell) = cell {
                                 state.selected.insert(cell);
                                 double_click = state.last_click == cell
                                     && self.tick_count.saturating_sub(state.last_click_tick)
                                         <= Self::LIST_DOUBLE_CLICK_TICKS;
                                 state.last_click = cell;
                                 state.last_click_tick = self.tick_count;
-                                if state.draw_enabled {
-                                    draw_cells = previous_selected
-                                        .symmetric_difference(&state.selected)
-                                        .copied()
-                                        .collect();
-                                    if !draw_cells.is_empty() {
-                                        draw_state = Some(state.clone());
-                                    }
-                                }
-                                Self::sync_list_state_to_guest(bus, list_handle, state);
                             } else {
                                 state.last_click = Self::list_no_click_cell();
                                 state.last_click_tick = self.tick_count;
-                                Self::sync_list_state_to_guest(bus, list_handle, state);
                             }
+                            if state.draw_enabled {
+                                draw_cells = previous_selected
+                                    .symmetric_difference(&state.selected)
+                                    .copied()
+                                    .collect();
+                                if !draw_cells.is_empty() {
+                                    draw_state = Some(state.clone());
+                                }
+                            }
+                            Self::sync_list_state_to_guest(bus, list_handle, state);
                         }
 
                         bus.write_word(result_addr, if double_click { 0x0100 } else { 0 });
@@ -22922,7 +22934,7 @@ mod tests {
     }
 
     #[test]
-    fn pack0_lclick_miss_clears_lastclick_history() {
+    fn pack0_lclick_blank_view_area_clears_selection_and_lastclick_history() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let view_rect_ptr = 0x355000u32;
@@ -22966,16 +22978,50 @@ mod tests {
         assert!(first.unwrap().is_ok());
         assert_eq!(bus.read_word(sp + 12), 0);
 
+        for modifiers in [0x0100, 0x0200] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0018); // LClick
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, modifiers);
+            bus.write_word(sp + 8, 35); // inside rView, below dataBounds
+            bus.write_word(sp + 10, 5);
+            bus.write_word(sp + 12, 0xBEEF);
+            let modified_miss = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+            assert!(modified_miss.is_some());
+            assert!(modified_miss.unwrap().is_ok());
+            assert_eq!(bus.read_word(sp + 12), 0);
+            assert!(disp
+                .list_states
+                .get(&list_handle)
+                .unwrap()
+                .selected
+                .contains(&(0, 0)));
+        }
+
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 0x0018); // LClick
         bus.write_long(sp + 2, list_handle);
         bus.write_word(sp + 6, 0);
-        bus.write_word(sp + 8, 200); // miss
-        bus.write_word(sp + 10, 200);
+        bus.write_word(sp + 8, 35); // inside rView, below dataBounds
+        bus.write_word(sp + 10, 5);
         bus.write_word(sp + 12, 0xBEEF);
         let miss = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
         assert!(miss.is_some());
         assert!(miss.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 12), 0);
+
+        let query_cell_ptr = 0x355200u32;
+        bus.write_word(query_cell_ptr, 0);
+        bus.write_word(query_cell_ptr + 2, 0);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x003C); // LGetSelect
+        bus.write_long(sp + 2, list_handle);
+        bus.write_long(sp + 6, query_cell_ptr);
+        bus.write_word(sp + 10, 0); // next = FALSE
+        bus.write_word(sp + 12, 0xBEEF);
+        let get_select = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(get_select.is_some());
+        assert!(get_select.unwrap().is_ok());
         assert_eq!(bus.read_word(sp + 12), 0);
 
         cpu.write_reg(Register::A7, sp);
@@ -23452,6 +23498,93 @@ mod tests {
             &disp.list_states.get(&list_handle).unwrap().selected,
             &expected
         );
+    }
+
+    #[test]
+    fn pack0_lclick_blank_view_area_arms_deselect_hilite() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let view_rect_ptr = 0x357500u32;
+        let data_bounds_ptr = 0x357600u32;
+        let window_ptr = 0x210100u32;
+        let return_pc = 0x3344_5566;
+
+        bus.write_word(view_rect_ptr, 0);
+        bus.write_word(view_rect_ptr + 2, 0);
+        bus.write_word(view_rect_ptr + 4, 20);
+        bus.write_word(view_rect_ptr + 6, 80);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 1);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0); // scrollVert = FALSE
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_word(sp + 8, 0x0100); // drawIt = TRUE
+        bus.write_long(sp + 10, window_ptr);
+        bus.write_word(sp + 14, 128);
+        bus.write_word(sp + 16, 10);
+        bus.write_word(sp + 18, 80);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+        let create = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(create.is_some());
+        assert!(create.unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+        let list_ptr = bus.read_long(list_handle);
+
+        let proc_addr = bus.alloc(2);
+        bus.write_word(proc_addr, 0x4E56); // plausible 68k proc entry
+        let proc_handle = bus.alloc(4);
+        bus.write_long(proc_handle, proc_addr);
+        bus.write_long(
+            list_ptr + super::super::TrapDispatcher::LIST_DEF_PROC_OFFSET,
+            proc_handle,
+        );
+        bus.write_byte(
+            list_ptr + super::super::TrapDispatcher::LIST_SEL_FLAGS_OFFSET,
+            0x80,
+        );
+        disp.list_states
+            .get_mut(&list_handle)
+            .unwrap()
+            .selected
+            .insert((0, 0));
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_word(sp, 0x0018); // LClick
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0); // modifiers
+        bus.write_word(sp + 8, 15); // inside rView, below dataBounds
+        bus.write_word(sp + 10, 5);
+        bus.write_word(sp + 12, 0xBEEF);
+        let click = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(click.is_some());
+        assert!(click.unwrap().is_ok());
+
+        let trampoline = disp.list_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_long(sp + 8), return_pc);
+        assert_eq!(bus.read_word(sp + 12), 0);
+        assert_eq!(
+            bus.read_word(trampoline + 6),
+            super::super::TrapDispatcher::LIST_LHILITE_MSG as u16
+        );
+        assert_eq!(bus.read_word(trampoline + 10), 0);
+        assert_eq!(bus.read_long(trampoline + 20), 0);
+        assert_eq!(bus.read_word(trampoline + 54), 0x4E75);
+        assert!(disp
+            .list_states
+            .get(&list_handle)
+            .unwrap()
+            .selected
+            .is_empty());
     }
 
     // Pack1 / List Manager ($A9E8) — LNew selector $0044
