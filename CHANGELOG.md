@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/benletchford/systemless/compare/v0.12.2...v0.12.3) (2026-08-06)
+
+
+### Bug Fixes
+
+* preserve menu marks and command-key equivalents ([e0f133c](https://github.com/benletchford/systemless/commit/e0f133c754b1f22f9335bea64257b8e54edde747))
+
 ## [0.12.2](https://github.com/benletchford/systemless/compare/v0.12.1...v0.12.2) (2026-08-05)
 
 
