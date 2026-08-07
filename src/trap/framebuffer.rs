@@ -4668,6 +4668,22 @@ mod redraw_chrome_tests {
     const CLIP_RGN: u32 = 0x182200;
     const WINDOW_VISIBLE_OFFSET: u32 = 110;
 
+    fn set_window_structure_rect(
+        bus: &mut crate::memory::MacMemoryBus,
+        window_ptr: u32,
+        rect: (i16, i16, i16, i16),
+    ) {
+        let region = bus.alloc(10);
+        bus.write_word(region, 10);
+        bus.write_word(region + 2, rect.0 as u16);
+        bus.write_word(region + 4, rect.1 as u16);
+        bus.write_word(region + 6, rect.2 as u16);
+        bus.write_word(region + 8, rect.3 as u16);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, region);
+        bus.write_long(window_ptr + 114, handle);
+    }
+
     #[test]
     fn indexed_framebuffer_helpers_preserve_adjacent_four_bit_pixels() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
@@ -4742,6 +4758,202 @@ mod redraw_chrome_tests {
         assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 40), 37);
         assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 400), 42);
         assert_eq!(bus.read_byte(screen_base + 599 * row_bytes + 799), 37);
+    }
+
+    #[test]
+    fn kiosk_stage_uses_last_centered_copybits_beneath_small_game_window() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0);
+        TrapDispatcher::fb_fill_rect_index(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            60,
+            80,
+            540,
+            720,
+            255,
+        );
+        TrapDispatcher::fb_fill_rect_index(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            193,
+            240,
+            406,
+            560,
+            42,
+        );
+
+        // A small transient game window is frontmost over the last centered
+        // screen CopyBits surface that establishes the kiosk aperture.
+        bus.write_word(PORT_PTR + 8, (-193i16) as u16);
+        bus.write_word(PORT_PTR + 10, (-240i16) as u16);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 213);
+        bus.write_word(PORT_PTR + 22, 320);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        set_window_structure_rect(&mut bus, PORT_PTR, (185, 232, 414, 568));
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_proc_ids.insert(PORT_PTR, 1);
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: 60,
+            dst_left: 80,
+            dst_bottom: 540,
+            dst_right: 720,
+        });
+        disp.menu_bar_hidden = true;
+        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[255] = [0, 0, 0];
+
+        disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
+
+        assert_eq!(bus.read_byte(screen_base), 255);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 100), 255);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 400), 42);
+        assert_eq!(bus.read_byte(screen_base + 599 * row_bytes + 799), 255);
+
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0);
+        TrapDispatcher::fb_fill_rect_index(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            60,
+            80,
+            540,
+            720,
+            255,
+        );
+        bus.write_byte(screen_base + 1, 7);
+        let before = bus.read_bytes(screen_base, (row_bytes * screen_h as u32) as usize);
+
+        disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
+
+        assert_eq!(
+            bus.read_bytes(screen_base, before.len()),
+            before,
+            "nonuniform application-painted margins must remain unchanged"
+        );
+    }
+
+    #[test]
+    fn kiosk_stage_preserves_transient_frames_crossing_the_saved_aperture() {
+        for (proc_id, content, structure) in [
+            (1i16, (60i16, 80i16, 213i16, 320i16), (52, 72, 221, 328)),
+            (3i16, (400i16, 600i16, 540i16, 720i16), (399, 599, 543, 723)),
+        ] {
+            let (mut disp, _cpu, mut bus) = setup_with_port();
+            let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = disp.screen_mode;
+            bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0);
+            TrapDispatcher::fb_fill_rect_index(
+                &mut bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_w as i16,
+                screen_h as i16,
+                60,
+                80,
+                540,
+                720,
+                255,
+            );
+            bus.write_word(PORT_PTR + 8, content.0.wrapping_neg() as u16);
+            bus.write_word(PORT_PTR + 10, content.1.wrapping_neg() as u16);
+            bus.write_word(PORT_PTR + 16, 0);
+            bus.write_word(PORT_PTR + 18, 0);
+            bus.write_word(PORT_PTR + 20, content.2.wrapping_sub(content.0) as u16);
+            bus.write_word(PORT_PTR + 22, content.3.wrapping_sub(content.1) as u16);
+            bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+            set_window_structure_rect(&mut bus, PORT_PTR, structure);
+            disp.front_window = PORT_PTR;
+            disp.window_list = vec![PORT_PTR];
+            disp.window_proc_ids.insert(PORT_PTR, proc_id);
+            disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+                src_top: 0,
+                src_left: 0,
+                src_bottom: 480,
+                src_right: 640,
+                dst_top: 60,
+                dst_left: 80,
+                dst_bottom: 540,
+                dst_right: 720,
+            });
+            disp.menu_bar_hidden = true;
+            disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+            disp.device_clut[255] = [0, 0, 0];
+
+            disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
+
+            assert_eq!(
+                bus.read_byte(screen_base),
+                0,
+                "proc {proc_id} structure crossing the aperture must suppress the stage fill"
+            );
+        }
+    }
+
+    #[test]
+    fn kiosk_stage_skips_transient_windows_without_structure_geometry() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0);
+        TrapDispatcher::fb_fill_rect_index(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            60,
+            80,
+            540,
+            720,
+            255,
+        );
+        bus.write_word(PORT_PTR + 8, (-193i16) as u16);
+        bus.write_word(PORT_PTR + 10, (-240i16) as u16);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 213);
+        bus.write_word(PORT_PTR + 22, 320);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_proc_ids.insert(PORT_PTR, 1);
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: 60,
+            dst_left: 80,
+            dst_bottom: 540,
+            dst_right: 720,
+        });
+        disp.menu_bar_hidden = true;
+        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[255] = [0, 0, 0];
+
+        disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
+
+        assert_eq!(bus.read_byte(screen_base), 0);
     }
 
     #[test]
