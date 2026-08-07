@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.8](https://github.com/benletchford/systemless/compare/v0.12.7...v0.12.8) (2026-08-07)
+
+
+### Bug Fixes
+
+* preserve black kiosk margins around transient windows ([10b616c](https://github.com/benletchford/systemless/commit/10b616c0e16385aaeb83c3b1aaf428e58029abf9))
+
 ## [0.12.7](https://github.com/benletchford/systemless/compare/v0.12.6...v0.12.7) (2026-08-06)
 
 
