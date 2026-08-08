@@ -2361,13 +2361,21 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        let mut windows = self.window_list.clone();
-        if windows.is_empty() && self.front_window != 0 {
-            windows.push(self.front_window);
-        }
+        // Iterate the window list in place. This runs on the event-polling
+        // path, which a Mac event loop hits constantly, so cloning the list
+        // just to walk it dominated allocation in whole-application
+        // profiles. The front window is a fallback only when the list is
+        // empty, which `chain` expresses without a temporary.
+        let fallback = if self.window_list.is_empty() && self.front_window != 0 {
+            Some(self.front_window)
+        } else {
+            None
+        };
 
-        windows
-            .into_iter()
+        self.window_list
+            .iter()
+            .copied()
+            .chain(fallback)
             .find(|&window_ptr| {
                 self.window_visible(bus, window_ptr)
                     && self.window_update_rect(bus, window_ptr).is_some()
