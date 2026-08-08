@@ -1875,6 +1875,12 @@ impl FixtureRunner {
             .fill_bytes(scrn_base, row_bytes * scrn_height as u32, 0xFF);
     }
 
+    /// Loading an application is a once-per-launch operation, but its caller
+    /// runs on the per-batch path. Left to itself the optimiser inlined this
+    /// whole body there, giving the hot function a 34 KB stack frame; keep it
+    /// out of line so the common case stays a cheap `Option` check.
+    #[cold]
+    #[inline(never)]
     fn switch_to_launched_application(
         &mut self,
         app_path: &str,
