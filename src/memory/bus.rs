@@ -452,6 +452,13 @@ pub struct MacMemoryBus {
     synthetic_ptr: u32,
     /// Guest writes cannot modify synthesized ROM-like instruction stubs.
     readonly_code_ranges: Vec<(u32, u32)>,
+    /// Half-open bounding box over `readonly_code_ranges`, maintained on
+    /// insert. Every guest write consults the protection list, but the
+    /// ranges are synthetic-region trampolines clustered well away from the
+    /// heap, stack and framebuffer that real writes target -- so this lets
+    /// the overwhelmingly common case reject in two comparisons instead of
+    /// scanning the list.
+    readonly_code_span: Option<(u32, u32)>,
     /// Free list: maps aligned_size → stack of recycled addresses
     free_blocks: HashMap<u32, Vec<u32>>,
     /// Tracks the aligned size of each allocation (address → aligned_size)
@@ -836,6 +843,7 @@ impl MacMemoryBus {
             heap_ptr: 0x200000, // Start heap at 2MB
             synthetic_ptr: screen_buffer_start,
             readonly_code_ranges: Vec::new(),
+            readonly_code_span: None,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -915,6 +923,7 @@ impl MacMemoryBus {
             heap_ptr: 0x200000,
             synthetic_ptr: screen_buffer_start,
             readonly_code_ranges: Vec::new(),
+            readonly_code_span: None,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -1076,8 +1085,12 @@ impl MacMemoryBus {
 
     pub(crate) fn protect_readonly_code(&mut self, address: u32, len: u32) {
         if len != 0 {
-            self.readonly_code_ranges
-                .push((address, address.saturating_add(len)));
+            let end = address.saturating_add(len);
+            self.readonly_code_ranges.push((address, end));
+            self.readonly_code_span = Some(match self.readonly_code_span {
+                Some((lo, hi)) => (lo.min(address), hi.max(end)),
+                None => (address, end),
+            });
         }
     }
 
@@ -1088,7 +1101,16 @@ impl MacMemoryBus {
     }
 
     fn readonly_code_overlaps(&self, address: u32, len: u32) -> bool {
+        // Reject outside the bounding box first: this runs on every guest
+        // write, and protected stubs occupy a small clustered region that
+        // ordinary writes never touch.
+        let Some((span_start, span_end)) = self.readonly_code_span else {
+            return false;
+        };
         let end = (address as u64).saturating_add(len as u64);
+        if end <= span_start as u64 || address as u64 >= span_end as u64 {
+            return false;
+        }
         self.readonly_code_ranges.iter().any(|&(start, stop)| {
             (start as u64) < end && (stop as u64) > address as u64
         })
@@ -1389,15 +1411,19 @@ impl MemoryBus for MacMemoryBus {
         maybe_log_mem_write(address, 1, value as u32);
 
         // Optional release-mode FB-write tracer. Cheap when unset (one
-        // atomic load + None branch).
-        maybe_log_fb_write(address, value);
+        // atomic load + None branch). The range is read once and shared
+        // with the disassembly companion below rather than fetched twice.
+        let fb_trace = fb_write_trace_range();
+        if fb_trace.is_some() {
+            maybe_log_fb_write(address, value);
+        }
         // Companion disassembly window: when both FB_WRITE_RANGE and
         // FB_WRITE_DISASM are set, dump the 8 instruction bytes at PC
         // alongside an m68k-disassembled mnemonic for each write that
         // falls in the watched range. Lets release-build pixel-
         // divergence investigations identify the 68k blit loop
         // responsible without a debug build.
-        if let Some((start, end)) = fb_write_trace_range() {
+        if let Some((start, end)) = fb_trace {
             if address >= start && address <= end && fb_write_disasm_enabled() {
                 let pc = CURRENT_PC.with(|p| *p.borrow());
                 if pc != 0 && (pc as u64 + 8) <= self.ram_size as u64 {
@@ -2015,6 +2041,38 @@ mod tests {
             "byte before write_bytes window"
         );
         assert_eq!(bus.read_byte(0x13E8), 0xCC, "byte after write_bytes window");
+    }
+
+    #[test]
+    fn readonly_code_protection_survives_the_bounding_box_fast_path() {
+        // Every guest write consults the protection list through a bounding
+        // box, so verify the fast reject cannot let a protected write
+        // through and cannot block an ordinary one -- including with
+        // several disjoint ranges, where the box spans the gap between
+        // them.
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_byte(0x2000, 0x11);
+        bus.write_byte(0x4000, 0x22);
+        bus.write_byte(0x3000, 0x33); // inside the future span, unprotected
+        bus.protect_readonly_code(0x2000, 2);
+        bus.protect_readonly_code(0x4000, 2);
+
+        // Protected: writes are dropped at every width.
+        bus.write_byte(0x2000, 0xFF);
+        bus.write_word(0x4000, 0xFFFF);
+        bus.write_long(0x2000, 0xFFFF_FFFF);
+        assert_eq!(bus.read_byte(0x2000), 0x11, "protected byte is unchanged");
+        assert_eq!(bus.read_byte(0x4000), 0x22, "protected byte is unchanged");
+
+        // Inside the bounding box but between the ranges: still writable.
+        bus.write_byte(0x3000, 0x44);
+        assert_eq!(bus.read_byte(0x3000), 0x44, "the gap stays writable");
+
+        // Outside the bounding box entirely: the fast-reject path.
+        bus.write_byte(0x0100, 0x55);
+        bus.write_byte(0x8000, 0x66);
+        assert_eq!(bus.read_byte(0x0100), 0x55, "below the span is writable");
+        assert_eq!(bus.read_byte(0x8000), 0x66, "above the span is writable");
     }
 
     #[test]
