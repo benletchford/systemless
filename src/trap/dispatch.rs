@@ -984,6 +984,51 @@ pub(crate) struct InverseTableCacheEntry {
 }
 
 /// Trap dispatcher with resource fork access and emulator state.
+
+/// Native trap dispatch table.
+///
+/// Consulted on every A-line trap dispatch, but it holds only the handful of
+/// traps a program has installed native handlers for. At that size a hash map
+/// costs more than the lookup it protects: the default hasher dominated, and
+/// even with a cheap hasher the SwissTable group probe remained visible in
+/// profiles of `dispatch`. A linear scan over a couple of `u16` keys needs
+/// neither.
+///
+/// The API mirrors the `HashMap` methods previously used so call sites are
+/// unchanged.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct TrapWordMap {
+    entries: Vec<(u16, u32)>,
+}
+
+impl TrapWordMap {
+    pub(crate) fn get(&self, trap: &u16) -> Option<&u32> {
+        self.entries
+            .iter()
+            .find(|(word, _)| word == trap)
+            .map(|(_, handler)| handler)
+    }
+
+    pub(crate) fn insert(&mut self, trap: u16, handler: u32) -> Option<u32> {
+        match self.entries.iter_mut().find(|(word, _)| *word == trap) {
+            Some(slot) => Some(std::mem::replace(&mut slot.1, handler)),
+            None => {
+                self.entries.push((trap, handler));
+                None
+            }
+        }
+    }
+
+    pub(crate) fn remove(&mut self, trap: &u16) -> Option<u32> {
+        let index = self.entries.iter().position(|(word, _)| word == trap)?;
+        Some(self.entries.swap_remove(index).1)
+    }
+
+    pub(crate) fn contains_key(&self, trap: &u16) -> bool {
+        self.entries.iter().any(|(word, _)| word == trap)
+    }
+}
+
 pub struct TrapDispatcher {
     /// Synthetic keyboard and mouse entries exposed by the ADB Manager.
     pub(crate) adb: crate::adb::AdbManager,
@@ -1772,7 +1817,7 @@ pub struct TrapDispatcher {
     /// and a native handler exists, the dispatcher simulates a JSR to the handler
     /// instead of running HLE code. This allows CRT-installed handlers (LoadSeg,
     /// UnloadSeg, ExitToShell) to run natively with proper code relocation.
-    pub(crate) native_trap_table: HashMap<u16, u32>,
+    pub(crate) native_trap_table: TrapWordMap,
     /// Most recent original call for each active native trap handler. Entries
     /// are replaced by a newer call and consumed when a handler invokes its
     /// saved old trap address.
@@ -3052,7 +3097,7 @@ impl TrapDispatcher {
             fill_black_override: None,
             recording_picture: None,
             recording_picture_bitmap: None,
-            native_trap_table: HashMap::new(),
+            native_trap_table: TrapWordMap::default(),
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
