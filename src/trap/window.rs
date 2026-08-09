@@ -4810,7 +4810,11 @@ mod tests {
         );
         let region_ptr = bus.alloc(10);
         bus.write_word(region_ptr, 10);
-        let rect = if dirty { (0i16, 0i16, 10i16, 10i16) } else { (0, 0, 0, 0) };
+        let rect = if dirty {
+            (0i16, 0i16, 10i16, 10i16)
+        } else {
+            (0, 0, 0, 0)
+        };
         bus.write_word(region_ptr + 2, rect.0 as u16);
         bus.write_word(region_ptr + 4, rect.1 as u16);
         bus.write_word(region_ptr + 6, rect.2 as u16);
@@ -4834,21 +4838,27 @@ mod tests {
         let back = make_window(&mut bus, true, true);
         disp.window_list = vec![front, middle, back];
         disp.front_window = front;
-        let event = disp.pending_update_event(&bus, 0xFFFF).expect("update event");
+        let event = disp
+            .pending_update_event(&bus, 0xFFFF)
+            .expect("update event");
         assert_eq!(event.what, 6, "updateEvt");
         assert_eq!(event.message, middle, "first dirty window front-to-back");
 
         // An invisible dirty window ahead of a visible dirty one is skipped.
         let hidden = make_window(&mut bus, false, true);
         disp.window_list = vec![hidden, back];
-        let event = disp.pending_update_event(&bus, 0xFFFF).expect("update event");
+        let event = disp
+            .pending_update_event(&bus, 0xFFFF)
+            .expect("update event");
         assert_eq!(event.message, back, "visibility still gates selection");
 
         // Empty list: the front window serves as the fallback...
         let lone = make_window(&mut bus, true, true);
         disp.window_list = Vec::new();
         disp.front_window = lone;
-        let event = disp.pending_update_event(&bus, 0xFFFF).expect("fallback event");
+        let event = disp
+            .pending_update_event(&bus, 0xFFFF)
+            .expect("fallback event");
         assert_eq!(event.message, lone, "front-window fallback on empty list");
 
         // ...and no fallback exists when it is unset, or when the update
@@ -4856,7 +4866,10 @@ mod tests {
         disp.front_window = 0;
         assert!(disp.pending_update_event(&bus, 0xFFFF).is_none());
         disp.front_window = lone;
-        assert!(disp.pending_update_event(&bus, 0xFFBF).is_none(), "mask gates");
+        assert!(
+            disp.pending_update_event(&bus, 0xFFBF).is_none(),
+            "mask gates"
+        );
     }
 
     fn install_wind_resource(
