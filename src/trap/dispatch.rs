@@ -983,8 +983,6 @@ pub(crate) struct InverseTableCacheEntry {
     pub bytes: Vec<u8>,
 }
 
-/// Trap dispatcher with resource fork access and emulator state.
-
 /// Native trap dispatch table.
 ///
 /// Consulted on every A-line trap dispatch. The default `HashMap` paid
@@ -1063,12 +1061,9 @@ impl TrapWordMap {
             }
         }
     }
-
-    pub(crate) fn contains_key(&self, trap: &u16) -> bool {
-        self.get(trap).is_some()
-    }
 }
 
+/// Trap dispatcher with resource fork access and emulator state.
 pub struct TrapDispatcher {
     /// Synthetic keyboard and mouse entries exposed by the ADB Manager.
     pub(crate) adb: crate::adb::AdbManager,
