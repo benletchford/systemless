@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.10](https://github.com/benletchford/systemless/compare/v0.12.9...v0.12.10) (2026-08-09)
+
+
+### Performance Improvements
+
+* keep the application-launch path out of the hot loop ([cc354b7](https://github.com/benletchford/systemless/commit/cc354b7d196635e5cbd31227f94e21ad767925a1))
+
 ## [0.12.9](https://github.com/benletchford/systemless/compare/v0.12.8...v0.12.9) (2026-08-09)
 
 
