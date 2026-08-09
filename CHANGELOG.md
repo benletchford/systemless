@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.9](https://github.com/benletchford/systemless/compare/v0.12.8...v0.12.9) (2026-08-09)
+
+
+### Performance Improvements
+
+* bound the read-only code check on the guest write path ([e8712d8](https://github.com/benletchford/systemless/commit/e8712d81e04c7ca041c76bcd9f8f48ed2fdc293c))
+
 ## [0.12.8](https://github.com/benletchford/systemless/compare/v0.12.7...v0.12.8) (2026-08-07)
 
 
