@@ -6207,6 +6207,32 @@ impl Default for TrapDispatcher {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn trap_word_map_preserves_the_hashmap_contract() {
+        let mut map = super::TrapWordMap::default();
+        // First insert returns None; lookup sees it.
+        assert_eq!(map.insert(0xA9F0, 0x1000), None);
+        assert_eq!(map.get(&0xA9F0), Some(&0x1000));
+        assert_eq!(map.get(&0xA9F1), None, "absent key misses");
+        // Replacement returns the previous handler and keeps one entry.
+        assert_eq!(map.insert(0xA9F0, 0x2000), Some(0x1000));
+        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
+        // A second key coexists.
+        assert_eq!(map.insert(0xA146, 0x3000), None);
+        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
+        assert_eq!(map.get(&0xA146), Some(&0x3000));
+        // Removal returns the value exactly once and clears lookup.
+        assert_eq!(map.remove(&0xA9F0), Some(0x2000));
+        assert_eq!(map.remove(&0xA9F0), None, "second remove is a miss");
+        assert_eq!(map.get(&0xA9F0), None);
+        // The untouched key survives its neighbor's removal.
+        assert_eq!(map.get(&0xA146), Some(&0x3000));
+        // Replace-then-remove on the survivor behaves like HashMap too.
+        assert_eq!(map.insert(0xA146, 0x4000), Some(0x3000));
+        assert_eq!(map.remove(&0xA146), Some(0x4000));
+        assert_eq!(map.get(&0xA146), None);
+    }
+
     use super::*;
     use crate::cpu::{CpuOps, Register};
     use crate::trap::menu::MenuTrackingState;
