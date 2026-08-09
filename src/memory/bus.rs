@@ -1111,9 +1111,9 @@ impl MacMemoryBus {
         if end <= span_start as u64 || address as u64 >= span_end as u64 {
             return false;
         }
-        self.readonly_code_ranges.iter().any(|&(start, stop)| {
-            (start as u64) < end && (stop as u64) > address as u64
-        })
+        self.readonly_code_ranges
+            .iter()
+            .any(|&(start, stop)| (start as u64) < end && (stop as u64) > address as u64)
     }
 
     /// Allocate memory from the heap with a stronger start-address alignment.
