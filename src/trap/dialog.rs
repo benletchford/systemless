@@ -3793,20 +3793,59 @@ impl super::TrapDispatcher {
 
     fn positioned_dialog_bounds(
         &self,
+        bus: &MacMemoryBus,
         mut bounds: (i16, i16, i16, i16),
         position: u16,
+        proc_id: i16,
     ) -> (i16, i16, i16, i16) {
+        let (_, _, screen_w, screen_h, _) = self.get_screen_params();
+        let main_screen = (0, 0, screen_h, screen_w);
+        let place_at_alert_position = |target: (i16, i16, i16, i16)| -> (i16, i16, i16, i16) {
+            let dialog_w = bounds.3 - bounds.1;
+            let dialog_h = bounds.2 - bounds.0;
+            let target_w = target.3 - target.1;
+            let target_h = target.2 - target.0;
+            let new_left = target.1 + (target_w - dialog_w) / 2;
+            let new_top = target.0 + (target_h - dialog_h) / 5;
+            (new_top, new_left, new_top + dialog_h, new_left + dialog_w)
+        };
+        // Parent-relative placement positions the complete dialog structure,
+        // then converts the result back to the content bounds used by NewWindow.
+        // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126 and 6-62 to 6-63
+        let place_structure_at_alert_position =
+            |target: (i16, i16, i16, i16)| -> (i16, i16, i16, i16) {
+                let structure = self.window_structure_global_rect_for_proc(bus, bounds, proc_id);
+                let structure_w = structure.3 - structure.1;
+                let structure_h = structure.2 - structure.0;
+                let target_w = target.3 - target.1;
+                let target_h = target.2 - target.0;
+                let new_structure_left = target.1 + (target_w - structure_w) / 2;
+                let new_structure_top = target.0 + (target_h - structure_h) / 5;
+                let new_left = new_structure_left + (bounds.1 - structure.1);
+                let new_top = new_structure_top + (bounds.0 - structure.0);
+                (
+                    new_top,
+                    new_left,
+                    new_top + (bounds.2 - bounds.0),
+                    new_left + (bounds.3 - bounds.1),
+                )
+            };
         match position {
-            // alertPositionMainScreen / ParentWindow / ParentWindowScreen:
-            // MTE 1992 p. 4-126 defines alert position as about one-fifth
-            // of the unused screen/window space above the new window.
-            0x300A | 0x700A | 0xB00A => {
-                let (_, _, screen_w, screen_h, _) = self.get_screen_params();
-                let dialog_w = bounds.3 - bounds.1;
-                let dialog_h = bounds.2 - bounds.0;
-                let new_left = (screen_w - dialog_w) / 2;
-                let new_top = (screen_h - dialog_h) / 5;
-                bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
+            // alertPositionMainScreen / ParentWindowScreen
+            // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
+            0x300A | 0x700A => {
+                bounds = place_at_alert_position(main_screen);
+            }
+            // alertPositionParentWindow uses the content rectangle of the
+            // window in which the user was last working.
+            // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
+            0xB00A => {
+                let parent = self.front_window_for_trap(bus);
+                let target = (parent != 0)
+                    .then(|| self.window_content_global_rect(bus, parent))
+                    .flatten()
+                    .unwrap_or(main_screen);
+                bounds = place_structure_at_alert_position(target);
             }
             // centerMainScreen / centerParentWindow: true vertical center
             // Macintosh Toolbox Essentials 1992, p. 4-126
@@ -3865,7 +3904,7 @@ impl super::TrapDispatcher {
             bus.write_long(handle, ditl_data);
             Self::duplicate_handle_data(bus, handle)
         };
-        let bounds = self.positioned_dialog_bounds(bounds, position);
+        let bounds = self.positioned_dialog_bounds(bus, bounds, position, 1);
         let dialog_ptr = self.finish_dialog_creation(
             bus,
             cpu,
@@ -9992,7 +10031,7 @@ impl super::TrapDispatcher {
 
                     // Apply System 7 DLOG positioning constants.
                     // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126.
-                    bounds = self.positioned_dialog_bounds(bounds, position);
+                    bounds = self.positioned_dialog_bounds(bus, bounds, position, proc_id);
 
                     eprintln!(
                         "[TRAP] GetNewDialog({}) bounds=({},{},{},{}) raw_bounds=({},{},{},{}) position=${:04X} len={} procID={} items={} title=\"{}\"",
@@ -17443,6 +17482,105 @@ mod tests {
 
         let dlg_ptr = bus.read_long(TEST_SP + 10);
         assert_ne!(dlg_ptr, 0);
+        assert_eq!(disp.window_bounds, (66, 155, 336, 645));
+    }
+
+    #[test]
+    fn get_new_dialog_uses_parent_window_for_alert_position() {
+        // MTE 1992 pp. 4-125 to 4-126: alertPositionParentWindow places the
+        // new window in the alert position of the window last used.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let mut parent_dlog = build_test_dlog((100, 100, 500, 700), 1521, 0);
+        parent_dlog[10] = 1;
+        let parent_ditl = build_test_ditl_item(4, (20, 20, 40, 80), b"Parent");
+        let child_dlog = build_test_dlog((10, 20, 110, 220), 1523, 0xB00A);
+        let child_ditl = build_test_ditl_item(4, (20, 20, 40, 80), b"Child");
+        disp.install_test_resource(&mut bus, *b"DLOG", 1520, &parent_dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1521, &parent_ditl);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1522, &child_dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1523, &child_ditl);
+
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1520);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_ne!(bus.read_long(TEST_SP + 10), 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1522);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(bus.read_long(TEST_SP + 10), 0);
+        assert_eq!(disp.window_bounds, (160, 300, 260, 500));
+    }
+
+    #[test]
+    fn get_new_dialog_positions_modal_frame_in_full_screen_parent() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let mut parent_dlog = build_test_dlog((0, 0, 600, 800), 1527, 0);
+        parent_dlog[10] = 1;
+        let parent_ditl = build_test_ditl_item(4, (20, 20, 40, 80), b"Parent");
+        let mut child_dlog = build_test_dlog((74, 64, 255, 443), 1529, 0xB00A);
+        child_dlog[8..10].copy_from_slice(&1i16.to_be_bytes());
+        let child_ditl = build_test_ditl_item(4, (20, 20, 40, 80), b"Child");
+        disp.install_test_resource(&mut bus, *b"DLOG", 1526, &parent_dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1527, &parent_ditl);
+        disp.install_test_resource(&mut bus, *b"DLOG", 1528, &child_dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1529, &child_ditl);
+
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1526);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1528);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(bus.read_long(TEST_SP + 10), 0);
+        assert_eq!(disp.window_bounds, (88, 210, 269, 589));
+    }
+
+    #[test]
+    fn get_new_dialog_parent_alert_position_falls_back_without_a_window() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((800 * 600) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+
+        let dlog = build_test_dlog((40, 40, 310, 530), 1525, 0xB00A);
+        let ditl = build_test_ditl_item(4, (241, 291, 261, 381), b"Not Yet");
+        disp.install_test_resource(&mut bus, *b"DLOG", 1524, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1525, &ditl);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1524);
+
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(bus.read_long(TEST_SP + 10), 0);
         assert_eq!(disp.window_bounds, (66, 155, 336, 645));
     }
 
