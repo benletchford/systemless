@@ -839,7 +839,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn window_content_global_rect(
+    pub(super) fn window_content_global_rect(
         &self,
         bus: &MacMemoryBus,
         window_ptr: u32,
@@ -992,7 +992,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn window_structure_global_rect_for_proc(
+    pub(super) fn window_structure_global_rect_for_proc(
         &self,
         bus: &MacMemoryBus,
         content_rect: (i16, i16, i16, i16),
@@ -1836,7 +1836,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn front_window_for_trap(&self, bus: &MacMemoryBus) -> u32 {
+    pub(super) fn front_window_for_trap(&self, bus: &MacMemoryBus) -> u32 {
         self.frontmost_visible_window_in_list(bus)
     }
 
