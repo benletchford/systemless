@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.12](https://github.com/benletchford/systemless/compare/v0.12.11...v0.12.12) (2026-08-10)
+
+
+### Bug Fixes
+
+* position parent-relative dialog frames over the front window ([13f99e8](https://github.com/benletchford/systemless/commit/13f99e8625c8d8d8955f37ab0dd252579e05456c))
+
 ## [0.12.11](https://github.com/benletchford/systemless/compare/v0.12.10...v0.12.11) (2026-08-10)
 
 
