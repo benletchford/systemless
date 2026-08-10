@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.11](https://github.com/benletchford/systemless/compare/v0.12.10...v0.12.11) (2026-08-10)
+
+
+### Performance Improvements
+
+* direct-index the native-trap table ([7bde41f](https://github.com/benletchford/systemless/commit/7bde41f32a63af7fd98f4232ffd7bd4d07c4e057))
+* stop cloning the window list on every event poll ([fd6e80c](https://github.com/benletchford/systemless/commit/fd6e80cb2b1f507009e2cf5e1987684eded4373b))
+
 ## [0.12.10](https://github.com/benletchford/systemless/compare/v0.12.9...v0.12.10) (2026-08-09)
 
 
