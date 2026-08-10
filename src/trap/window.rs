@@ -2361,13 +2361,21 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        let mut windows = self.window_list.clone();
-        if windows.is_empty() && self.front_window != 0 {
-            windows.push(self.front_window);
-        }
+        // Iterate the window list in place. This runs on the event-polling
+        // path, which a Mac event loop hits constantly, so cloning the list
+        // just to walk it dominated allocation in whole-application
+        // profiles. The front window is a fallback only when the list is
+        // empty, which `chain` expresses without a temporary.
+        let fallback = if self.window_list.is_empty() && self.front_window != 0 {
+            Some(self.front_window)
+        } else {
+            None
+        };
 
-        windows
-            .into_iter()
+        self.window_list
+            .iter()
+            .copied()
+            .chain(fallback)
             .find(|&window_ptr| {
                 self.window_visible(bus, window_ptr)
                     && self.window_update_rect(bus, window_ptr).is_some()
@@ -4792,6 +4800,76 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(bus.read_word(sp + 4), 0);
+    }
+
+    fn make_window(bus: &mut crate::memory::MacMemoryBus, visible: bool, dirty: bool) -> u32 {
+        let window_ptr = bus.alloc(160);
+        bus.write_byte(
+            window_ptr + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+            if visible { 0xFF } else { 0 },
+        );
+        let region_ptr = bus.alloc(10);
+        bus.write_word(region_ptr, 10);
+        let rect = if dirty {
+            (0i16, 0i16, 10i16, 10i16)
+        } else {
+            (0, 0, 0, 0)
+        };
+        bus.write_word(region_ptr + 2, rect.0 as u16);
+        bus.write_word(region_ptr + 4, rect.1 as u16);
+        bus.write_word(region_ptr + 6, rect.2 as u16);
+        bus.write_word(region_ptr + 8, rect.3 as u16);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, region_ptr);
+        bus.write_long(
+            window_ptr + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET,
+            handle,
+        );
+        window_ptr
+    }
+
+    #[test]
+    fn pending_update_event_selects_front_to_back_and_falls_back_when_list_is_empty() {
+        let (mut disp, _cpu, mut bus) = setup();
+        // Front-to-back selection: the front window is clean, the middle is
+        // the first dirty one, the back is also dirty; the middle must win.
+        let front = make_window(&mut bus, true, false);
+        let middle = make_window(&mut bus, true, true);
+        let back = make_window(&mut bus, true, true);
+        disp.window_list = vec![front, middle, back];
+        disp.front_window = front;
+        let event = disp
+            .pending_update_event(&bus, 0xFFFF)
+            .expect("update event");
+        assert_eq!(event.what, 6, "updateEvt");
+        assert_eq!(event.message, middle, "first dirty window front-to-back");
+
+        // An invisible dirty window ahead of a visible dirty one is skipped.
+        let hidden = make_window(&mut bus, false, true);
+        disp.window_list = vec![hidden, back];
+        let event = disp
+            .pending_update_event(&bus, 0xFFFF)
+            .expect("update event");
+        assert_eq!(event.message, back, "visibility still gates selection");
+
+        // Empty list: the front window serves as the fallback...
+        let lone = make_window(&mut bus, true, true);
+        disp.window_list = Vec::new();
+        disp.front_window = lone;
+        let event = disp
+            .pending_update_event(&bus, 0xFFFF)
+            .expect("fallback event");
+        assert_eq!(event.message, lone, "front-window fallback on empty list");
+
+        // ...and no fallback exists when it is unset, or when the update
+        // bit is masked out.
+        disp.front_window = 0;
+        assert!(disp.pending_update_event(&bus, 0xFFFF).is_none());
+        disp.front_window = lone;
+        assert!(
+            disp.pending_update_event(&bus, 0xFFBF).is_none(),
+            "mask gates"
+        );
     }
 
     fn install_wind_resource(
