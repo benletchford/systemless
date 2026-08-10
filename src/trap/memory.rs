@@ -6949,7 +6949,7 @@ mod tests {
             "bare Toolbox trap numbers must install under their canonical A-line word"
         );
         assert!(
-            !dispatcher.native_trap_table.contains_key(&0x01F4),
+            dispatcher.native_trap_table.get(&0x01F4).is_none(),
             "the raw bare trap number is not a dispatchable trap-table key"
         );
     }

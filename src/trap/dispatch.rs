@@ -983,6 +983,86 @@ pub(crate) struct InverseTableCacheEntry {
     pub bytes: Vec<u8>,
 }
 
+/// Native trap dispatch table.
+///
+/// Consulted on every A-line trap dispatch. The default `HashMap` paid
+/// SipHash plus a SwissTable probe per lookup, and a linear scan is
+/// unbounded: `SetTrapAddress`/`NSetTrapAddress` can populate arbitrarily
+/// many slots, so an application that patches many traps would make the
+/// hottest dispatch path O(n).
+///
+/// Every key producer normalizes into two bands — the Operating System
+/// table `0xA000..=0xA0FF` (`trap_address_table_key`, and dispatch's
+/// `0xA000 | (trap & 0x00FF)`) and the Toolbox table `0xA800..=0xABFF`
+/// (`0xA800 | (trap & 0x03FF)`) — 1,280 possible keys in total, so the
+/// table direct-indexes them: O(1) for any occupancy, no hashing, no
+/// probe, ~10 KB once. Keys outside the two bands (which no production
+/// caller generates) go to a spill list so the `HashMap`-shaped contract
+/// stays total; the dispatch path never touches it because its keys are
+/// in-band by construction.
+#[derive(Debug, Clone)]
+pub(crate) struct TrapWordMap {
+    bands: Box<[Option<u32>; Self::SLOTS]>,
+    spill: Vec<(u16, u32)>,
+}
+
+impl Default for TrapWordMap {
+    fn default() -> Self {
+        Self {
+            bands: Box::new([None; Self::SLOTS]),
+            spill: Vec::new(),
+        }
+    }
+}
+
+impl TrapWordMap {
+    const OS_SLOTS: usize = 0x100;
+    const TOOL_SLOTS: usize = 0x400;
+    const SLOTS: usize = Self::OS_SLOTS + Self::TOOL_SLOTS;
+
+    fn slot(trap: u16) -> Option<usize> {
+        match trap {
+            0xA000..=0xA0FF => Some(usize::from(trap - 0xA000)),
+            0xA800..=0xABFF => Some(Self::OS_SLOTS + usize::from(trap - 0xA800)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn get(&self, trap: &u16) -> Option<&u32> {
+        match Self::slot(*trap) {
+            Some(index) => self.bands[index].as_ref(),
+            None => self
+                .spill
+                .iter()
+                .find(|(word, _)| word == trap)
+                .map(|(_, handler)| handler),
+        }
+    }
+
+    pub(crate) fn insert(&mut self, trap: u16, handler: u32) -> Option<u32> {
+        match Self::slot(trap) {
+            Some(index) => self.bands[index].replace(handler),
+            None => match self.spill.iter_mut().find(|(word, _)| *word == trap) {
+                Some(slot) => Some(std::mem::replace(&mut slot.1, handler)),
+                None => {
+                    self.spill.push((trap, handler));
+                    None
+                }
+            },
+        }
+    }
+
+    pub(crate) fn remove(&mut self, trap: &u16) -> Option<u32> {
+        match Self::slot(*trap) {
+            Some(index) => self.bands[index].take(),
+            None => {
+                let index = self.spill.iter().position(|(word, _)| word == trap)?;
+                Some(self.spill.swap_remove(index).1)
+            }
+        }
+    }
+}
+
 /// Trap dispatcher with resource fork access and emulator state.
 pub struct TrapDispatcher {
     /// Synthetic keyboard and mouse entries exposed by the ADB Manager.
@@ -1772,7 +1852,7 @@ pub struct TrapDispatcher {
     /// and a native handler exists, the dispatcher simulates a JSR to the handler
     /// instead of running HLE code. This allows CRT-installed handlers (LoadSeg,
     /// UnloadSeg, ExitToShell) to run natively with proper code relocation.
-    pub(crate) native_trap_table: HashMap<u16, u32>,
+    pub(crate) native_trap_table: TrapWordMap,
     /// Most recent original call for each active native trap handler. Entries
     /// are replaced by a newer call and consumed when a handler invokes its
     /// saved old trap address.
@@ -3052,7 +3132,7 @@ impl TrapDispatcher {
             fill_black_override: None,
             recording_picture: None,
             recording_picture_bitmap: None,
-            native_trap_table: HashMap::new(),
+            native_trap_table: TrapWordMap::default(),
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
@@ -6162,6 +6242,72 @@ impl Default for TrapDispatcher {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn trap_word_map_preserves_the_hashmap_contract() {
+        let mut map = super::TrapWordMap::default();
+        // First insert returns None; lookup sees it.
+        assert_eq!(map.insert(0xA9F0, 0x1000), None);
+        assert_eq!(map.get(&0xA9F0), Some(&0x1000));
+        assert_eq!(map.get(&0xA9F1), None, "absent key misses");
+        // Replacement returns the previous handler and keeps one entry.
+        assert_eq!(map.insert(0xA9F0, 0x2000), Some(0x1000));
+        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
+        // A second key coexists.
+        assert_eq!(map.insert(0xA146, 0x3000), None);
+        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
+        assert_eq!(map.get(&0xA146), Some(&0x3000));
+        // Removal returns the value exactly once and clears lookup.
+        assert_eq!(map.remove(&0xA9F0), Some(0x2000));
+        assert_eq!(map.remove(&0xA9F0), None, "second remove is a miss");
+        assert_eq!(map.get(&0xA9F0), None);
+        // The untouched key survives its neighbor's removal.
+        assert_eq!(map.get(&0xA146), Some(&0x3000));
+        // Replace-then-remove on the survivor behaves like HashMap too.
+        assert_eq!(map.insert(0xA146, 0x4000), Some(0x3000));
+        assert_eq!(map.remove(&0xA146), Some(0x4000));
+        assert_eq!(map.get(&0xA146), None);
+    }
+
+    #[test]
+    fn trap_word_map_stays_exact_at_full_occupancy_and_off_band() {
+        // SetTrapAddress can populate every slot of both trap tables, so
+        // fill them completely: 256 OS words and 1,024 Toolbox words.
+        let mut map = super::TrapWordMap::default();
+        for os in 0xA000u16..=0xA0FF {
+            assert_eq!(map.insert(os, u32::from(os) | 0x10_0000), None);
+        }
+        for tool in 0xA800u16..=0xABFF {
+            assert_eq!(map.insert(tool, u32::from(tool) | 0x20_0000), None);
+        }
+        // Every lookup is exact at full occupancy — the boundary the
+        // linear-scan design regressed on.
+        for os in 0xA000u16..=0xA0FF {
+            assert_eq!(map.get(&os), Some(&(u32::from(os) | 0x10_0000)));
+        }
+        for tool in 0xA800u16..=0xABFF {
+            assert_eq!(map.get(&tool), Some(&(u32::from(tool) | 0x20_0000)));
+        }
+        // Replacement and removal stay exact with every slot occupied.
+        assert_eq!(map.insert(0xA9F0, 0xDEAD), Some(0xA9F0 | 0x20_0000));
+        assert_eq!(map.remove(&0xA9F0), Some(0xDEAD));
+        assert_eq!(map.get(&0xA9F0), None);
+        assert_eq!(
+            map.get(&0xA9F1),
+            Some(&(0xA9F1 | 0x20_0000)),
+            "neighbors survive"
+        );
+        // The band boundaries themselves: words between the OS and
+        // Toolbox tables, and past the Toolbox table, are storable and
+        // retrievable (spill), and absent ones stay absent.
+        for off_band in [0x01F4u16, 0xA100, 0xA7FF, 0xAC00, 0xFFFF] {
+            assert_eq!(map.get(&off_band), None);
+            assert_eq!(map.insert(off_band, 0xBEEF), None);
+            assert_eq!(map.get(&off_band), Some(&0xBEEF));
+            assert_eq!(map.remove(&off_band), Some(0xBEEF));
+            assert_eq!(map.get(&off_band), None);
+        }
+    }
+
     use super::*;
     use crate::cpu::{CpuOps, Register};
     use crate::trap::menu::MenuTrackingState;
