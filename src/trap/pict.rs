@@ -96,7 +96,6 @@ static TRACE_PICT_PALETTE: OnceLock<bool> = OnceLock::new();
 static TRACE_PICT_SAMPLES: OnceLock<bool> = OnceLock::new();
 static CLUT_MATCH_ITABLE: OnceLock<bool> = OnceLock::new();
 static CLUT_MATCH_LEGACY_GRAY: OnceLock<bool> = OnceLock::new();
-static CLUT_MATCH_DEVICE_ITABLE: OnceLock<bool> = OnceLock::new();
 static PICT_IDENTITY_REMAP: OnceLock<bool> = OnceLock::new();
 static SRC_TO_DST_TABLE_CACHE: OnceLock<Mutex<Vec<SrcToDstTableCacheEntry>>> = OnceLock::new();
 
@@ -128,11 +127,6 @@ fn clut_match_itable_enabled() -> bool {
 fn clut_match_legacy_gray_enabled() -> bool {
     *CLUT_MATCH_LEGACY_GRAY
         .get_or_init(|| std::env::var_os("SYSTEMLESS_CLUT_MATCH_LEGACY_GRAY").is_some())
-}
-
-fn clut_match_device_itable_enabled() -> bool {
-    *CLUT_MATCH_DEVICE_ITABLE
-        .get_or_init(|| std::env::var_os("SYSTEMLESS_CLUT_MATCH_DEVICE_ITABLE").is_some())
 }
 
 fn pict_identity_remap_enabled() -> bool {
@@ -3999,24 +3993,12 @@ fn build_src_to_dst_table_uncached(
         }
         return table;
     }
-    // Device-ITable path: 4-bit inverse table built from the CURRENT
-    // device_clut once, used for all 256 src_clut entries. Matches the
-    // Mac ROM's MakeITable semantics — rebuild on GDevice CTab change,
-    // then consult per pixel.
-    //
-    // Scoped to DENSE-GRAYSCALE source PICTs only. ITable on colour PICTs
-    // regresses the main_menu and
-    // in-space HUD panel because the game's Palette Manager state and
-    // the ITable cell-centre picks diverge on non-gray colours).
-    // Dense-grayscale PICTs (like the EV splash) have no such issue:
-    // they use the standard gray ramp which the ITable resolves
-    // correctly against any device_clut.
-    //
-    // Default-on; set `SYSTEMLESS_CLUT_MATCH_LEGACY_GRAY=1` to opt out of
-    // the grayscale ITable path and use full-precision luma-diff.
-    let gray_itable_enabled = !clut_match_legacy_gray_enabled();
-    let force_all = clut_match_device_itable_enabled();
-    let use_itable = force_all || (gray_itable_enabled && pict_clut_is_dense_grayscale(src_clut));
+    // Color QuickDraw matches indexed PICT colors through the current
+    // GDevice's inverse table. Build that 4-bit table once and consult it for
+    // each source ColorSpec. Dense grayscale PICTs retain their diagnostic
+    // legacy opt-out because their older luminance-only matcher predates the
+    // general Color Manager path.
+    let use_itable = !pict_clut_is_dense_grayscale(src_clut) || !clut_match_legacy_gray_enabled();
     if use_itable {
         let itable = build_device_itable(device_clut);
         for (i, entry) in src_clut.iter().enumerate() {
@@ -4065,38 +4047,70 @@ fn clear_src_to_dst_table_cache_for_tests() {
 }
 
 /// Build a 4-bit-per-channel inverse table (16 × 16 × 16 = 4096 cells)
-/// against the given `device_clut`. For each cube cell, stores the
-/// CLUT idx whose entry is Euclidean-closest to the cell's centre.
+/// against the given `device_clut`. QuickDraw seeds the quantized cube in
+/// ascending ColorTable order, then performs a multi-source flood fill over
+/// the six axis-adjacent cells. Seed order resolves equidistant cells, so the
+/// result is an approximation rather than an independent RGB-distance search.
 /// The cell index is `qr<<8 | qg<<4 | qb`.
 ///
-/// Cost: 4096 cells × 256 clut entries = ~1M compare ops. Called once
-/// per `build_src_to_dst_table` invocation (once per PICT parse), not
-/// per pixel. Matches the Mac ROM MakeITable semantics for the
-/// device's active GDevice at the moment of DrawPicture.
+/// Cost is linear in the 4096 cells. Called once per
+/// `build_src_to_dst_table` invocation (once per PICT parse), not per pixel.
+/// Matches the Mac ROM MakeITable semantics for the device's active GDevice
+/// at the moment of DrawPicture.
 ///
 /// Imaging With QuickDraw 1994, p. 4-82 (MakeITable, default 4 bits)
 fn build_device_itable(device_clut: &[[u16; 3]; 256]) -> [u8; 4096] {
     let mut table = [0u8; 4096];
-    for cell in 0u32..4096 {
-        let qr = (cell >> 8) & 0xF;
-        let qg = (cell >> 4) & 0xF;
-        let qb = cell & 0xF;
-        let cr = ((qr << 12) | 0x0800) as i64;
-        let cg = ((qg << 12) | 0x0800) as i64;
-        let cb = ((qb << 12) | 0x0800) as i64;
-        let mut best_idx = 0u8;
-        let mut best_dist = i64::MAX;
-        for (idx, entry) in device_clut.iter().enumerate() {
-            let dr = cr - i64::from(entry[0]);
-            let dg = cg - i64::from(entry[1]);
-            let db = cb - i64::from(entry[2]);
-            let d = dr * dr + dg * dg + db * db;
-            if d < best_dist {
-                best_dist = d;
-                best_idx = idx as u8;
+    let mut filled = [false; 4096];
+    let mut queue = std::collections::VecDeque::with_capacity(4096);
+
+    for (index, color) in device_clut.iter().copied().enumerate() {
+        let cell = (usize::from(color[0] >> 12) << 8)
+            | (usize::from(color[1] >> 12) << 4)
+            | usize::from(color[2] >> 12);
+        if !filled[cell] {
+            filled[cell] = true;
+            table[cell] = index as u8;
+            queue.push_back(cell);
+        }
+    }
+
+    const DIRECTIONS: [[i8; 3]; 6] = [
+        [0, 0, 1],
+        [0, 0, -1],
+        [0, 1, 0],
+        [0, -1, 0],
+        [1, 0, 0],
+        [-1, 0, 0],
+    ];
+
+    while let Some(cell) = queue.pop_front() {
+        let components = [
+            ((cell >> 8) & 0x0F) as i8,
+            ((cell >> 4) & 0x0F) as i8,
+            (cell & 0x0F) as i8,
+        ];
+        for direction in DIRECTIONS {
+            let next_components = [
+                components[0] + direction[0],
+                components[1] + direction[1],
+                components[2] + direction[2],
+            ];
+            if next_components
+                .iter()
+                .any(|&component| !(0..16).contains(&component))
+            {
+                continue;
+            }
+            let next = ((next_components[0] as usize) << 8)
+                | ((next_components[1] as usize) << 4)
+                | next_components[2] as usize;
+            if !filled[next] {
+                filled[next] = true;
+                table[next] = table[cell];
+                queue.push_back(next);
             }
         }
-        table[cell as usize] = best_idx;
     }
     table
 }
@@ -6191,13 +6205,59 @@ fn parse_direct_bits_rect(
 #[cfg(test)]
 mod tests {
     use super::{
-        blit_row, build_pict_indexed_transfer_table, build_src_to_dst_table,
+        blit_row, build_device_itable, build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
-        dst_clip_row_spans, peek_initial_packbits_clut, try_blit_packbits_8bpp_src_copy_fast,
-        try_blit_row_8bpp_src_copy_fast, DstClip, DstClipRegion, PictIndexedTransfer, PixMapInfo,
+        dst_clip_row_spans, peek_initial_packbits_clut, read_color_table,
+        try_blit_packbits_8bpp_src_copy_fast, try_blit_row_8bpp_src_copy_fast, DstClip,
+        DstClipRegion, PictIndexedTransfer, PixMapInfo,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
+
+    #[test]
+    fn device_itable_matches_rom_propagation_samples() {
+        let table = build_device_itable(&TrapDispatcher::standard_mac_8bpp_clut());
+
+        assert_eq!(table[0x564], 130);
+        assert_eq!(table[0x631], 137);
+        assert_eq!(table[0x431], 173);
+        assert_eq!(table[0x666], 129);
+        assert_eq!(table[0x333], 172);
+        assert_eq!(table[0x555], 251);
+    }
+
+    #[test]
+    fn color_table_uses_sparse_colorspec_values_as_source_indexes() {
+        let mut bus = MacMemoryBus::new(1024);
+        let mut pos = 0x100;
+        bus.write_long(pos, 0x1234_5678);
+        pos += 4;
+        bus.write_word(pos, 0); // explicit ColorSpec.value indexes
+        pos += 2;
+        bus.write_word(pos, 2); // three entries
+        pos += 2;
+        for (value, rgb) in [
+            (200u16, [0x1111, 0x2222, 0x3333]),
+            (3u16, [0x4444, 0x5555, 0x6666]),
+            (99u16, [0x7777, 0x8888, 0x9999]),
+        ] {
+            bus.write_word(pos, value);
+            pos += 2;
+            for component in rgb {
+                bus.write_word(pos, component);
+                pos += 2;
+            }
+        }
+
+        let (end, colors, seed) = read_color_table(&bus, 0x100);
+
+        assert_eq!(end, pos);
+        assert_eq!(seed, 0x1234_5678);
+        assert_eq!(colors[200], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(colors[3], [0x4444, 0x5555, 0x6666]);
+        assert_eq!(colors[99], [0x7777, 0x8888, 0x9999]);
+        assert_eq!(colors[0], [0, 0, 0]);
+    }
 
     #[test]
     fn grayscale_luminance_mapping_prefers_low_chroma_match() {
