@@ -242,11 +242,14 @@ impl super::TrapDispatcher {
             return Err(PARAM_ERR);
         }
 
+        // FTSoundRec phases are byte offsets into their 256-byte waveforms,
+        // while rates are 16.16 fixed-point increments (Inside Macintosh
+        // Volume II, II-227). Normalize both into the same accumulator scale.
         let mut phases = [
-            u64::from(bus.read_long(record + 6)),
-            u64::from(bus.read_long(record + 14)),
-            u64::from(bus.read_long(record + 22)),
-            u64::from(bus.read_long(record + 30)),
+            u64::from(bus.read_long(record + 6)) << 16,
+            u64::from(bus.read_long(record + 14)) << 16,
+            u64::from(bus.read_long(record + 22)) << 16,
+            u64::from(bus.read_long(record + 30)) << 16,
         ];
         let rates = [
             u64::from(bus.read_long(record + 2)),
@@ -2995,6 +2998,34 @@ mod tests {
         let four_tone_mix = disp.sound_manager.mix_frame(128);
         assert!(four_tone_mix.iter().any(|sample| *sample != 0x80));
         assert_eq!(disp.sound_manager.channels.len(), 1);
+    }
+
+    #[test]
+    fn four_tone_phase_is_a_waveform_byte_offset() {
+        let (_disp, _cpu, mut bus) = setup();
+        let synth = 0x310000;
+        let record = 0x311000;
+        let wave = 0x312000;
+        bus.write_word(synth, 1);
+        bus.write_long(synth + 2, record);
+        bus.write_word(record, 1);
+        bus.write_long(record + 2, 0);
+        bus.write_long(record + 6, 1);
+        for voice in 1..4u32 {
+            bus.write_long(record + 2 + voice * 8, 0);
+            bus.write_long(record + 6 + voice * 8, 0);
+        }
+        bus.write_long(record + 34, wave);
+        bus.write_long(record + 38, 0);
+        bus.write_long(record + 42, 0);
+        bus.write_long(record + 46, 0);
+        bus.write_byte(wave, 0x20);
+        bus.write_byte(wave + 1, 0xE0);
+
+        let (samples, _) =
+            super::super::TrapDispatcher::decode_four_tone_synth(&bus, synth, 6).unwrap();
+
+        assert_eq!(samples[0], 0xE0);
     }
 
     /// Locks in `parse_aiff_samples` end-to-end decoding — the entry
