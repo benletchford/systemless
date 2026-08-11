@@ -4280,6 +4280,7 @@ impl super::TrapDispatcher {
                 if self.mouse_button {
                     let tracking = self.dialog_tracking.as_mut().unwrap();
                     tracking.active_button = Some(super::dispatch::DialogButtonTrackingState {
+                        mouse_down: event.clone(),
                         item_no: hit,
                         rect: item.rect,
                         title: item.text.clone(),
@@ -8038,6 +8039,34 @@ impl super::TrapDispatcher {
         self.invert_button_rect(bus, top, left, bottom, right);
     }
 
+    fn restore_dialog_button_normal_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        item_no: i16,
+        item: &DialogItem,
+        is_default: bool,
+    ) {
+        if let Some(control_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no) {
+            let control_ptr = bus.read_long(control_handle);
+            if control_ptr != 0 {
+                bus.write_byte(control_ptr + 17, 0);
+            }
+        }
+        let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, item.rect);
+        self.draw_button_with_enabled(
+            bus,
+            top,
+            left,
+            bottom,
+            right,
+            &item.text,
+            is_default,
+            true,
+        );
+    }
+
     /// Draw a checkbox item.
     pub(crate) fn draw_checkbox(
         &self,
@@ -10175,12 +10204,13 @@ impl super::TrapDispatcher {
     }
 
     fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
-        let Some((dialog_ptr, bounds, item_no, rect, title, is_default, highlighted, item_type)) =
+        let Some((dialog_ptr, bounds, mouse_down, item_no, rect, title, is_default, highlighted, item_type)) =
             self.dialog_tracking.as_ref().and_then(|tracking| {
                 tracking.active_button.as_ref().map(|button| {
                     (
                         tracking.dialog_ptr,
                         tracking.bounds,
+                        button.mouse_down.clone(),
                         button.item_no,
                         button.rect,
                         button.title.clone(),
@@ -10236,7 +10266,7 @@ impl super::TrapDispatcher {
             return;
         }
 
-        self.consume_dialog_mouse_up();
+        self.consume_or_retain_dialog_mouse_up(&mouse_down);
         if let Some(t) = self.dialog_tracking.as_mut() {
             t.active_button = None;
         }
@@ -11759,6 +11789,24 @@ impl super::TrapDispatcher {
                             self.flush_dialog_edit_item_texts(
                                 bus, dialog_ptr, &items, edit_item, &edit_text,
                             );
+                            if hit > 0
+                                && item_type.is_some_and(|ty| (ty & 0x7F) == 4 && (ty & 0x80) == 0)
+                            {
+                                if let Some(item) = items.get((hit - 1) as usize) {
+                                    self.restore_dialog_button_normal_state(
+                                        bus,
+                                        dialog_ptr,
+                                        bounds,
+                                        hit,
+                                        item,
+                                        hit == self
+                                            .dialog_tracking
+                                            .as_ref()
+                                            .map(|tracking| tracking.default_item)
+                                            .unwrap_or(0),
+                                    );
+                                }
+                            }
                             // Filter handled the event — end tracking and return.
                             let saved = self.dialog_tracking.take().unwrap();
                             let saved_dialog_ptr = saved.dialog_ptr;
@@ -11886,23 +11934,35 @@ impl super::TrapDispatcher {
                                 bus, dialog_ptr, &items, edit_item, &edit_text,
                             );
 
-                            let saved = self.dialog_tracking.take().unwrap();
+                            let mut saved = self.dialog_tracking.take().unwrap();
                             let saved_dialog_ptr = saved.dialog_ptr;
                             let saved_bounds = saved.bounds;
                             let item_type = saved
                                 .items
                                 .get(flash_item.saturating_sub(1) as usize)
                                 .map(|item| item.item_type);
+                            if let Some(item) = saved
+                                .items
+                                .get(flash_item.saturating_sub(1) as usize)
+                                .filter(|item| {
+                                    (item.item_type & 0x7F) == 4 && (item.item_type & 0x80) == 0
+                                })
+                            {
+                                self.restore_dialog_button_normal_state(
+                                    bus,
+                                    saved_dialog_ptr,
+                                    saved_bounds,
+                                    flash_item,
+                                    item,
+                                    flash_item == saved.default_item,
+                                );
+                                saved.rendered_pixels = self.save_dialog_pixels(bus, saved_bounds);
+                                saved.rendered_pixels_final = true;
+                            }
                             self.persist_visible_dialog_snapshot(bus, &saved);
                             self.dialog_saved_pixels
                                 .insert(saved_dialog_ptr, saved.saved_pixels);
                             self.pending_modal_button_dispose_dialog = Some(saved_dialog_ptr);
-
-                            // ModalDialog button clicks should consume the
-                            // matching mouseUp before returning to the app.
-                            // If we leave it queued, the release can leak into
-                            // the underlying game view after the dialog closes.
-                            self.consume_dialog_mouse_up();
 
                             if item_hit_ptr != 0 {
                                 bus.write_word(item_hit_ptr, flash_item as u16);
@@ -12055,6 +12115,7 @@ impl super::TrapDispatcher {
                                                     let t = self.dialog_tracking.as_mut().unwrap();
                                                     t.active_button = Some(
                                                         super::dispatch::DialogButtonTrackingState {
+                                                            mouse_down: e.clone(),
                                                             item_no: hit,
                                                             rect: item.rect,
                                                             title: item.text.clone(),
@@ -27434,6 +27495,13 @@ mod tests {
             }],
             default_item: 1,
             active_button: Some(DialogButtonTrackingState {
+                mouse_down: super::super::dispatch::QueuedEvent {
+                    what: 1,
+                    message: 0,
+                    where_v: probe_y,
+                    where_h: probe_x,
+                    modifiers: 0,
+                },
                 item_no: 1,
                 rect: item_rect,
                 title: String::new(),
@@ -31163,6 +31231,125 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert!(disp.event_queue.iter().all(|event| event.what != 2));
         assert!(!disp.pending_modal_dialog_mouse_up);
+    }
+
+    #[test]
+    fn modal_dialog_filter_button_hit_releases_visual_before_nested_modal() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let child_dialog = bus.alloc(170);
+        let item_hit_ptr = 0x300100u32;
+        let result_addr = 0x300102u32;
+        let bounds = (100, 200, 200, 360);
+        let item_rect = (20, 30, 60, 110);
+        let screen_rect = TrapDispatcher::dialog_item_screen_rect(bounds, item_rect);
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let probe_x = 270;
+        let probe_y = 140;
+
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        disp.draw_button(
+            &mut bus,
+            screen_rect.0,
+            screen_rect.1,
+            screen_rect.2,
+            screen_rect.3,
+            "",
+            true,
+        );
+        assert!(!screen_pixel_is_set(
+            &bus,
+            screen_base,
+            row_bytes,
+            probe_x,
+            probe_y
+        ));
+        disp.draw_dialog_button_highlight_state(&mut bus, screen_rect, "", true, true);
+        assert!(screen_pixel_is_set(
+            &bus,
+            screen_base,
+            row_bytes,
+            probe_x,
+            probe_y
+        ));
+
+        let control_ptr = bus.alloc(32);
+        let control_handle = bus.alloc(4);
+        bus.write_long(control_handle, control_ptr);
+        bus.write_byte(control_ptr + 17, 1);
+        disp.dialog_control_handles
+            .insert(control_handle, (dialog_ptr, 1));
+
+        let items = vec![DialogItem {
+            item_type: 4,
+            rect: item_rect,
+            text: String::new(),
+            ..DialogItem::default()
+        }];
+        bus.write_word(result_addr, 0x0100);
+        bus.write_word(item_hit_ptr, 1);
+        disp.dialog_filter_result_addr = result_addr;
+        disp.front_window = dialog_ptr;
+        disp.mouse_button = true;
+        disp.dialog_tracking = Some(DialogTrackingState {
+            dialog_ptr,
+            bounds,
+            items,
+            default_item: 1,
+            stack_ptr: TEST_SP,
+            item_hit_ptr,
+            rendered_pixels: disp.save_dialog_pixels(&bus, bounds),
+            rendered_pixels_final: true,
+            draw_procs_done: true,
+            filter_proc: 0x149F0,
+            last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: probe_y,
+                where_h: probe_x,
+                modifiers: 0,
+            }),
+            ..Default::default()
+        });
+
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(item_hit_ptr), 1);
+        assert_eq!(bus.read_byte(control_ptr + 17), 0);
+        assert!(!screen_pixel_is_set(
+            &bus,
+            screen_base,
+            row_bytes,
+            probe_x,
+            probe_y
+        ));
+        assert!(disp.pending_modal_dialog_mouse_up);
+
+        disp.front_window = child_dialog;
+        disp.push_mouse_up(probe_y, probe_x);
+        assert!(!disp.pending_modal_dialog_mouse_up);
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+
+        disp.front_window = dialog_ptr;
+        assert!(!screen_pixel_is_set(
+            &bus,
+            screen_base,
+            row_bytes,
+            probe_x,
+            probe_y
+        ));
+        disp.push_mouse_down(150, 260);
+        disp.push_mouse_up(150, 260);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        assert_eq!(what, 1);
+        assert!(has_event);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        assert_eq!(what, 2);
+        assert!(has_event);
     }
 
     #[test]

@@ -553,6 +553,9 @@ pub struct DialogPopupTrackingState {
 
 /// Push-button tracking owned by an active ModalDialog loop.
 pub struct DialogButtonTrackingState {
+    /// The initiating event retained so a delayed release cannot consume an
+    /// unrelated queued mouse-down if the dialog is disposed while tracking.
+    pub mouse_down: QueuedEvent,
     pub item_no: i16,
     pub rect: (i16, i16, i16, i16),
     pub title: String,
