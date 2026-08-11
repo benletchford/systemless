@@ -220,7 +220,15 @@ impl super::TrapDispatcher {
         // Driver presence is a capability probe. Keep this list limited to
         // services backed by the HLE: AppleTalk's .MPP/.ATP/.XPP drivers must
         // remain absent until their control, status, and protocol paths exist.
-        matches!(filename, ".AIn" | ".AOut" | ".BIn" | ".BOut")
+        [".AIn", ".AOut", ".BIn", ".BOut"]
+            .iter()
+            .any(|driver| filename.eq_ignore_ascii_case(driver))
+    }
+
+    fn is_unavailable_appletalk_driver_name(filename: &str) -> bool {
+        [".MPP", ".ATP", ".XPP"]
+            .iter()
+            .any(|driver| filename.eq_ignore_ascii_case(driver))
     }
 
     fn address_is_loaded_code(&self, address: u32) -> bool {
@@ -3785,6 +3793,13 @@ impl super::TrapDispatcher {
                         "[TRAP] PBOpen -> synthetic driver refnum={} name=\"{}\"",
                         refnum, filename
                     );
+                } else if Self::is_unavailable_appletalk_driver_name(&filename) {
+                    // A missing Device Manager driver reports dInstErr, not
+                    // the File Manager's fnfErr (Inside Macintosh Volume II,
+                    // II-183).
+                    eprintln!("[TRAP] PBOpen: driver is not installed");
+                    bus.write_word(pb + 16, (-26i16) as u16); // dInstErr
+                    cpu.write_reg(Register::D0, (-26i32) as u32);
                 } else {
                     eprintln!("[TRAP] PBOpen: file not found in VFS");
                     bus.write_word(pb + 16, (-43i16) as u16); // fnfErr
@@ -13181,7 +13196,7 @@ mod tests {
     fn pbopen_synthetic_driver_refnum_supports_read_write_close() {
         let (mut disp, mut cpu, mut bus) = setup();
         let pb = 0x300000u32;
-        setup_param_block(&mut bus, &mut cpu, pb, b".AIn");
+        setup_param_block(&mut bus, &mut cpu, pb, b".ain");
 
         call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
 
@@ -13209,11 +13224,7 @@ mod tests {
 
     #[test]
     fn pbopen_does_not_advertise_unavailable_appletalk_drivers() {
-        for driver_name in [
-            b".MPP".as_slice(),
-            b".ATP".as_slice(),
-            b".XPP".as_slice(),
-        ] {
+        for driver_name in [b".mpp".as_slice(), b".AtP".as_slice(), b".xPp".as_slice()] {
             let (mut disp, mut cpu, mut bus) = setup();
             let pb = 0x300000u32;
             setup_param_block(&mut bus, &mut cpu, pb, driver_name);
@@ -13222,8 +13233,8 @@ mod tests {
 
             call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
 
-            assert_eq!(cpu.read_reg(Register::D0), (-43i32) as u32);
-            assert_eq!(bus.read_word(pb + 16), (-43i16) as u16);
+            assert_eq!(cpu.read_reg(Register::D0), (-26i32) as u32);
+            assert_eq!(bus.read_word(pb + 16), (-26i16) as u16);
             assert_eq!(bus.read_word(pb + 24), 0);
             assert!(disp.synthetic_drivers.is_empty());
         }
@@ -13246,6 +13257,8 @@ mod tests {
             (-43i32) as u32,
             "D0 should be fnfErr"
         );
+        assert_eq!(bus.read_word(pb + 16), (-43i16) as u16);
+        assert_eq!(bus.read_word(pb + 24), 0);
     }
 
     // ================================================================
