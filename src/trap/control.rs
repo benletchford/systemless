@@ -2518,17 +2518,38 @@ impl super::TrapDispatcher {
             // Makes the given control visible by setting contrlVis to 255.
             // PROCEDURE ShowControl(theControl: ControlHandle);
             // Inside Macintosh Volume I, I-328
-            // ShowControl ($A957): Sets contrlVis byte to 255 (visible)
+            // ShowControl ($A957): Makes an actually hidden control visible
+            // and asks its definition procedure to draw the whole control.
             (true, 0x157) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ctrl_handle = bus.read_long(sp);
+                let mut newly_visible_control = None;
                 if ctrl_handle != 0 {
                     let ctrl_ptr = bus.read_long(ctrl_handle);
                     if ctrl_ptr != 0 {
+                        let was_visible =
+                            Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16));
                         bus.write_byte(ctrl_ptr + 16, 255); // contrlVis = visible
+                        if !was_visible {
+                            newly_visible_control = Some(ctrl_ptr);
+                        }
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 4);
+                if let Some(ctrl_ptr) = newly_visible_control {
+                    let owner = bus.read_long(ctrl_ptr + 4);
+                    if owner != 0 {
+                        self.set_current_port_state(bus, cpu, owner, None);
+                    }
+                    if !self.arm_control_def_messages(
+                        cpu,
+                        bus,
+                        ctrl_handle,
+                        &[(Self::CDEF_DRAW_CNTL_MSG, 0, None)],
+                    ) {
+                        self.draw_control(cpu, bus, ctrl_ptr);
+                    }
+                }
                 Ok(())
             }
 
@@ -4910,10 +4931,20 @@ mod tests {
     // ShowControl/HideControl/MoveControl semantics per Inside Macintosh
     // Volume I (1985), pp. I-328 to I-329.
     #[test]
-    fn showcontrol_sets_contrlvis_visible_and_pops_handle_arg() {
-        let (mut disp, mut cpu, mut bus) = setup();
+    fn showcontrol_draws_standard_control_and_pops_handle_arg() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
         let sp = 0x300000u32;
+        let window = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+        let screen_base = bus.read_long(window + 2);
+        let row_bytes = u32::from(bus.read_word(window + 6) & 0x3FFF);
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        clear_1bpp_screen(&mut bus, screen_base, row_bytes, 342);
         let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 0, 0);
+        bus.write_long(ctrl_ptr + 4, window);
+        disp.control_proc_ids.insert(ctrl_ptr, 0);
+        let before: Vec<u8> = (0..row_bytes * 342)
+            .map(|offset| bus.read_byte(screen_base + offset))
+            .collect();
 
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, ctrl_handle);
@@ -4923,6 +4954,63 @@ mod tests {
 
         assert_eq!(bus.read_byte(ctrl_ptr + 16), 255);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_ne!(
+            (0..row_bytes * 342)
+                .map(|offset| bus.read_byte(screen_base + offset))
+                .collect::<Vec<_>>(),
+            before,
+            "ShowControl should immediately draw a newly visible standard control"
+        );
+    }
+
+    #[test]
+    fn showcontrol_arms_application_cdef_draw_in_owner_port() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = 0x300000u32;
+        let return_pc = 0x1234_5678;
+        let owner = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+        let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 0, 0);
+        let cdef_proc = bus.alloc(4);
+        let cdef_handle = bus.alloc(4);
+        bus.write_word(cdef_proc, 0x4E56); // LINK.W A6,#imm
+        bus.write_long(cdef_handle, cdef_proc);
+        bus.write_long(ctrl_ptr + 4, owner);
+        bus.write_long(ctrl_ptr + 24, cdef_handle);
+        disp.control_proc_ids.insert(ctrl_ptr, (160 << 4) | 5);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(sp, ctrl_handle);
+        disp.dispatch_control(true, 0x157, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let trampoline = disp.control_def_trampoline;
+        assert_eq!(bus.read_byte(ctrl_ptr + 16), 255);
+        assert_ne!(trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(bus.read_word(trampoline + 12), 5);
+        assert_eq!(bus.read_long(trampoline + 16), ctrl_handle);
+        assert_eq!(
+            bus.read_word(trampoline + 22),
+            super::super::TrapDispatcher::CDEF_DRAW_CNTL_MSG as u16
+        );
+        assert_eq!(bus.read_long(trampoline + 26), 0);
+        assert_eq!(bus.read_long(trampoline + 32), cdef_proc);
+        assert_eq!(disp.current_port, owner);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(sp, ctrl_handle);
+        disp.dispatch_control(true, 0x157, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(
+            cpu.read_reg(Register::PC),
+            return_pc,
+            "ShowControl should not redraw a control that is already visible"
+        );
     }
 
     #[test]
