@@ -143,6 +143,54 @@ impl super::TrapDispatcher {
         self.sound_manager.channels.push(chan);
     }
 
+    /// Submit a Sound Driver free-form synthesizer buffer to the host mixer.
+    /// Inside Macintosh Volume II describes the record as a zero mode word,
+    /// a 16.16 duration measured in 44.93 microsecond output periods, and the
+    /// unsigned 8-bit waveform bytes that fill the remainder of the write.
+    pub(super) fn write_legacy_sound_driver_buffer(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        buffer: u32,
+        count: usize,
+    ) -> bool {
+        const FREE_FORM_HEADER_SIZE: usize = 6;
+        if buffer == 0
+            || count <= FREE_FORM_HEADER_SIZE
+            || bus.read_word(buffer) != 0
+        {
+            return false;
+        }
+
+        let duration = bus.read_long(buffer + 2);
+        if duration == 0 {
+            return false;
+        }
+        let sample_rate_fixed = (((crate::sound::RATE_22KHZ_FIXED as u64) << 16)
+            / duration as u64)
+            .min(u32::MAX as u64) as u32;
+        let samples = bus.read_bytes(
+            buffer + FREE_FORM_HEADER_SIZE as u32,
+            count - FREE_FORM_HEADER_SIZE,
+        );
+
+        let guest_ptr = bus.alloc(GUEST_SND_CHANNEL_SIZE);
+        if guest_ptr == 0 {
+            return false;
+        }
+        let mut channel = SndChannel::new(guest_ptr, true);
+        channel.mark_auto_dispose_when_idle();
+        channel.play_buffer(samples, sample_rate_fixed, sound::PlaybackKind::Buffer, 0);
+        self.sound_manager.channels.push(channel);
+        if trace_sound_enabled() {
+            eprintln!(
+                "[SOUND] legacy free-form write samples={} rate=${:08X}",
+                count - FREE_FORM_HEADER_SIZE,
+                sample_rate_fixed
+            );
+        }
+        true
+    }
+
     pub(crate) fn dispatch_sound<C: CpuOps>(
         &mut self,
         is_tool: bool,

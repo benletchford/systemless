@@ -3914,7 +3914,8 @@ impl super::TrapDispatcher {
             // FSWrite ($A003): Writes to output_dir or VFS
             (false, 0x03) => {
                 let pb = cpu.read_reg(Register::A0);
-                let ref_num = bus.read_word(pb + 24);
+                let ref_num_word = bus.read_word(pb + 24);
+                let ref_num = ref_num_word as i16;
                 let buffer = bus.read_long(pb + 32);
                 let request_count = bus.read_long(pb + 36) as usize;
                 let pos_mode = bus.read_word(pb + 44);
@@ -3924,8 +3925,27 @@ impl super::TrapDispatcher {
                     ref_num, buffer, request_count, pos_mode, pos_offset
                 );
 
-                let Some(filename) = self.open_files.get(&ref_num).cloned() else {
-                    if self.synthetic_drivers.contains_key(&ref_num) {
+                // Device Manager reference numbers are signed. The ROM Sound
+                // Driver occupies unit 3 / reference number -4 and accepts
+                // free-form synthesizer records through the same FSWrite API.
+                if ref_num < 0 {
+                    let result = if ref_num == -4 {
+                        if self.write_legacy_sound_driver_buffer(bus, buffer, request_count) {
+                            0
+                        } else {
+                            -20 // writErr
+                        }
+                    } else {
+                        -21 // badUnitErr
+                    };
+                    bus.write_long(pb + 40, if result == 0 { request_count as u32 } else { 0 });
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, (result as i32) as u32);
+                    return Some(Ok(()));
+                }
+
+                let Some(filename) = self.open_files.get(&ref_num_word).cloned() else {
+                    if self.synthetic_drivers.contains_key(&ref_num_word) {
                         bus.write_long(pb + 40, request_count as u32);
                         bus.write_word(pb + 16, 0);
                         cpu.write_reg(Register::D0, 0);
@@ -3941,7 +3961,7 @@ impl super::TrapDispatcher {
                 let (new_pos, host_sync_bytes) = {
                     let file_buf = self.vfs.entry(filename.clone()).or_default();
                     let file_len = file_buf.len();
-                    let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
+                    let cur_pos = *self.file_positions.get(&ref_num_word).unwrap_or(&0);
                     let Ok(start) =
                         Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
                     else {
@@ -3969,7 +3989,7 @@ impl super::TrapDispatcher {
                     (end, sync)
                 };
 
-                self.file_positions.insert(ref_num, new_pos);
+                self.file_positions.insert(ref_num_word, new_pos);
                 bus.write_long(pb + 40, request_count as u32);
                 bus.write_long(pb + 46, new_pos as u32);
 
@@ -13594,6 +13614,52 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), (-51i32) as u32);
         assert_eq!(bus.read_word(pb + 16), (-51i16) as u16);
+        assert_eq!(bus.read_long(pb + 40), 0);
+    }
+
+    #[test]
+    fn fs_write_routes_signed_sound_driver_refnum_to_mixer() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let write_buf = 0x310000u32;
+        let request_count = 5024u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, (-4i16) as u16);
+        bus.write_long(pb + 32, write_buf);
+        bus.write_long(pb + 36, request_count);
+
+        bus.write_word(write_buf, 0); // free-form synthesizer
+        bus.write_long(write_buf + 2, 0x0001_0000); // one output period per sample
+        let waveform = vec![0xE0; request_count as usize - 6];
+        bus.write_bytes(write_buf + 6, &waveform);
+
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 40), request_count);
+        assert!(
+            disp.sound_manager.channels.iter().any(|channel| channel.is_playing()),
+            "the Sound Driver payload should reach an active mixer channel"
+        );
+        let mixed = disp.sound_manager.mix_frame(3);
+        assert_eq!(mixed.len(), 3);
+        assert!(mixed.iter().any(|sample| *sample != 0x80));
+    }
+
+    #[test]
+    fn fs_write_unknown_negative_refnum_returns_baduniterr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, (-9i16) as u16);
+        bus.write_long(pb + 32, 0x310000);
+        bus.write_long(pb + 36, 4);
+
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-21i32) as u32);
+        assert_eq!(bus.read_word(pb + 16), (-21i16) as u16);
         assert_eq!(bus.read_long(pb + 40), 0);
     }
 
