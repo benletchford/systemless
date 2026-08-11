@@ -248,6 +248,8 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
         insert_payload_into_vfs(runner, payload, &mut executable_entry);
     }
 
+    materialize_installer_layout(runner, &mut executable_entry);
+
     log_vfs(runner);
 
     let executable =
@@ -1253,6 +1255,160 @@ fn insert_payload_into_vfs(
     }
 }
 
+fn pascal_installer_destinations(bytes: &[u8]) -> Vec<String> {
+    let mut destinations = Vec::new();
+    for offset in 0..bytes.len() {
+        let len = bytes[offset] as usize;
+        let Some(end) = offset.checked_add(1 + len) else {
+            continue;
+        };
+        if len < 3 || end > bytes.len() {
+            continue;
+        }
+        let text = &bytes[offset + 1..end];
+        if !text
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+        {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(text) else {
+            continue;
+        };
+        if !text.starts_with(':') || text.matches(':').count() < 2 {
+            continue;
+        }
+        let components = text
+            .split(':')
+            .filter(|component| !component.is_empty())
+            .collect::<Vec<_>>();
+        if components.len() < 2
+            || components
+                .iter()
+                .any(|component| *component == "." || *component == ".." || component.contains('/'))
+        {
+            continue;
+        }
+        let destination = components.join("/");
+        if !destinations.contains(&destination) {
+            destinations.push(destination);
+        }
+    }
+    destinations
+}
+
+/// Materialize the install layout described by classic installer resources.
+/// Multi-disk archives commonly store compressed payloads on one volume and
+/// the launcher on another; applications then use paths relative to the
+/// installed launcher. Keeping only the source-volume paths makes those
+/// ordinary File Manager lookups miss even though the payload is present.
+fn materialize_installer_layout(
+    runner: &mut FixtureRunner,
+    executable_entry: &mut Option<ExecutableCandidate>,
+) {
+    let Some(executable) = executable_entry.as_ref() else {
+        return;
+    };
+    let executable_basename = executable
+        .name
+        .rsplit('/')
+        .next()
+        .unwrap_or(&executable.name)
+        .to_string();
+
+    let mut manifest_paths = runner
+        .dispatcher()
+        .vfs_metadata
+        .iter()
+        .filter_map(|(path, metadata)| {
+            (metadata.file_type.to_be_bytes() == *b"bbkr").then_some(path.clone())
+        })
+        .collect::<Vec<_>>();
+    manifest_paths.sort_unstable();
+
+    let mut destinations = manifest_paths
+        .iter()
+        .filter_map(|path| runner.dispatcher().vfs_rsrc.get(path))
+        .flat_map(|bytes| pascal_installer_destinations(bytes))
+        .collect::<Vec<_>>();
+    let Some(install_root) = destinations.iter().find_map(|destination| {
+        let basename = destination.rsplit('/').next()?;
+        basename
+            .eq_ignore_ascii_case(&executable_basename)
+            .then(|| {
+                destination
+                    .split('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+    }) else {
+        return;
+    };
+    destinations.retain(|destination| {
+        destination
+            .split('/')
+            .next()
+            .is_some_and(|root| root.eq_ignore_ascii_case(&install_root))
+    });
+
+    let mut source_paths = runner
+        .dispatcher()
+        .vfs_metadata
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    source_paths.sort_unstable();
+
+    for destination in destinations {
+        let Some(destination_basename) = destination.rsplit('/').next() else {
+            continue;
+        };
+        let source_basename = destination_basename
+            .strip_suffix(".rsrc")
+            .unwrap_or(destination_basename);
+        let Some(source) = source_paths.iter().find(|path| {
+            let basename = path.rsplit('/').next().unwrap_or(path);
+            basename.eq_ignore_ascii_case(destination_basename)
+                || basename.eq_ignore_ascii_case(source_basename)
+        }) else {
+            continue;
+        };
+        let Some(metadata) = runner.dispatcher().vfs_metadata.get(source).copied() else {
+            continue;
+        };
+        let data = runner
+            .dispatcher()
+            .vfs
+            .get(source)
+            .cloned()
+            .unwrap_or_default();
+        let rsrc = runner
+            .dispatcher()
+            .vfs_rsrc
+            .get(source)
+            .cloned()
+            .unwrap_or_default();
+        insert_forks_into_vfs(
+            runner,
+            &destination,
+            data,
+            rsrc,
+            metadata.file_type.to_be_bytes(),
+            metadata.creator.to_be_bytes(),
+            metadata.finder_flags,
+        );
+
+        if destination_basename.eq_ignore_ascii_case(&executable_basename) {
+            if let Some(executable) = executable_entry.as_mut() {
+                executable.name = destination.clone();
+                executable.vfs_key =
+                    crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&destination);
+            }
+        }
+    }
+}
+
 fn load_selected_executable(
     runner: &mut FixtureRunner,
     executable: &ExecutableCandidate,
@@ -2244,5 +2400,106 @@ mod tests {
 
         assert!(expanded.data.is_empty());
         assert!(ResourceFork::parse(&expanded.rsrc).is_some());
+    }
+
+    #[test]
+    fn installer_destinations_parse_safe_pascal_paths() {
+        let mut bytes = vec![0xFF, 0x00];
+        for path in [":Installed:Game App", ":Installed:Data:Scene.rsrc"] {
+            bytes.push(path.len() as u8);
+            bytes.extend_from_slice(path.as_bytes());
+        }
+        bytes.extend_from_slice(&[5, b':', b'.', b'.', b':', b'X']);
+
+        assert_eq!(
+            pascal_installer_destinations(&bytes),
+            ["Installed/Game App", "Installed/Data/Scene.rsrc"]
+        );
+    }
+
+    #[test]
+    fn installer_layout_places_payloads_beside_the_installed_application() {
+        let mut runner = crate::game::new_runner();
+        let mut manifest = Vec::new();
+        for path in [
+            ":Installed:Game App",
+            ":Installed:Data:Scene.rsrc",
+            ":Installed:Data:State",
+            ":Other Install:Ignored",
+        ] {
+            manifest.push(path.len() as u8);
+            manifest.extend_from_slice(path.as_bytes());
+        }
+
+        insert_forks_into_vfs(
+            &mut runner,
+            "Install Disk/Installer",
+            Vec::new(),
+            manifest,
+            *b"bbkr",
+            *b"TEST",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Install Disk/Game App",
+            Vec::new(),
+            b"application".to_vec(),
+            *b"APPL",
+            *b"TEST",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Payload Disk/Scene",
+            Vec::new(),
+            b"scene resource fork".to_vec(),
+            *b"DATA",
+            *b"TEST",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Payload Disk/State",
+            b"saved state".to_vec(),
+            Vec::new(),
+            *b"DATA",
+            *b"TEST",
+            0x4000,
+        );
+        let mut executable = Some(ExecutableCandidate {
+            name: "Install Disk/Game App".to_string(),
+            vfs_key: "Install Disk/Game App".to_string(),
+            is_appl: true,
+            has_data_fork: false,
+            score: 11,
+            creator: *b"TEST",
+        });
+
+        materialize_installer_layout(&mut runner, &mut executable);
+
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs_rsrc
+                .get("Installed/Data/Scene.rsrc")
+                .map(Vec::as_slice),
+            Some(b"scene resource fork".as_slice())
+        );
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs
+                .get("Installed/Data/State")
+                .map(Vec::as_slice),
+            Some(b"saved state".as_slice())
+        );
+        assert!(!runner
+            .dispatcher()
+            .vfs
+            .contains_key("Other Install/Ignored"));
+        let executable = executable.unwrap();
+        assert_eq!(executable.name, "Installed/Game App");
+        assert_eq!(executable.vfs_key, "Installed/Game App");
     }
 }
