@@ -7323,24 +7323,40 @@ impl super::TrapDispatcher {
 
         // Selected item text inside the box
         // Macintosh Toolbox Essentials 1992, 5-26
-        if enabled && !display_title.is_empty() {
+        if !display_title.is_empty() {
             let metrics = get_font_metrics(font_id, font_size);
             let text_y =
                 top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent - 1;
-            Self::fb_draw_string_clipped(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                text_x,
-                text_y,
-                &display_title,
-                font_id,
-                font_size,
-                (top, text_x, bottom, text_right),
-            );
+            if enabled {
+                Self::fb_draw_string_clipped(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    text_x,
+                    text_y,
+                    &display_title,
+                    font_id,
+                    font_size,
+                    (top, text_x, bottom, text_right),
+                );
+            } else {
+                self.draw_control_label_text(
+                    bus,
+                    top,
+                    text_x,
+                    bottom,
+                    text_right,
+                    text_x,
+                    text_y,
+                    &display_title,
+                    font_id,
+                    font_size,
+                    true,
+                );
+            }
         }
     }
 
@@ -24441,21 +24457,50 @@ mod tests {
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
 
-        let (mut blank, _blank_cpu, mut blank_bus) = setup();
-        blank.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
-        blank.draw_popup_control(&mut blank_bus, 20, 20, 40, 120, "");
+        for enabled in [true, false] {
+            let (mut blank, _blank_cpu, mut blank_bus) = setup();
+            blank.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+            blank.draw_popup_control_with_state(
+                &mut blank_bus,
+                20,
+                20,
+                40,
+                120,
+                "",
+                enabled,
+                false,
+            );
 
-        let (mut titled, _titled_cpu, mut titled_bus) = setup();
-        titled.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
-        titled.draw_popup_control(&mut titled_bus, 20, 20, 40, 120, "Standard/Marathon");
+            let (mut titled, _titled_cpu, mut titled_bus) = setup();
+            titled.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+            titled.draw_popup_control_with_state(
+                &mut titled_bus,
+                20,
+                20,
+                40,
+                120,
+                "Standard/Marathon",
+                enabled,
+                false,
+            );
 
-        for y in 20..40 {
-            for x in 101..180 {
-                assert_eq!(
-                    screen_pixel_is_set(&titled_bus, screen_base, row_bytes, x, y),
-                    screen_pixel_is_set(&blank_bus, screen_base, row_bytes, x, y),
-                    "selected-item text must not alter the arrow or pixels beyond it at ({x}, {y})"
-                );
+            assert!(
+                (20..40).any(|y| {
+                    (35..101).any(|x| {
+                        screen_pixel_is_set(&titled_bus, screen_base, row_bytes, x, y)
+                            != screen_pixel_is_set(&blank_bus, screen_base, row_bytes, x, y)
+                    })
+                }),
+                "the selected title must remain visible when enabled={enabled}"
+            );
+            for y in 20..40 {
+                for x in 101..180 {
+                    assert_eq!(
+                        screen_pixel_is_set(&titled_bus, screen_base, row_bytes, x, y),
+                        screen_pixel_is_set(&blank_bus, screen_base, row_bytes, x, y),
+                        "selected-item text must not alter the arrow or pixels beyond it at ({x}, {y}) when enabled={enabled}"
+                    );
+                }
             }
         }
 
