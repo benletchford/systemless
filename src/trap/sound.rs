@@ -27,6 +27,9 @@ const SAMPLED_SYNTH_ID: i16 = 5;
 const SOUND_MANAGER_3_SYNTH_VERSION: u32 = 0x0003_0000;
 const SOUND_DRIVER_REF_NUM: i16 = -4;
 const LEGACY_SOUND_SAMPLE_RATE: u32 = 22_257;
+/// Maximum mono PCM retained for one decoded legacy Sound Driver request.
+/// Compact tone records can otherwise expand to hours of host-side audio.
+const LEGACY_SOUND_DECODE_LIMIT_SAMPLES: usize = sound::OUTPUT_RATE as usize * 60;
 const BAD_UNIT_ERR: i16 = -21;
 const WRITE_ERR: i16 = -20;
 const PARAM_ERR: i16 = -50;
@@ -133,7 +136,9 @@ impl super::TrapDispatcher {
                 return Err(MEM_FULL_ERR);
             }
             self.clear_guest_sound_channel_state(bus, ptr);
-            self.sound_manager.channels.push(SndChannel::new(ptr, false));
+            self.sound_manager
+                .channels
+                .push(SndChannel::new(ptr, false));
             self.legacy_sound_driver_channel = Some(ptr);
             ptr
         };
@@ -169,7 +174,10 @@ impl super::TrapDispatcher {
         if sampling_factor == 0 {
             return Err(PARAM_ERR);
         }
-        let samples = bus.read_bytes(buffer + 6, request_count - 6);
+        let sample_count = request_count.checked_sub(6).ok_or(PARAM_ERR)?;
+        let mut samples = Self::reserve_legacy_sound_samples(sample_count)?;
+        samples.resize(sample_count, 0);
+        bus.read_bytes_into(buffer + 6, &mut samples);
         let sample_rate_fixed = (u64::from(LEGACY_SOUND_SAMPLE_RATE)
             .saturating_mul(u64::from(sampling_factor)))
         .min(u64::from(u32::MAX)) as u32;
@@ -184,8 +192,8 @@ impl super::TrapDispatcher {
         if request_count < 8 {
             return Err(PARAM_ERR);
         }
-        let mut samples = Vec::new();
         let triplet_count = (request_count - 2) / 6;
+        let mut total_sample_count = 0usize;
         for index in 0..triplet_count {
             let tone = buffer + 2 + index as u32 * 6;
             let count = bus.read_word(tone);
@@ -195,15 +203,39 @@ impl super::TrapDispatcher {
                 break;
             }
 
-            let sample_count = (u64::from(sound::OUTPUT_RATE) * u64::from(duration) / 60)
-                .min(usize::MAX as u64) as usize;
+            let sample_count = (sound::OUTPUT_RATE as usize)
+                .checked_mul(usize::from(duration))
+                .ok_or(MEM_FULL_ERR)?
+                / 60;
+            total_sample_count = total_sample_count
+                .checked_add(sample_count)
+                .filter(|total| *total <= LEGACY_SOUND_DECODE_LIMIT_SAMPLES)
+                .ok_or(MEM_FULL_ERR)?;
+        }
+        if total_sample_count == 0 {
+            return Err(PARAM_ERR);
+        }
+
+        let mut samples = Self::reserve_legacy_sound_samples(total_sample_count)?;
+        for index in 0..triplet_count {
+            let tone = buffer + 2 + index as u32 * 6;
+            let count = bus.read_word(tone);
+            let amplitude = bus.read_word(tone + 2);
+            let duration = bus.read_word(tone + 4);
+            if count == 0 && amplitude == 0 && duration == 0 {
+                break;
+            }
+
+            let sample_count = (sound::OUTPUT_RATE as usize)
+                .checked_mul(usize::from(duration))
+                .ok_or(MEM_FULL_ERR)?
+                / 60;
             let half_period = if count == 0 {
                 usize::MAX
             } else {
                 ((u64::from(sound::OUTPUT_RATE) * u64::from(count)) / (2 * 783_360)).max(1) as usize
             };
             let magnitude = i32::from(amplitude.min(255)) / 2;
-            samples.reserve(sample_count);
             for sample in 0..sample_count {
                 let polarity = if (sample / half_period) & 1 == 0 {
                     1
@@ -213,9 +245,7 @@ impl super::TrapDispatcher {
                 samples.push((0x80 + polarity * magnitude).clamp(0, 255) as u8);
             }
         }
-        if samples.is_empty() {
-            return Err(PARAM_ERR);
-        }
+        debug_assert_eq!(samples.len(), total_sample_count);
         Ok((samples, sound::OUTPUT_RATE << 16))
     }
 
@@ -236,11 +266,14 @@ impl super::TrapDispatcher {
             return Err(PARAM_ERR);
         }
         let duration = bus.read_word(record);
-        let sample_count = (u64::from(sound::OUTPUT_RATE) * u64::from(duration) / 60)
-            .min(usize::MAX as u64) as usize;
+        let sample_count = (sound::OUTPUT_RATE as usize)
+            .checked_mul(usize::from(duration))
+            .ok_or(MEM_FULL_ERR)?
+            / 60;
         if sample_count == 0 {
             return Err(PARAM_ERR);
         }
+        let mut samples = Self::reserve_legacy_sound_samples(sample_count)?;
 
         // FTSoundRec phases are byte offsets into their 256-byte waveforms,
         // while rates are 16.16 fixed-point increments (Inside Macintosh
@@ -266,18 +299,15 @@ impl super::TrapDispatcher {
         if waves.iter().all(|wave| *wave == 0) {
             return Err(PARAM_ERR);
         }
-        if waves.iter().any(|wave| {
-            *wave != 0
-                && wave
-                    .checked_add(256)
-                    .is_none_or(|end| end > bus.ram_size())
-        }) {
+        if waves
+            .iter()
+            .any(|wave| *wave != 0 && wave.checked_add(256).is_none_or(|end| end > bus.ram_size()))
+        {
             return Err(PARAM_ERR);
         }
 
         let hardware_to_output =
             ((u64::from(LEGACY_SOUND_SAMPLE_RATE)) << 16) / u64::from(sound::OUTPUT_RATE);
-        let mut samples = Vec::with_capacity(sample_count);
         for _ in 0..sample_count {
             let mut sum = 0i32;
             let mut voices = 0i32;
@@ -295,6 +325,17 @@ impl super::TrapDispatcher {
             samples.push((mixed + 0x80).clamp(0, 255) as u8);
         }
         Ok((samples, sound::OUTPUT_RATE << 16))
+    }
+
+    fn reserve_legacy_sound_samples(sample_count: usize) -> std::result::Result<Vec<u8>, i16> {
+        if sample_count > LEGACY_SOUND_DECODE_LIMIT_SAMPLES {
+            return Err(MEM_FULL_ERR);
+        }
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(sample_count)
+            .map_err(|_| MEM_FULL_ERR)?;
+        Ok(samples)
     }
 
     fn clear_guest_sound_channel_state(&self, bus: &mut MacMemoryBus, chan_ptr: u32) {
@@ -2875,7 +2916,7 @@ mod tests {
         decode_double_buffer_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
         extended80_to_f64, parse_aiff_samples, synth_sys_beep_samples,
         GUEST_SND_CHANNEL_Q_HEAD_OFFSET, GUEST_SND_CHANNEL_Q_LENGTH_OFFSET,
-        GUEST_SND_CHANNEL_Q_TAIL_OFFSET, GUEST_SND_CHANNEL_SIZE, SAMPLED_SYNTH_ID,
+        GUEST_SND_CHANNEL_Q_TAIL_OFFSET, GUEST_SND_CHANNEL_SIZE, MEM_FULL_ERR, SAMPLED_SYNTH_ID,
         SOUND_MANAGER_3_SYNTH_VERSION,
     };
     use crate::cpu::{CpuOps, Register};
@@ -2957,9 +2998,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sound_driver_decodes_square_and_four_tone_synths() {
+    fn legacy_sound_driver_decodes_supported_synths() {
         let (mut disp, _cpu, mut bus) = setup();
         bus.write_byte(crate::memory::globals::addr::SD_VOLUME, 7);
+
+        let free_form = 0x2F0000;
+        bus.write_word(free_form, 0);
+        bus.write_long(free_form + 2, 0x0001_0000);
+        bus.write_bytes(free_form + 6, &[0x20, 0xE0, 0x20, 0xE0]);
+
+        assert_eq!(
+            disp.write_device_driver(&mut bus, -4, free_form, 10),
+            Ok(10)
+        );
+        let free_form_mix = disp.sound_manager.mix_frame(4);
+        assert!(free_form_mix.iter().any(|sample| *sample != 0x80));
 
         let square = 0x300000;
         bus.write_word(square, (-1i16) as u16);
@@ -2998,6 +3051,26 @@ mod tests {
         let four_tone_mix = disp.sound_manager.mix_frame(128);
         assert!(four_tone_mix.iter().any(|sample| *sample != 0x80));
         assert_eq!(disp.sound_manager.channels.len(), 1);
+    }
+
+    #[test]
+    fn square_wave_synth_rejects_oversized_decoded_output() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let square = 0x300000;
+        bus.write_word(square, (-1i16) as u16);
+        for index in 0..2u32 {
+            let tone = square + 2 + index * 6;
+            bus.write_word(tone, 14_243);
+            bus.write_word(tone + 2, 255);
+            bus.write_word(tone + 4, u16::MAX);
+        }
+
+        assert_eq!(
+            disp.write_device_driver(&mut bus, -4, square, 14),
+            Err(MEM_FULL_ERR)
+        );
+        assert!(disp.sound_manager.channels.is_empty());
+        assert_eq!(disp.legacy_sound_driver_channel, None);
     }
 
     #[test]
