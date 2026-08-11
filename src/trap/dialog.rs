@@ -12,6 +12,7 @@ use crate::quickdraw::fonts::get_font_face_scaled;
 use crate::quickdraw::text::get_font_metrics;
 use crate::ui_theme::{ControlKind, UiThemeId};
 use crate::Result;
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 
@@ -7078,6 +7079,29 @@ impl super::TrapDispatcher {
         max_width
     }
 
+    fn popup_control_title_for_width<'a>(title: &'a str, max_width: i16) -> Cow<'a, str> {
+        let font_id = 0i16;
+        let font_size = 12i16;
+        if Self::fb_measure_string(title, font_id, font_size) <= max_width {
+            return Cow::Borrowed(title);
+        }
+
+        let ellipsis = "...";
+        let prefix_width = max_width - Self::fb_measure_string(ellipsis, font_id, font_size);
+        let mut width = 0;
+        let mut prefix_end = 0;
+        for (index, ch) in title.char_indices() {
+            let char_width = Self::fb_measure_string(&ch.to_string(), font_id, font_size);
+            if width + char_width > prefix_width {
+                break;
+            }
+            width += char_width;
+            prefix_end = index + ch.len_utf8();
+        }
+
+        Cow::Owned(format!("{}{}", &title[..prefix_end], ellipsis))
+    }
+
     pub(crate) fn draw_popup_control_label(
         &self,
         bus: &mut MacMemoryBus,
@@ -7312,14 +7336,18 @@ impl super::TrapDispatcher {
             }
         }
 
-        // Selected item text inside the box
-        // Macintosh Toolbox Essentials 1992, 5-26
-        if enabled && !title.is_empty() {
+        // Selected item text inside the box. Popup controls reserve the
+        // right-hand area for the arrow; popupFixedWidth titles that exceed
+        // the remaining area are shortened with ellipses (IM:VI 5-122).
+        if !title.is_empty() {
             let metrics = get_font_metrics(font_id, font_size);
             let text_x = left + 15;
+            let text_right = (right - 20).max(text_x);
             let text_y =
                 top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent - 1;
-            Self::fb_draw_string_styled(
+            let display_title =
+                Self::popup_control_title_for_width(title, text_right.saturating_sub(text_x));
+            Self::fb_draw_string_clipped(
                 bus,
                 screen_base,
                 row_bytes,
@@ -7328,11 +7356,14 @@ impl super::TrapDispatcher {
                 screen_height,
                 text_x,
                 text_y,
-                title,
+                &display_title,
                 font_id,
                 font_size,
-                0,
+                (top + 1, text_x, bottom - 2, text_right),
             );
+            if !enabled {
+                self.dim_rect(bus, top + 1, text_x, bottom - 2, text_right);
+            }
         }
     }
 
@@ -16300,6 +16331,91 @@ mod tests {
             }
         }
         sum
+    }
+
+    #[test]
+    fn popup_control_title_uses_longest_prefix_that_fits_with_ellipses() {
+        let title = "Standard/Marathon";
+        let max_width = 58;
+        let display_title = TrapDispatcher::popup_control_title_for_width(title, max_width);
+
+        assert_ne!(display_title, title);
+        assert!(display_title.ends_with("..."));
+        assert!(TrapDispatcher::fb_measure_string(&display_title, 0, 12) <= max_width);
+
+        let prefix = display_title.strip_suffix("...").unwrap();
+        let next = title[prefix.len()..].chars().next().unwrap();
+        let next_candidate = format!("{prefix}{next}...");
+        assert!(TrapDispatcher::fb_measure_string(&next_candidate, 0, 12) > max_width);
+    }
+
+    #[test]
+    fn popup_control_bounds_long_titles_without_changing_clip_region() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let port = disp.current_port;
+        let row_bytes = 64u32;
+        let base = bus.alloc(row_bytes * 342);
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        for offset in 0..(row_bytes * 342) {
+            bus.write_byte(base + offset, 0);
+        }
+
+        let clip_handle = bus.read_long(port + 28);
+        let clip_ptr = bus.read_long(clip_handle);
+        let clip_before = bus.read_bytes(clip_ptr, 10);
+        let title = "Standard/Marathon";
+        let text_width = 45;
+        let display_title = TrapDispatcher::popup_control_title_for_width(title, text_width);
+
+        disp.draw_popup_control_with_state(&mut bus, 20, 20, 40, 100, title, true, false);
+        disp.draw_popup_control_with_state(
+            &mut bus,
+            60,
+            20,
+            80,
+            100,
+            &display_title,
+            true,
+            false,
+        );
+        disp.draw_popup_control_with_state(&mut bus, 100, 20, 120, 100, title, false, false);
+        disp.draw_popup_control_with_state(
+            &mut bus,
+            140,
+            20,
+            160,
+            100,
+            &display_title,
+            false,
+            false,
+        );
+        disp.draw_popup_control_with_state(&mut bus, 180, 20, 200, 100, "", true, false);
+
+        for x in 20..=101 {
+            for y_offset in 0..20 {
+                assert_eq!(
+                    screen_pixel_is_set(&bus, base, row_bytes, x, 20 + y_offset),
+                    screen_pixel_is_set(&bus, base, row_bytes, x, 60 + y_offset),
+                    "normal long and pre-truncated titles differ at ({x},{y_offset})"
+                );
+                assert_eq!(
+                    screen_pixel_is_set(&bus, base, row_bytes, x, 100 + y_offset),
+                    screen_pixel_is_set(&bus, base, row_bytes, x, 140 + y_offset),
+                    "inactive long and pre-truncated titles differ at ({x},{y_offset})"
+                );
+
+                if !(35..80).contains(&x) {
+                    assert_eq!(
+                        screen_pixel_is_set(&bus, base, row_bytes, x, 20 + y_offset),
+                        screen_pixel_is_set(&bus, base, row_bytes, x, 180 + y_offset),
+                        "title drawing escaped its content rectangle at ({x},{y_offset})"
+                    );
+                }
+            }
+        }
+
+        assert!(count_set_pixels(&bus, base, row_bytes, 24, 80, 36, 98) > 0);
+        assert_eq!(bus.read_bytes(clip_ptr, 10), clip_before);
     }
 
     fn make_style_scrap(
