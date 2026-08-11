@@ -3755,6 +3755,44 @@ impl super::TrapDispatcher {
             return;
         }
 
+        // StdLDEF clips each draw message to the receiving cell. Keep that
+        // clip local to the owning port and restore the caller's region handle
+        // verbatim afterward; otherwise the final, partially visible row can
+        // leak into controls below rView.
+        let saved_clip_handle = bus.read_long(state.port.wrapping_add(28));
+        let cell_clip_ptr = bus.alloc(10);
+        let cell_clip_handle = bus.alloc(4);
+        if cell_clip_ptr == 0 || cell_clip_handle == 0 {
+            if cell_clip_ptr != 0 {
+                bus.free(cell_clip_ptr);
+            }
+            if cell_clip_handle != 0 {
+                bus.free(cell_clip_handle);
+            }
+            return;
+        }
+        bus.write_word(cell_clip_ptr, 10);
+        Self::write_rect_words(bus, cell_clip_ptr + 2, rect);
+        bus.write_long(cell_clip_handle, cell_clip_ptr);
+        if saved_clip_handle != 0 {
+            Self::write_region_boolean_op(
+                bus,
+                cell_clip_handle,
+                saved_clip_handle,
+                cell_clip_handle,
+                super::quickdraw::RegionBooleanOp::Intersection,
+            );
+        }
+        if Self::region_bbox(bus, cell_clip_handle).is_none() {
+            let cell_clip_ptr = bus.read_long(cell_clip_handle);
+            if cell_clip_ptr != 0 {
+                bus.free(cell_clip_ptr);
+            }
+            bus.free(cell_clip_handle);
+            return;
+        }
+        bus.write_long(state.port.wrapping_add(28), cell_clip_handle);
+
         let selected = state.selected.contains(&(row, col));
         let bg = if selected {
             self.hilite_color
@@ -3778,6 +3816,8 @@ impl super::TrapDispatcher {
         self.pn_mode = 0;
         self.pn_pat = [0xFF; 8];
         self.pn_size = (1, 1);
+        self.sync_current_port_draw_state(bus);
+        self.resolve_current_port_color_pixels(bus, true, true);
         self.draw_rect(
             cpu,
             bus,
@@ -3790,29 +3830,36 @@ impl super::TrapDispatcher {
             ShapeOp::Paint,
         );
 
-        if text.is_empty() {
-            return;
-        }
+        if !text.is_empty() {
+            let font_size = self.tx_size.max(9);
+            self.fg_color = fg;
+            self.bg_color = bg;
+            self.tx_face = 0;
+            self.tx_mode = 1;
+            self.tx_size = font_size;
+            let metrics = get_font_metrics(self.tx_font, font_size);
+            let cell_height = rect.2 - rect.0;
+            let text_height = metrics.ascent + metrics.descent;
+            let baseline = rect.0 + (cell_height - text_height).max(0) / 2 + metrics.ascent;
+            self.pn_loc = (baseline, rect.1 + 3);
+            self.sync_current_port_draw_state(bus);
+            self.resolve_current_port_color_pixels(bus, true, true);
 
-        let font_size = self.tx_size.max(9);
-        self.fg_color = fg;
-        self.bg_color = bg;
-        self.tx_face = 0;
-        self.tx_mode = 1;
-        self.tx_size = font_size;
-        let metrics = get_font_metrics(self.tx_font, font_size);
-        let cell_height = rect.2 - rect.0;
-        let text_height = metrics.ascent + metrics.descent;
-        let baseline = rect.0 + (cell_height - text_height).max(0) / 2 + metrics.ascent;
-        self.pn_loc = (baseline, rect.1 + 3);
-
-        let max_h = rect.3 - 3;
-        for ch in text.chars() {
-            if self.pn_loc.1 >= max_h {
-                break;
+            let max_h = rect.3 - 3;
+            for ch in text.chars() {
+                if self.pn_loc.1 >= max_h {
+                    break;
+                }
+                self.draw_char(cpu, bus, ch);
             }
-            self.draw_char(cpu, bus, ch);
         }
+
+        bus.write_long(state.port.wrapping_add(28), saved_clip_handle);
+        let cell_clip_ptr = bus.read_long(cell_clip_handle);
+        if cell_clip_ptr != 0 {
+            bus.free(cell_clip_ptr);
+        }
+        bus.free(cell_clip_handle);
     }
 
     fn draw_list_fallback<C: CpuOps>(
@@ -3832,6 +3879,15 @@ impl super::TrapDispatcher {
 
         self.set_current_port_state(bus, cpu, state.port, None);
         let list_port_state = self.qd_state_snapshot();
+        let list_port_color_state = ((bus.read_word(state.port.wrapping_add(6)) & 0xC000)
+            == 0xC000)
+            .then(|| {
+                (
+                    bus.read_long(state.port.wrapping_add(80)),
+                    bus.read_long(state.port.wrapping_add(84)),
+                    self.resolved_port_color_fields.get(&state.port).copied(),
+                )
+            });
 
         if let Some((row, col)) = only_cell {
             self.draw_list_cell_fallback(cpu, bus, state, row, col);
@@ -3845,6 +3901,15 @@ impl super::TrapDispatcher {
 
         self.restore_qd_state(list_port_state);
         self.sync_current_port_draw_state(bus);
+        if let Some((fg_pixel, bg_pixel, resolved_fields)) = list_port_color_state {
+            bus.write_long(state.port.wrapping_add(80), fg_pixel);
+            bus.write_long(state.port.wrapping_add(84), bg_pixel);
+            if let Some(fields) = resolved_fields {
+                self.resolved_port_color_fields.insert(state.port, fields);
+            } else {
+                self.resolved_port_color_fields.remove(&state.port);
+            }
+        }
 
         if previous_port != state.port {
             self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
@@ -10889,14 +10954,11 @@ impl super::TrapDispatcher {
             // byte $00) — same convention as Pack2 / Pack3 / Pack6,
             // NOT the Pack8 / SANE param-size-in-high-byte glue.
             //
-            // HLE compromise: Pack1 now builds and tears down real list
-            // records for the documented LNew/LDispose path so callers
-            // can obtain a live list handle. The remaining selectors
-            // still collapse to stack-discipline-correct no-ops until
-            // more Pack1 fixtures land. PROCEDUREs simply pop the
-            // documented Pascal frame; FUNCTIONs return defensive
-            // defaults (FALSE for BOOLEAN, 0 for INTEGER, (0,0) for
-            // Cell) when they still lack a stateful implementation.
+            // Pack1 routes the implemented stateful selectors through the
+            // same list-record path as Pack0. Selectors that still lack an
+            // implementation collapse to stack-discipline-correct no-ops:
+            // PROCEDUREs pop the documented Pascal frame and FUNCTIONs
+            // return defensive defaults.
             // LSearch's searchProc trampoline is intentionally NOT
             // invoked — returning FALSE is the stable "no match"
             // answer for the unimplemented search path.
@@ -10907,6 +10969,37 @@ impl super::TrapDispatcher {
             (true, 0x1E8) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                // Both package entry points expose the same List Manager
+                // selector ABI. Route every stateful selector through Pack0's
+                // implementation so records, drawing, and hit testing cannot
+                // drift between the two dispatchers. The remaining Pack1
+                // arms below retain their defensive nil-list contracts for
+                // operations that Pack0 does not implement yet.
+                if matches!(
+                    selector,
+                    0x0000
+                        | 0x0008
+                        | 0x000C
+                        | 0x0010
+                        | 0x0014
+                        | 0x0018
+                        | 0x001C
+                        | 0x0024
+                        | 0x0028
+                        | 0x002C
+                        | 0x0030
+                        | 0x0038
+                        | 0x003C
+                        | 0x0040
+                        | 0x0044
+                        | 0x0050
+                        | 0x0058
+                        | 0x005C
+                        | 0x0060
+                        | 0x0064
+                ) {
+                    return self.dispatch_toolbox(true, 0x1E7, cpu, bus);
+                }
                 match selector {
                     // PROCEDURE LActivate(act: BOOLEAN;
                     //                     lHandle: ListHandle);
@@ -23206,6 +23299,218 @@ mod tests {
         assert_eq!(disp.pn_loc, (7, 8));
         assert_eq!(disp.tx_mode, 2);
         assert_eq!(disp.tx_size, 12);
+    }
+
+    #[test]
+    fn list_dispatchers_draw_and_hit_test_offset_window_cells_in_local_coordinates() {
+        for trap in [0x1E7, 0x1E8] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let sp = TEST_SP;
+            let screen_base = 0x300000u32;
+            let row_bytes = 192u32;
+            let owner_port = 0x210000u32;
+            let caller_port = 0x211000u32;
+            let view_rect_ptr = 0x356400u32;
+            let data_bounds_ptr = 0x356500u32;
+            let data_ptr = 0x356600u32;
+            let query_cell_ptr = 0x356700u32;
+            let hilite = (0x0000, 0x8000, 0x0000);
+
+            disp.set_screen_mode_for_test(screen_base, row_bytes, 192, 128, 8);
+            disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+            disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
+            disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
+            disp.hilite_color = hilite;
+            bus.write_long(0x0824, screen_base);
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+            disp.init_cgraf_window(
+                &mut bus,
+                &mut cpu,
+                owner_port,
+                screen_base,
+                20,
+                30,
+                100,
+                170,
+                "",
+                0,
+                true,
+                false,
+                false,
+                0,
+            );
+            disp.init_cgraf_window(
+                &mut bus,
+                &mut cpu,
+                caller_port,
+                screen_base,
+                2,
+                3,
+                18,
+                23,
+                "",
+                0,
+                true,
+                false,
+                false,
+                0,
+            );
+            for offset in 0..(row_bytes * 128) {
+                bus.write_byte(screen_base + offset, 255);
+            }
+
+            super::super::TrapDispatcher::write_rect_words(
+                &mut bus,
+                view_rect_ptr,
+                (10, 10, 48, 100),
+            );
+            super::super::TrapDispatcher::write_rect_words(
+                &mut bus,
+                data_bounds_ptr,
+                (0, 0, 4, 1),
+            );
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0044); // LNew
+            bus.write_word(sp + 2, 0);
+            bus.write_word(sp + 4, 0);
+            bus.write_word(sp + 6, 0);
+            bus.write_word(sp + 8, 0); // drawIt = FALSE while populating
+            bus.write_long(sp + 10, owner_port);
+            bus.write_word(sp + 14, 128); // missing custom LDEF uses standard fallback
+            bus.write_word(sp + 16, 12);
+            bus.write_word(sp + 18, 90);
+            bus.write_long(sp + 20, data_bounds_ptr);
+            bus.write_long(sp + 24, view_rect_ptr);
+            bus.write_long(sp + 28, 0);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let list_handle = bus.read_long(sp + 28);
+
+            for (row, text) in [b"Alpha".as_slice(), b"Beta", b"Gamma", b"Delta"]
+                .into_iter()
+                .enumerate()
+            {
+                bus.write_bytes(data_ptr, text);
+                cpu.write_reg(Register::A7, sp);
+                bus.write_word(sp, 0x0058); // LSetCell
+                bus.write_long(sp + 2, list_handle);
+                bus.write_word(sp + 6, row as u16);
+                bus.write_word(sp + 8, 0);
+                bus.write_word(sp + 10, text.len() as u16);
+                bus.write_long(sp + 12, data_ptr);
+                disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x005C); // LSetSelect row 0
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, 0);
+            bus.write_word(sp + 8, 0);
+            bus.write_word(sp + 10, 0x0100);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x002C); // LDoDraw(TRUE)
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, 0x0100);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            disp.set_current_port_state(&mut bus, &mut cpu, caller_port, None);
+            disp.fg_color = (0x1111, 0x2222, 0x3333);
+            disp.bg_color = (0xAAAA, 0xBBBB, 0xCCCC);
+            disp.pn_loc = (7, 8);
+            disp.tx_mode = 2;
+            disp.sync_current_port_draw_state(&mut bus);
+            let owner_clip_handle = bus.read_long(owner_port + 28);
+            bus.write_long(owner_port + 80, 0);
+            bus.write_long(owner_port + 84, 0);
+            disp.resolved_port_color_fields.insert(owner_port, 0x03);
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0064); // LUpdate
+            bus.write_long(sp + 2, list_handle);
+            bus.write_long(sp + 6, 0);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            // The owner starts at global (20,30), so local rView (10,10)
+            // begins at screen (30,40). Every row must retain its own text
+            // witness instead of collapsing at the view's lower edge.
+            for (row, (top, bottom)) in
+                [(30u32, 42u32), (42, 54), (54, 66)].into_iter().enumerate()
+            {
+                let witness_pixels = (top..bottom)
+                    .flat_map(|y| (40u32..130).map(move |x| (y, x)))
+                    .filter(|&(y, x)| {
+                        let pixel = bus.read_byte(screen_base + y * row_bytes + x);
+                        if row == 0 { pixel != 255 } else { pixel == 0 }
+                    })
+                    .count();
+                assert!(witness_pixels > 0, "trap ${trap:03X} lost row at y={top}");
+            }
+            assert_eq!(bus.read_byte(screen_base + 31 * row_bytes + 125), 42);
+            assert_eq!(disp.current_port, caller_port);
+            assert_eq!(disp.fg_color, (0x1111, 0x2222, 0x3333));
+            assert_eq!(disp.bg_color, (0xAAAA, 0xBBBB, 0xCCCC));
+            assert_eq!(disp.pn_loc, (7, 8));
+            assert_eq!(disp.tx_mode, 2);
+            assert_eq!(bus.read_long(owner_port + 28), owner_clip_handle);
+            assert_eq!(bus.read_long(owner_port + 80), 0);
+            assert_eq!(bus.read_long(owner_port + 84), 0);
+            assert_eq!(
+                disp.resolved_port_color_fields.get(&owner_port),
+                Some(&0x03)
+            );
+            assert!((68u32..72).all(|y| (40u32..130)
+                .all(|x| bus.read_byte(screen_base + y * row_bytes + x) == 255)));
+
+            // LClick receives the same owner-local coordinate basis as rView.
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0018);
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, 0);
+            bus.write_word(sp + 8, 28); // local center of row 1
+            bus.write_word(sp + 10, 20);
+            bus.write_word(sp + 12, 0xBEEF);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(sp + 12), 0);
+
+            super::super::TrapDispatcher::write_point_words(
+                &mut bus,
+                query_cell_ptr,
+                (1, 0),
+            );
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x003C); // LGetSelect(FALSE, row 1)
+            bus.write_long(sp + 2, list_handle);
+            bus.write_long(sp + 6, query_cell_ptr);
+            bus.write_word(sp + 10, 0);
+            bus.write_word(sp + 12, 0xBEEF);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(sp + 12), 0x0100);
+
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x0040); // LLastClick
+            bus.write_long(sp + 2, list_handle);
+            bus.write_long(sp + 6, 0xFFFF_FFFF);
+            disp.dispatch_toolbox(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(sp + 6), 1);
+            assert_eq!(bus.read_word(sp + 8), 0);
+        }
     }
 
     #[test]

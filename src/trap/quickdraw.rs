@@ -18509,7 +18509,7 @@ impl super::TrapDispatcher {
         self.sync_port_draw_state(bus, self.current_port);
     }
 
-    fn resolve_current_port_color_pixels(
+    pub(super) fn resolve_current_port_color_pixels(
         &mut self,
         bus: &mut MacMemoryBus,
         foreground: bool,
