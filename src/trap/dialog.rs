@@ -6115,8 +6115,14 @@ impl super::TrapDispatcher {
                                 let title_width = self.popup_control_title_width(ctrl_ptr, max);
                                 let (draw_top, draw_left, draw_bottom, draw_right) = self
                                     .popup_control_box_rect(
-                                        bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
-                                        title_width, proc_id,
+                                        bus,
+                                        abs_top,
+                                        abs_left,
+                                        abs_bottom,
+                                        abs_right,
+                                        menu_id,
+                                        title_width,
+                                        proc_id,
                                     );
                                 self.draw_popup_control_label(
                                     bus,
@@ -6323,8 +6329,14 @@ impl super::TrapDispatcher {
                                 let title_width = self.popup_control_title_width(ctrl_ptr, max);
                                 let (draw_top, draw_left, draw_bottom, draw_right) = self
                                     .popup_control_box_rect(
-                                        bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
-                                        title_width, proc_id,
+                                        bus,
+                                        abs_top,
+                                        abs_left,
+                                        abs_bottom,
+                                        abs_right,
+                                        menu_id,
+                                        title_width,
+                                        proc_id,
                                     );
                                 self.draw_popup_control_label(
                                     bus,
@@ -6521,8 +6533,14 @@ impl super::TrapDispatcher {
                                 let title_width = self.popup_control_title_width(ctrl_ptr, max);
                                 let (draw_top, draw_left, draw_bottom, draw_right) = self
                                     .popup_control_box_rect(
-                                        bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
-                                        title_width, proc_id,
+                                        bus,
+                                        abs_top,
+                                        abs_left,
+                                        abs_bottom,
+                                        abs_right,
+                                        menu_id,
+                                        title_width,
+                                        proc_id,
                                     );
                                 self.draw_popup_control_label(
                                     bus,
@@ -7101,17 +7119,7 @@ impl super::TrapDispatcher {
         let text_y = top + ((bottom - top) + metrics.ascent - metrics.descent) / 2;
 
         self.draw_control_label_text(
-            bus,
-            top,
-            left,
-            bottom,
-            popup_left,
-            text_x,
-            text_y,
-            title,
-            font_id,
-            font_size,
-            !enabled,
+            bus, top, left, bottom, popup_left, text_x, text_y, title, font_id, font_size, !enabled,
         );
     }
 
@@ -28465,7 +28473,8 @@ mod tests {
         assert_eq!(bus.read_word(ctrl_ptr + 12) as i16, 30);
         assert_eq!(bus.read_word(ctrl_ptr + 14) as i16, 140);
         assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
-        assert_eq!(bus.read_word(ctrl_ptr + 20) as i16, 1300);
+        assert_eq!(bus.read_word(ctrl_ptr + 20) as i16, 1);
+        assert_eq!(bus.read_word(ctrl_ptr + 22) as i16, 0);
         assert_eq!(disp.control_proc_ids.get(&ctrl_ptr), Some(&1009));
         assert_eq!(
             disp.dialog_control_handles.get(&handle),

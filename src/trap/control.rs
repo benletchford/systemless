@@ -988,7 +988,16 @@ impl super::TrapDispatcher {
             // in contrlMax, so retain the pixel width as private CDEF state.
             // Macintosh Toolbox Essentials 1992, pp. 5-25 to 5-27.
             self.popup_control_title_widths.insert(ctrl_ptr, max);
-            self.create_popup_control_private_data(bus, min)
+            let data = self.create_popup_control_private_data(bus, min);
+            let item_count = self
+                .menus
+                .iter()
+                .rev()
+                .find(|menu| menu.id == min)
+                .map_or(0, |menu| menu.items.len().min(i16::MAX as usize) as i16);
+            bus.write_word(ctrl_ptr + 20, 1);
+            bus.write_word(ctrl_ptr + 22, item_count as u16);
+            data
         } else {
             0
         };
@@ -5263,10 +5272,9 @@ mod tests {
                 1009,
                 0,
             );
+            assert_eq!(bus.read_word(ctrl_ptr + 20), 1);
+            assert_eq!(bus.read_word(ctrl_ptr + 22), 1);
             bus.write_byte(ctrl_ptr + 17, hilite);
-            // The standard pop-up CDEF replaces the creation-time title width
-            // in contrlMax with the number of menu items.
-            bus.write_word(ctrl_ptr + 22, 1);
             assert_eq!(disp.popup_control_title_width(ctrl_ptr, 1), 60);
             disp.draw_control(&mut cpu, &mut bus, ctrl_ptr);
         }
