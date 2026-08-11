@@ -1973,6 +1973,10 @@ pub struct TrapDispatcher {
     /// Used by DrawControls to dispatch to the correct rendering routine.
     /// Inside Macintosh Volume I, I-331
     pub(crate) control_proc_ids: HashMap<u32, i16>,
+    /// Creation-time pop-up title widths keyed by ControlRecord pointer.
+    /// The standard pop-up CDEF replaces `contrlMax` with the menu item count,
+    /// so the original pixel width must remain in its private state.
+    pub(crate) popup_control_title_widths: HashMap<u32, i16>,
     /// The menu ID of the most recently inserted menu (via InsertMenu).
     /// Cleared when a type-0 userItem GetDItem is called immediately after.
     pub(crate) last_inserted_menu_id: Option<i16>,
@@ -3180,6 +3184,7 @@ impl TrapDispatcher {
             list_states: HashMap::new(),
             textedit_states: HashMap::new(),
             control_proc_ids: HashMap::new(),
+            popup_control_title_widths: HashMap::new(),
             last_inserted_menu_id: None,
             pending_dialog_popup_menu: None,
             dialog_item_popup_menus: HashMap::new(),

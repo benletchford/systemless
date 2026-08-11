@@ -6112,10 +6112,11 @@ impl super::TrapDispatcher {
                                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                                let title_width = self.popup_control_title_width(ctrl_ptr, max);
                                 let (draw_top, draw_left, draw_bottom, draw_right) = self
                                     .popup_control_box_rect(
                                         bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
-                                        max, proc_id,
+                                        title_width, proc_id,
                                     );
                                 self.draw_popup_control_label(
                                     bus,
@@ -6319,10 +6320,11 @@ impl super::TrapDispatcher {
                                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                                let title_width = self.popup_control_title_width(ctrl_ptr, max);
                                 let (draw_top, draw_left, draw_bottom, draw_right) = self
                                     .popup_control_box_rect(
                                         bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
-                                        max, proc_id,
+                                        title_width, proc_id,
                                     );
                                 self.draw_popup_control_label(
                                     bus,
@@ -6516,10 +6518,11 @@ impl super::TrapDispatcher {
                                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                                 let selected = value.max(1) as usize;
                                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                                let title_width = self.popup_control_title_width(ctrl_ptr, max);
                                 let (draw_top, draw_left, draw_bottom, draw_right) = self
                                     .popup_control_box_rect(
                                         bus, abs_top, abs_left, abs_bottom, abs_right, menu_id,
-                                        max, proc_id,
+                                        title_width, proc_id,
                                     );
                                 self.draw_popup_control_label(
                                     bus,
@@ -7089,8 +7092,6 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
         let font_id = 0i16;
         let font_size = 12i16;
         let metrics = get_font_metrics(font_id, font_size);
@@ -7099,22 +7100,19 @@ impl super::TrapDispatcher {
         let text_x = (text_right - text_width).max(left);
         let text_y = top + ((bottom - top) + metrics.ascent - metrics.descent) / 2;
 
-        Self::fb_draw_string(
+        self.draw_control_label_text(
             bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
+            top,
+            left,
+            bottom,
+            popup_left,
             text_x,
             text_y,
             title,
             font_id,
             font_size,
+            !enabled,
         );
-        if !enabled {
-            self.dim_rect(bus, top, left, bottom, popup_left);
-        }
     }
 
     pub(crate) fn draw_popup_control_with_state(
