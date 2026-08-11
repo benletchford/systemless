@@ -2203,8 +2203,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-355
             // Stack: SP+0: ch (2 bytes), SP+2: result (4 bytes).
             // Callee pops 2 bytes (ch), leaves LONGINT at SP.
-            // MenuKey ($A93E): Searches enabled menu-bar menus for matching key
-            // equivalent; scan order is right-to-left per IM:I I-355.
+            // MenuKey ($A93E): Searches enabled menus in the current menu list
+            // for a matching key equivalent; scan order is right-to-left per
+            // IM:I I-355.
             (true, 0x13E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ch = (bus.read_word(sp) & 0xFF) as u8;
@@ -2215,7 +2216,7 @@ impl super::TrapDispatcher {
                 let mut matched_menu_idx: Option<usize> = None;
                 let ch_upper = (ch as char).to_ascii_uppercase() as u8;
                 for (menu_idx, menu) in self.menus.iter().enumerate().rev() {
-                    if !menu.visible_in_menu_bar || !menu.enabled {
+                    if !menu.in_menu_bar || !menu.enabled {
                         continue;
                     }
                     for (i, item) in menu.items.iter().enumerate() {
@@ -2237,7 +2238,9 @@ impl super::TrapDispatcher {
                 // packed LongInt result remains the guest-visible behavior;
                 // title pixels are renderer/theme-owned chrome.
                 if let Some(menu_idx) = matched_menu_idx {
-                    self.highlight_menu_title(bus, menu_idx);
+                    if self.menus[menu_idx].visible_in_menu_bar {
+                        self.highlight_menu_title(bus, menu_idx);
+                    }
                 }
 
                 if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
@@ -7499,6 +7502,68 @@ mod tests {
             0,
             "MenuKey should ignore items from menus not yet inserted"
         );
+    }
+
+    // IM:I I-352 and I-355: InsertMenu adds a menu to the current menu
+    // list, and MenuKey searches that list. A beforeID of -1 omits the title
+    // from the menu bar but does not make its command equivalents unavailable.
+    #[test]
+    fn menukey_searches_installed_command_only_menu_without_drawing_title() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 64;
+        let base = bus.alloc(row_bytes * 342);
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        disp.menu_bar_hidden = false;
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let visible = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 230, 0x306800, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, visible, 0x306840, "Open/O");
+        insert_menu(&mut disp, &mut cpu, &mut bus, visible);
+
+        let commands =
+            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 231, 0x306880, "Commands");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, commands, 0x3068C0, "Pause/P");
+        insert_menu_before(&mut disp, &mut cpu, &mut bus, commands, -1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.menu_title_regions().len(), 1);
+        let menu_bar_before = bus.read_bytes(base, row_bytes as usize * 20);
+
+        assert_eq!(
+            menu_key_result(&mut disp, &mut cpu, &mut bus, b'P'),
+            (231u32 << 16) | 1
+        );
+        assert_eq!(
+            bus.read_bytes(base, row_bytes as usize * 20),
+            menu_bar_before,
+            "a command-only match must not paint a hidden menu title"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, commands);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(menu_key_result(&mut disp, &mut cpu, &mut bus, b'P'), 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, commands);
+        disp.dispatch_menu(true, 0x139, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, commands);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(menu_key_result(&mut disp, &mut cpu, &mut bus, b'P'), 0);
     }
 
     // MTE 1992 p. 3-138: GetItemCmd returns 0 if the item has no
