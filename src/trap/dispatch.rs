@@ -1579,6 +1579,10 @@ pub struct TrapDispatcher {
     /// Bits are packed for direct byte/bit readers:
     /// key >> 3 selects the byte, key & 7 selects the bit.
     pub(crate) key_map: [u8; 16],
+    /// Physical Caps Lock press state, kept separately from its logical
+    /// latched bit in `key_map` so a release does not clear the latch and a
+    /// repeated host key-down cannot toggle it twice.
+    pub(crate) caps_lock_physically_pressed: bool,
     /// Auto-key repeat state for the currently repeating character key.
     pub(crate) key_repeat: Option<KeyRepeatState>,
     /// Debug counter for GetKeys calls that observed at least one held key.
@@ -2125,6 +2129,7 @@ pub(crate) struct LoadedResources {
 impl TrapDispatcher {
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
     pub(crate) const AUTO_KEY_RATE_TICKS: u32 = 4;
+    const CAPS_LOCK_KEY_CODE: u8 = 0x39;
 
     pub(crate) fn key_is_modifier(key_code: u8) -> bool {
         // Command, Shift, Caps Lock, Option, and Control (including the
@@ -2695,6 +2700,7 @@ impl TrapDispatcher {
         const BTN_STATE: u16 = 128;
         const CMD_KEY: u16 = 256;
         const SHIFT_KEY: u16 = 512;
+        const ALPHA_LOCK: u16 = 1024;
         const OPTION_KEY: u16 = 2048;
         const CONTROL_KEY: u16 = 4096;
 
@@ -2707,6 +2713,11 @@ impl TrapDispatcher {
         }
         if self.key_is_down(0x38) || self.key_is_down(0x3C) {
             modifiers |= SHIFT_KEY;
+        }
+        // EventRecord.modifiers exposes the logical Caps Lock latch through
+        // alphaLock. Inside Macintosh Volume I (1985), p. I-263.
+        if self.key_is_down(Self::CAPS_LOCK_KEY_CODE) {
+            modifiers |= ALPHA_LOCK;
         }
         if self.key_is_down(0x3A) || self.key_is_down(0x3D) {
             modifiers |= OPTION_KEY;
@@ -3028,6 +3039,7 @@ impl TrapDispatcher {
             mouse_pos: (0, 0),
             mouse_button: false,
             key_map: [0; 16],
+            caps_lock_physically_pressed: false,
             key_repeat: None,
             debug_getkeys_nonzero_count: 0,
             debug_last_getkeys_nonzero_key_map: [0; 16],
@@ -4512,10 +4524,21 @@ impl TrapDispatcher {
         // classic Event Manager represents those repeats as autoKey events.
         // Inside Macintosh Volume I, I-246. Ignore duplicate host callbacks
         // so they cannot enqueue extra keyDown records or restart autoKey.
-        if self.key_is_down(key_code) {
-            return;
+        if key_code == Self::CAPS_LOCK_KEY_CODE {
+            if self.caps_lock_physically_pressed {
+                return;
+            }
+            self.caps_lock_physically_pressed = true;
+            // Caps Lock latches on one physical press and releases on the
+            // next. Inside Macintosh Volume I (1985), p. I-34.
+            let latched = !self.key_is_down(key_code);
+            set_key_map_key(&mut self.key_map, key_code, latched);
+        } else {
+            if self.key_is_down(key_code) {
+                return;
+            }
+            set_key_map_key(&mut self.key_map, key_code, true);
         }
-        set_key_map_key(&mut self.key_map, key_code, true);
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
             eprintln!(
@@ -4550,7 +4573,11 @@ impl TrapDispatcher {
 
     /// Push a key-up event into the event queue.
     pub fn push_key_up(&mut self, key_code: u8, char_code: u8) {
-        set_key_map_key(&mut self.key_map, key_code, false);
+        if key_code == Self::CAPS_LOCK_KEY_CODE {
+            self.caps_lock_physically_pressed = false;
+        } else {
+            set_key_map_key(&mut self.key_map, key_code, false);
+        }
         if self
             .key_repeat
             .is_some_and(|repeat| repeat.key_code == key_code)

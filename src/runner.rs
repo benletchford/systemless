@@ -539,6 +539,7 @@ struct IdleCycleHostSnapshot {
     mouse_pos: (i16, i16),
     mouse_button: bool,
     key_map: [u8; 16],
+    caps_lock_physically_pressed: bool,
 }
 
 impl IdleCycleHostSnapshot {
@@ -547,6 +548,7 @@ impl IdleCycleHostSnapshot {
             mouse_pos: dispatcher.mouse_pos,
             mouse_button: dispatcher.mouse_button,
             key_map: *dispatcher.key_map_bytes(),
+            caps_lock_physically_pressed: dispatcher.caps_lock_physically_pressed,
         }
     }
 }
@@ -7998,6 +8000,28 @@ mod tests {
             0,
             "unused raw byte should stay clear"
         );
+    }
+
+    #[test]
+    fn caps_lock_latch_is_preserved_in_low_memory_keymap() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let caps_lock_byte = addr::KEY_MAP_LM + 7;
+
+        runner.push_key_down(0x39, 0);
+        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x02, 0x02);
+        runner.push_key_up(0x39, 0);
+        assert_eq!(
+            runner.bus.read_byte(caps_lock_byte) & 0x02,
+            0x02,
+            "physical release must keep the low-memory Caps Lock bit latched"
+        );
+
+        runner.push_key_down(0x39, 0);
+        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x02, 0);
+        runner.push_key_up(0x39, 0);
+        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x02, 0);
     }
 
     #[test]
