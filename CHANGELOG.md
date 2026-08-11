@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.13](https://github.com/benletchford/systemless/compare/v0.12.12...v0.12.13) (2026-08-11)
+
+
+### Bug Fixes
+
+* **input:** latch Caps Lock state ([610d8ed](https://github.com/benletchford/systemless/commit/610d8ed1c5355a71d54a90a7bc9a467ebb673b8f))
+
 ## [0.12.12](https://github.com/benletchford/systemless/compare/v0.12.11...v0.12.12) (2026-08-10)
 
 
