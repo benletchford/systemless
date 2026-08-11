@@ -820,9 +820,10 @@ impl Default for FixtureRunnerConfig {
 ///    [`halted_by_exit_to_shell`](Self::halted_by_exit_to_shell) classifies
 ///    the common clean application-exit path.
 ///
-/// **Defaults:** kiosk mode (Mac menu bar suppressed regardless of the
-/// guest's `MBarHeight`); arrow keys NOT remapped to numpad. Override
-/// each via [`set_menu_bar_visible`](Self::set_menu_bar_visible) /
+/// **Defaults:** kiosk launch presentation (Mac menu bar initially
+/// suppressed until the guest explicitly reveals it); arrow keys NOT
+/// remapped to numpad. Override each via
+/// [`set_menu_bar_visible`](Self::set_menu_bar_visible) /
 /// [`set_arrows_as_numpad`](Self::set_arrows_as_numpad) or the
 /// `SYSTEMLESS_SHOW_MENU_BAR` env var.
 ///
@@ -974,10 +975,11 @@ impl FixtureRunner {
     /// [`crate::game::RAM_SIZE`] provides the canonical profile-driven size;
     /// tests and specialized embedders may choose a smaller allocation.
     ///
-    /// The dispatcher defaults to **kiosk mode** (Mac menu bar
-    /// suppressed, regardless of the guest's `MBarHeight`). Call
-    /// [`set_menu_bar_visible`](Self::set_menu_bar_visible) to opt back
-    /// in to the original Mac menu-bar behaviour.
+    /// The dispatcher defaults to an initial **kiosk presentation**. The Mac
+    /// menu bar starts suppressed, then returns if the guest explicitly
+    /// transitions `MBarHeight` from zero to a positive value. Call
+    /// [`set_menu_bar_visible`](Self::set_menu_bar_visible) to override that
+    /// launch behavior.
     pub fn new(ram_size: usize, config: FixtureRunnerConfig) -> Self {
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.set_ui_theme_id(config.ui_theme);
@@ -1174,17 +1176,13 @@ impl FixtureRunner {
 
     /// Show or hide the Mac menu bar.
     ///
-    /// systemless runs in **kiosk mode** by default — the Mac menu bar is
-    /// suppressed regardless of the guest's `MBarHeight` ($0BAA) value
-    /// and `DrawMenuBar` is a no-op. This matches the typical embedding
-    /// case (running a single classic Mac game inside a fullscreen
-    /// host window) where the host owns the chrome and the guest's
-    /// menu bar would just diverge from the original-machine
-    /// appearance whenever the cursor entered `y < 20`.
+    /// Systemless starts in a kiosk presentation by default, suppressing the
+    /// menu bar until the guest explicitly hides and reveals it through
+    /// `MBarHeight` ($0BAA). This keeps launch chrome out of game surfaces
+    /// while allowing applications to expose their own menu commands later.
     ///
-    /// Pass `true` to opt back in to original Mac behavior — for
-    /// example, when running a Mac *application* that relies on the
-    /// menu bar as its primary user surface.
+    /// Pass `true` to show menu chrome whenever guest state permits. Pass
+    /// `false` to force suppression across later guest reveal transitions.
     ///
     /// The same toggle is also accessible via the `SYSTEMLESS_SHOW_MENU_BAR`
     /// environment variable (set to any value to show) and via
@@ -1196,6 +1194,8 @@ impl FixtureRunner {
     /// Inside Macintosh Volume V, V-245 (MBarHeight global).
     pub fn set_menu_bar_visible(&mut self, visible: bool) {
         self.dispatcher.menu_bar_hidden = !visible;
+        self.dispatcher.menu_bar_hidden_forced = !visible;
+        self.dispatcher.menu_bar_guest_reveal_armed = false;
     }
 
     /// Returns true when the Mac menu bar is currently being rendered.
@@ -1911,7 +1911,9 @@ impl FixtureRunner {
             ui_theme: self.config.ui_theme,
             theme_metrics_mode: self.config.theme_metrics_mode,
         };
-        let menu_bar_visible = self.menu_bar_visible();
+        let menu_bar_hidden = self.dispatcher.menu_bar_hidden;
+        let menu_bar_hidden_forced = self.dispatcher.menu_bar_hidden_forced;
+        let menu_bar_guest_reveal_armed = self.dispatcher.menu_bar_guest_reveal_armed;
         let instructions_per_tick = self.instructions_per_tick;
         let wait_sleep_cap_in_headless = self.wait_sleep_cap_in_headless;
         let app_start_time = self.app_start_time;
@@ -1934,7 +1936,9 @@ impl FixtureRunner {
         let next_working_dir_refnum = self.dispatcher.next_working_dir_refnum;
 
         let mut replacement = FixtureRunner::new(ram_size, config);
-        replacement.set_menu_bar_visible(menu_bar_visible);
+        replacement.dispatcher.menu_bar_hidden = menu_bar_hidden;
+        replacement.dispatcher.menu_bar_hidden_forced = menu_bar_hidden_forced;
+        replacement.dispatcher.menu_bar_guest_reveal_armed = menu_bar_guest_reveal_armed;
         replacement.instructions_per_tick = instructions_per_tick;
         replacement.tick_budget = instructions_per_tick as i32;
         replacement.wait_sleep_cap_in_headless = wait_sleep_cap_in_headless;
@@ -13774,11 +13778,16 @@ mod tests {
             !runner.menu_bar_visible(),
             "kiosk default: menu_bar_visible() must report false"
         );
+        assert!(
+            !runner.dispatcher().menu_bar_hidden_forced,
+            "default kiosk suppression must remain releasable by guest state"
+        );
         runner.set_menu_bar_visible(true);
         assert!(
             runner.menu_bar_visible(),
             "after set_menu_bar_visible(true), menu_bar_visible() must report true"
         );
+        assert!(!runner.dispatcher().menu_bar_hidden_forced);
         runner.set_menu_bar_visible(false);
         assert!(
             !runner.menu_bar_visible(),
@@ -13789,7 +13798,11 @@ mod tests {
         // field but forget to wire it through the toggle.
         assert!(
             runner.dispatcher().menu_bar_hidden,
-            "set_menu_bar_visible(false) must clear the kiosk-bypass bit"
+            "set_menu_bar_visible(false) must restore menu-bar suppression"
+        );
+        assert!(
+            runner.dispatcher().menu_bar_hidden_forced,
+            "set_menu_bar_visible(false) must retain suppression across guest reveals"
         );
     }
 

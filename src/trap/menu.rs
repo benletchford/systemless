@@ -1528,6 +1528,12 @@ impl super::TrapDispatcher {
             // DrawMenuBar ($A937): Renders menu-bar titles for menus currently
             // in the menu list (InsertMenu-installed) per IM:I I-352/I-354.
             (true, 0x137) => {
+                if bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) > 0
+                    && !self.menu_bar_hidden_forced
+                {
+                    self.menu_bar_hidden = false;
+                    self.menu_bar_guest_reveal_armed = false;
+                }
                 self.draw_menu_bar_to_fb(bus);
                 Ok(())
             }

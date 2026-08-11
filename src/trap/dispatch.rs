@@ -1529,17 +1529,17 @@ pub struct TrapDispatcher {
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
     /// the game temporarily restores MBarHeight (e.g. on cursor-at-top).
     pub fullscreen_locked: bool,
-    /// Host-controlled override for menu bar visibility. When true, the menu
-    /// bar is suppressed regardless of game state — unlike `fullscreen_locked`
-    /// which the emulator auto-clears when the game writes MBarHeight > 0.
-    /// Defaults to `true` so the HLE renders like a kiosk by default; the
-    /// menu bar is a Mac OS chrome surface that has no analogue in a game-
-    /// only runtime, and showing it diverges screenshots from the
-    /// original-machine reference whenever the cursor hovers `y < 20`.
-    /// Set `SYSTEMLESS_SHOW_MENU_BAR=1` (or assign `menu_bar_hidden = false`
-    /// after construction) to opt back in for environments where the menu
-    /// bar IS the user-facing surface (e.g. running a Mac app, not a game).
+    /// Current host-side menu bar suppression. This starts enabled for kiosk
+    /// presentation, but a guest transition from `MBarHeight == 0` to a
+    /// positive height releases that initial suppression unless the host has
+    /// explicitly forced it through `FixtureRunner::set_menu_bar_visible`.
     pub menu_bar_hidden: bool,
+    /// Whether menu-bar suppression was explicitly forced by the host rather
+    /// than inherited from the default launch presentation.
+    pub(crate) menu_bar_hidden_forced: bool,
+    /// Set after observing a guest-hidden menu bar so a later positive
+    /// `MBarHeight` can be recognized as an explicit guest reveal.
+    pub(crate) menu_bar_guest_reveal_armed: bool,
     /// Sound Manager state (channels, playback buffers).
     pub sound_manager: crate::sound::SoundManager,
     /// Menus loaded from MENU resources, in order of insertion
@@ -3027,6 +3027,8 @@ impl TrapDispatcher {
             // host a Mac app (rather than a game) can opt back in via
             // `SYSTEMLESS_SHOW_MENU_BAR=1`.
             menu_bar_hidden: std::env::var_os("SYSTEMLESS_SHOW_MENU_BAR").is_none(),
+            menu_bar_hidden_forced: false,
+            menu_bar_guest_reveal_armed: false,
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
             saved_menu_bars: HashMap::new(),

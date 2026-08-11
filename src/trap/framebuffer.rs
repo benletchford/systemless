@@ -4352,6 +4352,15 @@ impl super::TrapDispatcher {
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         let (_, _, screen_w, screen_h, _) = self.screen_mode;
 
+        if menu_bar_height <= 0 {
+            self.menu_bar_guest_reveal_armed = true;
+        } else if self.menu_bar_guest_reveal_armed {
+            self.menu_bar_guest_reveal_armed = false;
+            if !self.menu_bar_hidden_forced {
+                self.menu_bar_hidden = false;
+            }
+        }
+
         // Detect fullscreen: the front window covers the entire screen
         // (top <= 0, left <= 0, bottom >= screen_h, right >= screen_w)
         // and MBarHeight is 0.  Once detected, lock fullscreen mode so
@@ -5384,6 +5393,89 @@ mod redraw_chrome_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn redraw_chrome_releases_initial_kiosk_after_guest_menu_bar_reveal() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+        disp.menus.push(super::super::menu::Menu {
+            id: 1,
+            title: String::from("File"),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        disp.front_window = 0;
+        disp.menu_bar_hidden = true;
+
+        bus.fill_bytes(screen_base, 800 * 20, 0xAA);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(bus.read_byte(screen_base + 10 * 800 + 400), 0xAA);
+
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(!disp.menu_bar_hidden);
+        assert_ne!(bus.read_byte(screen_base + 10 * 800 + 400), 0xAA);
+
+        disp.menu_bar_hidden = true;
+        disp.menu_bar_guest_reveal_armed = false;
+        bus.fill_bytes(screen_base, 800 * 20, 0xAA);
+
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        disp.redraw_chrome(&mut bus);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.redraw_chrome(&mut bus);
+
+        assert!(
+            !disp.menu_bar_hidden,
+            "a positive guest MBarHeight after fullscreen must release initial kiosk suppression"
+        );
+        assert_ne!(
+            bus.read_byte(screen_base + 10 * 800 + 400),
+            0xAA,
+            "the compositor must paint installed menu titles after the guest reveal"
+        );
+        assert_eq!(
+            disp.menu_title_hit_test(18),
+            Some(0),
+            "the revealed title must retain its Menu Manager hit region"
+        );
+
+        bus.fill_bytes(screen_base, 800 * 20, 0x55);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(
+            bus.read_byte(screen_base + 10 * 800 + 400),
+            0x55,
+            "the reverse guest transition must not leave menu chrome over application pixels"
+        );
+
+        disp.menu_bar_hidden = true;
+        disp.menu_bar_hidden_forced = true;
+        bus.fill_bytes(screen_base, 800 * 20, 0x66);
+        disp.redraw_chrome(&mut bus);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.redraw_chrome(&mut bus);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(
+            disp.menu_bar_hidden,
+            "an explicit host force-hide must survive guest reveal requests"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 10 * 800 + 400),
+            0x66,
+            "forced suppression must keep menu chrome out of the framebuffer"
+        );
     }
 
     #[test]
