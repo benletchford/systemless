@@ -5004,6 +5004,13 @@ impl super::TrapDispatcher {
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
         self.dialog_items.insert(dlg_ptr, items.clone());
+        // A dialog's screen-backed GrafPort can receive application control
+        // drawing even while its window is hidden. Establish the save-under
+        // before returning the DialogPtr so those dialog-owned writes cannot
+        // become the background later restored by DisposDialog. Draws through
+        // other ports keep this snapshot current until disposal.
+        // Inside Macintosh Volume I, I-412, I-425.
+        self.ensure_dialog_background_saved(bus, dlg_ptr, bounds);
 
         if visible {
             // NewDialog/GetNewDialog create and display visible dialogs
@@ -5185,15 +5192,17 @@ impl super::TrapDispatcher {
                 dialogs.push((tracking.dialog_ptr, tracking.bounds));
             }
         }
+        for &dialog_ptr in self.dialog_saved_pixels.keys() {
+            if !dialogs
+                .iter()
+                .any(|(candidate, _)| *candidate == dialog_ptr)
+                && self.dialog_items.contains_key(&dialog_ptr)
+            {
+                dialogs.push((dialog_ptr, Self::dialog_screen_bounds(bus, dialog_ptr)));
+            }
+        }
         for (dialog_ptr, bounds) in dialogs {
-            let drawing_active_modal_dialog =
-                self.dialog_tracking.as_ref().is_some_and(|tracking| {
-                    tracking.dialog_ptr == dialog_ptr && dialog_ptr == drawing_port
-                });
-            let drawing_premodal_dialog =
-                dialog_ptr == drawing_port && !self.dialog_modal_entered.contains(&dialog_ptr);
-            if drawing_active_modal_dialog
-                || drawing_premodal_dialog
+            if dialog_ptr == drawing_port
                 || self.active_modeless_dialog_draw_proc == Some(dialog_ptr)
             {
                 continue;
@@ -17730,9 +17739,33 @@ mod tests {
             0x77,
             "QuickDraw drawing through a hidden dialog port must be clipped"
         );
-        assert!(
-            !disp.dialog_saved_pixels.contains_key(&dlg_ptr),
-            "no visible draw means no saved-under snapshot"
+        let saved_rect = TrapDispatcher::dialog_saved_pixel_rect((100, 100, 180, 260));
+        let saved_width = (saved_rect.3 - saved_rect.1) as usize;
+        let probe_index =
+            ((125 - saved_rect.0) as usize) * saved_width + (125 - saved_rect.1) as usize;
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dlg_ptr).unwrap()[probe_index],
+            0x77,
+            "hidden dialog creation must capture the background before setup drawing"
+        );
+
+        // Drawing through another screen-backed port is background drawing
+        // and must keep the hidden dialog's save-under current. Drawing
+        // through the dialog port itself remains dialog-owned even after the
+        // dialog has entered and returned from ModalDialog.
+        bus.write_byte(probe_addr, 0x33);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, 0x300000, (125, 125, 126, 126));
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dlg_ptr).unwrap()[probe_index],
+            0x33
+        );
+        disp.dialog_modal_entered.insert(dlg_ptr);
+        bus.write_byte(probe_addr, 0x44);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, dlg_ptr, (125, 125, 126, 126));
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dlg_ptr).unwrap()[probe_index],
+            0x33,
+            "dialog-owned drawing must not poison the hidden save-under"
         );
     }
 
@@ -27151,11 +27184,11 @@ mod tests {
     }
 
     #[test]
-    fn retained_modal_dialog_saved_background_tracks_same_port_screen_draws() {
-        // After ModalDialog returns with a retained visible modal, the app may
-        // immediately redraw the background before calling DisposDialog while
-        // the dialog remains the current screen-backed port. Treat those
-        // same-port screen writes as background, not as dialog content.
+    fn retained_modal_dialog_saved_background_ignores_same_port_dialog_draws() {
+        // After ModalDialog returns with a retained visible modal, applications
+        // may redraw controls through the dialog's own screen-backed GrafPort.
+        // Those writes update visible dialog content, not the pixels underneath
+        // the window that DisposDialog must later restore.
         let (mut disp, _cpu, mut bus) = setup();
         let screen_base = 0x300000u32;
         let row_bytes: u32 = 640;
@@ -27195,8 +27228,8 @@ mod tests {
         disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, dialog_ptr, (120, 130, 121, 131));
         assert_eq!(
             disp.dialog_saved_pixels.get(&dialog_ptr).unwrap()[touched_idx],
-            0x44,
-            "retained modal same-port background drawing should update saved-under pixels"
+            0x11,
+            "retained modal same-port dialog drawing must not update saved-under pixels"
         );
     }
 
