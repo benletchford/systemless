@@ -216,11 +216,11 @@ impl super::TrapDispatcher {
     pub(crate) const RES_MAP_CHANGED_ATTR: u16 = 0x0020;
     pub(crate) const RES_MAP_READ_ONLY_ATTR: u16 = 0x0080;
 
-    fn is_synthetic_driver_name(filename: &str) -> bool {
-        matches!(
-            filename,
-            ".AIn" | ".AOut" | ".BIn" | ".BOut" | ".MPP" | ".ATP" | ".XPP"
-        )
+    fn is_available_synthetic_driver_name(filename: &str) -> bool {
+        // Driver presence is a capability probe. Keep this list limited to
+        // services backed by the HLE: AppleTalk's .MPP/.ATP/.XPP drivers must
+        // remain absent until their control, status, and protocol paths exist.
+        matches!(filename, ".AIn" | ".AOut" | ".BIn" | ".BOut")
     }
 
     fn address_is_loaded_code(&self, address: u32) -> bool {
@@ -3774,7 +3774,7 @@ impl super::TrapDispatcher {
                     bus.write_word(pb + 16, 0); // noErr
                     cpu.write_reg(Register::D0, 0);
                     eprintln!("[TRAP] PBOpen -> refnum={} vfs=\"{}\"", refnum, vfs_name);
-                } else if Self::is_synthetic_driver_name(&filename) {
+                } else if Self::is_available_synthetic_driver_name(&filename) {
                     let refnum = self.next_refnum;
                     self.next_refnum += 1;
                     self.synthetic_drivers.insert(refnum, filename.clone());
@@ -13205,6 +13205,28 @@ mod tests {
         call(&mut disp, false, 0x01, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert!(!disp.synthetic_drivers.contains_key(&refnum));
+    }
+
+    #[test]
+    fn pbopen_does_not_advertise_unavailable_appletalk_drivers() {
+        for driver_name in [
+            b".MPP".as_slice(),
+            b".ATP".as_slice(),
+            b".XPP".as_slice(),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let pb = 0x300000u32;
+            setup_param_block(&mut bus, &mut cpu, pb, driver_name);
+            bus.write_word(pb + 16, 0x7FFF);
+            bus.write_word(pb + 24, 0x7FFF);
+
+            call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+
+            assert_eq!(cpu.read_reg(Register::D0), (-43i32) as u32);
+            assert_eq!(bus.read_word(pb + 16), (-43i16) as u16);
+            assert_eq!(bus.read_word(pb + 24), 0);
+            assert!(disp.synthetic_drivers.is_empty());
+        }
     }
 
     // ================================================================
