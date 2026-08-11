@@ -1338,6 +1338,75 @@ impl super::TrapDispatcher {
         sampled
     }
 
+    fn exposed_background_is_damaged_desktop_pattern(
+        &self,
+        bus: &MacMemoryBus,
+        excluded_rect: (i16, i16, i16, i16),
+    ) -> bool {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let top = excluded_rect.0.max(0).min(screen_height);
+        let left = excluded_rect.1.max(0).min(screen_width);
+        let bottom = excluded_rect.2.max(0).min(screen_height);
+        let right = excluded_rect.3.max(0).min(screen_width);
+        let black = Self::logical_black_pixel_index(bus);
+        let white = Self::logical_white_pixel_index(bus);
+        let total = (i32::from(top) * i32::from(screen_width)
+            + i32::from((screen_height - bottom).max(0)) * i32::from(screen_width)
+            + i32::from((bottom - top).max(0))
+                * i32::from(left.max(0) + (screen_width - right).max(0)))
+            as usize;
+        let mut mismatches = 0usize;
+
+        for y in 0..screen_height {
+            let ranges = if y < top || y >= bottom {
+                [(0, screen_width), (0, 0)]
+            } else {
+                [(0, left), (right, screen_width)]
+            };
+            let pattern = STANDARD_GRAY_PATTERN[y.rem_euclid(8) as usize];
+            for (start, end) in ranges {
+                for x in start..end {
+                    let bit = (pattern >> (7 - x.rem_euclid(8))) & 1;
+                    let expected = if pixel_size == 8 {
+                        if bit != 0 {
+                            black
+                        } else {
+                            white
+                        }
+                    } else {
+                        bit
+                    };
+                    let actual = if pixel_size == 8 {
+                        bus.read_byte(screen_base + y as u32 * row_bytes + x as u32)
+                    } else {
+                        u8::from(Self::fb_pixel_is_logical_black(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                        ))
+                    };
+                    if actual != expected {
+                        mismatches += 1;
+                        // A mostly application-painted surround is not the
+                        // desktop. Reject it as soon as more than one pixel
+                        // in 32 differs from the standard pattern.
+                        if mismatches.saturating_mul(32) > total {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        total != 0 && mismatches != 0
+    }
+
     fn fill_desktop_pattern_outside_rect(
         &self,
         bus: &mut MacMemoryBus,
@@ -1403,8 +1472,7 @@ impl super::TrapDispatcher {
     }
 
     fn restore_kiosk_dialog_desktop_background(&mut self, bus: &mut MacMemoryBus) {
-        if !self.menu_bar_hidden
-            || self.fullscreen_locked
+        if self.fullscreen_locked
             || !self.front_window_is_dialog_like()
             || self.visible_window_count(bus) != 1
         {
@@ -1414,12 +1482,15 @@ impl super::TrapDispatcher {
         let bounds = self
             .window_structure_rect(bus, self.front_window)
             .unwrap_or(self.window_bounds);
-        if self.exposed_background_samples_are_black(bus, bounds) {
+        if self.exposed_background_samples_are_black(bus, bounds)
+            || self.exposed_background_is_damaged_desktop_pattern(bus, bounds)
+        {
             // SetDeskCPat defines the desktop as the Window Manager's
-            // patterned background. In kiosk mode, preserve black full-screen
-            // game surfaces, but restore the standard desktop pattern behind
-            // single floating dialogs whose exposed background is still the
-            // startup black stage.
+            // patterned background. Preserve genuine full-screen game surfaces,
+            // but restore the standard desktop behind a single floating window
+            // when the exposed area is either the startup black stage or an
+            // overwhelmingly intact desktop pattern with sparse direct-screen
+            // damage.
             // Inside Macintosh Volume V, V-210
             self.fill_desktop_pattern_outside_rect(bus, bounds);
             // A floating window can have captured its save-under while the
@@ -5539,6 +5610,66 @@ mod redraw_chrome_tests {
             "the save-under snapshot must track the synthesized desktop pattern"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
+    }
+
+    #[test]
+    fn redraw_chrome_repairs_sparse_desktop_damage_around_floating_window() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = disp.screen_mode;
+        TrapDispatcher::fb_fill_pattern_rect(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            0,
+            0,
+            screen_h as i16,
+            screen_w as i16,
+            super::STANDARD_GRAY_PATTERN,
+        );
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.menu_bar_hidden = false;
+        disp.fullscreen_locked = false;
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (100, 180, 208, 620);
+        disp.window_proc_id = 5;
+        disp.window_proc_ids.insert(PORT_PTR, 5);
+        disp.dialog_items
+            .insert(PORT_PTR, vec![DialogItem::default()]);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+        disp.window_saved_under_pixels
+            .insert(PORT_PTR, (100, 180, 440, 108, vec![0x7E; 440 * 108]));
+
+        let damaged = [(40u32, 140u32), (64, 180), (720, 320), (48, 470)];
+        for &(x, y) in &damaged {
+            bus.write_byte(screen_base + y * row_bytes + x, 0x7E);
+        }
+        let content_addr = screen_base + 150 * row_bytes + 240;
+        bus.write_byte(content_addr, 0x4D);
+
+        disp.redraw_chrome(&mut bus);
+
+        for &(x, y) in &damaged {
+            let pattern = super::STANDARD_GRAY_PATTERN[(y % 8) as usize];
+            let bit = (pattern >> (7 - (x % 8))) & 1;
+            let expected = if bit != 0 { 0xFF } else { 0x00 };
+            assert_eq!(bus.read_byte(screen_base + y * row_bytes + x), expected);
+        }
+        assert_eq!(
+            bus.read_byte(content_addr),
+            0x4D,
+            "desktop repair must preserve pixels inside the visible window"
+        );
+        let saved = &disp.window_saved_under_pixels[&PORT_PTR].4;
+        assert_eq!(
+            &saved[..2],
+            &[0xFF, 0x00],
+            "saved-under pixels must follow the repaired desktop"
+        );
     }
 
     #[test]
