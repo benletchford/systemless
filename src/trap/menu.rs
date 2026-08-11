@@ -5249,6 +5249,13 @@ impl super::TrapDispatcher {
 
     /// Highlight a menu title in the menu bar.
     pub(super) fn highlight_menu_title(&self, bus: &mut MacMemoryBus, menu_idx: usize) {
+        // MenuKey still resolves keyboard commands while menu chrome is
+        // suppressed, but its transient title highlight must remain hidden.
+        // This matches the effective-visibility guards used by DrawMenuBar
+        // and FlashMenuBar.
+        if self.fullscreen_locked || self.menu_bar_hidden {
+            return;
+        }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let mut target_region: Option<(i16, i16)> = None;
@@ -11898,6 +11905,50 @@ mod tests {
             all_disabled_stack_after,
             uninserted_result,
             uninserted_stack_after,
+        }
+    }
+
+    #[test]
+    fn menukey_does_not_paint_titles_while_menu_bar_is_hidden() {
+        for (menu_bar_hidden, fullscreen_locked) in [(true, false), (false, true)] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            let row_bytes = 512;
+            let height = 342;
+            let base = bus.alloc(row_bytes * height);
+            disp.set_screen_mode_for_test(base, row_bytes, 512, height as u16, 8);
+            clear_1bpp_screen(&mut bus, base, row_bytes, height);
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+            let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 703, 0x30BA00, "File");
+            append_menu_data(&mut disp, &mut cpu, &mut bus, file, 0x30BA40, "New/N");
+            insert_menu(&mut disp, &mut cpu, &mut bus, file);
+            assert!(disp.menus[0].visible_in_menu_bar);
+
+            disp.menu_bar_hidden = menu_bar_hidden;
+            disp.fullscreen_locked = fullscreen_locked;
+            let before = bus.read_bytes(base, row_bytes as usize * 20);
+
+            let (result, stack_after) =
+                menu_key_result_and_stack(&mut disp, &mut cpu, &mut bus, b'N');
+            assert_eq!(result, 0x02BF_0001);
+            assert_eq!(stack_after, TEST_SP + 2);
+            assert_eq!(
+                bus.read_bytes(base, row_bytes as usize * 20),
+                before,
+                "MenuKey must not expose a title highlight while menu chrome is hidden"
+            );
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0);
+            disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            disp.draw_menu_bar_to_fb(&mut bus);
+            assert_eq!(
+                bus.read_bytes(base, row_bytes as usize * 20),
+                before,
+                "clearing and compositing hidden menu chrome must leave the framebuffer unchanged"
+            );
         }
     }
 
