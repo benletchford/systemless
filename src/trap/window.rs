@@ -54,7 +54,7 @@ impl super::TrapDispatcher {
     const WDEF_TRAMPOLINE_SIZE: u32 = 68;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
-    const AUX_WIN_CTABLE_OFFSET: u32 = 8;
+    pub(crate) const AUX_WIN_CTABLE_OFFSET: u32 = 8;
     const AUX_WIN_DIALOG_CITEM_OFFSET: u32 = 12;
     const AUX_WIN_FLAGS_OFFSET: u32 = 16;
     const AUX_WIN_RESERVED_OFFSET: u32 = 20;
@@ -146,17 +146,30 @@ impl super::TrapDispatcher {
         (v.wrapping_add(bounds_top), h.wrapping_add(bounds_left))
     }
 
-    fn copy_window_color_table_resource(&mut self, bus: &mut MacMemoryBus, table_id: i16) -> u32 {
+    fn copy_color_table_resource(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        resource_type: [u8; 4],
+        table_id: i16,
+    ) -> Option<u32> {
         let resource_ptr = self
-            .find_resource_any(*b"wctb", table_id)
-            .map(|(_, ptr)| ptr)
-            .unwrap_or(0);
-        if resource_ptr == 0 {
-            return 0;
+            .find_resource_any(resource_type, table_id)
+            .map(|(_, ptr)| ptr)?;
+
+        if bus.get_alloc_size(resource_ptr).unwrap_or(0) < 8 {
+            return None;
         }
 
-        let ct_size = u32::from(bus.read_word(resource_ptr + 6)) + 1;
-        let byte_size = 8 + ct_size * 8;
+        let table_size = bus.read_word(resource_ptr + 6);
+        if table_size == 0xFFFF {
+            return Some(self.default_window_color_table_handle(bus));
+        }
+
+        let entry_count = u32::from(table_size) + 1;
+        let byte_size = 8 + entry_count * 8;
+        if bus.get_alloc_size(resource_ptr).unwrap_or(0) < byte_size {
+            return None;
+        }
         let ctab_ptr = bus.alloc(byte_size);
         for offset in 0..byte_size {
             bus.write_byte(ctab_ptr + offset, bus.read_byte(resource_ptr + offset));
@@ -169,7 +182,20 @@ impl super::TrapDispatcher {
         bus.write_long(ctab_ptr, seed);
         let ctab_handle = bus.alloc(4);
         bus.write_long(ctab_handle, ctab_ptr);
-        ctab_handle
+        Some(ctab_handle)
+    }
+
+    fn copy_window_color_table_resource(&mut self, bus: &mut MacMemoryBus, table_id: i16) -> u32 {
+        self.copy_color_table_resource(bus, *b"wctb", table_id)
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn copy_dialog_color_table_resource(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        table_id: i16,
+    ) -> Option<u32> {
+        self.copy_color_table_resource(bus, *b"dctb", table_id)
     }
 
     fn window_content_color(bus: &MacMemoryBus, ctab_handle: u32) -> Option<(u16, u16, u16)> {
@@ -196,7 +222,41 @@ impl super::TrapDispatcher {
         None
     }
 
-    fn apply_window_color_table(
+    pub(crate) fn window_semantic_color(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+        part: u16,
+    ) -> Option<(u16, u16, u16)> {
+        let aux_handle = *self.window_aux_records.get(&window_ptr)?;
+        let aux_ptr = bus.read_long(aux_handle);
+        let ctab_handle = bus.read_long(aux_ptr + Self::AUX_WIN_CTABLE_OFFSET);
+        let ctab_ptr = bus.read_long(ctab_handle);
+        if ctab_ptr == 0 {
+            return None;
+        }
+
+        // WCTab/DCTab resources contain the five semantic Window Manager
+        // roles. A device ColorTable instead contains indexed palette entries
+        // and must not be interpreted as window-part identifiers.
+        let table_size = bus.read_word(ctab_ptr + 6);
+        if table_size == 0xFFFF || table_size > 4 {
+            return None;
+        }
+        for index in 0..=u32::from(table_size) {
+            let entry = ctab_ptr + 8 + index * 8;
+            if bus.read_word(entry) == part {
+                return Some((
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ));
+            }
+        }
+        None
+    }
+
+    pub(crate) fn apply_window_color_table(
         &mut self,
         bus: &mut MacMemoryBus,
         window_ptr: u32,
@@ -240,7 +300,7 @@ impl super::TrapDispatcher {
         bus.read_long(gd_pmap + 42)
     }
 
-    fn ensure_window_aux_record(
+    pub(crate) fn ensure_window_aux_record(
         &mut self,
         bus: &mut MacMemoryBus,
         window_ptr: u32,
