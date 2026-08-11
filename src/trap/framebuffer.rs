@@ -3552,8 +3552,8 @@ impl super::TrapDispatcher {
 
         let _close_box_width = if has_go_away { 15i16 } else { 0 };
 
-        if is_movable_modal {
-            // movableDBoxProc: plain title bar, no stripes
+        if is_movable_modal && !active {
+            // Inactive movableDBoxProc: plain title bar, no stripes
             // Just draw the title text centered
             if !self.window_title.is_empty() {
                 let text_x = title_clear_left + 8;
@@ -4682,6 +4682,78 @@ mod redraw_chrome_tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, region);
         bus.write_long(window_ptr + 114, handle);
+    }
+
+    fn screen_pixel_is_black(
+        disp: &TrapDispatcher,
+        bus: &crate::memory::MacMemoryBus,
+        x: i16,
+        y: i16,
+    ) -> bool {
+        let (screen_base, row_bytes, width, height, depth) = disp.screen_mode;
+        TrapDispatcher::fb_pixel_is_logical_black(
+            bus,
+            screen_base,
+            row_bytes,
+            depth,
+            width as i16,
+            height as i16,
+            x,
+            y,
+        )
+    }
+
+    #[test]
+    fn active_movable_dialog_draws_stripes_without_window_controls() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let white = TrapDispatcher::logical_white_pixel_index(&bus);
+        bus.fill_bytes(screen_base, 800 * 600, white);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (103, 152, 497, 647);
+        disp.window_proc_id = 5;
+        disp.window_title.clear();
+        disp.go_away_flag = true;
+
+        disp.draw_window_chrome(&mut bus, true);
+
+        assert!(screen_pixel_is_black(&disp, &bus, 200, 85));
+        assert!(!screen_pixel_is_black(&disp, &bus, 200, 86));
+        assert!(screen_pixel_is_black(&disp, &bus, 200, 87));
+        assert!(
+            !screen_pixel_is_black(&disp, &bus, 160, 88),
+            "movable dialog must omit the close box even when goAwayFlag is set"
+        );
+        assert!(
+            !screen_pixel_is_black(&disp, &bus, 628, 88),
+            "movable dialog must omit the zoom box"
+        );
+    }
+
+    #[test]
+    fn inactive_movable_dialog_keeps_a_plain_framed_title_bar() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let white = TrapDispatcher::logical_white_pixel_index(&bus);
+        bus.fill_bytes(screen_base, 800 * 600, white);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (103, 152, 497, 647);
+        disp.window_proc_id = 5;
+        disp.window_title.clear();
+        disp.go_away_flag = true;
+
+        disp.draw_window_chrome(&mut bus, false);
+
+        assert!(screen_pixel_is_black(&disp, &bus, 200, 84));
+        assert!(!screen_pixel_is_black(&disp, &bus, 200, 85));
+        assert!(!screen_pixel_is_black(&disp, &bus, 160, 88));
+        assert!(!screen_pixel_is_black(&disp, &bus, 628, 88));
     }
 
     #[test]
