@@ -1341,6 +1341,66 @@ mod tests {
     }
 
     #[test]
+    fn caps_lock_latches_keymap_and_alpha_lock_until_second_press() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x39, 0);
+        assert!(disp.key_is_down(0x39), "first press should latch Caps Lock");
+        assert_eq!(disp.current_event_modifiers() & 0x0400, 0x0400);
+        assert!(
+            !disp
+                .dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008)
+                .5,
+            "Caps Lock must not post a standalone keyDown event"
+        );
+
+        disp.push_key_down(0x39, 0);
+        assert!(
+            disp.key_is_down(0x39),
+            "a repeated host keydown while physically held must not toggle the latch"
+        );
+        disp.push_key_up(0x39, 0);
+        assert!(
+            disp.key_is_down(0x39),
+            "physical release must preserve the logical Caps Lock latch"
+        );
+        assert_eq!(disp.current_event_modifiers() & 0x0400, 0x0400);
+        disp.push_key_down(0x00, b'a');
+        let (what, _, _, _, modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event);
+        assert_eq!(what, 3);
+        assert_eq!(
+            modifiers & 0x0400,
+            0x0400,
+            "character events must carry alphaLock while Caps Lock is latched"
+        );
+        disp.push_key_up(0x00, b'a');
+
+        disp.push_key_down(0x39, 0);
+        assert!(
+            !disp.key_is_down(0x39),
+            "second physical press should release Caps Lock"
+        );
+        assert_eq!(disp.current_event_modifiers() & 0x0400, 0);
+        disp.push_key_up(0x39, 0);
+        assert!(
+            !disp.key_is_down(0x39),
+            "second physical release must leave Caps Lock clear"
+        );
+        disp.push_key_down(0x00, b'a');
+        let (_, _, _, _, modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event);
+        assert_eq!(
+            modifiers & 0x0400,
+            0,
+            "character events must clear alphaLock after Caps Lock is released"
+        );
+    }
+
+    #[test]
     fn command_modifier_is_reported_on_following_character_event() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.sent_open_app_event = true;
