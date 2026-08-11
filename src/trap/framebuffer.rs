@@ -1931,7 +1931,7 @@ impl super::TrapDispatcher {
         glyph.advance as i16
     }
 
-    fn fb_draw_string_clipped(
+    pub(crate) fn fb_draw_string_clipped(
         bus: &mut MacMemoryBus,
         screen_base: u32,
         row_bytes: u32,

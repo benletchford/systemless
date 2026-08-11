@@ -7136,6 +7136,15 @@ impl super::TrapDispatcher {
 
         let font_id = 0i16;
         let font_size = 12i16;
+        let text_x = left + 15;
+        // The standard arrow occupies the right side of the box. Inside
+        // Macintosh Volume VI (1991), p. 3-17 requires popupFixedWidth item
+        // text that does not fit this content area to be truncated with
+        // ellipses. Keep the same bound for auto-sized controls when their
+        // resolved box is clamped to the screen edge.
+        let text_right = (right - 19).max(text_x);
+        let display_title =
+            Self::popup_control_display_title(title, text_right - text_x, font_id, font_size);
 
         if !self.draw_theme_control_chrome(
             bus,
@@ -7314,12 +7323,11 @@ impl super::TrapDispatcher {
 
         // Selected item text inside the box
         // Macintosh Toolbox Essentials 1992, 5-26
-        if enabled && !title.is_empty() {
+        if enabled && !display_title.is_empty() {
             let metrics = get_font_metrics(font_id, font_size);
-            let text_x = left + 15;
             let text_y =
                 top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent - 1;
-            Self::fb_draw_string_styled(
+            Self::fb_draw_string_clipped(
                 bus,
                 screen_base,
                 row_bytes,
@@ -7328,12 +7336,45 @@ impl super::TrapDispatcher {
                 screen_height,
                 text_x,
                 text_y,
-                title,
+                &display_title,
                 font_id,
                 font_size,
-                0,
+                (top, text_x, bottom, text_right),
             );
         }
+    }
+
+    fn popup_control_display_title(
+        title: &str,
+        available_width: i16,
+        font_id: i16,
+        font_size: i16,
+    ) -> String {
+        if available_width <= 0 {
+            return String::new();
+        }
+        if Self::fb_measure_string(title, font_id, font_size) <= available_width {
+            return title.to_owned();
+        }
+
+        let ellipses = "...";
+        let ellipses_width = Self::fb_measure_string(ellipses, font_id, font_size);
+        if ellipses_width > available_width {
+            return String::new();
+        }
+
+        let mut prefix = String::new();
+        let mut prefix_width = 0;
+        for ch in title.chars() {
+            let char_width = Self::fb_measure_string(&ch.to_string(), font_id, font_size);
+            if prefix_width + char_width + ellipses_width > available_width {
+                break;
+            }
+            prefix.push(ch);
+            prefix_width += char_width;
+        }
+        prefix.push_str(ellipses);
+        prefix
     }
 
     fn redraw_dialog_popup_controls(
@@ -24392,6 +24433,38 @@ mod tests {
         assert!(
             !screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 120, 39),
             "systemless-default popup provider should not draw the classic offset shadow"
+        );
+    }
+
+    #[test]
+    fn draw_popup_control_keeps_overlong_title_inside_content_area() {
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+
+        let (mut blank, _blank_cpu, mut blank_bus) = setup();
+        blank.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        blank.draw_popup_control(&mut blank_bus, 20, 20, 40, 120, "");
+
+        let (mut titled, _titled_cpu, mut titled_bus) = setup();
+        titled.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        titled.draw_popup_control(&mut titled_bus, 20, 20, 40, 120, "Standard/Marathon");
+
+        for y in 20..40 {
+            for x in 101..180 {
+                assert_eq!(
+                    screen_pixel_is_set(&titled_bus, screen_base, row_bytes, x, y),
+                    screen_pixel_is_set(&blank_bus, screen_base, row_bytes, x, y),
+                    "selected-item text must not alter the arrow or pixels beyond it at ({x}, {y})"
+                );
+            }
+        }
+
+        let display_title =
+            TrapDispatcher::popup_control_display_title("Standard/Marathon", 66, 0, 12);
+        assert!(display_title.ends_with("..."));
+        assert!(
+            TrapDispatcher::fb_measure_string(&display_title, 0, 12) <= 66,
+            "truncated popup title must fit its measured content width"
         );
     }
 
