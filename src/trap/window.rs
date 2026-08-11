@@ -1408,6 +1408,34 @@ impl super::TrapDispatcher {
             self.activate_as_front_window(bus, the_window);
         }
 
+        // Moving a structure changes the visibility of every window behind
+        // it. Rebuild their visible regions before invalidating the old
+        // structure area; otherwise BeginUpdate keeps the stale hole at the
+        // window's former position and the application can never repaint the
+        // newly exposed content. Inside Macintosh Volume I, I-289, I-293,
+        // I-297.
+        self.recalculate_window_vis_regions(bus);
+        if let Some(old_structure) = old_structure {
+            let windows = self.window_list.clone();
+            if let Some(moved_index) = windows.iter().position(|&window| window == the_window) {
+                for &window in windows.iter().skip(moved_index + 1) {
+                    if self.window_visible(bus, window) {
+                        self.invalidate_window_global_rect(bus, window, old_structure);
+                    }
+                }
+            }
+        }
+
+        // The screen copy preserves the pixels that were visible before the
+        // move. Queue a content update as well so portions entering from
+        // offscreen, or formerly covered by another window, are supplied by
+        // the owning application rather than left as stale copied pixels.
+        if self.window_visible(bus, the_window) {
+            if let Some(content_rect) = self.window_content_rect(bus, the_window) {
+                self.invalidate_window_rect(bus, the_window, content_rect);
+            }
+        }
+
         // Keep FindWindow hit-test bounds in sync (screen coords).
         let port_h = bus.read_word(the_window + 20) as i16;
         let port_w = bus.read_word(the_window + 22) as i16;
@@ -10041,6 +10069,87 @@ mod tests {
             bus.read_byte(new_content_probe),
             0,
             "moving a visible window should preserve the window's screen pixels at the new position"
+        );
+    }
+
+    #[test]
+    fn move_window_reveals_and_invalidates_background_content() {
+        // MoveWindow/DragWindow must pair the screen copy with CalcVisBehind
+        // and PaintBehind semantics. The back window's old occlusion hole is
+        // removed and its newly exposed content is queued for application
+        // redraw. Inside Macintosh Volume I, I-289, I-293, I-297.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(320 * 240);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 320, 320, 240, 8);
+        disp.menu_bar_hidden = true;
+
+        let back = bus.alloc(256);
+        let front = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            screen_base,
+            20,
+            20,
+            220,
+            300,
+            "Back",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            screen_base,
+            50,
+            60,
+            130,
+            180,
+            "Front",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        let back_vis = bus.read_long(back + 24);
+        assert!(
+            !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
+            "precondition: the front structure occludes the back window"
+        );
+        disp.validate_window_rect(&mut bus, back, (0, 0, 200, 280));
+        disp.validate_window_rect(&mut bus, front, (0, 0, 80, 120));
+
+        disp.move_window_to_global(&mut bus, front, 190, 140, true);
+
+        assert!(
+            super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
+            "the back visRgn must expose the front window's former location"
+        );
+        let back_update = bus.read_long(
+            back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET,
+        );
+        assert!(
+            super::super::TrapDispatcher::region_contains_point(&bus, back_update, 80, 100),
+            "the newly exposed back content must be invalidated"
+        );
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == back),
+            "the back window must receive an update event"
+        );
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == front),
+            "the moved window must redraw any newly visible content"
         );
     }
 
