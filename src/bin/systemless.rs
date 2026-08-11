@@ -634,6 +634,12 @@ impl App {
         }
     }
 
+    fn guest_requested_exit(&self) -> bool {
+        self.runner
+            .as_ref()
+            .is_some_and(FixtureRunner::halted_by_exit_to_shell)
+    }
+
     fn cpu_budget_for_duration(duration: std::time::Duration, ips: f64, credit: &mut f64) -> usize {
         *credit += duration.as_secs_f64() * ips;
         let budget = credit.floor().min(game::MAX_INSTRUCTIONS_PER_FRAME as f64) as usize;
@@ -1974,6 +1980,15 @@ impl ApplicationHandler for App {
 
         // Step emulation, then render
         self.step_frame();
+        if self.guest_requested_exit() {
+            self.sync_save_files(true);
+            eprintln!(
+                "[SYSTEMLESS] Guest exited. Total instructions: {}",
+                self.total_instructions
+            );
+            event_loop.exit();
+            return;
+        }
         self.sync_save_files(false);
 
         #[cfg(target_os = "macos")]
@@ -2503,6 +2518,29 @@ mod tests {
             queued_stereo_bytes: queued.clone(),
         }));
         (runner, queued)
+    }
+
+    #[test]
+    fn desktop_detects_clean_guest_exit() {
+        use systemless::cpu::Register;
+        use systemless::memory::MemoryBus;
+
+        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut runner = FixtureRunner::new(
+            8 * 1024 * 1024,
+            systemless::runner::FixtureRunnerConfig::default(),
+        );
+        let base = 0x0001_0000u32;
+        runner.bus_mut().write_word(base, 0xA9F4); // _ExitToShell
+        runner.cpu_mut().write_reg(Register::PC, base);
+        runner.cpu_mut().write_reg(Register::A7, 0x0010_0000);
+        app.runner = Some(runner);
+
+        assert!(!app.guest_requested_exit());
+        let (_steps, running) = app.runner.as_mut().unwrap().run_steps(1, None);
+
+        assert!(!running);
+        assert!(app.guest_requested_exit());
     }
 
     #[test]
