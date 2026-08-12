@@ -145,6 +145,12 @@ struct Cli {
     /// Guest indexed display depth
     #[arg(long, value_name = "BITS", default_value_t = 8, value_parser = parse_screen_depth)]
     screen_depth: u16,
+
+    /// Replay input events from a script during a headless run. Events are
+    /// scheduled by retired instruction count, so a run replays identically
+    /// every time and two builds can be compared on matched work.
+    #[arg(long, value_name = "FILE")]
+    input_script: Option<PathBuf>,
 }
 
 fn parse_screen_depth(value: &str) -> Result<u16, String> {
@@ -153,6 +159,142 @@ fn parse_screen_depth(value: &str) -> Result<u16, String> {
         "4" => Ok(4),
         "8" => Ok(8),
         _ => Err("screen depth must be 1, 4, or 8".to_string()),
+    }
+}
+
+/// One scripted input, delivered once the run has retired `at`
+/// instructions.
+///
+/// Scheduling on the instruction count rather than wall time is the whole
+/// point: a wall-clock schedule would land differently on a faster build,
+/// which is exactly the comparison these scripts exist to make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScriptedInput {
+    at: usize,
+    action: InputAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputAction {
+    MouseMove { v: i16, h: i16 },
+    MouseDown { v: i16, h: i16 },
+    MouseUp { v: i16, h: i16 },
+    KeyDown { key: u8, ch: u8 },
+    KeyUp { key: u8, ch: u8 },
+}
+
+/// Parse an input script: one `<at> <action> [args]` per line, `#`
+/// comments and blank lines ignored. `click` and `press` expand to a
+/// down/up pair at the same instant, which is what a guest sees for an
+/// ordinary click or keystroke.
+///
+/// Numbers accept `0x` prefixes so key codes can be written the way the
+/// Mac key tables list them.
+fn parse_input_script(text: &str) -> Result<Vec<ScriptedInput>, String> {
+    fn num<T: TryFrom<u64>>(tok: &str, line: usize) -> Result<T, String> {
+        let raw = tok.strip_prefix("0x").map_or_else(
+            || tok.parse::<u64>().map_err(|e| e.to_string()),
+            |hex| u64::from_str_radix(hex, 16).map_err(|e| e.to_string()),
+        );
+        let value = raw.map_err(|e| format!("line {line}: bad number {tok:?}: {e}"))?;
+        T::try_from(value).map_err(|_| format!("line {line}: {tok:?} out of range"))
+    }
+
+    let mut out = Vec::new();
+    for (index, raw) in text.lines().enumerate() {
+        let line = index + 1;
+        let body = raw.split('#').next().unwrap_or("").trim();
+        if body.is_empty() {
+            continue;
+        }
+        let tok: Vec<&str> = body.split_whitespace().collect();
+        if tok.len() < 2 {
+            return Err(format!("line {line}: expected `<at> <action> [args]`"));
+        }
+        let at: usize = num(tok[0], line)?;
+        let args = &tok[2..];
+        let expect = |n: usize| -> Result<(), String> {
+            if args.len() == n {
+                Ok(())
+            } else {
+                Err(format!(
+                    "line {line}: `{}` takes {n} argument(s), got {}",
+                    tok[1],
+                    args.len()
+                ))
+            }
+        };
+        let mut push = |action| out.push(ScriptedInput { at, action });
+        match tok[1] {
+            "mousemove" => {
+                expect(2)?;
+                push(InputAction::MouseMove {
+                    v: num(args[0], line)?,
+                    h: num(args[1], line)?,
+                });
+            }
+            "mousedown" => {
+                expect(2)?;
+                push(InputAction::MouseDown {
+                    v: num(args[0], line)?,
+                    h: num(args[1], line)?,
+                });
+            }
+            "mouseup" => {
+                expect(2)?;
+                push(InputAction::MouseUp {
+                    v: num(args[0], line)?,
+                    h: num(args[1], line)?,
+                });
+            }
+            "click" => {
+                expect(2)?;
+                let (v, h) = (num(args[0], line)?, num(args[1], line)?);
+                push(InputAction::MouseDown { v, h });
+                push(InputAction::MouseUp { v, h });
+            }
+            "keydown" => {
+                expect(2)?;
+                push(InputAction::KeyDown {
+                    key: num(args[0], line)?,
+                    ch: num(args[1], line)?,
+                });
+            }
+            "keyup" => {
+                expect(2)?;
+                push(InputAction::KeyUp {
+                    key: num(args[0], line)?,
+                    ch: num(args[1], line)?,
+                });
+            }
+            "press" => {
+                expect(2)?;
+                let (key, ch) = (num(args[0], line)?, num(args[1], line)?);
+                push(InputAction::KeyDown { key, ch });
+                push(InputAction::KeyUp { key, ch });
+            }
+            other => return Err(format!("line {line}: unknown action {other:?}")),
+        }
+    }
+    out.sort_by_key(|event| event.at);
+    Ok(out)
+}
+
+/// How many instructions to run before the next scheduled event.
+///
+/// Without this the loop would overshoot by up to a whole chunk and the
+/// delivery point would depend on chunk size rather than on the script,
+/// which would break the determinism the schedule exists to provide.
+fn steps_until_next_event(
+    chunk: usize,
+    remaining: usize,
+    total: usize,
+    next_at: Option<usize>,
+) -> usize {
+    let bounded = chunk.min(remaining);
+    match next_at {
+        Some(at) => bounded.min(at.saturating_sub(total).max(1)),
+        None => bounded,
     }
 }
 
@@ -2288,6 +2430,7 @@ fn run_headless(
     max_instructions: usize,
     addressing_24_bit: bool,
     screen_depth: u16,
+    script: &[ScriptedInput],
 ) {
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
@@ -2314,9 +2457,32 @@ fn run_headless(
     let chunk = 100_000;
     let mut total: usize = 0;
     let mut last_screenshot = 0usize;
+    let mut next_event = 0usize;
 
     while total < max_instructions {
-        let steps_to_run = chunk.min(max_instructions - total);
+        // Deliver everything the script has scheduled at or before this
+        // point, then run only as far as the next event so its delivery
+        // point comes from the script and not from the chunk size.
+        while let Some(event) = script.get(next_event) {
+            if event.at > total {
+                break;
+            }
+            match event.action {
+                InputAction::MouseMove { v, h } => runner.set_mouse_position(v, h),
+                InputAction::MouseDown { v, h } => runner.push_mouse_down(v, h),
+                InputAction::MouseUp { v, h } => runner.push_mouse_up(v, h),
+                InputAction::KeyDown { key, ch } => runner.push_key_down(key, ch),
+                InputAction::KeyUp { key, ch } => runner.push_key_up(key, ch),
+            }
+            eprintln!("[HEADLESS] input @{}: {:?}", event.at, event.action);
+            next_event += 1;
+        }
+        let steps_to_run = steps_until_next_event(
+            chunk,
+            max_instructions - total,
+            total,
+            script.get(next_event).map(|event| event.at),
+        );
         let (steps, running) = runner.run_steps(steps_to_run, None);
         total += steps;
 
@@ -2369,13 +2535,31 @@ fn main() {
     eprintln!("[SYSTEMLESS] Game: {}", game_path.display());
 
     if cli.headless {
+        let script = match cli.input_script.as_deref() {
+            Some(path) => {
+                let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                    eprintln!("Error: cannot read input script {}: {e}", path.display());
+                    std::process::exit(1);
+                });
+                parse_input_script(&text).unwrap_or_else(|e| {
+                    eprintln!("Error in input script {}: {e}", path.display());
+                    std::process::exit(1);
+                })
+            }
+            None => Vec::new(),
+        };
         run_headless(
             &game_path,
             cli.max_instructions.unwrap_or(5_000_000),
             cli.addressing_24_bit,
             cli.screen_depth,
+            &script,
         );
     } else {
+        if cli.input_script.is_some() {
+            eprintln!("Error: --input-script requires --headless");
+            std::process::exit(1);
+        }
         run_gui(
             game_path,
             arrows_as_numpad,
@@ -2623,6 +2807,119 @@ fn keycode_to_mac_printable_char(key: &PhysicalKey) -> u8 {
             _ => 0,
         },
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod input_script_tests {
+    use super::*;
+
+    #[test]
+    fn parses_actions_comments_and_blank_lines() {
+        let script = parse_input_script(
+            "# get into the game\n\
+             \n\
+             1000 mousemove 10 20\n\
+             2000 click 100 200   # dismiss the splash\n\
+             3000 press 0x24 13\n\
+             4000 keydown 0x7B 28\n\
+             4500 keyup 0x7B 28\n\
+             5000 mousedown 1 2\n\
+             5500 mouseup 1 2\n",
+        )
+        .expect("script parses");
+        assert_eq!(
+            script,
+            vec![
+                ScriptedInput {
+                    at: 1000,
+                    action: InputAction::MouseMove { v: 10, h: 20 }
+                },
+                // click expands to the down/up pair a guest sees
+                ScriptedInput {
+                    at: 2000,
+                    action: InputAction::MouseDown { v: 100, h: 200 }
+                },
+                ScriptedInput {
+                    at: 2000,
+                    action: InputAction::MouseUp { v: 100, h: 200 }
+                },
+                ScriptedInput {
+                    at: 3000,
+                    action: InputAction::KeyDown { key: 0x24, ch: 13 }
+                },
+                ScriptedInput {
+                    at: 3000,
+                    action: InputAction::KeyUp { key: 0x24, ch: 13 }
+                },
+                ScriptedInput {
+                    at: 4000,
+                    action: InputAction::KeyDown { key: 0x7B, ch: 28 }
+                },
+                ScriptedInput {
+                    at: 4500,
+                    action: InputAction::KeyUp { key: 0x7B, ch: 28 }
+                },
+                ScriptedInput {
+                    at: 5000,
+                    action: InputAction::MouseDown { v: 1, h: 2 }
+                },
+                ScriptedInput {
+                    at: 5500,
+                    action: InputAction::MouseUp { v: 1, h: 2 }
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn out_of_order_lines_are_sorted_by_instruction_count() {
+        // The loop consumes the schedule in order, so a script written out
+        // of order must not silently drop its early events.
+        let script = parse_input_script("900 click 1 1\n100 press 2 2\n").expect("parses");
+        assert_eq!(script.first().map(|e| e.at), Some(100));
+        assert_eq!(script.last().map(|e| e.at), Some(900));
+    }
+
+    #[test]
+    fn bad_lines_name_the_line_and_the_problem() {
+        for (text, needle) in [
+            ("1000 click 1\n", "takes 2 argument"),
+            ("1000 wiggle 1 2\n", "unknown action"),
+            ("abc click 1 2\n", "bad number"),
+            ("1000\n", "expected"),
+            ("1000 click 99999 1\n", "out of range"),
+        ] {
+            let err = parse_input_script(text).expect_err("must reject");
+            assert!(
+                err.contains(needle) && err.contains("line 1"),
+                "error {err:?} should mention line 1 and {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_run_stops_exactly_at_the_next_event() {
+        // Overshooting would make delivery depend on chunk size rather than
+        // on the script, which is precisely the determinism being bought.
+        assert_eq!(
+            steps_until_next_event(100_000, 500_000, 0, Some(1_500)),
+            1_500
+        );
+        // Never zero: a zero-step run would spin without ever advancing.
+        assert_eq!(
+            steps_until_next_event(100_000, 500_000, 1_500, Some(1_500)),
+            1
+        );
+        // No events left, or none near: the ordinary chunk applies.
+        assert_eq!(steps_until_next_event(100_000, 500_000, 0, None), 100_000);
+        assert_eq!(
+            steps_until_next_event(100_000, 500_000, 0, Some(900_000)),
+            100_000
+        );
+        // The instruction budget still wins over both.
+        assert_eq!(steps_until_next_event(100_000, 250, 0, None), 250);
+        assert_eq!(steps_until_next_event(100_000, 250, 0, Some(1_000)), 250);
     }
 }
 
