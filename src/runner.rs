@@ -2915,6 +2915,9 @@ impl FixtureRunner {
         let vfs_metadata = self.dispatcher.vfs_metadata.clone();
         let vfs_directories = self.dispatcher.vfs_directories.clone();
         let vfs_directory_paths = self.dispatcher.vfs_directory_paths.clone();
+        let vfs_volumes = self.dispatcher.vfs_volumes.clone();
+        let vfs_volume_names = self.dispatcher.vfs_volume_names.clone();
+        let next_vfs_volume_ref_num = self.dispatcher.next_vfs_volume_ref_num;
         let locked_files = self.dispatcher.locked_files.clone();
         let next_vfs_dir_id = self.dispatcher.next_vfs_dir_id;
         let next_vfs_file_id = self.dispatcher.next_vfs_file_id;
@@ -2939,6 +2942,9 @@ impl FixtureRunner {
         replacement.dispatcher.vfs_metadata = vfs_metadata;
         replacement.dispatcher.vfs_directories = vfs_directories;
         replacement.dispatcher.vfs_directory_paths = vfs_directory_paths;
+        replacement.dispatcher.vfs_volumes = vfs_volumes;
+        replacement.dispatcher.vfs_volume_names = vfs_volume_names;
+        replacement.dispatcher.next_vfs_volume_ref_num = next_vfs_volume_ref_num;
         replacement.dispatcher.locked_files = locked_files;
         replacement.dispatcher.next_vfs_dir_id = next_vfs_dir_id;
         replacement.dispatcher.next_vfs_file_id = next_vfs_file_id;

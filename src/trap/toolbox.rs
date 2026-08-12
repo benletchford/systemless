@@ -6105,7 +6105,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let perm = bus.read_byte(sp) as i8 as i16;
                 let wants_write = perm == 2 || perm == 3;
-                let _vref = bus.read_word(sp + 2);
+                let vref = bus.read_word(sp + 2) as i16;
                 let name_ptr = bus.read_long(sp + 4);
                 let name_len = bus.read_byte(name_ptr) as usize;
                 let mut name_bytes = vec![0u8; name_len];
@@ -6117,8 +6117,32 @@ impl super::TrapDispatcher {
                     eprintln!("[TRAP] OpenRFPerm(\"{}\")", name);
                 }
 
-                // Try to find and load the resource fork from vfs_rsrc
-                if let Some(vfs_key) = self.find_vfs_rsrc_file(&name) {
+                if vref != 0 && self.working_directory_info(vref).is_none() {
+                    bus.write_word(sp + 8, (-1i16) as u16);
+                    cpu.write_reg(Register::D0, (-1i32) as u32);
+                    bus.write_word(0x0A60, (-35i16) as u16); // nsvErr
+                    cpu.write_reg(Register::A7, sp + 8);
+                    return Some(Ok(()));
+                }
+                let mounted_dir_id = self.working_directory_info(vref).and_then(|working| {
+                    self.vfs_volume_for_ref_num(working.volume_ref_num)
+                        .map(|_| working.dir_id)
+                });
+                let vfs_key = if let Some(dir_id) = mounted_dir_id {
+                    self.find_vfs_rsrc_file_in_directory(dir_id, &name)
+                } else {
+                    self.find_vfs_rsrc_file(&name)
+                };
+
+                // Try to find and load the resource fork from the selected volume.
+                if let Some(vfs_key) = vfs_key {
+                    if wants_write && self.vfs_path_is_read_only(&vfs_key) {
+                        bus.write_word(sp + 8, (-1i16) as u16);
+                        cpu.write_reg(Register::D0, (-1i32) as u32);
+                        bus.write_word(0x0A60, (-44i16) as u16); // wPrErr
+                        cpu.write_reg(Register::A7, sp + 8);
+                        return Some(Ok(()));
+                    }
                     // Dedupe: if this file is already open, return the
                     // existing refnum and skip the merge. Without this,
                     // games that re-open their own fork (Bonkheads opens
@@ -6371,9 +6395,16 @@ impl super::TrapDispatcher {
                 let vref = bus.read_word(pb + 22) as i16;
                 let dir_id = bus.read_long(pb + 48);
                 let filename = Self::read_pb_filename(bus, name_ptr);
+                let permission = bus.read_byte(pb + 27) as i8 as i16;
+                let wants_write = matches!(permission, 2 | 3 | 4);
                 eprintln!("[TRAP] PBOpenRF(\"{}\")", filename);
 
                 let is_hfs_variant = (self.current_trap_word & 0x0F00) == 0x0200;
+                if is_hfs_variant && vref != 0 && self.working_directory_info(vref).is_none() {
+                    bus.write_word(pb + 16, (-35i16) as u16); // nsvErr
+                    cpu.write_reg(Register::D0, (-35i32) as u32);
+                    return Some(Ok(()));
+                }
                 let scoped_vfs_key = if is_hfs_variant {
                     self.hfs_lookup_directory_ids(vref, dir_id)
                         .into_iter()
@@ -6385,8 +6416,22 @@ impl super::TrapDispatcher {
                 // Try to find resource fork in vfs_rsrc. PBHOpenRF first uses
                 // the HFS parent directory fields, then preserves the legacy
                 // broad lookup as a compatibility fallback for flattened archives.
-                if let Some(vfs_key) = scoped_vfs_key.or_else(|| self.find_vfs_rsrc_file(&filename))
-                {
+                let mounted_volume_selected = is_hfs_variant
+                    && self.working_directory_info(vref).is_some_and(|working| {
+                        self.vfs_volume_for_ref_num(working.volume_ref_num)
+                            .is_some()
+                    });
+                let vfs_key = if mounted_volume_selected {
+                    scoped_vfs_key
+                } else {
+                    scoped_vfs_key.or_else(|| self.find_vfs_rsrc_file(&filename))
+                };
+                if let Some(vfs_key) = vfs_key {
+                    if wants_write && self.vfs_path_is_read_only(&vfs_key) {
+                        bus.write_word(pb + 16, (-44i16) as u16); // wPrErr
+                        cpu.write_reg(Register::D0, (-44i32) as u32);
+                        return Some(Ok(()));
+                    }
                     let rsrc_data = self.vfs_rsrc.get(&vfs_key).unwrap().clone();
                     eprintln!(
                         "[TRAP] PBOpenRF: found rsrc fork for \"{}\" ({} bytes)",
@@ -9063,24 +9108,23 @@ impl super::TrapDispatcher {
             //   sp+12  result INTEGER (2 — refnum or -1)
             // Pop 12 bytes; result lands at the new SP.
             //
-            // Systemless's flat VFS has no per-volume / per-directory
-            // namespace, so vRefNum and dirID are ignored — the file
-            // is resolved by name alone, identical to the existing
-            // HCreateResFile $A81B path. Behaviour otherwise mirrors
+            // Mounted disk-image volumes use their File Manager volume and
+            // directory identity; ordinary archive-backed paths retain the
+            // legacy broad name lookup. Behaviour otherwise mirrors
             // OpenRFPerm: dedup re-opens against `loaded_files`,
             // return the existing refnum, and leave current file unchanged
             // on already-open paths per MTb 1993 1-63. ResErr is noErr on
             // hit and fnfErr (-43) on miss (MTb 1993 1-64 result table).
-            // HOpenResFile ($A81A): HFS variant of OpenRFPerm; vRefNum/dirID
-            // ignored in flat VFS. New open sets current file; already-open
-            // path returns existing refnum without switching current.
+            // HOpenResFile ($A81A): HFS variant of OpenRFPerm. New open sets
+            // current file; already-open path returns the existing refnum
+            // without switching current.
             (true, 0x01A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let perm = signed_byte_from_stack_word(bus.read_word(sp));
                 let wants_write = perm == 2 || perm == 3;
                 let name_ptr = bus.read_long(sp + 2);
-                let _dir_id = bus.read_long(sp + 6);
-                let _v_ref = bus.read_word(sp + 10) as i16;
+                let dir_id = bus.read_long(sp + 6);
+                let v_ref = bus.read_word(sp + 10) as i16;
                 let name = if name_ptr != 0 {
                     decode_mac_roman(&bus.read_pstring(name_ptr))
                 } else {
@@ -9089,7 +9133,29 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_resfile_enabled() {
                     eprintln!("[TRAP] HOpenResFile(\"{}\")", name);
                 }
-                if let Some(vfs_key) = self.find_vfs_rsrc_file(&name) {
+                if v_ref != 0 && self.working_directory_info(v_ref).is_none() {
+                    bus.write_word(sp + 12, (-1i16) as u16);
+                    bus.write_word(0x0A60, (-35i16) as u16); // nsvErr
+                    cpu.write_reg(Register::A7, sp + 12);
+                    return Some(Ok(()));
+                }
+                let mounted_volume_selected =
+                    self.working_directory_info(v_ref).is_some_and(|working| {
+                        self.vfs_volume_for_ref_num(working.volume_ref_num)
+                            .is_some()
+                    });
+                let vfs_key = if mounted_volume_selected {
+                    self.find_vfs_rsrc_file_for_hfs_lookup(v_ref, dir_id, &name)
+                } else {
+                    self.find_vfs_rsrc_file(&name)
+                };
+                if let Some(vfs_key) = vfs_key {
+                    if wants_write && self.vfs_path_is_read_only(&vfs_key) {
+                        bus.write_word(sp + 12, (-1i16) as u16);
+                        bus.write_word(0x0A60, (-44i16) as u16); // wPrErr
+                        cpu.write_reg(Register::A7, sp + 12);
+                        return Some(Ok(()));
+                    }
                     if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
                         if wants_write {
                             self.write_refnums.insert(existing);
@@ -9139,8 +9205,8 @@ impl super::TrapDispatcher {
             (true, 0x01B) => {
                 let sp = cpu.read_reg(Register::A7);
                 let name_ptr = bus.read_long(sp);
-                let _dir_id = bus.read_long(sp + 4);
-                let _v_ref = bus.read_word(sp + 8) as i16;
+                let dir_id = bus.read_long(sp + 4);
+                let v_ref = bus.read_word(sp + 8) as i16;
                 let name = if name_ptr != 0 {
                     decode_mac_roman(&bus.read_pstring(name_ptr))
                 } else {
@@ -9149,25 +9215,52 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_resfile_enabled() {
                     eprintln!("[TRAP] HCreateResFile(\"{}\")", name);
                 }
-                if name.is_empty() {
+                if v_ref != 0 && self.working_directory_info(v_ref).is_none() {
+                    bus.write_word(0x0A60, (-35i16) as u16); // nsvErr
+                } else if name.is_empty() {
                     bus.write_word(0x0A60, (-37i16) as u16); // bdNamErr
-                } else if self.find_vfs_rsrc_file(&name).is_some() {
-                    bus.write_word(0x0A60, (-48i16) as u16); // dupFNErr
                 } else {
-                    let vfs_key = self
-                        .find_vfs_file(&name)
-                        .unwrap_or_else(|| Self::normalize_vfs_path(&name));
-                    self.vfs.entry(vfs_key.clone()).or_default();
-                    self.vfs_rsrc.entry(vfs_key.clone()).or_default();
-                    self.touch_vfs_entry(&vfs_key);
-                    if let Some(ref dir) = self.output_dir {
-                        let host_path = dir.join(&vfs_key);
-                        if let Some(parent) = host_path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
+                    let mounted_volume_selected =
+                        self.working_directory_info(v_ref).is_some_and(|working| {
+                            self.vfs_volume_for_ref_num(working.volume_ref_num)
+                                .is_some()
+                        });
+                    let existing_resource = if mounted_volume_selected {
+                        self.find_vfs_rsrc_file_for_hfs_lookup(v_ref, dir_id, &name)
+                    } else {
+                        self.find_vfs_rsrc_file(&name)
+                    };
+                    if existing_resource.is_some() {
+                        bus.write_word(0x0A60, (-48i16) as u16); // dupFNErr
+                    } else {
+                        let vfs_key = if mounted_volume_selected {
+                            let Some(vfs_key) = self.vfs_key_for_fsspec(v_ref, dir_id, &name)
+                            else {
+                                bus.write_word(0x0A60, (-120i16) as u16); // dirNFErr
+                                cpu.write_reg(Register::A7, sp + 10);
+                                return Some(Ok(()));
+                            };
+                            vfs_key
+                        } else {
+                            self.find_vfs_file(&name)
+                                .unwrap_or_else(|| Self::normalize_vfs_path(&name))
+                        };
+                        if self.vfs_path_is_read_only(&vfs_key) {
+                            bus.write_word(0x0A60, (-44i16) as u16); // wPrErr
+                        } else {
+                            self.vfs.entry(vfs_key.clone()).or_default();
+                            self.vfs_rsrc.entry(vfs_key.clone()).or_default();
+                            self.touch_vfs_entry(&vfs_key);
+                            if let Some(ref dir) = self.output_dir {
+                                let host_path = dir.join(&vfs_key);
+                                if let Some(parent) = host_path.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                let _ = std::fs::write(host_path, []);
+                            }
+                            bus.write_word(0x0A60, 0); // ResErr = noErr
                         }
-                        let _ = std::fs::write(host_path, []);
                     }
-                    bus.write_word(0x0A60, 0); // ResErr = noErr
                 }
                 cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
@@ -20922,6 +21015,44 @@ mod tests {
         // ResErr at $0A60 = -43
         assert_eq!(bus.read_word(0x0A60), (-43i16) as u16);
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    }
+
+    #[test]
+    fn open_rf_perm_rejects_write_access_to_mounted_image_resources() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let name_ptr = 0x200000u32;
+        let volume_ref =
+            disp.mount_vfs_volume("Resource Disk", 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+        disp.vfs_rsrc
+            .insert("Resource Disk/Assets".to_string(), vec![]);
+        disp.vfs_rsrc.insert("Assets".to_string(), vec![0x42]);
+        bus.write_byte(sp, 3); // fsRdWrPerm
+        bus.write_word(sp + 2, volume_ref as u16);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_word(sp + 8, 0xBEEF);
+        bus.write_pstring(name_ptr, b"Assets");
+
+        let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
+        assert!(result.expect("OpenRFPerm arm").is_ok());
+        assert_eq!(bus.read_word(sp + 8) as i16, -1);
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -1);
+        assert_eq!(bus.read_word(0x0A60) as i16, -44, "wPrErr");
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(sp, 1); // fsRdPerm
+        let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
+        assert!(result.expect("OpenRFPerm arm").is_ok());
+        let ref_num = bus.read_word(sp + 8);
+        assert_ne!(ref_num as i16, -1);
+        assert_eq!(bus.read_word(0x0A60) as i16, 0);
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .and_then(|resources| resources.names.get(&ref_num))
+                .map(String::as_str),
+            Some("Resource Disk/Assets")
+        );
     }
 
     // IM:IV IV-17 and MTb 1993 1-64..1-66: successful OpenRFPerm returns a
