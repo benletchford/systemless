@@ -3011,6 +3011,120 @@ impl super::TrapDispatcher {
         new_ptr
     }
 
+    fn scriptutil_font_script(&self) -> u8 {
+        let font = self.tx_font as u16;
+        if (0x4000..=0xBFFF).contains(&font) {
+            (((font - 0x4000) / 0x0200) + 1) as u8
+        } else {
+            0
+        }
+    }
+
+    fn scriptutil_is_lead_byte(script: u8, byte: u8) -> bool {
+        match script {
+            // Macintosh Japanese uses Shift-JIS lead-byte ranges.
+            1 => (0x81..=0x9F).contains(&byte) || (0xE0..=0xFC).contains(&byte),
+            // The Macintosh Chinese and Korean double-byte encodings reserve
+            // the high-byte range used by their script parse tables.
+            2 | 3 | 25 => (0xA1..=0xFE).contains(&byte),
+            _ => false,
+        }
+    }
+
+    fn scriptutil_character_len(script: u8, text: &[u8], offset: usize) -> usize {
+        let Some(&byte) = text.get(offset) else {
+            return 0;
+        };
+        if Self::scriptutil_is_lead_byte(script, byte) && offset + 1 < text.len() {
+            2
+        } else {
+            1
+        }
+    }
+
+    fn scriptutil_is_complete_text(script: u8, text: &[u8]) -> bool {
+        let mut offset = 0;
+        while offset < text.len() {
+            if Self::scriptutil_is_lead_byte(script, text[offset]) {
+                if offset + 1 == text.len() {
+                    return false;
+                }
+                offset += 2;
+            } else {
+                offset += 1;
+            }
+        }
+        true
+    }
+
+    fn scriptutil_replace_text(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        base_handle: u32,
+        substitution_handle: u32,
+        key_ptr: u32,
+    ) -> i16 {
+        const MEM_FULL_ERR: i16 = -108;
+        const NIL_HANDLE_ERR: i16 = -109;
+        const MEM_WZ_ERR: i16 = -111;
+
+        if base_handle == 0 || substitution_handle == 0 {
+            return NIL_HANDLE_ERR;
+        }
+
+        let base_ptr = bus.read_long(base_handle);
+        let substitution_ptr = bus.read_long(substitution_handle);
+        if base_ptr == 0 || substitution_ptr == 0 {
+            return MEM_WZ_ERR;
+        }
+
+        let Some(base_size) = bus.get_alloc_size(base_ptr) else {
+            return MEM_WZ_ERR;
+        };
+        let Some(substitution_size) = bus.get_alloc_size(substitution_ptr) else {
+            return MEM_WZ_ERR;
+        };
+        let key = if key_ptr == 0 {
+            Vec::new()
+        } else {
+            bus.read_pstring(key_ptr)
+        };
+        if key.is_empty() {
+            return 0;
+        }
+
+        let base = bus.read_bytes(base_ptr, base_size as usize);
+        let substitution = bus.read_bytes(substitution_ptr, substitution_size as usize);
+        let script = self.scriptutil_font_script();
+        let key_is_complete = Self::scriptutil_is_complete_text(script, &key);
+        let mut replaced = Vec::with_capacity(base.len());
+        let mut substitutions = 0i16;
+        let mut offset = 0;
+        while offset < base.len() {
+            let candidate_end = offset.saturating_add(key.len());
+            let matches_key = candidate_end <= base.len()
+                && base[offset..candidate_end] == key
+                && key_is_complete;
+            if matches_key {
+                replaced.extend_from_slice(&substitution);
+                substitutions = substitutions.saturating_add(1);
+                offset = candidate_end;
+            } else {
+                let char_len = Self::scriptutil_character_len(script, &base, offset);
+                replaced.extend_from_slice(&base[offset..offset + char_len]);
+                offset += char_len;
+            }
+        }
+
+        if substitutions == 0 {
+            return 0;
+        }
+        if !replaced.is_empty() && self.write_bytes_to_handle(bus, base_handle, &replaced) == 0 {
+            return MEM_FULL_ERR;
+        }
+        substitutions
+    }
+
     fn sync_scrap_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
         let handle = *self.scrap_handle.get_or_insert_with(|| {
             let handle = bus.alloc(4);
@@ -14009,6 +14123,26 @@ impl super::TrapDispatcher {
                 let selector = (raw_selector & 0xFF) as i32;
 
                 match raw_selector {
+                    // ReplaceText ($820CFFDC): FUNCTION ReplaceText(
+                    //   baseText, substitutionText: Handle; key: Str15): INTEGER.
+                    // Stack: selector(4), key pointer(4), substitution handle(4),
+                    // base handle(4), result(2). Pop selector and arguments.
+                    // Inside Macintosh: Text 1993, pp. 5-74..5-75 and Table D-3.
+                    0x820C_FFDC => {
+                        let key_ptr = bus.read_long(sp + 4);
+                        let substitution_handle = bus.read_long(sp + 8);
+                        let base_handle = bus.read_long(sp + 12);
+                        let result = self.scriptutil_replace_text(
+                            bus,
+                            base_handle,
+                            substitution_handle,
+                            key_ptr,
+                        );
+                        bus.write_word(sp + 16, result as u16);
+                        cpu.write_reg(Register::D0, result as i32 as u32);
+                        cpu.write_reg(Register::A7, sp + 16);
+                        return Some(Ok(()));
+                    }
                     // TruncString ($8208FFE0): FUNCTION TruncString(width: INTEGER;
                     //   VAR theString: Str255; truncWhere: TruncCode): INTEGER
                     // Returning smNotTruncated leaves the string unchanged.
@@ -28377,6 +28511,169 @@ mod tests {
 
         assert_eq!(bus.read_word(sp + 16), 0); // smNotTruncated
         assert_eq!(bus.read_word(length_ptr), 12);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    }
+
+    fn write_replace_text_frame(
+        bus: &mut MacMemoryBus,
+        sp: u32,
+        base_handle: u32,
+        substitution_handle: u32,
+        key_ptr: u32,
+    ) {
+        bus.write_long(sp, 0x820C_FFDC);
+        bus.write_long(sp + 4, key_ptr);
+        bus.write_long(sp + 8, substitution_handle);
+        bus.write_long(sp + 12, base_handle);
+        bus.write_word(sp + 16, 0xBEEF);
+    }
+
+    fn replace_text_handles(
+        bus: &mut MacMemoryBus,
+        base: &[u8],
+        substitution: &[u8],
+    ) -> (u32, u32) {
+        let base_ptr = bus.alloc(base.len() as u32);
+        let base_handle = bus.alloc(4);
+        let substitution_ptr = bus.alloc(substitution.len() as u32);
+        let substitution_handle = bus.alloc(4);
+        bus.write_bytes(base_ptr, base);
+        bus.write_long(base_handle, base_ptr);
+        bus.write_bytes(substitution_ptr, substitution);
+        bus.write_long(substitution_handle, substitution_ptr);
+        (base_handle, substitution_handle)
+    }
+
+    // ScriptUtil ($A8B5) encoded selector $820CFFDC ReplaceText
+    // Text 1993 pp. 5-74..5-75 and Table D-3.
+    #[test]
+    fn scriptutil_replacetext_replaces_multiple_nonoverlapping_keys_and_grows_handle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let key_ptr = bus.alloc(16);
+        let (base_handle, substitution_handle) =
+            replace_text_handles(&mut bus, b"A^0B^0", b"LONG");
+        let original_ptr = bus.read_long(base_handle);
+        bus.write_pstring(key_ptr, b"^0");
+        write_replace_text_frame(
+            &mut bus,
+            sp,
+            base_handle,
+            substitution_handle,
+            key_ptr,
+        );
+
+        disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+            .expect("ScriptUtil dispatch")
+            .expect("ReplaceText succeeds");
+
+        let updated_ptr = bus.read_long(base_handle);
+        assert_ne!(updated_ptr, original_ptr);
+        assert!(!disp.ptr_to_handle.contains_key(&original_ptr));
+        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(&base_handle));
+        assert_eq!(bus.read_word(sp + 16), 2);
+        assert_eq!(cpu.read_reg(Register::D0), 2);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.get_alloc_size(updated_ptr), Some(10));
+        assert_eq!(bus.read_bytes(updated_ptr, 10), b"ALONGBLONG");
+    }
+
+    #[test]
+    fn scriptutil_replacetext_shrinks_handle_without_recursively_scanning_substitution() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let key_ptr = bus.alloc(16);
+        let (base_handle, substitution_handle) =
+            replace_text_handles(&mut bus, b"aaaa", b"a");
+        let original_ptr = bus.read_long(base_handle);
+        bus.write_pstring(key_ptr, b"aa");
+        write_replace_text_frame(
+            &mut bus,
+            sp,
+            base_handle,
+            substitution_handle,
+            key_ptr,
+        );
+
+        disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+            .expect("ScriptUtil dispatch")
+            .expect("ReplaceText succeeds");
+
+        let updated_ptr = bus.read_long(base_handle);
+        assert_eq!(updated_ptr, original_ptr);
+        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(&base_handle));
+        assert_eq!(bus.read_word(sp + 16), 2);
+        assert_eq!(bus.get_alloc_size(updated_ptr), Some(2));
+        assert_eq!(bus.read_bytes(updated_ptr, 2), b"aa");
+    }
+
+    #[test]
+    fn scriptutil_replacetext_no_match_preserves_handle_and_contents() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let key_ptr = bus.alloc(16);
+        let (base_handle, substitution_handle) =
+            replace_text_handles(&mut bus, b"unchanged", b"replacement");
+        let original_ptr = bus.read_long(base_handle);
+        bus.write_pstring(key_ptr, b"missing");
+        write_replace_text_frame(
+            &mut bus,
+            sp,
+            base_handle,
+            substitution_handle,
+            key_ptr,
+        );
+
+        disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+            .expect("ScriptUtil dispatch")
+            .expect("ReplaceText succeeds");
+
+        assert_eq!(bus.read_word(sp + 16), 0);
+        assert_eq!(bus.read_long(base_handle), original_ptr);
+        assert_eq!(bus.read_bytes(original_ptr, 9), b"unchanged");
+    }
+
+    #[test]
+    fn scriptutil_replacetext_never_matches_trailing_byte_of_japanese_character() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let key_ptr = bus.alloc(16);
+        let (base_handle, substitution_handle) =
+            replace_text_handles(&mut bus, &[0x81, 0x40, 0x40], b"X");
+        disp.tx_font = 0x4000; // first Japanese font-family ID
+        bus.write_pstring(key_ptr, &[0x40]);
+        write_replace_text_frame(
+            &mut bus,
+            sp,
+            base_handle,
+            substitution_handle,
+            key_ptr,
+        );
+
+        disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+            .expect("ScriptUtil dispatch")
+            .expect("ReplaceText succeeds");
+
+        let updated_ptr = bus.read_long(base_handle);
+        assert_eq!(bus.read_word(sp + 16), 1);
+        assert_eq!(bus.read_bytes(updated_ptr, 3), &[0x81, 0x40, b'X']);
+    }
+
+    #[test]
+    fn scriptutil_replacetext_returns_nilhandleerr_through_encoded_result_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let key_ptr = bus.alloc(16);
+        let (_, substitution_handle) = replace_text_handles(&mut bus, b"base", b"X");
+        bus.write_pstring(key_ptr, b"a");
+        write_replace_text_frame(&mut bus, sp, 0, substitution_handle, key_ptr);
+
+        disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+            .expect("ScriptUtil dispatch")
+            .expect("ReplaceText returns an error code");
+
+        assert_eq!(bus.read_word(sp + 16) as i16, -109); // nilHandleErr
+        assert_eq!(cpu.read_reg(Register::D0), (-109i32) as u32);
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
     }
 
