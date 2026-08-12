@@ -1565,7 +1565,7 @@ impl super::TrapDispatcher {
         );
     }
 
-    fn draw_control_label_text(
+    pub(crate) fn draw_control_label_text(
         &self,
         bus: &mut MacMemoryBus,
         label_top: i16,
