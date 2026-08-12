@@ -6623,9 +6623,9 @@ fn load_app_generic<M: MemoryBus>(
     // discarded, which is why the bug stays latent there. Addresses past the
     // end of RAM are dropped by the bus, so the values below reproduce that.
     //
-    // Ground truth: systemless-play/fixgen/fixtures/lowmem_vectors, captured
-    // from BasiliskII (System 7.5.3, Quadra 650 ROM) — the four RAM-resident
-    // entries are that ROM's RAM handlers, the rest live at $4080xxxx.
+    // Observed in System 7.5.3 running in BasiliskII with a Quadra 650 ROM:
+    // four entries point to RAM-resident handlers and the rest point into the
+    // ROM image at $4080xxxx.
     const BOOT_EXCEPTION_VECTORS: [u32; 64] = [
         0x40810000, 0x40810000, 0x0001EAD6, 0x0001EAD8, 0x0001EADA, 0x0001EADC, 0x408026F8,
         0x408026FA, 0x408026FC, 0x408026FE, 0x408099B0, 0x4088D9FE, 0x40802704, 0x40802704,
