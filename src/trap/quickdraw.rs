@@ -12131,11 +12131,7 @@ impl super::TrapDispatcher {
                     let (value, r, g, b) = if src_ptr != 0 {
                         let src_entry = src_ptr + 8 + (src_idx as u32) * 8;
                         (
-                            if (bus.read_word(src_ptr + 4) & 0x8000) != 0 {
-                                src_idx as u16
-                            } else {
-                                bus.read_word(src_entry)
-                            },
+                            bus.read_word(src_entry),
                             bus.read_word(src_entry + 2),
                             bus.read_word(src_entry + 4),
                             bus.read_word(src_entry + 6),
@@ -21728,10 +21724,8 @@ impl super::TrapDispatcher {
         let sequence_uses_client_ids = is_full_replace
             && (1..=count as u32)
                 .all(|index| bus.read_word(table_ptr + index * 8) == bus.read_word(table_ptr));
-        let previous_frame_was_dimmed = Self::clut_is_dimmed_derivative_of(
-            &self.device_clut,
-            &self.color_manager_clut,
-        );
+        let previous_frame_was_dimmed =
+            Self::clut_is_dimmed_derivative_of(&self.device_clut, &self.color_manager_clut);
         let physical_clut_before_update = self.device_clut;
 
         // Normal path: install the supplied RGB values into device_clut
@@ -21805,10 +21799,7 @@ impl super::TrapDispatcher {
                         &self.color_manager_clut,
                     )));
 
-        if target_is_screen
-            && is_full_replace
-            && !transient_fade_table
-            && !sequence_uses_client_ids
+        if target_is_screen && is_full_replace && !transient_fade_table && !sequence_uses_client_ids
         {
             if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
                 let cm_before = self.color_manager_clut[0];
@@ -21842,14 +21833,8 @@ impl super::TrapDispatcher {
         let ctab_handle = Self::gdevice_ctab_handle(bus, gdh);
         let gd = bus.read_long(gdh);
         let client_id = (gd != 0).then(|| bus.read_word(gd + 2));
-        let _ = self.apply_color_table_updates(
-            bus,
-            ctab_handle,
-            table_ptr,
-            start,
-            count,
-            client_id,
-        );
+        let _ =
+            self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count, client_id);
     }
 
     fn set_entries_target_gdevice_handle(&self, bus: &MacMemoryBus) -> u32 {
@@ -30108,7 +30093,9 @@ mod tests {
         // commonly pass a freshly-created zero-length result handle;
         // the result must still become a structurally valid ColorTable.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.ensure_main_gdevice(&mut bus);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let source_ctab = bus.read_long(TrapDispatcher::gdevice_ctab_handle(&bus, gdh));
+        let source_value_42 = bus.read_word(source_ctab + 8 + 42 * 8);
 
         let selection = bus.alloc(2 + 256 * 2);
         bus.write_word(selection, 255); // reqLSize: 256 requests
@@ -30141,10 +30128,65 @@ mod tests {
 
         let canonical = TrapDispatcher::standard_mac_8bpp_clut();
         let entry_42 = result_ptr + 8 + 42 * 8;
-        assert_eq!(bus.read_word(entry_42), 42);
+        assert_eq!(bus.read_word(entry_42), source_value_42);
         assert_eq!(bus.read_word(entry_42 + 2), canonical[42][0]);
         assert_eq!(bus.read_word(entry_42 + 4), canonical[42][1]);
         assert_eq!(bus.read_word(entry_42 + 6), canonical[42][2]);
+    }
+
+    #[test]
+    fn saveentries_restoreentries_preserve_device_value_rgb_and_seed() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let ctab = bus.read_long(ctab_handle);
+        let seed = bus.read_long(ctab);
+        let selected_index = 42u32;
+        let selected_entry = ctab + 8 + selected_index * 8;
+        let original_value = 0x087Au16; // protected flag plus client ID
+        let original_rgb = [0x1234u16, 0x5678, 0x9ABC];
+        bus.write_word(selected_entry, original_value);
+        bus.write_word(selected_entry + 2, original_rgb[0]);
+        bus.write_word(selected_entry + 4, original_rgb[1]);
+        bus.write_word(selected_entry + 6, original_rgb[2]);
+
+        let selection = bus.alloc(4);
+        bus.write_word(selection, 0); // one request
+        bus.write_word(selection + 2, selected_index as u16);
+        let result_handle = bus.alloc(4);
+        let empty_result = bus.alloc(0);
+        bus.write_long(result_handle, empty_result);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, selection);
+        bus.write_long(TEST_SP + 4, result_handle);
+        bus.write_long(TEST_SP + 8, ctab_handle);
+        let result = d.dispatch_quickdraw(true, 0x249, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let saved_entry = bus.read_long(result_handle) + 8;
+        assert_eq!(bus.read_word(saved_entry), original_value);
+        assert_eq!(bus.read_word(saved_entry + 2), original_rgb[0]);
+        assert_eq!(bus.read_word(saved_entry + 4), original_rgb[1]);
+        assert_eq!(bus.read_word(saved_entry + 6), original_rgb[2]);
+
+        bus.write_word(selected_entry, 0xFFFF);
+        bus.write_word(selected_entry + 2, 0xAAAA);
+        bus.write_word(selected_entry + 4, 0xBBBB);
+        bus.write_word(selected_entry + 6, 0xCCCC);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, selection);
+        bus.write_long(TEST_SP + 4, ctab_handle);
+        bus.write_long(TEST_SP + 8, result_handle);
+        let result = d.dispatch_quickdraw(true, 0x24A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(selected_entry), original_value);
+        assert_eq!(bus.read_word(selected_entry + 2), original_rgb[0]);
+        assert_eq!(bus.read_word(selected_entry + 4), original_rgb[1]);
+        assert_eq!(bus.read_word(selected_entry + 6), original_rgb[2]);
+        assert_eq!(bus.read_long(ctab), seed, "RestoreEntries must not reseed");
     }
 
     #[test]
@@ -40597,7 +40639,10 @@ mod tests {
             }
             d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
             assert_eq!(d.device_clut[245], physical[245]);
-            assert_eq!(d.device_clut[42], [((42u16).wrapping_add(pass)) << 8, 0xD500, 0x5500]);
+            assert_eq!(
+                d.device_clut[42],
+                [((42u16).wrapping_add(pass)) << 8, 0xD500, 0x5500]
+            );
             assert_eq!(
                 d.color_manager_clut[245],
                 [((245u16).wrapping_add(pass)) << 8, 0x0A00, 0x5500]
