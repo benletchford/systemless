@@ -9082,8 +9082,16 @@ impl super::TrapDispatcher {
             // 5-100). If the application disposes that dialog before release,
             // discard the already-handled down event so the newly exposed
             // dialog cannot receive the same press.
-            if let Some(idx) = self.event_queue.iter().position(|event| event.what == 1) {
-                self.event_queue.remove(idx);
+            if let Some(owned) = self.pending_modal_dialog_mouse_down.as_ref() {
+                if let Some(idx) = self.event_queue.iter().rposition(|event| {
+                    event.what == owned.what
+                        && event.message == owned.message
+                        && event.where_v == owned.where_v
+                        && event.where_h == owned.where_h
+                        && event.modifiers == owned.modifiers
+                }) {
+                    self.event_queue.remove(idx);
+                }
             }
             self.mouse_button = false;
             self.adb.note_mouse_state(self.mouse_pos, false);
@@ -9569,8 +9577,11 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn consume_or_retain_dialog_mouse_up(&mut self) {
+    fn consume_or_retain_dialog_mouse_up(&mut self, mouse_down: &QueuedEvent) {
         self.pending_modal_dialog_mouse_up = !self.consume_dialog_mouse_up();
+        self.pending_modal_dialog_mouse_down = self
+            .pending_modal_dialog_mouse_up
+            .then(|| mouse_down.clone());
     }
 
     fn dialog_item_screen_rect(
@@ -11399,7 +11410,9 @@ impl super::TrapDispatcher {
                                 self.pending_modal_button_dispose_dialog = Some(saved_dialog_ptr);
                             }
                             if handled_mouse_down {
-                                self.consume_or_retain_dialog_mouse_up();
+                                self.consume_or_retain_dialog_mouse_up(
+                                    filter_event.as_ref().expect("handled mouseDown event"),
+                                );
                             }
                             if trace_dialog_filter_enabled() {
                                 let actual_hit = bus.read_word(item_hit_ptr) as i16;
@@ -11738,7 +11751,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved_dialog_ptr, saved.saved_pixels);
-                                                self.consume_or_retain_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up(&e);
                                                 // Don't restore pixels — dialog stays visible
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
@@ -11793,7 +11806,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved_dialog_ptr, saved.saved_pixels);
-                                                self.consume_or_retain_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up(&e);
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
@@ -11847,7 +11860,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
-                                                self.consume_or_retain_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up(&e);
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
@@ -11918,7 +11931,7 @@ impl super::TrapDispatcher {
                                                 self.persist_visible_dialog_snapshot(bus, &saved);
                                                 self.dialog_saved_pixels
                                                     .insert(saved.dialog_ptr, saved.saved_pixels);
-                                                self.consume_or_retain_dialog_mouse_up();
+                                                self.consume_or_retain_dialog_mouse_up(&e);
                                                 if item_hit_ptr != 0 {
                                                     bus.write_word(item_hit_ptr, hit as u16);
                                                 }
@@ -30479,11 +30492,14 @@ mod tests {
             .push((parent, (0, 0, 342, 512), 2, String::new()));
         disp.dialog_items.insert(child, Vec::new());
 
+        // An unrelated earlier down must stay ahead of the child press.
+        disp.push_mouse_down(20, 30);
         // Model an application-owned modal button handler that has returned
         // from ModalDialog but left the initiating event queued while keeping
         // ownership of the not-yet-arrived release.
         disp.push_mouse_down(130, 240);
-        disp.pending_modal_dialog_mouse_up = true;
+        let owned_down = disp.event_queue.back().expect("child mouseDown").clone();
+        disp.consume_or_retain_dialog_mouse_up(&owned_down);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, child);
@@ -30492,7 +30508,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(disp.front_window, parent);
-        assert!(disp.event_queue.iter().all(|event| event.what != 1));
+        let queued_downs = disp
+            .event_queue
+            .iter()
+            .filter(|event| event.what == 1)
+            .collect::<Vec<_>>();
+        assert_eq!(queued_downs.len(), 1);
+        assert_eq!((queued_downs[0].where_v, queued_downs[0].where_h), (20, 30));
         assert!(disp.pending_modal_dialog_mouse_up);
         assert!(!disp.mouse_button);
         assert_eq!(bus.read_byte(0x0172), 0x80);
@@ -30506,18 +30528,23 @@ mod tests {
             assert_eq!(bus.read_word(TEST_SP), 0);
         }
 
+        let (what, _, where_v, where_h, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        assert_eq!((what, where_v, where_h, has_event), (1, 20, 30, true));
+
         disp.push_mouse_up(130, 240);
         assert!(!disp.pending_modal_dialog_mouse_up);
-        assert!(disp.event_queue.iter().all(|event| !matches!(event.what, 1 | 2)));
+        assert!(disp
+            .event_queue
+            .iter()
+            .all(|event| !matches!(event.what, 1 | 2)));
 
         // A later independent click remains deliverable to the parent.
         disp.push_mouse_down(150, 260);
         disp.push_mouse_up(150, 260);
-        let (what, _, _, _, _, has_event) =
-            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
         assert_eq!((what, has_event), (1, true));
-        let (what, _, _, _, _, has_event) =
-            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
         assert_eq!((what, has_event), (2, true));
     }
 
