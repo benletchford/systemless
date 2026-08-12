@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.14](https://github.com/benletchford/systemless/compare/v0.12.13...v0.12.14) (2026-08-12)
+
+
+### Bug Fixes
+
+* **control:** truncate fixed-width popup titles ([99176f2](https://github.com/benletchford/systemless/commit/99176f2cfa6529b4ba133aa715b40bb6e7509723))
+
 ## [0.12.13](https://github.com/benletchford/systemless/compare/v0.12.12...v0.12.13) (2026-08-11)
 
 
