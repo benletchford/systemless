@@ -1836,6 +1836,12 @@ impl FixtureRunner {
     /// yourself (e.g. building a custom test fixture).
     pub fn load_app(&mut self, fork: &ResourceFork) -> Option<LoadedApp> {
         let app = load_app_generic(fork, &mut self.bus, self.config.load_address)?;
+        for code in fork.get_all_code().into_iter().filter(|code| code.id != 0) {
+            if let Some(&start) = app.segment_bases.get(&code.id) {
+                let bytes = self.bus.read_bytes(start, code.data.len());
+                self.bus.register_executable_snapshot(start, bytes);
+            }
+        }
         let heap_start = app_heap_start_for_loaded_app(&app);
 
         // Resource data is allocated after direct CODE/global loading. Reserve
@@ -3503,6 +3509,7 @@ impl FixtureRunner {
             }
 
             let pc = self.cpu.read_reg(Register::PC);
+            self.bus.set_execution_pc(pc);
             // Defer reading SP until needed. sp is only used by the
             // interrupt-callback match (rare), the env-gated
             // trace_buffer path, and the PC-bounds error branch.
@@ -3852,6 +3859,11 @@ impl FixtureRunner {
                     return (count, false);
                 }
                 BatchExit::IllegalInstruction { opcode } => {
+                    let pc = self.cpu.core.ppc;
+                    if self.bus.recover_overwritten_executable(pc) {
+                        self.cpu.write_reg(Register::PC, pc);
+                        continue;
+                    }
                     eprintln!(
                         "[CPU] IllegalInstruction: ${:04X} at PC=${:08X}",
                         opcode, self.cpu.core.pc
@@ -6332,9 +6344,14 @@ impl FixtureRunner {
                 self.trace_buffer.push_back((pc, opcode, a0, sp, a6, a5));
             }
 
+            self.bus.set_execution_pc(pc);
             match self.cpu.step(&mut self.bus) {
                 StepResult::Ok => {}
                 StepResult::Stopped => {
+                    if self.bus.recover_overwritten_executable(self.cpu.core.ppc) {
+                        self.cpu.write_reg(Register::PC, self.cpu.core.ppc);
+                        continue;
+                    }
                     if trace_load_enabled() {
                         let stopped_pc = self.cpu.read_reg(Register::PC);
                         let opcode = self.bus.read_word(stopped_pc);
@@ -7529,6 +7546,35 @@ mod tests {
             code1_base + 0x28,
             "MPW far offsets must not be adjusted by the 40-byte header twice"
         );
+    }
+
+    #[test]
+    fn resident_code_finishes_an_overwritten_startup_loop_from_cached_line() {
+        let base = 0x0001_0000u32;
+        let code0 = minimal_code0(0x1000, 0x1000, 0, 0);
+        let mut code1 = vec![0x00, 0x00, 0x42, 0x19, 0x51, 0xC9, 0xFF, 0xFC, 0x60, 0xFE];
+        code1.resize(16, 0x4E);
+        let fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, code0.as_slice()),
+            (*b"CODE", 1, code1.as_slice()),
+        ]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.config.load_address = base;
+
+        let app = runner.load_app(&fork).expect("load app");
+        let loop_pc = app.segment_bases[&1] + 2;
+        let destination = loop_pc + 2;
+        runner.cpu.write_reg(Register::A1, destination);
+        runner.cpu.write_reg(Register::D1, 0);
+        runner.cpu.write_reg(Register::A7, 0x007F_F000);
+        runner.cpu.write_reg(Register::PC, loop_pc);
+
+        let (_, still_running) = runner.run_steps(4, None);
+
+        assert!(still_running);
+        assert_eq!(runner.bus.read_word(loop_pc + 2), 0x00C9);
+        assert_eq!(runner.cpu.read_reg(Register::PC), loop_pc + 6);
     }
 
     #[test]

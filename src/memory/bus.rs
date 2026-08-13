@@ -459,6 +459,13 @@ pub struct MacMemoryBus {
     /// the overwhelmingly common case reject in two comparisons instead of
     /// scanning the list.
     readonly_code_span: Option<(u32, u32)>,
+    /// Original bytes for resident CODE segments that may be executing while
+    /// a startup decompressor overwrites their backing handles. A cache line
+    /// is activated only when execution encounters an overwritten opcode,
+    /// modeling the 68040 instruction cache without hiding ordinary data
+    /// writes from the guest.
+    executable_snapshots: Vec<ExecutableSnapshot>,
+    execution_pc: u32,
     /// Free list: maps aligned_size → stack of recycled addresses
     free_blocks: HashMap<u32, Vec<u32>>,
     /// Tracks the aligned size of each allocation (address → aligned_size)
@@ -478,6 +485,12 @@ pub struct MacMemoryBus {
     /// An out-of-range write makes the probe unverifiable even though the
     /// normal bus retains its legacy warn-and-ignore behavior.
     write_probe_invalid: bool,
+}
+
+struct ExecutableSnapshot {
+    start: u32,
+    bytes: Vec<u8>,
+    active_line: Option<u32>,
 }
 
 /// RAM storage - either owned vector or borrowed slice
@@ -844,6 +857,8 @@ impl MacMemoryBus {
             synthetic_ptr: screen_buffer_start,
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
+            executable_snapshots: Vec::new(),
+            execution_pc: 0,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),
@@ -903,6 +918,57 @@ impl MacMemoryBus {
         bus
     }
 
+    pub(crate) fn register_executable_snapshot(&mut self, start: u32, bytes: Vec<u8>) {
+        if !bytes.is_empty() {
+            self.executable_snapshots.push(ExecutableSnapshot {
+                start,
+                bytes,
+                active_line: None,
+            });
+        }
+    }
+
+    pub(crate) fn set_execution_pc(&mut self, pc: u32) {
+        self.execution_pc = pc;
+    }
+
+    pub(crate) fn execution_pc_uses_snapshot(&self) -> bool {
+        self.read_executable_snapshot_word(self.execution_pc)
+            .is_some()
+    }
+
+    pub(crate) fn recover_overwritten_executable(&mut self, address: u32) -> bool {
+        for snapshot in &mut self.executable_snapshots {
+            let end = snapshot.start.saturating_add(snapshot.bytes.len() as u32);
+            if address >= snapshot.start && address.saturating_add(2) <= end {
+                let offset = (address - snapshot.start) as usize;
+                let original =
+                    u16::from_be_bytes([snapshot.bytes[offset], snapshot.bytes[offset + 1]]);
+                if original == self.ram.read_word_in_bounds(address as usize) {
+                    return false;
+                }
+                snapshot.active_line = Some(address & !0xF);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn read_executable_snapshot_word(&self, address: u32) -> Option<u16> {
+        self.executable_snapshots.iter().find_map(|snapshot| {
+            let line = snapshot.active_line?;
+            if address < line || address.saturating_add(2) > line.saturating_add(16) {
+                return None;
+            }
+            if address < snapshot.start {
+                return None;
+            }
+            let offset = (address - snapshot.start) as usize;
+            let bytes = snapshot.bytes.get(offset..offset + 2)?;
+            Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+        })
+    }
+
     /// Create a memory bus wrapping an external RAM slice
     ///
     /// # Safety
@@ -924,6 +990,8 @@ impl MacMemoryBus {
             synthetic_ptr: screen_buffer_start,
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
+            executable_snapshots: Vec::new(),
+            execution_pc: 0,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             alloc_bucket_sizes: HashMap::new(),

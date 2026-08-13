@@ -101,12 +101,20 @@ impl m68k::AddressBus for MacMemoryBus {
     fn write_long(&mut self, addr: u32, val: u32) {
         MemoryBus::write_long(self, addr, val)
     }
+    #[inline]
+    fn read_immediate_word(&mut self, addr: u32) -> u16 {
+        self.read_executable_snapshot_word(addr)
+            .unwrap_or_else(|| MemoryBus::read_word(self, addr))
+    }
 
     /// Guest RAM is one flat side-effect-free array, so expose it all to
     /// the m68k batch loop. Returns `None` while bus-access diagnostics
     /// (tracers/watchpoints) are active so they keep seeing every access.
     #[inline]
     fn fast_mem(&mut self) -> Option<m68k::FastMem> {
+        if self.execution_pc_uses_snapshot() {
+            return None;
+        }
         let (ptr, len) = self.fast_mem_window()?;
         Some(m68k::FastMem { ptr, base: 0, len })
     }
