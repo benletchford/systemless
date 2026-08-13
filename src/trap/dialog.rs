@@ -29173,6 +29173,8 @@ mod tests {
         bus.write_word(dialog_ptr + 20, 180);
         bus.write_word(dialog_ptr + 22, 220);
         let dialog_bounds = (100, 100, 280, 320);
+        let exterior_probe = screen_base + 95 * 800 + 95;
+        bus.write_byte(exterior_probe, 0x33);
 
         let ctrl_ptr = bus.alloc(296);
         let ctrl_handle = bus.alloc(4);
@@ -29193,6 +29195,16 @@ mod tests {
         disp.dialog_control_handles
             .insert(ctrl_handle, (dialog_ptr, 1));
         disp.dialog_control_values.insert((dialog_ptr, 1), 1);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 7,
+                rect: (10, 20, 30, 130),
+                ..Default::default()
+            }],
+        );
+        disp.ensure_dialog_background_saved(&bus, dialog_ptr, dialog_bounds);
+        let saved_under = disp.dialog_saved_pixels[&dialog_ptr].clone();
         disp.menus.push(Menu {
             id: 900,
             title: "Squadies".to_string(),
@@ -29242,7 +29254,7 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: saved_under,
             stack_ptr: TEST_SP,
             item_hit_ptr: item_hit_addr,
             rendered_pixels: Vec::new(),
@@ -29332,6 +29344,23 @@ mod tests {
         assert!(
             retained.pixels != stale_open_popup_pixels,
             "retained snapshot kept stale open-popup pixels"
+        );
+
+        // After ModalDialog returns the popup hit, the application redraws
+        // the selected pane through the retained dialog port. A draw touching
+        // the dBox structure margin is still visible dialog composition, not
+        // a replacement for title artwork saved underneath the modal.
+        disp.dialog_modal_entered.insert(dialog_ptr);
+        bus.write_byte(exterior_probe, 0x77);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, dialog_ptr, (95, 95, 96, 96));
+
+        let save_rect = TrapDispatcher::dialog_saved_pixel_rect(dialog_bounds);
+        let save_width = (save_rect.3 - save_rect.1) as usize;
+        let exterior_index = (95 - save_rect.0) as usize * save_width + (95 - save_rect.1) as usize;
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dialog_ptr).unwrap()[exterior_index],
+            0x33,
+            "popup-era dialog drawing must not replace exterior saved-under pixels"
         );
     }
 
