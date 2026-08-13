@@ -1,6 +1,7 @@
 //! Menu Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
+use crate::managers::resource::ResourceFork;
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
@@ -485,6 +486,196 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
+    fn allocate_apple_menu_icon_number(&self) -> Option<u8> {
+        (1u8..=255).find(|number| {
+            if self.apple_menu_item_icons.contains_key(number) {
+                return false;
+            }
+            let resource_id = i16::from(*number) + 256;
+            [*b"cicn", *b"ICON", *b"SICN"]
+                .into_iter()
+                .all(|resource_type| self.find_resource_any(resource_type, resource_id).is_none())
+        })
+    }
+
+    fn apple_menu_item_icon(&mut self, bus: &mut MacMemoryBus, path: &str) -> u8 {
+        if !self.vfs_metadata.contains_key(path) {
+            return 0;
+        }
+        let Some(bytes) = self.vfs_rsrc.get(path) else {
+            return 0;
+        };
+        let Some(fork) = ResourceFork::parse(bytes) else {
+            return 0;
+        };
+        let mut icons = fork.get_all(*b"ICN#");
+        icons.sort_by_key(|resource| resource.id);
+        let Some(icon) = icons
+            .into_iter()
+            .find(|resource| resource.data.len() >= 128)
+        else {
+            return 0;
+        };
+        let Some(icon_number) = self.allocate_apple_menu_icon_number() else {
+            return 0;
+        };
+        let icon_data = icon.data[..128].to_vec();
+        let icon_ptr = bus.alloc(icon_data.len() as u32);
+        bus.write_bytes(icon_ptr, &icon_data);
+        self.apple_menu_item_icons.insert(icon_number, icon_ptr);
+        icon_number
+    }
+
+    fn allocate_hierarchical_menu_id(&self) -> Option<i16> {
+        (1i16..=255)
+            .rev()
+            .find(|candidate| !self.menus.iter().any(|menu| menu.id == *candidate))
+    }
+
+    fn create_vfs_hierarchical_menu(&mut self, bus: &mut MacMemoryBus, menu_id: i16) -> Menu {
+        let menu_ptr = bus.alloc(256);
+        let menu_handle = bus.alloc(4);
+        bus.write_long(menu_handle, menu_ptr);
+        bus.write_word(menu_ptr, menu_id as u16);
+        bus.write_word(menu_ptr + 2, 0);
+        bus.write_word(menu_ptr + 4, 0);
+        let menu_def_proc = self.menu_def_proc_handle(bus, 0);
+        bus.write_long(menu_ptr + 6, menu_def_proc);
+        bus.write_long(menu_ptr + 10, 0xFFFF_FFFF);
+        bus.write_byte(menu_ptr + 14, 0);
+        bus.write_byte(menu_ptr + 15, 0);
+        Menu {
+            id: menu_id,
+            title: String::new(),
+            items: Vec::new(),
+            enabled: true,
+            handle: menu_handle,
+            in_menu_bar: true,
+            hierarchical: true,
+            visible_in_menu_bar: false,
+        }
+    }
+
+    fn apple_menu_items_root(&self) -> Option<String> {
+        let suffix = "system folder/apple menu items";
+        let mut candidates = self
+            .vfs_directories
+            .keys()
+            .filter(|path| path.to_ascii_lowercase().ends_with(suffix))
+            .cloned()
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|path| (path.matches('/').count(), path.to_ascii_lowercase()));
+        candidates.into_iter().next()
+    }
+
+    fn populate_apple_menu_directory(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        menu: &mut Menu,
+        directory_path: &str,
+    ) {
+        let Some(directory) = self.vfs_directories.get(directory_path).cloned() else {
+            return;
+        };
+        let entries = self.list_vfs_catalog_entries(directory.dir_id);
+        for entry in entries {
+            if entry.name.is_empty()
+                || entry.name.starts_with('.')
+                || entry.name.starts_with('%')
+                || menu.items.iter().any(|item| item.text == entry.name)
+            {
+                continue;
+            }
+
+            if entry.is_directory {
+                let Some(submenu_id) = self.allocate_hierarchical_menu_id() else {
+                    continue;
+                };
+                let mut submenu = self.create_vfs_hierarchical_menu(bus, submenu_id);
+                // Reserve the ID before descending so nested folders cannot
+                // accidentally reuse their parent's hierarchical-menu ID.
+                self.menus.push(submenu.clone());
+                let reserved_index = self.menus.len() - 1;
+                self.populate_apple_menu_directory(bus, &mut submenu, &entry.path);
+                if submenu.items.is_empty() {
+                    self.menus.remove(reserved_index);
+                    continue;
+                }
+                sync_enable_flags(bus, &submenu);
+                self.serialise_menu_items_to_memory(bus, &submenu);
+                self.menus[reserved_index] = submenu;
+                menu.items.push(MenuItem {
+                    text: entry.name,
+                    icon: 0,
+                    key_equiv: 0x1B,
+                    mark: submenu_id as u8,
+                    style: 0,
+                    enabled: true,
+                });
+            } else {
+                let item_number = menu.items.len() as i16 + 1;
+                let icon = self.apple_menu_item_icon(bus, &entry.path);
+                menu.items.push(MenuItem {
+                    text: entry.name,
+                    icon,
+                    key_equiv: if icon == 0 { 0 } else { MENU_KEY_REDUCED_ICON },
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                });
+                self.apple_menu_item_paths
+                    .insert((menu.id, item_number), entry.path);
+            }
+        }
+    }
+
+    fn append_vfs_apple_menu_items(&mut self, bus: &mut MacMemoryBus, menu_handle: u32) {
+        self.ensure_vfs_catalog();
+        let Some(root) = self.apple_menu_items_root() else {
+            return;
+        };
+        let Some(index) = self
+            .menus
+            .iter()
+            .position(|menu| menu.handle == menu_handle)
+        else {
+            return;
+        };
+        let mut menu = self.menus.remove(index);
+        self.populate_apple_menu_directory(bus, &mut menu, &root);
+        sync_enable_flags(bus, &menu);
+        self.serialise_menu_items_to_memory(bus, &menu);
+        self.menus.insert(index, menu);
+    }
+
+    fn consume_apple_menu_item_selection(&mut self, result: u32) -> u32 {
+        let key = ((result >> 16) as u16 as i16, result as u16 as i16);
+        let Some(path) = self.apple_menu_item_paths.get(&key).cloned() else {
+            return result;
+        };
+        let expected_name = path.rsplit('/').next().unwrap_or(path.as_str());
+        let selection_still_matches = self
+            .menus
+            .iter()
+            .find(|menu| menu.id == key.0)
+            .and_then(|menu| menu.items.get((key.1 - 1) as usize))
+            .is_some_and(|item| item.text == expected_name);
+        if !selection_still_matches {
+            self.apple_menu_item_paths.remove(&key);
+            return result;
+        }
+        if self
+            .vfs_metadata
+            .get(&path)
+            .is_some_and(|metadata| metadata.file_type == u32::from_be_bytes(*b"APPL"))
+        {
+            self.queue_pending_launch_application(&path, true);
+        }
+        // System-provided items are dispatched by the Menu/Desk Manager, not
+        // returned to the application's About-command switch.
+        0
+    }
+
     /// Copy the live, inserted Menu Manager state into a frontend-neutral
     /// representation.  Refresh enable flags first because classic
     /// applications and custom menu procedures are allowed to mutate the
@@ -1753,6 +1944,9 @@ impl super::TrapDispatcher {
                 if let Some(m) = touched {
                     self.serialise_menu_items_to_memory(bus, &m);
                 }
+                if res_type == *b"DRVR" {
+                    self.append_vfs_apple_menu_items(bus, menu_handle);
+                }
                 Ok(())
             }
 
@@ -1831,6 +2025,7 @@ impl super::TrapDispatcher {
                 if self.menu_tracking.is_none() && self.pending_native_menu_selection.is_some() {
                     let sp = cpu.read_reg(Register::A7);
                     let result = self.take_native_menu_selection(bus).unwrap_or(0);
+                    let result = self.consume_apple_menu_item_selection(result);
                     // The synthetic mouse-up belongs to the native selection;
                     // native AppKit tracking has already completed it.
                     if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
@@ -1886,6 +2081,7 @@ impl super::TrapDispatcher {
                                 .unwrap_or(saved.highlighted_item);
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.draw_menu_bar_to_fb(bus);
+                            let result = self.consume_apple_menu_item_selection(result);
                             bus.write_long(sp + 4, result);
                             cpu.write_reg(Register::A7, sp + 4);
                             self.record_menuselect_input_trace(
@@ -3885,7 +4081,8 @@ impl super::TrapDispatcher {
     }
 
     fn menu_item_has_cicn_resource(&self, item: &MenuItem) -> bool {
-        self.cicn_menu_icon_resource_ptr(item).is_some()
+        !self.apple_menu_item_icons.contains_key(&item.icon)
+            && self.cicn_menu_icon_resource_ptr(item).is_some()
     }
 
     fn cicn_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
@@ -3905,8 +4102,13 @@ impl super::TrapDispatcher {
         // 1992 pp. 3-137 to 3-138 specify the Menu Manager adds 256
         // to obtain the ICON resource ID for the reduced-icon case.
         let icon_resource_id = Self::menu_item_icon_resource_id(item)?;
-        self.find_resource_any(*b"ICON", icon_resource_id)
-            .map(|(_, ptr)| ptr)
+        self.apple_menu_item_icons
+            .get(&item.icon)
+            .copied()
+            .or_else(|| {
+                self.find_resource_any(*b"ICON", icon_resource_id)
+                    .map(|(_, ptr)| ptr)
+            })
     }
 
     fn small_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
@@ -5486,6 +5688,45 @@ mod tests {
         fn exit(&self, _span: &Id) {}
     }
 
+    fn single_resource_fork(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
+        let data_offset = 16u32;
+        let data_length = (4 + data.len()) as u32;
+        let map_offset = data_offset + data_length;
+        let type_list_offset = 30u16;
+        let ref_list_offset = 10u16;
+        let name_list_offset = 40u16;
+        let map_length = 52u32;
+
+        let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+        header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+        header[8..12].copy_from_slice(&data_length.to_be_bytes());
+        header[12..16].copy_from_slice(&map_length.to_be_bytes());
+        bytes[0..16].copy_from_slice(&header);
+
+        let data_start = data_offset as usize;
+        bytes[data_start..data_start + 4].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes[data_start + 4..data_start + 4 + data.len()].copy_from_slice(data);
+
+        let map_start = map_offset as usize;
+        bytes[map_start..map_start + 16].copy_from_slice(&header);
+        bytes[map_start + 24..map_start + 26].copy_from_slice(&type_list_offset.to_be_bytes());
+        bytes[map_start + 26..map_start + 28].copy_from_slice(&name_list_offset.to_be_bytes());
+
+        let type_list_start = map_start + type_list_offset as usize;
+        bytes[type_list_start..type_list_start + 2].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 2..type_list_start + 6].copy_from_slice(&res_type);
+        bytes[type_list_start + 6..type_list_start + 8].copy_from_slice(&0u16.to_be_bytes());
+        bytes[type_list_start + 8..type_list_start + 10]
+            .copy_from_slice(&ref_list_offset.to_be_bytes());
+
+        let ref_list_start = type_list_start + ref_list_offset as usize;
+        bytes[ref_list_start..ref_list_start + 2].copy_from_slice(&(res_id as u16).to_be_bytes());
+        bytes[ref_list_start + 2..ref_list_start + 4].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        bytes
+    }
+
     fn write_pstring(bus: &mut crate::memory::MacMemoryBus, ptr: u32, s: &str) {
         let bytes = s.as_bytes();
         bus.write_byte(ptr, bytes.len().min(255) as u8);
@@ -6156,6 +6397,155 @@ mod tests {
             assert_eq!(item.mark, 0, "new AddResMenu items should have no mark");
             assert_eq!(item.style, 0, "new AddResMenu items should be plain style");
         }
+    }
+
+    #[test]
+    fn addresmenu_appends_vfs_apple_menu_items_and_hierarchical_folders() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 128, 0x306850, "\u{14}");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            0x306900,
+            "About Example;-",
+        );
+
+        disp.ensure_vfs_directory("Archive/System Folder/Apple Menu Items/Utilities");
+        let calculator_icon = (0u8..128).collect::<Vec<_>>();
+        for (path, file_type) in [
+            (
+                "Archive/System Folder/Apple Menu Items/Calculator",
+                *b"APPL",
+            ),
+            ("Archive/System Folder/Apple Menu Items/Note Pad", *b"APPL"),
+            (
+                "Archive/System Folder/Apple Menu Items/Utilities/Key Caps",
+                *b"APPL",
+            ),
+        ] {
+            let resource_fork = if path.ends_with("Calculator") {
+                single_resource_fork(*b"ICN#", 128, &calculator_icon)
+            } else {
+                vec![0]
+            };
+            disp.vfs_rsrc.insert(path.to_string(), resource_fork);
+            disp.set_vfs_entry_metadata(path, file_type, *b"TEST", 0);
+        }
+        disp.vfs_rsrc.insert(
+            "Archive/System Folder/Apple Menu Items/.Hidden".to_string(),
+            vec![0],
+        );
+        disp.set_vfs_entry_metadata(
+            "Archive/System Folder/Apple Menu Items/.Hidden",
+            *b"APPL",
+            *b"TEST",
+            0,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, u32::from_be_bytes(*b"DRVR"));
+        bus.write_long(TEST_SP + 4, handle);
+        disp.dispatch_menu(true, 0x14D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let apple = disp
+            .menus
+            .iter()
+            .find(|menu| menu.handle == handle)
+            .expect("Apple menu should remain registered");
+        assert_eq!(
+            apple
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["About Example", "-", "Calculator", "Note Pad", "Utilities"]
+        );
+        assert!(!apple.items.iter().any(|item| item.text == ".Hidden"));
+        let calculator = apple
+            .items
+            .iter()
+            .find(|item| item.text == "Calculator")
+            .unwrap();
+        assert_ne!(calculator.icon, 0);
+        assert_eq!(calculator.key_equiv, MENU_KEY_REDUCED_ICON);
+        let icon_ptr = disp.apple_menu_item_icons[&calculator.icon];
+        assert_eq!(bus.read_bytes(icon_ptr, 128), calculator_icon);
+        let utilities = apple
+            .items
+            .iter()
+            .find(|item| item.text == "Utilities")
+            .unwrap();
+        assert_eq!(utilities.key_equiv, 0x1B);
+        let submenu = disp
+            .menus
+            .iter()
+            .find(|menu| menu.id == utilities.mark as i16)
+            .expect("folder should install a hierarchical submenu");
+        assert!(submenu.hierarchical);
+        assert!(!submenu.visible_in_menu_bar);
+        assert_eq!(submenu.items.len(), 1);
+        assert_eq!(submenu.items[0].text, "Key Caps");
+        assert_eq!(
+            disp.apple_menu_item_paths
+                .get(&(submenu.id, 1))
+                .map(String::as_str),
+            Some("Archive/System Folder/Apple Menu Items/Utilities/Key Caps")
+        );
+    }
+
+    #[test]
+    fn vfs_apple_menu_selection_queues_application_launch_and_hides_guest_command() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let path = "Archive/System Folder/Apple Menu Items/Calculator";
+        disp.vfs_rsrc.insert(path.to_string(), vec![0]);
+        disp.set_vfs_entry_metadata(path, *b"APPL", *b"TEST", 0);
+        disp.apple_menu_item_paths
+            .insert((128, 3), path.to_string());
+        disp.menus.push(Menu {
+            id: 128,
+            title: String::new(),
+            items: ["One", "Two", "Calculator"]
+                .into_iter()
+                .map(|text| MenuItem {
+                    text: text.to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                })
+                .collect(),
+            enabled: true,
+            handle: bus.alloc(4),
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+
+        assert_eq!(disp.consume_apple_menu_item_selection(0x0080_0003), 0);
+        let launch = disp
+            .pending_launch_app
+            .as_ref()
+            .expect("application item should queue a launch");
+        assert_eq!(launch.path, path);
+        assert!(launch.after_event_yield);
+
+        assert_eq!(
+            disp.consume_apple_menu_item_selection(0x0081_0002),
+            0x0081_0002,
+            "ordinary application-owned menu results must pass through"
+        );
+
+        disp.menus[0].items[2].text = "Replacement".to_string();
+        assert_eq!(
+            disp.consume_apple_menu_item_selection(0x0080_0003),
+            0x0080_0003,
+            "stale system mappings must not consume application-owned selections"
+        );
     }
 
     // IM:I I-360: SetItemStyle takes one Style value, one item index,

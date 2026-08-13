@@ -1567,6 +1567,14 @@ pub struct TrapDispatcher {
     /// returned. Limit redelivery to once per tick so an animation loop that
     /// ignores mouseDown events can still make forward progress.
     pub(crate) pending_native_menu_event_tick: Option<u32>,
+    /// VFS-backed System Folder Apple Menu Items keyed by the menu selection
+    /// that represents them. These entries are owned by the Menu/Desk Manager
+    /// rather than by the foreground application.
+    pub(crate) apple_menu_item_paths: HashMap<(i16, i16), String>,
+    /// Synthetic menu icon resources installed for VFS-backed Apple Menu
+    /// Items. The menu item's one-byte icon number indexes this map through
+    /// the normal icon-number-plus-256 Menu Manager convention.
+    pub(crate) apple_menu_item_icons: HashMap<u8, u32>,
     /// Active control tracking state (currently popup-menu TrackControl).
     pub(crate) control_tracking: Option<ControlTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
@@ -3034,6 +3042,8 @@ impl TrapDispatcher {
             pending_native_menu_selection: None,
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
+            apple_menu_item_paths: HashMap::new(),
+            apple_menu_item_icons: HashMap::new(),
             control_tracking: None,
             underline_info: None,
             mouse_pos: (0, 0),
