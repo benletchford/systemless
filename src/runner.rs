@@ -894,6 +894,8 @@ pub struct FixtureRunner {
     /// must not be re-entered by our synthetic tick advancement while the callback
     /// is still unwinding back to interrupted guest code.
     active_interrupt_callback: Option<ActiveInterruptCallback>,
+    /// GrafPort state saved while an application-owned dialog userItem draws.
+    dialog_draw_port_snapshot: Option<crate::trap::dispatch::PortStateSnapshot>,
     /// Tracking trap PC to re-fire after an asynchronous callback returns.
     ///
     /// A timer/VBL callback can be injected while MenuSelect or ModalDialog
@@ -1012,6 +1014,7 @@ impl FixtureRunner {
             adb_callback_trampoline: 0,
             adb_packet_buffer: 0,
             active_interrupt_callback: None,
+            dialog_draw_port_snapshot: None,
             deferred_tracking_refire_pc: None,
             audio: None,
             audio_buffer: Vec::new(),
@@ -3580,6 +3583,18 @@ impl FixtureRunner {
                     self.cpu
                         .core
                         .set_sr_noint_nosp(active_interrupt_callback.sr);
+                    if matches!(
+                        active_interrupt_callback.source,
+                        ActiveInterruptCallbackSource::DialogDrawProc
+                    ) {
+                        if let Some(snapshot) = self.dialog_draw_port_snapshot.take() {
+                            self.dispatcher.restore_current_port_state(
+                                &mut self.bus,
+                                &mut self.cpu,
+                                &snapshot,
+                            );
+                        }
+                    }
                     if let Some((port, gdevice)) = active_interrupt_callback.restore_port {
                         self.dispatcher.set_current_port_state(
                             &mut self.bus,
@@ -5696,11 +5711,14 @@ impl FixtureRunner {
         self.bus.write_word(tramp + 12, item_no as u16);
         self.bus.write_long(tramp + 16, call_addr);
 
-        // The Dialog Manager sets the current port to the dialog before
-        // calling a userItem draw proc. It does not restore an older
-        // application port over the callback's final QuickDraw state.
-        self.dispatcher
-            .set_current_port_state(&mut self.bus, &mut self.cpu, dialog_ptr, None);
+        // The Dialog Manager sets the current port to the dialog before a
+        // userItem draw proc. Preserve the dialog's clean baseline around
+        // application drawing so one item cannot contaminate later redraws.
+        self.dialog_draw_port_snapshot = Some(self.dispatcher.prepare_dialog_user_item_port_state(
+            &mut self.bus,
+            &mut self.cpu,
+            dialog_ptr,
+        ));
 
         // Inject: push current PC, jump to trampoline
         let current_pc = self.cpu.read_reg(Register::PC);
@@ -13360,6 +13378,100 @@ mod tests {
         assert_eq!(
             runner.dispatcher.current_port, dialog_ptr,
             "Dialog Manager must leave the dialog port current after the draw proc"
+        );
+    }
+
+    #[test]
+    fn dialog_draw_proc_restores_parent_grafport_state_and_clip() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let dialog_ptr = runner.bus.alloc(170);
+        let other_port = runner.bus.alloc(170);
+        let proc_addr = 0x0004_2000u32;
+        let clip_rect = 0x0004_2100u32;
+
+        runner.bus.write_word(interrupted_pc, 0x60FE);
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        for port in [dialog_ptr, other_port] {
+            runner.dispatcher.init_cgraf_window(
+                &mut runner.bus,
+                &mut runner.cpu,
+                port,
+                0,
+                120,
+                180,
+                240,
+                420,
+                "",
+                2,
+                true,
+                false,
+                false,
+                0,
+            );
+        }
+        runner.dispatcher.set_current_port_state(
+            &mut runner.bus,
+            &mut runner.cpu,
+            dialog_ptr,
+            None,
+        );
+        let clip_handle = runner.bus.read_long(dialog_ptr + 28);
+        let clip_ptr = runner.bus.read_long(clip_handle);
+        let expected_clip: Vec<u8> = (0..10)
+            .map(|i| runner.bus.read_byte(clip_ptr + i))
+            .collect();
+
+        runner.bus.write_word(clip_rect, 1);
+        runner.bus.write_word(clip_rect + 2, 2);
+        runner.bus.write_word(clip_rect + 4, 3);
+        runner.bus.write_word(clip_rect + 6, 4);
+        let words = [
+            0x4E56,
+            0x0000, // LINK A6,#0
+            0x3F3C,
+            0x0007, // MOVE.W #7,-(SP), height
+            0x3F3C,
+            0x0006, // MOVE.W #6,-(SP), width
+            0xA89B, // _PenSize
+            0x3F3C,
+            0x000C, // MOVE.W #12,-(SP)
+            0xA89C, // _PenMode
+            0x2F3C,
+            (clip_rect >> 16) as u16,
+            clip_rect as u16, // rect pointer
+            0xA87B,           // _ClipRect
+            0x2F3C,
+            (other_port >> 16) as u16,
+            other_port as u16, // port pointer
+            0xA873,            // _SetPort
+            0x4E5E,
+            0x4E75, // UNLK; RTS
+        ];
+        for (i, word) in words.into_iter().enumerate() {
+            runner.bus.write_word(proc_addr + i as u32 * 2, word);
+        }
+        runner.dispatcher.modeless_dialog_draw_proc_queue =
+            VecDeque::from([(dialog_ptr, proc_addr, 5)]);
+
+        assert!(runner.fire_modeless_dialog_draw_proc());
+        let (_steps, running) = runner.run_steps(64, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.dispatcher.current_port, dialog_ptr);
+        assert_eq!(runner.bus.read_word(dialog_ptr + 52), 1);
+        assert_eq!(runner.bus.read_word(dialog_ptr + 54), 1);
+        assert_eq!(runner.bus.read_word(dialog_ptr + 56), 8);
+        assert_eq!(runner.bus.read_long(dialog_ptr + 28), clip_handle);
+        let restored_clip_ptr = runner.bus.read_long(clip_handle);
+        assert_eq!(
+            (0..10)
+                .map(|i| runner.bus.read_byte(restored_clip_ptr + i))
+                .collect::<Vec<_>>(),
+            expected_clip
         );
     }
 

@@ -613,6 +613,7 @@ pub(crate) struct PortDrawState {
     pub pn_size: (i16, i16),
     pub pn_mode: i16,
     pub pn_pat: [u8; 8],
+    pub pn_vis: i16,
     pub tx_font: i16,
     pub tx_face: i16,
     pub tx_mode: i16,
@@ -631,12 +632,29 @@ impl Default for PortDrawState {
             pn_size: (1, 1),
             pn_mode: 8,
             pn_pat: [0xFF; 8],
+            pn_vis: 0,
             tx_font: 0,
             tx_face: 0,
             tx_mode: 1,
             tx_size: 0,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PortRegionSnapshot {
+    pub handle: u32,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PortStateSnapshot {
+    pub port: u32,
+    pub gdevice: u32,
+    pub draw_state: PortDrawState,
+    pub port_state_bytes: [u8; 56],
+    pub vis_region: Option<PortRegionSnapshot>,
+    pub clip_region: Option<PortRegionSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1945,6 +1963,9 @@ pub struct TrapDispatcher {
     pub(crate) modeless_dialog_cdef_draw_queue: VecDeque<u32>,
     /// Dialog currently executing a modeless userItem draw proc.
     pub(crate) active_modeless_dialog_draw_proc: Option<u32>,
+    /// Clean GrafPort baseline established before a dialog's first userItem
+    /// callback. Dialog Manager drawing must not contaminate later callbacks.
+    pub(crate) dialog_user_item_port_states: HashMap<u32, PortStateSnapshot>,
     /// Mouse click currently captured by a front modal dialog. This includes
     /// ModalDialog-retained clicks and app-owned modal button presses.
     pub(crate) retained_modal_dialog_click: Option<RetainedModalDialogClickState>,
@@ -3173,6 +3194,7 @@ impl TrapDispatcher {
             modeless_dialog_draw_proc_queue: VecDeque::new(),
             modeless_dialog_cdef_draw_queue: VecDeque::new(),
             active_modeless_dialog_draw_proc: None,
+            dialog_user_item_port_states: HashMap::new(),
             retained_modal_dialog_click: None,
             pending_modal_button_dispose_dialog: None,
             window_stack: Vec::new(),
