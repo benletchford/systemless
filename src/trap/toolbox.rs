@@ -3119,7 +3119,8 @@ impl super::TrapDispatcher {
         if substitutions == 0 {
             return 0;
         }
-        if !replaced.is_empty() && self.write_bytes_to_handle(bus, base_handle, &replaced) == 0 {
+        let updated_ptr = self.write_bytes_to_handle(bus, base_handle, &replaced);
+        if !replaced.is_empty() && updated_ptr == 0 {
             return MEM_FULL_ERR;
         }
         substitutions
@@ -28675,6 +28676,26 @@ mod tests {
         assert_eq!(bus.read_word(sp + 16) as i16, -109); // nilHandleErr
         assert_eq!(cpu.read_reg(Register::D0), (-109i32) as u32);
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    }
+
+    #[test]
+    fn scriptutil_replacetext_empty_substitution_resizes_base_to_zero() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let key_ptr = bus.alloc(16);
+        let (base_handle, substitution_handle) = replace_text_handles(&mut bus, b"aaaa", b"");
+        let original_ptr = bus.read_long(base_handle);
+        bus.write_pstring(key_ptr, b"aa");
+        write_replace_text_frame(&mut bus, sp, base_handle, substitution_handle, key_ptr);
+
+        disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
+            .expect("ScriptUtil dispatch")
+            .expect("ReplaceText succeeds");
+
+        assert_eq!(bus.read_word(sp + 16), 2);
+        assert_eq!(bus.read_long(base_handle), 0);
+        assert_eq!(bus.get_alloc_size(original_ptr), None);
+        assert!(!disp.ptr_to_handle.contains_key(&original_ptr));
     }
 
     // ScriptUtil ($A8B5) encoded selector fallback
