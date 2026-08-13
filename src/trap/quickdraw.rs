@@ -3722,6 +3722,17 @@ impl super::TrapDispatcher {
                                 let dst_clut = dst_clut.as_ref().expect("indexed destination CLUT");
                                 let dst_rgb = dst_clut[usize::from(dst_pixel)];
                                 let effective_mode = if mode_base == 36 { 0 } else { mode_base };
+                                let invert_index = (effective_mode == 2 && src_rgb == [0, 0, 0])
+                                    || (effective_mode == 6 && src_rgb == [0xFFFF, 0xFFFF, 0xFFFF]);
+                                if invert_index {
+                                    let shifted_mask = pixel_mask << dst_shift;
+                                    let mapped = Self::inverted_index(dst_pixel, dst_bits);
+                                    bus.write_byte(
+                                        dst_addr,
+                                        (dst_byte & !shifted_mask) | (mapped << dst_shift),
+                                    );
+                                    continue;
+                                }
                                 let Some(result_rgb) = Self::copy_bits_direct_source_mode_rgb(
                                     src_rgb,
                                     dst_rgb,
@@ -3776,6 +3787,7 @@ impl super::TrapDispatcher {
                                     mode_base,
                                     src_pixel,
                                     dst_pixel,
+                                    dst_bits,
                                     copy_fg_rgb,
                                     copy_bg_rgb,
                                 ) else {
@@ -3820,6 +3832,7 @@ impl super::TrapDispatcher {
                                     mode_base,
                                     src_pixel,
                                     bus.read_byte(dst_addr),
+                                    8,
                                     copy_fg_rgb,
                                     copy_bg_rgb,
                                 ) else {
@@ -3876,6 +3889,7 @@ impl super::TrapDispatcher {
                                     mode_base,
                                     src_pixel,
                                     bus.read_byte(dst_addr),
+                                    8,
                                     copy_fg_rgb,
                                     copy_bg_rgb,
                                 ) else {
@@ -3948,19 +3962,16 @@ impl super::TrapDispatcher {
                                 let src_pixel = (src_byte & (1 << src_bit)) != 0;
                                 let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
                                 let dst_pixel = bus.read_byte(dst_addr);
-                                let dst_clut = dst_clut.unwrap();
                                 let fg_index = fg_index.unwrap();
                                 let bg_index = bg_index.unwrap();
                                 let new_pixel = match mode_base {
                                     0 => Some(if src_pixel { fg_index } else { bg_index }),
                                     1 => src_pixel.then_some(fg_index),
-                                    2 => src_pixel
-                                        .then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
+                                    2 => src_pixel.then(|| Self::inverted_index(dst_pixel, 8)),
                                     3 => src_pixel.then_some(bg_index),
                                     4 => Some(if src_pixel { bg_index } else { fg_index }),
                                     5 => (!src_pixel).then_some(fg_index),
-                                    6 => (!src_pixel)
-                                        .then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
+                                    6 => (!src_pixel).then(|| Self::inverted_index(dst_pixel, 8)),
                                     7 => (!src_pixel).then_some(bg_index),
                                     36 => src_pixel.then_some(fg_index),
                                     _ => Some(if src_pixel { fg_index } else { bg_index }),
@@ -19330,6 +19341,17 @@ impl super::TrapDispatcher {
                         let dst_clut = dst_clut.as_ref().expect("indexed destination CLUT");
                         let dst_rgb = dst_clut[usize::from(dst_pixel)];
                         let effective_mode = if mode_base == 36 { 0 } else { mode_base };
+                        let invert_index = (effective_mode == 2 && src_rgb == [0, 0, 0])
+                            || (effective_mode == 6 && src_rgb == [0xFFFF, 0xFFFF, 0xFFFF]);
+                        if invert_index {
+                            let shifted_mask = pixel_mask << dst_shift;
+                            let mapped = Self::inverted_index(dst_pixel, dst_bits);
+                            bus.write_byte(
+                                dst_addr,
+                                (dst_byte & !shifted_mask) | (mapped << dst_shift),
+                            );
+                            continue;
+                        }
                         let Some(result_rgb) = Self::copy_bits_direct_source_mode_rgb(
                             src_rgb,
                             dst_rgb,
@@ -19378,6 +19400,7 @@ impl super::TrapDispatcher {
                             mode_base,
                             src_pixel,
                             dst_pixel,
+                            dst_bits,
                             copy_fg_rgb,
                             copy_bg_rgb,
                         ) else {
@@ -19414,6 +19437,7 @@ impl super::TrapDispatcher {
                             mode_base,
                             src_pixel,
                             bus.read_byte(dst_addr),
+                            8,
                             copy_fg_rgb,
                             copy_bg_rgb,
                         ) else {
@@ -19441,6 +19465,7 @@ impl super::TrapDispatcher {
                             mode_base,
                             src_pixel,
                             bus.read_byte(dst_addr),
+                            8,
                             copy_fg_rgb,
                             copy_bg_rgb,
                         ) else {
@@ -19469,20 +19494,16 @@ impl super::TrapDispatcher {
                         let src_pixel = (src_byte & (1 << src_bit)) != 0;
                         let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
                         let dst_pixel = bus.read_byte(dst_addr);
-                        let dst_clut = dst_clut.unwrap();
                         let fg_index = fg_index.unwrap();
                         let bg_index = bg_index.unwrap();
                         let new_pixel = match mode_base {
                             0 => Some(if src_pixel { fg_index } else { bg_index }),
                             1 => src_pixel.then_some(fg_index),
-                            2 => {
-                                src_pixel.then(|| Self::inverted_palette_index(dst_clut, dst_pixel))
-                            }
+                            2 => src_pixel.then(|| Self::inverted_index(dst_pixel, 8)),
                             3 => src_pixel.then_some(bg_index),
                             4 => Some(if src_pixel { bg_index } else { fg_index }),
                             5 => (!src_pixel).then_some(fg_index),
-                            6 => (!src_pixel)
-                                .then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
+                            6 => (!src_pixel).then(|| Self::inverted_index(dst_pixel, 8)),
                             7 => (!src_pixel).then_some(bg_index),
                             36 => src_pixel.then_some(fg_index),
                             _ => Some(if src_pixel { fg_index } else { bg_index }),
@@ -21388,6 +21409,7 @@ impl super::TrapDispatcher {
         mode_base: u16,
         src_pixel: u8,
         dst_pixel: u8,
+        dst_pixel_size: u32,
         fg_rgb: [u16; 3],
         bg_rgb: [u16; 3],
     ) -> Option<u8> {
@@ -21412,14 +21434,14 @@ impl super::TrapDispatcher {
         match mode_base {
             0 => Some(raw_source()),
             1 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, fg_rgb, dst_rgb))),
-            2 => is_black.then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
+            2 => is_black.then(|| Self::inverted_index(dst_pixel, dst_pixel_size)),
             3 => (!is_white).then(|| map_rgb(Self::colorize_src_or_rgb(src_rgb, bg_rgb, dst_rgb))),
             4 => Some(map_rgb(Self::colorize_src_copy_rgb(
                 src_rgb, bg_rgb, fg_rgb,
             ))),
             5 => (!is_black)
                 .then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, fg_rgb, dst_rgb))),
-            6 => is_white.then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
+            6 => is_white.then(|| Self::inverted_index(dst_pixel, dst_pixel_size)),
             7 => (!is_black)
                 .then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, bg_rgb, dst_rgb))),
             _ => Some(raw_source()),
@@ -21487,12 +21509,8 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn inverted_palette_index(dst_clut: &[[u16; 3]; 256], pixel: u8) -> u8 {
-        let rgb = dst_clut[pixel as usize];
-        Self::nearest_palette_index(
-            dst_clut,
-            [0xFFFF - rgb[0], 0xFFFF - rgb[1], 0xFFFF - rgb[2]],
-        )
+    fn inverted_index(pixel: u8, pixel_size: u32) -> u8 {
+        pixel ^ ((1u16 << pixel_size) - 1) as u8
     }
 
     /// Convert classic ForeColor/BackColor constants to RGB.
@@ -32210,6 +32228,84 @@ mod tests {
             ],
             "8bpp srcOr should render bracket strokes through the foreground color without copying the source rectangle's white background"
         );
+    }
+
+    #[test]
+    fn copy_bits_indexed_xor_inverts_destination_indices_reversibly() {
+        for (mode, source_is_black) in [(2u16, true), (6, false)] {
+            for (pixel_size, destination_byte, inverted_byte) in
+                [(2u16, 0x6C, 0xAC), (4, 0x5A, 0xAA), (8, 0x5A, 0xA5)]
+            {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let src_pixmap = 0x306100u32;
+                let dst_pixmap = 0x306200u32;
+                let src_base = 0x307000u32;
+                let dst_base = 0x308000u32;
+                let ctab_handle = 0x309000u32;
+                let src_rect = 0x30A000u32;
+                let dst_rect = 0x30A010u32;
+                let max_index = (1u16 << pixel_size) - 1;
+
+                write_color_table(
+                    &mut bus,
+                    ctab_handle,
+                    0x1234_5678,
+                    &[(0, 0xFFFF, 0xFFFF, 0xFFFF), (max_index, 0, 0, 0)],
+                );
+                write_pixmap_indexed(
+                    &mut bus,
+                    src_pixmap,
+                    src_base,
+                    1,
+                    1,
+                    1,
+                    pixel_size,
+                    ctab_handle,
+                );
+                write_pixmap_indexed(
+                    &mut bus,
+                    dst_pixmap,
+                    dst_base,
+                    1,
+                    1,
+                    1,
+                    pixel_size,
+                    ctab_handle,
+                );
+                let source_index = if source_is_black { max_index as u8 } else { 0 };
+                bus.write_byte(src_base, source_index << (8 - pixel_size));
+                bus.write_byte(dst_base, destination_byte);
+                write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+                write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, mode);
+                bus.write_long(TEST_SP + 6, dst_rect);
+                bus.write_long(TEST_SP + 10, src_rect);
+                bus.write_long(TEST_SP + 14, dst_pixmap);
+                bus.write_long(TEST_SP + 18, src_pixmap);
+
+                assert!(d
+                    .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+                assert_eq!(
+                    bus.read_byte(dst_base),
+                    inverted_byte,
+                    "mode {mode}, {pixel_size}bpp"
+                );
+
+                cpu.write_reg(Register::A7, TEST_SP);
+                assert!(d
+                    .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+                assert_eq!(
+                    bus.read_byte(dst_base),
+                    destination_byte,
+                    "applying mode {mode} twice at {pixel_size}bpp must restore the destination"
+                );
+            }
+        }
     }
 
     #[test]
