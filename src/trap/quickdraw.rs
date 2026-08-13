@@ -21778,6 +21778,9 @@ impl super::TrapDispatcher {
         if !Self::set_entries_request_in_range(bus, table_ptr, start, count) {
             return;
         }
+        if !self.device_gamma_explicit {
+            self.device_gamma = crate::display::default_display_gamma();
+        }
         let incoming_default_palette = start == 0
             && count == 255
             && Self::table_looks_like_scaled_canonical_system_8bpp(bus, table_ptr);
