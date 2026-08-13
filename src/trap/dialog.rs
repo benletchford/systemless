@@ -7529,7 +7529,7 @@ impl super::TrapDispatcher {
         self.draw_button_state(bus, top, left, bottom, right, title, is_default, enabled);
     }
 
-    fn draw_button_state(
+    pub(crate) fn draw_button_state(
         &self,
         bus: &mut MacMemoryBus,
         top: i16,
@@ -7569,7 +7569,7 @@ impl super::TrapDispatcher {
             }
         }
 
-        self.draw_button_label(bus, top, left, bottom, right, title);
+        self.draw_button_label(bus, top, left, bottom, right, title, enabled);
     }
 
     fn fill_classic_button_shape(
@@ -7629,6 +7629,7 @@ impl super::TrapDispatcher {
         bottom: i16,
         right: i16,
         title: &str,
+        enabled: bool,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -7638,19 +7639,48 @@ impl super::TrapDispatcher {
         let text_w = Self::fb_measure_string(title, font_id, font_size);
         let text_x = left + (right - left - text_w) / 2;
         let text_y = top + (bottom - top - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
-        Self::fb_draw_string(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            text_x,
-            text_y,
-            title,
-            font_id,
-            font_size,
-        );
+        if enabled || pixel_size != 8 {
+            Self::fb_draw_string(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                text_x,
+                text_y,
+                title,
+                font_id,
+                font_size,
+            );
+        } else {
+            let gray_index = self
+                .device_clut
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, rgb)| {
+                    rgb.iter()
+                        .map(|component| (i32::from(*component) - 0xAAAA).unsigned_abs())
+                        .sum::<u32>()
+                })
+                .map(|(index, _)| index as u8)
+                .unwrap_or(0);
+            Self::fb_draw_string_styled_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                text_x,
+                text_y,
+                title,
+                font_id,
+                font_size,
+                0,
+                gray_index,
+            );
+        }
     }
 
     fn draw_classic_button_outline(
@@ -7723,7 +7753,7 @@ impl super::TrapDispatcher {
             highlighted,
             is_default,
         ) {
-            self.draw_button_label(bus, top, left, bottom, right, title);
+            self.draw_button_label(bus, top, left, bottom, right, title, true);
             return;
         }
         self.invert_button_rect(bus, top, left, bottom, right);
@@ -24952,6 +24982,31 @@ mod tests {
                 "inactive standard DITL {label} title should use a visible palette blend without a gray ramp"
             );
         }
+    }
+
+    #[test]
+    fn disabled_classic_button_uses_gray_label_ink() {
+        let (mut disp, mut _cpu, mut bus) = setup();
+        let screen_base = bus.alloc(320 * 200);
+        disp.set_screen_mode_for_test(screen_base, 320, 320, 200, 8);
+        let gray_index = disp
+            .device_clut
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, rgb)| {
+                rgb.iter()
+                    .map(|component| (i32::from(*component) - 0xAAAA).unsigned_abs())
+                    .sum::<u32>()
+            })
+            .map(|(index, _)| index as u8)
+            .unwrap();
+
+        disp.draw_button_state(&mut bus, 40, 40, 62, 120, "Open", false, false);
+
+        let label_ink = (44..116).any(|h| {
+            (44..59).any(|v| bus.read_byte(screen_base + v as u32 * 320 + h as u32) == gray_index)
+        });
+        assert!(label_ink, "disabled labels should use device-gray ink");
     }
 
     #[test]
