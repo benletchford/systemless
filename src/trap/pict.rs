@@ -2550,6 +2550,19 @@ fn one_bit_destination_clut() -> [[u16; 3]; 256] {
     clut
 }
 
+fn indexed_destination_clut(device_clut: &[[u16; 3]; 256], pixel_size: u16) -> [[u16; 3]; 256] {
+    if pixel_size == 1 {
+        return one_bit_destination_clut();
+    }
+    let mut clut = *device_clut;
+    if matches!(pixel_size, 2 | 4) {
+        let entry_count = 1usize << pixel_size;
+        let terminal = clut[entry_count - 1];
+        clut[entry_count..].fill(terminal);
+    }
+    clut
+}
+
 /// Map a legacy Mac Pascal QuickDraw color constant to a destination CLUT
 /// index. Inside Macintosh Volume I, I-172 defines the 8 canonical colors.
 /// `default_idx` is returned for color = 0 (Pascal sentinel for "no color
@@ -4531,12 +4544,8 @@ fn parse_pack_bits_rect(
     // pixels must be matched to the colors actually available in that
     // destination, not to the full 8bpp screen CLUT. Imaging With QuickDraw
     // 1994, pp. 4-13 and A-13; Inside Macintosh Volume V, V-57.
-    let mono_clut = if scrn_ps == 1 {
-        Some(one_bit_destination_clut())
-    } else {
-        None
-    };
-    let dst_clut = mono_clut.as_ref().unwrap_or(device_clut);
+    let restricted_clut = indexed_destination_clut(device_clut, scrn_ps);
+    let dst_clut = &restricted_clut;
     let seed_and_table_match = scrn_ps != 1
         && src_ct_seed != 0
         && src_ct_seed == device_ct_seed
@@ -6054,6 +6063,7 @@ fn parse_direct_bits_rect(
         screen_mode.3 as i32,
         screen_mode.4,
     );
+    let dst_clut = indexed_destination_clut(device_clut, scrn_ps);
 
     for row in 0..height {
         // Per PixMap.packType (Imaging With QuickDraw 1994, 4-29):
@@ -6097,7 +6107,7 @@ fn parse_direct_bits_rect(
                             r as u16 * 257,
                             g as u16 * 257,
                             b as u16 * 257,
-                            device_clut,
+                            &dst_clut,
                         );
                         let Some(pic_y) = mapped_pic_y else {
                             continue;
@@ -6147,7 +6157,7 @@ fn parse_direct_bits_rect(
                             row_data[ri] as u16 * 257,
                             row_data[gi] as u16 * 257,
                             row_data[bi] as u16 * 257,
-                            device_clut,
+                            &dst_clut,
                         );
                         let Some(pic_y) = mapped_pic_y else {
                             continue;
@@ -7311,6 +7321,107 @@ mod tests {
         assert!(ok);
         assert_eq!(bus.read_byte(screen_base), 42);
         assert_eq!(bus.read_byte(screen_base + row_bytes), 255);
+    }
+
+    #[test]
+    fn directbitsrect_maps_rgbdirect_colors_within_low_depth_destinations() {
+        for (pixel_size, expected) in [(2u16, 0x60u8), (4, 0x12)] {
+            for source_depth in [16u16, 32] {
+                let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+                let screen_base = 0x08_0000u32;
+                let pic = 0x10_0000u32;
+                let mut p = pic + 10;
+                bus.write_word(pic, 0);
+                for (offset, value) in [(2, 0u16), (4, 0), (6, 1), (8, 2)] {
+                    bus.write_word(pic + offset, value);
+                }
+                bus.write_byte(p, 0x11);
+                p += 1;
+                bus.write_byte(p, 0x02);
+                p += 1;
+                bus.write_byte(p, 0xFF);
+                p += 1;
+                bus.write_byte(p, 0);
+                p += 1;
+                bus.write_word(p, 0x009A);
+                p += 2;
+                bus.write_long(p, 0x0000_00FF);
+                p += 4;
+                let row_bytes = if source_depth == 16 { 4 } else { 8 };
+                bus.write_word(p, 0x8000 | row_bytes);
+                p += 2;
+                for value in [0i16, 0, 1, 2] {
+                    bus.write_word(p, value as u16);
+                    p += 2;
+                }
+                bus.write_word(p, 0);
+                p += 2;
+                bus.write_word(p, 1);
+                p += 2;
+                bus.write_long(p, 0);
+                p += 4;
+                bus.write_long(p, 0x0048_0000);
+                p += 4;
+                bus.write_long(p, 0x0048_0000);
+                p += 4;
+                bus.write_word(p, 16);
+                p += 2;
+                bus.write_word(p, source_depth);
+                p += 2;
+                bus.write_word(p, if source_depth == 32 { 3 } else { 1 });
+                p += 2;
+                bus.write_word(p, if source_depth == 32 { 8 } else { 16 });
+                p += 2;
+                bus.write_long(p, 0);
+                p += 4;
+                bus.write_long(p, 0);
+                p += 4;
+                bus.write_long(p, 0);
+                p += 4;
+                for _ in 0..2 {
+                    for value in [0i16, 0, 1, 2] {
+                        bus.write_word(p, value as u16);
+                        p += 2;
+                    }
+                }
+                bus.write_word(p, 0);
+                p += 2;
+                let row: &[u8] = if source_depth == 16 {
+                    &[0x7C, 0x00, 0x03, 0xE0]
+                } else {
+                    &[0xFF, 0, 0, 0xFF, 0, 0, 0, 0]
+                };
+                bus.write_bytes(p, row);
+                p += row.len() as u32;
+                bus.write_word(p, 0x00FF);
+                p += 2;
+                bus.write_word(pic, (p - pic) as u16);
+
+                let mut clut = [[0u16; 3]; 256];
+                clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+                clut[1] = [0xFFFF, 0, 0];
+                clut[2] = [0, 0xFFFF, 0];
+                clut[(1usize << pixel_size) - 1] = [0, 0, 0];
+                let (ok, _) = draw_picture(
+                    &mut bus,
+                    pic,
+                    0,
+                    0,
+                    1,
+                    2,
+                    (screen_base, 1, 2, 1, pixel_size),
+                    &clut,
+                    0,
+                    None,
+                );
+                assert!(ok);
+                assert_eq!(
+                    bus.read_byte(screen_base),
+                    expected,
+                    "{source_depth}-bit DirectBitsRect into {pixel_size}-bit indexed"
+                );
+            }
+        }
     }
 
     /// fillRect ($0x34) honors FillPat (0x0A) rather than PnPat (0x09) —
