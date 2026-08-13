@@ -73,6 +73,9 @@ const PM_COURTEOUS: i16 = 0x0000;
 const PM_TOLERANT: i16 = 0x0002;
 const PM_ANIMATED: i16 = 0x0004;
 const PM_EXPLICIT: i16 = 0x0008;
+const PM_NO_UPDATES: i16 = -0x8000;
+const PM_BK_UPDATES: i16 = -0x6000;
+const PM_FG_UPDATES: i16 = -0x4000;
 
 /// `dstWindow` value that addresses the default palette rather than a window.
 /// `SetPalette`/`NSetPalette` take a WindowPtr, and `(WindowPtr)-1` is the
@@ -16461,7 +16464,11 @@ impl super::TrapDispatcher {
 
         let palette_entries = usize::from(Self::palette_entry_count(bus, palette_handle)).min(256);
         let current_clut = self.device_clut;
-        let mut updated_clut = Self::standard_mac_8bpp_clut();
+        // Palette activation changes only the cells claimed by this palette.
+        // Resetting every other cell to the standard table reinterprets pixels
+        // already drawn by visible background windows, even though their
+        // palettes did not request or receive a redraw.
+        let mut updated_clut = current_clut;
         for (index, rgb) in updated_clut.iter_mut().enumerate().take(palette_entries) {
             let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
             let usage = bus.read_word(color_info + 6) as i16;
@@ -16480,8 +16487,17 @@ impl super::TrapDispatcher {
                 bus.read_word(color_info + 4),
             ];
         }
+        let color_environment_changed = updated_clut != current_clut;
         self.device_clut = updated_clut;
         self.color_manager_clut = updated_clut;
+        if color_environment_changed {
+            let active_window = if window == DEFAULT_PALETTE_WINDOW {
+                self.front_window
+            } else {
+                window
+            };
+            self.invalidate_windows_for_palette_change(bus, active_window);
+        }
         if trace_palette_enabled() {
             eprintln!(
                 "[PALETTE] ActivatePalette{} window=${:08X} palette=${:08X} entries={}",
@@ -16592,6 +16608,32 @@ impl super::TrapDispatcher {
 
     fn palette_update_mode(&self, palette: u32) -> i16 {
         self.palette_updates.get(&palette).copied().unwrap_or(0)
+    }
+
+    fn invalidate_windows_for_palette_change(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        active_window: u32,
+    ) {
+        let windows = self.window_list.clone();
+        for window in windows {
+            let palette = self.window_palette_handle_exact(window);
+            if palette == 0 {
+                continue;
+            }
+            let updates = self.palette_update_mode(palette);
+            let is_foreground = window == active_window;
+            let requests_update = match updates {
+                PM_ALL_UPDATES => true,
+                PM_FG_UPDATES => is_foreground,
+                PM_BK_UPDATES => !is_foreground,
+                PM_NO_UPDATES => false,
+                _ => false,
+            };
+            if requests_update {
+                self.invalidate_entire_visible_window(bus, window);
+            }
+        }
     }
 
     pub(crate) fn activate_palette_for_window(&mut self, bus: &mut MacMemoryBus, window: u32) {
@@ -35457,6 +35499,95 @@ mod tests {
         assert_ne!(d.device_clut, before);
         assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
         assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
+    }
+
+    #[test]
+    fn activatepalette_preserves_device_cells_not_claimed_by_the_palette() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4120u32;
+        let palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_TOLERANT, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            0,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_TOLERANT,
+            0,
+        );
+        d.set_window_palette_association(window, palette, super::PM_ALL_UPDATES);
+        d.front_window = window;
+        d.current_port = window;
+        let background_color = [0x0BAD, 0xC0DE, 0xCAFE];
+        d.device_clut[200] = background_color;
+        d.color_manager_clut[200] = background_color;
+        bus.write_long(TEST_SP, window);
+
+        let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.device_clut[200], background_color);
+        assert_eq!(d.color_manager_clut[200], background_color);
+    }
+
+    #[test]
+    fn activatepalette_invalidates_windows_according_to_their_update_modes() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let front = bus.alloc(256);
+        let back = bus.alloc(256);
+        let always = bus.alloc(256);
+        let quiet = bus.alloc(256);
+        let screen_base = d.screen_mode.0;
+        for (window, left) in [(back, 40), (always, 60), (quiet, 80), (front, 0)] {
+            d.init_cgraf_window(
+                &mut bus,
+                &mut cpu,
+                window,
+                screen_base,
+                40,
+                left,
+                140,
+                left + 100,
+                "",
+                2,
+                true,
+                false,
+                false,
+                0,
+            );
+            d.begin_update_window(&mut bus, window);
+            d.end_update_window(&mut bus, window);
+        }
+
+        let front_palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_TOLERANT, 0);
+        let back_palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_TOLERANT, 0);
+        let always_palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_TOLERANT, 0);
+        let quiet_palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_TOLERANT, 0);
+        let front_ptr = TrapDispatcher::palette_ptr(&bus, front_palette);
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            front_ptr,
+            0,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_TOLERANT,
+            0,
+        );
+        d.set_window_palette_association(front, front_palette, super::PM_FG_UPDATES);
+        d.set_window_palette_association(back, back_palette, super::PM_BK_UPDATES);
+        d.set_window_palette_association(always, always_palette, super::PM_ALL_UPDATES);
+        d.set_window_palette_association(quiet, quiet_palette, super::PM_NO_UPDATES);
+        d.front_window = front;
+        d.current_port = front;
+        bus.write_long(TEST_SP, front);
+
+        let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert!(d.window_has_pending_update(&bus, front));
+        assert!(d.window_has_pending_update(&bus, back));
+        assert!(d.window_has_pending_update(&bus, always));
+        assert!(!d.window_has_pending_update(&bus, quiet));
     }
 
     #[test]
