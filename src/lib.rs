@@ -32,7 +32,7 @@
 //! let config = FixtureRunnerConfig::default();
 //! let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
 //!
-//! // Load a Mac executable (StuffIt archive, MacBinary, or raw
+//! // Load a Mac executable (StuffIt/ZIP archive, MacBinary, or raw
 //! // resource fork — the loader auto-detects the format).
 //! let bytes = std::fs::read("MyGame.sit").unwrap();
 //! let _app = systemless::game::load_game(&mut runner, &bytes).unwrap();

@@ -64,7 +64,7 @@ systemless --show-menu-bar path/to/app.sit
 systemless --cpu-mhz 25 path/to/app.sit
 ```
 
-Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
+Systemless accepts StuffIt and ZIP archives, MacBinary files, and raw/macOS resource forks.
 Archives may contain multiple files; Systemless populates the in-memory VFS and
 selects an executable resource fork from the archive.
 

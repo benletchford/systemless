@@ -31,6 +31,7 @@ cpal = { version = "0.15", optional = true }
 stuffit = "0.1.5"
 hfs-reader = "0.1.1"
 hfsplus = "0.2.4"
+zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
