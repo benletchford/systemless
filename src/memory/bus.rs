@@ -445,6 +445,9 @@ pub trait MemoryBus {
 pub struct MacMemoryBus {
     ram: RamStorage,
     ram_size: u32,
+    /// Whether guest addresses use all 32 bits. In 24-bit mode the upper
+    /// byte is metadata and every memory access wraps through the low 24 bits.
+    addressing_32_bit: bool,
     globals: LowMemGlobals,
     /// Heap allocation pointer (grows upward from 0x200000)
     heap_ptr: u32,
@@ -798,9 +801,17 @@ impl MacMemoryBus {
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let count_usize = count as usize;
+        let translated_src = self.range_translates_contiguously(src, count_usize);
+        let translated_dst = self.range_translates_contiguously(dst, count_usize);
+        let src_for_overlap = self.translate_guest_address(src);
+        let dst_for_overlap = self.translate_guest_address(dst);
+        let src = translated_src.unwrap_or(src);
+        let dst = translated_dst.unwrap_or(dst);
         let src_end = (src as u64).saturating_add(count as u64);
         let dst_end = (dst as u64).saturating_add(count as u64);
         if fast
+            && translated_src.is_some()
+            && translated_dst.is_some()
             && !self.readonly_code_overlaps(dst, count)
             && src_end <= self.ram_size as u64
             && dst_end <= self.ram_size as u64
@@ -813,7 +824,9 @@ impl MacMemoryBus {
             }
         }
         // Fallback with explicit overlap handling (IM II-44).
-        if dst > src && dst < src.saturating_add(count) {
+        if dst_for_overlap > src_for_overlap
+            && dst_for_overlap < src_for_overlap.saturating_add(count)
+        {
             for i in (0..count).rev() {
                 let b = self.read_byte(src.wrapping_add(i));
                 self.write_byte(dst.wrapping_add(i), b);
@@ -839,6 +852,7 @@ impl MacMemoryBus {
         let mut bus = Self {
             ram: RamStorage::Owned(vec![0; ram_size]),
             ram_size: ram_size as u32,
+            addressing_32_bit: true,
             globals: LowMemGlobals::new(),
             heap_ptr: 0x200000, // Start heap at 2MB
             synthetic_ptr: screen_buffer_start,
@@ -919,6 +933,7 @@ impl MacMemoryBus {
         Self {
             ram: RamStorage::External(ram_ptr, ram_size),
             ram_size: ram_size as u32,
+            addressing_32_bit: true,
             globals,
             heap_ptr: 0x200000,
             synthetic_ptr: screen_buffer_start,
@@ -1247,9 +1262,17 @@ impl MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let translated_src = self.range_translates_contiguously(src, len as usize);
+        let translated_dst = self.range_translates_contiguously(dst, len as usize);
+        let src = translated_src.unwrap_or(src);
+        let dst = translated_dst.unwrap_or(dst);
         let src_end = (src as u64).saturating_add(len as u64);
         let dst_end = (dst as u64).saturating_add(len as u64);
-        if src_end > self.ram_size as u64 || dst_end > self.ram_size as u64 {
+        if translated_src.is_none()
+            || translated_dst.is_none()
+            || src_end > self.ram_size as u64
+            || dst_end > self.ram_size as u64
+        {
             return false;
         }
         if fast {
@@ -1275,9 +1298,17 @@ impl MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let translated_src = self.range_translates_contiguously(src, len as usize);
+        let translated_dst = self.range_translates_contiguously(dst, len as usize);
+        let src = translated_src.unwrap_or(src);
+        let dst = translated_dst.unwrap_or(dst);
         let src_end = (src as u64).saturating_add(len as u64);
         let dst_end = (dst as u64).saturating_add(len as u64);
-        if src_end > self.ram_size as u64 || dst_end > self.ram_size as u64 {
+        if translated_src.is_none()
+            || translated_dst.is_none()
+            || src_end > self.ram_size as u64
+            || dst_end > self.ram_size as u64
+        {
             return false;
         }
         if fast {
@@ -1317,12 +1348,43 @@ impl MacMemoryBus {
         self.ram_size
     }
 
+    /// Select the guest MMU address width. The default is 32-bit addressing.
+    pub fn set_addressing_32_bit(&mut self, enabled: bool) {
+        self.addressing_32_bit = enabled;
+    }
+
+    /// Whether guest memory accesses currently use all 32 address bits.
+    pub fn addressing_32_bit(&self) -> bool {
+        self.addressing_32_bit
+    }
+
+    #[inline]
+    pub fn translate_guest_address(&self, address: u32) -> u32 {
+        if self.addressing_32_bit {
+            address
+        } else {
+            address & 0x00FF_FFFF
+        }
+    }
+
+    #[inline]
+    fn range_translates_contiguously(&self, address: u32, len: usize) -> Option<u32> {
+        let translated = self.translate_guest_address(address);
+        let address_space_end = if self.addressing_32_bit {
+            u64::from(u32::MAX) + 1
+        } else {
+            0x0100_0000
+        };
+        ((translated as u64).saturating_add(len as u64) <= address_space_end).then_some(translated)
+    }
+
     /// Raw window over guest RAM for the m68k fastmem path, or `None`
     /// while any per-access diagnostic (framebuffer-write tracer, memory
     /// read/write tracer, watchpoint) needs to observe individual bus
     /// accesses — fastmem reads/writes bypass those hooks entirely.
     pub(crate) fn fast_mem_window(&mut self) -> Option<(*mut u8, u32)> {
-        if fb_write_trace_range().is_some()
+        if !self.addressing_32_bit
+            || fb_write_trace_range().is_some()
             || mem_read_trace_active()
             || mem_write_trace_active()
             || watchpoint_armed()
@@ -1354,6 +1416,7 @@ impl MacMemoryBus {
 impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_byte(&self, address: u32) -> u8 {
+        let address = self.translate_guest_address(address);
         let v = if address < self.ram_size {
             self.ram.get_in_bounds(address as usize)
         } else if let Some(value) = Self::boot_rom_shadow_byte(address) {
@@ -1375,7 +1438,9 @@ impl MemoryBus for MacMemoryBus {
     /// the byte-by-byte path when the read straddles `self.ram_size`.
     #[inline]
     fn read_word(&self, address: u32) -> u16 {
-        let v = if (address as u64) + 2 <= (self.ram_size as u64) {
+        let translated = self.range_translates_contiguously(address, 2);
+        let v = if translated.is_some_and(|address| (address as u64) + 2 <= self.ram_size as u64) {
+            let address = translated.unwrap();
             self.ram.read_word_in_bounds(address as usize)
         } else {
             let hi = self.read_byte(address) as u16;
@@ -1392,7 +1457,9 @@ impl MemoryBus for MacMemoryBus {
     /// slice index when the 4 bytes lie wholly within `self.ram_size`.
     #[inline]
     fn read_long(&self, address: u32) -> u32 {
-        let v = if (address as u64) + 4 <= (self.ram_size as u64) {
+        let translated = self.range_translates_contiguously(address, 4);
+        let v = if translated.is_some_and(|address| (address as u64) + 4 <= self.ram_size as u64) {
+            let address = translated.unwrap();
             self.ram.read_long_in_bounds(address as usize)
         } else {
             let hi = self.read_word(address) as u32;
@@ -1404,6 +1471,7 @@ impl MemoryBus for MacMemoryBus {
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        let address = self.translate_guest_address(address);
         if self.readonly_code_overlaps(address, 1) {
             return;
         }
@@ -1571,7 +1639,9 @@ impl MemoryBus for MacMemoryBus {
     /// needs per-byte dispatch through `write_byte`.
     #[inline]
     fn write_word(&mut self, address: u32, value: u16) {
-        if self.readonly_code_overlaps(address, 2) {
+        let translated = self.range_translates_contiguously(address, 2);
+        let protected_address = translated.unwrap_or(address);
+        if self.readonly_code_overlaps(protected_address, 2) {
             return;
         }
         maybe_log_mem_write(address, 2, value as u32);
@@ -1583,7 +1653,8 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
-        if fast && (address as u64) + 2 <= (self.ram_size as u64) {
+        if fast && translated.is_some_and(|address| (address as u64) + 2 <= self.ram_size as u64) {
+            let address = translated.unwrap();
             self.ram.write_word_in_bounds(address as usize, value);
             return;
         }
@@ -1596,7 +1667,9 @@ impl MemoryBus for MacMemoryBus {
     /// Same fast-path optimisation as `write_word`.
     #[inline]
     fn write_long(&mut self, address: u32, value: u32) {
-        if self.readonly_code_overlaps(address, 4) {
+        let translated = self.range_translates_contiguously(address, 4);
+        let protected_address = translated.unwrap_or(address);
+        if self.readonly_code_overlaps(protected_address, 4) {
             return;
         }
         maybe_log_mem_write(address, 4, value);
@@ -1607,7 +1680,8 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
-        if fast && (address as u64) + 4 <= (self.ram_size as u64) {
+        if fast && translated.is_some_and(|address| (address as u64) + 4 <= self.ram_size as u64) {
+            let address = translated.unwrap();
             self.ram.write_long_in_bounds(address as usize, value);
             return;
         }
@@ -1621,8 +1695,10 @@ impl MemoryBus for MacMemoryBus {
     /// that pulls more than a few bytes at once.
     #[inline]
     fn read_bytes(&self, address: u32, len: usize) -> Vec<u8> {
+        let translated = self.range_translates_contiguously(address, len);
+        let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(len as u64);
-        if end <= self.ram_size as u64 {
+        if translated.is_some() && end <= self.ram_size as u64 {
             if let Some(slice) = self.ram.slice_at(address as usize, len) {
                 return slice.to_vec();
             }
@@ -1641,8 +1717,10 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_bytes_into(&self, address: u32, dst: &mut [u8]) {
         let len = dst.len();
+        let translated = self.range_translates_contiguously(address, len);
+        let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(len as u64);
-        if end <= self.ram_size as u64 {
+        if translated.is_some() && end <= self.ram_size as u64 {
             if let Some(slice) = self.ram.slice_at(address as usize, len) {
                 dst.copy_from_slice(slice);
                 return;
@@ -1659,7 +1737,9 @@ impl MemoryBus for MacMemoryBus {
     /// trigger; same for the FB-write tracer.
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
-        if self.readonly_code_overlaps(address, data.len() as u32) {
+        let translated = self.range_translates_contiguously(address, data.len());
+        let protected_address = translated.unwrap_or(address);
+        if self.readonly_code_overlaps(protected_address, data.len() as u32) {
             return;
         }
         #[cfg(debug_assertions)]
@@ -1668,8 +1748,9 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(data.len() as u64);
-        if fast && end <= self.ram_size as u64 {
+        if fast && translated.is_some() && end <= self.ram_size as u64 {
             self.ram.write_bytes_in_bounds(address as usize, data);
             return;
         }
@@ -1680,7 +1761,9 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_zeros(&mut self, address: u32, len: u32) {
-        if self.readonly_code_overlaps(address, len) {
+        let translated = self.range_translates_contiguously(address, len as usize);
+        let protected_address = translated.unwrap_or(address);
+        if self.readonly_code_overlaps(protected_address, len) {
             return;
         }
         #[cfg(debug_assertions)]
@@ -1689,8 +1772,9 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(len as u64);
-        if fast && end <= self.ram_size as u64 {
+        if fast && translated.is_some() && end <= self.ram_size as u64 {
             self.ram
                 .fill_zeros_in_bounds(address as usize, len as usize);
             return;
@@ -1702,7 +1786,9 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
-        if self.readonly_code_overlaps(address, len) {
+        let translated = self.range_translates_contiguously(address, len as usize);
+        let protected_address = translated.unwrap_or(address);
+        if self.readonly_code_overlaps(protected_address, len) {
             return;
         }
         #[cfg(debug_assertions)]
@@ -1711,8 +1797,9 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(len as u64);
-        if fast && end <= self.ram_size as u64 {
+        if fast && translated.is_some() && end <= self.ram_size as u64 {
             self.ram
                 .fill_bytes_in_bounds(address as usize, len as usize, value);
             return;
@@ -1730,6 +1817,52 @@ impl MemoryBus for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn twenty_four_bit_mode_translates_scalar_and_bulk_accesses() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        bus.set_addressing_32_bit(false);
+
+        bus.write_byte(0x0301_0000, 0x12);
+        bus.write_word(0x0401_0002, 0x3456);
+        bus.write_long(0xA501_0004, 0x789A_BCDE);
+        bus.write_bytes(0x7F01_0008, &[1, 2, 3, 4]);
+
+        assert_eq!(bus.read_byte(0x0001_0000), 0x12);
+        assert_eq!(bus.read_word(0x0001_0002), 0x3456);
+        assert_eq!(bus.read_long(0x0001_0004), 0x789A_BCDE);
+        assert_eq!(bus.read_bytes(0x0001_0008, 4), [1, 2, 3, 4]);
+        assert_eq!(bus.read_long(0xEE01_0004), 0x789A_BCDE);
+    }
+
+    #[test]
+    fn twenty_four_bit_accesses_wrap_at_the_address_space_boundary() {
+        let mut bus = MacMemoryBus::new(0x0100_0000);
+        bus.set_addressing_32_bit(false);
+        bus.write_byte(0x00FF_FFFF, 0x12);
+        bus.write_byte(0, 0x34);
+
+        assert_eq!(bus.read_word(0xABFF_FFFF), 0x1234);
+        assert_eq!(bus.read_bytes(0xCDFF_FFFF, 2), [0x12, 0x34]);
+
+        bus.write_word(0xEFFF_FFFF, 0x5678);
+        assert_eq!(bus.read_byte(0x00FF_FFFF), 0x56);
+        assert_eq!(bus.read_byte(0), 0x78);
+    }
+
+    #[test]
+    fn thirty_two_bit_mode_preserves_tagged_addresses() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        bus.write_byte(0x0001_0000, 0x5A);
+
+        assert_eq!(bus.read_byte(0x0301_0000), 0);
+        assert_eq!(bus.read_byte(0x0001_0000), 0x5A);
+        assert!(bus.fast_mem_window().is_some());
+
+        bus.set_addressing_32_bit(false);
+        assert_eq!(bus.read_byte(0x0301_0000), 0x5A);
+        assert!(bus.fast_mem_window().is_none());
+    }
 
     #[test]
     fn new_bus_publishes_default_screen_row_bytes() {

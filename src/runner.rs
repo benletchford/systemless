@@ -1481,6 +1481,9 @@ pub struct FixtureRunnerConfig {
     /// Declares whether theme rendering preserves classic guest metrics or opts
     /// into future themed hit/measurement behavior.
     pub theme_metrics_mode: ThemeMetricsMode,
+    /// Use the full 32-bit guest address, or mask memory accesses to the low
+    /// 24 bits as on classic Macs running in 24-bit addressing mode.
+    pub addressing_32_bit: bool,
 }
 
 impl Default for FixtureRunnerConfig {
@@ -1492,6 +1495,7 @@ impl Default for FixtureRunnerConfig {
             menu_bar_policy: MenuBarPolicy::GuestControlled,
             ui_theme: UiThemeId::ClassicSystem7,
             theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
+            addressing_32_bit: true,
         }
     }
 }
@@ -1713,10 +1717,20 @@ impl FixtureRunner {
     /// [`FixtureRunnerConfig`] or through
     /// [`set_menu_bar_policy`](Self::set_menu_bar_policy).
     pub fn new(ram_size: usize, config: FixtureRunnerConfig) -> Self {
+        // A 24-bit address space can expose at most 16 MiB. Keep all allocated
+        // guest structures, the stack, and framebuffer below that boundary so
+        // masking the flag byte cannot alias a high-memory layout onto low RAM.
+        let ram_size = if config.addressing_32_bit {
+            ram_size
+        } else {
+            ram_size.min(0x0100_0000)
+        };
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
+        dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
         dispatcher.set_ui_theme_id(config.ui_theme);
         let mut bus = MacMemoryBus::new(ram_size);
+        bus.set_addressing_32_bit(config.addressing_32_bit);
         let standard_adb_service = bus.alloc_synthetic(2);
         bus.write_word(standard_adb_service, 0x4E75); // RTS
         dispatcher
@@ -1987,7 +2001,7 @@ impl FixtureRunner {
             // bus impl. Tag explicitly when the read landed at an
             // address beyond the configured guest RAM.
             let opcode = self.bus.read_word(cur);
-            let unmapped = cur >= self.bus.ram_size();
+            let unmapped = self.bus.translate_guest_address(cur) >= self.bus.ram_size();
             let (mnemonic, size) = if unmapped {
                 ("<unmapped>".to_string(), 2)
             } else {
@@ -2896,6 +2910,7 @@ impl FixtureRunner {
             menu_bar_policy: self.config.menu_bar_policy,
             ui_theme: self.config.ui_theme,
             theme_metrics_mode: self.config.theme_metrics_mode,
+            addressing_32_bit: self.bus.addressing_32_bit(),
         };
         let menu_bar_policy = self.dispatcher.menu_bar_policy;
         let menu_bar_hidden = self.dispatcher.menu_bar_hidden;
@@ -3183,7 +3198,8 @@ impl FixtureRunner {
         // Inside Macintosh: Memory 1992, p. 4-25 says applications can test
         // this low-memory byte directly; Systemless's TrapDispatcher already
         // defaults SwapMMUMode to true32b and Gestalt('addr') bit 0 to set.
-        self.bus.write_byte(addr::MMU32_BIT, 1);
+        self.bus
+            .write_byte(addr::MMU32_BIT, u8::from(self.bus.addressing_32_bit()));
         // Initialize Ticks ($016A) to a realistic post-boot value.
         // On a real Mac, hundreds of ticks elapse during the boot ROM,
         // system extensions, and Finder startup before the application
@@ -4790,7 +4806,8 @@ impl FixtureRunner {
                 return (count, false);
             }
 
-            if pc >= self.bus.ram_size() || pc < 0x60 {
+            let translated_pc = self.bus.translate_guest_address(pc);
+            if translated_pc >= self.bus.ram_size() || translated_pc < 0x60 {
                 // Read opcode + sp on-demand in the error branch.
                 let opcode = self.bus.read_word(pc);
                 let sp = self.cpu.read_reg(Register::A7);
@@ -9479,7 +9496,8 @@ impl FixtureRunner {
 
             // Safety Trigger: If PC jumps outside RAM or to Low Mem, stop immediately
             // Allow $60+ since CRT relocation installs trampolines in low memory
-            if pc >= self.bus.ram_size() || (pc < 0x60 && pc > 0) {
+            let translated_pc = self.bus.translate_guest_address(pc);
+            if translated_pc >= self.bus.ram_size() || (translated_pc < 0x60 && pc > 0) {
                 eprintln!(
                     "[RUN] CRITICAL: PC jumped to invalid address ${:08X}! Halting trace.",
                     pc
@@ -13749,6 +13767,57 @@ mod tests {
     }
 
     #[test]
+    fn init_app_can_start_in_twenty_four_bit_addressing_mode() {
+        let mut runner = FixtureRunner::new(
+            8 * 1024 * 1024,
+            FixtureRunnerConfig {
+                addressing_32_bit: false,
+                ..FixtureRunnerConfig::default()
+            },
+        );
+        let app = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+
+        runner.init_app(&app);
+
+        assert!(!runner.bus.addressing_32_bit());
+        assert_eq!(runner.bus.ram_size(), 8 * 1024 * 1024);
+        assert_eq!(runner.dispatcher.mmu_mode, 0);
+        assert_eq!(
+            runner
+                .bus
+                .read_byte(crate::memory::globals::addr::MMU32_BIT),
+            0
+        );
+    }
+
+    #[test]
+    fn twenty_four_bit_runner_caps_guest_ram_at_sixteen_megabytes() {
+        let runner = FixtureRunner::new(
+            64 * 1024 * 1024,
+            FixtureRunnerConfig {
+                addressing_32_bit: false,
+                ..FixtureRunnerConfig::default()
+            },
+        );
+
+        assert_eq!(runner.bus.ram_size(), 0x0100_0000);
+    }
+
+    #[test]
     fn init_app_seeds_callable_swap_mmu_mode_trap_table_entry() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
@@ -13805,6 +13874,12 @@ mod tests {
                 .read_byte(crate::memory::globals::addr::MMU32_BIT),
             0,
             "the indirect call should update the requested addressing mode"
+        );
+        runner.bus.write_long(0x0002_1000, 0x1234_5678);
+        assert_eq!(
+            runner.bus.read_long(0xAB02_1000),
+            0x1234_5678,
+            "SwapMMUMode must change actual guest address translation"
         );
     }
 

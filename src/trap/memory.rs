@@ -1108,8 +1108,13 @@ impl super::TrapDispatcher {
             // StripAddress ($A055)
             // Strips the high byte of a 24-bit address. No-op in 32-bit mode.
             // Inside Macintosh Volume V, V-593
-            // StripAddress ($A055): Returns A0 unchanged
-            (false, 0x55) => Ok(()),
+            // StripAddress ($A055): Removes the flag byte in 24-bit mode.
+            (false, 0x55) => {
+                if !bus.addressing_32_bit() {
+                    cpu.write_reg(Register::A0, cpu.read_reg(Register::A0) & 0x00FF_FFFF);
+                }
+                Ok(())
+            }
 
             // SwapMMUMode ($A05D)
             // Sets the addressing mode to the value in D0 (0=24-bit, 1=32-bit)
@@ -1121,6 +1126,7 @@ impl super::TrapDispatcher {
                 let new_mode = cpu.read_reg(Register::D0) & 0xFF;
                 let old_mode = self.mmu_mode as u32;
                 self.mmu_mode = (new_mode & 1) as u8;
+                bus.set_addressing_32_bit(self.mmu_mode != 0);
                 bus.write_byte(addr::MMU32_BIT, self.mmu_mode);
                 cpu.write_reg(Register::D0, old_mode);
                 Ok(())
@@ -6972,12 +6978,19 @@ mod tests {
     #[test]
     fn test_strip_address() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::A0, 0xAB12_3456);
         let result = dispatcher.dispatch_memory(false, 0x55, &mut cpu, &mut bus);
         assert!(result.is_some(), "StripAddress should be handled");
         assert!(
             result.unwrap().is_ok(),
             "StripAddress should succeed (no-op)"
         );
+        assert_eq!(cpu.read_reg(Register::A0), 0xAB12_3456);
+
+        bus.set_addressing_32_bit(false);
+        let result = dispatcher.dispatch_memory(false, 0x55, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), 0x0012_3456);
     }
 
     #[test]

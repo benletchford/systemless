@@ -33,11 +33,18 @@ pub const MAX_INSTRUCTIONS_PER_FRAME: usize = 2_000_000;
 
 /// Create a new FixtureRunner with standard configuration.
 pub fn new_runner() -> FixtureRunner {
+    new_runner_with_addressing(true)
+}
+
+/// Create a runner in either the default 32-bit addressing mode or classic
+/// 24-bit mode, where the upper address byte is ignored by memory accesses.
+pub fn new_runner_with_addressing(addressing_32_bit: bool) -> FixtureRunner {
     FixtureRunner::new(
         RAM_SIZE as usize,
         FixtureRunnerConfig {
             load_address: 0x10000,
             max_instructions: MAX_INSTRUCTIONS_PER_FRAME,
+            addressing_32_bit,
             ..FixtureRunnerConfig::default()
         },
     )

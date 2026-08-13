@@ -137,6 +137,10 @@ struct Cli {
     /// Prefer a native PowerPC slice when a classic 68K slice is also available
     #[arg(long)]
     prefer_powerpc: bool,
+
+    /// Start with classic 24-bit guest address translation
+    #[arg(long)]
+    addressing_24_bit: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -380,6 +384,8 @@ struct App {
     debug_frame_ms: Option<f64>,
     /// Remap arrow keys to numpad equivalents (for keyboards without a numpad)
     arrows_as_numpad: bool,
+    /// Start the guest with 24-bit rather than 32-bit address translation.
+    addressing_24_bit: bool,
     #[cfg(target_os = "macos")]
     native_integrations: bool,
     #[cfg(target_os = "macos")]
@@ -393,7 +399,12 @@ struct App {
 }
 
 impl App {
-    fn new(game_path: PathBuf, arrows_as_numpad: bool, native_integrations: bool) -> Self {
+    fn new(
+        game_path: PathBuf,
+        arrows_as_numpad: bool,
+        native_integrations: bool,
+        addressing_24_bit: bool,
+    ) -> Self {
         #[cfg(not(target_os = "macos"))]
         let _ = native_integrations;
         #[cfg(target_os = "macos")]
@@ -473,6 +484,7 @@ impl App {
             debug_host_fps: None,
             debug_frame_ms: None,
             arrows_as_numpad,
+            addressing_24_bit,
             #[cfg(target_os = "macos")]
             native_integrations,
             #[cfg(target_os = "macos")]
@@ -529,7 +541,7 @@ impl App {
             return;
         }
 
-        let mut runner = game::new_runner();
+        let mut runner = game::new_runner_with_addressing(!self.addressing_24_bit);
         #[cfg(target_os = "macos")]
         if self.native_integrations {
             runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
@@ -2051,7 +2063,12 @@ impl ApplicationHandler for App {
     }
 }
 
-fn run_gui(game_path: PathBuf, arrows_as_numpad: bool, native_integrations: bool) {
+fn run_gui(
+    game_path: PathBuf,
+    arrows_as_numpad: bool,
+    native_integrations: bool,
+    addressing_24_bit: bool,
+) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
         "[SYSTEMLESS] GUI arrow keys: {}",
@@ -2062,7 +2079,12 @@ fn run_gui(game_path: PathBuf, arrows_as_numpad: bool, native_integrations: bool
         }
     );
 
-    let mut app = App::new(game_path, arrows_as_numpad, native_integrations);
+    let mut app = App::new(
+        game_path,
+        arrows_as_numpad,
+        native_integrations,
+        addressing_24_bit,
+    );
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
     // entering the event loop so startup never exposes an empty host window.
@@ -2159,11 +2181,15 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
     eprintln!("[HEADLESS] Screenshot #{}: {} (ticks={})", num, path, ticks);
 }
 
-fn run_headless(game_path: &std::path::Path, max_instructions: usize) {
+fn run_headless(
+    game_path: &std::path::Path,
+    max_instructions: usize,
+    addressing_24_bit: bool,
+) {
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
 
-    let mut runner = game::new_runner();
+    let mut runner = game::new_runner_with_addressing(!addressing_24_bit);
     let app = game::load_game_from_path(&mut runner, game_path).expect("Failed to load game");
     let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, &mut runner);
     eprintln!(
@@ -2240,9 +2266,18 @@ fn main() {
     eprintln!("[SYSTEMLESS] Game: {}", game_path.display());
 
     if cli.headless {
-        run_headless(&game_path, cli.max_instructions.unwrap_or(5_000_000));
+        run_headless(
+            &game_path,
+            cli.max_instructions.unwrap_or(5_000_000),
+            cli.addressing_24_bit,
+        );
     } else {
-        run_gui(game_path, arrows_as_numpad, native_integrations);
+        run_gui(
+            game_path,
+            arrows_as_numpad,
+            native_integrations,
+            cli.addressing_24_bit,
+        );
     }
 }
 
@@ -2533,6 +2568,7 @@ mod tests {
             "--no-native-integrations",
             "--arrows-as-numpad",
             "--prefer-powerpc",
+            "--addressing-24-bit",
             "--max-instructions",
             "1234",
             "game.sit",
@@ -2545,6 +2581,7 @@ mod tests {
         assert!(cli.arrows_as_numpad);
         assert!(!cli.literal_arrows);
         assert!(cli.prefer_powerpc);
+        assert!(cli.addressing_24_bit);
         assert_eq!(cli.max_instructions, Some(1234));
     }
 
@@ -2613,7 +2650,7 @@ mod tests {
         use systemless::cpu::Register;
         use systemless::memory::MemoryBus;
 
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
@@ -2665,7 +2702,12 @@ mod tests {
 
     #[test]
     fn gui_defaults_to_literal_arrow_controls() {
-        let app = App::new(PathBuf::from("dummy"), DEFAULT_GUI_ARROWS_AS_NUMPAD, true);
+        let app = App::new(
+            PathBuf::from("dummy"),
+            DEFAULT_GUI_ARROWS_AS_NUMPAD,
+            true,
+            false,
+        );
 
         assert!(
             !app.arrows_as_numpad,
@@ -2942,7 +2984,7 @@ mod tests {
     fn step_frame_mixes_one_audio_frame_when_guest_tick_does_not_advance() {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -2975,7 +3017,7 @@ mod tests {
         runner.bus_mut().write_long(0x016A, 0);
         runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
 
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION);
         app.next_frame_time = Some(now + FRAME_DURATION * 4);
@@ -3073,7 +3115,7 @@ mod tests {
                 exhausted_buffer_index: 0,
             });
 
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         app.runner = Some(runner);
         app.start_time = Some(scheduled_frame_end);
         app.next_frame_time = Some(scheduled_frame_end);
@@ -3177,7 +3219,7 @@ mod tests {
         );
         runner.dispatcher_mut().sound_manager.channels.push(chan);
 
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -3205,7 +3247,7 @@ mod tests {
     fn step_frame_recovers_audio_elapsed_during_a_dropped_video_frame() {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -3235,7 +3277,7 @@ mod tests {
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
         runner.set_instructions_per_tick(1);
 
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION * 2);
         app.next_frame_time = Some(now + FRAME_DURATION);
@@ -3325,7 +3367,7 @@ mod tests {
 
     #[test]
     fn render_gate_waits_for_guest_tick_unless_forced() {
-        let mut app = App::new(PathBuf::from("dummy"), false, true);
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false);
         app.runner = Some(FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
