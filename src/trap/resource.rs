@@ -585,8 +585,22 @@ impl super::TrapDispatcher {
         refresh_from_resource: bool,
     ) -> Result<()> {
         let trace_loadseg = trace_loadseg_enabled();
-        if let Some(&seg_addr) = self.segment_map.get(&{ seg_num }) {
-            if refresh_from_resource {
+        let existing_seg_addr = self.segment_map.get(&seg_num).copied();
+        let seg_addr = existing_seg_addr.or_else(|| {
+            let (_, ptr) = self.find_or_load_resource_any(bus, *b"CODE", seg_num)?;
+            self.segment_map.insert(seg_num, ptr);
+            super::dispatch::record_segment_base(seg_num, ptr);
+            if trace_loadseg {
+                eprintln!(
+                    "[TRAP] LoadSeg: materialized CODE {} from resource chain at ${:08X}",
+                    seg_num, ptr
+                );
+            }
+            Some(ptr)
+        });
+
+        if let Some(seg_addr) = seg_addr {
+            if refresh_from_resource && existing_seg_addr.is_some() {
                 self.refresh_segment_from_resource(bus, seg_num, seg_addr, trace_loadseg);
             }
 
@@ -11451,6 +11465,36 @@ mod tests {
 
         assert_eq!(bus.read_word(island_addr), 0x0000);
         assert_eq!(bus.read_word(island_addr + 2), 0x3F3C);
+    }
+
+    #[test]
+    fn loadseg_materializes_code_from_runtime_resource_chain() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let code = [
+            0x00, 0x00, 0x00, 0x01, // near header: one entry
+            0x4E, 0x75, // RTS
+        ];
+        let seg_addr = setup_resources(&mut disp, &mut bus, b"CODE", 19, &code);
+
+        let island_addr = 0x240000u32;
+        bus.write_word(island_addr, 0x0000);
+        bus.write_word(island_addr + 2, 0x3F3C);
+        bus.write_word(island_addr + 4, 19);
+        bus.write_word(island_addr + 6, 0xA9F0);
+        bus.write_word(addr::CUR_JT_OFFSET, 0);
+        cpu.write_reg(Register::A5, island_addr);
+        cpu.write_reg(Register::PC, island_addr + 8);
+        bus.write_word(TEST_SP, 19);
+
+        call(&mut disp, true, 0x1F0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(disp.segment_map.get(&19), Some(&seg_addr));
+        assert_eq!(cpu.read_reg(Register::PC), island_addr + 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(bus.read_word(island_addr), 19);
+        assert_eq!(bus.read_word(island_addr + 2), 0x4EF9);
+        assert_eq!(bus.read_long(island_addr + 4), seg_addr + 4);
     }
 
     #[test]
