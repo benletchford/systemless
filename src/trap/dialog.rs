@@ -27234,6 +27234,68 @@ mod tests {
     }
 
     #[test]
+    fn nested_child_dialog_drawing_does_not_replace_parent_pixels_saved_underneath() {
+        // A child modal is saved over the already-rendered parent. After the
+        // child returns from ModalDialog, application userItem drawing still
+        // targets the child's screen-backed port; it must update the child,
+        // not the pixels that DisposDialog restores from beneath it.
+        // IM:I I-405, I-425.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes = 640u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let parent_ptr = bus.alloc(170);
+        let child_ptr = bus.alloc(170);
+        let parent_bounds = (80i16, 80i16, 260i16, 360i16);
+        let child_bounds = (120i16, 130i16, 220i16, 310i16);
+        seed_window_regions(&mut bus, parent_ptr, parent_bounds);
+        seed_window_regions(&mut bus, child_ptr, child_bounds);
+        for (window, bounds) in [(parent_ptr, parent_bounds), (child_ptr, child_bounds)] {
+            bus.write_word(window + 8, (-bounds.0) as u16);
+            bus.write_word(window + 10, (-bounds.1) as u16);
+            disp.dialog_items.insert(window, Vec::new());
+        }
+
+        let parent_probe = screen_base + 150 * row_bytes + 170;
+        bus.write_byte(parent_probe, 0x33);
+        disp.ensure_dialog_background_saved(&bus, child_ptr, child_bounds);
+        disp.dialog_visible_snapshots.insert(
+            child_ptr,
+            PersistentDialogSnapshot {
+                bounds: child_bounds,
+                pixels: disp.save_dialog_pixels(&bus, child_bounds),
+            },
+        );
+
+        disp.front_window = child_ptr;
+        disp.current_port = child_ptr;
+        disp.window_bounds = child_bounds;
+        disp.window_list = vec![child_ptr, parent_ptr];
+        disp.window_stack
+            .push((parent_ptr, parent_bounds, 2, "Parent".to_string()));
+        disp.dialog_modal_entered.insert(child_ptr);
+
+        // Simulate a child userItem callback drawing after ModalDialog has
+        // returned, at a pixel that belongs to the parent underneath.
+        bus.write_byte(parent_probe, 0xCC);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, child_ptr, (150, 170, 151, 171));
+
+        bus.write_long(TEST_SP, child_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            bus.read_byte(parent_probe),
+            0x33,
+            "disposing the child must restore the original parent userItem pixel"
+        );
+        assert_eq!(disp.front_window, parent_ptr);
+        assert_eq!(disp.current_port, parent_ptr);
+    }
+
+    #[test]
     fn stale_fullscreen_dialog_exposure_restores_from_offscreen_scene_port() {
         let (mut disp, _cpu, mut bus) = setup();
         let screen_base = bus.alloc(100 * 80);
