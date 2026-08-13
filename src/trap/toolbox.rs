@@ -160,6 +160,147 @@ fn scan_sane_decimal(
     bus.write_word(valid_prefix_ptr, if valid_prefix { 0xFFFF } else { 0 });
 }
 
+fn sane_nan_code(digits: &[u8]) -> u8 {
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    digits
+        .get(3..5)
+        .and_then(|code| Some(hex_value(code[0])? << 4 | hex_value(code[1])?))
+        .unwrap_or(0)
+}
+
+/// Format a 68K SANE decimal record using the classic `decform` contract.
+/// Existing significand digits are exact and are never discarded; the
+/// requested count is a minimum that pads with zeroes when necessary.
+fn format_sane_decimal(bus: &MacMemoryBus, decimal_ptr: u32, decform_ptr: u32) -> Vec<u8> {
+    const DECIMAL_OUTPUT_LIMIT: usize = 80;
+
+    let negative = bus.read_byte(decimal_ptr) != 0;
+    let exponent = i32::from(bus.read_word(decimal_ptr + 2) as i16);
+    let length = usize::from(bus.read_byte(decimal_ptr + 4)).min(20);
+    let digits = bus.read_bytes(decimal_ptr + 5, length);
+    let style = bus.read_byte(decform_ptr);
+    let requested_digits = i32::from(bus.read_word(decform_ptr + 2) as i16);
+
+    let special = match digits.first().copied() {
+        None => Some(b"?".to_vec()),
+        Some(b'0') => None,
+        Some(b'I') => Some(b"INF".to_vec()),
+        Some(b'N') => Some(format!("NAN({:03})", sane_nan_code(&digits)).into_bytes()),
+        Some(b'?') => Some(b"?".to_vec()),
+        Some(byte) if !byte.is_ascii_digit() || digits.iter().any(|d| !d.is_ascii_digit()) => {
+            Some(b"?".to_vec())
+        }
+        _ => None,
+    };
+    let is_zero = digits.first() == Some(&b'0');
+
+    let mut formatted = if let Some(special) = special {
+        special
+    } else if style == 1 {
+        let exact_digits = if is_zero { &b"0"[..] } else { &digits[..] };
+        let exact_fraction_digits = if is_zero { 0 } else { (-exponent).max(0) };
+        let fraction_digits = requested_digits.max(exact_fraction_digits).max(0) as usize;
+        let point = if is_zero {
+            1
+        } else {
+            exact_digits.len() as i32 + exponent
+        };
+        let integer_digits = point.max(1) as usize;
+        let required_len = integer_digits
+            .saturating_add(usize::from(fraction_digits != 0))
+            .saturating_add(fraction_digits)
+            .saturating_add(usize::from(negative));
+        if required_len > DECIMAL_OUTPUT_LIMIT {
+            return b"?".to_vec();
+        }
+
+        let mut result = Vec::with_capacity(required_len);
+        if point <= 0 {
+            result.push(b'0');
+            if fraction_digits != 0 {
+                result.push(b'.');
+                result.extend(std::iter::repeat_n(b'0', (-point) as usize));
+                result.extend_from_slice(exact_digits);
+            }
+        } else if point as usize >= exact_digits.len() {
+            result.extend_from_slice(exact_digits);
+            result.extend(std::iter::repeat_n(
+                b'0',
+                point as usize - exact_digits.len(),
+            ));
+            if fraction_digits != 0 {
+                result.push(b'.');
+            }
+        } else {
+            result.extend_from_slice(&exact_digits[..point as usize]);
+            result.push(b'.');
+            result.extend_from_slice(&exact_digits[point as usize..]);
+        }
+        let written_fraction = result
+            .iter()
+            .position(|byte| *byte == b'.')
+            .map(|point| result.len() - point - 1)
+            .unwrap_or(0);
+        result.extend(std::iter::repeat_n(
+            b'0',
+            fraction_digits.saturating_sub(written_fraction),
+        ));
+        result
+    } else {
+        let exact_digits = if is_zero { &b"0"[..] } else { &digits[..] };
+        let significant_digits = requested_digits.max(1).max(exact_digits.len() as i32) as usize;
+        let normalized_exponent = if is_zero {
+            0
+        } else {
+            exponent + exact_digits.len() as i32 - 1
+        };
+        let exponent_text = format!("{:+}", normalized_exponent);
+        let required_len = 1usize
+            .saturating_add(significant_digits)
+            .saturating_add(usize::from(significant_digits > 1))
+            .saturating_add(1)
+            .saturating_add(exponent_text.len());
+        if required_len > DECIMAL_OUTPUT_LIMIT {
+            return b"?".to_vec();
+        }
+
+        let mut result = Vec::with_capacity(required_len);
+        result.push(exact_digits[0]);
+        if significant_digits > 1 {
+            result.push(b'.');
+            result.extend_from_slice(&exact_digits[1..]);
+            result.extend(std::iter::repeat_n(
+                b'0',
+                significant_digits - exact_digits.len(),
+            ));
+        }
+        result.push(b'e');
+        result.extend_from_slice(exponent_text.as_bytes());
+        result
+    };
+
+    if formatted != b"?" {
+        if negative {
+            formatted.insert(0, b'-');
+        } else if style == 0 {
+            formatted.insert(0, b' ');
+        }
+    }
+    if formatted.len() > DECIMAL_OUTPUT_LIMIT {
+        b"?".to_vec()
+    } else {
+        formatted
+    }
+}
+
 fn standard_file_cancel_reply(bus: &mut MacMemoryBus, reply_ptr: u32) {
     if reply_ptr != 0 {
         // SFReply and StandardFileReply both start with the cancel flag.
@@ -12147,8 +12288,8 @@ impl super::TrapDispatcher {
 
             // Pack7 / DecStr68K ($A9EE) — integer and SANE decimal scanners.
             // Selectors 0/1 are the Binary-Decimal Conversion Package.
-            // Selector 2 is the SANE FPSTR2DEC scanner published by Apple's
-            // MPW SANEMacs.a interface.
+            // Selectors 2/3/4 are the SANE FPSTR2DEC, FDEC2STR, and
+            // FCSTR2DEC operations published by Apple's MPW SANEMacs.a.
             // PROCEDURE NumToString(theNumber: LONGINT; VAR theString: Str255);
             // PROCEDURE StringToNum(theString: Str255; VAR theNumber: LONGINT);
             // Inside Macintosh Volume I, I-489
@@ -12189,6 +12330,18 @@ impl super::TrapDispatcher {
                         let bytes = bus.read_pstring(string_ptr);
                         scan_sane_decimal(bus, &bytes, index_ptr, decimal_ptr, valid_prefix_ptr);
                         cpu.write_reg(Register::A7, sp + 18);
+                    }
+                    3 => {
+                        // FDEC2STR: MPW leaves the Pascal DecStr output,
+                        // decimal input, and decform input pointers after the
+                        // selector. Its public C wrapper converts the returned
+                        // Pascal string to a C string after this trap returns.
+                        let string_ptr = bus.read_long(sp + 2);
+                        let decimal_ptr = bus.read_long(sp + 6);
+                        let decform_ptr = bus.read_long(sp + 10);
+                        let bytes = format_sane_decimal(bus, decimal_ptr, decform_ptr);
+                        bus.write_pstring(string_ptr, &bytes);
+                        cpu.write_reg(Register::A7, sp + 14);
                     }
                     4 => {
                         // FCSTR2DEC / CStr2Dec: scan a NUL-terminated C
@@ -25668,6 +25821,172 @@ mod tests {
         assert_eq!(bus.read_byte(decimal_ptr + 4), 4);
         assert_eq!(bus.read_bytes(decimal_ptr + 5, 4), b"1250");
         assert_eq!(bus.read_byte(decimal_ptr + 25), 0);
+    }
+
+    fn run_fdec2str(
+        disp: &mut TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut MacMemoryBus,
+        style: u8,
+        requested_digits: i16,
+        negative: bool,
+        exponent: i16,
+        digits: &[u8],
+    ) -> Vec<u8> {
+        let sp = TEST_SP;
+        let string_ptr = 0x5400;
+        let decimal_ptr = 0x5500;
+        let decform_ptr = 0x5600;
+
+        bus.write_byte(decimal_ptr, u8::from(negative));
+        bus.write_byte(decimal_ptr + 1, 0);
+        bus.write_word(decimal_ptr + 2, exponent as u16);
+        bus.write_byte(decimal_ptr + 4, digits.len() as u8);
+        bus.write_bytes(decimal_ptr + 5, digits);
+        bus.write_byte(decimal_ptr + 25, 0);
+        bus.write_byte(decform_ptr, style);
+        bus.write_byte(decform_ptr + 1, 0);
+        bus.write_word(decform_ptr + 2, requested_digits as u16);
+        bus.write_byte(string_ptr, 0xCC);
+
+        // MPW SANEMacs.a FDEC2STR frame: selector, DecStr*, decimal*, decform*.
+        bus.write_word(sp, 3);
+        bus.write_long(sp + 2, string_ptr);
+        bus.write_long(sp + 6, decimal_ptr);
+        bus.write_long(sp + 10, decform_ptr);
+        cpu.write_reg(Register::A7, sp);
+
+        disp.dispatch_toolbox(true, 0x1EE, cpu, bus)
+            .expect("Pack7 dispatch")
+            .expect("FDEC2STR succeeds");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        bus.read_pstring(string_ptr)
+    }
+
+    #[test]
+    fn pack7_fdec2str_formats_fixed_style_without_discarding_exact_digits() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, -2, b"1250"),
+            b"12.50"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, true, -2, b"1250"),
+            b"-12.50"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 4, false, -1, b"125"),
+            b"12.5000"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, -3, b"9995"),
+            b"9.995"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, -2, b"1000"),
+            b"10.00"
+        );
+        // Num2Dec performs requested rounding before FDEC2STR. These are the
+        // carried records produced at either side of a rounding boundary.
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, -2, b"999"),
+            b"9.99"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, -2, b"1000"),
+            b"10.00"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, -2, false, 0, b"1499"),
+            b"1499"
+        );
+    }
+
+    #[test]
+    fn pack7_fdec2str_formats_float_style_with_padding_sign_and_exponent() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, false, -2, b"1250"),
+            b" 1.250e+1"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, true, -2, b"1250"),
+            b"-1.250e+1"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 6, false, -2, b"1250"),
+            b" 1.25000e+1"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 1, false, 9999, b"1"),
+            b" 1e+9999"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, false, -3, b"1000"),
+            b" 1.000e+0"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, false, -1, b"9999"),
+            b" 9.999e+2"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, false, -1, b"1000"),
+            b" 1.000e+2"
+        );
+    }
+
+    #[test]
+    fn pack7_fdec2str_formats_signed_zero_in_both_styles() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, 999, b"0"),
+            b"0.00"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, true, -999, b"0"),
+            b"-0.00"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, false, 999, b"0"),
+            b" 0.000e+0"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, true, -999, b"0"),
+            b"-0.000e+0"
+        );
+    }
+
+    #[test]
+    fn pack7_fdec2str_formats_infinity_nan_and_invalid_records() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, true, 0, b"I"),
+            b"-INF"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 0, 4, false, 0, b"I"),
+            b" INF"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, 0, b"N4021"),
+            b"NAN(033)"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, 0, b"NFFFF"),
+            b"NAN(255)"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 2, false, 0, b""),
+            b"?"
+        );
+        assert_eq!(
+            run_fdec2str(&mut disp, &mut cpu, &mut bus, 1, 80, false, 0, b"1"),
+            b"?"
+        );
     }
 
     #[test]
