@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.15](https://github.com/benletchford/systemless/compare/v0.12.14...v0.12.15) (2026-08-13)
+
+
+### Bug Fixes
+
+* restore formatting and Clippy release gates ([da32ef9](https://github.com/benletchford/systemless/commit/da32ef9213a15553e4283f2b2733e47c42aa0a09))
+* **window:** exit after clean guest quit ([c4a271c](https://github.com/benletchford/systemless/commit/c4a271c05c3bc840b247db186af6f5d6ac29196f))
+
 ## [0.12.14](https://github.com/benletchford/systemless/compare/v0.12.13...v0.12.14) (2026-08-12)
 
 
