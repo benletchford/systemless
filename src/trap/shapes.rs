@@ -108,18 +108,13 @@ fn trace_all_shapes_enabled() -> bool {
     *TRACE_ALL_SHAPES.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SHAPES_ALL").is_some())
 }
 
-fn shape_palette_index_for_rgb(
-    rgb: [u16; 3],
-    pixel_size: u16,
-    clut: &[[u16; 3]; 256],
-) -> u8 {
+fn shape_palette_index_for_rgb(rgb: [u16; 3], pixel_size: u16, clut: &[[u16; 3]; 256]) -> u8 {
     // Color QuickDraw maps RGB colors through the destination GDevice's
     // inverse table. The default 4-bit NewGWorld table uses ROM propagation
     // and tie-breaking, which can differ from a fresh Euclidean CLUT search.
     //
     // Inside Macintosh: Imaging With QuickDraw 1994, pp. 4-82 and 6-30
-    if pixel_size == 4
-        && super::dispatch::TrapDispatcher::uses_standard_mac_4bpp_gworld_clut(clut)
+    if pixel_size == 4 && super::dispatch::TrapDispatcher::uses_standard_mac_4bpp_gworld_clut(clut)
     {
         return super::dispatch::TrapDispatcher::standard_mac_4bpp_gworld_color2index(
             rgb[0], rgb[1], rgb[2],
@@ -1461,11 +1456,7 @@ impl super::TrapDispatcher {
                             bottom.saturating_sub(bounds_top),
                             right.saturating_sub(bounds_left),
                         );
-                        self.refresh_dialog_saved_pixels_after_screen_draw(
-                            bus,
-                            port,
-                            screen_rect,
-                        );
+                        self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, screen_rect);
                         self.refresh_visible_dialog_snapshot_region_for_port(
                             bus,
                             port,
@@ -1845,25 +1836,11 @@ mod tests {
         clut[181] = [0xAB90, 0x7C50, 0x9570];
 
         assert_eq!(
-            indexed_shape_color_index(
-                95,
-                (0xF2D7, 0x0856, 0x84EC),
-                8,
-                &clut,
-                true,
-                false,
-            ),
+            indexed_shape_color_index(95, (0xF2D7, 0x0856, 0x84EC), 8, &clut, true, false,),
             95
         );
         assert_eq!(
-            indexed_shape_color_index(
-                95,
-                (0xF2D7, 0x0856, 0x84EC),
-                8,
-                &clut,
-                true,
-                true,
-            ),
+            indexed_shape_color_index(95, (0xF2D7, 0x0856, 0x84EC), 8, &clut, true, true,),
             181
         );
     }

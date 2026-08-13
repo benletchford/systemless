@@ -1349,9 +1349,7 @@ mod tests {
         assert!(disp.key_is_down(0x39), "first press should latch Caps Lock");
         assert_eq!(disp.current_event_modifiers() & 0x0400, 0x0400);
         assert!(
-            !disp
-                .dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008)
-                .5,
+            !disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008).5,
             "Caps Lock must not post a standalone keyDown event"
         );
 

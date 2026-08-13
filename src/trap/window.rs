@@ -393,15 +393,7 @@ impl super::TrapDispatcher {
         // (1992), pp. 4-66 and 4-145, says the Window Manager resolves the
         // WDEF and stores its handle in this field when creating a window.
         self.synthesize_system_wdef(bus, wdef_id)
-            .map(|ptr| {
-                self.get_or_create_resource_handle_in_file(
-                    bus,
-                    *b"WDEF",
-                    wdef_id,
-                    ptr,
-                    0,
-                )
-            })
+            .map(|ptr| self.get_or_create_resource_handle_in_file(bus, *b"WDEF", wdef_id, ptr, 0))
             .unwrap_or(0)
     }
 
@@ -3301,10 +3293,7 @@ impl super::TrapDispatcher {
                         if resolved_user_item_proc {
                             self.queue_modeless_dialog_draw_procs(bus, the_window);
                         }
-                        if !self
-                            .modeless_dialog_cdef_draw_queue
-                            .contains(&the_window)
-                        {
+                        if !self.modeless_dialog_cdef_draw_queue.contains(&the_window) {
                             self.modeless_dialog_cdef_draw_queue.push_back(the_window);
                         }
                     } else {

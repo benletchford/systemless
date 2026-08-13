@@ -174,7 +174,7 @@ impl CinepakDecoder {
                     while y < s_bottom {
                         if inter {
                             match bits.bit() {
-                                Some(true) => {}          // coded — fall through
+                                Some(true) => {} // coded — fall through
                                 Some(false) => {
                                     // Skipped: keep the block from the prior frame.
                                     x += 4;
@@ -569,7 +569,7 @@ mod tests {
         // Left block updated to 200.
         assert_eq!(dec.rgb[0], 200);
         // Right block (x=4) skipped => preserved from the first frame at 50.
-        assert_eq!(dec.rgb[(0 * 8 + 4) * 3], 50);
+        assert_eq!(dec.rgb[4 * 3], 50);
     }
 
     #[test]

@@ -3225,13 +3225,8 @@ impl super::TrapDispatcher {
             && !skip_canonical_to_screen
             && !hardware_palette_active
         {
-            let translation = self.build_palette_translation(
-                bus,
-                &src_clut,
-                &dst_clut,
-                screen_ctab_handle,
-                8,
-            );
+            let translation =
+                self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle, 8);
             for row in 0..row_count {
                 let src_addr = candidate.base + row * candidate.row_bytes;
                 let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
@@ -3399,7 +3394,10 @@ impl super::TrapDispatcher {
         }
         (
             visible_samples,
-            sampled_indices.into_iter().filter(|present| *present).count() as u32,
+            sampled_indices
+                .into_iter()
+                .filter(|present| *present)
+                .count() as u32,
         )
     }
 
@@ -5950,11 +5948,7 @@ mod redraw_chrome_tests {
         let untouched_probe = screen_base + 20 * 64 + 20;
         bus.write_byte(touched_probe, 0x77);
         bus.write_byte(untouched_probe, 0x88);
-        disp.refresh_visible_dialog_snapshot_region_for_port(
-            &bus,
-            dialog_ptr,
-            (12, 12, 13, 13),
-        );
+        disp.refresh_visible_dialog_snapshot_region_for_port(&bus, dialog_ptr, (12, 12, 13, 13));
 
         bus.write_byte(touched_probe, 0x00);
         bus.write_byte(untouched_probe, 0x00);
@@ -5989,9 +5983,8 @@ mod redraw_chrome_tests {
             let untouched = (20u32, 20u32);
             let pixels_per_byte = 8 / u32::from(pixel_size);
             let pixel_mask = |x: u32| {
-                let shift = 8
-                    - u32::from(pixel_size)
-                    - (x % pixels_per_byte) * u32::from(pixel_size);
+                let shift =
+                    8 - u32::from(pixel_size) - (x % pixels_per_byte) * u32::from(pixel_size);
                 (((1u16 << pixel_size) - 1) as u8) << shift
             };
             let pixel_addr = |x: u32, y: u32| screen_base + y * row_bytes + x / pixels_per_byte;

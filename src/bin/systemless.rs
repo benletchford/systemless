@@ -1317,10 +1317,7 @@ impl App {
                 }
             }
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
-            let palette = display::argb_palette_from_clut_with_gamma(
-                &device_clut,
-                &device_gamma,
-            );
+            let palette = display::argb_palette_from_clut_with_gamma(&device_clut, &device_gamma);
             if let Some(surface) = self.surface.as_mut() {
                 let presented_directly = surface
                     .present_guest_frame(

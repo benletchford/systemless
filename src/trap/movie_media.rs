@@ -453,10 +453,14 @@ mod tests {
         // Build a minimal moov with one video trak carrying a cvid stsd and
         // one sample. ImageDescription: width=212 height=168 depth=24.
         let mut idesc = vec![0u8; 70];
-        idesc[16] = 0; idesc[17] = 212u8; // width low byte (212)
-        idesc[18] = 0; idesc[19] = 168u8; // height
-        idesc[66] = 0; idesc[67] = 24; // depth
-        idesc[68] = 0xFF; idesc[69] = 0xFF; // clutID = -1
+        idesc[16] = 0;
+        idesc[17] = 212u8; // width low byte (212)
+        idesc[18] = 0;
+        idesc[19] = 168u8; // height
+        idesc[66] = 0;
+        idesc[67] = 24; // depth
+        idesc[68] = 0xFF;
+        idesc[69] = 0xFF; // clutID = -1
         let mut desc = Vec::new();
         desc.extend_from_slice(&((16 + idesc.len()) as u32).to_be_bytes());
         desc.extend_from_slice(b"cvid");

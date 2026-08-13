@@ -813,10 +813,7 @@ impl super::TrapDispatcher {
         // their item handle is a draw procedure; queue only the callbacks
         // whose display rectangles intersect the active update region.
         self.queue_modeless_dialog_draw_procs_intersecting(bus, dialog_ptr, update_rect);
-        if !self
-            .modeless_dialog_cdef_draw_queue
-            .contains(&dialog_ptr)
-        {
+        if !self.modeless_dialog_cdef_draw_queue.contains(&dialog_ptr) {
             self.modeless_dialog_cdef_draw_queue.push_back(dialog_ptr);
         }
         true
@@ -9270,13 +9267,7 @@ impl super::TrapDispatcher {
             && !skip_canonical_to_screen
             && !hardware_palette_active
         {
-            Some(self.build_palette_translation(
-                bus,
-                &src_clut,
-                &dst_clut,
-                screen_ctab_handle,
-                8,
-            ))
+            Some(self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle, 8))
         } else {
             None
         };
@@ -10779,10 +10770,7 @@ impl super::TrapDispatcher {
                     // runner trampoline executes guest drawing before the
                     // caller resumes.
                     self.queue_modeless_dialog_draw_procs_intersecting(bus, dialog_ptr, None);
-                    if !self
-                        .modeless_dialog_cdef_draw_queue
-                        .contains(&dialog_ptr)
-                    {
+                    if !self.modeless_dialog_cdef_draw_queue.contains(&dialog_ptr) {
                         self.modeless_dialog_cdef_draw_queue.push_back(dialog_ptr);
                     }
                 }
@@ -25988,8 +25976,7 @@ mod tests {
         disp.current_port = dialog_ptr;
         disp.window_bounds = (100, 120, 220, 320);
         disp.window_list = vec![dialog_ptr, visible_window];
-        disp.window_stack
-            .push((0, (0, 0, 0, 0), -1, String::new()));
+        disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
         bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
 
         bus.write_long(TEST_SP, dialog_ptr);
@@ -30387,12 +30374,8 @@ mod tests {
         disp.front_window = dialog_ptr;
         disp.current_port = dialog_ptr;
         disp.window_list = vec![dialog_ptr, previous_window];
-        disp.window_stack.push((
-            previous_window,
-            (0, 0, 342, 512),
-            0,
-            String::from("Map"),
-        ));
+        disp.window_stack
+            .push((previous_window, (0, 0, 342, 512), 0, String::from("Map")));
         disp.dialog_items.insert(
             dialog_ptr,
             vec![DialogItem {
@@ -30452,20 +30435,17 @@ mod tests {
         assert!(disp.pending_modal_dialog_mouse_up);
 
         disp.push_mouse_up(130, 240);
-        let (what, _, _, _, _, has_event) =
-            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
         assert_eq!(what, 0);
         assert!(!has_event);
         assert!(!disp.pending_modal_dialog_mouse_up);
 
         disp.push_mouse_down(150, 260);
         disp.push_mouse_up(150, 260);
-        let (what, _, _, _, _, has_event) =
-            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
         assert_eq!(what, 1);
         assert!(has_event);
-        let (what, _, _, _, _, has_event) =
-            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
         assert_eq!(what, 2);
         assert!(has_event);
     }
