@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.16](https://github.com/benletchford/systemless/compare/v0.12.15...v0.12.16) (2026-08-13)
+
+
+### Bug Fixes
+
+* **menu:** hide MenuKey title highlights with menu bar ([f729115](https://github.com/benletchford/systemless/commit/f729115ec820e4349312acca5ce30270abc7f9cd))
+
 ## [0.12.15](https://github.com/benletchford/systemless/compare/v0.12.14...v0.12.15) (2026-08-13)
 
 
