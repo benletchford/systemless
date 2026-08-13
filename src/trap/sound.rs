@@ -45,6 +45,14 @@ fn sound_dispatch_param_bytes(selector: u32) -> u32 {
     }
 
     match selector {
+        // MIDI Manager selectors use a fixed $0004 family word and do not
+        // encode their Pascal frame sizes in the selector. Universal
+        // Interfaces 3.4, MIDI.h.
+        0x0004_0004 => 16, // MIDISignIn(clientID, refCon, icon, name)
+        0x001C_0004 => 14, // MIDIAddPort(clientID, bufSize, refnum, init)
+        0x0024_0004 => 16, // MIDIConnectData(srcClID, srcPortID, dstClID, dstPortID)
+        0x0048_0004 => 14, // MIDIWakeUp(refnum, time, period, timeProc)
+        0x0064_0004 => 2,  // MIDIStopTime(refnum)
         // The Inside Macintosh VI selector table documents these SoundDispatch
         // selectors with a zero param-size byte even though the Pascal
         // routines have stack arguments. Some clients pass those literals.
@@ -286,6 +294,74 @@ impl super::TrapDispatcher {
                         "[SOUND] SoundDispatch selector=${:08X} routine=${:02X} param_bytes={}",
                         selector, routine, param_bytes
                     );
+                }
+                if selector & 0xFFFF == 0x0004 {
+                    match selector {
+                        // MIDIVersion ($00000004)
+                        // Returns the installed MIDI Manager version. Report
+                        // MIDI Manager 2.0 because the selectors below provide
+                        // its client, port, connection, and clock facade.
+                        // FUNCTION MIDIVersion: NumVersion;
+                        // Universal Interfaces 3.4, MIDI.h; Inside Macintosh:
+                        // Sound 1994, p. 1-6.
+                        0x0000_0004 => bus.write_long(sp, 0x0200_8000),
+
+                        // MIDISignIn ($00040004)
+                        // Registers a MIDI Manager client. The HLE has no MIDI
+                        // transport, but accepting the client allows software
+                        // to use a silent port without corrupting its stack.
+                        // FUNCTION MIDISignIn(clientID: OSType; refCon: LongInt;
+                        //     icon: Handle; name: Str255): OSErr;
+                        // Universal Interfaces 3.4, MIDI.h and MacErrors.h.
+                        0x0004_0004 => {
+                            bus.write_word(sp + param_bytes, 0); // noErr
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        }
+
+                        // MIDIAddPort ($001C0004)
+                        // Adds a port and returns its reference number.
+                        // FUNCTION MIDIAddPort(clientID: OSType; bufSize:
+                        //     Integer; VAR refnum: Integer;
+                        //     init: MIDIPortParamsPtr): OSErr;
+                        // Universal Interfaces 3.4, MIDI.h.
+                        0x001C_0004 => {
+                            let refnum_ptr = bus.read_long(sp + 4);
+                            if refnum_ptr != 0 {
+                                bus.write_word(refnum_ptr, 1);
+                            }
+                            bus.write_word(sp + param_bytes, 0); // noErr
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        }
+
+                        // MIDIConnectData ($00240004)
+                        // Connects two data ports. Silent HLE ports accept the
+                        // connection but discard packet output.
+                        // FUNCTION MIDIConnectData(srcClID, srcPortID,
+                        //     dstClID, dstPortID: OSType): OSErr;
+                        // Universal Interfaces 3.4, MIDI.h.
+                        0x0024_0004 => {
+                            bus.write_word(sp + param_bytes, 0); // noErr
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        }
+
+                        // MIDIWakeUp ($00480004)
+                        // Schedules a time callback for a port. The silent HLE
+                        // has no MIDI clock callbacks.
+                        // PROCEDURE MIDIWakeUp(refnum: Integer; time, period:
+                        //     LongInt; timeProc: MIDITimeUPP);
+                        // Universal Interfaces 3.4, MIDI.h.
+                        0x0048_0004 => cpu.write_reg(Register::A7, sp + param_bytes),
+
+                        // MIDIStopTime ($00640004)
+                        // Stops a port's time base.
+                        // PROCEDURE MIDIStopTime(refnum: Integer);
+                        // Universal Interfaces 3.4, MIDI.h.
+                        0x0064_0004 => cpu.write_reg(Register::A7, sp + param_bytes),
+
+                        _ => {}
+                    }
+                    cpu.write_reg(Register::D0, 0);
+                    return Some(Ok(()));
                 }
                 match routine {
                     // SndSoundManagerVersion and UnsignedFixedMulDiv share
@@ -3305,6 +3381,55 @@ mod tests {
             0x80,
             "release stage byte must mark a final release"
         );
+    }
+
+    #[test]
+    fn sounddispatch_reports_midi_manager_version_without_touching_the_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0004); // MIDIVersion
+        bus.write_long(sp, 0xDEAD_BEEF);
+        bus.write_long(sp + 4, 0xCAFE_BABE);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), 0x0200_8000);
+        assert_eq!(bus.read_long(sp + 4), 0xCAFE_BABE);
+    }
+
+    #[test]
+    fn sounddispatch_consumes_midi_manager_pascal_frames() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let refnum_ptr = 0x230A80;
+
+        for (selector, param_bytes, has_result) in [
+            (0x0004_0004, 16, true),
+            (0x001C_0004, 14, true),
+            (0x0024_0004, 16, true),
+            (0x0048_0004, 14, false),
+            (0x0064_0004, 2, false),
+        ] {
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, selector);
+            bus.write_long(sp + 4, refnum_ptr);
+            bus.write_word(sp + param_bytes, 0xBEEF);
+
+            let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), sp + param_bytes);
+            if has_result {
+                assert_eq!(bus.read_word(sp + param_bytes), 0);
+            } else {
+                assert_eq!(bus.read_word(sp + param_bytes), 0xBEEF);
+            }
+        }
+        assert_eq!(bus.read_word(refnum_ptr), 1);
     }
 
     #[test]
