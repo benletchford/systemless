@@ -32,6 +32,23 @@ const NO_OUTSTANDING_HLE_ERR: i16 = -608;
 const CONNECTION_INVALID_ERR: i16 = -609;
 const NO_PORT_ERR: i16 = -903;
 
+#[derive(Clone, Debug)]
+struct CatSearchEntry {
+    name: String,
+    vref_num: i16,
+    parent_dir_id: u32,
+    is_directory: bool,
+    locked: bool,
+    finder_info: [u8; 16],
+    extended_finder_info: [u8; 16],
+    data_length: u32,
+    resource_length: u32,
+    child_count: u16,
+    created_date: u32,
+    modified_date: u32,
+    backup_date: u32,
+}
+
 fn trace_menu_pict_enabled() -> bool {
     *TRACE_MENU_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_MENU_PICT").is_some())
 }
@@ -7068,6 +7085,15 @@ impl super::TrapDispatcher {
             (false, 0x60) => {
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
                 let pb = cpu.read_reg(Register::A0);
+                if selector == 0x18 {
+                    // PBCatSearch ($A260, selector $0018) searches one
+                    // volume's complete catalog and returns bounded FSSpec
+                    // batches. Files 1992, 2-38 to 2-42 and 2-204 to 2-206.
+                    let result = self.perform_cat_search(bus, pb);
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                    return Some(Ok(()));
+                }
                 if selector == 1 {
                     // PBOpenWD ($A260, selector 1)
                     // Creates a working directory for the specified directory.
@@ -7923,6 +7949,299 @@ impl super::TrapDispatcher {
         // ioDrParID: parent directory ID.
         // Files 1992, 2-192
         bus.write_long(pb + 100, directory.parent_dir_id);
+    }
+
+    fn cat_search_volume_ref_num(&self, bus: &MacMemoryBus, pb: u32) -> Option<i16> {
+        let requested_name = Self::read_pb_filename(bus, bus.read_long(pb + 18));
+        if !requested_name.is_empty() {
+            if requested_name.eq_ignore_ascii_case(Self::boot_volume_name()) {
+                return Some(Self::boot_volume_ref_num());
+            }
+            return self
+                .vfs_volume_by_name(&requested_name)
+                .map(|volume| volume.ref_num);
+        }
+
+        let requested_ref = bus.read_word(pb + 22) as i16;
+        if requested_ref == 0 || requested_ref == Self::boot_volume_ref_num() {
+            return Some(self.resolve_volume_ref_num(requested_ref));
+        }
+        if let Some(volume) = self.vfs_volume_for_ref_num(requested_ref) {
+            return Some(volume.ref_num);
+        }
+        self.working_directory_info(requested_ref)
+            .map(|working_directory| working_directory.volume_ref_num)
+    }
+
+    fn cat_search_entries(&mut self, volume_ref_num: i16) -> Vec<CatSearchEntry> {
+        self.ensure_vfs_catalog();
+        let mut entries = Vec::new();
+
+        for (path, directory) in &self.vfs_directories {
+            let entry_volume_ref = self
+                .vfs_volume_for_path(path)
+                .map(|volume| volume.ref_num)
+                .unwrap_or_else(Self::boot_volume_ref_num);
+            if entry_volume_ref != volume_ref_num {
+                continue;
+            }
+            let child_count = self
+                .vfs_directories
+                .values()
+                .filter(|child| {
+                    child.dir_id != directory.dir_id && child.parent_dir_id == directory.dir_id
+                })
+                .count()
+                .saturating_add(
+                    self.vfs_metadata
+                        .values()
+                        .filter(|metadata| metadata.parent_dir_id == directory.dir_id)
+                        .count(),
+                )
+                .min(u16::MAX as usize) as u16;
+            let name = if directory.parent_dir_id == 1 {
+                if volume_ref_num == Self::boot_volume_ref_num() {
+                    Self::boot_volume_name().to_string()
+                } else {
+                    self.vfs_volume_for_ref_num(volume_ref_num)
+                        .map(|volume| volume.name.clone())
+                        .unwrap_or_else(|| directory.name.clone())
+                }
+            } else {
+                Self::hfs_name_from_vfs_component(&directory.name)
+            };
+            entries.push(CatSearchEntry {
+                name,
+                vref_num: volume_ref_num,
+                parent_dir_id: directory.parent_dir_id,
+                is_directory: true,
+                locked: false,
+                finder_info: [0; 16],
+                extended_finder_info: [0; 16],
+                data_length: 0,
+                resource_length: 0,
+                child_count,
+                created_date: 0,
+                modified_date: 0,
+                backup_date: 0,
+            });
+        }
+
+        let mut file_paths: Vec<String> = self.vfs_metadata.keys().cloned().collect();
+        file_paths.sort_unstable_by_key(|path| path.to_ascii_lowercase());
+        for path in file_paths {
+            let entry_volume_ref = self
+                .vfs_volume_for_path(&path)
+                .map(|volume| volume.ref_num)
+                .unwrap_or_else(Self::boot_volume_ref_num);
+            if entry_volume_ref != volume_ref_num {
+                continue;
+            }
+            let Some(metadata) = self.vfs_metadata.get(&path).copied() else {
+                continue;
+            };
+            let mut finder_info = [0u8; 16];
+            finder_info[..4].copy_from_slice(&metadata.file_type.to_be_bytes());
+            finder_info[4..8].copy_from_slice(&metadata.creator.to_be_bytes());
+            finder_info[8..10].copy_from_slice(&metadata.finder_flags.to_be_bytes());
+            entries.push(CatSearchEntry {
+                name: Self::hfs_name_from_vfs_component(Self::vfs_basename(&path)),
+                vref_num: volume_ref_num,
+                parent_dir_id: metadata.parent_dir_id,
+                is_directory: false,
+                locked: self.locked_files.contains(&path),
+                finder_info,
+                extended_finder_info: [0; 16],
+                data_length: self.vfs.get(&path).map_or(0, |data| data.len() as u32),
+                resource_length: self.vfs_rsrc.get(&path).map_or(0, |data| data.len() as u32),
+                child_count: 0,
+                created_date: metadata.created_date,
+                modified_date: metadata.modified_date,
+                backup_date: 0,
+            });
+        }
+
+        entries.sort_unstable_by_key(|entry| {
+            (
+                entry.parent_dir_id,
+                entry.name.to_ascii_lowercase(),
+                entry.is_directory,
+            )
+        });
+        entries
+    }
+
+    fn masked_bytes_match(
+        bus: &MacMemoryBus,
+        actual: &[u8],
+        desired_ptr: u32,
+        mask_ptr: u32,
+    ) -> bool {
+        actual.iter().enumerate().all(|(index, actual)| {
+            let desired = bus.read_byte(desired_ptr + index as u32);
+            let mask = bus.read_byte(mask_ptr + index as u32);
+            (actual ^ desired) & mask == 0
+        })
+    }
+
+    fn cat_search_entry_matches(
+        bus: &MacMemoryBus,
+        entry: &CatSearchEntry,
+        search_bits: u32,
+        info1: u32,
+        info2: u32,
+    ) -> bool {
+        const PARTIAL_NAME: u32 = 1;
+        const FULL_NAME: u32 = 2;
+        const ATTRIBUTES: u32 = 4;
+        const FINDER_INFO: u32 = 8;
+        const DIRECTORY_CHILD_COUNT: u32 = 16;
+        const DATA_LOGICAL_LENGTH: u32 = 32;
+        const DATA_PHYSICAL_LENGTH: u32 = 64;
+        const RESOURCE_LOGICAL_LENGTH: u32 = 128;
+        const RESOURCE_PHYSICAL_LENGTH: u32 = 256;
+        const CREATED_DATE: u32 = 512;
+        const MODIFIED_DATE: u32 = 1024;
+        const BACKUP_DATE: u32 = 2048;
+        const EXTENDED_FINDER_INFO: u32 = 4096;
+        const PARENT_ID: u32 = 8192;
+        const NEGATE: u32 = 16384;
+
+        let mut matches = true;
+        if search_bits & (PARTIAL_NAME | FULL_NAME) != 0 {
+            let target = Self::read_pb_filename(bus, bus.read_long(info1 + 18));
+            if search_bits & FULL_NAME != 0 {
+                matches &= entry.name.eq_ignore_ascii_case(&target);
+            } else {
+                matches &= entry
+                    .name
+                    .to_ascii_lowercase()
+                    .contains(&target.to_ascii_lowercase());
+            }
+        }
+        if search_bits & ATTRIBUTES != 0 {
+            let actual = (u8::from(entry.is_directory) << 4) | u8::from(entry.locked);
+            let desired = bus.read_byte(info1 + 30);
+            let mask = bus.read_byte(info2 + 30) & 0x11;
+            matches &= (actual ^ desired) & mask == 0;
+        }
+        if search_bits & FINDER_INFO != 0 {
+            matches &= Self::masked_bytes_match(bus, &entry.finder_info, info1 + 32, info2 + 32);
+        }
+        if search_bits & EXTENDED_FINDER_INFO != 0 {
+            matches &=
+                Self::masked_bytes_match(bus, &entry.extended_finder_info, info1 + 84, info2 + 84);
+        }
+
+        if entry.is_directory {
+            if search_bits
+                & (DATA_LOGICAL_LENGTH
+                    | DATA_PHYSICAL_LENGTH
+                    | RESOURCE_LOGICAL_LENGTH
+                    | RESOURCE_PHYSICAL_LENGTH)
+                != 0
+            {
+                matches = false;
+            }
+            if search_bits & DIRECTORY_CHILD_COUNT != 0 {
+                matches &= entry.child_count >= bus.read_word(info1 + 52)
+                    && entry.child_count <= bus.read_word(info2 + 52);
+            }
+        } else {
+            if search_bits & DIRECTORY_CHILD_COUNT != 0 {
+                matches = false;
+            }
+            let range_matches = |bit: u32, offset: u32, value: u32| {
+                search_bits & bit == 0
+                    || (value >= bus.read_long(info1 + offset)
+                        && value <= bus.read_long(info2 + offset))
+            };
+            matches &= range_matches(DATA_LOGICAL_LENGTH, 54, entry.data_length);
+            matches &= range_matches(DATA_PHYSICAL_LENGTH, 58, entry.data_length);
+            matches &= range_matches(RESOURCE_LOGICAL_LENGTH, 64, entry.resource_length);
+            matches &= range_matches(RESOURCE_PHYSICAL_LENGTH, 68, entry.resource_length);
+        }
+
+        let range_matches = |bit: u32, offset: u32, value: u32| {
+            search_bits & bit == 0
+                || (value >= bus.read_long(info1 + offset)
+                    && value <= bus.read_long(info2 + offset))
+        };
+        matches &= range_matches(CREATED_DATE, 72, entry.created_date);
+        matches &= range_matches(MODIFIED_DATE, 76, entry.modified_date);
+        matches &= range_matches(BACKUP_DATE, 80, entry.backup_date);
+        matches &= range_matches(PARENT_ID, 100, entry.parent_dir_id);
+
+        if search_bits & NEGATE != 0 {
+            !matches
+        } else {
+            matches
+        }
+    }
+
+    fn write_cat_search_fsspec(bus: &mut MacMemoryBus, ptr: u32, entry: &CatSearchEntry) {
+        bus.write_word(ptr, entry.vref_num as u16);
+        bus.write_long(ptr + 2, entry.parent_dir_id);
+        let bytes = encode_mac_roman_lossy(&entry.name);
+        let length = bytes.len().min(63);
+        bus.write_byte(ptr + 6, length as u8);
+        bus.write_bytes(ptr + 7, &bytes[..length]);
+        if length < 63 {
+            bus.fill_bytes(ptr + 7 + length as u32, 63 - length as u32, 0);
+        }
+    }
+
+    fn write_cat_search_position(bus: &mut MacMemoryBus, pb: u32, position: usize) {
+        bus.write_long(pb + 52, 1);
+        bus.write_long(pb + 56, position.min(u32::MAX as usize) as u32);
+        bus.fill_bytes(pb + 60, 8, 0);
+    }
+
+    fn perform_cat_search(&mut self, bus: &mut MacMemoryBus, pb: u32) -> i16 {
+        bus.write_long(pb + 32, 0);
+        let Some(volume_ref_num) = self.cat_search_volume_ref_num(bus, pb) else {
+            return -35; // nsvErr
+        };
+        let requested_count = bus.read_long(pb + 28) as usize;
+        if requested_count == 0 {
+            return 0;
+        }
+        let matches_ptr = bus.read_long(pb + 24);
+        if matches_ptr == 0 {
+            return -50; // paramErr
+        }
+        let search_bits = bus.read_long(pb + 36);
+        let info1 = bus.read_long(pb + 40);
+        let info2 = bus.read_long(pb + 44);
+        if search_bits & !16384 != 0 && (info1 == 0 || info2 == 0) {
+            return -50; // paramErr
+        }
+
+        let entries = self.cat_search_entries(volume_ref_num);
+        let mut position = if bus.read_long(pb + 52) == 0 {
+            0
+        } else {
+            bus.read_long(pb + 56) as usize
+        }
+        .min(entries.len());
+        let mut actual_count = 0usize;
+        while position < entries.len() {
+            let entry = &entries[position];
+            position += 1;
+            if Self::cat_search_entry_matches(bus, entry, search_bits, info1, info2) {
+                Self::write_cat_search_fsspec(bus, matches_ptr + actual_count as u32 * 70, entry);
+                actual_count += 1;
+                if actual_count == requested_count {
+                    bus.write_long(pb + 32, actual_count as u32);
+                    Self::write_cat_search_position(bus, pb, position);
+                    return 0;
+                }
+            }
+        }
+
+        bus.write_long(pb + 32, actual_count as u32);
+        Self::write_cat_search_position(bus, pb, entries.len());
+        -39 // eofErr
     }
 
     fn lookup_catalog_entry(
@@ -13692,6 +14011,222 @@ mod tests {
             .expect("mounted volume")
             .root_dir_id;
         (volume_ref, root_dir_id)
+    }
+
+    fn setup_cat_search(
+        bus: &mut crate::memory::MacMemoryBus,
+        cpu: &mut impl CpuOps,
+        volume_ref: i16,
+        requested_count: u32,
+    ) -> (u32, u32, u32, u32) {
+        let pb = 0x300000u32;
+        let matches = 0x310000u32;
+        let info1 = 0x320000u32;
+        let info2 = 0x320100u32;
+        bus.fill_bytes(pb, 128, 0);
+        bus.fill_bytes(matches, 70 * 8, 0xA5);
+        bus.fill_bytes(info1, 128, 0);
+        bus.fill_bytes(info2, 128, 0);
+        bus.write_word(pb + 22, volume_ref as u16);
+        bus.write_long(pb + 24, matches);
+        bus.write_long(pb + 28, requested_count);
+        bus.write_long(pb + 40, info1);
+        bus.write_long(pb + 44, info2);
+        cpu.write_reg(Register::A0, pb);
+        cpu.write_reg(Register::D0, 0x18);
+        (pb, matches, info1, info2)
+    }
+
+    fn call_cat_search(
+        disp: &mut super::super::TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut crate::memory::MacMemoryBus,
+    ) -> i16 {
+        cpu.write_reg(Register::D0, 0x18);
+        call(disp, false, 0x60, cpu, bus).unwrap();
+        cpu.read_reg(Register::D0) as i16
+    }
+
+    #[test]
+    fn pbcatsearch_empty_catalog_returns_eof_without_matches() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (volume_ref, _) = mount_read_only_test_volume(&mut disp, "Empty Disk");
+        // Exclude the volume root itself by requiring a file attribute.
+        let (pb, _, info1, info2) = setup_cat_search(&mut bus, &mut cpu, volume_ref, 4);
+        bus.write_long(pb + 36, 4);
+        bus.write_byte(info1 + 30, 0);
+        bus.write_byte(info2 + 30, 0x10);
+
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(bus.read_long(pb + 32), 0);
+        assert_ne!(bus.read_long(pb + 52), 0);
+    }
+
+    #[test]
+    fn pbcatsearch_honors_zero_requested_matches_and_rejects_unknown_volume() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.insert("Alpha".to_string(), vec![1]);
+        let (pb, matches, _, _) = setup_cat_search(&mut bus, &mut cpu, -1, 0);
+
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), 0);
+        assert_eq!(bus.read_long(pb + 32), 0);
+        assert_eq!(bus.read_long(pb + 52), 0);
+        assert_eq!(bus.read_byte(matches), 0xA5);
+
+        bus.write_word(pb + 22, (-999i16) as u16);
+        bus.write_long(pb + 28, 1);
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -35);
+        assert_eq!(bus.read_word(pb + 16) as i16, -35);
+        assert_eq!(bus.read_long(pb + 32), 0);
+    }
+
+    #[test]
+    fn pbcatsearch_selects_named_volume_and_scopes_results() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (volume_ref, _) = mount_read_only_test_volume(&mut disp, "Archive Disk");
+        disp.vfs.insert("Archive Disk/Needle".to_string(), vec![1]);
+        disp.set_vfs_entry_metadata("Archive Disk/Needle", *b"TEXT", *b"TEST", 0);
+        disp.vfs.insert("Needle".to_string(), vec![2]);
+        disp.set_vfs_entry_metadata("Needle", *b"TEXT", *b"BOOT", 0);
+        let (pb, matches, info1, info2) = setup_cat_search(&mut bus, &mut cpu, 0, 2);
+        let volume_name = 0x320200u32;
+        let target_name = 0x320240u32;
+        write_pstring(&mut bus, volume_name, b"archive disk");
+        write_pstring(&mut bus, target_name, b"needle");
+        bus.write_long(pb + 18, volume_name);
+        bus.write_long(pb + 36, 2 | 4);
+        bus.write_long(info1 + 18, target_name);
+        bus.write_byte(info2 + 30, 0x10);
+
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_word(matches) as i16, volume_ref);
+        assert_eq!(bus.read_pstring(matches + 6), b"Needle");
+    }
+
+    #[test]
+    fn pbcatsearch_paginates_without_duplicates_and_reports_final_eof() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for name in ["Alpha", "Beta", "Gamma"] {
+            disp.vfs.insert(name.to_string(), vec![1]);
+            disp.set_vfs_entry_metadata(name, *b"TEXT", *b"TEST", 0);
+        }
+        let (pb, matches, _info1, info2) = setup_cat_search(&mut bus, &mut cpu, -1, 2);
+        bus.write_long(pb + 36, 4);
+        bus.write_byte(info2 + 30, 0x10);
+
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), 0);
+        assert_eq!(bus.read_long(pb + 32), 2);
+        assert_eq!(bus.read_pstring(matches + 6), b"Alpha");
+        assert_eq!(bus.read_pstring(matches + 76), b"Beta");
+        let resume = bus.read_long(pb + 56);
+        assert!(resume > 0);
+
+        bus.fill_bytes(matches, 140, 0);
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_pstring(matches + 6), b"Gamma");
+        assert!(bus.read_long(pb + 56) > resume);
+
+        bus.fill_bytes(matches, 70, 0xA5);
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(bus.read_long(pb + 32), 0);
+        assert_eq!(bus.read_byte(matches), 0xA5);
+    }
+
+    #[test]
+    fn pbcatsearch_applies_file_and_directory_specific_criteria() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let folder_id = disp.ensure_vfs_directory("Folder");
+        disp.vfs
+            .insert("Folder/Document".to_string(), vec![1, 2, 3]);
+        disp.vfs_rsrc
+            .insert("Folder/Document".to_string(), vec![4, 5]);
+        disp.set_vfs_entry_metadata("Folder/Document", *b"TEXT", *b"TEST", 0x0040);
+        let metadata = disp.vfs_file_metadata("Folder/Document").unwrap();
+        let (pb, matches, info1, info2) = setup_cat_search(&mut bus, &mut cpu, -1, 4);
+        let target_name = 0x320200u32;
+        write_pstring(&mut bus, target_name, b"document");
+        bus.write_long(info1 + 18, target_name);
+        bus.write_long(pb + 36, 2 | 4 | 8 | 32 | 128 | 512 | 1024 | 8192);
+        bus.write_byte(info2 + 30, 0x10);
+        bus.write_long(info1 + 32, u32::from_be_bytes(*b"TEXT"));
+        bus.write_long(info2 + 32, u32::MAX);
+        bus.write_long(info1 + 36, u32::from_be_bytes(*b"TEST"));
+        bus.write_long(info2 + 36, u32::MAX);
+        bus.write_word(info1 + 40, 0x0040);
+        bus.write_word(info2 + 40, 0xFFFF);
+        bus.write_long(info1 + 54, 3);
+        bus.write_long(info2 + 54, 3);
+        bus.write_long(info1 + 64, 2);
+        bus.write_long(info2 + 64, 2);
+        bus.write_long(info1 + 72, metadata.created_date);
+        bus.write_long(info2 + 72, metadata.created_date);
+        bus.write_long(info1 + 76, metadata.modified_date);
+        bus.write_long(info2 + 76, metadata.modified_date);
+        bus.write_long(info1 + 100, folder_id);
+        bus.write_long(info2 + 100, folder_id);
+
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_pstring(matches + 6), b"Document");
+
+        bus.fill_bytes(matches, 280, 0);
+        bus.write_long(pb + 52, 0);
+        write_pstring(&mut bus, target_name, b"folder");
+        bus.write_long(pb + 36, 2 | 4 | 16);
+        bus.write_byte(info1 + 30, 0x10);
+        bus.write_byte(info2 + 30, 0x10);
+        bus.write_word(info1 + 52, 1);
+        bus.write_word(info2 + 52, 1);
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_pstring(matches + 6), b"Folder");
+
+        bus.write_long(pb + 52, 0);
+        bus.write_long(pb + 36, 4 | 32);
+        bus.write_byte(info1 + 30, 0x10);
+        bus.write_byte(info2 + 30, 0x10);
+        bus.write_long(info1 + 54, 0);
+        bus.write_long(info2 + 54, u32::MAX);
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(
+            bus.read_long(pb + 32),
+            0,
+            "file-only length excludes folders"
+        );
+    }
+
+    #[test]
+    fn pbcatsearch_honors_partial_name_locked_attribute_and_negation() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for name in ["Locked Report", "Open Report", "Notes"] {
+            disp.vfs.insert(name.to_string(), vec![1]);
+            disp.set_vfs_entry_metadata(name, *b"TEXT", *b"TEST", 0);
+        }
+        disp.locked_files.insert("Locked Report".to_string());
+        let (pb, matches, info1, info2) = setup_cat_search(&mut bus, &mut cpu, -1, 8);
+        let target_name = 0x320200u32;
+        write_pstring(&mut bus, target_name, b"report");
+        bus.write_long(info1 + 18, target_name);
+        bus.write_long(pb + 36, 1 | 4);
+        bus.write_byte(info1 + 30, 1);
+        bus.write_byte(info2 + 30, 0x11);
+
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_pstring(matches + 6), b"Locked Report");
+
+        bus.fill_bytes(matches, 280, 0);
+        bus.write_long(pb + 52, 0);
+        bus.write_long(pb + 36, 1 | 4 | 16384);
+        assert_eq!(call_cat_search(&mut disp, &mut cpu, &mut bus), -39);
+        let names = (0..bus.read_long(pb + 32))
+            .map(|index| bus.read_pstring(matches + index * 70 + 6))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&b"Open Report".to_vec()));
+        assert!(names.contains(&b"Notes".to_vec()));
+        assert!(!names.contains(&b"Locked Report".to_vec()));
     }
 
     // ================================================================
