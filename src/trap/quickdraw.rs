@@ -3693,6 +3693,56 @@ impl super::TrapDispatcher {
                         let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                         match (src_info.pixel_size, dst_info.pixel_size) {
+                            (src_bits @ (16 | 32), dst_bits @ (1 | 2 | 4 | 8)) => {
+                                let src_addr = src_info.base
+                                    + src_y_off * src_info.row_bytes
+                                    + src_x_off * (src_bits / 8);
+                                let src_rgb = Self::read_rgbdirect_pixel(
+                                    |address| read_src_byte(bus, address),
+                                    src_addr,
+                                    src_bits,
+                                )
+                                .expect("RGBDirect source depth");
+                                if mode_base == 36 && src_rgb == copy_bg_rgb {
+                                    continue;
+                                }
+
+                                let pixels_per_byte = 8 / dst_bits;
+                                let pixel_mask = if dst_bits == 8 {
+                                    u8::MAX
+                                } else {
+                                    (1u8 << dst_bits) - 1
+                                };
+                                let dst_addr = dst_info.base
+                                    + dst_y * dst_info.row_bytes
+                                    + dst_x / pixels_per_byte;
+                                let dst_shift = 8 - dst_bits - (dst_x % pixels_per_byte) * dst_bits;
+                                let dst_byte = bus.read_byte(dst_addr);
+                                let dst_pixel = (dst_byte >> dst_shift) & pixel_mask;
+                                let dst_clut = dst_clut.as_ref().expect("indexed destination CLUT");
+                                let dst_rgb = dst_clut[usize::from(dst_pixel)];
+                                let effective_mode = if mode_base == 36 { 0 } else { mode_base };
+                                let Some(result_rgb) = Self::copy_bits_direct_source_mode_rgb(
+                                    src_rgb,
+                                    dst_rgb,
+                                    effective_mode,
+                                    copy_fg_rgb,
+                                    copy_bg_rgb,
+                                ) else {
+                                    continue;
+                                };
+                                let mapped = self.palette_index_for_rgb(
+                                    bus,
+                                    dst_ctab_handle,
+                                    dst_clut,
+                                    result_rgb,
+                                ) & pixel_mask;
+                                let shifted_mask = pixel_mask << dst_shift;
+                                bus.write_byte(
+                                    dst_addr,
+                                    (dst_byte & !shifted_mask) | (mapped << dst_shift),
+                                );
+                            }
                             (src_bits @ (2 | 4), dst_bits) if src_bits == dst_bits => {
                                 let pixels_per_byte = 8 / src_bits;
                                 let pixel_mask = (1u8 << src_bits) - 1;
@@ -16673,10 +16723,16 @@ impl super::TrapDispatcher {
         ctab_handle: u32,
         pixel_size: u32,
     ) -> Option<[[u16; 3]; 256]> {
-        if !matches!(pixel_size, 2 | 4 | 8) {
+        if !matches!(pixel_size, 1 | 2 | 4 | 8) {
             return None;
         }
-        let mut clut = self.read_port_clut(bus, ctab_handle);
+        let mut clut = if pixel_size == 1 {
+            let mut clut = [[0u16; 3]; 256];
+            clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+            clut
+        } else {
+            self.read_port_clut(bus, ctab_handle)
+        };
         if pixel_size < 8 {
             let entry_count = 1usize << pixel_size;
             let terminal = clut[entry_count - 1];
@@ -19246,6 +19302,52 @@ impl super::TrapDispatcher {
                 let src_y_off = (src_y - i32::from(src_info.bounds_top)) as u32;
 
                 match (src_info.pixel_size, dst_info.pixel_size) {
+                    (src_bits @ (16 | 32), dst_bits @ (1 | 2 | 4 | 8)) => {
+                        let src_addr = src_info.base
+                            + src_y_off * src_info.row_bytes
+                            + src_x_off * (src_bits / 8);
+                        let src_rgb = Self::read_rgbdirect_pixel(
+                            |address| read_src_byte(bus, address),
+                            src_addr,
+                            src_bits,
+                        )
+                        .expect("RGBDirect source depth");
+                        if mode_base == 36 && src_rgb == copy_bg_rgb {
+                            continue;
+                        }
+
+                        let pixels_per_byte = 8 / dst_bits;
+                        let pixel_mask = if dst_bits == 8 {
+                            u8::MAX
+                        } else {
+                            (1u8 << dst_bits) - 1
+                        };
+                        let dst_addr =
+                            dst_info.base + dst_y * dst_info.row_bytes + dst_x / pixels_per_byte;
+                        let dst_shift = 8 - dst_bits - (dst_x % pixels_per_byte) * dst_bits;
+                        let dst_byte = bus.read_byte(dst_addr);
+                        let dst_pixel = (dst_byte >> dst_shift) & pixel_mask;
+                        let dst_clut = dst_clut.as_ref().expect("indexed destination CLUT");
+                        let dst_rgb = dst_clut[usize::from(dst_pixel)];
+                        let effective_mode = if mode_base == 36 { 0 } else { mode_base };
+                        let Some(result_rgb) = Self::copy_bits_direct_source_mode_rgb(
+                            src_rgb,
+                            dst_rgb,
+                            effective_mode,
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        ) else {
+                            continue;
+                        };
+                        let mapped =
+                            self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, result_rgb)
+                                & pixel_mask;
+                        let shifted_mask = pixel_mask << dst_shift;
+                        bus.write_byte(
+                            dst_addr,
+                            (dst_byte & !shifted_mask) | (mapped << dst_shift),
+                        );
+                    }
                     (src_bits @ (2 | 4), dst_bits) if src_bits == dst_bits => {
                         let pixels_per_byte = 8 / src_bits;
                         let pixel_mask = (1u8 << src_bits) - 1;
@@ -21321,6 +21423,67 @@ impl super::TrapDispatcher {
             7 => (!is_black)
                 .then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, bg_rgb, dst_rgb))),
             _ => Some(raw_source()),
+        }
+    }
+
+    fn copy_bits_direct_source_mode_rgb(
+        src_rgb: [u16; 3],
+        dst_rgb: [u16; 3],
+        mode_base: u16,
+        fg_rgb: [u16; 3],
+        bg_rgb: [u16; 3],
+    ) -> Option<[u16; 3]> {
+        let is_black = src_rgb == [0, 0, 0];
+        let is_white = src_rgb == [0xFFFF, 0xFFFF, 0xFFFF];
+        match mode_base {
+            0 => Some(src_rgb),
+            1 => (!is_white).then(|| Self::colorize_src_or_rgb(src_rgb, fg_rgb, dst_rgb)),
+            2 => is_black.then(|| {
+                [
+                    0xFFFF - dst_rgb[0],
+                    0xFFFF - dst_rgb[1],
+                    0xFFFF - dst_rgb[2],
+                ]
+            }),
+            3 => (!is_white).then(|| Self::colorize_src_or_rgb(src_rgb, bg_rgb, dst_rgb)),
+            4 => Some(Self::colorize_src_copy_rgb(src_rgb, bg_rgb, fg_rgb)),
+            5 => (!is_black).then(|| Self::colorize_not_src_or_rgb(src_rgb, fg_rgb, dst_rgb)),
+            6 => is_white.then(|| {
+                [
+                    0xFFFF - dst_rgb[0],
+                    0xFFFF - dst_rgb[1],
+                    0xFFFF - dst_rgb[2],
+                ]
+            }),
+            7 => (!is_black).then(|| Self::colorize_not_src_or_rgb(src_rgb, bg_rgb, dst_rgb)),
+            _ => Some(src_rgb),
+        }
+    }
+
+    fn read_rgbdirect_pixel(
+        read_byte: impl Fn(u32) -> u8,
+        address: u32,
+        pixel_size: u32,
+    ) -> Option<[u16; 3]> {
+        match pixel_size {
+            16 => {
+                let packed = u16::from_be_bytes([read_byte(address), read_byte(address + 1)]);
+                let expand5 = |component: u16| {
+                    (component << 11) | (component << 6) | (component << 1) | (component >> 4)
+                };
+                Some([
+                    expand5((packed >> 10) & 0x1F),
+                    expand5((packed >> 5) & 0x1F),
+                    expand5(packed & 0x1F),
+                ])
+            }
+            32 => {
+                let red = u16::from(read_byte(address + 1));
+                let green = u16::from(read_byte(address + 2));
+                let blue = u16::from(read_byte(address + 3));
+                Some([(red << 8) | red, (green << 8) | green, (blue << 8) | blue])
+            }
+            _ => None,
         }
     }
 
@@ -32050,6 +32213,134 @@ mod tests {
     }
 
     #[test]
+    fn copy_bits_rgbdirect_sources_map_into_every_indexed_depth() {
+        for (src_bits, source_bytes) in [
+            (16u16, vec![0x7C, 0x00, 0x03, 0xE0]),
+            (32u16, vec![0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00]),
+        ] {
+            for (dst_bits, expected) in [(2u16, vec![0x60u8]), (4, vec![0x12]), (8, vec![1, 2])] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let src_pixmap = 0x306100u32;
+                let dst_pixmap = 0x306200u32;
+                let src_base = 0x307000u32;
+                let dst_base = 0x308000u32;
+                let dst_ctab_handle = 0x309000u32;
+                let src_rect = 0x30A000u32;
+                let dst_rect = 0x30A010u32;
+
+                write_direct_pixmap(&mut bus, src_pixmap, src_base, 2, 1, src_bits);
+                write_color_table(
+                    &mut bus,
+                    dst_ctab_handle,
+                    0x1234_5678,
+                    &[
+                        (0, 0xFFFF, 0xFFFF, 0xFFFF),
+                        (1, 0xFFFF, 0, 0),
+                        (2, 0, 0xFFFF, 0),
+                        ((1u16 << dst_bits) - 1, 0, 0, 0),
+                    ],
+                );
+                let row_bytes = (2 * u32::from(dst_bits)).div_ceil(8) as u16;
+                write_pixmap_indexed(
+                    &mut bus,
+                    dst_pixmap,
+                    dst_base,
+                    row_bytes,
+                    2,
+                    1,
+                    dst_bits,
+                    dst_ctab_handle,
+                );
+                bus.write_bytes(src_base, &source_bytes);
+                bus.write_byte(dst_base, 0);
+                write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+                write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 0);
+                bus.write_long(TEST_SP + 6, dst_rect);
+                bus.write_long(TEST_SP + 10, src_rect);
+                bus.write_long(TEST_SP + 14, dst_pixmap);
+                bus.write_long(TEST_SP + 18, src_pixmap);
+
+                let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+                assert_eq!(
+                    bus.read_bytes(dst_base, expected.len()),
+                    expected,
+                    "{src_bits}-bit RGBDirect into {dst_bits}-bit indexed"
+                );
+            }
+        }
+
+        for (src_bits, source_bytes) in [
+            (16u16, vec![0x00, 0x00, 0x7F, 0xFF]),
+            (32u16, vec![0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF]),
+        ] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let src_pixmap = 0x306100u32;
+            let dst_pixmap = 0x306200u32;
+            let src_base = 0x307000u32;
+            let dst_base = 0x308000u32;
+            let src_rect = 0x30A000u32;
+            let dst_rect = 0x30A010u32;
+            write_direct_pixmap(&mut bus, src_pixmap, src_base, 2, 1, src_bits);
+            write_pixmap_indexed(&mut bus, dst_pixmap, dst_base, 1, 2, 1, 1, 0);
+            bus.write_bytes(src_base, &source_bytes);
+            bus.write_byte(dst_base, 0);
+            write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+            write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 6, dst_rect);
+            bus.write_long(TEST_SP + 10, src_rect);
+            bus.write_long(TEST_SP + 14, dst_pixmap);
+            bus.write_long(TEST_SP + 18, src_pixmap);
+            let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(bus.read_byte(dst_base), 0x80);
+        }
+    }
+
+    #[test]
+    fn copy_bits_rgbdirect_transparent_and_boolean_modes_use_rgb_values() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.fg_color = (0, 0, 0);
+        d.bg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+        let src_pixmap = 0x306100u32;
+        let dst_pixmap = 0x306200u32;
+        let src_base = 0x307000u32;
+        let dst_base = 0x308000u32;
+        let src_rect = 0x30A000u32;
+        let dst_rect = 0x30A010u32;
+        write_direct_pixmap(&mut bus, src_pixmap, src_base, 2, 1, 32);
+        write_pixmap_8(&mut bus, dst_pixmap, dst_base, 2, 1, 0);
+        bus.write_bytes(src_base, &[0, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0]);
+        bus.write_bytes(dst_base, &[42, 0]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 2);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 2);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 36);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 2), vec![42, 255]);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_bytes(dst_base, &[42, 42]);
+        bus.write_word(TEST_SP + 4, 1);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 2), vec![42, 255]);
+    }
+
+    #[test]
     fn copy_bits_4bpp_srcor_uses_color_tables_and_preserves_white_source() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         d.fg_color = (0, 0, 0);
@@ -32234,6 +32525,27 @@ mod tests {
         bus.write_word(pixmap_ptr + 34, 1);
         bus.write_word(pixmap_ptr + 36, 8);
         bus.write_long(pixmap_ptr + 42, ctab_handle);
+    }
+
+    fn write_direct_pixmap(
+        bus: &mut crate::memory::MacMemoryBus,
+        pixmap_ptr: u32,
+        base_addr: u32,
+        width: u16,
+        height: u16,
+        pixel_size: u16,
+    ) {
+        bus.write_long(pixmap_ptr, base_addr);
+        bus.write_word(pixmap_ptr + 4, 0x8000 | (width * (pixel_size / 8)));
+        bus.write_word(pixmap_ptr + 6, 0);
+        bus.write_word(pixmap_ptr + 8, 0);
+        bus.write_word(pixmap_ptr + 10, height);
+        bus.write_word(pixmap_ptr + 12, width);
+        bus.write_word(pixmap_ptr + 30, 16);
+        bus.write_word(pixmap_ptr + 32, pixel_size);
+        bus.write_word(pixmap_ptr + 34, if pixel_size == 32 { 3 } else { 1 });
+        bus.write_word(pixmap_ptr + 36, if pixel_size == 32 { 8 } else { 16 });
+        bus.write_long(pixmap_ptr + 42, 0);
     }
 
     fn write_pixmap_indexed(
