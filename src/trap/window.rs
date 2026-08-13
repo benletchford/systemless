@@ -2133,6 +2133,7 @@ impl super::TrapDispatcher {
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
         self.window_list.retain(|&tracked| tracked != window_ptr);
         self.sync_window_list_links(bus);
+        self.dialog_visible_snapshots.remove(&window_ptr);
         self.saved_vis_regions.remove(&window_ptr);
         self.window_proc_ids.remove(&window_ptr);
         self.windows_placed_offscreen.remove(&window_ptr);
@@ -2208,6 +2209,40 @@ impl super::TrapDispatcher {
         }
         bus.write_byte(window_ptr + Self::WINDOW_VISIBLE_OFFSET, 0x00);
         self.set_window_vis_from_content(bus, window_ptr, false);
+    }
+
+    fn visible_windows_behind(&self, bus: &MacMemoryBus, window_ptr: u32) -> Vec<u32> {
+        let Some(index) = self
+            .window_list
+            .iter()
+            .position(|&window| window == window_ptr)
+        else {
+            return Vec::new();
+        };
+        self.window_list[index + 1..]
+            .iter()
+            .copied()
+            .filter(|&window| self.window_visible(bus, window))
+            .collect()
+    }
+
+    fn invalidate_exposed_windows(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        windows: &[u32],
+        exposed_rect: Option<(i16, i16, i16, i16)>,
+    ) {
+        let Some(exposed_rect) = exposed_rect else {
+            return;
+        };
+        for &window in windows {
+            if let Some(intersection) = self
+                .window_content_global_rect(bus, window)
+                .and_then(|content| Self::rect_intersection(content, exposed_rect))
+            {
+                self.invalidate_window_global_rect(bus, window, intersection);
+            }
+        }
     }
 
     fn apply_closewindow_front_promotion_side_effects(
@@ -3166,8 +3201,11 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
                 let was_front = self.front_window == the_window;
+                let exposed_rect = self.window_structure_rect(bus, the_window);
+                let windows_behind = self.visible_windows_behind(bus, the_window);
                 self.erase_window_for_removal(bus, the_window);
                 self.untrack_window(bus, the_window);
+                self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
                 self.apply_closewindow_front_promotion_side_effects(bus, the_window, was_front);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -3182,8 +3220,11 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
                 let was_front = self.front_window == the_window;
+                let exposed_rect = self.window_structure_rect(bus, the_window);
+                let windows_behind = self.visible_windows_behind(bus, the_window);
                 self.erase_window_for_removal(bus, the_window);
                 self.untrack_window(bus, the_window);
+                self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
                 self.apply_closewindow_front_promotion_side_effects(bus, the_window, was_front);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -3400,6 +3441,8 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 4);
                         return Some(Ok(()));
                     }
+                    let exposed_rect = self.window_structure_rect(bus, the_window);
+                    let windows_behind = self.visible_windows_behind(bus, the_window);
                     // Erase the window's chrome area BEFORE clearing
                     // visible so the screen doesn't retain stale chrome.
                     let (wind_top, wind_left, wind_bottom, wind_right) = {
@@ -3469,6 +3512,7 @@ impl super::TrapDispatcher {
                             self.current_port = new_front;
                         }
                     }
+                    self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
                     self.capture_gui_frame(bus, &format!("hide_window_{:08X}", the_window));
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -3997,6 +4041,17 @@ impl super::TrapDispatcher {
                 let show_flag = bus.read_byte(sp) != 0;
                 let the_window = bus.read_long(sp + 2);
                 if the_window != 0 {
+                    if !show_flag {
+                        self.dialog_visible_snapshots.remove(&the_window);
+                    }
+                    let exposed_rect = (!show_flag && self.window_visible(bus, the_window))
+                        .then(|| self.window_structure_rect(bus, the_window))
+                        .flatten();
+                    let windows_behind = if exposed_rect.is_some() {
+                        self.visible_windows_behind(bus, the_window)
+                    } else {
+                        Vec::new()
+                    };
                     bus.write_byte(
                         the_window + Self::WINDOW_VISIBLE_OFFSET,
                         if show_flag { 0xFF } else { 0x00 },
@@ -4014,6 +4069,7 @@ impl super::TrapDispatcher {
                         }
                     } else {
                         self.clear_queued_update_events(the_window);
+                        self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);
@@ -6920,6 +6976,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn closewindow_invalidates_document_exposed_behind_floating_window() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let document = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            document,
+            screen_base,
+            40,
+            40,
+            300,
+            500,
+            "Board",
+            0,
+            true,
+            true,
+            true,
+            0,
+        );
+        let utility = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            utility,
+            screen_base,
+            80,
+            100,
+            220,
+            420,
+            "Scores",
+            1,
+            true,
+            true,
+            false,
+            0,
+        );
+        disp.window_list = vec![utility, document];
+        disp.sync_window_list_links(&mut bus);
+        // Floating utilities may remain above an active document without
+        // becoming the Window Manager's active front window.
+        disp.front_window = document;
+        disp.current_port = document;
+        disp.dialog_visible_snapshots.insert(
+            utility,
+            PersistentDialogSnapshot {
+                bounds: (80, 100, 220, 420),
+                pixels: vec![0xEE; 140 * 320],
+            },
+        );
+        let update_handle = bus.read_long(document + 122);
+        super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
+        disp.clear_queued_update_events(document);
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, utility);
+        let result = dispatch(&mut disp, 0x12D, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        let update = disp
+            .window_update_rect(&bus, document)
+            .expect("closing the overlapping utility should expose document content");
+        assert!(update.0 <= 80 && update.1 <= 100);
+        assert!(update.2 >= 220 && update.3 >= 420);
+        assert!(disp
+            .event_queue
+            .iter()
+            .any(|event| { event.what == 6 && event.message == document }));
+        assert!(!disp.dialog_visible_snapshots.contains_key(&utility));
+    }
+
     // ---------------------------------------------------------------
     // 7. DisposeWindow (0x114) -- pops 4 bytes
     // ---------------------------------------------------------------
@@ -7504,6 +7636,68 @@ mod tests {
     }
 
     #[test]
+    fn hide_window_invalidates_visible_content_behind_it() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let back = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            screen_base,
+            40,
+            40,
+            300,
+            500,
+            "Back",
+            0,
+            true,
+            true,
+            true,
+            0,
+        );
+        let front = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            screen_base,
+            80,
+            100,
+            220,
+            420,
+            "Front",
+            1,
+            true,
+            true,
+            false,
+            0,
+        );
+        disp.window_list = vec![front, back];
+        disp.sync_window_list_links(&mut bus);
+        disp.front_window = front;
+        disp.current_port = front;
+        let update_handle = bus.read_long(back + 122);
+        super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
+        disp.clear_queued_update_events(back);
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, front);
+        let result = dispatch(&mut disp, 0x116, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert!(disp.window_update_rect(&bus, back).is_some());
+        assert!(disp
+            .event_queue
+            .iter()
+            .any(|event| { event.what == 6 && event.message == back }));
+    }
+
+    #[test]
     fn hide_window_skips_invisible_candidates() {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
@@ -7920,6 +8114,77 @@ mod tests {
             activate_after, activate_before,
             "ShowHide must not generate activate/deactivate events"
         );
+    }
+
+    #[test]
+    fn showhide_false_invalidates_visible_content_behind_target() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let back = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            screen_base,
+            40,
+            40,
+            300,
+            500,
+            "Back",
+            0,
+            true,
+            true,
+            true,
+            0,
+        );
+        let target = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            target,
+            screen_base,
+            80,
+            100,
+            220,
+            420,
+            "Target",
+            1,
+            true,
+            true,
+            false,
+            0,
+        );
+        disp.window_list = vec![target, back];
+        disp.sync_window_list_links(&mut bus);
+        disp.front_window = back;
+        disp.current_port = back;
+        disp.dialog_visible_snapshots.insert(
+            target,
+            PersistentDialogSnapshot {
+                bounds: (80, 100, 220, 420),
+                pixels: vec![0xEE; 140 * 320],
+            },
+        );
+        let update_handle = bus.read_long(back + 122);
+        super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
+        disp.clear_queued_update_events(back);
+
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(sp, 0);
+        bus.write_long(sp + 2, target);
+        let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert!(disp.window_update_rect(&bus, back).is_some());
+        assert!(disp
+            .event_queue
+            .iter()
+            .any(|event| { event.what == 6 && event.message == back }));
+        assert!(!disp.dialog_visible_snapshots.contains_key(&target));
     }
 
     // ---------------------------------------------------------------
