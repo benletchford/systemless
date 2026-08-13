@@ -605,11 +605,7 @@ pub fn screen_pixel_rgb_with_gamma(
         8 => {
             let addr = scrn_base + y * row_bytes + x;
             let pixel = bus.read_byte(addr);
-            Some(clut_to_rgba8_with_gamma(
-                device_clut,
-                device_gamma,
-                pixel,
-            ))
+            Some(clut_to_rgba8_with_gamma(device_clut, device_gamma, pixel))
         }
         4 => {
             let addr = scrn_base + y * row_bytes + x / 2;
@@ -619,11 +615,7 @@ pub fn screen_pixel_rgb_with_gamma(
             } else {
                 packed & 0x0F
             };
-            Some(clut_to_rgba8_with_gamma(
-                device_clut,
-                device_gamma,
-                pixel,
-            ))
+            Some(clut_to_rgba8_with_gamma(device_clut, device_gamma, pixel))
         }
         1 => {
             let addr = scrn_base + y * row_bytes + x / 8;
@@ -1506,10 +1498,10 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 mod tests {
     use super::{
         argb_palette_from_clut, argb_palette_from_clut_with_gamma, clut_component_to_u8,
-        clut_to_argb,
-        normalize_centered_compact_mac_viewport_margins_rgba, render_cursor, render_cursor_argb,
-        render_screen_argb, render_screen_into, render_screen_with_rgba_palette_into,
-        rgba_palette_from_clut, screen_pixel_rgb, screen_pixel_rgb_with_gamma, CursorImage,
+        clut_to_argb, normalize_centered_compact_mac_viewport_margins_rgba, render_cursor,
+        render_cursor_argb, render_screen_argb, render_screen_into,
+        render_screen_with_rgba_palette_into, rgba_palette_from_clut, screen_pixel_rgb,
+        screen_pixel_rgb_with_gamma, CursorImage,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
 

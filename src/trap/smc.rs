@@ -166,8 +166,7 @@ impl SmcDecoder {
                         let first = read_be_u16(data, &mut pos)?;
                         let second = read_be_u16(data, &mut pos)?;
                         let third = read_be_u16(data, &mut pos)?;
-                        let upper =
-                            (u32::from(first & 0xFFF0) << 8) | u32::from(second >> 4);
+                        let upper = (u32::from(first & 0xFFF0) << 8) | u32::from(second >> 4);
                         let lower = (u32::from(third & 0xFFF0) << 8)
                             | (u32::from(first & 0x000F) << 8)
                             | (u32::from(second & 0x000F) << 4)
@@ -175,8 +174,7 @@ impl SmcDecoder {
                         let mut pixels = [0u8; 16];
                         for index in 0..8 {
                             pixels[index] = colors[((upper >> (21 - index * 3)) & 7) as usize];
-                            pixels[index + 8] =
-                                colors[((lower >> (21 - index * 3)) & 7) as usize];
+                            pixels[index + 8] = colors[((lower >> (21 - index * 3)) & 7) as usize];
                         }
                         if block < total_blocks {
                             self.fill_block(block, block_columns, pixels);
@@ -272,7 +270,7 @@ mod tests {
         let mut decoder = SmcDecoder::new(8, 4);
         let data = [
             0, 0, 0, 22, // SMC frame header
-            0x60, 7, // one solid block
+            0x60, 7,    // one solid block
             0xE0, // one literal block
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
         ];

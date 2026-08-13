@@ -810,8 +810,7 @@ mod tests {
         ));
 
         let mut unterminated = [b'X'; 32];
-        unterminated[..APPLE_HFS_PARTITION_TYPE.len()]
-            .copy_from_slice(APPLE_HFS_PARTITION_TYPE);
+        unterminated[..APPLE_HFS_PARTITION_TYPE.len()].copy_from_slice(APPLE_HFS_PARTITION_TYPE);
         assert!(!fixed_apm_field_equals(
             &unterminated,
             APPLE_HFS_PARTITION_TYPE

@@ -408,7 +408,11 @@ impl super::TrapDispatcher {
         let shift = 8 - data_width;
         let mut installed = [[0u8; 256]; 3];
         for (channel, output) in installed.iter_mut().enumerate() {
-            let source_channel = if channel_count == 1 { 0 } else { channel as u32 };
+            let source_channel = if channel_count == 1 {
+                0
+            } else {
+                channel as u32
+            };
             let source_base = data_base + source_channel * data_count;
             for (input, value) in output.iter_mut().enumerate() {
                 let source_index = (input as u32) >> shift;
@@ -451,13 +455,16 @@ impl super::TrapDispatcher {
             bus.write_long(anchor, first_task);
         }
         let head = if anchor != 0 { anchor } else { first_task };
-        let tail = system_tasks.last().unwrap_or_else(|| {
-            if first_task != 0 {
-                first_task
-            } else {
-                anchor
-            }
-        });
+        let tail =
+            system_tasks.last().unwrap_or_else(
+                || {
+                    if first_task != 0 {
+                        first_task
+                    } else {
+                        anchor
+                    }
+                },
+            );
         // QHdr layout: qFlags WORD, qHead QElemPtr, qTail QElemPtr.
         bus.write_long(VBL_QUEUE_HEADER + 2, head);
         bus.write_long(VBL_QUEUE_HEADER + 6, tail);

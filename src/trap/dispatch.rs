@@ -4907,10 +4907,8 @@ impl TrapDispatcher {
             // acquire a family and size through a FOND association, which may
             // not have been loaded yet.
             if res_type == *b"FONT" {
-                let _ = crate::quickdraw::fonts::register_resource_font_strike(
-                    font_resource_id,
-                    bytes,
-                );
+                let _ =
+                    crate::quickdraw::fonts::register_resource_font_strike(font_resource_id, bytes);
             }
             return;
         }
@@ -4940,9 +4938,9 @@ impl TrapDispatcher {
     }
 
     fn register_fond_associated_strikes(&self, refnum: u16, fond_resource_id: i16) {
-        let Some(fond_bytes) = self
-            .resource_backing_data
-            .get(&(refnum, *b"FOND", fond_resource_id))
+        let Some(fond_bytes) =
+            self.resource_backing_data
+                .get(&(refnum, *b"FOND", fond_resource_id))
         else {
             return;
         };

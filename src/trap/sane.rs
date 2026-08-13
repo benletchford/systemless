@@ -336,11 +336,13 @@ impl super::TrapDispatcher {
                 let mut value = match text.as_ref() {
                     "INF" | "Inf" | "inf" => f64::INFINITY,
                     value if value.starts_with("NAN") || value.starts_with("NaN") => f64::NAN,
-                    _ => digits
-                        .iter()
-                        .filter(|digit| digit.is_ascii_digit())
-                        .fold(0.0, |value, digit| value * 10.0 + f64::from(*digit - b'0'))
-                        * libm::pow(10.0, f64::from(exponent)),
+                    _ => {
+                        digits
+                            .iter()
+                            .filter(|digit| digit.is_ascii_digit())
+                            .fold(0.0, |value, digit| value * 10.0 + f64::from(*digit - b'0'))
+                            * libm::pow(10.0, f64::from(exponent))
+                    }
                 };
                 if negative {
                     value = -value;

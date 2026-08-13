@@ -3108,11 +3108,7 @@ impl super::TrapDispatcher {
         (visible_start.clamp(data_start, max), data_start, max)
     }
 
-    fn set_list_visible_origin(
-        state: &mut super::dispatch::ListState,
-        row: i16,
-        column: i16,
-    ) {
+    fn set_list_visible_origin(state: &mut super::dispatch::ListState, row: i16, column: i16) {
         let row_page = (state.visible.2 - state.visible.0).max(1);
         let col_page = (state.visible.3 - state.visible.1).max(1);
         let max_row = (state.data_bounds.2 - row_page).max(state.data_bounds.0);
@@ -8391,13 +8387,11 @@ impl super::TrapDispatcher {
                 let name = String::from_utf8_lossy(&name_bytes).to_string();
                 eprintln!("[TRAP] GetNamedResource('{}', \"{}\")", type_str, name);
 
-                let handle =
-                    self.find_named_resource_any_loaded(bus, res_type, &name)
-                        .map(|(refnum, id, ptr)| {
-                            self.get_or_create_resource_handle_in_file(
-                                bus, res_type, id, ptr, refnum,
-                            )
-                        });
+                let handle = self
+                    .find_named_resource_any_loaded(bus, res_type, &name)
+                    .map(|(refnum, id, ptr)| {
+                        self.get_or_create_resource_handle_in_file(bus, res_type, id, ptr, refnum)
+                    });
 
                 if let Some(handle) = handle {
                     eprintln!("[TRAP] GetNamedResource -> handle ${:08X}", handle);
@@ -11392,14 +11386,8 @@ impl super::TrapDispatcher {
                         if let Some(state) = self.list_states.get(&list_handle).cloned() {
                             if state.draw_enabled {
                                 self.draw_list_scrollbars(cpu, bus, list_handle);
-                                if self.draw_list_with_ldef(
-                                    cpu,
-                                    bus,
-                                    list_handle,
-                                    &state,
-                                    None,
-                                    10,
-                                ) {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
+                                {
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
@@ -12571,16 +12559,13 @@ impl super::TrapDispatcher {
                                 .unwrap_or(full_path.as_str());
                             let normalized = Self::normalize_hfs_path(relative_path);
                             self.ensure_vfs_catalog();
-                            Self::find_case_insensitive_relative_key(
-                                self.vfs.keys(),
-                                &normalized,
-                            )
-                            .or_else(|| {
-                                Self::find_case_insensitive_relative_key(
-                                    self.vfs_rsrc.keys(),
-                                    &normalized,
-                                )
-                            })
+                            Self::find_case_insensitive_relative_key(self.vfs.keys(), &normalized)
+                                .or_else(|| {
+                                    Self::find_case_insensitive_relative_key(
+                                        self.vfs_rsrc.keys(),
+                                        &normalized,
+                                    )
+                                })
                         });
 
                         if was_changed_ptr != 0 {
@@ -12621,8 +12606,7 @@ impl super::TrapDispatcher {
                         let full_path_ptr = bus.read_long(sp + 12);
                         let full_path_len = bus.read_word(sp + 16) as usize;
 
-                        let valid =
-                            alias_ptr != 0 && full_path_ptr != 0 && full_path_len != 0;
+                        let valid = alias_ptr != 0 && full_path_ptr != 0 && full_path_len != 0;
                         if valid {
                             let full_path = bus.read_bytes(full_path_ptr, full_path_len);
                             eprintln!(
@@ -21672,14 +21656,8 @@ mod tests {
     fn get_named_resource_reloads_after_release() {
         let (mut disp, mut cpu, mut bus) = setup();
         let data = [0x42, 0x43, 0x44, 0x45];
-        let data_ptr = disp.install_named_test_resource_in_file(
-            &mut bus,
-            0,
-            *b"TEST",
-            500,
-            "ReloadMe",
-            &data,
-        );
+        let data_ptr =
+            disp.install_named_test_resource_in_file(&mut bus, 0, *b"TEST", 500, "ReloadMe", &data);
         let name_addr = 0x300000u32;
         bus.write_byte(name_addr, 8);
         bus.write_bytes(name_addr + 1, b"ReloadMe");

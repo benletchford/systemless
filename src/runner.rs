@@ -2437,12 +2437,9 @@ impl FixtureRunner {
         // Adapt a direct JSR to the existing A-line trap by removing the JSR
         // return address before dispatch and jumping back afterward.
         let hide_cursor_trampoline = self.bus.alloc(6);
-        self.bus
-            .write_word(hide_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
-        self.bus
-            .write_word(hide_cursor_trampoline + 2, 0xA852); // HideCursor
-        self.bus
-            .write_word(hide_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus.write_word(hide_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus.write_word(hide_cursor_trampoline + 2, 0xA852); // HideCursor
+        self.bus.write_word(hide_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
         self.bus
             .write_long(addr::J_HIDE_CURSOR, hide_cursor_trampoline);
         // JShowCursor ($0804): QuickDraw glue vector for ShowCursor.
@@ -2463,12 +2460,9 @@ impl FixtureRunner {
         // the trap, then jump back after the trap consumes that payload.
         // Inside Macintosh Volume I, I-474; MPW Quickdraw.h.
         let shield_cursor_trampoline = self.bus.alloc(6);
-        self.bus
-            .write_word(shield_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
-        self.bus
-            .write_word(shield_cursor_trampoline + 2, 0xA855); // ShieldCursor
-        self.bus
-            .write_word(shield_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus.write_word(shield_cursor_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus.write_word(shield_cursor_trampoline + 2, 0xA855); // ShieldCursor
+        self.bus.write_word(shield_cursor_trampoline + 4, 0x4ED0); // JMP (A0)
         self.bus
             .write_long(addr::J_SHIELD_CURSOR, shield_cursor_trampoline);
 
@@ -2493,12 +2487,9 @@ impl FixtureRunner {
         // leaves A7 on the four-byte FMOutPtr result slot. Allocate this only
         // after reserving the application zone header so it remains live.
         let swap_font_trampoline = self.bus.alloc(6);
-        self.bus
-            .write_word(swap_font_trampoline, 0x205F); // MOVEA.L (SP)+,A0
-        self.bus
-            .write_word(swap_font_trampoline + 2, 0xA901); // FMSwapFont
-        self.bus
-            .write_word(swap_font_trampoline + 4, 0x4ED0); // JMP (A0)
+        self.bus.write_word(swap_font_trampoline, 0x205F); // MOVEA.L (SP)+,A0
+        self.bus.write_word(swap_font_trampoline + 2, 0xA901); // FMSwapFont
+        self.bus.write_word(swap_font_trampoline + 4, 0x4ED0); // JMP (A0)
         self.bus.write_long(addr::J_SWAP_FONT, swap_font_trampoline);
 
         // Set CPU state
@@ -3283,10 +3274,7 @@ impl FixtureRunner {
 
         // BLS.S/BLT.S/BLE.S disp8
         let branch_condition = w_brk & 0xFF00;
-        if branch_condition != 0x6300
-            && branch_condition != 0x6D00
-            && branch_condition != 0x6F00
-        {
+        if branch_condition != 0x6300 && branch_condition != 0x6D00 && branch_condition != 0x6F00 {
             return false;
         }
         let disp8 = (w_brk & 0xFF) as i8 as i32;
@@ -3316,9 +3304,7 @@ impl FixtureRunner {
             } else {
                 (captured_tick as i32) <= (mem_target as i32)
             };
-            if !still_waiting
-                || (branch_condition == 0x6F00 && mem_target == i32::MAX as u32)
-            {
+            if !still_waiting || (branch_condition == 0x6F00 && mem_target == i32::MAX as u32) {
                 // The signed branch would already fall through, or signed
                 // TickCount overflow would keep BLE taken at target + 1.
                 return false;
@@ -5786,11 +5772,7 @@ impl FixtureRunner {
                 return true;
             }
         }
-        while let Some(dialog_ptr) = self
-            .dispatcher
-            .modeless_dialog_cdef_draw_queue
-            .pop_front()
-        {
+        while let Some(dialog_ptr) = self.dispatcher.modeless_dialog_cdef_draw_queue.pop_front() {
             if self.dispatcher.arm_dialog_control_def_draws(
                 &mut self.cpu,
                 &mut self.bus,
@@ -8526,10 +8508,7 @@ mod tests {
             .read_long(crate::memory::globals::addr::J_SHOW_CURSOR);
         assert_ne!(entry, 0);
         assert_eq!(
-            [
-                runner.bus.read_word(entry),
-                runner.bus.read_word(entry + 2),
-            ],
+            [runner.bus.read_word(entry), runner.bus.read_word(entry + 2),],
             [0xA853, 0x4E75],
             "JShowCursor should target ShowCursor followed by RTS"
         );
@@ -9780,12 +9759,10 @@ mod tests {
         runner.cpu.write_reg(Register::A1, 0x2222_2222);
         runner.cpu.write_reg(Register::A2, 0x3333_3333);
         runner.cpu.write_reg(Register::D0, 0x4444_4444);
-        assert!(runner.dispatcher.adb.set_device_handler(
-            3,
-            callback_addr,
-            data_area,
-            false,
-        ));
+        assert!(runner
+            .dispatcher
+            .adb
+            .set_device_handler(3, callback_addr, data_area, false,));
         runner.dispatcher.adb.note_mouse_state((5, -10), true);
 
         assert!(runner.fire_adb_callback());
@@ -13858,8 +13835,7 @@ mod tests {
 
     #[test]
     fn disassemble_at_uses_the_configured_ram_boundary() {
-        let mut runner =
-            FixtureRunner::new(16 * 1024 * 1024, FixtureRunnerConfig::default());
+        let mut runner = FixtureRunner::new(16 * 1024 * 1024, FixtureRunnerConfig::default());
         let pc = 12 * 1024 * 1024;
         runner.bus.write_word(pc, 0x4E71);
 

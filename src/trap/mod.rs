@@ -13,9 +13,9 @@
 //! - `text_render` — Text rendering helpers (draw_char, draw_string, etc.)
 //! - `framebuffer` — Framebuffer helpers + chrome rendering
 
+mod cinepak;
 mod control;
 mod dialog;
-mod cinepak;
 pub mod dispatch;
 mod event;
 pub(crate) mod extended80;

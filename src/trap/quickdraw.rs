@@ -3190,11 +3190,8 @@ impl super::TrapDispatcher {
                 let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
                 let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let dst_clut = self.read_indexed_destination_clut(
-                    bus,
-                    dst_ctab_handle,
-                    dst_info.pixel_size,
-                );
+                let dst_clut =
+                    self.read_indexed_destination_clut(bus, dst_ctab_handle, dst_info.pixel_size);
                 let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
                 // Executor's translation gate compares the source PixMap's
                 // CTab seed against `CTAB_SEED(PIXMAP_TABLE(GD_PMAP(the_gd)))` —
@@ -3338,8 +3335,7 @@ impl super::TrapDispatcher {
                 // sources copied into an 8-bit destination cannot preserve
                 // their indices across the depth change; their RGB values
                 // must still be matched into the destination CTable.
-                let skip_explicit_palette_translation = src_info.pixel_size
-                    == dst_info.pixel_size
+                let skip_explicit_palette_translation = src_info.pixel_size == dst_info.pixel_size
                     && self.explicit_palette_ctabs.contains(&src_info.ctab_handle);
                 let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && matches!(dst_info.pixel_size, 2 | 4 | 8)
@@ -7040,8 +7036,7 @@ impl super::TrapDispatcher {
                         let pixmap = bus.read_long(pixmap_handle);
                         let old_ctab_handle = bus.read_long(pixmap + 42);
                         let old_base = Self::offscreen_pixmap_base_ptr(bus, pixmap);
-                        let stored_base_handle =
-                            Self::offscreen_pixmap_base_handle(bus, pixmap);
+                        let stored_base_handle = Self::offscreen_pixmap_base_handle(bus, pixmap);
                         let old_base_handle = if stored_base_handle != 0 {
                             stored_base_handle
                         } else {
@@ -7051,8 +7046,7 @@ impl super::TrapDispatcher {
                                 .filter(|&handle| bus.read_long(handle) == old_base)
                                 .unwrap_or(0)
                         };
-                        let pixels_were_locked =
-                            stored_base_handle == 0 && old_base_handle != 0;
+                        let pixels_were_locked = stored_base_handle == 0 && old_base_handle != 0;
                         let old_rb_raw = bus.read_word(pixmap + 4);
                         let old_row_bytes = (old_rb_raw & 0x3FFF) as u32;
                         let old_top = bus.read_word(pixmap + 6) as i16;
@@ -8229,14 +8223,13 @@ impl super::TrapDispatcher {
                     // table, so leaving its inherited tail visible lets
                     // matching choose indices above 3/15; packed writes then
                     // truncate those indices into unrelated colors.
-                    let packed_draw_port_clut =
-                        matches!(port_ps, 1 | 2 | 4).then(|| {
-                            let mut clut = *selected_draw_port_clut;
-                            let entry_count = 1usize << port_ps;
-                            let terminal = clut[entry_count - 1];
-                            clut[entry_count..].fill(terminal);
-                            clut
-                        });
+                    let packed_draw_port_clut = matches!(port_ps, 1 | 2 | 4).then(|| {
+                        let mut clut = *selected_draw_port_clut;
+                        let entry_count = 1usize << port_ps;
+                        let terminal = clut[entry_count - 1];
+                        clut[entry_count..].fill(terminal);
+                        clut
+                    });
                     let draw_port_clut = packed_draw_port_clut
                         .as_ref()
                         .unwrap_or(selected_draw_port_clut);
@@ -13735,21 +13728,18 @@ impl super::TrapDispatcher {
                     self.copy_bits_destination_ctab_handle(bus, self.current_port, &dst_info);
                 let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let dst_clut = self.read_indexed_destination_clut(
-                    bus,
-                    dst_ctab_handle,
-                    dst_info.pixel_size,
-                );
+                let dst_clut =
+                    self.read_indexed_destination_clut(bus, dst_ctab_handle, dst_info.pixel_size);
                 let palette_translation = match (src_clut.as_ref(), dst_clut.as_ref()) {
-                    (Some(src_clut), Some(dst_clut)) if src_clut != dst_clut => Some(
-                        self.build_palette_translation(
+                    (Some(src_clut), Some(dst_clut)) if src_clut != dst_clut => {
+                        Some(self.build_palette_translation(
                             bus,
                             src_clut,
                             dst_clut,
                             dst_ctab_handle,
                             src_info.pixel_size,
-                        ),
-                    ),
+                        ))
+                    }
                     _ => None,
                 };
 
@@ -13793,14 +13783,11 @@ impl super::TrapDispatcher {
                 // watchpoint behavior; palette translation remains identical.
                 let clipped_width = i32::from(clip_r) - i32::from(clip_l);
                 let clipped_height = i32::from(clip_b) - i32::from(clip_t);
-                let src_clip_top =
-                    i32::from(src_top) + (i32::from(clip_t) - i32::from(dst_top));
-                let src_clip_left =
-                    i32::from(src_left) + (i32::from(clip_l) - i32::from(dst_left));
+                let src_clip_top = i32::from(src_top) + (i32::from(clip_t) - i32::from(dst_top));
+                let src_clip_left = i32::from(src_left) + (i32::from(clip_l) - i32::from(dst_left));
                 let src_clip_bottom = src_clip_top + clipped_height;
                 let src_clip_right = src_clip_left + clipped_width;
-                let mask_clip_top =
-                    i32::from(mask_top) + (i32::from(clip_t) - i32::from(dst_top));
+                let mask_clip_top = i32::from(mask_top) + (i32::from(clip_t) - i32::from(dst_top));
                 let mask_clip_left =
                     i32::from(mask_left) + (i32::from(clip_l) - i32::from(dst_left));
                 let mask_clip_bottom = mask_clip_top + clipped_height;
@@ -13831,30 +13818,25 @@ impl super::TrapDispatcher {
                     let mask_first_bit = mask_col % 8;
                     let mask_byte_count = (mask_first_bit + width).div_ceil(8);
 
-                    let accessed_span =
-                        |base: u32,
-                         row_bytes: u32,
-                         first_row: u32,
-                         first_col: u32,
-                         rows: u32,
-                         bytes: u32|
-                         -> Option<(u64, u64)> {
-                            if rows == 0
-                                || bytes == 0
-                                || first_col.checked_add(bytes)? > row_bytes
-                            {
-                                return None;
-                            }
-                            let start = u64::from(base)
-                                + u64::from(first_row) * u64::from(row_bytes)
-                                + u64::from(first_col);
-                            let end = u64::from(base)
-                                + u64::from(first_row.checked_add(rows - 1)?)
-                                    * u64::from(row_bytes)
-                                + u64::from(first_col)
-                                + u64::from(bytes);
-                            (end <= u64::from(u32::MAX) + 1).then_some((start, end))
-                        };
+                    let accessed_span = |base: u32,
+                                         row_bytes: u32,
+                                         first_row: u32,
+                                         first_col: u32,
+                                         rows: u32,
+                                         bytes: u32|
+                     -> Option<(u64, u64)> {
+                        if rows == 0 || bytes == 0 || first_col.checked_add(bytes)? > row_bytes {
+                            return None;
+                        }
+                        let start = u64::from(base)
+                            + u64::from(first_row) * u64::from(row_bytes)
+                            + u64::from(first_col);
+                        let end = u64::from(base)
+                            + u64::from(first_row.checked_add(rows - 1)?) * u64::from(row_bytes)
+                            + u64::from(first_col)
+                            + u64::from(bytes);
+                        (end <= u64::from(u32::MAX) + 1).then_some((start, end))
+                    };
                     let src_span = accessed_span(
                         src_info.base,
                         src_info.row_bytes,
@@ -13881,9 +13863,7 @@ impl super::TrapDispatcher {
                     );
                     match (src_span, mask_span, dst_span) {
                         (Some(src), Some(mask), Some(dst)) => {
-                            let disjoint = |a: (u64, u64), b: (u64, u64)| {
-                                a.1 <= b.0 || b.1 <= a.0
-                            };
+                            let disjoint = |a: (u64, u64), b: (u64, u64)| a.1 <= b.0 || b.1 <= a.0;
                             disjoint(src, dst) && disjoint(mask, dst)
                         }
                         _ => false,
@@ -13891,8 +13871,7 @@ impl super::TrapDispatcher {
                 } else {
                     false
                 };
-                let row_buffered_8bpp_mask =
-                    buffered_geometry_valid && buffered_spans_disjoint;
+                let row_buffered_8bpp_mask = buffered_geometry_valid && buffered_spans_disjoint;
                 if row_buffered_8bpp_mask {
                     let width = clipped_width as usize;
                     let src_col = (src_clip_left - i32::from(src_info.bounds_left)) as u32;
@@ -17777,8 +17756,7 @@ impl super::TrapDispatcher {
         let pixmap_ptr = bus.read_long(offscreen_pixmap);
         if pixmap_ptr != 0 {
             let pixel_buf = Self::offscreen_pixmap_base_ptr(bus, pixmap_ptr);
-            let stored_pixel_buf_handle =
-                Self::offscreen_pixmap_base_handle(bus, pixmap_ptr);
+            let stored_pixel_buf_handle = Self::offscreen_pixmap_base_handle(bus, pixmap_ptr);
             let pixel_buf_handle = if stored_pixel_buf_handle != 0 {
                 stored_pixel_buf_handle
             } else {
@@ -19055,15 +19033,13 @@ impl super::TrapDispatcher {
             && !(hardware_palette_active && src_info.pixel_size == 8)
         {
             match (src_clut.as_ref(), dst_clut.as_ref()) {
-                (Some(src_clut), Some(dst_clut)) => {
-                    Some(self.build_palette_translation(
-                        bus,
-                        src_clut,
-                        dst_clut,
-                        dst_ctab_handle,
-                        src_info.pixel_size,
-                    ))
-                }
+                (Some(src_clut), Some(dst_clut)) => Some(self.build_palette_translation(
+                    bus,
+                    src_clut,
+                    dst_clut,
+                    dst_ctab_handle,
+                    src_info.pixel_size,
+                )),
                 _ => None,
             }
         } else {
@@ -21366,15 +21342,15 @@ impl super::TrapDispatcher {
             // ForeColor/BackColor constants rather than pure primaries.
             // greenColor (341) uses 0x8000 for green to match System 7.5.3
             // ROM rather than Executor's diverging 0x64AF.
-            69 => (0xFC00, 0xF37D, 0x052F),  // yellowColor
+            69 => (0xFC00, 0xF37D, 0x052F), // yellowColor
             // System 7.5.3 normalizes 139 to the same cGrafPort fgColor and
             // rgbFgColor as the documented magentaColor constant 137. The
             // extra legacy color-plane bit must not turn into CLUT index 139.
             137 | 139 => (0xF2D7, 0x0856, 0x84EC), // magentaColor
-            205 => (0xDD6B, 0x08C2, 0x06A2), // redColor
-            273 => (0x0241, 0xAB54, 0xEAFF), // cyanColor
-            341 => (0x0000, 0x8000, 0x11B0), // greenColor
-            409 => (0x0000, 0x0000, 0xD400), // blueColor
+            205 => (0xDD6B, 0x08C2, 0x06A2),       // redColor
+            273 => (0x0241, 0xAB54, 0xEAFF),       // cyanColor
+            341 => (0x0000, 0x8000, 0x11B0),       // greenColor
+            409 => (0x0000, 0x0000, 0xD400),       // blueColor
             _ => {
                 let idx = (color as usize) & 0xFF;
                 let [r, g, b] = Self::standard_mac_8bpp_clut()[idx];
@@ -21716,10 +21692,8 @@ impl super::TrapDispatcher {
         let sequence_uses_client_ids = is_full_replace
             && (1..=count as u32)
                 .all(|index| bus.read_word(table_ptr + index * 8) == bus.read_word(table_ptr));
-        let previous_frame_was_dimmed = Self::clut_is_dimmed_derivative_of(
-            &self.device_clut,
-            &self.color_manager_clut,
-        );
+        let previous_frame_was_dimmed =
+            Self::clut_is_dimmed_derivative_of(&self.device_clut, &self.color_manager_clut);
 
         // Normal path: install the supplied RGB values into device_clut
         // unconditionally. Per Inside Macintosh Volume V, V-143 the caller's
@@ -32094,10 +32068,7 @@ mod tests {
             &mut bus,
             src_ctab_handle,
             0x1111_1111,
-            &[
-                (0, 0xFFFF, 0xFFFF, 0xFFFF),
-                (15, 0x0000, 0x0000, 0x0000),
-            ],
+            &[(0, 0xFFFF, 0xFFFF, 0xFFFF), (15, 0x0000, 0x0000, 0x0000)],
         );
         write_color_table(
             &mut bus,
@@ -32109,26 +32080,8 @@ mod tests {
                 (15, 0x0000, 0x0000, 0x0000),
             ],
         );
-        write_pixmap_indexed(
-            &mut bus,
-            src_pixmap,
-            src_base,
-            1,
-            2,
-            1,
-            4,
-            src_ctab_handle,
-        );
-        write_pixmap_indexed(
-            &mut bus,
-            dst_pixmap,
-            dst_base,
-            1,
-            2,
-            1,
-            4,
-            dst_ctab_handle,
-        );
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 1, 2, 1, 4, src_ctab_handle);
+        write_pixmap_indexed(&mut bus, dst_pixmap, dst_base, 1, 2, 1, 4, dst_ctab_handle);
         bus.write_byte(src_base, 0x0F);
         bus.write_byte(dst_base, 0xDD);
         write_rect(&mut bus, src_rect, 0, 0, 1, 2);
@@ -32169,10 +32122,7 @@ mod tests {
             &mut bus,
             src_ctab_handle,
             0x1111_1111,
-            &[
-                (0, 0xFFFF, 0xFFFF, 0xFFFF),
-                (3, 0x8000, 0x8000, 0x8000),
-            ],
+            &[(0, 0xFFFF, 0xFFFF, 0xFFFF), (3, 0x8000, 0x8000, 0x8000)],
         );
         write_color_table(
             &mut bus,
@@ -32185,26 +32135,8 @@ mod tests {
                 (15, 0x0000, 0x0000, 0x0000),
             ],
         );
-        write_pixmap_indexed(
-            &mut bus,
-            src_pixmap,
-            src_base,
-            1,
-            2,
-            1,
-            4,
-            src_ctab_handle,
-        );
-        write_pixmap_indexed(
-            &mut bus,
-            dst_pixmap,
-            dst_base,
-            1,
-            2,
-            1,
-            4,
-            dst_ctab_handle,
-        );
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 1, 2, 1, 4, src_ctab_handle);
+        write_pixmap_indexed(&mut bus, dst_pixmap, dst_base, 1, 2, 1, 4, dst_ctab_handle);
         bus.write_byte(src_base, 0x03);
         bus.write_byte(dst_base, 0xAA);
         write_rect(&mut bus, src_rect, 0, 0, 1, 2);
@@ -32681,16 +32613,7 @@ mod tests {
                 (42, explicit_rgb.0, explicit_rgb.1, explicit_rgb.2),
             ],
         );
-        write_pixmap_indexed(
-            &mut bus,
-            src_pixmap,
-            src_base,
-            1,
-            1,
-            1,
-            4,
-            src_ctab_handle,
-        );
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 1, 1, 1, 4, src_ctab_handle);
         write_pixmap_8(&mut bus, dst_pixmap, dst_base, 1, 1, dst_ctab_handle);
         bus.write_byte(src_base, 0x20);
         bus.write_byte(dst_base, 0);
@@ -40518,7 +40441,9 @@ mod tests {
         }
         bus.write_word(table_ptr + 8 + 6, 0);
         assert!(TrapDispatcher::table_uniform_scale_of_clut(&bus, table_ptr, &baseline).is_none());
-        assert!(!TrapDispatcher::clut_is_dimmed_derivative_of(&baseline, &baseline));
+        assert!(!TrapDispatcher::clut_is_dimmed_derivative_of(
+            &baseline, &baseline
+        ));
         assert!(d.set_entries_target_is_screen(&bus));
 
         d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);

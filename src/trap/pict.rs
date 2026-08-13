@@ -1486,10 +1486,10 @@ fn parse_compressed_quicktime(
             if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
                 continue;
             }
-            let x = ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32
-                + i32::from(dst_left);
-            let y = ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32
-                + i32::from(dst_top);
+            let x =
+                ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
+            let y =
+                ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
             let source_index = pixels[source_y as usize * width + source_x as usize];
             write_pixel_clipped(
                 bus,
@@ -3986,10 +3986,9 @@ fn build_src_to_dst_table_uncached(
             .all(|entry| *entry == device_clut[15])
     {
         for (index, entry) in src_clut.iter().take(256).enumerate() {
-            table[index] =
-                super::dispatch::TrapDispatcher::standard_mac_4bpp_gworld_color2index(
-                    entry[0], entry[1], entry[2],
-                );
+            table[index] = super::dispatch::TrapDispatcher::standard_mac_4bpp_gworld_color2index(
+                entry[0], entry[1], entry[2],
+            );
         }
         return table;
     }

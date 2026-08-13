@@ -1692,9 +1692,8 @@ impl super::TrapDispatcher {
 
                 if res_type == *b"WDEF" {
                     if let Some(ptr) = self.synthesize_system_wdef(bus, res_id) {
-                        let handle = self.get_or_create_resource_handle_in_file(
-                            bus, res_type, res_id, ptr, 0,
-                        );
+                        let handle = self
+                            .get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, 0);
                         cpu.write_reg(Register::A0, handle);
                         cpu.write_reg(Register::D0, 0);
                         bus.write_word(0x0A60, 0); // ResErr = noErr
@@ -2322,13 +2321,11 @@ impl super::TrapDispatcher {
                 eprintln!("[TRAP] Get1NamedResource('{}', \"{}\")", type_str, name);
 
                 // Look up by (type, name) in the named resources index
-                let handle =
-                    self.find_named_resource_current_loaded(bus, res_type, &name)
-                        .map(|(refnum, id, ptr)| {
-                            self.get_or_create_resource_handle_in_file(
-                                bus, res_type, id, ptr, refnum,
-                            )
-                        });
+                let handle = self
+                    .find_named_resource_current_loaded(bus, res_type, &name)
+                    .map(|(refnum, id, ptr)| {
+                        self.get_or_create_resource_handle_in_file(bus, res_type, id, ptr, refnum)
+                    });
 
                 if let Some(h) = handle {
                     eprintln!("[TRAP] Get1NamedResource -> handle ${:08X}", h);
@@ -2480,46 +2477,46 @@ impl super::TrapDispatcher {
                 let word_before_seg = bus.read_word(a9f0_addr.wrapping_sub(4));
                 let is_standard = old_trap_standard || word_before_seg == 0x3F3C;
 
-                let (seg_num, entry_addr, fmt, refresh_from_resource) =
-                    if native_old_trap_standard {
-                        let call = native_call.as_ref().unwrap();
-                        let sn = bus.read_word(call.argument_sp) as i16;
-                        cpu.write_reg(Register::A7, call.argument_sp.wrapping_add(2));
-                        (
-                            sn,
-                            call.return_pc.wrapping_sub(8),
-                            "mpw-native-oldtrap",
-                            true,
-                        )
-                    } else if native_old_trap_think {
-                        let call = native_call.as_ref().unwrap();
-                        let entry = call.return_pc.wrapping_sub(2);
-                        let sn = bus.read_word(entry + 6) as i16;
-                        cpu.write_reg(Register::A7, call.argument_sp);
-                        (sn, entry, "thinkc-native-oldtrap", true)
-                    } else if old_trap_standard {
-                        let return_pc = original_trap_return.unwrap();
-                        let sn = bus.read_word(sp) as i16;
-                        cpu.write_reg(Register::A7, sp + 2);
-                        (sn, return_pc.wrapping_sub(8), "mpw-oldtrap", true)
-                    } else if old_trap_think {
-                        let return_pc = original_trap_return.unwrap();
-                        let entry = return_pc.wrapping_sub(2);
-                        let sn = bus.read_word(entry + 6) as i16;
-                        (sn, entry, "thinkc-oldtrap", true)
-                    } else if is_standard {
-                        // Standard: seg# was pushed by MOVE.W, pop it
-                        let sn = bus.read_word(sp) as i16;
-                        cpu.write_reg(Register::A7, sp + 2);
-                        // Entry starts 6 bytes before A9F0
-                        (sn, a9f0_addr.wrapping_sub(6), "mpw", false)
-                    } else {
-                        // Think C: A9F0 at entry+0, seg# at entry+6, offset at entry+4
-                        // Stack has JSR return address (don't pop segment number)
-                        let entry = a9f0_addr; // A9F0 IS entry+0
-                        let sn = bus.read_word(entry + 6) as i16;
-                        (sn, entry, "thinkc", false)
-                    };
+                let (seg_num, entry_addr, fmt, refresh_from_resource) = if native_old_trap_standard
+                {
+                    let call = native_call.as_ref().unwrap();
+                    let sn = bus.read_word(call.argument_sp) as i16;
+                    cpu.write_reg(Register::A7, call.argument_sp.wrapping_add(2));
+                    (
+                        sn,
+                        call.return_pc.wrapping_sub(8),
+                        "mpw-native-oldtrap",
+                        true,
+                    )
+                } else if native_old_trap_think {
+                    let call = native_call.as_ref().unwrap();
+                    let entry = call.return_pc.wrapping_sub(2);
+                    let sn = bus.read_word(entry + 6) as i16;
+                    cpu.write_reg(Register::A7, call.argument_sp);
+                    (sn, entry, "thinkc-native-oldtrap", true)
+                } else if old_trap_standard {
+                    let return_pc = original_trap_return.unwrap();
+                    let sn = bus.read_word(sp) as i16;
+                    cpu.write_reg(Register::A7, sp + 2);
+                    (sn, return_pc.wrapping_sub(8), "mpw-oldtrap", true)
+                } else if old_trap_think {
+                    let return_pc = original_trap_return.unwrap();
+                    let entry = return_pc.wrapping_sub(2);
+                    let sn = bus.read_word(entry + 6) as i16;
+                    (sn, entry, "thinkc-oldtrap", true)
+                } else if is_standard {
+                    // Standard: seg# was pushed by MOVE.W, pop it
+                    let sn = bus.read_word(sp) as i16;
+                    cpu.write_reg(Register::A7, sp + 2);
+                    // Entry starts 6 bytes before A9F0
+                    (sn, a9f0_addr.wrapping_sub(6), "mpw", false)
+                } else {
+                    // Think C: A9F0 at entry+0, seg# at entry+6, offset at entry+4
+                    // Stack has JSR return address (don't pop segment number)
+                    let entry = a9f0_addr; // A9F0 IS entry+0
+                    let sn = bus.read_word(entry + 6) as i16;
+                    (sn, entry, "thinkc", false)
+                };
 
                 let trace_loadseg = trace_loadseg_enabled();
                 if trace_loadseg {
@@ -6217,8 +6214,8 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
 
-                        let Some(vfs_key) = self
-                            .find_vfs_rsrc_file_for_hfs_lookup(vref, dir_id, &filename)
+                        let Some(vfs_key) =
+                            self.find_vfs_rsrc_file_for_hfs_lookup(vref, dir_id, &filename)
                         else {
                             eprintln!("[TRAP] FSpOpenRF(\"{}\") -> fnfErr", filename);
                             bus.write_word(sp + 10, (-43i16) as u16); // fnfErr
@@ -6236,10 +6233,7 @@ impl super::TrapDispatcher {
                             self.write_refnums.insert(refnum);
                         }
                         self.file_positions.insert(refnum, 0);
-                        eprintln!(
-                            "[TRAP] FSpOpenRF -> refnum={} vfs=\"{}\"",
-                            refnum, rsrc_key
-                        );
+                        eprintln!("[TRAP] FSpOpenRF -> refnum={} vfs=\"{}\"", refnum, rsrc_key);
                         bus.write_word(ref_num_ptr, refnum);
                         bus.write_word(sp + 10, 0); // noErr
                         cpu.write_reg(Register::A7, sp + 10);
@@ -12156,8 +12150,7 @@ mod tests {
     #[test]
     fn hlfs_dispatch_fspopenrf_rejects_an_unknown_volume() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.vfs_rsrc
-            .insert("Duplicate".to_string(), vec![0xA1]);
+        disp.vfs_rsrc.insert("Duplicate".to_string(), vec![0xA1]);
 
         let spec_ptr = 0x300000u32;
         write_fsspec(&mut bus, spec_ptr, 1234, 2, b"Duplicate");
@@ -14268,10 +14261,7 @@ mod tests {
         let pb = 0x300000u32;
         let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"poison");
         bus.write_word(pb + 16, 0x3FFF);
-        bus.write_word(
-            pb + 22,
-            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
-        );
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
         bus.write_word(pb + 28, (-1i16) as u16);
         bus.write_long(pb + 48, 2);
         cpu.write_reg(Register::D0, 9);

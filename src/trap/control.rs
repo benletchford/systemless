@@ -1025,11 +1025,7 @@ impl super::TrapDispatcher {
         (handle, ctrl_ptr)
     }
 
-    pub(crate) fn dispose_control_handle(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        ctrl_handle: u32,
-    ) {
+    pub(crate) fn dispose_control_handle(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) {
         if ctrl_handle == 0 {
             return;
         }
@@ -3381,12 +3377,7 @@ impl super::TrapDispatcher {
                     }
                     if self.control_uses_application_def_proc(bus, ctrl_ptr) {
                         if Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16)) {
-                            cdef_draw_calls.push((
-                                ctrl_handle,
-                                Self::CDEF_DRAW_CNTL_MSG,
-                                0,
-                                None,
-                            ));
+                            cdef_draw_calls.push((ctrl_handle, Self::CDEF_DRAW_CNTL_MSG, 0, None));
                         }
                     } else {
                         self.draw_control(cpu, bus, ctrl_ptr);
