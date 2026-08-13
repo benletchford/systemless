@@ -6861,6 +6861,129 @@ impl super::TrapDispatcher {
                 );
                 let resolved_vref = self.resolve_volume_ref_num(vref);
 
+                if selector == 24 {
+                    // PBCatSearch ($A260, selector $0018). CSParam uses a
+                    // volume-wide cursor and returns an array of 70-byte
+                    // FSSpec records. Files 1992, 2-247..2-253.
+                    let volume_name_matches = filename.is_empty()
+                        || filename.eq_ignore_ascii_case(Self::boot_volume_name());
+                    let valid_volume = volume_name_matches
+                        && (vref == 0
+                            || vref == Self::boot_volume_ref_num()
+                            || self.working_directories.contains_key(&vref));
+                    if !valid_volume {
+                        bus.write_long(pb + 32, 0); // ioActMatchCount
+                        bus.write_word(pb + 16, (-35i16) as u16); // nsvErr
+                        cpu.write_reg(Register::D0, (-35i32) as u32);
+                        return Some(Ok(()));
+                    }
+
+                    let match_ptr = bus.read_long(pb + 24);
+                    let requested_raw = bus.read_long(pb + 28) as i32;
+                    if requested_raw < 0 || (requested_raw > 0 && match_ptr == 0) {
+                        bus.write_long(pb + 32, 0);
+                        bus.write_word(pb + 16, (-50i16) as u16); // paramErr
+                        cpu.write_reg(Register::D0, (-50i32) as u32);
+                        return Some(Ok(()));
+                    }
+                    let requested = requested_raw as usize;
+                    let search_bits = bus.read_long(pb + 36);
+                    let search_info1 = bus.read_long(pb + 40);
+                    let search_info2 = bus.read_long(pb + 44);
+                    let initialized = bus.read_long(pb + 52) != 0;
+                    let start = if initialized {
+                        bus.read_long(pb + 56) as usize
+                    } else {
+                        0
+                    };
+
+                    self.ensure_vfs_catalog();
+                    let mut entries = Vec::new();
+                    for (path, directory) in &self.vfs_directories {
+                        if !path.is_empty() {
+                            entries.push(super::dispatch::VfsCatalogEntry {
+                                path: path.clone(),
+                                name: Self::hfs_name_from_vfs_component(&directory.name),
+                                is_directory: true,
+                            });
+                        }
+                    }
+                    for path in self.vfs_metadata.keys() {
+                        entries.push(super::dispatch::VfsCatalogEntry {
+                            path: path.clone(),
+                            name: Self::hfs_name_from_vfs_component(Self::vfs_basename(path)),
+                            is_directory: false,
+                        });
+                    }
+                    entries.sort_by(|left, right| {
+                        left.path
+                            .to_ascii_lowercase()
+                            .cmp(&right.path.to_ascii_lowercase())
+                    });
+
+                    let mut scanned = start.min(entries.len());
+                    let mut actual = 0usize;
+                    if requested == 0 {
+                        // With no output capacity there can be no partial
+                        // result page; consume the scan so callers still get
+                        // the documented termination signal.
+                        scanned = entries.len();
+                    }
+                    while scanned < entries.len() && actual < requested {
+                        let entry = &entries[scanned];
+                        scanned += 1;
+                        if !self.catalog_search_entry_matches(
+                            bus,
+                            entry,
+                            search_bits,
+                            search_info1,
+                            search_info2,
+                        ) {
+                            continue;
+                        }
+                        if match_ptr != 0 {
+                            let spec = match_ptr + (actual as u32 * 70);
+                            let parent_id = if entry.is_directory {
+                                self.vfs_directories
+                                    .get(&entry.path)
+                                    .map_or(2, |directory| directory.parent_dir_id)
+                            } else {
+                                self.vfs_metadata
+                                    .get(&entry.path)
+                                    .map_or(2, |metadata| metadata.parent_dir_id)
+                            };
+                            bus.write_word(spec, Self::boot_volume_ref_num_u16());
+                            bus.write_long(spec + 2, parent_id);
+                            let name = if entry.name.len() > 63 {
+                                let end = (0..=63)
+                                    .rev()
+                                    .find(|offset| entry.name.is_char_boundary(*offset))
+                                    .unwrap_or(0);
+                                &entry.name[..end]
+                            } else {
+                                &entry.name
+                            };
+                            Self::write_pstring(bus, spec + 6, name);
+                        }
+                        actual += 1;
+                    }
+
+                    bus.write_long(pb + 32, actual as u32);
+                    bus.write_long(pb + 52, 1); // initialized
+                    bus.write_long(pb + 56, scanned as u32); // private cursor
+                    for offset in [60u32, 64] {
+                        bus.write_long(pb + offset, 0);
+                    }
+                    let result = if scanned >= entries.len() {
+                        -39i16 // eofErr; matches from the final page remain valid
+                    } else {
+                        0
+                    };
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                    return Some(Ok(()));
+                }
+
                 if selector == 6 {
                     // PBDirCreate ($A260, selector 6)
                     // Creates a new directory and returns its directory ID in ioDirID.
@@ -7431,6 +7554,137 @@ impl super::TrapDispatcher {
         bus.write_word(finfo_ptr + 8, finder_flags);
         bus.write_long(finfo_ptr + 10, 0); // fdLocation
         bus.write_word(finfo_ptr + 14, 0); // fdFldr
+    }
+
+    fn catalog_search_entry_matches(
+        &self,
+        bus: &MacMemoryBus,
+        entry: &super::dispatch::VfsCatalogEntry,
+        search_bits: u32,
+        info1: u32,
+        info2: u32,
+    ) -> bool {
+        if info1 == 0 || info2 == 0 {
+            return search_bits & 0x4000 != 0;
+        }
+
+        let metadata = (!entry.is_directory)
+            .then(|| self.vfs_metadata.get(&entry.path).copied())
+            .flatten();
+        let directory = entry
+            .is_directory
+            .then(|| self.vfs_directories.get(&entry.path))
+            .flatten();
+        let attributes = if entry.is_directory {
+            0x10
+        } else if self.locked_files.contains(&entry.path) {
+            0x01
+        } else {
+            0
+        };
+        let parent_id = metadata
+            .map(|value| value.parent_dir_id)
+            .or_else(|| directory.map(|value| value.parent_dir_id))
+            .unwrap_or(2);
+        let data_len = self
+            .vfs
+            .get(&entry.path)
+            .map_or(0, |data| data.len() as u32);
+        let rsrc_len = self
+            .vfs_rsrc
+            .get(&entry.path)
+            .map_or(0, |data| data.len() as u32);
+        let created = metadata.map_or(0, |value| value.created_date);
+        let modified = metadata.map_or(0, |value| value.modified_date);
+
+        let mut matches = true;
+        if search_bits & 0x03 != 0 {
+            let target_ptr = bus.read_long(info1 + 18);
+            let target = Self::read_pb_filename(bus, target_ptr);
+            let name = entry.name.to_ascii_lowercase();
+            let target = target.to_ascii_lowercase();
+            if search_bits & 0x02 != 0 {
+                matches &= name == target;
+            } else {
+                matches &= name.contains(&target);
+            }
+        }
+        if search_bits & 0x04 != 0 {
+            let desired = bus.read_byte(info1 + 30) & 0x11;
+            let mask = bus.read_byte(info2 + 30) & 0x11;
+            matches &= attributes & mask == desired & mask;
+        }
+        if search_bits & 0x08 != 0 {
+            let finder = if let Some(value) = metadata {
+                let mut bytes = [0u8; 16];
+                bytes[..4].copy_from_slice(&value.file_type.to_be_bytes());
+                bytes[4..8].copy_from_slice(&value.creator.to_be_bytes());
+                bytes[8..10].copy_from_slice(&value.finder_flags.to_be_bytes());
+                bytes
+            } else {
+                [0u8; 16]
+            };
+            matches &= finder.iter().enumerate().all(|(index, value)| {
+                let desired = bus.read_byte(info1 + 32 + index as u32);
+                let mask = bus.read_byte(info2 + 32 + index as u32);
+                value & mask == desired & mask
+            });
+        }
+        if search_bits & 0x10 != 0 {
+            let child_count = directory.map_or(0, |value| {
+                self.vfs_directories
+                    .values()
+                    .filter(|child| child.parent_dir_id == value.dir_id)
+                    .count()
+                    + self
+                        .vfs_metadata
+                        .values()
+                        .filter(|child| child.parent_dir_id == value.dir_id)
+                        .count()
+            }) as u16;
+            matches &= entry.is_directory
+                && child_count >= bus.read_word(info1 + 52)
+                && child_count <= bus.read_word(info2 + 52);
+        }
+        for (bit, value) in [
+            (0x20, data_len),
+            (0x40, data_len),
+            (0x80, rsrc_len),
+            (0x100, rsrc_len),
+            (0x200, created),
+            (0x400, modified),
+            (0x800, 0),
+        ] {
+            if search_bits & bit != 0 {
+                let offset = match bit {
+                    0x20 => 54,
+                    0x40 => 58,
+                    0x80 => 64,
+                    0x100 => 68,
+                    0x200 => 72,
+                    0x400 => 76,
+                    _ => 80,
+                };
+                matches &= value >= bus.read_long(info1 + offset)
+                    && value <= bus.read_long(info2 + offset);
+            }
+        }
+        if search_bits & 0x1000 != 0 {
+            matches &= (0..16).all(|index| {
+                let desired = bus.read_byte(info1 + 84 + index);
+                let mask = bus.read_byte(info2 + 84 + index);
+                desired & mask == 0
+            });
+        }
+        if search_bits & 0x2000 != 0 {
+            matches &=
+                parent_id >= bus.read_long(info1 + 100) && parent_id <= bus.read_long(info2 + 100);
+        }
+        if search_bits & 0x4000 != 0 {
+            !matches
+        } else {
+            matches
+        }
     }
 
     fn fill_file_catalog_info(
@@ -14347,6 +14601,103 @@ mod tests {
         assert_eq!(bus.read_long(pb + 54), 0, "data fork length");
         assert_eq!(bus.read_long(pb + 64), 4, "resource fork length");
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbcatsearch_paginates_matches_and_returns_eof() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let folder_id = disp.ensure_vfs_directory("Game Folder");
+        for name in ["First Save", "Second Save"] {
+            let path = format!("Game Folder/{name}");
+            disp.vfs.insert(path.clone(), vec![1]);
+            disp.set_vfs_entry_metadata(&path, *b"SAVE", *b"GAME", 0);
+        }
+
+        let pb = 0x300000u32;
+        let matches = 0x301000u32;
+        let low = 0x302000u32;
+        let high = 0x303000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 24, matches);
+        bus.write_long(pb + 28, 1);
+        bus.write_long(pb + 36, 0x0004 | 0x2000); // files in folder
+        bus.write_long(pb + 40, low);
+        bus.write_long(pb + 44, high);
+        bus.write_byte(low + 30, 0);
+        bus.write_byte(high + 30, 0x10);
+        bus.write_long(low + 100, folder_id);
+        bus.write_long(high + 100, folder_id);
+
+        let mut names = Vec::new();
+        loop {
+            cpu.write_reg(Register::D0, 24);
+            call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+            let result = bus.read_word(pb + 16) as i16;
+            if bus.read_long(pb + 32) != 0 {
+                assert_eq!(
+                    bus.read_word(matches) as i16,
+                    super::super::dispatch::BOOT_VOLUME_REF_NUM
+                );
+                assert_eq!(bus.read_long(matches + 2), folder_id);
+                names.push(bus.read_pstring(matches + 6));
+            }
+            if result == -39 {
+                break;
+            }
+            assert_eq!(result, 0);
+        }
+
+        assert_eq!(names, [b"First Save".to_vec(), b"Second Save".to_vec()]);
+        assert_ne!(bus.read_long(pb + 52), 0);
+    }
+
+    #[test]
+    fn fsdispatch_pbcatsearch_empty_catalog_terminates_with_eof() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.clear();
+        disp.vfs_rsrc.clear();
+        disp.vfs_metadata.clear();
+        disp.vfs_directories.retain(|path, _| path.is_empty());
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 24, 0x301000);
+        bus.write_long(pb + 28, 8);
+        bus.write_long(pb + 40, 0x302000);
+        bus.write_long(pb + 44, 0x303000);
+        cpu.write_reg(Register::D0, 24);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(bus.read_word(pb + 16) as i16, -39);
+        assert_eq!(bus.read_long(pb + 32), 0);
+    }
+
+    #[test]
+    fn fsdispatch_pbcatsearch_zero_matches_and_unknown_volume_are_deterministic() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.insert("Document".to_string(), vec![1]);
+
+        let pb = 0x300000u32;
+        let name = setup_param_block(&mut bus, &mut cpu, pb, b"");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 28, 0);
+        bus.write_long(pb + 40, 0x302000);
+        bus.write_long(pb + 44, 0x303000);
+        cpu.write_reg(Register::D0, 24);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(pb + 16) as i16, -39);
+        assert_eq!(bus.read_long(pb + 32), 0);
+
+        write_pstring(&mut bus, name, b"Missing Volume");
+        bus.write_long(pb + 52, 0);
+        cpu.write_reg(Register::D0, 24);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(pb + 16) as i16, -35);
+        assert_eq!(bus.read_long(pb + 32), 0);
     }
 
     // ================================================================
