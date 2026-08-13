@@ -2104,6 +2104,148 @@ impl super::TrapDispatcher {
         true
     }
 
+    fn te_set_style_for_range(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        range_start: usize,
+        range_end: usize,
+        mode: u16,
+        text_style_ptr: u32,
+    ) -> bool {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if !Self::te_is_styled_record(bus, te_ptr) || text_style_ptr == 0 {
+            return false;
+        }
+        let text_len = Self::te_text_length(bus, te_handle);
+        let range_start = range_start.min(text_len);
+        let range_end = range_end.min(text_len);
+        if range_start >= range_end {
+            return false;
+        }
+
+        let existing_runs = self.te_style_runs(bus, te_handle, text_len);
+        let old_range_end_style = Self::te_style_at_offset(&existing_runs, range_end);
+        let requested_face = bus.read_byte(text_style_ptr + 2) as i16;
+        let toggle_face = mode & 0x0020 != 0 && mode & 0x0002 != 0;
+        let remove_toggled_face = toggle_face
+            && existing_runs.iter().enumerate().all(|(index, run)| {
+                let run_end = existing_runs
+                    .get(index + 1)
+                    .map(|next| next.start)
+                    .unwrap_or(text_len);
+                run_end <= range_start
+                    || run.start >= range_end
+                    || run.style.face & requested_face == requested_face
+            });
+
+        let transform = |mut style: TeResolvedStyle| {
+            if mode & 0x0001 != 0 {
+                style.font = bus.read_word(text_style_ptr) as i16;
+            }
+            if mode & 0x0002 != 0 {
+                style.face = if toggle_face {
+                    if remove_toggled_face {
+                        style.face & !requested_face
+                    } else {
+                        style.face | requested_face
+                    }
+                } else {
+                    requested_face
+                };
+            }
+            if mode & 0x0010 != 0 {
+                style.size = style
+                    .size
+                    .saturating_add(bus.read_word(text_style_ptr + 4) as i16)
+                    .max(1);
+            } else if mode & 0x0004 != 0 {
+                style.size = bus.read_word(text_style_ptr + 4) as i16;
+            }
+            if mode & 0x0008 != 0 {
+                style.color = (
+                    bus.read_word(text_style_ptr + 6),
+                    bus.read_word(text_style_ptr + 8),
+                    bus.read_word(text_style_ptr + 10),
+                );
+            }
+            let metrics = get_font_metrics(style.font, Self::font_lookup_size(style.size));
+            style.line_height = metrics.ascent + metrics.descent + metrics.leading;
+            style.ascent = metrics.ascent;
+            style
+        };
+
+        let mut merged: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(existing_runs.len() + 2);
+        for run in &existing_runs {
+            if run.start < range_start || run.start >= range_end {
+                merged.push((run.start, run.style));
+            } else {
+                merged.push((run.start, transform(run.style)));
+            }
+        }
+        if !existing_runs.iter().any(|run| run.start == range_start) {
+            merged.push((
+                range_start,
+                transform(Self::te_style_at_offset(&existing_runs, range_start)),
+            ));
+        }
+        if range_end < text_len && !existing_runs.iter().any(|run| run.start == range_end) {
+            merged.push((range_end, old_range_end_style));
+        }
+        merged.sort_by_key(|(start, _)| *start);
+        let mut folded = Vec::with_capacity(merged.len());
+        for (start, style) in merged {
+            if let Some((last_start, last_style)) = folded.last_mut() {
+                if *last_start == start {
+                    *last_style = style;
+                    continue;
+                }
+                if *last_style == style {
+                    continue;
+                }
+            }
+            folded.push((start, style));
+        }
+        let merged = folded;
+
+        let run_count = merged.len().min(u16::MAX as usize);
+        let style_handle = Self::te_style_handle(bus, te_handle);
+        if style_handle == 0 {
+            return false;
+        }
+        let style_ptr = Self::ensure_handle_capacity(
+            bus,
+            style_handle,
+            Self::TE_STYLE_RUNS_OFFSET + ((run_count as u32 + 1) * 4),
+        );
+        if style_ptr == 0 {
+            return false;
+        }
+        let style_table_handle = bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
+        let style_table_ptr = Self::ensure_handle_capacity(
+            bus,
+            style_table_handle,
+            (run_count as u32) * Self::ST_ELEMENT_SIZE,
+        );
+        if style_table_ptr == 0 {
+            return false;
+        }
+        bus.write_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET, run_count as u16);
+        bus.write_word(style_ptr + Self::TE_STYLE_N_STYLES_OFFSET, run_count as u16);
+        for (index, (start, style)) in merged.iter().take(run_count).enumerate() {
+            Self::te_write_style_table_element(
+                bus,
+                style_table_ptr + (index as u32 * Self::ST_ELEMENT_SIZE),
+                *style,
+            );
+            let run_ptr = style_ptr + Self::TE_STYLE_RUNS_OFFSET + (index as u32 * 4);
+            bus.write_word(run_ptr, (*start).min(u16::MAX as usize) as u16);
+            bus.write_word(run_ptr + 2, index as u16);
+        }
+        Self::te_update_styled_run_sentinel(bus, te_handle, text_len);
+        true
+    }
+
     #[allow(dead_code)]
     fn te_line_metrics(&self, bus: &MacMemoryBus, te_handle: u32) -> (i16, i16) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
@@ -2843,6 +2985,9 @@ impl super::TrapDispatcher {
         let previous_port = self.current_port;
         let previous_gdevice = self.current_gdevice;
         let switched_port = te_port != 0 && te_port != previous_port;
+        let color_port = te_port != 0 && (bus.read_word(te_port + 6) & 0xC000) == 0xC000;
+        let old_port_fg_pixel = color_port.then(|| bus.read_long(te_port + 80));
+        let old_resolved_color_fields = self.resolved_port_color_fields.get(&te_port).copied();
 
         // Always sync A5 globals to te_port before drawing, even if port didn't change.
         // draw_generic_shape reads from A5 globals, and untrack_window can set self.current_port
@@ -3039,6 +3184,12 @@ impl super::TrapDispatcher {
                     self.tx_face = style.face;
                     self.tx_size = style.size;
                     self.fg_color = style.color;
+                    // A CGrafPort keeps both the logical RGB foreground and a
+                    // destination-specific pixel value. Styled TextEdit owns
+                    // its run colors, so resolve each run's RGB value before
+                    // drawing without leaking that temporary pixel into the
+                    // caller's port state.
+                    self.resolve_current_port_color_pixels(bus, true, false);
                 }
                 self.draw_char(cpu, bus, byte as char);
             }
@@ -3182,6 +3333,14 @@ impl super::TrapDispatcher {
         self.tx_size = old_size;
         self.fg_color = old_fg;
         self.pn_loc = old_loc;
+        if let Some(pixel) = old_port_fg_pixel {
+            bus.write_long(te_port + 80, pixel);
+        }
+        if let Some(fields) = old_resolved_color_fields {
+            self.resolved_port_color_fields.insert(te_port, fields);
+        } else {
+            self.resolved_port_color_fields.remove(&te_port);
+        }
         if trace_textedit_enabled() {
             eprintln!(
                 "[TE] draw_te_contents visible_lines hTE=${:08X} {:?}",
@@ -13499,6 +13658,26 @@ impl super::TrapDispatcher {
                                     == bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET);
                                 if insertion_point && Self::te_is_styled_record(bus, te_ptr) {
                                     Self::te_set_null_style(bus, te_handle, mode, style_ptr);
+                                } else if Self::te_is_styled_record(bus, te_ptr) {
+                                    let mut selection_start =
+                                        bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                                    let mut selection_end =
+                                        bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                                    if selection_end < selection_start {
+                                        std::mem::swap(&mut selection_start, &mut selection_end);
+                                    }
+                                    if self.te_set_style_for_range(
+                                        bus,
+                                        te_handle,
+                                        selection_start,
+                                        selection_end,
+                                        mode,
+                                        style_ptr,
+                                    ) && redraw
+                                    {
+                                        self.te_recalculate_layout(bus, te_handle);
+                                        self.draw_te_contents(cpu, bus, te_handle);
+                                    }
                                 } else {
                                     let style_handle = Self::te_style_handle(bus, te_handle);
                                     if style_handle != 0 {
@@ -13637,7 +13816,6 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
-                        let _ = redraw;
                         cpu.write_reg(Register::A7, sp + 14);
                     }
                     0x0002 => {
@@ -14864,6 +15042,8 @@ impl super::TrapDispatcher {
                         );
                     }
                     self.draw_te_contents(cpu, bus, te_handle);
+                    let te_port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
+                    self.refresh_visible_dialog_snapshot_for_port(bus, te_port);
                 }
                 cpu.write_reg(Register::A7, sp + stack_pop);
                 Ok(())
@@ -33276,6 +33456,46 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!((runs[0].start, runs[0].style.face), (0, 1));
         assert_eq!((runs[1].start, runs[1].style.face), (1, 0));
+    }
+
+    #[test]
+    fn tesetstyle_changes_only_the_selected_styled_text_range() {
+        // Text 1993, p. 2-98: TESetStyle changes the character attributes
+        // of the current selection range. Adjacent runs must retain their
+        // attributes so later TEUpdate calls can render every range correctly.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.tx_font = 22;
+        disp.tx_size = 12;
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 80, 200), (0, 0, 80, 200));
+        disp.te_set_text_contents(&mut bus, te_handle, b"red green red");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 4);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 9);
+
+        let text_style = bus.alloc(12);
+        bus.write_word(text_style, 22);
+        bus.write_byte(text_style + 2, 1);
+        bus.write_word(text_style + 4, 12);
+        bus.write_word(text_style + 6, 0);
+        bus.write_word(text_style + 8, 0xFFFF);
+        bus.write_word(text_style + 10, 0);
+        bus.write_word(TEST_SP, 0x0001);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_word(TEST_SP + 6, 0); // redraw = FALSE
+        bus.write_long(TEST_SP + 8, text_style);
+        bus.write_word(TEST_SP + 12, 0x000F); // doAll
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+        let runs = disp.te_style_runs(&bus, te_handle, 13);
+        assert_eq!(runs.len(), 3);
+        assert_eq!((runs[0].start, runs[0].style.color), (0, (0, 0, 0)));
+        assert_eq!((runs[1].start, runs[1].style.color), (4, (0, 0xFFFF, 0)));
+        assert_eq!((runs[2].start, runs[2].style.color), (9, (0, 0, 0)));
+        assert_eq!(runs[1].style.face, 1);
     }
 
     #[test]
