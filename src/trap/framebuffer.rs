@@ -4310,13 +4310,42 @@ impl super::TrapDispatcher {
                 if front_is_dialog && dialog_ptr != front_window {
                     None
                 } else {
-                    Some(snapshot.clone())
+                    Some((dialog_ptr, snapshot.clone()))
                 }
             })
             .collect();
-        for snapshot in snapshots {
+        for (dialog_ptr, snapshot) in snapshots {
             let bounds = snapshot.bounds;
+            // Retained dialog pixels stand in for drawing into a dialog's
+            // window port, so they must obey the Window Manager's front-to-
+            // back ordering too. Preserve every visible structure in front
+            // of this dialog before replaying its snapshot, then put those
+            // pixels back. Otherwise a modeless dialog behind a document
+            // window is incorrectly composited over that window every frame.
+            // Inside Macintosh Volume I (1985), pp. I-281 and I-297.
+            let snapshot_rect = Self::dialog_saved_pixel_rect(bounds);
+            let preserved_front_pixels: Vec<_> = self
+                .window_list
+                .iter()
+                .position(|&window| window == dialog_ptr)
+                .map(|dialog_index| {
+                    self.window_list[..dialog_index]
+                        .iter()
+                        .filter(|&&window| self.window_visible(bus, window))
+                        .filter_map(|&window| {
+                            self.window_structure_rect(bus, window)
+                                .and_then(|structure| {
+                                    Self::rect_intersection(snapshot_rect, structure)
+                                })
+                                .and_then(|overlap| self.save_screen_rect_pixels(bus, overlap))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             self.restore_dialog_pixels(bus, bounds, &snapshot.pixels);
+            for (top, left, width, height, pixels) in preserved_front_pixels {
+                self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
+            }
         }
     }
 
@@ -5829,6 +5858,62 @@ mod redraw_chrome_tests {
             bus.read_byte(probe),
             0x77,
             "a retained snapshot must not overwrite pixels painted after DrawDialog"
+        );
+    }
+
+    #[test]
+    fn restore_visible_dialog_snapshots_preserves_windows_in_front() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let dialog = bus.alloc(256);
+        let front = bus.alloc(256);
+        let dialog_bounds = (10, 10, 40, 40);
+        set_window_structure_rect(&mut bus, dialog, (2, 2, 48, 48));
+        set_window_structure_rect(&mut bus, front, (18, 18, 32, 32));
+        bus.write_byte(dialog + 110, 0xFF);
+        bus.write_byte(front + 110, 0xFF);
+        disp.window_list = vec![front, dialog];
+        disp.front_window = front;
+        assert!(disp.window_visible(&bus, front));
+        assert_eq!(
+            disp.window_structure_rect(&bus, front),
+            Some((18, 18, 32, 32))
+        );
+
+        for y in 2..48u32 {
+            for x in 2..48u32 {
+                bus.write_byte(screen_base + y * 64 + x, 0x77);
+            }
+        }
+        let dialog_pixels = disp.save_dialog_pixels(&bus, dialog_bounds);
+        for y in 2..48u32 {
+            for x in 2..48u32 {
+                bus.write_byte(screen_base + y * 64 + x, 0x11);
+            }
+        }
+        disp.dialog_visible_snapshots.insert(
+            dialog,
+            super::super::dispatch::PersistentDialogSnapshot {
+                bounds: dialog_bounds,
+                pixels: dialog_pixels,
+            },
+        );
+
+        disp.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 24 * 64 + 24),
+            0x11,
+            "a retained background dialog must not paint over a window in front"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 12 * 64 + 12),
+            0x77,
+            "the exposed part of a retained background dialog should still be restored"
         );
     }
 
