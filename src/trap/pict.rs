@@ -148,6 +148,12 @@ fn align_pict_pos(pos: u32) -> u32 {
     }
 }
 
+fn checked_pict_payload_end(pos: u32, length_field_size: u32, data_len: u32) -> Option<u32> {
+    pos.checked_add(length_field_size)
+        .and_then(|p| p.checked_add(data_len))
+        .and_then(|p| p.checked_add(p & 1))
+}
+
 fn skip_reserved_v1_opcode(bus: &MacMemoryBus, opcode: u16, pos: u32) -> Option<u32> {
     match opcode {
         0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => Some(pos + 8),
@@ -323,7 +329,17 @@ pub fn draw_picture(
     }
 
     // Read Picture header
-    let _pic_size = bus.read_word(pic_ptr) as u32;
+    let pic_size = bus.read_word(pic_ptr) as u32;
+    // picSize is zero for pictures larger than 64 KiB.  Otherwise it is
+    // the authoritative boundary for every opcode payload in the record.
+    let pic_end = if pic_size >= 10 {
+        pic_ptr
+            .checked_add(pic_size)
+            .filter(|end| *end <= bus.ram_size())
+            .unwrap_or(bus.ram_size())
+    } else {
+        bus.ram_size()
+    };
     let frame_top = bus.read_word(pic_ptr + 2) as i16;
     let frame_left = bus.read_word(pic_ptr + 4) as i16;
     let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
@@ -1318,16 +1334,24 @@ pub fn draw_picture(
                     // v2 reserved opcode skip rules
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        let Some(new_pos) =
+                            checked_pict_payload_end(pos, 2, data_len).filter(|p| *p <= pic_end)
+                        else {
+                            break;
+                        };
+                        pos = new_pos;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                         // 0 bytes — both reserved-range blocks have no payload
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        pos += 4 + data_len;
-                        pos = align_pict_pos(pos);
+                        let Some(new_pos) =
+                            checked_pict_payload_end(pos, 4, data_len).filter(|p| *p <= pic_end)
+                        else {
+                            break;
+                        };
+                        pos = new_pos;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -1535,6 +1559,15 @@ pub(crate) fn peek_initial_packbits_clut(
         return None;
     }
 
+    let pic_size = bus.read_word(pic_ptr) as u32;
+    let pic_end = if pic_size >= 10 {
+        pic_ptr
+            .checked_add(pic_size)
+            .filter(|end| *end <= bus.ram_size())
+            .unwrap_or(bus.ram_size())
+    } else {
+        bus.ram_size()
+    };
     let frame_top = bus.read_word(pic_ptr + 2) as i16;
     let frame_left = bus.read_word(pic_ptr + 4) as i16;
     let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
@@ -1600,15 +1633,15 @@ pub(crate) fn peek_initial_packbits_clut(
                 if is_v2 {
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos =
+                            checked_pict_payload_end(pos, 2, data_len).filter(|p| *p <= pic_end)?;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        pos += 4 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos =
+                            checked_pict_payload_end(pos, 4, data_len).filter(|p| *p <= pic_end)?;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -7635,6 +7668,92 @@ mod tests {
             "v1 reserved shape opcodes should skip their data, not stop the PICT stream"
         );
         assert_eq!(bus.read_byte(screen_base + 8 * row_bytes + 8), 255);
+    }
+
+    #[test]
+    fn pict_v2_reserved_opcode_rejects_overflowing_payload_length() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1;
+        bus.write_byte(p, 0x02);
+        p += 1;
+        bus.write_byte(p, 0xFF);
+        p += 1;
+        bus.write_byte(p, 0x00);
+        p += 1;
+        bus.write_word(p, 0x00D0);
+        p += 2;
+        bus.write_long(p, u32::MAX);
+        p += 4;
+
+        bus.write_word(pic, (p - pic) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 16);
+        bus.write_word(pic + 8, 16);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            16,
+            16,
+            (screen_base, 16, 16, 16, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok, "an invalid reserved opcode should stop decoding safely");
+        assert!(peek_initial_packbits_clut(&bus, pic).is_none());
+    }
+
+    #[test]
+    fn pict_v2_reserved_opcode_rejects_payload_past_picture_end() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1;
+        bus.write_byte(p, 0x02);
+        p += 1;
+        bus.write_byte(p, 0xFF);
+        p += 1;
+        bus.write_byte(p, 0x00);
+        p += 1;
+        bus.write_word(p, 0x00D0);
+        p += 2;
+        bus.write_long(p, 32);
+        p += 4;
+
+        bus.write_word(pic, (p - pic) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 16);
+        bus.write_word(pic + 8, 16);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            16,
+            16,
+            (screen_base, 16, 16, 16, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok, "an out-of-bounds reserved opcode should stop safely");
+        assert!(peek_initial_packbits_clut(&bus, pic).is_none());
     }
 
     /// fillPoly ($0x74) samples FillPat per pixel — alternating row pattern
