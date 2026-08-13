@@ -44,21 +44,31 @@ pub const MAX_INSTRUCTIONS_PER_FRAME: usize = 2_000_000;
 
 /// Create a new FixtureRunner with standard configuration.
 pub fn new_runner() -> FixtureRunner {
-    new_runner_with_addressing(true)
+    new_runner_with_configuration(true, 8)
 }
 
 /// Create a runner in either the default 32-bit addressing mode or classic
 /// 24-bit mode, where the upper address byte is ignored by memory accesses.
 pub fn new_runner_with_addressing(addressing_32_bit: bool) -> FixtureRunner {
-    FixtureRunner::new(
-        RAM_SIZE as usize,
-        FixtureRunnerConfig {
-            load_address: 0x10000,
-            max_instructions: MAX_INSTRUCTIONS_PER_FRAME,
-            addressing_32_bit,
-            ..FixtureRunnerConfig::default()
-        },
-    )
+    new_runner_with_configuration(addressing_32_bit, 8)
+}
+
+/// Create a standard runner with the requested indexed screen depth.
+pub fn new_runner_with_screen_depth(screen_depth: u16) -> FixtureRunner {
+    new_runner_with_configuration(true, screen_depth)
+}
+
+/// Create a standard runner with explicit addressing and display modes.
+pub fn new_runner_with_configuration(addressing_32_bit: bool, screen_depth: u16) -> FixtureRunner {
+    let config = FixtureRunnerConfig {
+        load_address: 0x10000,
+        max_instructions: MAX_INSTRUCTIONS_PER_FRAME,
+        addressing_32_bit,
+        ..FixtureRunnerConfig::default()
+    }
+    .with_screen_depth(screen_depth)
+    .expect("frontend selected an unsupported screen depth");
+    FixtureRunner::new(RAM_SIZE as usize, config)
 }
 
 /// Load an application from BinHex, MacBinary, StuffIt, web-pack, or raw

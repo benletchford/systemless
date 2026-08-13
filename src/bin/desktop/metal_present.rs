@@ -675,7 +675,7 @@ impl MetalPresenter {
         let screen_height = u32::from(height);
         let (content_left, content_top, width, height) = content_rect;
         let (drawable_width, drawable_height) = drawable_size;
-        if !matches!(pixel_size, 1 | 8) {
+        if !matches!(pixel_size, 1 | 4 | 8) {
             return Ok(false);
         }
         if content_left.saturating_add(width) > screen_width
@@ -704,7 +704,11 @@ impl MetalPresenter {
         let (mut uniforms, cursor_data) = cursor
             .map(|(image, position)| guest_cursor_data(Some(image), position))
             .unwrap_or_else(|| guest_cursor_data(None, (0, 0)));
-        let packed_content_left = if pixel_size == 1 { content_left & 7 } else { 0 };
+        let packed_content_left = match pixel_size {
+            1 => content_left & 7,
+            4 => content_left & 1,
+            _ => 0,
+        };
         let packed_origin_left = content_left - packed_content_left;
         uniforms.row_bytes = u32::try_from(visible_layout.visible_row_bytes)
             .map_err(|_| "visible guest row stride exceeds Metal's limit".to_string())?;
@@ -1095,10 +1099,16 @@ fn guest_visible_byte_layout(
 ) -> Option<GuestVisibleByteLayout> {
     let row_stride = usize::try_from(row_bytes).ok()?;
     let (first_byte, byte_end) = match pixel_size {
-        1 => (
-            usize::try_from(left / 8).ok()?,
-            usize::try_from(left.checked_add(width)?.checked_add(7)? / 8).ok()?,
-        ),
+        1 | 4 => {
+            let pixels_per_byte = 8 / u32::from(pixel_size);
+            (
+                usize::try_from(left / pixels_per_byte).ok()?,
+                usize::try_from(
+                    left.checked_add(width)?.checked_add(pixels_per_byte - 1)? / pixels_per_byte,
+                )
+                .ok()?,
+            )
+        }
         8 => (
             usize::try_from(left).ok()?,
             usize::try_from(left.checked_add(width)?).ok()?,
@@ -1213,6 +1223,15 @@ mod tests {
     fn cropped_presentation_packs_only_visible_guest_rows() {
         let layout = guest_visible_byte_layout(800, 8, 80, 104, 640, 392).unwrap();
         assert_eq!(layout.visible_row_bytes * layout.row_count, 250_880);
+    }
+
+    #[test]
+    fn cropped_four_bit_presentation_keeps_nibble_aligned_rows() {
+        let layout = guest_visible_byte_layout(400, 4, 81, 10, 319, 20).unwrap();
+        assert_eq!(layout.first_row_offset, 4_040);
+        assert_eq!(layout.row_stride, 400);
+        assert_eq!(layout.visible_row_bytes, 160);
+        assert_eq!(layout.row_count, 20);
     }
 
     #[test]

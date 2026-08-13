@@ -917,6 +917,14 @@ impl MacMemoryBus {
         bus
     }
 
+    pub(crate) fn configure_screen_depth(&mut self, depth: u16) {
+        debug_assert!(matches!(depth, 4 | 8));
+        let profile = crate::machine_profile::reference_machine_profile();
+        let row_bytes = ((u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8) + 1) & !1;
+        self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
+        self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);
+    }
+
     /// Create a memory bus wrapping an external RAM slice
     ///
     /// # Safety
