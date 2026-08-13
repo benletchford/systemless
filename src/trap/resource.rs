@@ -6855,11 +6855,223 @@ impl super::TrapDispatcher {
                 let dir_id = bus.read_long(pb + 48);
                 let filename = Self::read_pb_filename(bus, name_ptr);
                 let fdir_index = bus.read_word(pb + 28) as i16;
+                let resolved_vref = self.resolve_volume_ref_num(vref);
+                if selector == 24 {
+                    // PBCatSearch ($A260, selector $0018)
+                    // Searches a volume catalog and returns matching FSSpec records.
+                    // FUNCTION PBCatSearch(paramBlock: HParmBlkPtr; async: Boolean): OSErr;
+                    // Files 1992, 2-38 to 2-42 and 2-205 to 2-207
+                    let match_ptr = bus.read_long(pb + 24);
+                    let requested_count = bus.read_long(pb + 28) as usize;
+                    let search_bits = bus.read_long(pb + 36);
+                    let info1 = bus.read_long(pb + 40);
+                    let info2 = bus.read_long(pb + 44);
+                    let mut catalog_index = bus.read_long(pb + 52) as usize;
+                    bus.write_long(pb + 32, 0); // ioActMatchCount
+
+                    if requested_count > 0 && match_ptr == 0 {
+                        bus.write_word(pb + 16, (-50i16) as u16); // paramErr
+                        cpu.write_reg(Register::D0, (-50i32) as u32);
+                        return Some(Ok(()));
+                    }
+
+                    self.ensure_vfs_catalog();
+                    let mut entries = Vec::new();
+                    for (path, directory) in &self.vfs_directories {
+                        entries.push(super::dispatch::VfsCatalogEntry {
+                            path: path.clone(),
+                            name: directory.name.clone(),
+                            is_directory: true,
+                        });
+                    }
+                    for path in self.vfs_metadata.keys() {
+                        entries.push(super::dispatch::VfsCatalogEntry {
+                            path: path.clone(),
+                            name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                                super::TrapDispatcher::vfs_basename(path),
+                            ),
+                            is_directory: false,
+                        });
+                    }
+                    entries.sort_by_key(|entry| entry.path.to_ascii_lowercase());
+                    catalog_index = catalog_index.min(entries.len());
+
+                    let name_criterion = if search_bits & 0x0003 != 0 && info1 != 0 {
+                        Self::read_pb_filename(bus, bus.read_long(info1 + 18))
+                    } else {
+                        String::new()
+                    };
+                    let name_criterion = name_criterion.to_ascii_lowercase();
+                    let mut actual_count = 0usize;
+
+                    while catalog_index < entries.len() {
+                        let entry = entries[catalog_index].clone();
+                        catalog_index += 1;
+                        let metadata = if entry.is_directory {
+                            None
+                        } else {
+                            self.vfs_file_metadata(&entry.path)
+                        };
+                        let directory = if entry.is_directory {
+                            self.vfs_directories.get(&entry.path)
+                        } else {
+                            None
+                        };
+                        let parent_id = metadata
+                            .map(|value| value.parent_dir_id)
+                            .or_else(|| directory.map(|value| value.parent_dir_id))
+                            .unwrap_or(1);
+                        let data_len = self
+                            .vfs
+                            .get(&entry.path)
+                            .map_or(0, |data| data.len() as u32);
+                        let rsrc_len = self
+                            .vfs_rsrc
+                            .get(&entry.path)
+                            .map_or(0, |data| data.len() as u32);
+                        let attributes = if entry.is_directory {
+                            0x10
+                        } else if self.locked_files.contains(&entry.path) {
+                            0x01
+                        } else {
+                            0x00
+                        };
+                        let (file_type, creator, finder_flags, created, modified) = metadata
+                            .map(|value| {
+                                (
+                                    value.file_type,
+                                    value.creator,
+                                    value.finder_flags,
+                                    value.created_date,
+                                    value.modified_date,
+                                )
+                            })
+                            .unwrap_or((
+                                u32::from_be_bytes(*b"fold"),
+                                u32::from_be_bytes(*b"MACS"),
+                                0,
+                                0,
+                                0,
+                            ));
+
+                        let mut matches = true;
+                        let entry_name = entry.name.to_ascii_lowercase();
+                        if search_bits & 0x0001 != 0 {
+                            matches &= entry_name.contains(&name_criterion);
+                        }
+                        if search_bits & 0x0002 != 0 {
+                            matches &= entry_name == name_criterion;
+                        }
+                        if search_bits & 0x0004 != 0 {
+                            matches &= info1 != 0
+                                && info2 != 0
+                                && (attributes & bus.read_byte(info2 + 30))
+                                    == (bus.read_byte(info1 + 30) & bus.read_byte(info2 + 30));
+                        }
+                        if search_bits & 0x0008 != 0 {
+                            let mut finder_info = [0u8; 16];
+                            finder_info[0..4].copy_from_slice(&file_type.to_be_bytes());
+                            finder_info[4..8].copy_from_slice(&creator.to_be_bytes());
+                            finder_info[8..10].copy_from_slice(&finder_flags.to_be_bytes());
+                            matches &= info1 != 0
+                                && info2 != 0
+                                && finder_info.iter().enumerate().all(|(index, actual)| {
+                                    let mask = bus.read_byte(info2 + 32 + index as u32);
+                                    actual & mask == bus.read_byte(info1 + 32 + index as u32) & mask
+                                });
+                        }
+                        if entry.is_directory {
+                            if search_bits & 0x0010 != 0 {
+                                let child_count = self
+                                    .vfs_directories
+                                    .values()
+                                    .filter(|child| {
+                                        child.parent_dir_id == directory.unwrap().dir_id
+                                    })
+                                    .count()
+                                    + self
+                                        .vfs_metadata
+                                        .values()
+                                        .filter(|child| {
+                                            child.parent_dir_id == directory.unwrap().dir_id
+                                        })
+                                        .count();
+                                matches &= Self::catalog_search_word_in_range(
+                                    bus,
+                                    info1,
+                                    info2,
+                                    52,
+                                    child_count.min(u16::MAX as usize) as u16,
+                                );
+                            }
+                        } else {
+                            for (bit, offset, actual) in [
+                                (0x0020, 54, data_len),
+                                (0x0040, 58, data_len),
+                                (0x0080, 64, rsrc_len),
+                                (0x0100, 68, rsrc_len),
+                            ] {
+                                if search_bits & bit != 0 {
+                                    matches &= Self::catalog_search_long_in_range(
+                                        bus, info1, info2, offset, actual,
+                                    );
+                                }
+                            }
+                        }
+                        for (bit, offset, actual) in [
+                            (0x0200, 72, created),
+                            (0x0400, 76, modified),
+                            (0x0800, 80, 0),
+                            (0x2000, 100, parent_id),
+                        ] {
+                            if search_bits & bit != 0 {
+                                matches &= Self::catalog_search_long_in_range(
+                                    bus, info1, info2, offset, actual,
+                                );
+                            }
+                        }
+                        if search_bits & 0x1000 != 0 {
+                            matches &= info1 != 0
+                                && info2 != 0
+                                && (0..16).all(|index| {
+                                    let mask = bus.read_byte(info2 + 84 + index);
+                                    bus.read_byte(info1 + 84 + index) & mask == 0
+                                });
+                        }
+                        if search_bits & 0x4000 != 0 {
+                            matches = !matches;
+                        }
+
+                        if matches && actual_count < requested_count {
+                            Self::write_catalog_search_fsspec(
+                                bus,
+                                match_ptr + (actual_count as u32 * 70),
+                                resolved_vref as u16,
+                                parent_id,
+                                &entry.name,
+                            );
+                            actual_count += 1;
+                            if actual_count == requested_count {
+                                break;
+                            }
+                        }
+                    }
+
+                    bus.write_long(pb + 32, actual_count as u32);
+                    bus.write_long(pb + 52, catalog_index as u32);
+                    let result = if catalog_index >= entries.len() {
+                        -39i16 // eofErr
+                    } else {
+                        0 // noErr: requested match count reached before end of catalog
+                    };
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                    return Some(Ok(()));
+                }
                 eprintln!(
                     "[TRAP] FSDispatch selector={} name_ptr=${:08X} filename=\"{}\" vref={} dirID={} fdirIdx={}",
                     selector, name_ptr, filename, vref, dir_id, fdir_index
                 );
-                let resolved_vref = self.resolve_volume_ref_num(vref);
 
                 if selector == 6 {
                     // PBDirCreate ($A260, selector 6)
@@ -7431,6 +7643,52 @@ impl super::TrapDispatcher {
         bus.write_word(finfo_ptr + 8, finder_flags);
         bus.write_long(finfo_ptr + 10, 0); // fdLocation
         bus.write_word(finfo_ptr + 14, 0); // fdFldr
+    }
+
+    fn catalog_search_long_in_range(
+        bus: &MacMemoryBus,
+        info1: u32,
+        info2: u32,
+        offset: u32,
+        actual: u32,
+    ) -> bool {
+        info1 != 0
+            && info2 != 0
+            && actual >= bus.read_long(info1 + offset)
+            && actual <= bus.read_long(info2 + offset)
+    }
+
+    fn catalog_search_word_in_range(
+        bus: &MacMemoryBus,
+        info1: u32,
+        info2: u32,
+        offset: u32,
+        actual: u16,
+    ) -> bool {
+        info1 != 0
+            && info2 != 0
+            && actual >= bus.read_word(info1 + offset)
+            && actual <= bus.read_word(info2 + offset)
+    }
+
+    fn write_catalog_search_fsspec(
+        bus: &mut MacMemoryBus,
+        spec: u32,
+        vref: u16,
+        parent_id: u32,
+        name: &str,
+    ) {
+        bus.write_word(spec, vref);
+        bus.write_long(spec + 2, parent_id);
+        let bytes = name.as_bytes();
+        let written = bytes.len().min(63);
+        bus.write_byte(spec + 6, written as u8);
+        for (index, byte) in bytes.iter().take(written).enumerate() {
+            bus.write_byte(spec + 7 + index as u32, *byte);
+        }
+        for offset in written as u32 + 1..64 {
+            bus.write_byte(spec + 6 + offset, 0);
+        }
     }
 
     fn fill_file_catalog_info(
@@ -14347,6 +14605,89 @@ mod tests {
         assert_eq!(bus.read_long(pb + 54), 0, "data fork length");
         assert_eq!(bus.read_long(pb + 64), 4, "resource fork length");
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbcatsearch_returns_eof_for_no_matches() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.insert("Lode Runner".to_string(), Vec::new());
+        disp.set_vfs_entry_metadata("Lode Runner", *b"APPL", *b"Lode", 0);
+
+        let pb = 0x300000u32;
+        let matches = 0x300100u32;
+        let info1 = 0x300200u32;
+        let info2 = 0x300300u32;
+        cpu.write_reg(Register::A0, pb);
+        cpu.write_reg(Register::D0, 24);
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 24, matches);
+        bus.write_long(pb + 28, 1);
+        bus.write_long(pb + 36, 0x000C); // attributes and Finder information
+        bus.write_long(pb + 40, info1);
+        bus.write_long(pb + 44, info2);
+        bus.write_byte(info1 + 30, 0x00); // files
+        bus.write_byte(info2 + 30, 0x10); // directory-bit mask
+        bus.write_long(info1 + 32, u32::from_be_bytes(*b"Pref"));
+        bus.write_long(info1 + 36, u32::from_be_bytes(*b"LODE"));
+        bus.write_long(info2 + 32, u32::MAX);
+        bus.write_long(info2 + 36, u32::MAX);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(bus.read_word(pb + 16) as i16, -39);
+        assert_eq!(bus.read_long(pb + 32), 0);
+    }
+
+    #[test]
+    fn fsdispatch_pbcatsearch_returns_fsspecs_and_resumes_from_catalog_position() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for name in ["A Preferences", "B Preferences"] {
+            disp.vfs.insert(name.to_string(), Vec::new());
+            disp.set_vfs_entry_metadata(name, *b"Pref", *b"LODE", 0);
+        }
+
+        let pb = 0x300000u32;
+        let matches = 0x300100u32;
+        let info1 = 0x300200u32;
+        let info2 = 0x300300u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 24, matches);
+        bus.write_long(pb + 28, 1);
+        bus.write_long(pb + 36, 0x000C);
+        bus.write_long(pb + 40, info1);
+        bus.write_long(pb + 44, info2);
+        bus.write_byte(info1 + 30, 0x00);
+        bus.write_byte(info2 + 30, 0x10);
+        bus.write_long(info1 + 32, u32::from_be_bytes(*b"Pref"));
+        bus.write_long(info1 + 36, u32::from_be_bytes(*b"LODE"));
+        bus.write_long(info2 + 32, u32::MAX);
+        bus.write_long(info2 + 36, u32::MAX);
+
+        cpu.write_reg(Register::D0, 24);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_pstring(matches + 6), b"A Preferences".to_vec());
+        let next_position = bus.read_long(pb + 52);
+        assert!(next_position > 0);
+
+        cpu.write_reg(Register::D0, 24);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(pb + 32), 1);
+        assert_eq!(bus.read_pstring(matches + 6), b"B Preferences".to_vec());
+        assert!(bus.read_long(pb + 52) > next_position);
+
+        cpu.write_reg(Register::D0, 24);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(bus.read_word(pb + 16) as i16, -39);
+        assert_eq!(bus.read_long(pb + 32), 0);
     }
 
     // ================================================================
