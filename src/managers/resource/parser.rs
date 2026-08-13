@@ -47,6 +47,12 @@ pub struct ResourceFork {
     /// All resources indexed by (type, id)
     resources: HashMap<(ResourceType, i16), Resource>,
     pub map_attrs: u16,
+    /// Serialized resource-map bytes retained for guest code that walks
+    /// `TopMapHndl` directly instead of using Resource Manager traps.
+    map: Vec<u8>,
+    /// Complete serialized fork retained for native Resource Manager code
+    /// that reads the already-open application resource fork through PBRead.
+    serialized: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +72,14 @@ impl ResourceFork {
 
     pub fn map_attrs(&self) -> u16 {
         self.map_attrs
+    }
+
+    pub(crate) fn map(&self) -> &[u8] {
+        &self.map
+    }
+
+    pub(crate) fn serialized(&self) -> &[u8] {
+        &self.serialized
     }
 
     #[cfg(test)]
@@ -91,6 +105,8 @@ impl ResourceFork {
                     )
                 })
                 .collect(),
+            map: Vec::new(),
+            serialized: Vec::new(),
         }
     }
 }
@@ -234,7 +250,9 @@ impl ResourceFork {
 
         let mut fork = ResourceFork {
             map_attrs: u16::from_be_bytes([map[22], map[23]]),
-            ..ResourceFork::default()
+            resources: HashMap::new(),
+            map: map.to_vec(),
+            serialized: data.to_vec(),
         };
 
         // Parse type list
