@@ -5419,13 +5419,17 @@ impl super::TrapDispatcher {
             // the canonical System 7+ name.
             //
             // Regression coverage:
+            //   toolbox::tests::launch_legacy_cmdline_queues_existing_target_and_preserves_page_option
+            //   toolbox::tests::launch_legacy_cmdline_missing_target_halts_without_clobbering_d0
             //   toolbox::tests::launchapplication_launchcontinue_clear_records_target_app_path_and_halts
             //   toolbox::tests::launchapplication_launchcontinue_set_records_target_app_path_and_returns
             //   toolbox::tests::launchapplication_existing_foreground_target_queues_runner_launch
             // LaunchApplication ($A9F2): Per IM:VI Table C-1 line 57551 the canonical System 7+ name is LaunchApplication; legacy IM:II II-60 name was "Launch" (same trap word). Register-based: A0 points to LaunchPB record (System 7+) or legacy CmdLine record (pre-System-7); no stack args. Existing foreground launch targets are queued for runner-level app switching; missing targets preserve the historical halt/return behavior according to launchContinue.
             (true, 0x1F2) => {
                 let launch_params = cpu.read_reg(Register::A0);
-                let launch_flags = if launch_params != 0 {
+                let extended_block =
+                    launch_params != 0 && bus.read_word(launch_params + 6) == 0x4C43;
+                let launch_flags = if extended_block {
                     bus.read_word(launch_params + 14)
                 } else {
                     0
@@ -5435,15 +5439,48 @@ impl super::TrapDispatcher {
                 let mut launch_result = 0u32;
                 let mut launch_target: Option<String> = None;
                 if launch_params != 0 {
-                    let app_spec_ptr = bus.read_long(launch_params + 16);
-                    if app_spec_ptr != 0 {
-                        let filename = crate::trap::types::read_fsspec_name(bus, app_spec_ptr);
-                        if !filename.is_empty() {
-                            let vref = bus.read_word(app_spec_ptr) as i16;
-                            let dir_id = bus.read_long(app_spec_ptr + 2);
-                            let app_path = self
-                                .vfs_key_for_fsspec(vref, dir_id, &filename)
-                                .unwrap_or(filename);
+                    if extended_block {
+                        let app_spec_ptr = bus.read_long(launch_params + 16);
+                        if app_spec_ptr != 0 {
+                            let filename = crate::trap::types::read_fsspec_name(bus, app_spec_ptr);
+                            if !filename.is_empty() {
+                                let vref = bus.read_word(app_spec_ptr) as i16;
+                                let dir_id = bus.read_long(app_spec_ptr + 2);
+                                let app_path = self
+                                    .vfs_key_for_fsspec(vref, dir_id, &filename)
+                                    .unwrap_or(filename);
+                                self.set_launched_app_path(&app_path);
+                                let target_exists = self.find_vfs_file(&app_path).is_some()
+                                    || self.find_vfs_rsrc_file(&app_path).is_some();
+                                if target_exists {
+                                    launch_target = Some(app_path);
+                                } else {
+                                    launch_result = (-43i32) as u32; // fnfErr
+                                }
+                            }
+                        } else {
+                            launch_result = (-43i32) as u32; // fnfErr
+                        }
+                    } else {
+                        // IM:II II-59..II-60 legacy CmdLine record:
+                        // 0(A0) points to a Pascal application name and
+                        // 4(A0) carries the sound/screen page option.
+                        bus.write_word(0x0936, bus.read_word(launch_params + 4));
+                        let app_name_ptr = bus.read_long(launch_params);
+                        let app_name = if app_name_ptr != 0 {
+                            String::from_utf8_lossy(&bus.read_pstring(app_name_ptr)).into_owned()
+                        } else {
+                            String::new()
+                        };
+                        if app_name.is_empty() {
+                            launch_result = (-43i32) as u32; // fnfErr
+                        } else {
+                            let app_path = match self.directory_path_for_id(self.default_dir_id) {
+                                Some(dir_path) if !dir_path.is_empty() => {
+                                    format!("{dir_path}/{app_name}")
+                                }
+                                _ => app_name,
+                            };
                             self.set_launched_app_path(&app_path);
                             let target_exists = self.find_vfs_file(&app_path).is_some()
                                 || self.find_vfs_rsrc_file(&app_path).is_some();
@@ -5453,10 +5490,8 @@ impl super::TrapDispatcher {
                                 launch_result = (-43i32) as u32; // fnfErr
                             }
                         }
-                    } else {
-                        launch_result = (-43i32) as u32; // fnfErr
                     }
-                    if launch_result != 0 {
+                    if extended_block && launch_result != 0 {
                         bus.write_long(launch_params + 20, 0); // launchProcessSN.highLongOfPSN
                         bus.write_long(launch_params + 24, 0); // launchProcessSN.lowLongOfPSN
                         bus.write_long(launch_params + 28, 0); // launchPreferredSize
@@ -5464,7 +5499,9 @@ impl super::TrapDispatcher {
                         bus.write_long(launch_params + 36, 0); // launchAvailableSize
                     }
                 }
-                cpu.write_reg(Register::D0, launch_result);
+                if extended_block {
+                    cpu.write_reg(Register::D0, launch_result);
+                }
                 let queued_foreground_launch =
                     launch_result == 0 && launch_target.is_some() && !launch_dont_switch;
                 if launch_result == 0 {
@@ -19568,6 +19605,84 @@ mod tests {
         );
         assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
+    }
+
+    #[test]
+    fn launch_legacy_cmdline_queues_existing_target_and_preserves_page_option() {
+        // IM:II II-59..II-60: the legacy CmdLine record stores a pointer to
+        // the Pascal application name at 0(A0) and CurPageOption at 4(A0).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_before = cpu.read_reg(Register::A7);
+        let cmd_line = bus.alloc(8);
+        let app_name = bus.alloc(32);
+        let target_dir_id = disp.ensure_vfs_directory("LaunchTargets");
+        disp.default_dir_id = target_dir_id;
+        disp.vfs
+            .insert("LaunchTargets/Legacy Helper".to_string(), Vec::new());
+
+        cpu.write_reg(Register::A0, cmd_line);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+        for offset in 0..8u32 {
+            bus.write_byte(cmd_line + offset, 0);
+        }
+        bus.write_long(cmd_line, app_name);
+        bus.write_word(cmd_line + 4, 0xFFFF);
+        write_pascal_string(&mut bus, app_name, "Legacy Helper");
+
+        let result = disp.dispatch_toolbox(true, 0x1F2, &mut cpu, &mut bus);
+        assert!(result.is_some(), "Launch should be handled");
+        assert!(
+            result.unwrap().is_ok(),
+            "an existing legacy target should be queued for runner switching"
+        );
+        assert_eq!(cpu.read_reg(Register::A0), cmd_line);
+        assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(bus.read_word(0x0936), 0xFFFF);
+        assert_eq!(
+            disp.launched_app_path.as_deref(),
+            Some("LaunchTargets/Legacy Helper")
+        );
+        assert_eq!(
+            disp.take_pending_launch_application(false, false)
+                .as_deref(),
+            Some("LaunchTargets/Legacy Helper")
+        );
+    }
+
+    #[test]
+    fn launch_legacy_cmdline_missing_target_halts_without_clobbering_d0() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_before = cpu.read_reg(Register::A7);
+        let cmd_line = bus.alloc(8);
+        let app_name = bus.alloc(32);
+        let target_dir_id = disp.ensure_vfs_directory("LaunchTargets");
+        disp.default_dir_id = target_dir_id;
+
+        cpu.write_reg(Register::A0, cmd_line);
+        cpu.write_reg(Register::D0, 0x89AB_CDEF);
+        for offset in 0..8u32 {
+            bus.write_byte(cmd_line + offset, 0);
+        }
+        bus.write_long(cmd_line, app_name);
+        bus.write_word(cmd_line + 4, 1);
+        write_pascal_string(&mut bus, app_name, "NoSuchApp");
+
+        let result = disp.dispatch_toolbox(true, 0x1F2, &mut cpu, &mut bus);
+        assert!(result.is_some(), "Launch should be handled");
+        assert!(matches!(result.unwrap().unwrap_err(), crate::Error::Halted));
+        assert_eq!(cpu.read_reg(Register::A0), cmd_line);
+        assert_eq!(cpu.read_reg(Register::D0), 0x89AB_CDEF);
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(bus.read_word(0x0936), 1);
+        assert_eq!(
+            disp.launched_app_path.as_deref(),
+            Some("LaunchTargets/NoSuchApp")
+        );
+        assert!(
+            disp.take_pending_launch_application(false, true).is_none(),
+            "a missing legacy target must not be queued"
+        );
     }
 
     #[test]
