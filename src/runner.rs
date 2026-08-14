@@ -3594,19 +3594,43 @@ impl FixtureRunner {
                     );
                     let completed_modeless_dialog_draw_proc = completed_dialog_draw_proc
                         && self.dispatcher.active_modeless_dialog_draw_proc.is_some();
+                    let completed_modal_dialog_draw_proc =
+                        completed_dialog_draw_proc && !completed_modeless_dialog_draw_proc;
                     if completed_dialog_draw_proc {
                         self.dispatcher
                             .finalize_dialog_draw_procs_if_idle(&mut self.bus);
                     }
-                    let deferred_tracking_refire_pc = self.deferred_tracking_refire_pc.take();
                     self.active_interrupt_callback = None;
                     self.refill_foreground_budget_after_async_return();
-                    if let Some(refire_pc) = deferred_tracking_refire_pc {
-                        self.cpu.write_reg(Register::PC, refire_pc);
-                        continue;
-                    }
                     if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
                     {
+                        continue;
+                    }
+                    // A ModalDialog update pass calls every pending userItem
+                    // procedure before it starts handling events. Drain the
+                    // remaining callbacks directly from the completed callback
+                    // boundary so a foreground idle loop cannot run between
+                    // items. Inside Macintosh Volume I, I-405.
+                    if completed_modal_dialog_draw_proc
+                        && self
+                            .dispatcher
+                            .dialog_tracking
+                            .as_ref()
+                            .is_some_and(|tracking| !tracking.draw_procs_done)
+                        && self.fire_dialog_draw_procs()
+                    {
+                        continue;
+                    }
+                    if completed_modal_dialog_draw_proc {
+                        // The callback completion check already proved that
+                        // PC/SP are ModalDialog's exact resume boundary. Do
+                        // not let an older deferred tracking address redirect
+                        // the completed update pass away from that trap.
+                        self.deferred_tracking_refire_pc = None;
+                        continue;
+                    }
+                    if let Some(refire_pc) = self.deferred_tracking_refire_pc.take() {
+                        self.cpu.write_reg(Register::PC, refire_pc);
                         continue;
                     }
                     if sound_work_only {
@@ -13152,6 +13176,47 @@ mod tests {
             runner.active_interrupt_callback.is_none(),
             "dialog callback should have resumed foreground code"
         );
+        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+    }
+
+    #[test]
+    fn modal_dialog_draw_procs_drain_before_foreground_code_resumes() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000u32;
+        let interrupted_sp = 0x007F_FFC0u32;
+        let proc_1 = 0x0004_2000u32;
+        let proc_2 = 0x0004_2100u32;
+
+        // Model an application loop that does not immediately call
+        // ModalDialog again after the first injected callback returns.
+        runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+
+        for proc_addr in [proc_1, proc_2] {
+            runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
+            runner.bus.write_word(proc_addr + 2, 0x0000);
+            runner.bus.write_word(proc_addr + 4, 0x4E5E); // UNLK A6
+            runner.bus.write_word(proc_addr + 6, 0x4E75); // RTS
+        }
+
+        let mut tracking = dialog_tracking_for_test(0, 0);
+        tracking.draw_proc_queue = VecDeque::from([(proc_1, 3), (proc_2, 4)]);
+        tracking.draw_procs_done = false;
+        tracking.rendered_pixels_final = false;
+        runner.dispatcher.dialog_tracking = Some(tracking);
+
+        assert!(runner.fire_dialog_draw_procs());
+        runner.deferred_tracking_refire_pc = Some(interrupted_pc + 2);
+        let (_steps, running) = runner.run_steps(128, None);
+
+        assert!(running);
+        let tracking = runner.dispatcher.dialog_tracking.as_ref().unwrap();
+        assert!(tracking.draw_proc_queue.is_empty());
+        assert!(tracking.draw_procs_done);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert!(runner.deferred_tracking_refire_pc.is_none());
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
     }
