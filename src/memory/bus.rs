@@ -12,6 +12,7 @@ use super::globals::LowMemGlobals;
 
 const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
 const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
+const SYNTHETIC_RESERVE_BYTES: u32 = 64 * 1024;
 // System 7.5.3 on the Quadra 650 leaves exception vector 0 pointing to
 // $40810000. A BasiliskII oracle capture of that ROM establishes the word at
 // offset 6 as $0372. Keep the shadow deliberately narrow: bytes outside this
@@ -375,6 +376,13 @@ pub trait MemoryBus {
     /// Get the total RAM size
     fn ram_size(&self) -> u32;
 
+    /// Highest address available to the application heap, globals, and stack.
+    /// Implementations may reserve RAM above this boundary for emulated
+    /// hardware and host-owned callback code.
+    fn application_memory_limit(&self) -> u32 {
+        self.ram_size()
+    }
+
     /// Read a Pascal string (length-prefixed) from memory. Delegates
     /// to [`Self::read_bytes`] for the data so the underlying slice
     /// fast path on [`MacMemoryBus`] applies.
@@ -453,6 +461,8 @@ pub struct MacMemoryBus {
     heap_ptr: u32,
     /// Systemless-owned executable/data stubs grow downward outside the guest heap.
     synthetic_ptr: u32,
+    /// Lower bound of the fixed reservation for future synthetic allocations.
+    synthetic_floor: u32,
     /// Guest writes cannot modify synthesized ROM-like instruction stubs.
     readonly_code_ranges: Vec<(u32, u32)>,
     /// Half-open bounding box over `readonly_code_ranges`, maintained on
@@ -849,6 +859,7 @@ impl MacMemoryBus {
         } else {
             ram_size as u32
         };
+        let synthetic_floor = screen_buffer_start.saturating_sub(SYNTHETIC_RESERVE_BYTES);
         let mut bus = Self {
             ram: RamStorage::Owned(vec![0; ram_size]),
             ram_size: ram_size as u32,
@@ -856,6 +867,7 @@ impl MacMemoryBus {
             globals: LowMemGlobals::new(),
             heap_ptr: 0x200000, // Start heap at 2MB
             synthetic_ptr: screen_buffer_start,
+            synthetic_floor,
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             free_blocks: HashMap::new(),
@@ -938,6 +950,7 @@ impl MacMemoryBus {
         } else {
             ram_size as u32
         };
+        let synthetic_floor = screen_buffer_start.saturating_sub(SYNTHETIC_RESERVE_BYTES);
         Self {
             ram: RamStorage::External(ram_ptr, ram_size),
             ram_size: ram_size as u32,
@@ -945,6 +958,7 @@ impl MacMemoryBus {
             globals,
             heap_ptr: 0x200000,
             synthetic_ptr: screen_buffer_start,
+            synthetic_floor,
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             free_blocks: HashMap::new(),
@@ -1071,10 +1085,10 @@ impl MacMemoryBus {
         let ptr = self.heap_ptr;
         let new_ptr = ptr + aligned;
 
-        if new_ptr >= self.synthetic_ptr {
+        if new_ptr >= self.synthetic_floor {
             eprintln!(
                 "[ALLOC] Out of memory: requesting {} bytes, heap at ${:08X}, limit ${:08X}",
-                size, ptr, self.synthetic_ptr
+                size, ptr, self.synthetic_floor
             );
             return 0; // Return NULL; callers must check and set memFullErr
         }
@@ -1094,10 +1108,10 @@ impl MacMemoryBus {
         let Some(ptr) = self.synthetic_ptr.checked_sub(aligned) else {
             return 0;
         };
-        if ptr <= self.heap_ptr {
+        if ptr < self.synthetic_floor {
             eprintln!(
-                "[ALLOC] Out of synthetic memory: requesting {} bytes, heap at ${:08X}, synthetic at ${:08X}",
-                size, self.heap_ptr, self.synthetic_ptr
+                "[ALLOC] Out of synthetic memory: requesting {} bytes, floor at ${:08X}, synthetic at ${:08X}",
+                size, self.synthetic_floor, self.synthetic_ptr
             );
             return 0;
         }
@@ -1190,10 +1204,10 @@ impl MacMemoryBus {
         let ptr = (self.heap_ptr + alignment - 1) & !(alignment - 1);
         let new_ptr = ptr + aligned;
 
-        if new_ptr >= self.synthetic_ptr {
+        if new_ptr >= self.synthetic_floor {
             eprintln!(
                 "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
-                size, alignment, self.heap_ptr, self.synthetic_ptr
+                size, alignment, self.heap_ptr, self.synthetic_floor
             );
             return 0;
         }
@@ -1820,6 +1834,10 @@ impl MemoryBus for MacMemoryBus {
     fn ram_size(&self) -> u32 {
         self.ram_size
     }
+
+    fn application_memory_limit(&self) -> u32 {
+        self.synthetic_floor
+    }
 }
 
 #[cfg(test)]
@@ -2004,6 +2022,27 @@ mod tests {
         assert!(synthetic > second_guest);
         assert_eq!(bus.read_bytes(synthetic, 24), vec![0; 24]);
         assert_eq!(bus.get_alloc_size(synthetic), None);
+    }
+
+    #[test]
+    fn synthetic_reservation_has_a_stable_guest_memory_boundary() {
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        let application_limit = bus.application_memory_limit();
+
+        bus.reserve_heap_until(application_limit - 4);
+        assert_eq!(
+            bus.alloc(4),
+            0,
+            "guest allocations must stop at the reservation"
+        );
+
+        let whole_reservation = bus.alloc_synthetic(SYNTHETIC_RESERVE_BYTES);
+        assert_eq!(whole_reservation, application_limit);
+        assert_eq!(
+            bus.alloc_synthetic(4),
+            0,
+            "synthetic allocations must not escape their reservation"
+        );
     }
 
     #[test]
