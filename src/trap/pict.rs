@@ -142,6 +142,11 @@ fn align_pict_pos(pos: u32) -> u32 {
     }
 }
 
+fn checked_skip_pict_data(pos: u32, length_field_size: u32, data_len: u32) -> Option<u32> {
+    let next = pos.checked_add(length_field_size)?.checked_add(data_len)?;
+    next.checked_add(next & 1)
+}
+
 fn skip_reserved_v1_opcode(bus: &MacMemoryBus, opcode: u16, pos: u32) -> Option<u32> {
     match opcode {
         0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => Some(pos + 8),
@@ -1349,28 +1354,26 @@ pub fn draw_picture(
                     // v2 reserved opcode skip rules
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        let Some(next) = checked_skip_pict_data(pos, 2, data_len) else {
+                            eprintln!(
+                                "[PICT] Reserved v2 opcode 0x{opcode:04X} length overflow - stopping"
+                            );
+                            break;
+                        };
+                        pos = next;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                         // 0 bytes — both reserved-range blocks have no payload
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        let Some(new_pos) = pos
-                            .checked_add(4)
-                            .and_then(|payload| payload.checked_add(data_len))
-                        else {
+                        let Some(next) = checked_skip_pict_data(pos, 4, data_len) else {
                             eprintln!(
-                                "[PICT] Reserved v2 opcode 0x{:04X} length {} overflows at offset {} - stopping",
-                                opcode,
-                                data_len,
-                                pos - 2 - pic_ptr
+                                "[PICT] Reserved v2 opcode 0x{opcode:04X} length overflow - stopping"
                             );
                             break;
                         };
-                        pos = new_pos;
-                        pos = align_pict_pos(pos);
+                        pos = next;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -1628,6 +1631,9 @@ pub(crate) fn peek_initial_packbits_clut(
                 pos += 2 + data_len;
                 pos = align_pict_pos(pos);
             }
+            0x90 | 0x91 if bus.read_word(pos) & 0x8000 != 0 => {
+                return peek_pack_bits_rect_clut(bus, pos);
+            }
             0x98 | 0x99 => return peek_pack_bits_rect_clut(bus, pos),
             0xA1 => {
                 pos += 2;
@@ -1643,15 +1649,13 @@ pub(crate) fn peek_initial_packbits_clut(
                 if is_v2 {
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos = checked_skip_pict_data(pos, 2, data_len)?;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        pos += 4 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos = checked_skip_pict_data(pos, 4, data_len)?;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -6292,7 +6296,7 @@ mod tests {
     use super::{
         blit_row, build_device_itable, build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
-        dst_clip_row_spans, peek_initial_packbits_clut, read_color_table,
+        dst_clip_row_spans, peek_initial_packbits_clut, picture_stream_len, read_color_table,
         try_blit_packbits_8bpp_src_copy_fast, try_blit_row_8bpp_src_copy_fast, DstClip,
         DstClipRegion, PictIndexedTransfer, PixMapInfo,
     };
@@ -8038,6 +8042,10 @@ mod tests {
 
         assert!(ok);
         assert_eq!(bus.read_bytes(screen_base, 4), vec![0, 7, 7, 0]);
+        assert_eq!(
+            picture_stream_len(&bus.read_bytes(pic, (p - pic) as usize)),
+            Some((p - pic) as usize)
+        );
     }
 
     #[test]
