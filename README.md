@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://systemless.org/">
+    <img src=".github/assets/systemless-logo.svg" alt="Systemless" width="128" height="128">
+  </a>
+</p>
+
 # systemless
 
 Systemless is a high-level runtime for 68k classic Macintosh applications and
