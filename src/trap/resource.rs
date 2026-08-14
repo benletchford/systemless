@@ -209,6 +209,36 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
 }
 
 impl super::TrapDispatcher {
+    fn restore_native_toolbox_nonvolatile<C: CpuOps>(
+        cpu: &mut C,
+        call: &super::dispatch::NativeTrapCallState,
+    ) {
+        for (reg, value) in [
+            Register::D3,
+            Register::D4,
+            Register::D5,
+            Register::D6,
+            Register::D7,
+        ]
+        .into_iter()
+        .zip(call.preserved_d_regs)
+        {
+            cpu.write_reg(reg, value);
+        }
+        for (reg, value) in [
+            Register::A2,
+            Register::A3,
+            Register::A4,
+            Register::A5,
+            Register::A6,
+        ]
+        .into_iter()
+        .zip(call.preserved_a_regs)
+        {
+            cpu.write_reg(reg, value);
+        }
+    }
+
     pub(crate) const RES_NOT_FOUND: i16 = -192;
     pub(crate) const RES_ATTR_ERR: i16 = -198;
     pub(crate) const RES_CHANGED_ATTR: u16 = 0x0002;
@@ -2482,6 +2512,7 @@ impl super::TrapDispatcher {
                     let call = native_call.as_ref().unwrap();
                     let sn = bus.read_word(call.argument_sp) as i16;
                     cpu.write_reg(Register::A7, call.argument_sp.wrapping_add(2));
+                    Self::restore_native_toolbox_nonvolatile(cpu, call);
                     (
                         sn,
                         call.return_pc.wrapping_sub(8),
@@ -2493,6 +2524,7 @@ impl super::TrapDispatcher {
                     let entry = call.return_pc.wrapping_sub(2);
                     let sn = bus.read_word(entry + 6) as i16;
                     cpu.write_reg(Register::A7, call.argument_sp);
+                    Self::restore_native_toolbox_nonvolatile(cpu, call);
                     (sn, entry, "thinkc-native-oldtrap", true)
                 } else if old_trap_standard {
                     let return_pc = original_trap_return.unwrap();
@@ -11226,6 +11258,44 @@ mod tests {
     #[test]
     fn loadseg_native_old_trap_recovers_the_recorded_original_call() {
         let (mut disp, mut cpu, mut bus) = setup();
+        let preserved_d_regs = [
+            0xD300_0003,
+            0xD400_0004,
+            0xD500_0005,
+            0xD600_0006,
+            0xD700_0007,
+        ];
+        let preserved_a_regs = [
+            0xA200_0002,
+            0xA300_0003,
+            0xA400_0004,
+            0xA500_0005,
+            0xA600_0006,
+        ];
+        for (reg, value) in [
+            Register::D3,
+            Register::D4,
+            Register::D5,
+            Register::D6,
+            Register::D7,
+        ]
+        .into_iter()
+        .zip(preserved_d_regs)
+        {
+            cpu.write_reg(reg, value);
+        }
+        for (reg, value) in [
+            Register::A2,
+            Register::A3,
+            Register::A4,
+            Register::A5,
+            Register::A6,
+        ]
+        .into_iter()
+        .zip(preserved_a_regs)
+        {
+            cpu.write_reg(reg, value);
+        }
         let seg_addr = 0x220000u32;
         bus.write_word(seg_addr, 0x0000);
         bus.write_word(seg_addr + 2, 0x0000);
@@ -11255,6 +11325,22 @@ mod tests {
         let trampoline = disp.get_or_create_tool_trap_trampoline(&mut bus, 0xA9F0);
         let handler_sp = TEST_SP - 0x100;
         bus.write_long(handler_sp, 0x310000);
+        for reg in [
+            Register::D3,
+            Register::D4,
+            Register::D5,
+            Register::D6,
+            Register::D7,
+            Register::A2,
+            Register::A3,
+            Register::A4,
+            Register::A5,
+            Register::A6,
+        ] {
+            cpu.write_reg(reg, 0xDEAD_BEEF);
+        }
+        cpu.write_reg(Register::D0, 0xCAFE_0000);
+        cpu.write_reg(Register::A0, 0xCAFE_000A);
         cpu.write_reg(Register::A7, handler_sp);
         cpu.write_reg(Register::PC, trampoline + 2);
 
@@ -11266,6 +11352,32 @@ mod tests {
         assert_eq!(bus.read_word(entry_addr), 2);
         assert_eq!(bus.read_word(entry_addr + 2), 0x4EF9);
         assert_eq!(bus.read_long(entry_addr + 4), seg_addr + 4 + 0x0010);
+        for (reg, expected) in [
+            Register::D3,
+            Register::D4,
+            Register::D5,
+            Register::D6,
+            Register::D7,
+        ]
+        .into_iter()
+        .zip(preserved_d_regs)
+        {
+            assert_eq!(cpu.read_reg(reg), expected);
+        }
+        for (reg, expected) in [
+            Register::A2,
+            Register::A3,
+            Register::A4,
+            Register::A5,
+            Register::A6,
+        ]
+        .into_iter()
+        .zip(preserved_a_regs)
+        {
+            assert_eq!(cpu.read_reg(reg), expected);
+        }
+        assert_eq!(cpu.read_reg(Register::D0), 0xCAFE_0000);
+        assert_eq!(cpu.read_reg(Register::A0), 0xCAFE_000A);
         assert!(!disp.pending_native_trap_calls.contains_key(&0xA9F0));
     }
 

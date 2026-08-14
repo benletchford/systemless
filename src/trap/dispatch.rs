@@ -720,11 +720,15 @@ pub(crate) struct LoadSegGetResourceState {
 /// Original A-line call state retained while a handler installed through
 /// SetTrapAddress runs. A handler may call the old trap address later, after
 /// changing its stack frame, so old-trap recovery cannot infer this state
-/// from A6 or from the handler's instruction shape.
+/// from A6 or from the handler's instruction shape. Toolbox routines may
+/// alter D0-D2, A0, and A1, but must preserve D3-D7 and A2-A6 (Inside
+/// Macintosh: Operating System Utilities, 1994, pp. 8-15 to 8-16).
 #[derive(Clone, Debug)]
 pub(crate) struct NativeTrapCallState {
     pub return_pc: u32,
     pub argument_sp: u32,
+    pub preserved_d_regs: [u32; 5],
+    pub preserved_a_regs: [u32; 5],
 }
 
 /// Stack size handed to a cooperative thread when `NewThread` is passed 0
@@ -6157,6 +6161,20 @@ impl TrapDispatcher {
                     NativeTrapCallState {
                         return_pc,
                         argument_sp: sp,
+                        preserved_d_regs: [
+                            cpu.read_reg(Register::D3),
+                            cpu.read_reg(Register::D4),
+                            cpu.read_reg(Register::D5),
+                            cpu.read_reg(Register::D6),
+                            cpu.read_reg(Register::D7),
+                        ],
+                        preserved_a_regs: [
+                            cpu.read_reg(Register::A2),
+                            cpu.read_reg(Register::A3),
+                            cpu.read_reg(Register::A4),
+                            cpu.read_reg(Register::A5),
+                            cpu.read_reg(Register::A6),
+                        ],
                     },
                 );
                 let new_sp = sp.wrapping_sub(4);
