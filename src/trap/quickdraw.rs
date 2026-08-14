@@ -3363,6 +3363,14 @@ impl super::TrapDispatcher {
                 let src_clut = src_clut.as_ref();
                 let dst_clut = dst_clut.as_ref();
                 let palette_translation = palette_translation.as_ref();
+                let shared_indexed_pixel_mask = Self::shared_indexed_pixel_mask(
+                    src_info.pixel_size,
+                    dst_info.pixel_size,
+                    src_info.ctab_handle,
+                    dst_ctab_handle,
+                    src_clut,
+                    dst_clut,
+                );
                 let transformed_blit = !no_scaling
                     || palette_translation.is_some()
                     || src_info.pixel_size != dst_info.pixel_size
@@ -3773,6 +3781,7 @@ impl super::TrapDispatcher {
                                     src_clut,
                                     dst_clut,
                                     palette_translation,
+                                    shared_indexed_pixel_mask,
                                     mode_base,
                                     src_pixel,
                                     dst_pixel,
@@ -3817,6 +3826,7 @@ impl super::TrapDispatcher {
                                     src_clut,
                                     dst_clut,
                                     palette_translation,
+                                    None,
                                     mode_base,
                                     src_pixel,
                                     bus.read_byte(dst_addr),
@@ -3873,6 +3883,7 @@ impl super::TrapDispatcher {
                                     src_clut,
                                     dst_clut,
                                     palette_translation,
+                                    shared_indexed_pixel_mask,
                                     mode_base,
                                     src_pixel,
                                     bus.read_byte(dst_addr),
@@ -19104,6 +19115,14 @@ impl super::TrapDispatcher {
         let src_clut = src_clut.as_ref();
         let dst_clut = dst_clut.as_ref();
         let palette_translation = palette_translation.as_ref();
+        let shared_indexed_pixel_mask = Self::shared_indexed_pixel_mask(
+            src_info.pixel_size,
+            dst_info.pixel_size,
+            src_info.ctab_handle,
+            dst_ctab_handle,
+            src_clut,
+            dst_clut,
+        );
         let (copy_fg_rgb, copy_bg_rgb) = self.copy_bits_port_draw_colors(bus, port);
         if trace_copybits_enabled()
             && (mask_rgn != 0
@@ -19375,6 +19394,7 @@ impl super::TrapDispatcher {
                             src_clut,
                             dst_clut,
                             palette_translation,
+                            shared_indexed_pixel_mask,
                             mode_base,
                             src_pixel,
                             dst_pixel,
@@ -19411,6 +19431,7 @@ impl super::TrapDispatcher {
                             src_clut,
                             dst_clut,
                             palette_translation,
+                            None,
                             mode_base,
                             src_pixel,
                             bus.read_byte(dst_addr),
@@ -19438,6 +19459,7 @@ impl super::TrapDispatcher {
                             src_clut,
                             dst_clut,
                             palette_translation,
+                            shared_indexed_pixel_mask,
                             mode_base,
                             src_pixel,
                             bus.read_byte(dst_addr),
@@ -21385,15 +21407,25 @@ impl super::TrapDispatcher {
         src_clut: Option<&[[u16; 3]; 256]>,
         dst_clut: Option<&[[u16; 3]; 256]>,
         palette_translation: Option<&[u8; 256]>,
+        shared_indexed_pixel_mask: Option<u8>,
         mode_base: u16,
         src_pixel: u8,
         dst_pixel: u8,
         fg_rgb: [u16; 3],
         bg_rgb: [u16; 3],
     ) -> Option<u8> {
-        // Color QuickDraw applies current foreground/background colors for
-        // Boolean source modes on colored pixels, and leaves destination
-        // pixels untouched for the table's white/black preserve cases.
+        if let Some(pixel_mask) = shared_indexed_pixel_mask {
+            if let Some(pixel) =
+                Self::indexed_boolean_transfer(src_pixel, dst_pixel, mode_base, pixel_mask)
+            {
+                return Some(pixel);
+            }
+        }
+
+        // Across different indexed color spaces, Color QuickDraw applies
+        // current foreground/background colors for Boolean source modes and
+        // leaves destination pixels untouched for the table's white/black
+        // preserve cases.
         // Imaging With QuickDraw 1994, p. 4-33.
         let raw_source = || {
             palette_translation
@@ -21424,6 +21456,58 @@ impl super::TrapDispatcher {
                 .then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, bg_rgb, dst_rgb))),
             _ => Some(raw_source()),
         }
+    }
+
+    fn indexed_boolean_transfer(
+        src_pixel: u8,
+        dst_pixel: u8,
+        mode_base: u16,
+        pixel_mask: u8,
+    ) -> Option<u8> {
+        // A shared indexed color space makes the pixel value itself the
+        // Boolean operand. Mask complemented results to the active depth.
+        // Imaging With QuickDraw (1994), pp. 4-32--4-34.
+        let src_pixel = src_pixel & pixel_mask;
+        let dst_pixel = dst_pixel & pixel_mask;
+        let result = match mode_base {
+            0 => src_pixel,
+            1 => src_pixel | dst_pixel,
+            2 => src_pixel ^ dst_pixel,
+            3 => !src_pixel & dst_pixel,
+            4 => !src_pixel,
+            5 => !src_pixel | dst_pixel,
+            6 => !src_pixel ^ dst_pixel,
+            7 => src_pixel & dst_pixel,
+            _ => return None,
+        };
+        Some(result & pixel_mask)
+    }
+
+    fn shared_indexed_pixel_mask(
+        src_pixel_size: u32,
+        dst_pixel_size: u32,
+        src_ctab_handle: u32,
+        dst_ctab_handle: u32,
+        src_clut: Option<&[[u16; 3]; 256]>,
+        dst_clut: Option<&[[u16; 3]; 256]>,
+    ) -> Option<u8> {
+        // Equal explicit ColorTables describe the same indexed color space;
+        // null tables instead inherit a device context and cannot establish
+        // that relationship by themselves.
+        if src_pixel_size != dst_pixel_size
+            || !matches!(src_pixel_size, 2 | 4 | 8)
+            || src_ctab_handle == 0
+            || dst_ctab_handle == 0
+            || (src_ctab_handle != dst_ctab_handle && src_clut != dst_clut)
+        {
+            return None;
+        }
+
+        Some(if src_pixel_size == 8 {
+            u8::MAX
+        } else {
+            (1u8 << src_pixel_size) - 1
+        })
     }
 
     fn copy_bits_direct_source_mode_rgb(
@@ -32504,6 +32588,91 @@ mod tests {
             ),
             [0x4000, 0x4000, 0x4000]
         );
+    }
+
+    #[test]
+    fn indexed_boolean_transfer_masks_all_eight_source_modes() {
+        let results = (0..=7)
+            .map(|mode| {
+                TrapDispatcher::indexed_boolean_transfer(0b1010, 0b1100, mode, 0x0F)
+                    .expect("Boolean source mode")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(results, vec![0xA, 0xE, 0x6, 0x4, 0x5, 0xD, 0x9, 0x8]);
+        assert_eq!(
+            TrapDispatcher::indexed_boolean_transfer(0, 0, 4, 0x03),
+            Some(0x03),
+            "complemented two-bit pixels must not leak high bits"
+        );
+    }
+
+    #[test]
+    fn copy_bits_shared_palette_srcxor_restores_packed_indexed_pixels() {
+        // When indexed PixMaps use the same depth and ColorTable, Boolean
+        // source modes operate directly on their pixel values. Applying
+        // srcXor twice must therefore restore every packed destination byte.
+        // Imaging With QuickDraw (1994), pp. 4-32--4-34.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+
+        for (case, pixel_size) in [2u16, 4, 8].into_iter().enumerate() {
+            let root = 0x340000 + case as u32 * 0x10000;
+            let src_pixmap = root + 0x100;
+            let dst_pixmap = root + 0x200;
+            let src_base = root + 0x1000;
+            let dst_base = root + 0x2000;
+            let shared_ctab = root + 0x3000;
+            let src_rect = root + 0x4000;
+            let dst_rect = root + 0x4010;
+            let width = 8 / pixel_size;
+            let source = 0b1011_0001u8;
+            let original = 0b0110_1100u8;
+
+            write_color_table(
+                &mut bus,
+                shared_ctab,
+                0x1234_5678 + case as u32,
+                &[(0, 0xFFFF, 0xFFFF, 0xFFFF)],
+            );
+            write_pixmap_indexed(
+                &mut bus,
+                src_pixmap,
+                src_base,
+                1,
+                width,
+                1,
+                pixel_size,
+                shared_ctab,
+            );
+            write_pixmap_indexed(
+                &mut bus,
+                dst_pixmap,
+                dst_base,
+                1,
+                width,
+                1,
+                pixel_size,
+                shared_ctab,
+            );
+            bus.write_byte(src_base, source);
+            bus.write_byte(dst_base, original);
+            write_rect(&mut bus, src_rect, 0, 0, 1, width as i16);
+            write_rect(&mut bus, dst_rect, 0, 0, 1, width as i16);
+
+            for expected in [source ^ original, original] {
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 2u16); // srcXor
+                bus.write_long(TEST_SP + 6, dst_rect);
+                bus.write_long(TEST_SP + 10, src_rect);
+                bus.write_long(TEST_SP + 14, dst_pixmap);
+                bus.write_long(TEST_SP + 18, src_pixmap);
+
+                let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+                assert_eq!(bus.read_byte(dst_base), expected, "{pixel_size}bpp srcXor");
+            }
+        }
     }
 
     fn write_pixmap_8(
