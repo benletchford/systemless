@@ -755,7 +755,7 @@ impl super::TrapDispatcher {
         let key = (refnum, res_type, res_id);
         let recorded_resident = self.resident_resources.contains(&key);
         if let Some(handle) = self.resource_handles_by_key.get(&key).copied() {
-            if let Some((existing_ptr, existing_type, existing_id)) =
+            if let Some((mut existing_ptr, existing_type, existing_id)) =
                 self.loaded_handles.get(&handle).copied()
             {
                 if existing_type == res_type
@@ -769,6 +769,11 @@ impl super::TrapDispatcher {
                     // later lookup with loading enabled should fill it and restore
                     // the reverse ptr->handle ownership so RecoverHandle keeps
                     // working after the refill.
+                    if existing_ptr == 0 && ptr != 0 {
+                        existing_ptr = ptr;
+                        self.loaded_handles
+                            .insert(handle, (ptr, existing_type, existing_id));
+                    }
                     if bus.read_long(handle) == 0 && (self.res_load || recorded_resident) {
                         bus.write_long(handle, existing_ptr);
                         self.add_resource_materialization_tick_cost(bus, existing_ptr);
@@ -842,7 +847,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn reload_resource_data_from_file(
+    pub(crate) fn reload_resource_data_from_file(
         &mut self,
         bus: &mut MacMemoryBus,
         refnum: u16,
@@ -1122,6 +1127,9 @@ impl super::TrapDispatcher {
                             .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
                     }
                 }
+                if let Some(order) = self.resource_file_order.get_mut(&refnum) {
+                    order.retain(|key| *key != (res_type, res_id));
+                }
                 self.forget_resource_backing_data(refnum, res_type, res_id);
                 bus.write_word(0x0A60, 0);
                 true
@@ -1134,6 +1142,9 @@ impl super::TrapDispatcher {
                         file.named
                             .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
                     }
+                }
+                if let Some(order) = self.resource_file_order.get_mut(&current_refnum) {
+                    order.retain(|key| *key != (res_type, res_id));
                 }
                 self.forget_resource_backing_data(current_refnum, res_type, res_id);
                 self.forget_resource_handle_index_for_handle(handle);
@@ -1208,6 +1219,10 @@ impl super::TrapDispatcher {
         file.loaded.insert((res_type, new_id), ptr);
         file.attrs.insert((res_type, new_id), attrs);
         file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
+        self.resource_file_order
+            .entry(current_refnum)
+            .or_default()
+            .push((res_type, new_id));
 
         if name_ptr != 0 {
             let name_bytes = bus.read_pstring(name_ptr);
@@ -1860,12 +1875,11 @@ impl super::TrapDispatcher {
                                 bus.write_long(handle, detached_ptr);
                             }
                         }
-                        // Detaching severs the handle from the resource map. Keep the
-                        // immutable backing bytes so a later GetResource can reload the
-                        // original fork data, but do not let the file's live map keep
-                        // pointing at this now-private buffer.
+                        // Detaching severs this handle from the resource map without
+                        // deleting the resource reference. Mark its shared data as
+                        // unloaded so a later lookup reloads pristine fork bytes.
+                        self.unload_resource_live_map_entry_for_handle(handle);
                         self.forget_resource_residency_for_handle(handle);
-                        self.forget_resource_live_map_entry_for_handle(handle);
                         self.forget_resource_handle_index_for_handle(handle);
                         self.loaded_handles.remove(&handle);
                         if let Some(refnum) = self.resource_handle_files.remove(&handle) {
@@ -2836,6 +2850,13 @@ impl super::TrapDispatcher {
                             {
                                 self.remember_resource_backing_data(refnum, res_type, new_id, data);
                             }
+                            if let Some(order) = self.resource_file_order.get_mut(&refnum) {
+                                if let Some(key) =
+                                    order.iter_mut().find(|key| **key == (res_type, old_id))
+                                {
+                                    *key = (res_type, new_id);
+                                }
+                            }
                         }
 
                         if let Some(resources) = self.resources.as_mut() {
@@ -2935,6 +2956,10 @@ impl super::TrapDispatcher {
                         if let Some(file) = resources.files.get_mut(&refnum) {
                             // Add to loaded map
                             file.loaded.insert((res_type, res_id), ptr);
+                            self.resource_file_order
+                                .entry(refnum)
+                                .or_default()
+                                .push((res_type, res_id));
                             // Set resChanged attribute
                             let entry = file.attrs.entry((res_type, res_id)).or_insert(0);
                             *entry |= Self::RES_CHANGED_ATTR as u8;
@@ -7146,14 +7171,35 @@ impl super::TrapDispatcher {
     /// real guest-bus allocation. Both traps therefore return the
     /// same byte count from `bus.get_alloc_size`.
     fn handle_resource_size_query<C: CpuOps>(
-        &self,
+        &mut self,
         bus: &mut MacMemoryBus,
         cpu: &mut C,
     ) -> Result<()> {
         let sp = cpu.read_reg(Register::A7);
         let handle = bus.read_long(sp);
 
-        let size: i32 = if let Some((ptr, _, _)) = self.loaded_handles.get(&handle).copied() {
+        let identity = self.loaded_handles.get(&handle).copied();
+        let ptr = match identity {
+            Some((0, res_type, res_id)) if self.res_load => self
+                .resource_handle_files
+                .get(&handle)
+                .copied()
+                .and_then(|refnum| {
+                    self.reload_resource_data_from_file(bus, refnum, res_type, res_id)
+                })
+                .unwrap_or(0),
+            Some((ptr, _, _)) => ptr,
+            None => 0,
+        };
+        if ptr != 0 && identity.is_some_and(|(old_ptr, _, _)| old_ptr == 0) {
+            if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+                entry.0 = ptr;
+            }
+            bus.write_long(handle, ptr);
+            self.restore_loaded_resource_handle(handle, ptr);
+        }
+
+        let size: i32 = if identity.is_some() {
             // IM:I I-121 keys validity on whether the handle is a Resource
             // Manager handle, not on whether the handle's master pointer is
             // currently non-NIL (SetResLoad(FALSE) can return empty handles).
@@ -8820,6 +8866,39 @@ mod tests {
         assert_eq!(bus.read_byte(shared_ptr + 3), 0x40);
     }
 
+    #[test]
+    fn detach_resource_keeps_unloaded_resource_map_reference_reloadable() {
+        // Inside Macintosh Volume I (1985), p. I-122: DetachResource makes
+        // the handle ordinary, but the resource remains in its file. A later
+        // lookup must therefore still count and reload the resource.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let original = [0x10u8, 0x20, 0x30, 0x40];
+        let shared_ptr = setup_resources(&mut disp, &mut bus, b"CODE", 1, &original);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"CODE", 1, shared_ptr);
+
+        bus.write_long(TEST_SP, handle);
+        call(&mut disp, true, 0x192, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(disp.count_resources(*b"CODE", true), 1);
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .unwrap()
+                .files
+                .get(&0)
+                .unwrap()
+                .loaded
+                .get(&(*b"CODE", 1)),
+            Some(&0)
+        );
+        let (refnum, reloaded_ptr) = disp
+            .find_or_load_resource_current(&mut bus, *b"CODE", 1)
+            .unwrap();
+        assert_eq!(refnum, 0);
+        assert_ne!(reloaded_ptr, shared_ptr);
+        assert_eq!(bus.read_bytes(reloaded_ptr, original.len()), original);
+    }
+
     // Inside Macintosh Volume I (1985), p. I-122: DetachResource must not
     // detach resChanged resources, but ResError still returns noErr.
     #[test]
@@ -8886,7 +8965,7 @@ mod tests {
     }
 
     #[test]
-    fn detach_resource_unloads_live_map_entry_but_keeps_backing_data_reloadable() {
+    fn detach_resource_unloads_map_data_but_keeps_reference_reloadable() {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let original = [0x50, 0x61, 0x6B, 0x20, 0xAA, 0xBB];
@@ -8923,7 +9002,7 @@ mod tests {
                 .unwrap()
                 .loaded
                 .get(&(*b"Pak ", 12000)),
-            None
+            Some(&0)
         );
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -9414,6 +9493,32 @@ mod tests {
         assert_eq!(new_sp, TEST_SP + 4);
         assert_eq!(bus.read_long(new_sp) as i32, bytes.len() as i32);
         assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn size_resource_reloads_nil_backing_pointer_when_loading_is_enabled() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let bytes = [0x11u8, 0x22, 0x33, 0x44];
+        let data_ptr = setup_resources(&mut disp, &mut bus, b"CODE", 1, &bytes);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"CODE", 1, data_ptr);
+        disp.loaded_handles.insert(handle, (0, *b"CODE", 1));
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .loaded
+            .insert((*b"CODE", 1), 0);
+        bus.write_long(handle, 0);
+        disp.res_load = true;
+
+        bus.write_long(TEST_SP, handle);
+        call(&mut disp, true, 0x1A5, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_long(TEST_SP + 4), bytes.len() as u32);
+        assert_ne!(bus.read_long(handle), 0);
+        assert_eq!(bus.read_bytes(bus.read_long(handle), bytes.len()), bytes);
     }
 
     #[test]
