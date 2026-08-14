@@ -2589,7 +2589,7 @@ impl super::TrapDispatcher {
         if fullscreen_visible {
             // Real full-screen game windows start from an erased content area
             // using the Window Manager desktop/background. In Systemless's
-            // default kiosk mode the Mac menu bar/desktop is suppressed, so
+            // explicit kiosk mode the Mac menu bar/desktop is suppressed, so
             // exposed areas should stay on the black host stage rather than
             // flash the classic white desktop. When callers opt into the menu
             // bar, keep the normal Mac white background.
@@ -6642,6 +6642,7 @@ mod tests {
     #[test]
     fn test_new_cwindow_0x245() {
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_menu_bar_policy(crate::runner::MenuBarPolicy::ForceHidden);
         let screen_base = bus.alloc((800 * 600) as u32);
         bus.write_long(0x0824, screen_base);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
@@ -6683,7 +6684,7 @@ mod tests {
         // Verify it creates a CGrafPort: portVersion at offset +6 should have 0xC000
         let port_version = bus.read_word(window_ptr + 6);
         assert_eq!(port_version, 0xC000, "NewCWindow should set CGrafPort flag");
-        // In default kiosk mode the Mac desktop is hidden, so fullscreen
+        // In explicit kiosk mode the Mac desktop is hidden, so fullscreen
         // windows erase exposed framebuffer areas to the black host stage.
         assert_eq!(
             bus.read_byte(screen_base),
@@ -6695,6 +6696,7 @@ mod tests {
     #[test]
     fn kiosk_new_cwindow_suppresses_initial_document_chrome_erase() {
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_menu_bar_policy(crate::runner::MenuBarPolicy::ForceHidden);
         let screen_base = bus.alloc((800 * 600) as u32);
         bus.write_long(0x0824, screen_base);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);

@@ -4320,6 +4320,20 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn refresh_menu_bar_policy_from_guest(&mut self, bus: &MacMemoryBus) {
+        if self.menu_bar_policy != crate::runner::MenuBarPolicy::InitialKiosk {
+            return;
+        }
+
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        if menu_bar_height <= 0 && self.front_window != 0 {
+            self.initial_kiosk_guest_hide_observed = true;
+        } else if menu_bar_height > 0 && self.initial_kiosk_guest_hide_observed {
+            self.menu_bar_policy = crate::runner::MenuBarPolicy::GuestControlled;
+            self.menu_bar_hidden = false;
+        }
+    }
+
     /// Redraw the menu bar and window chrome into the framebuffer.
     ///
     /// On a real Mac, the Window Manager maintains these UI elements and redraws
@@ -4327,6 +4341,8 @@ impl super::TrapDispatcher {
     /// so game drawing (explosions, etc.) can overwrite them. This method restores
     /// the chrome and should be called after each frame of emulation.
     pub fn redraw_chrome(&mut self, bus: &mut MacMemoryBus) {
+        self.refresh_menu_bar_policy_from_guest(bus);
+
         // Blit front window's port pixels to screen framebuffer if they differ.
         // On real Mac OS the Window Manager composites windows to the screen.
         // In HLE, games draw to the window's GrafPort which may have a different
@@ -5441,9 +5457,8 @@ mod redraw_chrome_tests {
     }
 
     /// Counterpart to the kiosk-mode test above: when `menu_bar_hidden
-    /// = false` (app-style hosting), `redraw_chrome` MUST paint the
-    /// menu bar so menus are reachable. This pins the env-var-driven
-    /// opt-out (SYSTEMLESS_SHOW_MENU_BAR=1 → menu_bar_hidden=false).
+    /// = false` (guest-controlled hosting), `redraw_chrome` MUST paint
+    /// the menu bar so menus are reachable.
     #[test]
     fn redraw_chrome_paints_menu_bar_when_not_hidden() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
