@@ -758,10 +758,24 @@ fn load_address_for_size_partition(
     }
 }
 
+/// Host presentation policy for the classic Mac menu bar.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MenuBarPolicy {
+    /// Follow the guest's `MBarHeight` and fullscreen state.
+    #[default]
+    GuestControlled,
+    /// Begin with kiosk presentation, then return control to the guest after
+    /// an explicit `DrawMenuBar` request or a real hide-and-reveal transition.
+    InitialKiosk,
+    /// Keep the guest menu bar suppressed regardless of guest state.
+    ForceHidden,
+}
+
 /// Configuration knobs for [`FixtureRunner`]. Use
 /// [`FixtureRunnerConfig::default`] for the canonical defaults
 /// (10M-instruction budget, 0x10000 load base, arrow-keys NOT
-/// remapped to numpad) — only override fields you actually need.
+/// remapped to numpad, guest-controlled menu bar) — only override fields you
+/// actually need.
 pub struct FixtureRunnerConfig {
     /// Hard cap on instructions executed by the simpler unbounded
     /// [`FixtureRunner::run`] entry point. Not consulted by
@@ -777,6 +791,9 @@ pub struct FixtureRunnerConfig {
     /// Useful on keyboards without a numeric keypad, since many classic Mac games use
     /// the numpad for movement. Inside Macintosh Volume V, V-191.
     pub arrows_as_numpad: bool,
+    /// Host presentation policy for the classic Mac menu bar. The default
+    /// honors guest `MBarHeight` and fullscreen transitions.
+    pub menu_bar_policy: MenuBarPolicy,
     /// Selected UI rendering provider. The default `classic-system7` provider
     /// represents the existing renderer; non-classic themes are explicit and
     /// must not alter guest-visible Toolbox behavior in classic metrics mode.
@@ -792,6 +809,7 @@ impl Default for FixtureRunnerConfig {
             max_instructions: 10_000_000,
             load_address: DEFAULT_LOAD_ADDRESS,
             arrows_as_numpad: false,
+            menu_bar_policy: MenuBarPolicy::GuestControlled,
             ui_theme: UiThemeId::ClassicSystem7,
             theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
         }
@@ -820,11 +838,9 @@ impl Default for FixtureRunnerConfig {
 ///    [`halted_by_exit_to_shell`](Self::halted_by_exit_to_shell) classifies
 ///    the common clean application-exit path.
 ///
-/// **Defaults:** kiosk mode (Mac menu bar suppressed regardless of the
-/// guest's `MBarHeight`); arrow keys NOT remapped to numpad. Override
-/// each via [`set_menu_bar_visible`](Self::set_menu_bar_visible) /
-/// [`set_arrows_as_numpad`](Self::set_arrows_as_numpad) or the
-/// `SYSTEMLESS_SHOW_MENU_BAR` env var.
+/// **Defaults:** guest-controlled Mac menu-bar visibility; arrow keys NOT
+/// remapped to numpad. Frontends can select a kiosk policy through
+/// [`set_menu_bar_policy`](Self::set_menu_bar_policy).
 ///
 /// See `examples/run_headless.rs` for a runnable end-to-end example.
 pub struct FixtureRunner {
@@ -974,12 +990,13 @@ impl FixtureRunner {
     /// [`crate::game::RAM_SIZE`] provides the canonical profile-driven size;
     /// tests and specialized embedders may choose a smaller allocation.
     ///
-    /// The dispatcher defaults to **kiosk mode** (Mac menu bar
-    /// suppressed, regardless of the guest's `MBarHeight`). Call
-    /// [`set_menu_bar_visible`](Self::set_menu_bar_visible) to opt back
-    /// in to the original Mac menu-bar behaviour.
+    /// The dispatcher follows the guest's menu-bar state by default. Frontends
+    /// that own the surrounding chrome can select an explicit kiosk policy in
+    /// [`FixtureRunnerConfig`] or through
+    /// [`set_menu_bar_policy`](Self::set_menu_bar_policy).
     pub fn new(ram_size: usize, config: FixtureRunnerConfig) -> Self {
         let mut dispatcher = TrapDispatcher::new();
+        dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.set_ui_theme_id(config.ui_theme);
         let mut bus = MacMemoryBus::new(ram_size);
         let standard_adb_service = bus.alloc_synthetic(2);
@@ -1172,34 +1189,35 @@ impl FixtureRunner {
             .preserves_classic_guest_metrics()
     }
 
-    /// Show or hide the Mac menu bar.
+    /// Select the host presentation policy for the classic Mac menu bar.
+    pub fn set_menu_bar_policy(&mut self, policy: MenuBarPolicy) {
+        self.config.menu_bar_policy = policy;
+        self.dispatcher.set_menu_bar_policy(policy);
+    }
+
+    /// Return the current host presentation policy for the menu bar.
+    pub fn menu_bar_policy(&self) -> MenuBarPolicy {
+        self.dispatcher.menu_bar_policy
+    }
+
+    /// Compatibility toggle for embedders using the older boolean API.
     ///
-    /// systemless runs in **kiosk mode** by default — the Mac menu bar is
-    /// suppressed regardless of the guest's `MBarHeight` ($0BAA) value
-    /// and `DrawMenuBar` is a no-op. This matches the typical embedding
-    /// case (running a single classic Mac game inside a fullscreen
-    /// host window) where the host owns the chrome and the guest's
-    /// menu bar would just diverge from the original-machine
-    /// appearance whenever the cursor entered `y < 20`.
-    ///
-    /// Pass `true` to opt back in to original Mac behavior — for
-    /// example, when running a Mac *application* that relies on the
-    /// menu bar as its primary user surface.
-    ///
-    /// The same toggle is also accessible via the `SYSTEMLESS_SHOW_MENU_BAR`
-    /// environment variable (set to any value to show) and via
-    /// `systemless --show-menu-bar`. This library method is the
-    /// preferred entry point for library embedders that don't want
-    /// to depend on environment-variable plumbing.
+    /// `true` restores guest-controlled visibility. `false` permanently hides
+    /// the bar; game frontends that only need an initial kiosk presentation
+    /// should use [`MenuBarPolicy::InitialKiosk`] instead.
     ///
     /// Inside Macintosh Volume I, I-354 (DrawMenuBar);
     /// Inside Macintosh Volume V, V-245 (MBarHeight global).
     pub fn set_menu_bar_visible(&mut self, visible: bool) {
-        self.dispatcher.menu_bar_hidden = !visible;
+        self.set_menu_bar_policy(if visible {
+            MenuBarPolicy::GuestControlled
+        } else {
+            MenuBarPolicy::ForceHidden
+        });
     }
 
-    /// Returns true when the Mac menu bar is currently being rendered.
-    /// In the default kiosk configuration this returns `false`.
+    /// Returns whether host policy currently permits the Mac menu bar to be
+    /// rendered. Guest `MBarHeight` and fullscreen state may still hide it.
     pub fn menu_bar_visible(&self) -> bool {
         !self.dispatcher.menu_bar_hidden
     }
@@ -1908,10 +1926,13 @@ impl FixtureRunner {
             max_instructions: self.config.max_instructions,
             load_address: self.config.load_address,
             arrows_as_numpad: self.config.arrows_as_numpad,
+            menu_bar_policy: self.config.menu_bar_policy,
             ui_theme: self.config.ui_theme,
             theme_metrics_mode: self.config.theme_metrics_mode,
         };
-        let menu_bar_visible = self.menu_bar_visible();
+        let menu_bar_policy = self.dispatcher.menu_bar_policy;
+        let menu_bar_hidden = self.dispatcher.menu_bar_hidden;
+        let initial_kiosk_guest_hide_observed = self.dispatcher.initial_kiosk_guest_hide_observed;
         let instructions_per_tick = self.instructions_per_tick;
         let wait_sleep_cap_in_headless = self.wait_sleep_cap_in_headless;
         let app_start_time = self.app_start_time;
@@ -1934,7 +1955,10 @@ impl FixtureRunner {
         let next_working_dir_refnum = self.dispatcher.next_working_dir_refnum;
 
         let mut replacement = FixtureRunner::new(ram_size, config);
-        replacement.set_menu_bar_visible(menu_bar_visible);
+        replacement.dispatcher.menu_bar_policy = menu_bar_policy;
+        replacement.dispatcher.menu_bar_hidden = menu_bar_hidden;
+        replacement.dispatcher.initial_kiosk_guest_hide_observed =
+            initial_kiosk_guest_hide_observed;
         replacement.instructions_per_tick = instructions_per_tick;
         replacement.tick_budget = instructions_per_tick as i32;
         replacement.wait_sleep_cap_in_headless = wait_sleep_cap_in_headless;
@@ -4515,6 +4539,8 @@ impl FixtureRunner {
         // A same-tick cycle proof is invalid as soon as any ordinary clock
         // advancement or interrupt work occurs during the observed cycle.
         self.cancel_idle_cycle_detector();
+        self.dispatcher
+            .refresh_menu_bar_policy_from_guest(&self.bus);
         let new_tick = self.bus.read_long(0x016A).wrapping_add(1);
         self.bus.write_long(0x016A, new_tick);
         self.dispatcher.tick_count = new_tick;
@@ -13794,45 +13820,46 @@ mod tests {
     }
 
     #[test]
-    fn set_menu_bar_visible_round_trips_through_public_api() {
-        // Pins the FixtureRunner::set_menu_bar_visible / menu_bar_visible
-        // pair as the public-API entry point for the kiosk-mode toggle.
-        // Library embedders should not need to reach through
-        // dispatcher_mut() into TrapDispatcher::menu_bar_hidden — the
-        // method-based surface keeps the kiosk-on-by-default contract
-        // discoverable from the FixtureRunner type alone.
-        //
-        // Default (constructor): kiosk on → menu bar NOT visible.
-        // After set_menu_bar_visible(true): menu bar IS visible.
-        // After set_menu_bar_visible(false): kiosk back on.
-        // Skip when SYSTEMLESS_SHOW_MENU_BAR is set in the test env —
-        // the env var pre-seeds menu_bar_hidden = false at construction
-        // and would race the round-trip assertion.
-        if std::env::var_os("SYSTEMLESS_SHOW_MENU_BAR").is_some() {
-            return;
-        }
+    fn menu_bar_policy_defaults_to_guest_control_and_supports_explicit_kiosk_modes() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        assert!(
-            !runner.menu_bar_visible(),
-            "kiosk default: menu_bar_visible() must report false"
-        );
-        runner.set_menu_bar_visible(true);
+        assert_eq!(runner.menu_bar_policy(), MenuBarPolicy::GuestControlled);
         assert!(
             runner.menu_bar_visible(),
-            "after set_menu_bar_visible(true), menu_bar_visible() must report true"
+            "library runners should permit guest menu chrome by default"
         );
+
+        runner.set_menu_bar_policy(MenuBarPolicy::InitialKiosk);
+        assert_eq!(runner.menu_bar_policy(), MenuBarPolicy::InitialKiosk);
+        assert!(!runner.menu_bar_visible());
+
         runner.set_menu_bar_visible(false);
-        assert!(
-            !runner.menu_bar_visible(),
-            "after set_menu_bar_visible(false), menu_bar_visible() must report false"
-        );
-        // Internal field stays in sync with the public API — guards
-        // against future refactors that introduce a parallel state
-        // field but forget to wire it through the toggle.
-        assert!(
-            runner.dispatcher().menu_bar_hidden,
-            "set_menu_bar_visible(false) must clear the kiosk-bypass bit"
-        );
+        assert_eq!(runner.menu_bar_policy(), MenuBarPolicy::ForceHidden);
+        assert!(!runner.menu_bar_visible());
+
+        runner.set_menu_bar_visible(true);
+        assert_eq!(runner.menu_bar_policy(), MenuBarPolicy::GuestControlled);
+        assert!(runner.menu_bar_visible());
+    }
+
+    #[test]
+    fn initial_kiosk_releases_after_guest_hides_and_reveals_menu_bar() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_menu_bar_policy(MenuBarPolicy::InitialKiosk);
+        runner.dispatcher.front_window = 1;
+
+        runner
+            .bus
+            .write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        runner.force_advance_guest_tick();
+        assert_eq!(runner.menu_bar_policy(), MenuBarPolicy::InitialKiosk);
+        assert!(!runner.menu_bar_visible());
+
+        runner
+            .bus
+            .write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        runner.force_advance_guest_tick();
+        assert_eq!(runner.menu_bar_policy(), MenuBarPolicy::GuestControlled);
+        assert!(runner.menu_bar_visible());
     }
 
     #[test]

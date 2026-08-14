@@ -80,9 +80,11 @@ Common runner options:
 ```sh
 systemless --headless --max-instructions 5000000 path/to/app.sit
 systemless --arrows-as-numpad path/to/game.sit
-systemless --show-menu-bar path/to/app.sit
-systemless --cpu-mhz 25 path/to/app.sit
 ```
+
+The desktop runner uses the canonical machine profile automatically. On macOS,
+guest menus are mirrored into the native menu bar; other platforms render the
+classic menu bar according to the guest application's own visibility state.
 
 Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
 Archives may contain multiple files; Systemless populates the in-memory VFS and
@@ -256,7 +258,6 @@ name.
 | -------- | ------ |
 | `SYSTEMLESS_LOAD_EXECUTABLE` | Selects an executable from a multi-app archive by substring. |
 | `SYSTEMLESS_ORIGINAL_FONTS_DIR` | Loads optional runtime font override blobs. |
-| `SYSTEMLESS_SHOW_MENU_BAR` | Shows classic Mac menu chrome by default. |
 | `SYSTEMLESS_TRACE_LOAD` | Logs archive, VFS, resource, and startup loading diagnostics. |
 | `SYSTEMLESS_TRACE_LOADSEG` | Logs Segment Loader jump-table patching. |
 | `SYSTEMLESS_TRACE_TRAP_COUNTS` | Prints trap dispatch frequency summaries. |

@@ -1528,6 +1528,10 @@ impl super::TrapDispatcher {
             // DrawMenuBar ($A937): Renders menu-bar titles for menus currently
             // in the menu list (InsertMenu-installed) per IM:I I-352/I-354.
             (true, 0x137) => {
+                // Initial kiosk mode is only a frontend launch policy. A
+                // guest DrawMenuBar call is an explicit request to present its
+                // menus, so ownership returns to the guest before rendering.
+                self.release_initial_menu_bar_kiosk();
                 self.draw_menu_bar_to_fb(bus);
                 Ok(())
             }
@@ -8673,6 +8677,38 @@ mod tests {
         let result = disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus);
         assert!(result.is_some(), "DrawMenuBar should be handled");
         assert!(result.unwrap().is_ok(), "DrawMenuBar should succeed");
+    }
+
+    #[test]
+    fn draw_menu_bar_releases_initial_kiosk_policy() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_menu_bar_policy(crate::runner::MenuBarPolicy::InitialKiosk);
+
+        let result = disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus);
+
+        assert!(result.is_some(), "DrawMenuBar should be handled");
+        assert!(result.unwrap().is_ok(), "DrawMenuBar should succeed");
+        assert_eq!(
+            disp.menu_bar_policy,
+            crate::runner::MenuBarPolicy::GuestControlled
+        );
+        assert!(!disp.menu_bar_hidden);
+    }
+
+    #[test]
+    fn draw_menu_bar_preserves_force_hidden_policy() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_menu_bar_policy(crate::runner::MenuBarPolicy::ForceHidden);
+
+        let result = disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus);
+
+        assert!(result.is_some(), "DrawMenuBar should be handled");
+        assert!(result.unwrap().is_ok(), "DrawMenuBar should succeed");
+        assert_eq!(
+            disp.menu_bar_policy,
+            crate::runner::MenuBarPolicy::ForceHidden
+        );
+        assert!(disp.menu_bar_hidden);
     }
 
     #[test]

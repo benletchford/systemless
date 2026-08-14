@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -- [--headless] [--max-instructions N] \
-//!     [--cpu-mhz N] [--show-menu-bar] [--arrows-as-numpad] <game>
+//!     [--arrows-as-numpad] <game>
 //! ```
 //!
 //! Disable the GUI deps with `--no-default-features` to build a
@@ -41,6 +41,8 @@ use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
+#[cfg(target_os = "macos")]
+use systemless::runner::MenuBarPolicy;
 use systemless::trap::dispatch::ScreenCopyBitsRect;
 
 #[cfg(not(target_os = "macos"))]
@@ -112,17 +114,9 @@ struct Cli {
     )]
     literal_arrows: bool,
 
-    /// Emulate the requested CPU clock speed
-    #[arg(long, value_name = "N")]
-    cpu_mhz: Option<f64>,
-
     /// Stop a headless run after this many instructions
     #[arg(long, value_name = "N")]
     max_instructions: Option<usize>,
-
-    /// Show the classic Mac menu bar
-    #[arg(long)]
-    show_menu_bar: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -338,10 +332,6 @@ struct App {
     next_frame_time: Option<std::time::Instant>,
     /// Adaptive CPU/render split for the single-threaded GUI loop.
     render_headroom: std::time::Duration,
-    /// Wall-clock boundary up to which GUI CPU time has been budgeted.
-    next_cpu_budget_time: Option<std::time::Instant>,
-    /// Fractional guest instructions carried between GUI slices.
-    cpu_instruction_credit: f64,
     /// Fractional host samples carried between GUI slices to preserve rate.
     audio_sample_remainder: f64,
     /// Wall-clock instant represented by the most recently queued audio.
@@ -370,14 +360,6 @@ struct App {
     debug_frame_ms: Option<f64>,
     /// Remap arrow keys to numpad equivalents (for keyboards without a numpad)
     arrows_as_numpad: bool,
-    /// Optional GUI CPU cap in instructions per second (cpu_mhz × 1_000_000).
-    emulated_ips: Option<f64>,
-    /// CLI override of the default-hidden menu bar. When true, the
-    /// HLE renders the menu bar even though the dispatcher's
-    /// `menu_bar_hidden` defaults to true. Wired through to
-    /// `runner.dispatcher_mut().menu_bar_hidden = false` at runner
-    /// construction.
-    show_menu_bar: bool,
     #[cfg(target_os = "macos")]
     native_menu: native_menu::NativeMenuBridge,
     #[cfg(target_os = "macos")]
@@ -389,12 +371,7 @@ struct App {
 }
 
 impl App {
-    fn new(
-        game_path: PathBuf,
-        arrows_as_numpad: bool,
-        cpu_mhz: Option<f64>,
-        show_menu_bar: bool,
-    ) -> Self {
+    fn new(game_path: PathBuf, arrows_as_numpad: bool) -> Self {
         #[cfg(target_os = "macos")]
         let native_menu_app_name = game_path
             .file_stem()
@@ -457,8 +434,6 @@ impl App {
             start_time: None,
             next_frame_time: None,
             render_headroom: MIN_RENDER_HEADROOM,
-            next_cpu_budget_time: None,
-            cpu_instruction_credit: 0.0,
             audio_sample_remainder: 0.0,
             last_audio_mix_time: None,
             mouse_physical: (0.0, 0.0),
@@ -474,8 +449,6 @@ impl App {
             debug_host_fps: None,
             debug_frame_ms: None,
             arrows_as_numpad,
-            emulated_ips: cpu_mhz.map(|mhz| mhz * 1_000_000.0),
-            show_menu_bar,
             #[cfg(target_os = "macos")]
             native_menu: native_menu::NativeMenuBridge::new(native_menu_app_name),
             #[cfg(target_os = "macos")]
@@ -530,9 +503,8 @@ impl App {
         }
 
         let mut runner = game::new_runner();
-        if self.show_menu_bar {
-            runner.set_menu_bar_visible(true);
-        }
+        #[cfg(target_os = "macos")]
+        runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
         let app =
             game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
         let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner);
@@ -638,13 +610,6 @@ impl App {
         self.runner
             .as_ref()
             .is_some_and(FixtureRunner::halted_by_exit_to_shell)
-    }
-
-    fn cpu_budget_for_duration(duration: std::time::Duration, ips: f64, credit: &mut f64) -> usize {
-        *credit += duration.as_secs_f64() * ips;
-        let budget = credit.floor().min(game::MAX_INSTRUCTIONS_PER_FRAME as f64) as usize;
-        *credit -= budget as f64;
-        budget
     }
 
     /// Wall-clock origin such that `tick_due_at(origin, now)` equals `guest_tick`.
@@ -766,19 +731,7 @@ impl App {
             .map(|d| d.max(now))
             .unwrap_or(now);
 
-        let slice_budget = if let Some(ips) = self.emulated_ips {
-            let cpu_interval_start = self.next_cpu_budget_time.unwrap_or(now);
-            let cpu_interval = cpu_deadline
-                .checked_duration_since(cpu_interval_start)
-                .unwrap_or_default();
-            let budget =
-                Self::cpu_budget_for_duration(cpu_interval, ips, &mut self.cpu_instruction_credit);
-            self.next_cpu_budget_time = Some(cpu_deadline);
-            budget
-        } else {
-            self.next_cpu_budget_time = Some(cpu_deadline);
-            game::MAX_INSTRUCTIONS_PER_FRAME
-        };
+        let slice_budget = game::MAX_INSTRUCTIONS_PER_FRAME;
         let audio_interval = self
             .last_audio_mix_time
             .replace(now)
@@ -1960,11 +1913,7 @@ impl ApplicationHandler for App {
         // Schedule the next host frame. If startup/resource loading makes us
         // miss a full presentation interval, drop the missed host frame instead
         // of running immediate catch-up frames that bunch audio and graphics.
-        let (next_target, dropped_missed_frame) = Self::next_frame_target(now, next);
-        if dropped_missed_frame {
-            self.next_cpu_budget_time = Some(now);
-            self.cpu_instruction_credit = 0.0;
-        }
+        let (next_target, _) = Self::next_frame_target(now, next);
         self.next_frame_time = Some(next_target);
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_target));
 
@@ -2019,12 +1968,8 @@ impl ApplicationHandler for App {
     }
 }
 
-fn run_gui(game_path: PathBuf, arrows_as_numpad: bool, cpu_mhz: Option<f64>, show_menu_bar: bool) {
+fn run_gui(game_path: PathBuf, arrows_as_numpad: bool) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
-    match cpu_mhz {
-        Some(mhz) => eprintln!("[SYSTEMLESS] GUI CPU cap: {:.1} MHz", mhz),
-        None => eprintln!("[SYSTEMLESS] GUI CPU cap: uncapped"),
-    }
     eprintln!(
         "[SYSTEMLESS] GUI arrow keys: {}",
         if arrows_as_numpad {
@@ -2034,7 +1979,7 @@ fn run_gui(game_path: PathBuf, arrows_as_numpad: bool, cpu_mhz: Option<f64>, sho
         }
     );
 
-    let mut app = App::new(game_path, arrows_as_numpad, cpu_mhz, show_menu_bar);
+    let mut app = App::new(game_path, arrows_as_numpad);
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
     // entering the event loop so startup never exposes an empty host window.
@@ -2072,16 +2017,11 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
     eprintln!("[HEADLESS] Screenshot #{}: {} (ticks={})", num, path, ticks);
 }
 
-fn run_headless(game_path: &std::path::Path, max_instructions: usize, show_menu_bar: bool) {
+fn run_headless(game_path: &std::path::Path, max_instructions: usize) {
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
 
     let mut runner = game::new_runner();
-    if show_menu_bar {
-        // CLI override of the default kiosk-mode hide. See
-        // FixtureRunner::set_menu_bar_visible for the rationale.
-        runner.set_menu_bar_visible(true);
-    }
     let app = game::load_game_from_path(&mut runner, game_path).expect("Failed to load game");
     let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, &mut runner);
     eprintln!(
@@ -2147,13 +2087,9 @@ fn main() {
     eprintln!("[SYSTEMLESS] Game: {}", game_path.display());
 
     if cli.headless {
-        run_headless(
-            &game_path,
-            cli.max_instructions.unwrap_or(5_000_000),
-            cli.show_menu_bar,
-        );
+        run_headless(&game_path, cli.max_instructions.unwrap_or(5_000_000));
     } else {
-        run_gui(game_path, arrows_as_numpad, cli.cpu_mhz, cli.show_menu_bar);
+        run_gui(game_path, arrows_as_numpad);
     }
 }
 
@@ -2442,11 +2378,8 @@ mod tests {
             "systemless",
             "--headless",
             "--arrows-as-numpad",
-            "--cpu-mhz",
-            "25.5",
             "--max-instructions",
             "1234",
-            "--show-menu-bar",
             "game.sit",
         ])
         .expect("runner options should parse");
@@ -2455,9 +2388,7 @@ mod tests {
         assert!(cli.headless);
         assert!(cli.arrows_as_numpad);
         assert!(!cli.literal_arrows);
-        assert_eq!(cli.cpu_mhz, Some(25.5));
         assert_eq!(cli.max_instructions, Some(1234));
-        assert!(cli.show_menu_bar);
     }
 
     #[test]
@@ -2480,16 +2411,19 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_missing_game_invalid_values_and_unknown_options() {
+    fn cli_rejects_missing_game_removed_options_and_unknown_options() {
         let missing_game =
             Cli::try_parse_from(["systemless"]).expect_err("game path should be required");
-        let invalid_value = Cli::try_parse_from(["systemless", "--cpu-mhz", "fast", "game.sit"])
-            .expect_err("CPU clock should be numeric");
+        let removed_cpu = Cli::try_parse_from(["systemless", "--cpu-mhz", "25", "game.sit"])
+            .expect_err("removed CPU option should be rejected");
+        let removed_menu = Cli::try_parse_from(["systemless", "--show-menu-bar", "game.sit"])
+            .expect_err("removed menu option should be rejected");
         let unknown_option = Cli::try_parse_from(["systemless", "--wat", "game.sit"])
             .expect_err("unknown options should be rejected");
 
         assert_eq!(missing_game.kind(), ErrorKind::MissingRequiredArgument);
-        assert_eq!(invalid_value.kind(), ErrorKind::ValueValidation);
+        assert_eq!(removed_cpu.kind(), ErrorKind::UnknownArgument);
+        assert_eq!(removed_menu.kind(), ErrorKind::UnknownArgument);
         assert_eq!(unknown_option.kind(), ErrorKind::UnknownArgument);
     }
 
@@ -2522,7 +2456,7 @@ mod tests {
         use systemless::cpu::Register;
         use systemless::memory::MemoryBus;
 
-        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
@@ -2574,12 +2508,7 @@ mod tests {
 
     #[test]
     fn gui_defaults_to_literal_arrow_controls() {
-        let app = App::new(
-            PathBuf::from("dummy"),
-            DEFAULT_GUI_ARROWS_AS_NUMPAD,
-            None,
-            false,
-        );
+        let app = App::new(PathBuf::from("dummy"), DEFAULT_GUI_ARROWS_AS_NUMPAD);
 
         assert!(
             !app.arrows_as_numpad,
@@ -2856,7 +2785,7 @@ mod tests {
     fn step_frame_mixes_one_audio_frame_when_guest_tick_does_not_advance() {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
-        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -2887,13 +2816,12 @@ mod tests {
         runner.cpu_mut().write_reg(Register::PC, pc);
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
         runner.bus_mut().write_long(0x016A, 0);
-        runner.set_instructions_per_tick(1_000_000);
+        runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
 
-        let mut app = App::new(PathBuf::from("dummy"), false, Some(1.0), false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION);
         app.next_frame_time = Some(now + FRAME_DURATION * 4);
-        app.next_cpu_budget_time = Some(now);
         app.last_presented_guest_tick = Some(0);
         app.force_next_render = false;
 
@@ -2988,7 +2916,7 @@ mod tests {
                 exhausted_buffer_index: 0,
             });
 
-        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         app.runner = Some(runner);
         app.start_time = Some(scheduled_frame_end);
         app.next_frame_time = Some(scheduled_frame_end);
@@ -3092,7 +3020,7 @@ mod tests {
         );
         runner.dispatcher_mut().sound_manager.channels.push(chan);
 
-        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -3120,7 +3048,7 @@ mod tests {
     fn step_frame_recovers_audio_elapsed_during_a_dropped_video_frame() {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
-        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -3150,7 +3078,7 @@ mod tests {
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
         runner.set_instructions_per_tick(1);
 
-        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION * 2);
         app.next_frame_time = Some(now + FRAME_DURATION);
@@ -3162,31 +3090,6 @@ mod tests {
             "one GUI frame should queue about 367 stereo frames, got {} bytes",
             *queued.borrow()
         );
-    }
-
-    #[test]
-    fn cpu_budget_for_duration_preserves_average_mhz() {
-        let mut credit = 0.0;
-        let mut total = 0usize;
-        let ips = systemless::runner::DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND;
-
-        total += App::cpu_budget_for_duration(
-            FRAME_DURATION.saturating_sub(MIN_RENDER_HEADROOM),
-            ips,
-            &mut credit,
-        );
-        for _ in 1..120 {
-            total += App::cpu_budget_for_duration(FRAME_DURATION, ips, &mut credit);
-        }
-
-        let total_duration = FRAME_DURATION
-            .saturating_sub(MIN_RENDER_HEADROOM)
-            .as_secs_f64()
-            + FRAME_DURATION.as_secs_f64() * 119.0;
-        let expected = (total_duration * ips).floor() as usize;
-        assert_eq!(total, expected);
-        assert!(credit >= 0.0);
-        assert!(credit < 1.0);
     }
 
     #[test]
@@ -3255,7 +3158,7 @@ mod tests {
 
     #[test]
     fn render_gate_waits_for_guest_tick_unless_forced() {
-        let mut app = App::new(PathBuf::from("dummy"), false, None, false);
+        let mut app = App::new(PathBuf::from("dummy"), false);
         app.runner = Some(FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),

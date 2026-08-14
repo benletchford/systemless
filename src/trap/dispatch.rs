@@ -1529,16 +1529,16 @@ pub struct TrapDispatcher {
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
     /// the game temporarily restores MBarHeight (e.g. on cursor-at-top).
     pub fullscreen_locked: bool,
-    /// Host-controlled override for menu bar visibility. When true, the menu
-    /// bar is suppressed regardless of game state — unlike `fullscreen_locked`
-    /// which the emulator auto-clears when the game writes MBarHeight > 0.
-    /// Defaults to `true` so the HLE renders like a kiosk by default; the
-    /// menu bar is a Mac OS chrome surface that has no analogue in a game-
-    /// only runtime, and showing it diverges screenshots from the
-    /// original-machine reference whenever the cursor hovers `y < 20`.
-    /// Set `SYSTEMLESS_SHOW_MENU_BAR=1` (or assign `menu_bar_hidden = false`
-    /// after construction) to opt back in for environments where the menu
-    /// bar IS the user-facing surface (e.g. running a Mac app, not a game).
+    /// Host presentation policy for the classic Mac menu bar.
+    pub(crate) menu_bar_policy: crate::runner::MenuBarPolicy,
+    /// Whether an initial-kiosk frontend has observed the guest genuinely hide
+    /// the menu bar after creating a window. A later reveal releases the kiosk
+    /// suppression back to guest control; an explicit DrawMenuBar request does
+    /// so immediately.
+    pub(crate) initial_kiosk_guest_hide_observed: bool,
+    /// Effective host suppression bit used by rendering and hit-testing paths.
+    /// Guest-controlled runners default to `false`; explicit frontend policy
+    /// may set it while leaving `fullscreen_locked` to model guest state.
     pub menu_bar_hidden: bool,
     /// Sound Manager state (channels, playback buffers).
     pub sound_manager: crate::sound::SoundManager,
@@ -2130,6 +2130,20 @@ impl TrapDispatcher {
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
     pub(crate) const AUTO_KEY_RATE_TICKS: u32 = 4;
     const CAPS_LOCK_KEY_CODE: u8 = 0x39;
+
+    pub(crate) fn set_menu_bar_policy(&mut self, policy: crate::runner::MenuBarPolicy) {
+        self.menu_bar_policy = policy;
+        self.initial_kiosk_guest_hide_observed = false;
+        self.menu_bar_hidden = !matches!(policy, crate::runner::MenuBarPolicy::GuestControlled);
+    }
+
+    pub(crate) fn release_initial_menu_bar_kiosk(&mut self) {
+        if self.menu_bar_policy == crate::runner::MenuBarPolicy::InitialKiosk {
+            self.menu_bar_policy = crate::runner::MenuBarPolicy::GuestControlled;
+            self.initial_kiosk_guest_hide_observed = false;
+            self.menu_bar_hidden = false;
+        }
+    }
 
     pub(crate) fn key_is_modifier(key_code: u8) -> bool {
         // Command, Shift, Caps Lock, Option, and Control (including the
@@ -3020,13 +3034,9 @@ impl TrapDispatcher {
             go_away_flag: false,
             window_list: Vec::new(),
             fullscreen_locked: false,
-            // Default to hiding the menu bar — the HLE is a game runtime,
-            // not a Finder, and a leaking menu bar at `y < 20` is the
-            // single biggest source of visual glitches where the classic
-            // menu bar bleeds into the game's top rows. Frontends that
-            // host a Mac app (rather than a game) can opt back in via
-            // `SYSTEMLESS_SHOW_MENU_BAR=1`.
-            menu_bar_hidden: std::env::var_os("SYSTEMLESS_SHOW_MENU_BAR").is_none(),
+            menu_bar_policy: crate::runner::MenuBarPolicy::GuestControlled,
+            initial_kiosk_guest_hide_observed: false,
+            menu_bar_hidden: false,
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
             saved_menu_bars: HashMap::new(),

@@ -27,8 +27,8 @@
 //! ```no_run
 //! use systemless::runner::{FixtureRunner, FixtureRunnerConfig};
 //!
-//! // Allocate an 8 MiB guest, default config (kiosk mode — Mac menu
-//! // bar suppressed; arrow keys not remapped to numpad).
+//! // Allocate an 8 MiB guest with guest-controlled menu visibility and
+//! // arrow keys left as literal arrow keys.
 //! let config = FixtureRunnerConfig::default();
 //! let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
 //!
