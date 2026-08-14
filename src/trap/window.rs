@@ -2192,6 +2192,10 @@ impl super::TrapDispatcher {
             // already placed us.
             return;
         }
+        let covered_rect = Self::region_handle_rect(
+            bus,
+            bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
+        );
         self.window_list.retain(|&w| w != window_ptr);
         if behind == 0 {
             self.window_list.push(window_ptr);
@@ -2217,6 +2221,22 @@ impl super::TrapDispatcher {
         }
         if self.front_window != window_ptr {
             self.sync_cached_front_window_render_state(bus);
+        }
+        // Creation draws a visible window before the Pascal `behind`
+        // parameter is applied. If that parameter moves it behind existing
+        // windows, its freshly drawn pixels have clobbered the windows that
+        // remain in front. Add the overlap to each affected window's update
+        // region so its application can repaint the exposed content.
+        if let Some(rect) = covered_rect {
+            let windows = self.window_list.clone();
+            for &window in &windows {
+                if window == window_ptr {
+                    break;
+                }
+                if self.window_visible(bus, window) {
+                    self.invalidate_window_global_rect(bus, window, rect);
+                }
+            }
         }
     }
 
@@ -6757,6 +6777,69 @@ mod tests {
             (10, 20, 110, 220),
             "cached front-window geometry must follow the visible front after behind=NIL reorders"
         );
+    }
+
+    #[test]
+    fn apply_behind_parameter_invalidates_windows_clobbered_during_creation() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let existing = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            existing,
+            screen_base,
+            20,
+            20,
+            300,
+            400,
+            "Existing",
+            4,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.validate_window_rect(&mut bus, existing, (0, 0, 280, 380));
+
+        let created = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            created,
+            screen_base,
+            60,
+            80,
+            180,
+            300,
+            "Created",
+            1,
+            true,
+            false,
+            true,
+            0,
+        );
+        disp.validate_window_rect(&mut bus, created, (0, 0, 120, 220));
+
+        disp.apply_behind_parameter(&mut bus, created, existing);
+
+        assert_eq!(disp.window_list, vec![existing, created]);
+        let update = super::super::TrapDispatcher::region_handle_rect(
+            &bus,
+            bus.read_long(existing + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET),
+        );
+        assert!(
+            update.is_some(),
+            "the window left in front must redraw pixels clobbered by creation"
+        );
+        assert!(disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == existing));
     }
 
     #[test]
