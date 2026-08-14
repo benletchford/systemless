@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.17](https://github.com/benletchford/systemless/compare/v0.12.16...v0.12.17) (2026-08-14)
+
+
+### Bug Fixes
+
+* **control:** draw controls when shown ([687702a](https://github.com/benletchford/systemless/commit/687702a2c8d9c95a9e8377bfb0566dc51f1a036c))
+* **device:** hide unavailable AppleTalk drivers ([de8c9c6](https://github.com/benletchford/systemless/commit/de8c9c663c0370444c86876532f0802f8611b7ea))
+* drain modal dialog draw callbacks before resuming events ([084a5d0](https://github.com/benletchford/systemless/commit/084a5d08fb6e88cbcfa30a45a12300a79e4b7dc7))
+* prefer exact executable override matches ([93a821f](https://github.com/benletchford/systemless/commit/93a821f00050700ade484db8854f829a2736d8f7))
+* **quickdraw:** convert direct pixels to indexed color ([e28f4c9](https://github.com/benletchford/systemless/commit/e28f4c98bd8cd1a7f6d711390bf68952cf35fcaa))
+* **sane:** implement FDEC2STR formatting ([3699b12](https://github.com/benletchford/systemless/commit/3699b1220643bd21b473f64d0ddb89ff5f47be68))
+
 ## [0.12.16](https://github.com/benletchford/systemless/compare/v0.12.15...v0.12.16) (2026-08-13)
 
 
