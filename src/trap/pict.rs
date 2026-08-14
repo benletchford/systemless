@@ -148,6 +148,11 @@ fn align_pict_pos(pos: u32) -> u32 {
     }
 }
 
+fn checked_skip_pict_data(pos: u32, length_field_size: u32, data_len: u32) -> Option<u32> {
+    let next = pos.checked_add(length_field_size)?.checked_add(data_len)?;
+    next.checked_add(next & 1)
+}
+
 fn skip_reserved_v1_opcode(bus: &MacMemoryBus, opcode: u16, pos: u32) -> Option<u32> {
     match opcode {
         0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => Some(pos + 8),
@@ -1178,24 +1183,59 @@ pub fn draw_picture(
             }
             0x88..=0x8C => {}
             0x90 | 0x91 => {
-                // BitsRect / BitsRgn - 1bpp bitmap
-                pos = parse_bits_rect(
-                    bus,
-                    pos,
-                    opcode == 0x91,
-                    dst_top,
-                    dst_left,
-                    frame_top,
-                    frame_left,
-                    scale_x,
-                    scale_y,
-                    screen_mode,
-                    device_clut,
-                    fg_idx,
-                    bg_idx,
-                    clip_region.as_ref(),
-                    dst_clip,
-                );
+                // BitsRect / BitsRgn may contain either a 1bpp BitMap or an
+                // indexed PixMap. Inside Macintosh Volume V, pp. V-94 and
+                // V-103, says the rowBytes high bit selects the PixMap form;
+                // these opcodes remain uncompressed because rowBytes is < 8.
+                if bus.read_word(pos) & 0x8000 != 0 {
+                    let (new_pos, clut) = parse_pack_bits_rect(
+                        bus,
+                        pos,
+                        opcode == 0x91,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        device_clut,
+                        device_ct_seed,
+                        fg_idx,
+                        bg_idx,
+                        clip_region.as_ref(),
+                        dst_clip,
+                    );
+                    pos = new_pos;
+                    if let Some(ct) = clut {
+                        if preferred_clut.is_none()
+                            || preferred_clut
+                                .as_ref()
+                                .is_some_and(|existing| clut_resembles_canonical_8bpp(existing))
+                        {
+                            preferred_clut = Some(ct.clone());
+                        }
+                        last_clut = Some(ct);
+                    }
+                } else {
+                    pos = parse_bits_rect(
+                        bus,
+                        pos,
+                        opcode == 0x91,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        device_clut,
+                        fg_idx,
+                        bg_idx,
+                        clip_region.as_ref(),
+                        dst_clip,
+                    );
+                }
             }
             0x98 | 0x99 => {
                 // PackBitsRect / PackBitsRgn - packed bitmap
@@ -1318,16 +1358,26 @@ pub fn draw_picture(
                     // v2 reserved opcode skip rules
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        let Some(next) = checked_skip_pict_data(pos, 2, data_len) else {
+                            eprintln!(
+                                "[PICT] Reserved v2 opcode 0x{opcode:04X} length overflow - stopping"
+                            );
+                            break;
+                        };
+                        pos = next;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                         // 0 bytes — both reserved-range blocks have no payload
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        pos += 4 + data_len;
-                        pos = align_pict_pos(pos);
+                        let Some(next) = checked_skip_pict_data(pos, 4, data_len) else {
+                            eprintln!(
+                                "[PICT] Reserved v2 opcode 0x{opcode:04X} length overflow - stopping"
+                            );
+                            break;
+                        };
+                        pos = next;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -1585,6 +1635,9 @@ pub(crate) fn peek_initial_packbits_clut(
                 pos += 2 + data_len;
                 pos = align_pict_pos(pos);
             }
+            0x90 | 0x91 if bus.read_word(pos) & 0x8000 != 0 => {
+                return peek_pack_bits_rect_clut(bus, pos);
+            }
             0x98 | 0x99 => return peek_pack_bits_rect_clut(bus, pos),
             0xA1 => {
                 pos += 2;
@@ -1600,15 +1653,13 @@ pub(crate) fn peek_initial_packbits_clut(
                 if is_v2 {
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos = checked_skip_pict_data(pos, 2, data_len)?;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        pos += 4 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos = checked_skip_pict_data(pos, 4, data_len)?;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -1894,6 +1945,9 @@ fn skip_pixdata_bytes(bytes: &[u8], mut pos: usize, pm: &PixMapInfo) -> Option<u
 }
 
 fn skip_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
+    if read_pict_u16(bytes, pos)? & 0x8000 != 0 {
+        return skip_pack_bits_rect_bytes(bytes, pos, has_rgn);
+    }
     let row_bytes = usize::from(read_pict_u16(bytes, pos)? & 0x3FFF);
     let bounds_top = read_pict_u16(bytes, pos + 2)? as i16;
     let bounds_bottom = read_pict_u16(bytes, pos + 6)? as i16;
@@ -6202,8 +6256,9 @@ mod tests {
     use super::{
         blit_row, build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
-        dst_clip_row_spans, peek_initial_packbits_clut, try_blit_packbits_8bpp_src_copy_fast,
-        try_blit_row_8bpp_src_copy_fast, DstClip, DstClipRegion, PictIndexedTransfer, PixMapInfo,
+        dst_clip_row_spans, peek_initial_packbits_clut, picture_stream_len,
+        try_blit_packbits_8bpp_src_copy_fast, try_blit_row_8bpp_src_copy_fast, DstClip,
+        DstClipRegion, PictIndexedTransfer, PixMapInfo,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
@@ -7201,6 +7256,154 @@ mod tests {
             0b1000_0000,
             "indexed color PICT pixels drawn into 1bpp must resolve against the black/white destination, not the full 8bpp CLUT"
         );
+    }
+
+    /// A BitsRect whose rowBytes high bit is set carries a PixMap and color
+    /// table even though its rows are uncompressed (Inside Macintosh Volume V,
+    /// pp. V-94 and V-103). Treating it as the old 1bpp BitMap form loses the
+    /// PixMap header and desynchronizes the remaining PICT opcode stream.
+    #[test]
+    fn indexed_pixmap_bitsrect_draws_uncompressed_pixels_and_stays_synchronized() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_bytes(screen_base, &[0xEE; 2]);
+
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_word(p, 0x0011);
+        p += 2;
+        bus.write_word(p, 0x02FF);
+        p += 2;
+        bus.write_word(p, 0x0090);
+        p += 2;
+        bus.write_word(p, 0x8001);
+        p += 2;
+        for value in [0i16, 0, 1, 2] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_long(p, 0);
+        p += 4;
+        bus.write_long(p, 0x0048_0000);
+        p += 4;
+        bus.write_long(p, 0x0048_0000);
+        p += 4;
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_word(p, 4);
+        p += 2;
+        bus.write_word(p, 1);
+        p += 2;
+        bus.write_word(p, 4);
+        p += 2;
+        bus.write_long(p, 0);
+        p += 4;
+        bus.write_long(p, 0);
+        p += 4;
+        bus.write_long(p, 0);
+        p += 4;
+
+        bus.write_long(p, 0x1234_5678);
+        p += 4;
+        bus.write_word(p, 0x8000);
+        p += 2;
+        bus.write_word(p, 2);
+        p += 2;
+        for (index, [r, g, b]) in [
+            (0u16, [0xFFFF, 0xFFFF, 0xFFFF]),
+            (1u16, [0xFFFF, 0x0000, 0x0000]),
+            (2u16, [0x0000, 0x0000, 0xFFFF]),
+        ] {
+            bus.write_word(p, index);
+            p += 2;
+            bus.write_word(p, r);
+            p += 2;
+            bus.write_word(p, g);
+            p += 2;
+            bus.write_word(p, b);
+            p += 2;
+        }
+
+        for _ in 0..2 {
+            for value in [0i16, 0, 1, 2] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+        bus.write_word(p, 0);
+        p += 2;
+        bus.write_byte(p, 0x12);
+        p += 1;
+        p += 1;
+        bus.write_word(p, 0x00FF);
+        p += 2;
+
+        bus.write_word(pic, (p - pic) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 1);
+        bus.write_word(pic + 8, 2);
+
+        let mut clut = [[0x7777u16; 3]; 256];
+        clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        clut[17] = [0xFFFF, 0x0000, 0x0000];
+        clut[42] = [0x0000, 0x0000, 0xFFFF];
+        clut[255] = [0x0000, 0x0000, 0x0000];
+
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            1,
+            2,
+            (screen_base, 2, 2, 1, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok);
+        assert_eq!(bus.read_bytes(screen_base, 2), vec![17, 42]);
+        assert_eq!(
+            picture_stream_len(&bus.read_bytes(pic, (p - pic) as usize)),
+            Some((p - pic) as usize)
+        );
+    }
+
+    #[test]
+    fn reserved_v2_long_data_length_overflow_stops_picture_parsing() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pic = 0x10_0000u32;
+        bus.write_word(pic, 20);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, 1);
+        bus.write_word(pic + 8, 1);
+        bus.write_word(pic + 10, 0x0011);
+        bus.write_word(pic + 12, 0x02FF);
+        bus.write_word(pic + 14, 0x8100);
+        bus.write_long(pic + 16, u32::MAX);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            1,
+            1,
+            (0x08_0000, 1, 1, 1, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok);
     }
 
     #[test]
