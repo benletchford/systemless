@@ -1375,6 +1375,27 @@ fn maybe_select_executable(
     data_len: usize,
     creator: [u8; 4],
 ) {
+    let executable_override = executable_name_override();
+    maybe_select_executable_with_override(
+        executable_entry,
+        name,
+        rsrc,
+        is_appl,
+        data_len,
+        creator,
+        executable_override.as_deref(),
+    );
+}
+
+fn maybe_select_executable_with_override(
+    executable_entry: &mut Option<ExecutableCandidate>,
+    name: &str,
+    rsrc: &[u8],
+    is_appl: bool,
+    data_len: usize,
+    creator: [u8; 4],
+    executable_override: Option<&str>,
+) {
     if rsrc.is_empty() {
         return;
     }
@@ -1383,18 +1404,15 @@ fn maybe_select_executable(
         return;
     }
 
-    // SYSTEMLESS_LOAD_EXECUTABLE: case-sensitive substring match against the
-    // archive entry name. When the env var is set and a candidate matches
-    // it wins outright over the size/APPL heuristic, which is needed for
-    // archives that contain multiple bootable executables and where size
-    // alone cannot distinguish the user-facing runtime from tooling.
-    let override_match = executable_name_override()
-        .map(|needle| name.contains(needle.as_str()))
-        .unwrap_or(false);
-    let prev_override_match = match (executable_entry.as_ref(), executable_name_override()) {
-        (Some(prev), Some(needle)) => prev.name.contains(needle.as_str()),
-        _ => false,
-    };
+    // SYSTEMLESS_LOAD_EXECUTABLE: prefer an exact candidate path, then a
+    // case-sensitive substring match, then the normal size/APPL heuristic.
+    // The substring fallback supports short user-facing names, while exact
+    // precedence keeps "Game" from losing to a larger "Game Installer".
+    let override_rank = executable_override_match_rank(name, executable_override);
+    let prev_override_rank = executable_entry
+        .as_ref()
+        .map(|prev| executable_override_match_rank(&prev.name, executable_override))
+        .unwrap_or(0);
 
     let candidate = ExecutableCandidate {
         name: name.to_string(),
@@ -1405,10 +1423,8 @@ fn maybe_select_executable(
         creator,
     };
 
-    let take = if override_match && !prev_override_match {
-        true
-    } else if !override_match && prev_override_match {
-        false
+    let take = if override_rank != prev_override_rank {
+        override_rank > prev_override_rank
     } else {
         match executable_entry.as_ref() {
             Some(prev) => candidate.selection_key() > prev.selection_key(),
@@ -1418,6 +1434,14 @@ fn maybe_select_executable(
 
     if take {
         *executable_entry = Some(candidate);
+    }
+}
+
+fn executable_override_match_rank(name: &str, executable_override: Option<&str>) -> u8 {
+    match executable_override {
+        Some(needle) if name == needle => 2,
+        Some(needle) if name.contains(needle) => 1,
+        _ => 0,
     }
 }
 
@@ -1912,6 +1936,35 @@ mod tests {
 
         let selected = selected.expect("expected an executable candidate");
         assert_eq!(selected.name, "Demo Disk/Pathways into Darkness");
+    }
+
+    #[test]
+    fn executable_selection_prefers_exact_override_over_larger_substring_match() {
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let installer_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+        let mut selected = None;
+
+        maybe_select_executable_with_override(
+            &mut selected,
+            "DOOM II/DOOM II",
+            &app_rsrc,
+            true,
+            422_288,
+            *b"????",
+            Some("DOOM II/DOOM II"),
+        );
+        maybe_select_executable_with_override(
+            &mut selected,
+            "DOOM II/DOOM II Installer",
+            &installer_rsrc,
+            true,
+            9_871_672,
+            *b"????",
+            Some("DOOM II/DOOM II"),
+        );
+
+        let selected = selected.expect("expected an executable candidate");
+        assert_eq!(selected.name, "DOOM II/DOOM II");
     }
 
     #[test]
