@@ -16465,12 +16465,11 @@ impl super::TrapDispatcher {
         for (index, rgb) in updated_clut.iter_mut().enumerate().take(palette_entries) {
             let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
             let usage = bus.read_word(color_info + 6) as i16;
-            // A purely explicit entry observes the existing device index and
-            // ignores ciRGB. If the caller also requests pmTolerant, however,
-            // Palette Manager prioritization must install the requested RGB
-            // while PmForeColor still keeps the entry's explicit index.
-            // Inside Macintosh V (1986), pp. V-157..V-160.
-            if usage & PM_EXPLICIT != 0 && usage & PM_TOLERANT == 0 {
+            // pmExplicit makes ciRGB an index into the device ColorTable, so
+            // it does not modify that index's current RGB value. Additional
+            // usage flags do not change the entry's explicit classification.
+            // Inside Macintosh: Advanced Color Imaging (1995), pp. 1-12--1-13.
+            if usage & PM_EXPLICIT != 0 {
                 *rgb = current_clut[index];
                 continue;
             }
@@ -35486,11 +35485,10 @@ mod tests {
     }
 
     #[test]
-    fn activatepalette_installs_tolerant_rgb_for_mixed_explicit_entries() {
-        // IM:V V-157..V-160: tolerant entries participate in palette
-        // prioritization and update the color environment. Combining that
-        // request with pmExplicit must retain stable PmForeColor indices
-        // without suppressing the tolerant RGB installation.
+    fn activatepalette_preserves_device_rgb_for_mixed_explicit_entries() {
+        // pmExplicit identifies a device ColorTable index rather than an RGB
+        // request, even when another usage flag is also present.
+        // Inside Macintosh: Advanced Color Imaging (1995), pp. 1-12--1-13.
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4160u32;
         let usage = super::PM_TOLERANT | super::PM_EXPLICIT;
@@ -35507,12 +35505,13 @@ mod tests {
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
         d.current_port = window;
+        let before = d.device_clut;
         bus.write_long(TEST_SP, window);
 
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
-        assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.device_clut, before);
+        assert_eq!(d.color_manager_clut, before);
     }
 
     #[test]
