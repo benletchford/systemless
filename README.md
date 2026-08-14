@@ -1,23 +1,37 @@
 <p align="center">
   <a href="https://systemless.org/">
-    <img src=".github/assets/systemless-logo.svg" alt="Systemless" width="128" height="128">
+    <img src=".github/assets/systemless-logo.svg" alt="Systemless mascot" width="192" height="192">
   </a>
 </p>
 
-# systemless
+<h1 align="center">systemless</h1>
 
-Systemless is a high-level runtime for 68k classic Macintosh applications and
-games, written in Rust.
+<p align="center">
+  <strong>A high-level runtime for classic 68k Macintosh applications and games.</strong><br>
+  Run original Mac software without a ROM image, System installation, or hardware emulation.
+</p>
 
-It executes guest 68k code with the [`m68k`](https://crates.io/crates/m68k)
+<p align="center">
+  <a href="https://github.com/benletchford/systemless/actions/workflows/ci.yml"><img src="https://github.com/benletchford/systemless/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/systemless"><img src="https://img.shields.io/crates/v/systemless.svg" alt="crates.io"></a>
+  <a href="https://docs.rs/systemless"><img src="https://docs.rs/systemless/badge.svg" alt="Documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/crates/l/systemless.svg" alt="License"></a>
+</p>
+
+Written in Rust, Systemless executes guest 68k code with the [`m68k`](https://crates.io/crates/m68k)
 crate and handles Mac OS A-line traps in native Rust. Native builds explicitly
 enable m68k's Cranelift JIT for eligible hot traces; WebAssembly uses its
 portable trace executor. That lets packaged Mac applications run without a Mac
 ROM image, a full System install, or hardware emulation.
 
-See it running in the browser: **[Marathon](https://systemless.org/marathon)**
-and **[Escape Velocity](https://systemless.org/escape-velocity)**. More demos
-are available at <https://systemless.org/>.
+## See it in action
+
+| [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
+| :---: | :---: |
+| [![Marathon running in Systemless](.github/assets/marathon-gameplay.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](.github/assets/escape-velocity-gameplay.png)](https://systemless.org/escape-velocity) |
+
+Play these and more classic Macintosh games in your browser at
+[systemless.org](https://systemless.org/).
 
 ## Status
 
