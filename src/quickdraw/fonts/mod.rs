@@ -35,6 +35,7 @@ pub mod pixel_font;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 pub use self::heuristics::{
@@ -500,10 +501,16 @@ struct OverrideCache {
 /// substituting authentic Mac bitmap glyphs at runtime without committing
 /// Apple-copyrighted data into this repo.
 ///
-/// The cache follows the current env path instead of freezing the first
-/// lookup. Test harnesses and embedders can validate or set the local font
-/// cache shortly before launching a fixture, after unrelated code has already
-/// queried fallback metrics.
+/// The directory is resolved on the first lookup and reused after that.
+/// `get_font_face` sits on the per-glyph drawing path, where consulting
+/// the environment means walking it and allocating: a CPU profile of EV
+/// Override attributed several percent of the process to exactly that,
+/// across the handful of lookups each character performs.
+///
+/// Embedders and test harnesses that set or clear
+/// `SYSTEMLESS_ORIGINAL_FONTS_DIR` after other code has already queried
+/// font metrics must call [`refresh_font_overrides`] to pick the change
+/// up.
 static OVERRIDES: LazyLock<Mutex<OverrideCache>> =
     LazyLock::new(|| Mutex::new(OverrideCache::default()));
 
@@ -536,7 +543,30 @@ fn get_font_face_with_overrides(
     get_baked_font_face(font_id, size)
 }
 
+/// Re-read `SYSTEMLESS_ORIGINAL_FONTS_DIR` on the next font lookup.
+///
+/// Call this after setting or clearing the variable at runtime. Lookups
+/// otherwise reuse the directory resolved by the first one, because
+/// consulting the environment per glyph is measurably expensive.
+pub fn refresh_font_overrides() {
+    OVERRIDE_RESOLVED.store(false, Ordering::Release);
+}
+
+/// Whether the override directory has been resolved, and whether it
+/// yielded any faces. Both are read per glyph, so they are plain atomics;
+/// when no overrides exist -- the usual case, since the variable is an
+/// opt-in hook -- lookups take neither the environment nor the mutex.
+static OVERRIDE_RESOLVED: AtomicBool = AtomicBool::new(false);
+static OVERRIDE_ANY: AtomicBool = AtomicBool::new(false);
+
 fn get_override_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
+    if OVERRIDE_RESOLVED.load(Ordering::Acquire) {
+        if !OVERRIDE_ANY.load(Ordering::Acquire) {
+            return None;
+        }
+        let cache = OVERRIDES.lock().expect("font override cache poisoned");
+        return cache.faces.get(&(font_id, size)).copied();
+    }
     let env_dir = std::env::var_os("SYSTEMLESS_ORIGINAL_FONTS_DIR");
     let mut cache = OVERRIDES.lock().expect("font override cache poisoned");
     if cache.env_dir != env_dir {
@@ -546,6 +576,8 @@ fn get_override_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> 
             .unwrap_or_default();
         cache.env_dir = env_dir;
     }
+    OVERRIDE_ANY.store(!cache.faces.is_empty(), Ordering::Release);
+    OVERRIDE_RESOLVED.store(true, Ordering::Release);
     cache.faces.get(&(font_id, size)).copied()
 }
 
