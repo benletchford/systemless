@@ -1016,6 +1016,14 @@ fn canonical_trap_number(opcode: u16) -> (bool, u16) {
     (is_tool, trap_num)
 }
 
+/// Input/time polls that may anchor an exact idle-cycle proof: pure
+/// reads of host state that only changes at tick boundaries. A cycle
+/// that repeats around one of these with identical CPU and memory state
+/// is waiting, whether or not it ever asks the Event Manager.
+fn is_poll_anchor_trap(opcode: u16) -> bool {
+    matches!(canonical_trap_number(opcode), (true, 0x0172..=0x0176))
+}
+
 fn hle_trap_extra_tick_cost(opcode: u16) -> i32 {
     let (is_tool, trap_num) = canonical_trap_number(opcode);
     match (is_tool, trap_num) {
@@ -4004,6 +4012,18 @@ impl FixtureRunner {
             // memory. The exact-state journal therefore observes every
             // consequence without needing a separate host-state condition.
             (true, 0x0071) => true,
+            // The input-poll family (GetMouse, StillDown, Button, TickCount,
+            // GetKeys) reads host input/time state that only changes at tick
+            // boundaries and reports it entirely through registers and guest
+            // memory: if anything did change between iterations, the journal
+            // or CPU snapshot differs and the proof self-rejects. EV
+            // Override's crawl idles in exactly such a cycle (GetKeys +
+            // Button between frames), which the null-event whitelist alone
+            // can never prove.
+            (true, 0x0172..=0x0176) => true,
+            // SANE Pack4/Pack5 are pure transforms of stack operands and
+            // guest memory (verified handler-side: no dispatcher state).
+            (true, 0x01EB) | (true, 0x01EC) => true,
             (true, 0x01B4) => !self.dispatcher.system_task_has_periodic_work(),
             _ => false,
         };
@@ -5404,7 +5424,7 @@ impl FixtureRunner {
                                 }
                                 continue;
                             }
-                            if null_event
+                            if (null_event || is_poll_anchor_trap(opcode))
                                 && spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap)
                                 && self.try_exact_null_event_cycle_fastfwd(pc, tick_cap)
                             {
@@ -15768,6 +15788,86 @@ mod tests {
         assert_eq!(runner.dispatcher.tick_count, 110);
         assert!(runner.idle_cycle_sleep.is_none());
         assert!(runner.bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn poll_traps_and_sane_do_not_cancel_an_idle_probe() {
+        // EV Override's crawl idles in a GetKeys/Button cycle interleaved
+        // with SANE math; the proof must survive every one of those traps
+        // and still cancel on anything with unjournaled consequences.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.dispatcher.tick_count = 100;
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+
+        for opcode in [0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC] {
+            runner.note_idle_cycle_trap_result(opcode);
+            assert!(
+                runner.idle_cycle_probe.is_some(),
+                "poll/SANE trap {opcode:04X} must not cancel the probe"
+            );
+        }
+        // A drawing trap has host-visible consequences the journal cannot
+        // observe; it must cancel.
+        runner.note_idle_cycle_trap_result(0xA893);
+        assert!(runner.idle_cycle_probe.is_none());
+    }
+
+    #[test]
+    fn poll_anchor_covers_the_input_family_only() {
+        for opcode in [0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xAD76] {
+            assert!(is_poll_anchor_trap(opcode), "{opcode:04X}");
+        }
+        for opcode in [0xA970u16, 0xA971, 0xA991, 0xA9EB, 0xA893, 0x4E71] {
+            assert!(!is_poll_anchor_trap(opcode), "{opcode:04X}");
+        }
+    }
+
+    #[test]
+    fn input_poll_cycle_proves_and_parks_like_a_null_event_cycle() {
+        // The crawl shape: a cycle anchored at a GetKeys site with no event
+        // trap anywhere in it. The exact-state proof must park it to the
+        // next tick exactly as it parks a null-event loop.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        let sp = 0x0010_0000u32;
+        let keymap = 0x0020_0000u32;
+        runner.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.cpu.core.ppc = trap_pc;
+        runner.cpu.core.ir = 0xA976;
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+        // The prior (pre-proof) iteration already left the KeyMap and the
+        // SANE-computed scroll position in place; the journal compares
+        // against exactly this state.
+        runner.bus.write_long(keymap, 0);
+        runner.bus.write_long(keymap + 16, 0x0001_0000);
+
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(105)));
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+
+        // One full iteration: GetKeys rewrites the same all-zero KeyMap,
+        // Button and TickCount report unchanged host state, SANE recomputes
+        // the same scroll position into a scratch long.
+        runner.bus.write_long(keymap, 0);
+        runner.note_idle_cycle_trap_result(0xA976);
+        runner.note_idle_cycle_trap_result(0xA974);
+        runner.note_idle_cycle_trap_result(0xA975);
+        runner.bus.write_long(keymap + 16, 0x0001_0000);
+        runner.bus.write_long(keymap + 16, 0x0001_0000);
+        runner.note_idle_cycle_trap_result(0xA9EB);
+        assert!(runner.idle_cycle_probe.is_some(), "cycle traps kept the probe");
+
+        // At the frame's tick cap, a proven cycle parks (the GUI case:
+        // sleep to the next frame instead of spinning out the cap).
+        assert!(runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
+        assert_eq!(runner.dispatcher.tick_count, 100);
+        assert!(runner.idle_cycle_sleep.is_some());
     }
 
     #[test]
