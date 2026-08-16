@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0](https://github.com/benletchford/systemless/compare/v0.12.17...v0.13.0) (2026-08-16)
+
+
+### Features
+
+* **ppc:** add initial PowerPC application support ([#631](https://github.com/benletchford/systemless/issues/631)) ([ec5c263](https://github.com/benletchford/systemless/commit/ec5c263509ba8e689ce09a4709f8995ddbb0f367))
+
+
+### Performance Improvements
+
+* **fonts:** resolve the override directory once, not per glyph ([#628](https://github.com/benletchford/systemless/issues/628)) ([4158bd8](https://github.com/benletchford/systemless/commit/4158bd8f5fe4134940410e95d27a63c0011dd0be))
+
 ## [0.12.17](https://github.com/benletchford/systemless/compare/v0.12.16...v0.12.17) (2026-08-14)
 
 
