@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/benletchford/systemless/compare/v0.13.0...v0.13.1) (2026-08-16)
+
+
+### Performance Improvements
+
+* defer PowerPC host synchronization between GUI slices ([c145d81](https://github.com/benletchford/systemless/commit/c145d8160451e6f86baae50b2a283abab8696891))
+
 ## [0.13.0](https://github.com/benletchford/systemless/compare/v0.12.17...v0.13.0) (2026-08-16)
 
 
