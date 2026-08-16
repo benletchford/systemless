@@ -369,8 +369,14 @@ pub fn draw_picture(
     // DHDVText. Default to Geneva 12 like most classic Mac UI.
     let mut pict_font_id: i16 = 3;
     let mut pict_font_size: i16 = 12;
-    let mut pen_v: i16 = 0;
-    let mut pen_h: i16 = 0;
+    // Imaging With QuickDraw (1994), Appendix A, pp. A-7--A-8, defines
+    // relative text opcodes in terms of the current text position. Keep it
+    // distinct from the graphics pen updated by LineFrom/ShortLineFrom;
+    // recorded pictures routinely interleave framing lines and DHDVText.
+    let mut line_pen_v: i16 = 0;
+    let mut line_pen_h: i16 = 0;
+    let mut text_pen_v: i16 = 0;
+    let mut text_pen_h: i16 = 0;
     // PnSize(0x07) so frameRect / frameOval / frameArc / frame-variants
     // honor thick pens. Default (1, 1) matches QuickDraw initPort.
     let mut pen_size: (i16, i16) = (1, 1);
@@ -587,8 +593,8 @@ pub fn draw_picture(
                     pn_pat,
                     fg_idx,
                 );
-                pen_v = new_v;
-                pen_h = new_h;
+                line_pen_v = new_v;
+                line_pen_h = new_h;
             }
             0x21 => {
                 // LineFrom: newPt(v:word, h:word). Draws from current
@@ -599,8 +605,8 @@ pub fn draw_picture(
                 draw_picture_line(
                     bus,
                     screen_mode,
-                    pen_v,
-                    pen_h,
+                    line_pen_v,
+                    line_pen_h,
                     new_v,
                     new_h,
                     dst_top,
@@ -615,8 +621,8 @@ pub fn draw_picture(
                     pn_pat,
                     fg_idx,
                 );
-                pen_v = new_v;
-                pen_h = new_h;
+                line_pen_v = new_v;
+                line_pen_h = new_h;
             }
             0x22 => {
                 // ShortLine: pnLoc(v:word, h:word) + dh(i8) + dv(i8).
@@ -646,8 +652,8 @@ pub fn draw_picture(
                     pn_pat,
                     fg_idx,
                 );
-                pen_v = new_v;
-                pen_h = new_h;
+                line_pen_v = new_v;
+                line_pen_h = new_h;
             }
             0x23 => {
                 // ShortLineFrom: dh(i8) + dv(i8). Draws from current
@@ -655,13 +661,13 @@ pub fn draw_picture(
                 let dh = bus.read_byte(pos) as i8 as i16;
                 let dv = bus.read_byte(pos + 1) as i8 as i16;
                 pos += 2;
-                let new_v = pen_v.saturating_add(dv);
-                let new_h = pen_h.saturating_add(dh);
+                let new_v = line_pen_v.saturating_add(dv);
+                let new_h = line_pen_h.saturating_add(dh);
                 draw_picture_line(
                     bus,
                     screen_mode,
-                    pen_v,
-                    pen_h,
+                    line_pen_v,
+                    line_pen_h,
                     new_v,
                     new_h,
                     dst_top,
@@ -676,13 +682,13 @@ pub fn draw_picture(
                     pn_pat,
                     fg_idx,
                 );
-                pen_v = new_v;
-                pen_h = new_h;
+                line_pen_v = new_v;
+                line_pen_h = new_h;
             }
             0x28 => {
                 // LongText: txLoc(v:word, h:word) + count(1) + text
-                pen_v = bus.read_word(pos) as i16;
-                pen_h = bus.read_word(pos + 2) as i16;
+                text_pen_v = bus.read_word(pos) as i16;
+                text_pen_h = bus.read_word(pos + 2) as i16;
                 pos += 4;
                 let len = bus.read_byte(pos) as u32;
                 pos += 1;
@@ -691,8 +697,8 @@ pub fn draw_picture(
                 draw_picture_text(
                     bus,
                     screen_mode,
-                    pen_v,
-                    pen_h,
+                    text_pen_v,
+                    text_pen_h,
                     text_start,
                     len,
                     pict_font_id,
@@ -709,7 +715,7 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(
+                text_pen_h = text_pen_h.saturating_add(text_advance(
                     bus,
                     text_start,
                     len,
@@ -728,12 +734,12 @@ pub fn draw_picture(
                 pos += 1;
                 let text_start = pos;
                 pos += len;
-                pen_h = pen_h.saturating_add(dh);
+                text_pen_h = text_pen_h.saturating_add(dh);
                 draw_picture_text(
                     bus,
                     screen_mode,
-                    pen_v,
-                    pen_h,
+                    text_pen_v,
+                    text_pen_h,
                     text_start,
                     len,
                     pict_font_id,
@@ -750,14 +756,14 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(
+                text_pen_h = text_pen_h.saturating_add(text_advance(
                     bus,
                     text_start,
                     len,
                     pict_font_id,
                     pict_font_size,
                 ));
-                if is_v2 && len.is_multiple_of(2) {
+                if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
                 }
             }
@@ -769,12 +775,12 @@ pub fn draw_picture(
                 pos += 1;
                 let text_start = pos;
                 pos += len;
-                pen_v = pen_v.saturating_add(dv);
+                text_pen_v = text_pen_v.saturating_add(dv);
                 draw_picture_text(
                     bus,
                     screen_mode,
-                    pen_v,
-                    pen_h,
+                    text_pen_v,
+                    text_pen_h,
                     text_start,
                     len,
                     pict_font_id,
@@ -791,14 +797,14 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(
+                text_pen_h = text_pen_h.saturating_add(text_advance(
                     bus,
                     text_start,
                     len,
                     pict_font_id,
                     pict_font_size,
                 ));
-                if is_v2 && len.is_multiple_of(2) {
+                if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
                 }
             }
@@ -811,13 +817,13 @@ pub fn draw_picture(
                 pos += 1;
                 let text_start = pos;
                 pos += len;
-                pen_h = pen_h.saturating_add(dh);
-                pen_v = pen_v.saturating_add(dv);
+                text_pen_h = text_pen_h.saturating_add(dh);
+                text_pen_v = text_pen_v.saturating_add(dv);
                 draw_picture_text(
                     bus,
                     screen_mode,
-                    pen_v,
-                    pen_h,
+                    text_pen_v,
+                    text_pen_h,
                     text_start,
                     len,
                     pict_font_id,
@@ -834,7 +840,7 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                pen_h = pen_h.saturating_add(text_advance(
+                text_pen_h = text_pen_h.saturating_add(text_advance(
                     bus,
                     text_start,
                     len,
@@ -2045,7 +2051,7 @@ pub(crate) fn picture_stream_len(bytes: &[u8]) -> Option<usize> {
             0x29 | 0x2A => {
                 let len = usize::from(*bytes.get(pos + 1)?);
                 let mut next = pict_add(pos, 2usize.checked_add(len)?, bytes.len())?;
-                if is_v2 && len.is_multiple_of(2) {
+                if is_v2 && !len.is_multiple_of(2) {
                     next = pict_add(next, 1, bytes.len())?;
                 }
                 next

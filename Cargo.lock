@@ -1772,6 +1772,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ppc"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87d40ae627917451c3933cce67f6c8e0bc7f93fcabedd528f97acfbb965271b8"
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2199,6 +2205,7 @@ version = "0.12.17"
 dependencies = [
  "clap",
  "cpal",
+ "flate2",
  "hfs-reader",
  "hfsplus",
  "image",
@@ -2209,6 +2216,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-metal",
  "objc2-quartz-core 0.2.2",
+ "ppc",
  "serde",
  "serde_json",
  "softbuffer",

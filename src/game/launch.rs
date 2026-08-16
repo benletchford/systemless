@@ -4,6 +4,11 @@
 //! packs), runner initialization, and post-load configuration so all
 //! frontends behave identically.
 
+use crate::loader::cfrg::{parse_cfrg_resource, select_powerpc_application_fragment, WHOLE_FORK};
+use crate::loader::pef::{parse_pef_header, parse_pef_loader_header, resolve_pef_main_entry};
+use crate::loader::ppc::{
+    PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord, PpcVfsResourceRecord,
+};
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
 use crate::memory::MemoryBus;
@@ -85,7 +90,7 @@ pub fn pack_game_sources_for_web(
                 .map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
             file_entries.extend(collect_stuffit_payload_files(&archive)?);
         } else if let Some(image) = crate::disk_image::extract_dc42_or_hfs(source)? {
-            file_entries.extend(payload_from_disk_image(image)?.files);
+            file_entries.extend(payload_from_disk_image(image, 1)?.files);
         } else {
             return Err("Game source is not a StuffIt archive or HFS disk image".to_string());
         }
@@ -178,6 +183,17 @@ pub fn load_game_from_path(
         }
     }
 
+    if let Some((root, app_rel, rsrc_data)) = find_exported_resource_sidecar(path) {
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Loading exported host tree from {} with app {}",
+                root.display(),
+                app_rel
+            );
+        }
+        return load_exported_host_tree(runner, &root, &app_rel, file_data, rsrc_data);
+    }
+
     // Fall back to detecting MacBinary/raw resource-fork style payloads.
     load_game(runner, &file_data)
 }
@@ -243,6 +259,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             entry.file_type,
             entry.creator,
             entry.finder_flags,
+            1,
         )?;
         skipped_disk_image_errors.extend(payload.skipped_disk_image_errors.iter().cloned());
         insert_payload_into_vfs(runner, payload, &mut executable_entry);
@@ -284,6 +301,7 @@ fn load_binhex(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp
             file.file_type,
             file.creator,
             file.finder_flags,
+            2,
         )?,
         &mut executable_entry,
     );
@@ -355,13 +373,20 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
         finder_flags,
     );
 
+    let kind = classify_executable(data_fork, rsrc_data, file_type == *b"APPL")
+        .ok_or("No executable found in MacBinary file")?;
     let executable = ExecutableCandidate {
         name: app_name.to_string(),
         vfs_key: crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(app_name),
+        kind,
         is_appl: file_type == *b"APPL",
         has_data_fork: !data_fork.is_empty(),
         score: data_fork.len().max(rsrc_data.len()),
+        priority: 2,
         creator,
+        is_installer: is_installer_executable(app_name, creator),
+        is_demo: executable_name_has_role(app_name, "demo"),
+        version: executable_version(rsrc_data),
     };
     load_selected_executable(runner, &executable)
 }
@@ -380,7 +405,7 @@ fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loade
     let mut executable_entry: Option<ExecutableCandidate> = None;
     insert_payload_into_vfs(
         runner,
-        payload_from_disk_image(image)?,
+        payload_from_disk_image(image, 1)?,
         &mut executable_entry,
     );
     log_vfs(runner);
@@ -507,10 +532,12 @@ impl<'a> WebPackLoader<'a> {
                 maybe_select_executable(
                     &mut self.executable_entry,
                     &pending.name,
+                    &pending.data,
                     &pending.rsrc,
                     pending.is_appl,
                     pending.data_len,
                     pending.creator_code,
+                    1,
                 );
                 insert_forks_into_vfs(
                     runner,
@@ -781,6 +808,169 @@ fn insert_forks_into_vfs(
     );
 }
 
+fn load_exported_host_tree(
+    runner: &mut FixtureRunner,
+    root: &std::path::Path,
+    app_rel: &str,
+    app_data: Vec<u8>,
+    app_rsrc: Vec<u8>,
+) -> Result<LoadedApp, String> {
+    let mut executable_entry: Option<ExecutableCandidate> = None;
+    let mut payload = payload_from_exported_host_tree(root, app_rel)?;
+
+    if !payload
+        .files
+        .iter()
+        .any(|file| file.name.eq_ignore_ascii_case(app_rel))
+    {
+        payload.files.push(PayloadFile {
+            name: app_rel.to_string(),
+            data: app_data,
+            rsrc: app_rsrc,
+            file_type: *b"APPL",
+            creator: *b"????",
+            finder_flags: 0,
+            executable_priority: 2,
+        });
+    }
+
+    insert_payload_into_vfs(runner, payload, &mut executable_entry);
+    log_vfs(runner);
+
+    let executable = executable_entry.ok_or("No executable found in exported host tree")?;
+    load_selected_executable(runner, &executable)
+}
+
+fn payload_from_exported_host_tree(
+    root: &std::path::Path,
+    app_rel: &str,
+) -> Result<Payload, String> {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    collect_exported_host_tree(root, root, app_rel, &mut dirs, &mut files)?;
+    Ok(Payload {
+        dirs,
+        files,
+        skipped_disk_image_errors: Vec::new(),
+    })
+}
+
+fn collect_exported_host_tree(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    app_rel: &str,
+    dirs: &mut Vec<String>,
+    files: &mut Vec<PayloadFile>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|err| format!("read exported host directory {}: {}", dir.display(), err))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            format!(
+                "read exported host directory entry in {}: {}",
+                dir.display(),
+                err
+            )
+        })?;
+        let path = entry.path();
+        let rel = match path.strip_prefix(root) {
+            Ok(rel) => rel,
+            Err(_) => continue,
+        };
+        let rel_name = rel.to_string_lossy().to_string();
+        if rel_name.is_empty()
+            || rel_name.starts_with("__rsrc__")
+            || rel
+                .components()
+                .any(|component| component.as_os_str() == ".rsrc")
+        {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(|err| {
+            format!(
+                "stat exported host directory entry {}: {}",
+                path.display(),
+                err
+            )
+        })?;
+        if file_type.is_dir() {
+            dirs.push(rel_name.clone());
+            collect_exported_host_tree(root, &path, app_rel, dirs, files)?;
+            continue;
+        }
+        if !file_type.is_file() || exported_host_file_is_harness_artifact(&rel_name) {
+            continue;
+        }
+
+        let data = std::fs::read(&path)
+            .map_err(|err| format!("read exported host file {}: {}", path.display(), err))?;
+        let rsrc = read_exported_resource_sidecar_for_rel(root, rel).unwrap_or_default();
+        let is_app = rel_name.eq_ignore_ascii_case(app_rel);
+        files.push(PayloadFile {
+            name: rel_name,
+            data,
+            rsrc,
+            file_type: if is_app { *b"APPL" } else { *b"????" },
+            creator: *b"????",
+            finder_flags: 0,
+            executable_priority: if is_app { 2 } else { 1 },
+        });
+    }
+    Ok(())
+}
+
+fn exported_host_file_is_harness_artifact(rel_name: &str) -> bool {
+    let lower = rel_name.to_ascii_lowercase();
+    lower.ends_with(".png") || lower.ends_with(".ctx.json")
+}
+
+fn find_exported_resource_sidecar(
+    path: &std::path::Path,
+) -> Option<(std::path::PathBuf, String, Vec<u8>)> {
+    let file_name = path.file_name()?;
+    if let Some(parent) = path.parent() {
+        let sidecar = parent.join(".rsrc").join(file_name);
+        if let Ok(bytes) = std::fs::read(&sidecar) {
+            if !bytes.is_empty() {
+                let root = parent.to_path_buf();
+                let app_rel = file_name.to_string_lossy().to_string();
+                return Some((root, app_rel, bytes));
+            }
+        }
+    }
+
+    for root in path.ancestors().skip(1) {
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let sidecar = root.join(format!("__rsrc__{}", rel.to_string_lossy()));
+        if let Ok(bytes) = std::fs::read(&sidecar) {
+            if !bytes.is_empty() {
+                return Some((root.to_path_buf(), rel.to_string_lossy().to_string(), bytes));
+            }
+        }
+    }
+    None
+}
+
+fn read_exported_resource_sidecar_for_rel(
+    root: &std::path::Path,
+    rel: &std::path::Path,
+) -> Option<Vec<u8>> {
+    let sidecar = root.join(format!("__rsrc__{}", rel.to_string_lossy()));
+    if let Ok(bytes) = std::fs::read(sidecar) {
+        if !bytes.is_empty() {
+            return Some(bytes);
+        }
+    }
+    let parent = rel.parent()?;
+    let file_name = rel.file_name()?;
+    let sidecar = root.join(parent).join(".rsrc").join(file_name);
+    std::fs::read(sidecar)
+        .ok()
+        .filter(|bytes| !bytes.is_empty())
+}
+
 #[derive(Debug)]
 struct Payload {
     dirs: Vec<String>,
@@ -796,25 +986,52 @@ struct PayloadFile {
     file_type: [u8; 4],
     creator: [u8; 4],
     finder_flags: u16,
+    executable_priority: u8,
 }
 
 fn collect_stuffit_payload_files(archive: &SitArchive) -> Result<Vec<PayloadFile>, String> {
-    let mut files = Vec::new();
+    Ok(payload_from_stuffit_archive(archive, 1)?.files)
+}
+
+fn payload_from_stuffit_archive(
+    archive: &SitArchive,
+    executable_priority: u8,
+) -> Result<Payload, String> {
+    let mut payload = Payload {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
     for entry in archive.entries.iter().filter(|entry| !entry.is_folder) {
         let (data, rsrc) = entry
             .decompressed_forks()
             .map_err(|e| format!("Decompress error: {:?}", e))?;
-        let payload = payload_from_forks(
+        let entry_payload = payload_from_forks(
             &entry.name,
             data,
             rsrc,
             entry.file_type,
             entry.creator,
             entry.finder_flags,
+            executable_priority,
         )?;
-        files.extend(payload.files);
+        payload.dirs.extend(entry_payload.dirs);
+        payload.files.extend(entry_payload.files);
     }
-    Ok(files)
+    for entry in archive.entries.iter().filter(|entry| entry.is_folder) {
+        payload.dirs.push(entry.name.clone());
+    }
+    Ok(payload)
+}
+
+fn payload_from_stuffit_bytes(
+    name: &str,
+    bytes: &[u8],
+    executable_priority: u8,
+) -> Result<Payload, String> {
+    let archive = SitArchive::parse(bytes)
+        .map_err(|e| format!("Nested StuffIt {name}: failed to parse: {:?}", e))?;
+    payload_from_stuffit_archive(&archive, executable_priority)
 }
 
 fn expand_squz_payload_file(
@@ -823,6 +1040,7 @@ fn expand_squz_payload_file(
     file_type: [u8; 4],
     creator: [u8; 4],
     finder_flags: u16,
+    executable_priority: u8,
 ) -> Result<Option<PayloadFile>, String> {
     if file_type != *b"SQUZ" || creator != *b"BrSq" {
         return Ok(None);
@@ -914,6 +1132,7 @@ fn expand_squz_payload_file(
                     file_type: target_type,
                     creator: target_creator,
                     finder_flags: target_finder_flags,
+                    executable_priority,
                 }));
             }
             if crate::runner::trace_load_enabled() {
@@ -964,6 +1183,7 @@ fn expand_squz_payload_file(
         file_type: target_type,
         creator: target_creator,
         finder_flags: target_finder_flags,
+        executable_priority,
     }))
 }
 
@@ -1123,8 +1343,38 @@ fn payload_from_forks(
     file_type: [u8; 4],
     creator: [u8; 4],
     finder_flags: u16,
+    executable_priority: u8,
 ) -> Result<Payload, String> {
-    if let Some(file) = expand_squz_payload_file(name, &data, file_type, creator, finder_flags)? {
+    if is_stuffit_archive(&data) {
+        if crate::runner::trace_load_enabled() {
+            eprintln!("[LOAD] Extracting nested StuffIt archive from data fork \"{name}\"");
+        }
+        return payload_from_stuffit_bytes(name, &data, executable_priority);
+    }
+
+    if is_stuffit_archive(&rsrc) {
+        if crate::runner::trace_load_enabled() {
+            eprintln!("[LOAD] Extracting nested StuffIt archive from resource fork \"{name}\"");
+        }
+        return payload_from_stuffit_bytes(name, &rsrc, executable_priority);
+    }
+
+    if let Some(payload) = expand_installer_maker_payload(name, &data, executable_priority)? {
+        return Ok(payload);
+    }
+
+    if let Some(payload) = expand_vise_payload(name, &data, executable_priority)? {
+        return Ok(payload);
+    }
+
+    if let Some(file) = expand_squz_payload_file(
+        name,
+        &data,
+        file_type,
+        creator,
+        finder_flags,
+        executable_priority,
+    )? {
         return Ok(Payload {
             dirs: Vec::new(),
             files: vec![file],
@@ -1143,7 +1393,7 @@ fn payload_from_forks(
                     image.files.len()
                 );
             }
-            return payload_from_disk_image(image);
+            return payload_from_disk_image(image, executable_priority);
         }
         Ok(None) => {}
         Err(err) => {
@@ -1165,7 +1415,7 @@ fn payload_from_forks(
                     image.files.len()
                 );
             }
-            return payload_from_disk_image(image);
+            return payload_from_disk_image(image, executable_priority);
         }
         Ok(None) => {}
         Err(err) => {
@@ -1186,38 +1436,318 @@ fn payload_from_forks(
             file_type,
             creator,
             finder_flags,
+            executable_priority,
         }],
         skipped_disk_image_errors,
     })
 }
 
-fn payload_from_disk_image(image: crate::disk_image::DiskImageContents) -> Result<Payload, String> {
-    let mut files = Vec::new();
+fn expand_installer_maker_payload(
+    name: &str,
+    data: &[u8],
+    executable_priority: u8,
+) -> Result<Option<Payload>, String> {
+    let Some(container) = crate::game::installer_maker::parse_installer_maker_st46(data) else {
+        return Ok(None);
+    };
+
+    if crate::runner::trace_load_enabled() {
+        eprintln!(
+            "[LOAD] Extracting InstallerMaker ST46 payload from \"{}\": {} files",
+            name,
+            container.entries.len()
+        );
+    }
+
+    let mut payload = Payload {
+        dirs: vec![name.to_string()],
+        files: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
+    for entry in container.entries {
+        let rsrc = decode_installer_fork(
+            name,
+            &entry.name,
+            "resource",
+            entry.rsrc_method,
+            entry.rsrc_packed,
+            entry.rsrc_unpacked_len,
+        )?;
+        let data = decode_installer_fork(
+            name,
+            &entry.name,
+            "data",
+            entry.data_method,
+            entry.data_packed,
+            entry.data_unpacked_len,
+        )?;
+        let embedded_name = format!("{}/{}", name, entry.name);
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Expanded InstallerMaker \"{}\" data={} rsrc={}",
+                embedded_name,
+                data.len(),
+                rsrc.len()
+            );
+        }
+        let vise_fallback = data
+            .starts_with(b"SVCT")
+            .then(|| (data.clone(), rsrc.clone()));
+        let entry_payload = match payload_from_forks(
+            &embedded_name,
+            data,
+            rsrc,
+            entry.file_type,
+            entry.creator,
+            entry.finder_flags,
+            executable_priority,
+        ) {
+            Ok(entry_payload) => entry_payload,
+            Err(error) if vise_fallback.is_some() => {
+                if crate::runner::trace_load_enabled() {
+                    eprintln!(
+                        "[LOAD] Preserving unexpanded nested Installer VISE \"{}\": {}",
+                        embedded_name, error
+                    );
+                }
+                let (data, rsrc) = vise_fallback.unwrap();
+                Payload {
+                    dirs: Vec::new(),
+                    files: vec![PayloadFile {
+                        name: embedded_name,
+                        data,
+                        rsrc,
+                        file_type: entry.file_type,
+                        creator: entry.creator,
+                        finder_flags: entry.finder_flags,
+                        executable_priority,
+                    }],
+                    skipped_disk_image_errors: Vec::new(),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        payload.dirs.extend(entry_payload.dirs);
+        payload.files.extend(entry_payload.files);
+        payload
+            .skipped_disk_image_errors
+            .extend(entry_payload.skipped_disk_image_errors);
+    }
+
+    Ok(Some(payload))
+}
+
+fn expand_vise_payload(
+    name: &str,
+    data: &[u8],
+    executable_priority: u8,
+) -> Result<Option<Payload>, String> {
+    let Some(parsed) = crate::game::vise::parse_vise(data) else {
+        return Ok(None);
+    };
+    let archive = parsed.map_err(|error| format!("Installer VISE {name}: {error}"))?;
+
+    if crate::runner::trace_load_enabled() {
+        eprintln!(
+            "[LOAD] Extracting Installer VISE payload from \"{}\": {} files",
+            name,
+            archive.entries.len()
+        );
+    }
+
+    let mut required_by_stream = std::collections::HashMap::<(usize, usize), usize>::new();
+    let mut packed_by_stream = std::collections::HashMap::<(usize, usize), &[u8]>::new();
+    for entry in &archive.entries {
+        for (packed_offset, packed, unpacked_len) in [
+            (
+                entry.data_packed_offset,
+                entry.data_packed,
+                entry.data_unpacked_len,
+            ),
+            (
+                entry.rsrc_packed_offset,
+                entry.rsrc_packed,
+                entry.rsrc_unpacked_len,
+            ),
+        ] {
+            if unpacked_len == 0 {
+                continue;
+            }
+            let required_len =
+                entry
+                    .unpacked_offset
+                    .checked_add(unpacked_len)
+                    .ok_or_else(|| {
+                        format!(
+                            "Installer VISE {name}/{} unpacked fork range overflow",
+                            entry.path
+                        )
+                    })?;
+            let key = (packed_offset, packed.len());
+            required_by_stream
+                .entry(key)
+                .and_modify(|current| *current = (*current).max(required_len))
+                .or_insert(required_len);
+            packed_by_stream.entry(key).or_insert(packed);
+        }
+    }
+    let mut decoded_by_stream = std::collections::HashMap::new();
+    for (key, required_len) in required_by_stream {
+        let packed = packed_by_stream
+            .get(&key)
+            .ok_or_else(|| format!("Installer VISE {name}: missing packed stream {key:?}"))?;
+        let decoded = crate::game::vise::decode_vise_fork(packed, required_len)
+            .map_err(|error| format!("Installer VISE {name} stream at 0x{:X}: {error}", key.0))?;
+        decoded_by_stream.insert(key, decoded);
+    }
+
+    let mut payload = Payload {
+        dirs: std::iter::once(name.to_string())
+            .chain(
+                archive
+                    .dirs
+                    .into_iter()
+                    .map(|directory| format!("{name}/{directory}")),
+            )
+            .collect(),
+        files: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
+    for entry in archive.entries {
+        let extract_fork = |packed_offset: usize,
+                            packed_len: usize,
+                            unpacked_len: usize,
+                            fork_name: &str|
+         -> Result<Vec<u8>, String> {
+            if unpacked_len == 0 {
+                return Ok(Vec::new());
+            }
+            let key = (packed_offset, packed_len);
+            let decoded = decoded_by_stream.get(&key).ok_or_else(|| {
+                format!(
+                    "Installer VISE {name}/{} {fork_name} fork: missing decoded stream",
+                    entry.path
+                )
+            })?;
+            let end = entry
+                .unpacked_offset
+                .checked_add(unpacked_len)
+                .ok_or_else(|| {
+                    format!(
+                        "Installer VISE {name}/{} {fork_name} fork range overflow",
+                        entry.path
+                    )
+                })?;
+            decoded
+                .get(entry.unpacked_offset..end)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| {
+                    format!(
+                        "Installer VISE {name}/{} {fork_name} fork range {}..{} exceeds decoded stream {}",
+                        entry.path,
+                        entry.unpacked_offset,
+                        end,
+                        decoded.len()
+                    )
+                })
+        };
+        let data = extract_fork(
+            entry.data_packed_offset,
+            entry.data_packed.len(),
+            entry.data_unpacked_len,
+            "data",
+        )?;
+        let rsrc = extract_fork(
+            entry.rsrc_packed_offset,
+            entry.rsrc_packed.len(),
+            entry.rsrc_unpacked_len,
+            "resource",
+        )?;
+        let embedded_name = format!("{name}/{}", entry.path);
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Expanded Installer VISE \"{}\" data={} rsrc={}",
+                embedded_name,
+                data.len(),
+                rsrc.len()
+            );
+        }
+        let entry_payload = payload_from_forks(
+            &embedded_name,
+            data,
+            rsrc,
+            entry.file_type,
+            entry.creator,
+            0,
+            executable_priority,
+        )?;
+        payload.dirs.extend(entry_payload.dirs);
+        payload.files.extend(entry_payload.files);
+        payload
+            .skipped_disk_image_errors
+            .extend(entry_payload.skipped_disk_image_errors);
+    }
+
+    Ok(Some(payload))
+}
+
+fn decode_installer_fork(
+    container_name: &str,
+    entry_name: &str,
+    fork_name: &str,
+    method: u8,
+    packed: &[u8],
+    unpacked_len: usize,
+) -> Result<Vec<u8>, String> {
+    match method {
+        0 => {
+            if packed.len() != unpacked_len {
+                return Err(format!(
+                    "InstallerMaker {container_name}/{entry_name} {fork_name} fork: stored length {} != declared {}",
+                    packed.len(),
+                    unpacked_len
+                ));
+            }
+            Ok(packed.to_vec())
+        }
+        14 => crate::game::installer_maker::decode_installer_method14(packed, unpacked_len)
+            .map_err(|error| {
+                format!(
+                    "InstallerMaker {container_name}/{entry_name} {fork_name} fork: {error}"
+                )
+            }),
+        other => Err(format!(
+            "InstallerMaker {container_name}/{entry_name} {fork_name} fork: unsupported method {other}"
+        )),
+    }
+}
+
+fn payload_from_disk_image(
+    image: crate::disk_image::DiskImageContents,
+    executable_priority: u8,
+) -> Result<Payload, String> {
+    let mut payload = Payload {
+        dirs: image.dirs,
+        files: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
     for file in image.files {
-        if let Some(expanded) = expand_squz_payload_file(
+        let file_payload = payload_from_forks(
             &file.path,
-            &file.data,
+            file.data,
+            file.rsrc,
             file.file_type,
             file.creator,
             file.finder_flags,
-        )? {
-            files.push(expanded);
-        } else {
-            files.push(PayloadFile {
-                name: file.path,
-                data: file.data,
-                rsrc: file.rsrc,
-                file_type: file.file_type,
-                creator: file.creator,
-                finder_flags: file.finder_flags,
-            });
-        }
+            executable_priority,
+        )?;
+        payload.dirs.extend(file_payload.dirs);
+        payload.files.extend(file_payload.files);
+        payload
+            .skipped_disk_image_errors
+            .extend(file_payload.skipped_disk_image_errors);
     }
-    Ok(Payload {
-        dirs: image.dirs,
-        files,
-        skipped_disk_image_errors: Vec::new(),
-    })
+    Ok(payload)
 }
 
 fn insert_payload_into_vfs(
@@ -1236,10 +1766,12 @@ fn insert_payload_into_vfs(
         maybe_select_executable(
             executable_entry,
             &file.name,
+            &file.data,
             &file.rsrc,
             is_appl,
             data_len,
             file.creator,
+            file.executable_priority,
         );
         insert_forks_into_vfs(
             runner,
@@ -1265,18 +1797,79 @@ fn load_selected_executable(
         .dispatcher()
         .vfs_rsrc
         .get(&executable.vfs_key)
+        .cloned()
         .ok_or_else(|| {
             format!(
                 "Selected executable resource fork missing: {}",
                 executable.name
             )
         })?;
-    let fork = ResourceFork::parse(rsrc).ok_or("Failed to parse resource fork")?;
-    let app = runner
-        .load_app(&fork)
-        .ok_or_else(|| "Failed to load app".to_string())?;
-    merge_launch_resource_companions(runner, executable)?;
-    Ok(app)
+    match executable.kind {
+        ExecutableKind::Classic68k => {
+            let fork = ResourceFork::parse(&rsrc).ok_or("Failed to parse resource fork")?;
+            let app = runner
+                .load_app(&fork)
+                .ok_or_else(|| "Failed to load app".to_string())?;
+            merge_launch_resource_companions(runner, executable)?;
+            Ok(app)
+        }
+        ExecutableKind::PowerPcPef {
+            architecture,
+            fragment_offset,
+            fragment_length,
+            app_stack_size,
+        } => {
+            let data = runner
+                .dispatcher()
+                .vfs
+                .get(&executable.vfs_key)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("Selected executable data fork missing: {}", executable.name)
+                })?;
+            let ppc_vfs = ppc_diagnostic_vfs(runner, Some(&executable.name));
+            let pef = pef_fragment_data(&data, fragment_offset, fragment_length).ok_or_else(|| {
+                format!(
+                    "PowerPC PEF executable \"{}\" selected, but cfrg fragment range is outside the data fork (architecture {})",
+                    executable.name,
+                    fourcc_lossy(architecture)
+                )
+            })?;
+            if crate::runner::trace_load_enabled() {
+                if let Some(details) = pef_diagnostic_details(
+                    pef,
+                    fragment_offset,
+                    fragment_length,
+                    app_stack_size,
+                    Some(&ppc_vfs),
+                ) {
+                    eprintln!("[LOAD] PowerPC PEF details: {details}");
+                }
+            }
+            let mut loaded = crate::loader::ppc::load_pef_application_with_config(
+                pef,
+                crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size),
+            )
+            .map_err(|error| {
+                format!(
+                    "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
+                    executable.name
+                )
+            })?;
+            loaded.seed_vfs_directories(
+                ppc_vfs.directories,
+                ppc_vfs.default_dir_id,
+                ppc_vfs.next_dir_id,
+            );
+            loaded.seed_vfs_files_and_resources(
+                ppc_vfs.files,
+                ppc_vfs.resource_files,
+                ppc_vfs.resources,
+            );
+            loaded.set_launched_app_path(&executable.name);
+            Ok(LoadedApp::from_ppc(loaded))
+        }
+    }
 }
 
 fn merge_launch_resource_companions(
@@ -1370,19 +1963,23 @@ fn creator_matches(executable: [u8; 4], companion: [u8; 4]) -> bool {
 fn maybe_select_executable(
     executable_entry: &mut Option<ExecutableCandidate>,
     name: &str,
+    data: &[u8],
     rsrc: &[u8],
     is_appl: bool,
     data_len: usize,
     creator: [u8; 4],
+    executable_priority: u8,
 ) {
     let executable_override = executable_name_override();
     maybe_select_executable_with_override(
         executable_entry,
         name,
+        data,
         rsrc,
         is_appl,
         data_len,
         creator,
+        executable_priority,
         executable_override.as_deref(),
     );
 }
@@ -1390,19 +1987,21 @@ fn maybe_select_executable(
 fn maybe_select_executable_with_override(
     executable_entry: &mut Option<ExecutableCandidate>,
     name: &str,
+    data: &[u8],
     rsrc: &[u8],
     is_appl: bool,
     data_len: usize,
     creator: [u8; 4],
+    executable_priority: u8,
     executable_override: Option<&str>,
 ) {
     if rsrc.is_empty() {
         return;
     }
 
-    if !ResourceFork::contains_code(rsrc, 0) {
+    let Some(kind) = classify_executable(data, rsrc, is_appl) else {
         return;
-    }
+    };
 
     // SYSTEMLESS_LOAD_EXECUTABLE: prefer an exact candidate path, then a
     // case-sensitive substring match, then the normal size/APPL heuristic.
@@ -1417,17 +2016,22 @@ fn maybe_select_executable_with_override(
     let candidate = ExecutableCandidate {
         name: name.to_string(),
         vfs_key: crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(name),
+        kind,
         is_appl,
         has_data_fork: data_len > 0,
         score: data_len.max(rsrc.len()),
+        priority: executable_priority,
         creator,
+        is_installer: is_installer_executable(name, creator),
+        is_demo: executable_name_has_role(name, "demo"),
+        version: executable_version(rsrc),
     };
 
     let take = if override_rank != prev_override_rank {
         override_rank > prev_override_rank
     } else {
         match executable_entry.as_ref() {
-            Some(prev) => candidate.selection_key() > prev.selection_key(),
+            Some(prev) => executable_candidate_is_better(&candidate, prev),
             None => true,
         }
     };
@@ -1451,25 +2055,381 @@ fn executable_name_override() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn prefer_powerpc() -> bool {
+    matches!(
+        std::env::var("SYSTEMLESS_PREFER_POWERPC").ok().as_deref(),
+        Some("1" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES")
+    )
+}
+
 #[derive(Clone, Debug)]
 struct ExecutableCandidate {
     name: String,
     vfs_key: String,
+    kind: ExecutableKind,
     is_appl: bool,
     has_data_fork: bool,
     score: usize,
+    priority: u8,
     creator: [u8; 4],
+    is_installer: bool,
+    is_demo: bool,
+    version: Option<u32>,
 }
 
 impl ExecutableCandidate {
-    fn selection_key(&self) -> (bool, bool, bool, usize) {
+    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, usize) {
         (
+            self.priority,
             self.is_appl,
+            !self.is_installer,
+            !self.is_demo,
             !is_system_folder_path(&self.name),
+            self.kind.is_powerpc(),
             self.has_data_fork,
             self.score,
         )
     }
+}
+
+fn executable_candidate_is_better(
+    candidate: &ExecutableCandidate,
+    previous: &ExecutableCandidate,
+) -> bool {
+    let candidate_class = candidate.version_selection_class();
+    let previous_class = previous.version_selection_class();
+    if candidate_class == previous_class && same_application_family(candidate, previous) {
+        match (candidate.version, previous.version) {
+            (Some(candidate_version), Some(previous_version))
+                if candidate_version != previous_version =>
+            {
+                return candidate_version > previous_version;
+            }
+            _ => {}
+        }
+    }
+
+    candidate.selection_key() > previous.selection_key()
+}
+
+impl ExecutableCandidate {
+    fn version_selection_class(&self) -> (u8, bool, bool, bool, bool, bool) {
+        (
+            self.priority,
+            self.is_appl,
+            !self.is_installer,
+            !is_system_folder_path(&self.name),
+            self.kind.is_powerpc(),
+            self.has_data_fork,
+        )
+    }
+}
+
+fn same_application_family(left: &ExecutableCandidate, right: &ExecutableCandidate) -> bool {
+    left.creator == right.creator
+        && left.creator != *b"????"
+        && left.creator != [0; 4]
+        && executable_family_name(&left.name) == executable_family_name(&right.name)
+}
+
+fn executable_family_name(name: &str) -> String {
+    name.rsplit('/')
+        .next()
+        .unwrap_or(name)
+        .to_ascii_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty() && !matches!(*word, "demo" | "trial" | "shareware"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn executable_version(rsrc: &[u8]) -> Option<u32> {
+    let fork = ResourceFork::parse(rsrc)?;
+    let resource = fork.resources().get(&(*b"vers", 1))?;
+    let bytes: [u8; 4] = resource.data.get(..4)?.try_into().ok()?;
+
+    // Macintosh Toolbox Essentials (1992), Finder Interface pp. 7-69–7-70:
+    // a file's 'vers' resource ID 1 begins with its four-byte numeric version.
+    Some(u32::from_be_bytes(bytes))
+}
+
+fn is_installer_executable(name: &str, creator: [u8; 4]) -> bool {
+    if creator == *b"VIS3" {
+        return true;
+    }
+    [
+        "install",
+        "installer",
+        "setup",
+        "update",
+        "updater",
+        "uninstall",
+        "uninstaller",
+    ]
+    .into_iter()
+    .any(|role| executable_name_has_role(name, role))
+}
+
+fn executable_name_has_role(name: &str, role: &str) -> bool {
+    let file_name = name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase();
+    file_name
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .any(|word| word == role)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExecutableKind {
+    Classic68k,
+    PowerPcPef {
+        architecture: [u8; 4],
+        fragment_offset: u32,
+        fragment_length: u32,
+        app_stack_size: u32,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct PpcDiagnosticVfs {
+    directories: Vec<PpcVfsDirectory>,
+    files: Vec<PpcVfsFileRecord>,
+    resource_files: Vec<PpcVfsResourceFileRecord>,
+    resources: Vec<PpcVfsResourceRecord>,
+    default_dir_id: u32,
+    next_dir_id: u32,
+}
+
+impl ExecutableKind {
+    fn is_powerpc(self) -> bool {
+        matches!(self, Self::PowerPcPef { .. })
+    }
+}
+
+fn classify_executable(data: &[u8], rsrc: &[u8], is_appl: bool) -> Option<ExecutableKind> {
+    classify_executable_with_preference(data, rsrc, is_appl, prefer_powerpc())
+}
+
+fn classify_executable_with_preference(
+    data: &[u8],
+    rsrc: &[u8],
+    is_appl: bool,
+    prefer_powerpc: bool,
+) -> Option<ExecutableKind> {
+    let fork = ResourceFork::parse(rsrc)?;
+    if is_appl && prefer_powerpc {
+        if let Some(cfrg_resource) = fork.get(*b"cfrg", 0) {
+            if let Some(cfrg) = parse_cfrg_resource(&cfrg_resource.data) {
+                if let Some((fragment, range)) =
+                    select_powerpc_application_fragment(&cfrg, data.len())
+                {
+                    if let Some(header) = data.get(range.clone()).and_then(parse_pef_header) {
+                        return Some(ExecutableKind::PowerPcPef {
+                            architecture: header.architecture,
+                            fragment_offset: range.start as u32,
+                            fragment_length: (range.end - range.start) as u32,
+                            app_stack_size: fragment.app_stack_size,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if fork.get_code(0).is_some() {
+        return Some(ExecutableKind::Classic68k);
+    }
+
+    if is_appl {
+        let cfrg = parse_cfrg_resource(&fork.get(*b"cfrg", 0)?.data)?;
+        let (fragment, range) = select_powerpc_application_fragment(&cfrg, data.len())?;
+        let header = parse_pef_header(data.get(range.clone())?)?;
+        return Some(ExecutableKind::PowerPcPef {
+            architecture: header.architecture,
+            fragment_offset: range.start as u32,
+            fragment_length: (range.end - range.start) as u32,
+            app_stack_size: fragment.app_stack_size,
+        });
+    }
+
+    None
+}
+
+fn ppc_diagnostic_vfs(
+    runner: &mut FixtureRunner,
+    app_resource_path: Option<&str>,
+) -> PpcDiagnosticVfs {
+    runner.dispatcher_mut().ensure_vfs_catalog();
+    let dispatcher = runner.dispatcher();
+    let app_resource_path =
+        app_resource_path.map(crate::trap::dispatch::TrapDispatcher::normalize_vfs_path);
+    let mut directory_entries: Vec<_> = dispatcher.vfs_directory_paths.iter().collect();
+    directory_entries.sort_by_key(|(dir_id, _)| **dir_id);
+
+    let directories = directory_entries
+        .into_iter()
+        .filter_map(|(dir_id, _)| {
+            let path = dispatcher.directory_path_for_id(*dir_id)?;
+            let directory = dispatcher.directory_entry_for_id(*dir_id)?;
+            Some(PpcVfsDirectory {
+                dir_id: *dir_id,
+                parent_dir_id: directory.parent_dir_id,
+                path: path.to_string(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            })
+        })
+        .collect();
+
+    let mut file_entries: Vec<_> = dispatcher.vfs.iter().collect();
+    file_entries.sort_by_key(|(path, _)| *path);
+    let mut files = file_entries
+        .into_iter()
+        .map(|(path, data)| {
+            let metadata = dispatcher.vfs_metadata.get(path);
+            PpcVfsFileRecord {
+                path: path.clone(),
+                data: data.clone(),
+                creator: metadata.map_or(0, |value| value.creator),
+                file_type: metadata.map_or(0, |value| value.file_type),
+                finder_flags: metadata.map_or(0, |value| value.finder_flags),
+                dirty: false,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut resource_entries: Vec<_> = dispatcher.vfs_rsrc.iter().collect();
+    resource_entries.sort_by_key(|(path, _)| *path);
+    let mut resource_files = Vec::new();
+    let mut resources = Vec::new();
+    for (path, rsrc_data) in resource_entries {
+        let metadata = dispatcher.vfs_metadata.get(path);
+        let creator = metadata.map_or(0, |value| value.creator);
+        let file_type = metadata.map_or(0, |value| value.file_type);
+        let parsed_fork = ResourceFork::parse(rsrc_data);
+        resource_files.push(PpcVfsResourceFileRecord {
+            path: path.clone(),
+            creator,
+            file_type,
+            finder_flags: metadata.map_or(0, |value| value.finder_flags),
+            resource_len: u32::try_from(rsrc_data.len()).unwrap_or(u32::MAX),
+            raw_data: Some(rsrc_data.clone()),
+            map_attrs: parsed_fork.as_ref().map_or(0, ResourceFork::map_attrs),
+            dirty: false,
+        });
+        if !files
+            .iter()
+            .any(|file| file.path.eq_ignore_ascii_case(path))
+        {
+            files.push(PpcVfsFileRecord {
+                path: path.clone(),
+                data: Vec::new(),
+                creator,
+                file_type,
+                finder_flags: metadata.map_or(0, |value| value.finder_flags),
+                dirty: false,
+            });
+        }
+
+        let seed_all_resources = app_resource_path
+            .as_ref()
+            .is_some_and(|app_path| app_path.eq_ignore_ascii_case(path));
+        if let Some(fork) = parsed_fork.as_ref() {
+            let mut sorted_resources: Vec<_> = fork.resources().values().collect();
+            sorted_resources.sort_by_key(|resource| (resource.res_type, resource.id));
+            for resource in sorted_resources {
+                if !seed_all_resources && resource.res_type != *b"alis" {
+                    continue;
+                }
+                resources.push(PpcVfsResourceRecord {
+                    ref_num: 0,
+                    path: path.clone(),
+                    res_type: u32::from_be_bytes(resource.res_type),
+                    res_id: resource.id,
+                    name: resource.name_bytes.clone().unwrap_or_default(),
+                    data: resource.data.clone(),
+                    raw_data: resource.raw_data.clone(),
+                    raw_attrs: resource.raw_attrs.map(u16::from),
+                    attrs: u16::from(resource.attrs),
+                    handle: 0,
+                });
+            }
+        }
+    }
+
+    PpcDiagnosticVfs {
+        directories,
+        files,
+        resource_files,
+        resources,
+        default_dir_id: dispatcher.default_dir_id,
+        next_dir_id: dispatcher.next_vfs_dir_id,
+    }
+}
+
+fn pef_fragment_data(data: &[u8], fragment_offset: u32, fragment_length: u32) -> Option<&[u8]> {
+    let start = usize::try_from(fragment_offset).ok()?;
+    let length = usize::try_from(fragment_length).ok()?;
+    data.get(start..start.checked_add(length)?)
+}
+
+fn pef_diagnostic_details(
+    data: &[u8],
+    fragment_offset: u32,
+    fragment_length: u32,
+    app_stack_size: u32,
+    ppc_vfs: Option<&PpcDiagnosticVfs>,
+) -> Option<String> {
+    let header = parse_pef_header(data)?;
+    let mut details = vec![
+        format!("architecture {}", fourcc_lossy(header.architecture)),
+        format!("cfrg-offset=0x{fragment_offset:x}"),
+        format!(
+            "cfrg-length={}",
+            if fragment_length == WHOLE_FORK {
+                "whole-fork".to_string()
+            } else {
+                fragment_length.to_string()
+            }
+        ),
+        format!("cfrg-stack={app_stack_size}"),
+        format!("sections={}", header.section_count),
+        format!("instantiated={}", header.instantiated_section_count),
+    ];
+    if let Some(loader) = parse_pef_loader_header(data) {
+        details.push(format!(
+            "imports={} libs / {} symbols",
+            loader.imported_library_count, loader.total_imported_symbol_count
+        ));
+    }
+    if let Some(entry) = resolve_pef_main_entry(data) {
+        details.push(format!(
+            "entry=pc 0x{:08x} rtoc 0x{:08x}",
+            entry.entry_pc, entry.rtoc
+        ));
+    }
+    if let Some(vfs) = ppc_vfs {
+        details.push(format!(
+            "vfs={} files / {} resources",
+            vfs.files.len(),
+            vfs.resources.len()
+        ));
+    }
+    Some(details.join(", "))
+}
+
+fn fourcc_lossy(value: [u8; 4]) -> String {
+    value
+        .iter()
+        .map(|&byte| {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                char::from(byte)
+            } else {
+                '.'
+            }
+        })
+        .collect()
 }
 
 fn is_system_folder_path(path: &str) -> bool {
@@ -1611,6 +2571,46 @@ mod tests {
         bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
 
         bytes
+    }
+
+    fn make_versioned_code_resource_fork(version: [u8; 4]) -> Vec<u8> {
+        crate::managers::resource::serialize_resource_fork(&[
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"CODE",
+                id: 0,
+                name: Vec::new(),
+                data: vec![0; 128],
+                attrs: 0,
+            },
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"vers",
+                id: 1,
+                name: Vec::new(),
+                data: version.to_vec(),
+                attrs: 0,
+            },
+        ])
+        .expect("serialize versioned application resource fork")
+    }
+
+    fn make_fat_application_resource_fork(cfrg: Vec<u8>) -> Vec<u8> {
+        crate::managers::resource::serialize_resource_fork(&[
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"CODE",
+                id: 0,
+                name: Vec::new(),
+                data: vec![0; 128],
+                attrs: 0,
+            },
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"cfrg",
+                id: 0,
+                name: Vec::new(),
+                data: cfrg,
+                attrs: 0,
+            },
+        ])
+        .expect("serialize fat application resource fork")
     }
 
     fn make_macbinary_application(name: &str, data: &[u8], rsrc: &[u8]) -> Vec<u8> {
@@ -1848,6 +2848,7 @@ mod tests {
             *b"dImg",
             *b"ddsk",
             0,
+            1,
         )
         .expect("unsupported nested image should not abort archive payload loading");
 
@@ -1893,18 +2894,22 @@ mod tests {
         maybe_select_executable(
             &mut selected,
             "Sample App/Sample Manual",
+            &[],
             &manual_rsrc,
             true,
             0,
             *b"????",
+            1,
         );
         maybe_select_executable(
             &mut selected,
             "Sample App/Sample Runtime",
+            &[0],
             &app_rsrc,
             true,
             322_352,
             *b"????",
+            1,
         );
 
         let selected = selected.expect("expected an executable candidate");
@@ -1920,18 +2925,22 @@ mod tests {
         maybe_select_executable(
             &mut selected,
             "Demo Disk/System Folder/Apple Menu Items/Stickies",
+            &[0],
             &utility_rsrc,
             true,
             38,
             *b"notz",
+            1,
         );
         maybe_select_executable(
             &mut selected,
             "Demo Disk/Pathways into Darkness",
+            &[],
             &game_rsrc,
             true,
             0,
             *b"p.th",
+            1,
         );
 
         let selected = selected.expect("expected an executable candidate");
@@ -1947,24 +2956,96 @@ mod tests {
         maybe_select_executable_with_override(
             &mut selected,
             "DOOM II/DOOM II",
+            &[0],
             &app_rsrc,
             true,
             422_288,
             *b"????",
+            1,
             Some("DOOM II/DOOM II"),
         );
         maybe_select_executable_with_override(
             &mut selected,
             "DOOM II/DOOM II Installer",
+            &[0],
             &installer_rsrc,
             true,
             9_871_672,
             *b"????",
+            1,
             Some("DOOM II/DOOM II"),
         );
 
         let selected = selected.expect("expected an executable candidate");
         assert_eq!(selected.name, "DOOM II/DOOM II");
+    }
+
+    #[test]
+    fn executable_selection_prefers_newer_version_of_same_application_family() {
+        let full_rsrc = make_versioned_code_resource_fork([0x01, 0x00, 0x80, 0x00]);
+        let demo_rsrc = make_versioned_code_resource_fork([0x01, 0x20, 0x80, 0x00]);
+
+        for newest_first in [false, true] {
+            let mut selected = None;
+            let mut candidates = [
+                ("Collection/Product", &full_rsrc, 900_000usize),
+                ("Collection/Product Demo", &demo_rsrc, 100_000usize),
+            ];
+            if newest_first {
+                candidates.reverse();
+            }
+
+            for (name, rsrc, data_len) in candidates {
+                maybe_select_executable(
+                    &mut selected,
+                    name,
+                    &[0],
+                    rsrc,
+                    true,
+                    data_len,
+                    *b"GAME",
+                    1,
+                );
+            }
+
+            assert_eq!(
+                selected.expect("expected an executable candidate").name,
+                "Collection/Product Demo"
+            );
+        }
+    }
+
+    #[test]
+    fn executable_selection_does_not_compare_versions_across_creators() {
+        let full_rsrc = make_versioned_code_resource_fork([0x01, 0x00, 0x80, 0x00]);
+        let demo_rsrc = make_versioned_code_resource_fork([0x09, 0x00, 0x80, 0x00]);
+        let mut selected = None;
+
+        maybe_select_executable(
+            &mut selected,
+            "Collection/Product",
+            &[0],
+            &full_rsrc,
+            true,
+            900_000,
+            *b"FULL",
+            1,
+        );
+        maybe_select_executable(
+            &mut selected,
+            "Collection/Product Demo",
+            &[0],
+            &demo_rsrc,
+            true,
+            100_000,
+            *b"DEMO",
+            1,
+        );
+
+        assert_eq!(
+            selected.expect("expected an executable candidate").name,
+            "Collection/Product"
+        );
     }
 
     #[test]
@@ -2042,10 +3123,15 @@ mod tests {
         let executable = ExecutableCandidate {
             name: "Folder/Runtime".to_string(),
             vfs_key: "Folder/Runtime".to_string(),
+            kind: ExecutableKind::Classic68k,
             is_appl: true,
             has_data_fork: true,
             score: 128,
+            priority: 1,
             creator: *b"ABCD",
+            is_installer: false,
+            is_demo: false,
+            version: None,
         };
 
         assert_eq!(
@@ -2072,10 +3158,15 @@ mod tests {
         let executable = ExecutableCandidate {
             name: "Folder/Runtime".to_string(),
             vfs_key: "Folder/Runtime".to_string(),
+            kind: ExecutableKind::Classic68k,
             is_appl: true,
             has_data_fork: true,
             score: 128,
+            priority: 1,
             creator: *b"ABCD",
+            is_installer: false,
+            is_demo: false,
+            version: None,
         };
 
         assert!(launch_resource_companion_keys(runner.dispatcher(), &executable).is_empty());
@@ -2099,10 +3190,15 @@ mod tests {
         let executable = ExecutableCandidate {
             name: "Folder/Runtime".to_string(),
             vfs_key: "Folder/Runtime".to_string(),
+            kind: ExecutableKind::Classic68k,
             is_appl: true,
             has_data_fork: true,
             score: 128,
+            priority: 1,
             creator: *b"ABCD",
+            is_installer: false,
+            is_demo: false,
+            version: None,
         };
 
         assert!(launch_resource_companion_keys(runner.dispatcher(), &executable).is_empty());
@@ -2168,6 +3264,119 @@ mod tests {
         assert_eq!(decoded, b"ABCDEFGHABCDEFGHABCDEFGHAB");
     }
 
+    fn make_minimal_pef(architecture: [u8; 4]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 40];
+        bytes[0..4].copy_from_slice(b"Joy!");
+        bytes[4..8].copy_from_slice(b"peff");
+        bytes[8..12].copy_from_slice(&architecture);
+        bytes
+    }
+
+    fn make_cfrg(fragment_offset: u32, fragment_length: u32) -> Vec<u8> {
+        make_cfrg_with_stack(fragment_offset, fragment_length, 0)
+    }
+
+    fn make_cfrg_with_stack(
+        fragment_offset: u32,
+        fragment_length: u32,
+        app_stack_size: u32,
+    ) -> Vec<u8> {
+        let name = b"\x09Test App\xAA";
+        let record_len = 42 + name.len();
+        let mut bytes = vec![0u8; 32 + record_len];
+        bytes[8..12].copy_from_slice(&1u32.to_be_bytes());
+        bytes[28..32].copy_from_slice(&1u32.to_be_bytes());
+
+        let record = 32;
+        bytes[record..record + 4].copy_from_slice(b"pwpc");
+        bytes[record + 16..record + 20].copy_from_slice(&app_stack_size.to_be_bytes());
+        bytes[record + 20..record + 22].copy_from_slice(&0u16.to_be_bytes());
+        bytes[record + 22] = 1; // kIsApp
+        bytes[record + 23] = 1; // kOnDiskFlat
+        bytes[record + 24..record + 28].copy_from_slice(&fragment_offset.to_be_bytes());
+        bytes[record + 28..record + 32].copy_from_slice(&fragment_length.to_be_bytes());
+        bytes[record + 40..record + 42].copy_from_slice(&(record_len as u16).to_be_bytes());
+        bytes[record + 42..].copy_from_slice(name);
+        bytes
+    }
+
+    #[test]
+    fn executable_selection_recognizes_powerpc_pef_apps_with_cfrg() {
+        let cfrg_rsrc = make_single_resource_fork_bytes(*b"cfrg", 0, &make_cfrg(0, 0));
+        let ppc_data = make_minimal_pef(*b"pwpc");
+
+        assert_eq!(
+            classify_executable(&ppc_data, &cfrg_rsrc, true),
+            Some(ExecutableKind::PowerPcPef {
+                architecture: *b"pwpc",
+                fragment_offset: 0,
+                fragment_length: ppc_data.len() as u32,
+                app_stack_size: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn executable_selection_prefers_classic_slice_for_fat_apps() {
+        let rsrc = make_fat_application_resource_fork(make_cfrg(0, 0));
+        let ppc_data = make_minimal_pef(*b"pwpc");
+
+        assert_eq!(
+            classify_executable_with_preference(&ppc_data, &rsrc, true, false),
+            Some(ExecutableKind::Classic68k)
+        );
+    }
+
+    #[test]
+    fn executable_selection_can_force_powerpc_slice_for_fat_apps() {
+        let rsrc = make_fat_application_resource_fork(make_cfrg(0, 0));
+        let ppc_data = make_minimal_pef(*b"pwpc");
+
+        assert_eq!(
+            classify_executable_with_preference(&ppc_data, &rsrc, true, true),
+            Some(ExecutableKind::PowerPcPef {
+                architecture: *b"pwpc",
+                fragment_offset: 0,
+                fragment_length: ppc_data.len() as u32,
+                app_stack_size: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn executable_selection_uses_nonzero_cfrg_data_fork_offset() {
+        let cfrg_rsrc = make_single_resource_fork_bytes(*b"cfrg", 0, &make_cfrg(8, 40));
+        let mut ppc_data = b"metadata".to_vec();
+        ppc_data.extend_from_slice(&make_minimal_pef(*b"pwpc"));
+
+        assert_eq!(
+            classify_executable(&ppc_data, &cfrg_rsrc, true),
+            Some(ExecutableKind::PowerPcPef {
+                architecture: *b"pwpc",
+                fragment_offset: 8,
+                fragment_length: 40,
+                app_stack_size: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn executable_selection_carries_cfrg_application_stack_size() {
+        let cfrg = make_cfrg_with_stack(0, 0, 0x32000);
+        let cfrg_rsrc = make_single_resource_fork_bytes(*b"cfrg", 0, &cfrg);
+        let ppc_data = make_minimal_pef(*b"pwpc");
+
+        assert_eq!(
+            classify_executable(&ppc_data, &cfrg_rsrc, true),
+            Some(ExecutableKind::PowerPcPef {
+                architecture: *b"pwpc",
+                fragment_offset: 0,
+                fragment_length: ppc_data.len() as u32,
+                app_stack_size: 0x32000,
+            })
+        );
+    }
+
     #[test]
     fn broderbund_squz_0305_uses_2k_window_and_5_bit_lengths() {
         let stream = [
@@ -2203,7 +3412,7 @@ mod tests {
         file.extend_from_slice(&(rsrc.len() as u32).to_be_bytes());
         file.extend_from_slice(&rsrc);
 
-        let expanded = expand_squz_payload_file("AllSounds1.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+        let expanded = expand_squz_payload_file("AllSounds1.rsrc", &file, *b"SQUZ", *b"BrSq", 0, 1)
             .unwrap()
             .unwrap();
 
@@ -2235,7 +3444,7 @@ mod tests {
         file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
         file.extend_from_slice(&stream);
 
-        let expanded = expand_squz_payload_file("Activity.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+        let expanded = expand_squz_payload_file("Activity.rsrc", &file, *b"SQUZ", *b"BrSq", 0, 1)
             .unwrap()
             .unwrap();
 
@@ -2261,9 +3470,10 @@ mod tests {
         file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
         file.extend_from_slice(&stream);
 
-        let expanded = expand_squz_payload_file("Document Scrapbook", &file, *b"SQUZ", *b"BrSq", 0)
-            .unwrap()
-            .unwrap();
+        let expanded =
+            expand_squz_payload_file("Document Scrapbook", &file, *b"SQUZ", *b"BrSq", 0, 1)
+                .unwrap()
+                .unwrap();
 
         assert_eq!(expanded.data, b"Hello");
         assert!(expanded.rsrc.is_empty());
@@ -2291,7 +3501,7 @@ mod tests {
         file.extend_from_slice(&(stream.len() as u32).to_be_bytes());
         file.extend_from_slice(&stream);
 
-        let expanded = expand_squz_payload_file("Activity.rsrc", &file, *b"SQUZ", *b"BrSq", 0)
+        let expanded = expand_squz_payload_file("Activity.rsrc", &file, *b"SQUZ", *b"BrSq", 0, 1)
             .unwrap()
             .unwrap();
 

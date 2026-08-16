@@ -6,7 +6,7 @@
 //! transparently before clients see resource data, so Systemless needs to do
 //! the same before CODE resources reach the Segment Loader.
 
-const COMPRESSED_RESOURCE_ATTR: u8 = 0x01;
+pub(crate) const COMPRESSED_RESOURCE_ATTR: u8 = 0x01;
 const COMPRESSED_MAGIC: &[u8; 4] = b"\xA8\x9Fer";
 const COMPRESSED_TYPE_8: u16 = 0x0801;
 const HEADER_LEN: usize = 0x12;

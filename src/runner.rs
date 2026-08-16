@@ -2,6 +2,13 @@
 
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
+use crate::loader::ppc::{
+    PpcDecodedAiffPlaybackRecord, PpcDecodedBufferCommandRecord, PpcDrawSprocketTraceEntry,
+    PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding, PpcInputSnapshot,
+    PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3SceneReplay,
+    PpcQ3SoftwareRenderStats, PpcQueuedEvent, PpcRgbColor, PpcSoundCompletionRecord,
+    PpcSoundDoubleBackRecord, PpcSoundDoubleBufferPlaybackRecord,
+};
 use crate::loader::{
     ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
     MpwFarSegmentHeader,
@@ -13,7 +20,8 @@ use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 use crate::{Error, Result};
 use m68k::BatchExit;
-use std::collections::{BTreeSet, HashMap};
+use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult, PpcSectionMem};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Cache env-var lookups (per-call syscall otherwise).
@@ -24,6 +32,44 @@ static TRACE_VBL: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RUNNER: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_PROCS: OnceLock<bool> = OnceLock::new();
 
+fn ppc_run_result_cycles(result: PpcRunResult) -> u64 {
+    match result {
+        PpcRunResult::CycleLimit { cycles }
+        | PpcRunResult::Halted { cycles, .. }
+        | PpcRunResult::Unimplemented { cycles, .. }
+        | PpcRunResult::MemoryFault { cycles, .. }
+        | PpcRunResult::Exception { cycles, .. }
+        | PpcRunResult::FetchFault { cycles, .. } => cycles,
+    }
+}
+
+fn ppc_decoded_playback_duration_ticks(decoded: &PpcDecodedAiffPlaybackRecord) -> Option<u32> {
+    if decoded.sample_rate_fixed == 0 {
+        return None;
+    }
+    let sample_count = u128::try_from(decoded.samples.len()).ok()?;
+    if sample_count == 0 {
+        return Some(0);
+    }
+    let numerator = sample_count.checked_mul(1203)?.checked_mul(1u128 << 16)?;
+    let denominator = u128::from(decoded.sample_rate_fixed).checked_mul(20)?;
+    let ticks = numerator
+        .checked_add(denominator.saturating_sub(1))?
+        .checked_div(denominator)?;
+    Some(u32::try_from(ticks).unwrap_or(u32::MAX))
+}
+
+fn ppc_resource_sidecar_parent(
+    root: &std::path::Path,
+    normalized_path: &str,
+) -> Option<(std::path::PathBuf, std::ffi::OsString)> {
+    let host_path = root.join(normalized_path);
+    Some((
+        host_path.parent()?.to_path_buf(),
+        host_path.file_name()?.to_os_string(),
+    ))
+}
+
 const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
@@ -33,6 +79,7 @@ const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
 const HFS_VCB_SIZE: u32 = 178;
+const PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES: u64 = 50_000;
 
 fn trace_dialog_filter_enabled() -> bool {
     *TRACE_DIALOG_FILTER
@@ -72,7 +119,6 @@ fn trace_buffer_enabled() -> bool {
     *TRACE_BUFFER_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_BUFFER").is_some())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 static TRACE_PC_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
 #[cfg(not(target_arch = "wasm32"))]
 static TRACE_PC_RANGE_TICKS: OnceLock<Option<(Option<u32>, Option<u32>)>> = OnceLock::new();
@@ -191,6 +237,606 @@ fn trace_opcode_counts_enabled() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     *TRACE_OPCODE_COUNTS
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_OPCODE_COUNTS").is_some())
+}
+
+static TRACE_PPC_FETCH_COUNTS: OnceLock<bool> = OnceLock::new();
+fn trace_ppc_fetch_counts_enabled() -> bool {
+    *TRACE_PPC_FETCH_COUNTS
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_PPC_FETCH_COUNTS").is_some())
+}
+
+static INPUT_TICK_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+fn input_tick_trace_enabled() -> bool {
+    *INPUT_TICK_TRACE_ENABLED
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_INPUT_TICK_TRACE").is_some())
+}
+
+static PPC_IMPORT_HIST_ENABLED: OnceLock<bool> = OnceLock::new();
+fn ppc_import_hist_enabled() -> bool {
+    *PPC_IMPORT_HIST_ENABLED
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_IMPORT_HIST").is_some())
+}
+
+static PPC_UNIMPL_HIST_ENABLED: OnceLock<bool> = OnceLock::new();
+fn ppc_unimpl_hist_enabled() -> bool {
+    *PPC_UNIMPL_HIST_ENABLED
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_UNIMPL_HIST").is_some())
+}
+
+static PPC_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+fn ppc_profile_enabled() -> bool {
+    *PPC_PROFILE_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_PROFILE").is_some())
+}
+
+static PPC_GWORLD_DUMP_ENABLED: OnceLock<bool> = OnceLock::new();
+fn ppc_gworld_dump_enabled() -> bool {
+    *PPC_GWORLD_DUMP_ENABLED
+        .get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_GWORLD_DUMP").is_some())
+}
+
+static QD3D_DUMP_FRAME: OnceLock<Option<usize>> = OnceLock::new();
+fn qd3d_dump_frame_index() -> Option<usize> {
+    *QD3D_DUMP_FRAME.get_or_init(|| {
+        let value = std::env::var_os("SYSTEMLESS_QD3D_DUMP_FRAME")?;
+        parse_qd3d_dump_frame_value(&value)
+    })
+}
+
+static QD3D_DUMP_REPLAY_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+fn qd3d_dump_replay_dir() -> Option<&'static std::path::Path> {
+    QD3D_DUMP_REPLAY_DIR
+        .get_or_init(|| {
+            let value = std::env::var_os("SYSTEMLESS_QD3D_DUMP_REPLAY_DIR")?;
+            if value.is_empty() {
+                return None;
+            }
+            Some(std::path::PathBuf::from(value))
+        })
+        .as_deref()
+}
+
+fn parse_qd3d_dump_frame_value(value: &std::ffi::OsStr) -> Option<usize> {
+    let value = value.to_str()?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .map_or_else(
+            || value.parse().ok(),
+            |hex| usize::from_str_radix(hex, 16).ok(),
+        )
+}
+
+fn format_qd3d_frame_dump(frame_index: usize, replay: &PpcQ3SceneReplay) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let memory_bytes: usize = replay
+        .memory_regions
+        .iter()
+        .map(|region| region.data.len())
+        .sum();
+    let _ = writeln!(
+        out,
+        "[QD3D-FRAME] frame={} commands={} memory_regions={} memory_bytes={}",
+        frame_index,
+        replay.commands.len(),
+        replay.memory_regions.len(),
+        memory_bytes
+    );
+    for (region_index, region) in replay.memory_regions.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "[QD3D-FRAME] frame={} memory={} base=${:08X} bytes={} checksum=${:08X}",
+            frame_index,
+            region_index,
+            region.base_addr,
+            region.data.len(),
+            qd3d_frame_dump_checksum(&region.data)
+        );
+    }
+    for (command_index, command) in replay.commands.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "[QD3D-FRAME] frame={} command={} {:#?}",
+            frame_index, command_index, command
+        );
+    }
+    out
+}
+
+fn qd3d_frame_replay_dump_path(
+    output_dir: &std::path::Path,
+    frame_index: usize,
+) -> std::path::PathBuf {
+    output_dir.join(format!("q3_frame_{frame_index:06}_replay.json"))
+}
+
+fn write_qd3d_frame_replay_dump(
+    output_dir: &std::path::Path,
+    frame_index: usize,
+    replay: &PpcQ3SceneReplay,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(output_dir)?;
+    let path = qd3d_frame_replay_dump_path(output_dir, frame_index);
+    let json = replay
+        .to_json_pretty()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    std::fs::write(&path, json)?;
+    Ok(path)
+}
+
+fn qd3d_frame_dump_checksum(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5u32, |hash, byte| {
+        hash.wrapping_mul(0x0100_0193) ^ u32::from(*byte)
+    })
+}
+
+fn format_input_key_map(key_map: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(32);
+    for byte in key_map {
+        let _ = write!(out, "{:02X}", byte);
+    }
+    out
+}
+
+fn format_oracle_hex32(value: u32) -> String {
+    format!("{value:08X}")
+}
+
+fn format_oracle_optional_hex32(value: Option<u32>) -> String {
+    value.map_or_else(|| "none".to_string(), format_oracle_hex32)
+}
+
+fn format_oracle_optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn format_oracle_optional_u16(value: Option<u16>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn format_oracle_optional_bool(value: Option<bool>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn format_input_tick_trace(
+    tick: u32,
+    total_instructions: u64,
+    input: PpcInputSnapshot,
+    event_queue_len: usize,
+    mb_state: u8,
+) -> String {
+    format!(
+        "[INPUT-TICK] tick={} total_instructions={} mouse_button={} mouse_v={} mouse_h={} key_map={} event_queue={} mb_state=${:02X}",
+        tick,
+        total_instructions,
+        input.mouse_button,
+        input.mouse_v,
+        input.mouse_h,
+        format_input_key_map(&input.key_map),
+        event_queue_len,
+        mb_state
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcProfileSample {
+    max_steps: usize,
+    cycles: u64,
+    total_instructions: u64,
+    tick: u32,
+    pc: u32,
+    lr: u32,
+    current_gworld: u32,
+    screen_events: u64,
+    handled_import_count: u32,
+    last_import_index: Option<u32>,
+    unsupported_import_index: Option<u32>,
+    q3_frames: usize,
+    q3_frame_start: usize,
+    q3_frame_end: usize,
+    q3_commands: usize,
+    q3_vertices: usize,
+    q3_triangles: usize,
+    q3_pixels: usize,
+    dsp_front_gworld: u32,
+    dsp_back_gworld: u32,
+    run_us: u128,
+    render_us: u128,
+    sync_us: u128,
+    total_us: u128,
+}
+
+fn format_optional_profile_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn format_profile_hex32(value: u32) -> String {
+    format!("${value:08X}")
+}
+
+fn format_ppc_profile_sample(sample: PpcProfileSample) -> String {
+    format!(
+        "[PPC-PROFILE] max_steps={} cycles={} total_instructions={} tick={} screen_events={} \
+         pc={} lr={} current_gworld={} imports={} last_import={} unsupported_import={} q3_frames={} q3_frame_start={} \
+         q3_frame_end={} q3_commands={} q3_vertices={} q3_triangles={} q3_pixels={} \
+         dsp_front_gworld={} dsp_back_gworld={} run_us={} render_us={} sync_us={} total_us={}",
+        sample.max_steps,
+        sample.cycles,
+        sample.total_instructions,
+        sample.tick,
+        sample.screen_events,
+        format_profile_hex32(sample.pc),
+        format_profile_hex32(sample.lr),
+        format_profile_hex32(sample.current_gworld),
+        sample.handled_import_count,
+        format_optional_profile_u32(sample.last_import_index),
+        format_optional_profile_u32(sample.unsupported_import_index),
+        sample.q3_frames,
+        sample.q3_frame_start,
+        sample.q3_frame_end,
+        sample.q3_commands,
+        sample.q3_vertices,
+        sample.q3_triangles,
+        sample.q3_pixels,
+        format_profile_hex32(sample.dsp_front_gworld),
+        format_profile_hex32(sample.dsp_back_gworld),
+        sample.run_us,
+        sample.render_us,
+        sample.sync_us,
+        sample.total_us
+    )
+}
+
+fn elapsed_profile_micros(start: Option<Instant>) -> u128 {
+    start.map_or(0, |start| start.elapsed().as_micros())
+}
+
+fn merge_ppc_import_histogram(
+    histogram: &mut HashMap<(String, String), u64>,
+    trace: &[PpcHleImportTraceEntry],
+) {
+    for entry in trace {
+        let key = (entry.library_name.clone(), entry.symbol_name.clone());
+        *histogram.entry(key).or_insert(0) += entry.repeat_count;
+    }
+}
+
+fn ppc_import_trace_runs(trace: &[PpcHleImportTraceEntry]) -> Vec<(&PpcHleImportTraceEntry, u64)> {
+    let mut runs = Vec::new();
+    let mut iter = trace.iter();
+    let Some(mut current) = iter.next() else {
+        return runs;
+    };
+    let mut count = current.repeat_count;
+    for entry in iter {
+        if entry.library_name == current.library_name && entry.symbol_name == current.symbol_name {
+            count = count.saturating_add(entry.repeat_count);
+        } else {
+            runs.push((current, count));
+            current = entry;
+            count = entry.repeat_count;
+        }
+    }
+    runs.push((current, count));
+    runs
+}
+
+fn ppc_import_trace_run_eq(
+    left: &(&PpcHleImportTraceEntry, u64),
+    right: &(&PpcHleImportTraceEntry, u64),
+) -> bool {
+    left.1 == right.1
+        && left.0.library_name == right.0.library_name
+        && left.0.symbol_name == right.0.symbol_name
+}
+
+fn ppc_import_trace_blocks_equal(
+    runs: &[(&PpcHleImportTraceEntry, u64)],
+    left: usize,
+    right: usize,
+    len: usize,
+) -> bool {
+    (0..len).all(|offset| ppc_import_trace_run_eq(&runs[left + offset], &runs[right + offset]))
+}
+
+fn ppc_import_trace_repeated_block_len(
+    runs: &[(&PpcHleImportTraceEntry, u64)],
+    start: usize,
+) -> Option<(usize, u64)> {
+    const MAX_BLOCK_LEN: usize = 128;
+    let remaining = runs.len().saturating_sub(start);
+    let max_block_len = MAX_BLOCK_LEN.min(remaining / 2);
+    let mut best: Option<(usize, u64, usize)> = None;
+    for block_len in 2..=max_block_len {
+        if !ppc_import_trace_blocks_equal(runs, start, start + block_len, block_len) {
+            continue;
+        }
+        let mut repeats = 2u64;
+        let mut next = start + block_len * 2;
+        while next + block_len <= runs.len()
+            && ppc_import_trace_blocks_equal(runs, start, next, block_len)
+        {
+            repeats = repeats.saturating_add(1);
+            next += block_len;
+        }
+        let saved_rows = block_len
+            .saturating_mul(usize::try_from(repeats).unwrap_or(usize::MAX))
+            .saturating_sub(1);
+        if saved_rows >= block_len.saturating_mul(2)
+            && best
+                .as_ref()
+                .is_none_or(|(_, _, best_saved)| saved_rows > *best_saved)
+        {
+            best = Some((block_len, repeats, saved_rows));
+        }
+    }
+    best.map(|(block_len, repeats, _)| (block_len, repeats))
+}
+
+fn format_ppc_import_histogram(histogram: &HashMap<(String, String), u64>, top_n: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut entries: Vec<((String, String), u64)> = histogram
+        .iter()
+        .map(|((library, symbol), &count)| ((library.clone(), symbol.clone()), count))
+        .collect();
+    entries.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0 .0.cmp(&right.0 .0))
+            .then_with(|| left.0 .1.cmp(&right.0 .1))
+    });
+    let total: u64 = entries.iter().map(|(_, count)| *count).sum();
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "[PPC-IMPORT-HIST] top {} of {} imports ({} total import calls)",
+        top_n.min(entries.len()),
+        entries.len(),
+        total
+    );
+    for ((library, symbol), count) in entries.iter().take(top_n) {
+        let _ = writeln!(
+            out,
+            "[PPC-IMPORT-HIST]   {:>10}  {}:{}",
+            count, library, symbol
+        );
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PpcGWorldDumpState {
+    current_gworld: u32,
+    front_gworld: u32,
+    back_gworld: u32,
+    swap_count: u32,
+}
+
+fn format_ppc_gworld_sample(
+    memory: &mut PpcSectionMem,
+    record: PpcGWorldRecord,
+    point: (u32, u32),
+) -> String {
+    let (x, y) = point;
+    if x >= record.width || y >= record.height {
+        return "out".to_string();
+    }
+    let Some(row_base) = record
+        .base_addr
+        .checked_add(y.saturating_mul(record.row_bytes))
+    else {
+        return "bad".to_string();
+    };
+    match record.depth {
+        8 => row_base
+            .checked_add(x)
+            .and_then(|addr| memory.read_u8(addr))
+            .map_or_else(|| "unmapped".to_string(), |value| format!("${value:02X}")),
+        16 => row_base
+            .checked_add(x.saturating_mul(2))
+            .and_then(|addr| memory.read_u16_be(addr))
+            .map_or_else(|| "unmapped".to_string(), |value| format!("${value:04X}")),
+        _ => "unsupported-depth".to_string(),
+    }
+}
+
+fn format_ppc_gworld_dump(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    state: PpcGWorldDumpState,
+    top_n: usize,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "[PPC-GWORLD-DUMP] {} gworlds current=${:08X} front=${:08X} back=${:08X} swap_count={}",
+        gworlds.len(),
+        state.current_gworld,
+        state.front_gworld,
+        state.back_gworld,
+        state.swap_count
+    );
+
+    for record in gworlds.iter().copied() {
+        let mut bytes = Vec::new();
+        let mut checksum = 0;
+        let mut nonzero_units = 0u64;
+        let mut value_counts: BTreeMap<u32, u64> = BTreeMap::new();
+        let row_len = match record.depth {
+            8 => record.width.min(record.row_bytes),
+            16 => record.width.saturating_mul(2).min(record.row_bytes),
+            _ => record.row_bytes,
+        };
+        if row_len > 0 && record.height > 0 && row_len <= record.row_bytes && row_len <= 64 * 1024 {
+            let mut row = vec![0u8; row_len as usize];
+            for y in 0..record.height {
+                let Some(row_addr) = record
+                    .base_addr
+                    .checked_add(y.saturating_mul(record.row_bytes))
+                else {
+                    continue;
+                };
+                if memory.read_bytes_into(row_addr, &mut row).is_none() {
+                    continue;
+                }
+                bytes.extend_from_slice(&row);
+                match record.depth {
+                    8 => {
+                        for value in &row {
+                            if *value != 0 {
+                                nonzero_units = nonzero_units.saturating_add(1);
+                            }
+                            *value_counts.entry(u32::from(*value)).or_insert(0) += 1;
+                        }
+                    }
+                    16 => {
+                        for chunk in row.chunks_exact(2) {
+                            let value = u16::from_be_bytes([chunk[0], chunk[1]]);
+                            if value != 0 {
+                                nonzero_units = nonzero_units.saturating_add(1);
+                            }
+                            *value_counts.entry(u32::from(value)).or_insert(0) += 1;
+                        }
+                    }
+                    _ => {
+                        for value in &row {
+                            if *value != 0 {
+                                nonzero_units = nonzero_units.saturating_add(1);
+                            }
+                            *value_counts.entry(u32::from(*value)).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+            checksum = qd3d_frame_dump_checksum(&bytes);
+        }
+
+        let mut roles = Vec::new();
+        if record.port == state.current_gworld {
+            roles.push("current");
+        }
+        if record.port == state.front_gworld {
+            roles.push("front");
+        }
+        if record.port == state.back_gworld {
+            roles.push("back");
+        }
+        let role = if roles.is_empty() {
+            "none".to_string()
+        } else {
+            roles.join(",")
+        };
+        let unique_units = value_counts.len();
+        let mut top_values: Vec<(u32, u64)> = value_counts.into_iter().collect();
+        top_values.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        let value_width = if record.depth == 16 { 4 } else { 2 };
+        let top_values = top_values
+            .iter()
+            .take(top_n)
+            .map(|(value, count)| format!("${value:0width$X}:{count}", width = value_width))
+            .collect::<Vec<_>>()
+            .join(",");
+        let center = (record.width / 2, record.height / 2);
+        let bottom_right = (
+            record.width.saturating_sub(1),
+            record.height.saturating_sub(1),
+        );
+        let _ = writeln!(
+            out,
+            "[PPC-GWORLD-DUMP] port=${:08X} role={} base=${:08X} row_bytes={} size={}x{}x{} bytes={} checksum=${:08X} nonzero_units={} unique_units={} top={} samples=(0,0):{},center:{},last:{}",
+            record.port,
+            role,
+            record.base_addr,
+            record.row_bytes,
+            record.width,
+            record.height,
+            record.depth,
+            bytes.len(),
+            checksum,
+            nonzero_units,
+            unique_units,
+            top_values,
+            format_ppc_gworld_sample(memory, record, (0, 0)),
+            format_ppc_gworld_sample(memory, record, center),
+            format_ppc_gworld_sample(memory, record, bottom_right)
+        );
+    }
+    out
+}
+
+fn merge_ppc_unimpl_histogram(histogram: &mut HashMap<String, u64>, key: String) {
+    *histogram.entry(key).or_insert(0) += 1;
+}
+
+fn ppc_unimpl_histogram_key(
+    imports: &[PpcImportBinding],
+    result: PpcRunResult,
+    unsupported_import_index: Option<u32>,
+) -> Option<String> {
+    if let Some(index) = unsupported_import_index {
+        return Some(
+            imports
+                .iter()
+                .find(|binding| binding.symbol_index == index)
+                .map_or_else(
+                    || format!("import #{} <unknown>", index),
+                    |binding| {
+                        format!(
+                            "import #{} {}:{}",
+                            index, binding.library_name, binding.symbol_name
+                        )
+                    },
+                ),
+        );
+    }
+
+    match result {
+        PpcRunResult::Unimplemented { pc, error, .. } => {
+            Some(format!("instruction pc=${:08X} {:?}", pc, error))
+        }
+        PpcRunResult::Exception {
+            pc,
+            exception: PpcException::IllegalInstruction { word, reason },
+            ..
+        } => Some(format!(
+            "illegal-instruction pc=${:08X} word=${:08X} {:?}",
+            pc, word, reason
+        )),
+        _ => None,
+    }
+}
+
+fn format_ppc_unimpl_histogram(histogram: &HashMap<String, u64>, top_n: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut entries: Vec<(String, u64)> = histogram
+        .iter()
+        .map(|(key, &count)| (key.clone(), count))
+        .collect();
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let total: u64 = entries.iter().map(|(_, count)| *count).sum();
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "[PPC-UNIMPL-HIST] top {} of {} unsupported stops ({} total)",
+        top_n.min(entries.len()),
+        entries.len(),
+        total
+    );
+    for (key, count) in entries.iter().take(top_n) {
+        let _ = writeln!(out, "[PPC-UNIMPL-HIST]   {:>10}  {}", count, key);
+    }
+    out
 }
 
 // Sampled PC histogram, opt-in via `SYSTEMLESS_TRACE_HOT_PC=1`. Every
@@ -625,12 +1271,27 @@ fn vfs_fork_hash(bytes: &[u8]) -> u64 {
 /// Default emulated CPU speed from the canonical machine profile.
 pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
     crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz;
-/// Shared default realtime CPU budget used by the GUI runner and scripted
-/// realtime mode so both frontends expose the same machine profile.
+/// PowerPC clock exposed by the native 604 machine profile. The Power
+/// Macintosh 9500/120 paired a 120 MHz clock with the same 604 processor
+/// reported by the PPC Gestalt implementation.
+/// <https://support.apple.com/en-hk/112050>
+pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 = 120.0;
+/// Default 68K realtime CPU budget used by scripted realtime mode and by GUI
+/// sessions that do not load a PowerPC executable.
 pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_MHZ * 1_000_000.0;
+
+/// Returns the per-VBL instruction budget for the loaded guest architecture.
+pub fn default_realtime_instructions_per_tick(powerpc: bool) -> u32 {
+    let mhz = if powerpc {
+        DEFAULT_REALTIME_PPC_CPU_MHZ
+    } else {
+        DEFAULT_REALTIME_CPU_MHZ
+    };
+    (mhz * 1_000_000.0 / DEFAULT_VBL_HZ).round() as u32
+}
 // Default instructions per VBL tick for non-realtime execution (scripted harnesses, tests).
 // Realtime frontends override this via set_instructions_per_tick() to match the
-// shared default machine profile defined above.
+// architecture-specific machine profile defined above.
 // This lower value lets scripted harnesses run quickly without being wall-clock-paced.
 const INSTRUCTIONS_PER_TICK: u32 = 12_000;
 const DEFAULT_LAUNCH_TICKS: u32 = 600;
@@ -816,6 +1477,18 @@ impl Default for FixtureRunnerConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PpcHostSoundPlayback {
+    file_playback_index: usize,
+    channel: u32,
+}
+
+struct PpcDecodedDoubleBuffer {
+    buffer_ptr: u32,
+    flags: u32,
+    samples: Vec<crate::sound::StereoSample>,
+}
+
 /// Canonical entry point of the systemless library.
 ///
 /// `FixtureRunner` owns the three pieces of guest state: the [`M68kCpu`]
@@ -845,6 +1518,9 @@ impl Default for FixtureRunnerConfig {
 /// See `examples/run_headless.rs` for a runnable end-to-end example.
 pub struct FixtureRunner {
     cpu: M68kCpu,
+    ppc_app: Option<PpcLoadedApp>,
+    ppc_sound_synced_file_playback_count: usize,
+    ppc_sound_host_playbacks: Vec<PpcHostSoundPlayback>,
     bus: MacMemoryBus,
     dispatcher: TrapDispatcher,
     config: FixtureRunnerConfig,
@@ -976,6 +1652,23 @@ pub struct FixtureRunner {
     /// overhead low; a million hot samples still fits in tens of
     /// unique addresses.
     pc_histogram: HashMap<u32, u64>,
+    /// PPC fetched-instruction histogram, opt-in via
+    /// `SYSTEMLESS_TRACE_PPC_FETCH_COUNTS=1`. Aggregated across PPC
+    /// run budgets so diagnostics can prioritize reachable opcode
+    /// gaps without retaining every fetched PC.
+    ppc_fetch_histogram: PpcFetchHistogram,
+    /// PPC HLE import histogram, opt-in via
+    /// `SYSTEMLESS_PPC_IMPORT_HIST=1`. Aggregated across PPC run
+    /// budgets and native PPC callback runs by library/symbol.
+    ppc_import_histogram: HashMap<(String, String), u64>,
+    /// Unsupported PPC runtime stop histogram, opt-in via
+    /// `SYSTEMLESS_PPC_UNIMPL_HIST=1`. Records unsupported imports
+    /// and unimplemented/illegal instruction stops by stable text key.
+    ppc_unimpl_histogram: HashMap<String, u64>,
+    /// Completed QD3D frame index used by `SYSTEMLESS_QD3D_DUMP_FRAME`.
+    /// Incremented only for non-empty completed-frame snapshots, matching
+    /// the renderer's frame accounting.
+    q3_completed_frame_index: usize,
 }
 
 impl FixtureRunner {
@@ -1006,6 +1699,9 @@ impl FixtureRunner {
             .install_standard_service_routine(standard_adb_service);
         Self {
             cpu: M68kCpu::new(),
+            ppc_app: None,
+            ppc_sound_synced_file_playback_count: 0,
+            ppc_sound_host_playbacks: Vec::new(),
             bus,
             dispatcher,
             config,
@@ -1046,6 +1742,10 @@ impl FixtureRunner {
             application_partition_size: None,
             opcode_histogram: Box::new([0u64; 65536]),
             pc_histogram: HashMap::new(),
+            ppc_fetch_histogram: PpcFetchHistogram::new(),
+            ppc_import_histogram: HashMap::new(),
+            ppc_unimpl_histogram: HashMap::new(),
+            q3_completed_frame_index: 0,
         }
     }
 
@@ -1350,6 +2050,182 @@ impl FixtureRunner {
         }
     }
 
+    /// Dump the PPC fetched-instruction histogram. No-op unless
+    /// `SYSTEMLESS_TRACE_PPC_FETCH_COUNTS=1` is set. This is
+    /// reachable-code evidence: unlike PEF static scans, literal
+    /// pools and embedded data never enter this count.
+    pub fn print_ppc_fetch_histogram(&self, top_n: usize) {
+        if !trace_ppc_fetch_counts_enabled() {
+            return;
+        }
+        let decode_summary = self.ppc_fetch_histogram.decode_summary();
+        eprintln!(
+            "[PPC-FETCH-HIST] decoder coverage: {} decoded / {} total fetched instructions ({} unsupported)",
+            decode_summary.decoded(),
+            decode_summary.total(),
+            decode_summary.unsupported()
+        );
+        if !decode_summary.is_fully_decoded() {
+            let mut unsupported_primary: Vec<(u8, u64)> = decode_summary
+                .unsupported_primary()
+                .iter()
+                .map(|(&primary, &count)| (primary, count))
+                .collect();
+            unsupported_primary.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+            for (primary, count) in unsupported_primary.iter().take(top_n) {
+                eprintln!(
+                    "[PPC-FETCH-HIST]   {:>10}  unsupported primary {:02}",
+                    count, primary
+                );
+            }
+
+            let mut unsupported_secondary: Vec<((u8, u16), u64)> = decode_summary
+                .unsupported_secondary()
+                .iter()
+                .map(|(&key, &count)| (key, count))
+                .collect();
+            unsupported_secondary.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+            for ((primary, secondary), count) in unsupported_secondary.iter().take(top_n) {
+                eprintln!(
+                    "[PPC-FETCH-HIST]   {:>10}  unsupported primary {:02} secondary {:03}",
+                    count, primary, secondary
+                );
+            }
+        }
+
+        let mut primaries: Vec<(u8, u64)> = (0u8..64)
+            .filter_map(|primary| {
+                let count = self.ppc_fetch_histogram.primary_count(primary);
+                (count > 0).then_some((primary, count))
+            })
+            .collect();
+        primaries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        eprintln!(
+            "[PPC-FETCH-HIST] top {} of {} primary opcodes ({} total fetched instructions)",
+            top_n.min(primaries.len()),
+            primaries.len(),
+            self.ppc_fetch_histogram.total()
+        );
+        for (primary, count) in primaries.iter().take(top_n) {
+            eprintln!("[PPC-FETCH-HIST]   {:>10}  primary {:02}", count, primary);
+        }
+
+        let mut secondaries: Vec<((u8, u16), u64)> = self
+            .ppc_fetch_histogram
+            .secondary_counts()
+            .iter()
+            .map(|(&key, &count)| (key, count))
+            .collect();
+        secondaries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        eprintln!(
+            "[PPC-FETCH-HIST] top {} of {} secondary opcode buckets",
+            top_n.min(secondaries.len()),
+            secondaries.len()
+        );
+        for ((primary, secondary), count) in secondaries.iter().take(top_n) {
+            eprintln!(
+                "[PPC-FETCH-HIST]   {:>10}  primary {:02} secondary {:03}",
+                count, primary, secondary
+            );
+        }
+
+        let mut pcs: Vec<(u32, u64)> = self
+            .ppc_fetch_histogram
+            .pc_counts()
+            .iter()
+            .map(|(&pc, &count)| (pc, count))
+            .collect();
+        pcs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        eprintln!(
+            "[PPC-FETCH-HIST] top {} of {} fetched PCs",
+            top_n.min(pcs.len()),
+            pcs.len()
+        );
+        for (pc, count) in pcs.iter().take(top_n) {
+            eprintln!("[PPC-FETCH-HIST]   {:>10}  pc ${:08X}", count, pc);
+        }
+
+        let mut words: Vec<(u32, u64)> = self
+            .ppc_fetch_histogram
+            .word_counts()
+            .iter()
+            .map(|(&word, &count)| (word, count))
+            .collect();
+        words.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+        eprintln!(
+            "[PPC-FETCH-HIST] top {} of {} fetched instruction words",
+            top_n.min(words.len()),
+            words.len()
+        );
+        for (word, count) in words.iter().take(top_n) {
+            eprintln!("[PPC-FETCH-HIST]   {:>10}  word ${:08X}", count, word);
+        }
+    }
+
+    /// Dump the PPC HLE import histogram. No-op unless
+    /// `SYSTEMLESS_PPC_IMPORT_HIST=1` is set.
+    pub fn print_ppc_import_histogram(&self, top_n: usize) {
+        if !ppc_import_hist_enabled() {
+            return;
+        }
+        eprint!(
+            "{}",
+            format_ppc_import_histogram(&self.ppc_import_histogram, top_n)
+        );
+    }
+
+    fn record_ppc_import_histogram(&mut self, trace: &[PpcHleImportTraceEntry]) {
+        merge_ppc_import_histogram(&mut self.ppc_import_histogram, trace);
+    }
+
+    /// Dump tracked PPC GWorld fingerprints. No-op unless
+    /// `SYSTEMLESS_PPC_GWORLD_DUMP=1` is set.
+    pub fn print_ppc_gworld_dump(&mut self, top_n: usize) {
+        if !ppc_gworld_dump_enabled() {
+            return;
+        }
+        let Some(ppc_app) = self.ppc_app.as_mut() else {
+            return;
+        };
+        eprint!(
+            "{}",
+            format_ppc_gworld_dump(
+                &mut ppc_app.memory,
+                &ppc_app.gworlds,
+                PpcGWorldDumpState {
+                    current_gworld: ppc_app.current_gworld,
+                    front_gworld: ppc_app.draw_sprocket.front_buffer_gworld,
+                    back_gworld: ppc_app.draw_sprocket.back_buffer_gworld,
+                    swap_count: ppc_app.draw_sprocket.swap_count,
+                },
+                top_n
+            )
+        );
+    }
+
+    /// Dump unsupported PPC runtime stops. No-op unless
+    /// `SYSTEMLESS_PPC_UNIMPL_HIST=1` is set.
+    pub fn print_ppc_unimpl_histogram(&self, top_n: usize) {
+        if !ppc_unimpl_hist_enabled() {
+            return;
+        }
+        eprint!(
+            "{}",
+            format_ppc_unimpl_histogram(&self.ppc_unimpl_histogram, top_n)
+        );
+    }
+
+    fn record_ppc_unimpl_histogram(
+        &mut self,
+        imports: &[PpcImportBinding],
+        result: PpcRunResult,
+        unsupported_import_index: Option<u32>,
+    ) {
+        if let Some(key) = ppc_unimpl_histogram_key(imports, result, unsupported_import_index) {
+            merge_ppc_unimpl_histogram(&mut self.ppc_unimpl_histogram, key);
+        }
+    }
+
     pub fn install_application_clut(&mut self, clut: [[u16; 3]; 256]) {
         self.dispatcher
             .install_application_clut(&mut self.bus, clut);
@@ -1381,6 +2257,35 @@ impl FixtureRunner {
     /// and decides how/where its output is persisted.
     pub fn set_trace_sink(&mut self, sink: Box<dyn crate::trace::TraceSink>) {
         self.dispatcher.set_trace_sink(sink)
+    }
+
+    pub fn record_oracle_checkpoint_snapshot(&mut self, name: &str) -> Result<u64> {
+        self.composite_frame();
+        self.dispatcher.record_trace_event(
+            &self.bus,
+            self.current_oracle_pc(),
+            "checkpoint_snapshot",
+            BTreeMap::from([("name".to_string(), name.to_string())]),
+            true,
+        )?;
+        Ok(self.dispatcher.screen_event_count)
+    }
+
+    pub fn record_oracle_script_input(&mut self, fields: BTreeMap<String, String>) -> Result<()> {
+        self.dispatcher.record_trace_event(
+            &self.bus,
+            self.current_oracle_pc(),
+            "script_input",
+            fields,
+            false,
+        )
+    }
+
+    fn current_oracle_pc(&self) -> u32 {
+        self.ppc_app
+            .as_ref()
+            .map(|app| app.cpu.pc)
+            .unwrap_or_else(|| self.cpu.read_reg(Register::PC))
     }
 
     /// Composite chrome/dialog overlays onto the framebuffer.
@@ -1560,6 +2465,11 @@ impl FixtureRunner {
         self.instructions_per_tick
     }
 
+    /// Whether the active application executes through the PowerPC runtime.
+    pub fn is_powerpc_app(&self) -> bool {
+        self.ppc_app.is_some()
+    }
+
     /// Cap the per-WaitNextEvent-call sleep tick advance in headless mode.
     /// None (default) preserves the legacy drain-all behavior. Some(n) caps
     /// each WNE sleep to at most n tick advances, mirroring GUI mode.
@@ -1609,6 +2519,10 @@ impl FixtureRunner {
                 .pending_sound_callbacks
                 .is_empty()
             || !self.dispatcher.sound_manager.pending_callbacks.is_empty()
+            || self
+                .ppc_app
+                .as_ref()
+                .is_some_and(|app| !app.sound.pending_completions.is_empty())
     }
 
     pub fn is_ui_tracking_active(&self) -> bool {
@@ -1623,6 +2537,7 @@ impl FixtureRunner {
     /// keep up with wall-clock time (e.g. during expensive PICT draws).
     pub fn force_advance_guest_tick(&mut self) {
         self.advance_guest_tick();
+        self.queue_due_ppc_sound_completions();
     }
 
     pub fn set_output_path(&mut self, path: std::path::PathBuf) {
@@ -1703,6 +2618,18 @@ impl FixtureRunner {
             created_date: metadata.created_date,
             modified_date: metadata.modified_date,
         })
+    }
+
+    /// Reconstruct resource entries embedded by installers and publish the
+    /// complete forks through the virtual filesystem snapshot API.
+    pub fn prepare_vfs_resource_forks_for_native_export(&mut self) -> usize {
+        let Some(mut ppc_app) = self.ppc_app.take() else {
+            return 0;
+        };
+        let materialized_count = ppc_app.prepare_vfs_resource_forks_for_native_export();
+        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.ppc_app = Some(ppc_app);
+        materialized_count
     }
 
     pub fn import_vfs_file(&mut self, file: &VfsFileSnapshot) {
@@ -2162,6 +3089,15 @@ impl FixtureRunner {
     /// Think C runtimes, e.g. Koji / Munchies) sees `CurStackBase` =
     /// 0 and spins forever in the globals-decompression loop.
     pub fn init_app(&mut self, app: &LoadedApp) {
+        if let Some(ppc_app) = app.ppc.clone() {
+            self.init_ppc_app(ppc_app);
+            return;
+        }
+
+        self.ppc_app = None;
+        self.ppc_sound_synced_file_playback_count = 0;
+        self.ppc_sound_host_playbacks.clear();
+
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
 
@@ -2531,6 +3467,61 @@ impl FixtureRunner {
             .write_reg(Register::PC, app.entry_point(app.a5_base));
     }
 
+    fn init_ppc_app(&mut self, ppc_app: PpcLoadedApp) {
+        use crate::memory::globals::addr;
+
+        let ram_size = self.bus.ram_size();
+        self.bus.write_long(addr::MEM_TOP, ram_size);
+        self.bus.write_long(addr::TICKS, 0);
+        let time = self
+            .app_start_time
+            .unwrap_or_else(current_mac_epoch_seconds);
+        self.bus.write_long(addr::TIME, time);
+        self.bus.write_long(addr::RND_SEED, time);
+        self.bus.write_byte(addr::MB_STATE, 0x80);
+        self.bus.write_word(addr::MBAR_HEIGHT, 20);
+        self.bus.write_byte(addr::SOUND_LEVEL, 1);
+
+        let app_dir_id = self.dispatcher.default_dir_id;
+        self.bus.write_long(addr::CUR_DIR_STORE, app_dir_id);
+        self.bus.write_word(
+            addr::SF_SAVE_DISK,
+            (-crate::trap::dispatch::BOOT_VOLUME_REF_NUM) as u16,
+        );
+
+        let gdh = self.dispatcher.ensure_main_gdevice(&mut self.bus);
+        self.bus.write_long(0x8A4, gdh);
+        self.bus.write_long(0xCC8, gdh);
+        self.bus.write_long(0x8A8, gdh);
+        if let Some(front_buffer) = ppc_app.presented_front_buffer() {
+            self.ensure_ppc_host_screen_mode(front_buffer);
+        } else {
+            let gd_ptr = self.bus.read_long(gdh);
+            let pmap_h = self.bus.read_long(gd_ptr + 22);
+            let pmap = self.bus.read_long(pmap_h);
+            let scrn_base = self.bus.read_long(pmap);
+            let rb = (self.bus.read_word(pmap + 4) & 0x3FFF) as u32;
+            let top = self.bus.read_word(pmap + 6) as i16;
+            let left = self.bus.read_word(pmap + 8) as i16;
+            let bottom = self.bus.read_word(pmap + 10) as i16;
+            let right = self.bus.read_word(pmap + 12) as i16;
+            let pixel_size = self.bus.read_word(pmap + 32);
+            let width = (right - left).max(1) as u16;
+            let height = (bottom - top).max(1) as u16;
+            self.dispatcher.screen_mode = (scrn_base, rb, width, height, pixel_size);
+        }
+
+        self.halted = false;
+        self.halted_trap = None;
+        self.halted_pc = None;
+        self.halted_sp = None;
+        self.halted_d0 = None;
+        self.cpu.write_reg(Register::PC, 0);
+        self.ppc_sound_synced_file_playback_count = 0;
+        self.ppc_sound_host_playbacks.clear();
+        self.ppc_app = Some(ppc_app);
+    }
+
     /// Mix and queue audio samples without full frame finalization.
     /// Used to keep the audio buffer fed during long CPU frames.
     pub fn mix_audio(&mut self, num_samples: usize) {
@@ -2562,6 +3553,7 @@ impl FixtureRunner {
     }
 
     fn mix_host_audio(&mut self, mut remaining_samples: usize) {
+        self.service_ppc_double_buffer_playbacks();
         while remaining_samples > 0 {
             self.try_load_pending_double_buffers();
             self.dispatcher.service_guest_sound_queues(&mut self.bus);
@@ -2584,7 +3576,9 @@ impl FixtureRunner {
             self.dispatcher
                 .release_finished_internal_sound_channels(&mut self.bus);
             remaining_samples -= chunk;
+            self.service_ppc_double_buffer_playbacks();
         }
+        self.sync_ppc_sound_completions_from_dispatcher();
     }
 
     fn finish_host_frame(&mut self, audio_samples: usize, sound_interrupt_dispatched: bool) {
@@ -3438,6 +4432,28 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: bool,
     ) -> (usize, bool) {
+        if self.ppc_app.is_some() {
+            if yield_for_ui {
+                return self.run_ppc_steps(max_steps, tick_cap, audio_samples, false, finish_frame);
+            }
+
+            let mut count = 0usize;
+            let mut running = !self.halted;
+            while count < max_steps && running {
+                let (steps, still_running) =
+                    self.run_ppc_steps(max_steps - count, tick_cap, 0, true, false);
+                count = count.saturating_add(steps);
+                running = still_running;
+                if steps == 0 {
+                    break;
+                }
+            }
+            if finish_frame {
+                self.finish_host_frame(audio_samples, false);
+            }
+            return (count, running);
+        }
+
         // An unfinished proof may never span a frontend scheduling boundary.
         // A *completed* proof is different: it remains parked behind a second
         // memory-write journal and exact CPU/input/event guards, all checked
@@ -3517,6 +4533,7 @@ impl FixtureRunner {
                     break;
                 }
             }
+
             if self.cpu.is_stopped() {
                 self.halted = true;
                 self.halted_pc = Some(self.cpu.read_reg(Register::PC));
@@ -4389,6 +5406,1976 @@ impl FixtureRunner {
         (count, !self.halted)
     }
 
+    fn run_ppc_steps(
+        &mut self,
+        max_steps: usize,
+        tick_cap: Option<u32>,
+        audio_samples: usize,
+        coalesce_to_tick_cap: bool,
+        finish_frame: bool,
+    ) -> (usize, bool) {
+        if max_steps == 0 || self.halted {
+            return (0, !self.halted);
+        }
+        let ppc_max_steps = if coalesce_to_tick_cap {
+            self.ppc_cycle_budget_for_tick_cap(max_steps, tick_cap)
+        } else {
+            max_steps
+        };
+        // Return control near each guest tick boundary so interrupt-time PPC
+        // VBL and Time Manager callbacks run before the application begins
+        // the following frame. Classic games such as Marathon depend on a
+        // periodic timer callback to feed their simulation heartbeat.
+        let cycles_to_next_tick = usize::try_from(self.tick_budget.max(1)).unwrap_or(1);
+        let ppc_max_steps = ppc_max_steps.min(cycles_to_next_tick);
+        if ppc_max_steps == 0 {
+            if finish_frame {
+                self.finish_host_frame(audio_samples, false);
+            }
+            return (0, true);
+        }
+
+        self.dispatcher.instruction_count = self.total_instructions;
+        let (input_offset_v, input_offset_h) = self.ppc_viewport_offset();
+        let input = self.ppc_input_snapshot(input_offset_v, input_offset_h);
+        let Some(mut ppc_app) = self.ppc_app.take() else {
+            return (0, !self.halted);
+        };
+
+        ppc_app.set_input_snapshot(input);
+        ppc_app.set_event_queue(
+            self.dispatcher
+                .event_queue
+                .iter()
+                .map(|event| PpcQueuedEvent {
+                    what: event.what,
+                    message: event.message,
+                    where_v: event.where_v.saturating_sub(input_offset_v),
+                    where_h: event.where_h.saturating_sub(input_offset_h),
+                    modifiers: event.modifiers,
+                }),
+        );
+        ppc_app.set_tick_count(self.dispatcher.tick_count);
+        let cycles_per_tick = self.instructions_per_tick.max(1);
+        let remaining_cycles =
+            (i64::from(self.tick_budget).clamp(0, i64::from(cycles_per_tick))) as u32;
+        ppc_app.set_clock_cycle_timing(
+            cycles_per_tick,
+            cycles_per_tick.saturating_sub(remaining_cycles),
+        );
+        let ppc_start_tick = self.dispatcher.tick_count;
+        let profile_ppc = ppc_profile_enabled();
+        let profile_total_start = profile_ppc.then(Instant::now);
+        let record_ppc_imports = self.dispatcher.is_trace_recording();
+        let trace_ppc_import_hist = ppc_import_hist_enabled();
+        let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
+        let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
+        let profile_run_start = profile_ppc.then(Instant::now);
+        let probe = match (trace_ppc_imports, trace_ppc_fetches) {
+            (true, true) => {
+                ppc_app.run_with_hle_import_trace_and_fetch_histogram(ppc_max_steps as u64)
+            }
+            (true, false) => ppc_app.run_with_hle_import_trace(ppc_max_steps as u64),
+            (false, true) => ppc_app.run_with_hle_import_fetch_histogram(ppc_max_steps as u64),
+            (false, false) => ppc_app.run_with_hle_imports(ppc_max_steps as u64),
+        };
+        let profile_run_us = elapsed_profile_micros(profile_run_start);
+        let cycles = ppc_run_result_cycles(probe.result);
+        let pc = ppc_app.cpu.pc;
+        let sp = ppc_app.cpu.gpr[1];
+        let gpr3 = ppc_app.cpu.gpr[3];
+        let unsupported_import_index = probe.unsupported_import_index;
+        let still_running = matches!(probe.result, PpcRunResult::CycleLimit { .. })
+            && unsupported_import_index.is_none();
+
+        self.total_instructions = self.total_instructions.saturating_add(cycles);
+        self.dispatcher.instruction_count = self.total_instructions;
+        self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
+        let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
+        let vbl_probes = ppc_app.fire_vbl_tasks_for_ticks(
+            ppc_start_tick,
+            elapsed_ticks,
+            usize::MAX,
+            u64::from(cycles_per_tick),
+            trace_ppc_imports,
+            trace_ppc_fetches,
+        );
+        let timer_probes = ppc_app.fire_timer_tasks_for_ticks(
+            ppc_start_tick,
+            elapsed_ticks,
+            usize::MAX,
+            u64::from(cycles_per_tick),
+            trace_ppc_imports,
+            trace_ppc_fetches,
+        );
+        if trace_vbl_enabled() {
+            for vbl_probe in &vbl_probes {
+                eprintln!(
+                    "[VBL-PPC] task=${:08X} callback=${:08X} entry=${:08X} tick={} cycles={} end_r3=${:08X} result={:?}",
+                    vbl_probe.invocation.task_ptr,
+                    vbl_probe.invocation.callback,
+                    vbl_probe.invocation.callback_entry,
+                    vbl_probe.invocation.tick,
+                    vbl_probe.invocation.cycles,
+                    vbl_probe.invocation.end_r3,
+                    vbl_probe.invocation.result,
+                );
+            }
+        }
+        if trace_timer_enabled() {
+            for timer_probe in &timer_probes {
+                eprintln!(
+                    "[TIMER-PPC] task=${:08X} callback=${:08X} entry=${:08X} tick={} cycles={} end_r3=${:08X} result={:?}",
+                    timer_probe.invocation.task_ptr,
+                    timer_probe.invocation.callback,
+                    timer_probe.invocation.callback_entry,
+                    timer_probe.invocation.tick,
+                    timer_probe.invocation.cycles,
+                    timer_probe.invocation.end_r3,
+                    timer_probe.invocation.result,
+                );
+            }
+        }
+        let vbl_cycles = vbl_probes
+            .iter()
+            .map(|probe| probe.invocation.cycles)
+            .sum::<u64>();
+        let timer_cycles = timer_probes
+            .iter()
+            .map(|probe| probe.invocation.cycles)
+            .sum::<u64>();
+        self.total_instructions = self
+            .total_instructions
+            .saturating_add(vbl_cycles)
+            .saturating_add(timer_cycles);
+        self.dispatcher.instruction_count = self.total_instructions;
+        if record_ppc_imports {
+            self.record_ppc_import_trace(&probe.import_trace);
+            for vbl_probe in &vbl_probes {
+                self.record_ppc_import_trace(&vbl_probe.import_trace);
+            }
+            for timer_probe in &timer_probes {
+                self.record_ppc_import_trace(&timer_probe.import_trace);
+            }
+            self.record_draw_sprocket_trace(&probe.draw_sprocket_trace);
+            self.record_input_sprocket_trace(&probe.input_sprocket_trace);
+        }
+        if trace_ppc_import_hist {
+            self.record_ppc_import_histogram(&probe.import_trace);
+            for vbl_probe in &vbl_probes {
+                self.record_ppc_import_histogram(&vbl_probe.import_trace);
+            }
+            for timer_probe in &timer_probes {
+                self.record_ppc_import_histogram(&timer_probe.import_trace);
+            }
+        }
+        if let Some(histogram) = probe.fetch_histogram.as_ref() {
+            self.ppc_fetch_histogram.merge_from(histogram);
+        }
+        for vbl_probe in &vbl_probes {
+            if let Some(histogram) = vbl_probe.fetch_histogram.as_ref() {
+                self.ppc_fetch_histogram.merge_from(histogram);
+            }
+        }
+        for timer_probe in &timer_probes {
+            if let Some(histogram) = timer_probe.fetch_histogram.as_ref() {
+                self.ppc_fetch_histogram.merge_from(histogram);
+            }
+        }
+        let qd3d_dump_frame = qd3d_dump_frame_index();
+        let q3_frame_start = self.q3_completed_frame_index;
+        let mut next_q3_frame_index = self.q3_completed_frame_index;
+        let profile_render_start = profile_ppc.then(Instant::now);
+        let render_stats = if qd3d_dump_frame.is_some() {
+            ppc_app.render_completed_q3_frames_to_front_buffer_with_observer(|_, replay| {
+                if qd3d_dump_frame == Some(next_q3_frame_index) {
+                    eprint!("{}", format_qd3d_frame_dump(next_q3_frame_index, replay));
+                    if let Some(output_dir) = qd3d_dump_replay_dir() {
+                        match write_qd3d_frame_replay_dump(output_dir, next_q3_frame_index, replay)
+                        {
+                            Ok(path) => eprintln!(
+                                "[QD3D-FRAME] frame={} replay_json={}",
+                                next_q3_frame_index,
+                                path.display()
+                            ),
+                            Err(err) => eprintln!(
+                                "[QD3D-FRAME] frame={} replay_json_error={}",
+                                next_q3_frame_index, err
+                            ),
+                        }
+                    }
+                }
+                next_q3_frame_index = next_q3_frame_index.saturating_add(1);
+            })
+        } else {
+            let stats = ppc_app.render_completed_q3_frames_to_front_buffer_fast();
+            next_q3_frame_index = next_q3_frame_index.saturating_add(stats.frames);
+            stats
+        };
+        let profile_render_us = elapsed_profile_micros(profile_render_start);
+        self.q3_completed_frame_index = next_q3_frame_index;
+        self.record_q3_frame_trace(pc, q3_frame_start, next_q3_frame_index, render_stats);
+        let profile_sync_start = profile_ppc.then(Instant::now);
+        self.sync_ppc_front_buffer_to_host(&mut ppc_app);
+        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
+        self.dispatcher.event_queue = ppc_app
+            .event_queue()
+            .iter()
+            .map(|event| crate::trap::dispatch::QueuedEvent {
+                what: event.what,
+                message: event.message,
+                where_v: event.where_v,
+                where_h: event.where_h,
+                modifiers: event.modifiers,
+            })
+            .collect();
+        let profile_sync_us = elapsed_profile_micros(profile_sync_start);
+
+        if profile_ppc {
+            eprintln!(
+                "{}",
+                format_ppc_profile_sample(PpcProfileSample {
+                    max_steps,
+                    cycles,
+                    total_instructions: self.total_instructions,
+                    tick: self.dispatcher.tick_count,
+                    pc,
+                    lr: ppc_app.cpu.lr,
+                    current_gworld: ppc_app.current_gworld,
+                    screen_events: self.dispatcher.screen_event_count,
+                    handled_import_count: probe.handled_import_count,
+                    last_import_index: probe.last_import_index,
+                    unsupported_import_index,
+                    q3_frames: render_stats.frames,
+                    q3_frame_start,
+                    q3_frame_end: next_q3_frame_index,
+                    q3_commands: render_stats.commands,
+                    q3_vertices: render_stats.vertices,
+                    q3_triangles: render_stats.triangles,
+                    q3_pixels: render_stats.pixels,
+                    dsp_front_gworld: ppc_app.draw_sprocket.front_buffer_gworld,
+                    dsp_back_gworld: ppc_app.draw_sprocket.back_buffer_gworld,
+                    run_us: profile_run_us,
+                    render_us: profile_render_us,
+                    sync_us: profile_sync_us,
+                    total_us: elapsed_profile_micros(profile_total_start),
+                })
+            );
+        }
+
+        if ppc_unimpl_hist_enabled() && !still_running {
+            self.record_ppc_unimpl_histogram(
+                &ppc_app.imports,
+                probe.result,
+                unsupported_import_index,
+            );
+        }
+
+        if !still_running {
+            self.halted = true;
+            self.halted_pc = Some(pc);
+            self.halted_sp = Some(sp);
+            self.halted_d0 = Some(gpr3);
+            if trace_load_enabled() {
+                let word = ppc_app.memory.read_u32_be(pc);
+                let word_text = word
+                    .map(|word| format!(" word=${word:08X}"))
+                    .unwrap_or_default();
+                let lr = ppc_app.cpu.lr;
+                let gpr4 = ppc_app.cpu.gpr[4];
+                let gpr29 = ppc_app.cpu.gpr[29];
+                let gpr30 = ppc_app.cpu.gpr[30];
+                let gpr31 = ppc_app.cpu.gpr[31];
+                let node_text = if gpr30 != 0 {
+                    let prev = ppc_app.memory.read_u32_be(gpr30).unwrap_or(0);
+                    let next = ppc_app
+                        .memory
+                        .read_u32_be(gpr30.wrapping_add(4))
+                        .unwrap_or(0);
+                    format!(" r30[0..8]=${prev:08X}/${next:08X}")
+                } else {
+                    String::new()
+                };
+                let global_text = {
+                    let g29 = ppc_app.memory.read_u32_be(gpr29).unwrap_or(0);
+                    let g31 = ppc_app.memory.read_u32_be(gpr31).unwrap_or(0);
+                    let g31_8 = ppc_app
+                        .memory
+                        .read_u32_be(gpr31.wrapping_add(8))
+                        .unwrap_or(0);
+                    format!(" [r29]=${g29:08X} [r31]=${g31:08X} [r31+8]=${g31_8:08X}")
+                };
+                if let Some(index) = unsupported_import_index {
+                    eprintln!(
+                        "[PPC] halted at unsupported import #{} pc=${:08X} sp=${:08X} lr=${:08X} r3=${:08X} r4=${:08X} r29=${:08X} r30=${:08X} r31=${:08X}{}{}{}",
+                        index, pc, sp, lr, gpr3, gpr4, gpr29, gpr30, gpr31, word_text, node_text, global_text
+                    );
+                } else {
+                    eprintln!(
+                        "[PPC] halted after {:?} pc=${:08X} sp=${:08X} lr=${:08X} r3=${:08X} r4=${:08X} r29=${:08X} r30=${:08X} r31=${:08X}{}{}{}",
+                        probe.result, pc, sp, lr, gpr3, gpr4, gpr29, gpr30, gpr31, word_text, node_text, global_text
+                    );
+                }
+            }
+        }
+
+        self.ppc_app = Some(ppc_app);
+        self.queue_due_ppc_sound_completions();
+        if finish_frame {
+            self.finish_host_frame(audio_samples, false);
+        }
+        (
+            usize::try_from(
+                cycles
+                    .saturating_add(vbl_cycles)
+                    .saturating_add(timer_cycles),
+            )
+            .unwrap_or(usize::MAX),
+            still_running,
+        )
+    }
+
+    fn record_ppc_import_trace(&mut self, trace: &[PpcHleImportTraceEntry]) {
+        let runs = ppc_import_trace_runs(trace);
+        let mut index = 0usize;
+        while index < runs.len() {
+            if let Some((block_len, sequence_repeat_count)) =
+                ppc_import_trace_repeated_block_len(&runs, index)
+            {
+                let (entry, _) = runs[index];
+                let sequence = runs[index..index + block_len]
+                    .iter()
+                    .map(|(entry, repeat_count)| {
+                        serde_json::json!({
+                            "library": entry.library_name,
+                            "symbol": entry.symbol_name,
+                            "repeat_count": repeat_count,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let fields = TrapDispatcher::trace_field_map(&[
+                    ("import_index", entry.import_index.to_string()),
+                    ("library", entry.library_name.clone()),
+                    ("symbol", entry.symbol_name.clone()),
+                    ("lr", format!("{:08X}", entry.lr)),
+                    ("rtoc", format!("{:08X}", entry.rtoc)),
+                    ("sp", format!("{:08X}", entry.sp)),
+                    (
+                        "dispatcher_target",
+                        format!("{:?}", entry.dispatcher_target),
+                    ),
+                    ("repeat_count", sequence_repeat_count.to_string()),
+                    ("sequence", serde_json::Value::Array(sequence).to_string()),
+                ]);
+                if let Err(err) = self.dispatcher.record_trace_event(
+                    &self.bus,
+                    entry.pc,
+                    "ppc_import",
+                    fields,
+                    false,
+                ) {
+                    eprintln!("[ORACLE] failed to record PPC import event: {:?}", err);
+                }
+                index += block_len
+                    .saturating_mul(usize::try_from(sequence_repeat_count).unwrap_or(usize::MAX));
+                continue;
+            }
+            let (entry, repeat_count) = runs[index];
+            let fields = TrapDispatcher::trace_field_map(&[
+                ("import_index", entry.import_index.to_string()),
+                ("library", entry.library_name.clone()),
+                ("symbol", entry.symbol_name.clone()),
+                ("lr", format!("{:08X}", entry.lr)),
+                ("rtoc", format!("{:08X}", entry.rtoc)),
+                ("sp", format!("{:08X}", entry.sp)),
+                (
+                    "dispatcher_target",
+                    format!("{:?}", entry.dispatcher_target),
+                ),
+                ("repeat_count", repeat_count.to_string()),
+            ]);
+            if let Err(err) =
+                self.dispatcher
+                    .record_trace_event(&self.bus, entry.pc, "ppc_import", fields, false)
+            {
+                eprintln!("[ORACLE] failed to record PPC import event: {:?}", err);
+            }
+            index += 1;
+        }
+    }
+
+    fn record_input_sprocket_trace(&mut self, trace: &[PpcInputSprocketSimpleStateTraceEntry]) {
+        for entry in trace {
+            let fields = TrapDispatcher::trace_field_map(&[
+                ("import_index", entry.import_index.to_string()),
+                ("element", format!("{:08X}", entry.element)),
+                ("state_ptr", format!("{:08X}", entry.state_ptr)),
+                ("state", format!("{:08X}", entry.state)),
+                ("kind", format!("{:08X}", entry.kind)),
+                ("kind_name", entry.kind_name.clone()),
+                ("fallback_state", format!("{:08X}", entry.fallback_state)),
+                ("need_name", entry.need_name.clone()),
+                ("action_binding", entry.action_binding.clone()),
+                ("key_map", format_input_key_map(&entry.input.key_map)),
+                ("mouse_button", entry.input.mouse_button.to_string()),
+                ("mouse_v", entry.input.mouse_v.to_string()),
+                ("mouse_h", entry.input.mouse_h.to_string()),
+                ("initialized", entry.input_sprocket.initialized.to_string()),
+                ("suspended", entry.input_sprocket.suspended.to_string()),
+                (
+                    "keyboard_active",
+                    entry.input_sprocket.keyboard_active.to_string(),
+                ),
+                (
+                    "mouse_active",
+                    entry.input_sprocket.mouse_active.to_string(),
+                ),
+            ]);
+            if let Err(err) = self.dispatcher.record_trace_event(
+                &self.bus,
+                entry.pc,
+                "input_sprocket",
+                fields,
+                false,
+            ) {
+                eprintln!(
+                    "[ORACLE] failed to record InputSprocket simple-state event: {:?}",
+                    err
+                );
+            }
+        }
+    }
+
+    fn record_draw_sprocket_trace(&mut self, trace: &[PpcDrawSprocketTraceEntry]) {
+        for entry in trace {
+            let fields = TrapDispatcher::trace_field_map(&[
+                ("import_index", entry.import_index.to_string()),
+                ("action", entry.action.clone()),
+                ("result", entry.result.to_string()),
+                ("result_hex", format!("{:04X}", entry.result as u16)),
+                ("context", format_oracle_optional_hex32(entry.context)),
+                (
+                    "requested_state",
+                    entry
+                        .requested_state
+                        .clone()
+                        .unwrap_or_else(|| "none".to_string()),
+                ),
+                (
+                    "requested_frequency",
+                    format_oracle_optional_u32(entry.requested_frequency),
+                ),
+                (
+                    "requested_width",
+                    format_oracle_optional_u32(entry.requested_width),
+                ),
+                (
+                    "requested_height",
+                    format_oracle_optional_u32(entry.requested_height),
+                ),
+                (
+                    "requested_context_options",
+                    format_oracle_optional_u32(entry.requested_context_options),
+                ),
+                (
+                    "requested_display_depth_mask",
+                    format_oracle_optional_u32(entry.requested_display_depth_mask),
+                ),
+                (
+                    "requested_back_buffer_depth_mask",
+                    format_oracle_optional_u32(entry.requested_back_buffer_depth_mask),
+                ),
+                (
+                    "requested_display_depth",
+                    format_oracle_optional_u32(entry.requested_display_depth),
+                ),
+                (
+                    "requested_back_buffer_depth",
+                    format_oracle_optional_u32(entry.requested_back_buffer_depth),
+                ),
+                (
+                    "requested_page_count",
+                    format_oracle_optional_u32(entry.requested_page_count),
+                ),
+                (
+                    "can_user_select",
+                    format_oracle_optional_bool(entry.can_user_select),
+                ),
+                (
+                    "fade_kind",
+                    entry
+                        .fade_kind
+                        .clone()
+                        .unwrap_or_else(|| "none".to_string()),
+                ),
+                (
+                    "fade_percent",
+                    entry
+                        .fade_percent
+                        .map_or_else(|| "none".to_string(), |percent| percent.to_string()),
+                ),
+                (
+                    "fade_zero_red",
+                    format_oracle_optional_u16(entry.fade_zero_red),
+                ),
+                (
+                    "fade_zero_green",
+                    format_oracle_optional_u16(entry.fade_zero_green),
+                ),
+                (
+                    "fade_zero_blue",
+                    format_oracle_optional_u16(entry.fade_zero_blue),
+                ),
+                (
+                    "reserved_context",
+                    format_oracle_optional_hex32(entry.reserved_context),
+                ),
+                (
+                    "active_context",
+                    format_oracle_optional_hex32(entry.active_context),
+                ),
+                (
+                    "has_reserved_context",
+                    entry.reserved_context.is_some().to_string(),
+                ),
+                (
+                    "has_active_context",
+                    entry.active_context.is_some().to_string(),
+                ),
+                ("context_state", entry.context_state.clone()),
+                (
+                    "front_gworld",
+                    format_oracle_hex32(entry.front_buffer_gworld),
+                ),
+                ("back_gworld", format_oracle_hex32(entry.back_buffer_gworld)),
+                (
+                    "last_swap_context",
+                    format_oracle_optional_hex32(entry.last_swap_context),
+                ),
+                ("swap_count", entry.swap_count.to_string()),
+                ("fade_count", entry.fade_count.to_string()),
+                ("frequency", entry.frequency.to_string()),
+                ("width", entry.width.to_string()),
+                ("height", entry.height.to_string()),
+                ("context_options", entry.context_options.to_string()),
+                ("display_depth_mask", entry.display_depth_mask.to_string()),
+                (
+                    "back_buffer_depth_mask",
+                    entry.back_buffer_depth_mask.to_string(),
+                ),
+                ("display_depth", entry.display_depth.to_string()),
+                ("back_buffer_depth", entry.back_buffer_depth.to_string()),
+                ("page_count", entry.page_count.to_string()),
+            ]);
+            if let Err(err) = self.dispatcher.record_trace_event(
+                &self.bus,
+                entry.pc,
+                "draw_sprocket",
+                fields,
+                false,
+            ) {
+                eprintln!("[ORACLE] failed to record DrawSprocket event: {:?}", err);
+            }
+        }
+    }
+
+    fn record_q3_frame_trace(
+        &mut self,
+        pc: u32,
+        frame_start: usize,
+        frame_end: usize,
+        stats: PpcQ3SoftwareRenderStats,
+    ) {
+        if stats.frames == 0 || !self.dispatcher.is_trace_recording() {
+            return;
+        }
+        let fields = TrapDispatcher::trace_field_map(&[
+            ("frame_start", frame_start.to_string()),
+            ("frame_end", frame_end.to_string()),
+            ("frames", stats.frames.to_string()),
+            ("commands", stats.commands.to_string()),
+            ("vertices", stats.vertices.to_string()),
+            ("triangles", stats.triangles.to_string()),
+            ("pixels", stats.pixels.to_string()),
+            (
+                "target_base",
+                format_oracle_optional_hex32(stats.target_base),
+            ),
+            (
+                "target_row_bytes",
+                format_oracle_optional_u32(stats.target_row_bytes),
+            ),
+            (
+                "target_width",
+                format_oracle_optional_u32(stats.target_width),
+            ),
+            (
+                "target_height",
+                format_oracle_optional_u32(stats.target_height),
+            ),
+            (
+                "target_depth",
+                format_oracle_optional_u32(stats.target_depth),
+            ),
+            (
+                "target_source",
+                stats.target_source.unwrap_or("none").to_string(),
+            ),
+            (
+                "target_draw_context",
+                format_oracle_optional_hex32(stats.target_draw_context),
+            ),
+            (
+                "target_gworld",
+                format_oracle_optional_hex32(stats.target_gworld),
+            ),
+            ("target_consistent", stats.target_consistent.to_string()),
+        ]);
+        if let Err(err) = self
+            .dispatcher
+            .record_trace_event(&self.bus, pc, "q3_frame", fields, false)
+        {
+            eprintln!("[ORACLE] failed to record QD3D frame event: {:?}", err);
+        }
+    }
+
+    fn ppc_input_snapshot(&self, offset_v: i16, offset_h: i16) -> PpcInputSnapshot {
+        PpcInputSnapshot {
+            key_map: self.dispatcher.key_map,
+            mouse_button: self.dispatcher.mouse_button,
+            mouse_v: self.dispatcher.mouse_pos.0.saturating_sub(offset_v),
+            mouse_h: self.dispatcher.mouse_pos.1.saturating_sub(offset_h),
+        }
+    }
+
+    fn ppc_viewport_offset(&self) -> (i16, i16) {
+        let Some(front_buffer) = self
+            .ppc_app
+            .as_ref()
+            .and_then(PpcLoadedApp::presented_front_buffer)
+        else {
+            return (0, 0);
+        };
+        let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(front_buffer);
+        (
+            i16::try_from(canvas_height.saturating_sub(front_buffer.height) / 2).unwrap_or(0),
+            i16::try_from(canvas_width.saturating_sub(front_buffer.width) / 2).unwrap_or(0),
+        )
+    }
+
+    fn sync_ppc_sound_to_dispatcher(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let decoded_buffer_commands = std::mem::take(&mut ppc_app.sound.decoded_buffer_commands);
+        for decoded in decoded_buffer_commands {
+            self.play_ppc_decoded_buffer_command(decoded);
+        }
+        self.sync_ppc_double_buffer_playbacks(ppc_app);
+
+        let start = self
+            .ppc_sound_synced_file_playback_count
+            .min(ppc_app.sound.file_playbacks.len());
+        for index in start..ppc_app.sound.file_playbacks.len() {
+            let playback = &ppc_app.sound.file_playbacks[index];
+            if !playback.active || playback.paused {
+                continue;
+            }
+            let Some(decoded) = ppc_app
+                .sound
+                .decoded_file_playbacks
+                .iter()
+                .find(|decoded| decoded.file_playback_index as usize == index)
+                .cloned()
+            else {
+                continue;
+            };
+            let channel = playback.channel;
+            self.ensure_ppc_sound_playback_timing(ppc_app, index, &decoded);
+            let chan_index = self
+                .dispatcher
+                .sound_manager
+                .channels
+                .iter()
+                .position(|chan| chan.guest_ptr == channel)
+                .unwrap_or_else(|| {
+                    self.dispatcher
+                        .sound_manager
+                        .channels
+                        .push(crate::sound::SndChannel::new(channel, false));
+                    self.dispatcher.sound_manager.channels.len() - 1
+                });
+            let chan = &mut self.dispatcher.sound_manager.channels[chan_index];
+            chan.quiet();
+            chan.play_buffer(
+                decoded.samples.clone(),
+                decoded.sample_rate_fixed,
+                crate::sound::PlaybackKind::File,
+                0,
+            );
+            self.ppc_sound_host_playbacks
+                .retain(|record| record.file_playback_index != index);
+            self.ppc_sound_host_playbacks.push(PpcHostSoundPlayback {
+                file_playback_index: index,
+                channel,
+            });
+            self.dispatcher.sound_manager.debug_file_play_count = self
+                .dispatcher
+                .sound_manager
+                .debug_file_play_count
+                .saturating_add(1);
+        }
+
+        self.ppc_sound_synced_file_playback_count = ppc_app.sound.file_playbacks.len();
+        self.adjust_ppc_sound_pause_timing(ppc_app);
+
+        let mut seen_channels = Vec::new();
+        for playback in ppc_app.sound.file_playbacks.iter().rev() {
+            if seen_channels.contains(&playback.channel) {
+                continue;
+            }
+            seen_channels.push(playback.channel);
+            if let Some(chan) = self
+                .dispatcher
+                .sound_manager
+                .find_channel_mut(playback.channel)
+            {
+                if !playback.active || playback.quiet_now {
+                    chan.quiet();
+                } else {
+                    chan.set_file_paused(playback.paused);
+                }
+            }
+        }
+        self.ppc_sound_host_playbacks.retain(|record| {
+            ppc_app
+                .sound
+                .file_playbacks
+                .get(record.file_playback_index)
+                .is_some_and(|playback| playback.active && !playback.quiet_now)
+        });
+    }
+
+    fn play_ppc_decoded_buffer_command(&mut self, decoded: PpcDecodedBufferCommandRecord) {
+        let channel = decoded.channel;
+        if trace_sound_runner_enabled() {
+            let non_silent = decoded
+                .samples
+                .iter()
+                .filter(|sample| **sample != 0x80)
+                .count();
+            eprintln!(
+                "[PPC-SOUND] host bufferCmd chan=${channel:08X} rate=${:08X} samples={} non_silent={}",
+                decoded.sample_rate_fixed,
+                decoded.samples.len(),
+                non_silent
+            );
+        }
+        let chan_index = self
+            .dispatcher
+            .sound_manager
+            .channels
+            .iter()
+            .position(|chan| chan.guest_ptr == channel)
+            .unwrap_or_else(|| {
+                self.dispatcher
+                    .sound_manager
+                    .channels
+                    .push(crate::sound::SndChannel::new(channel, false));
+                self.dispatcher.sound_manager.channels.len() - 1
+            });
+        self.dispatcher.sound_manager.channels[chan_index].play_buffer(
+            decoded.samples,
+            decoded.sample_rate_fixed,
+            crate::sound::PlaybackKind::Buffer,
+            0,
+        );
+        self.dispatcher.sound_manager.debug_cmd_count = self
+            .dispatcher
+            .sound_manager
+            .debug_cmd_count
+            .saturating_add(1);
+        self.dispatcher.sound_manager.debug_buffer_cmd_count = self
+            .dispatcher
+            .sound_manager
+            .debug_buffer_cmd_count
+            .saturating_add(1);
+        if !self
+            .dispatcher
+            .sound_manager
+            .debug_cmd_codes_seen
+            .contains(&crate::sound::cmd::BUFFER)
+        {
+            self.dispatcher
+                .sound_manager
+                .debug_cmd_codes_seen
+                .push(crate::sound::cmd::BUFFER);
+        }
+    }
+
+    fn sync_ppc_double_buffer_playbacks(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let stopped_channels = ppc_app
+            .sound
+            .double_buffer_playbacks
+            .iter()
+            .filter(|playback| !playback.active && playback.host_buffer_loaded)
+            .filter(|playback| {
+                !ppc_app
+                    .sound
+                    .double_buffer_playbacks
+                    .iter()
+                    .any(|other| other.active && other.channel == playback.channel)
+            })
+            .map(|playback| playback.channel)
+            .collect::<Vec<_>>();
+        for channel in stopped_channels {
+            if let Some(host_channel) = self.dispatcher.sound_manager.find_channel_mut(channel) {
+                host_channel.quiet();
+            }
+        }
+        for playback in &mut ppc_app.sound.double_buffer_playbacks {
+            if !playback.active {
+                playback.host_buffer_loaded = false;
+            }
+        }
+
+        for index in 0..ppc_app.sound.double_buffer_playbacks.len() {
+            let playback = ppc_app.sound.double_buffer_playbacks[index];
+            if !playback.active {
+                continue;
+            }
+            if !playback.host_initialized {
+                ppc_app.sound.double_buffer_playbacks[index].host_initialized = true;
+                self.dispatcher.sound_manager.debug_double_buffer_count = self
+                    .dispatcher
+                    .sound_manager
+                    .debug_double_buffer_count
+                    .saturating_add(1);
+            }
+            if playback.host_buffer_loaded {
+                continue;
+            }
+
+            let Some(decoded) = Self::decode_ppc_double_buffer(&mut ppc_app.memory, playback)
+            else {
+                if trace_sound_runner_enabled() {
+                    eprintln!(
+                        "[PPC-SOUND] unsupported double buffer chan=${:08X} header=${:08X} channels={} bits={} compression={} packet={}",
+                        playback.channel,
+                        playback.header,
+                        playback.num_channels,
+                        playback.sample_size,
+                        playback.compression_id,
+                        playback.packet_size
+                    );
+                }
+                continue;
+            };
+            if decoded.flags & 0x01 == 0 || decoded.samples.is_empty() {
+                Self::queue_ppc_doubleback(
+                    &mut ppc_app.sound,
+                    index,
+                    self.dispatcher.tick_count,
+                    self.total_instructions,
+                );
+                continue;
+            }
+
+            self.play_ppc_decoded_double_buffer(playback, &decoded);
+            ppc_app.sound.double_buffer_playbacks[index].host_buffer_loaded = true;
+        }
+    }
+
+    fn decode_ppc_double_buffer(
+        memory: &mut PpcSectionMem,
+        playback: PpcSoundDoubleBufferPlaybackRecord,
+    ) -> Option<PpcDecodedDoubleBuffer> {
+        const MAX_RETAINED_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+
+        if playback.compression_id != 0 {
+            return None;
+        }
+        let buffer_index = usize::from(playback.current_buffer_index & 1);
+        let buffer_ptr = playback.buffers[buffer_index];
+        if buffer_ptr == 0 {
+            return None;
+        }
+        let num_frames = usize::try_from(memory.read_u32_be(buffer_ptr)?).ok()?;
+        let flags = memory.read_u32_be(buffer_ptr.checked_add(4)?)?;
+        if flags & 0x01 == 0 || num_frames == 0 {
+            return Some(PpcDecodedDoubleBuffer {
+                buffer_ptr,
+                flags,
+                samples: Vec::new(),
+            });
+        }
+        let num_channels = usize::from(playback.num_channels);
+        let sample_size = usize::from(playback.sample_size);
+        let bytes_per_sample = match sample_size {
+            8 => 1usize,
+            16 => 2usize,
+            _ => return None,
+        };
+        let byte_count = num_frames
+            .checked_mul(num_channels)?
+            .checked_mul(bytes_per_sample)?;
+        if byte_count > MAX_RETAINED_SAMPLE_BYTES {
+            return None;
+        }
+        let mut raw = vec![0; byte_count];
+        memory.read_bytes_into(buffer_ptr.checked_add(16)?, &mut raw)?;
+        let samples = crate::trap::decode_interleaved_stereo_samples(
+            &raw,
+            num_frames,
+            num_channels,
+            sample_size,
+        )?;
+        Some(PpcDecodedDoubleBuffer {
+            buffer_ptr,
+            flags,
+            samples,
+        })
+    }
+
+    fn play_ppc_decoded_double_buffer(
+        &mut self,
+        playback: PpcSoundDoubleBufferPlaybackRecord,
+        decoded: &PpcDecodedDoubleBuffer,
+    ) {
+        let channel_index = self
+            .dispatcher
+            .sound_manager
+            .channels
+            .iter()
+            .position(|channel| channel.guest_ptr == playback.channel)
+            .unwrap_or_else(|| {
+                self.dispatcher
+                    .sound_manager
+                    .channels
+                    .push(crate::sound::SndChannel::new(playback.channel, false));
+                self.dispatcher.sound_manager.channels.len() - 1
+            });
+        let host_channel = &mut self.dispatcher.sound_manager.channels[channel_index];
+        let non_silent_frames = decoded
+            .samples
+            .iter()
+            .filter(|sample| sample.left != 0x80 || sample.right != 0x80)
+            .count();
+        host_channel.debug_double_buffer_loads =
+            host_channel.debug_double_buffer_loads.saturating_add(1);
+        host_channel.debug_double_buffer_frames_loaded = host_channel
+            .debug_double_buffer_frames_loaded
+            .saturating_add(decoded.samples.len() as u64);
+        host_channel.debug_double_buffer_non_silent_frames = host_channel
+            .debug_double_buffer_non_silent_frames
+            .saturating_add(non_silent_frames as u64);
+        if non_silent_frames > 0 {
+            host_channel.debug_double_buffer_non_silent_loads = host_channel
+                .debug_double_buffer_non_silent_loads
+                .saturating_add(1);
+        }
+        let capture_remaining = crate::sound::DEBUG_DOUBLE_BUFFER_CAPTURE_LIMIT
+            .saturating_sub(host_channel.debug_double_buffer_captured_samples.len());
+        host_channel.debug_double_buffer_captured_samples.extend(
+            decoded
+                .samples
+                .iter()
+                .take(capture_remaining)
+                .copied()
+                .map(crate::sound::StereoSample::downmix),
+        );
+        if trace_sound_runner_enabled() {
+            eprintln!(
+                "[PPC-SOUND] host double buffer chan=${:08X} buf=${:08X} index={} frames={} non_silent={} flags=${:08X}",
+                playback.channel,
+                decoded.buffer_ptr,
+                playback.current_buffer_index,
+                decoded.samples.len(),
+                non_silent_frames,
+                decoded.flags
+            );
+        }
+        host_channel.play_stereo_buffer(
+            decoded.samples.clone(),
+            playback.sample_rate_fixed,
+            crate::sound::PlaybackKind::Buffer,
+            0,
+        );
+    }
+
+    fn queue_ppc_doubleback(
+        sound: &mut crate::loader::ppc::PpcSoundState,
+        playback_index: usize,
+        tick: u32,
+        instruction_count: u64,
+    ) {
+        let Some(playback) = sound.double_buffer_playbacks.get_mut(playback_index) else {
+            return;
+        };
+        let buffer_index = playback.current_buffer_index & 1;
+        let pending_bit = 1u8 << buffer_index;
+        let buffer_ptr = playback.buffers[usize::from(buffer_index)];
+        if playback.callback == 0
+            || buffer_ptr == 0
+            || playback.callback_pending_mask & pending_bit != 0
+        {
+            return;
+        }
+        playback.callback_pending_mask |= pending_bit;
+        sound.pending_doublebacks.push(PpcSoundDoubleBackRecord {
+            channel: playback.channel,
+            header: playback.header,
+            exhausted_buffer: buffer_ptr,
+            exhausted_buffer_index: u32::from(buffer_index),
+            callback: playback.callback,
+            tick,
+            instruction_count,
+        });
+    }
+
+    fn ensure_ppc_sound_playback_timing(
+        &mut self,
+        ppc_app: &mut PpcLoadedApp,
+        index: usize,
+        decoded: &PpcDecodedAiffPlaybackRecord,
+    ) {
+        let Some(playback) = ppc_app.sound.file_playbacks.get_mut(index) else {
+            return;
+        };
+        if playback.timing_valid {
+            return;
+        }
+        let duration_ticks = ppc_decoded_playback_duration_ticks(decoded).unwrap_or(1);
+        let duration_instructions =
+            u64::from(duration_ticks).saturating_mul(u64::from(self.instructions_per_tick));
+        playback.timing_valid = true;
+        playback.start_tick = self.dispatcher.tick_count;
+        playback.start_instruction_count = self.total_instructions;
+        playback.due_tick = playback.start_tick.saturating_add(duration_ticks);
+        playback.due_instruction_count = playback
+            .start_instruction_count
+            .saturating_add(duration_instructions);
+        playback.pause_timing_valid = false;
+        playback.pause_started_tick = 0;
+        playback.pause_started_instruction_count = 0;
+    }
+
+    fn adjust_ppc_sound_pause_timing(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let current_tick = self.dispatcher.tick_count;
+        let current_instructions = self.total_instructions;
+        for playback in &mut ppc_app.sound.file_playbacks {
+            if !playback.active || playback.quiet_now || !playback.timing_valid {
+                playback.pause_timing_valid = false;
+                continue;
+            }
+            if playback.paused {
+                if !playback.pause_timing_valid {
+                    playback.pause_timing_valid = true;
+                    playback.pause_started_tick = current_tick;
+                    playback.pause_started_instruction_count = current_instructions;
+                }
+                continue;
+            }
+            if playback.pause_timing_valid {
+                let paused_ticks = current_tick.saturating_sub(playback.pause_started_tick);
+                let paused_instructions =
+                    current_instructions.saturating_sub(playback.pause_started_instruction_count);
+                playback.due_tick = playback.due_tick.saturating_add(paused_ticks);
+                playback.due_instruction_count = playback
+                    .due_instruction_count
+                    .saturating_add(paused_instructions);
+                playback.pause_timing_valid = false;
+                playback.pause_started_tick = 0;
+                playback.pause_started_instruction_count = 0;
+            }
+        }
+    }
+
+    fn queue_due_ppc_sound_completions(&mut self) {
+        let current_tick = self.dispatcher.tick_count;
+        let current_instructions = self.total_instructions;
+        let completed = {
+            let Some(ppc_app) = self.ppc_app.as_mut() else {
+                return;
+            };
+
+            let mut completed = Vec::new();
+            for (index, playback) in ppc_app.sound.file_playbacks.iter_mut().enumerate() {
+                if !playback.active
+                    || playback.paused
+                    || playback.quiet_now
+                    || !playback.timing_valid
+                    || current_tick < playback.due_tick
+                    || current_instructions < playback.due_instruction_count
+                {
+                    continue;
+                }
+
+                playback.active = false;
+                playback.paused = false;
+                let scheduled_tick = playback.due_tick;
+                let scheduled_instruction_count = playback.due_instruction_count;
+                if playback.async_play && playback.completion != 0 {
+                    ppc_app
+                        .sound
+                        .pending_completions
+                        .push(PpcSoundCompletionRecord {
+                            file_playback_index: u32::try_from(index).unwrap_or(u32::MAX),
+                            channel: playback.channel,
+                            completion: playback.completion,
+                            tick: current_tick,
+                            instruction_count: current_instructions,
+                            scheduled_tick,
+                            scheduled_instruction_count,
+                        });
+                }
+                completed.push((index, playback.channel));
+            }
+            completed
+        };
+
+        if completed.is_empty() {
+            return;
+        }
+        for (_, channel) in &completed {
+            if let Some(chan) = self.dispatcher.sound_manager.find_channel_mut(*channel) {
+                chan.quiet();
+            }
+        }
+        self.ppc_sound_host_playbacks.retain(|record| {
+            !completed
+                .iter()
+                .any(|(index, _)| *index == record.file_playback_index)
+        });
+        self.fire_pending_ppc_sound_completions();
+    }
+
+    fn sync_ppc_sound_completions_from_dispatcher(&mut self) {
+        if self.ppc_app.is_none() || self.ppc_sound_host_playbacks.is_empty() {
+            self.fire_pending_ppc_sound_completions();
+            return;
+        }
+
+        let mut remaining = Vec::with_capacity(self.ppc_sound_host_playbacks.len());
+        let mut completed = Vec::new();
+        for record in self.ppc_sound_host_playbacks.drain(..) {
+            let still_active = self
+                .dispatcher
+                .sound_manager
+                .channels
+                .iter()
+                .find(|channel| channel.guest_ptr == record.channel)
+                .is_some_and(|channel| channel.has_active_playback());
+            if still_active {
+                remaining.push(record);
+            } else {
+                completed.push(record);
+            }
+        }
+        self.ppc_sound_host_playbacks = remaining;
+        if completed.is_empty() {
+            self.fire_pending_ppc_sound_completions();
+            return;
+        }
+
+        {
+            let Some(ppc_app) = self.ppc_app.as_mut() else {
+                return;
+            };
+            for record in completed {
+                let Some(playback) = ppc_app
+                    .sound
+                    .file_playbacks
+                    .get_mut(record.file_playback_index)
+                else {
+                    continue;
+                };
+                if !playback.active || playback.quiet_now {
+                    continue;
+                }
+                playback.active = false;
+                playback.paused = false;
+                if playback.async_play && playback.completion != 0 {
+                    let scheduled_tick = if playback.timing_valid {
+                        playback.due_tick
+                    } else {
+                        self.dispatcher.tick_count
+                    };
+                    let scheduled_instruction_count = if playback.timing_valid {
+                        playback.due_instruction_count
+                    } else {
+                        self.total_instructions
+                    };
+                    ppc_app
+                        .sound
+                        .pending_completions
+                        .push(PpcSoundCompletionRecord {
+                            file_playback_index: u32::try_from(record.file_playback_index)
+                                .unwrap_or(u32::MAX),
+                            channel: record.channel,
+                            completion: playback.completion,
+                            tick: self.dispatcher.tick_count,
+                            instruction_count: self.total_instructions,
+                            scheduled_tick,
+                            scheduled_instruction_count,
+                        });
+                }
+            }
+        }
+        self.fire_pending_ppc_sound_completions();
+    }
+
+    fn service_ppc_double_buffer_playbacks(&mut self) {
+        let Some(mut ppc_app) = self.ppc_app.take() else {
+            return;
+        };
+
+        for index in 0..ppc_app.sound.double_buffer_playbacks.len() {
+            let playback = ppc_app.sound.double_buffer_playbacks[index];
+            if !playback.active || !playback.host_buffer_loaded {
+                continue;
+            }
+            let host_is_playing = self
+                .dispatcher
+                .sound_manager
+                .channels
+                .iter()
+                .find(|channel| channel.guest_ptr == playback.channel)
+                .is_some_and(crate::sound::SndChannel::is_playing);
+            if host_is_playing {
+                continue;
+            }
+
+            let buffer_index = playback.current_buffer_index & 1;
+            let buffer_ptr = playback.buffers[usize::from(buffer_index)];
+            let flags = ppc_app
+                .memory
+                .read_u32_be(buffer_ptr.wrapping_add(4))
+                .unwrap_or(0);
+            if buffer_ptr != 0 {
+                let _ = ppc_app
+                    .memory
+                    .write_u32_be(buffer_ptr.wrapping_add(4), flags & !0x01);
+            }
+            ppc_app.sound.double_buffer_playbacks[index].host_buffer_loaded = false;
+            if flags & 0x04 != 0 {
+                ppc_app.sound.double_buffer_playbacks[index].active = false;
+                continue;
+            }
+
+            Self::queue_ppc_doubleback(
+                &mut ppc_app.sound,
+                index,
+                self.dispatcher.tick_count,
+                self.total_instructions,
+            );
+            ppc_app.sound.double_buffer_playbacks[index].current_buffer_index = buffer_index ^ 1;
+        }
+
+        self.sync_ppc_double_buffer_playbacks(&mut ppc_app);
+        self.ppc_app = Some(ppc_app);
+        self.fire_pending_ppc_sound_doublebacks();
+
+        let Some(mut ppc_app) = self.ppc_app.take() else {
+            return;
+        };
+        self.sync_ppc_double_buffer_playbacks(&mut ppc_app);
+        self.ppc_app = Some(ppc_app);
+    }
+
+    fn fire_pending_ppc_sound_doublebacks(&mut self) {
+        let Some(ppc_app) = self.ppc_app.as_ref() else {
+            return;
+        };
+        if ppc_app.sound.pending_doublebacks.is_empty() {
+            return;
+        }
+
+        let record_ppc_imports = self.dispatcher.is_trace_recording();
+        let trace_ppc_import_hist = ppc_import_hist_enabled();
+        let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
+        let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
+        let Some(mut ppc_app) = self.ppc_app.take() else {
+            return;
+        };
+        let mut fired_count = 0usize;
+        while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
+            let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
+            let resume_pc = ppc_app.cpu.pc;
+            let probe = ppc_app.run_sound_doubleback_callback(
+                doubleback,
+                PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                trace_ppc_imports,
+                trace_ppc_fetches,
+            );
+            let invocation = probe.invocation;
+            if trace_sound_runner_enabled() {
+                eprintln!(
+                    "[PPC-SOUND] doubleback chan=${:08X} buffer={} callback=${:08X} entry=${:08X} resume_pc=${:08X} end_pc=${:08X} cycles={} result={:?}",
+                    doubleback.channel,
+                    doubleback.exhausted_buffer_index,
+                    doubleback.callback,
+                    invocation.callback_entry,
+                    resume_pc,
+                    invocation.end_pc,
+                    invocation.cycles,
+                    invocation.result
+                );
+            }
+            if record_ppc_imports {
+                self.record_ppc_import_trace(&probe.import_trace);
+            }
+            if trace_ppc_import_hist {
+                self.record_ppc_import_histogram(&probe.import_trace);
+            }
+            if let Some(histogram) = probe.fetch_histogram.as_ref() {
+                self.ppc_fetch_histogram.merge_from(histogram);
+            }
+            if ppc_unimpl_hist_enabled() {
+                self.record_ppc_unimpl_histogram(
+                    &ppc_app.imports,
+                    invocation.result,
+                    invocation.unsupported_import_index,
+                );
+            }
+            self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
+            self.dispatcher.instruction_count = self.total_instructions;
+            self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
+
+            let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
+            if let Some(playback) =
+                ppc_app
+                    .sound
+                    .double_buffer_playbacks
+                    .iter_mut()
+                    .rev()
+                    .find(|playback| {
+                        playback.channel == doubleback.channel
+                            && playback.header == doubleback.header
+                    })
+            {
+                playback.callback_pending_mask &= !buffer_bit;
+            }
+
+            let callback_failed = invocation.unsupported_import_index.is_some()
+                || !matches!(invocation.result, PpcRunResult::Halted { .. });
+            if callback_failed {
+                self.halted = true;
+                self.halted_pc = Some(invocation.end_pc);
+                self.halted_sp = Some(invocation.end_sp);
+                self.halted_d0 = Some(invocation.end_r3);
+                if trace_load_enabled() {
+                    eprintln!(
+                        "[PPC] sound doubleback callback failed pc=${:08X} callback=${:08X} result={:?} unsupported_import={:?}",
+                        invocation.end_pc,
+                        invocation.completion,
+                        invocation.result,
+                        invocation.unsupported_import_index
+                    );
+                }
+            }
+
+            ppc_app.sound.completion_invocations.push(invocation);
+            fired_count += 1;
+            if callback_failed {
+                break;
+            }
+        }
+        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
+        self.ppc_app = Some(ppc_app);
+    }
+
+    fn fire_pending_ppc_sound_completions(&mut self) {
+        let Some(ppc_app) = self.ppc_app.as_ref() else {
+            return;
+        };
+        if ppc_app.sound.pending_completions.is_empty() {
+            return;
+        }
+
+        let record_ppc_imports = self.dispatcher.is_trace_recording();
+        let trace_ppc_import_hist = ppc_import_hist_enabled();
+        let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
+        let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
+        let Some(mut ppc_app) = self.ppc_app.take() else {
+            return;
+        };
+        let mut fired_count = 0usize;
+        while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
+            let completion = ppc_app.sound.pending_completions.remove(0);
+            let probe = ppc_app.run_sound_completion_callback(
+                completion,
+                PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                trace_ppc_imports,
+                trace_ppc_fetches,
+            );
+            let invocation = probe.invocation;
+            if record_ppc_imports {
+                self.record_ppc_import_trace(&probe.import_trace);
+            }
+            if trace_ppc_import_hist {
+                self.record_ppc_import_histogram(&probe.import_trace);
+            }
+            if let Some(histogram) = probe.fetch_histogram.as_ref() {
+                self.ppc_fetch_histogram.merge_from(histogram);
+            }
+            if ppc_unimpl_hist_enabled() {
+                self.record_ppc_unimpl_histogram(
+                    &ppc_app.imports,
+                    invocation.result,
+                    invocation.unsupported_import_index,
+                );
+            }
+            self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
+            self.dispatcher.instruction_count = self.total_instructions;
+            self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
+
+            let callback_failed = invocation.unsupported_import_index.is_some()
+                || !matches!(invocation.result, PpcRunResult::Halted { .. });
+            if callback_failed {
+                self.halted = true;
+                self.halted_pc = Some(invocation.end_pc);
+                self.halted_sp = Some(invocation.end_sp);
+                self.halted_d0 = Some(invocation.end_r3);
+                if trace_load_enabled() {
+                    eprintln!(
+                        "[PPC] sound completion callback failed pc=${:08X} completion=${:08X} result={:?} unsupported_import={:?}",
+                        invocation.end_pc,
+                        invocation.completion,
+                        invocation.result,
+                        invocation.unsupported_import_index
+                    );
+                }
+            }
+
+            ppc_app.sound.completion_invocations.push(invocation);
+            fired_count += 1;
+            if callback_failed {
+                break;
+            }
+        }
+        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
+        self.ppc_app = Some(ppc_app);
+    }
+
+    fn sync_ppc_vfs_to_dispatcher(&mut self, ppc_app: &mut PpcLoadedApp) {
+        for path in ppc_app.take_deleted_vfs_file_paths() {
+            let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&path);
+            if normalized.is_empty() {
+                continue;
+            }
+            self.dispatcher.vfs.remove(&normalized);
+            self.dispatcher.vfs_rsrc.remove(&normalized);
+            self.dispatcher.locked_files.remove(&normalized);
+            self.dispatcher.remove_vfs_entry_metadata(&normalized);
+            if let Some(dir) = &self.dispatcher.output_dir {
+                let host_path = dir.join(&normalized);
+                let _ = std::fs::remove_file(&host_path);
+                if let Some((parent, file_name)) = ppc_resource_sidecar_parent(dir, &normalized) {
+                    let _ = std::fs::remove_file(parent.join(".rsrc").join(file_name));
+                }
+            }
+        }
+
+        for directory in ppc_app.take_dirty_vfs_directories() {
+            let normalized =
+                crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&directory.path);
+            if normalized.is_empty() {
+                continue;
+            }
+            self.dispatcher.ensure_vfs_directory(&normalized);
+            self.dispatcher.set_vfs_entry_finfo(
+                &normalized,
+                directory.file_type,
+                directory.creator,
+                directory.finder_flags,
+            );
+            if let Some(dir) = &self.dispatcher.output_dir {
+                let _ = std::fs::create_dir_all(dir.join(&normalized));
+            }
+        }
+
+        for file in ppc_app.take_dirty_vfs_files() {
+            let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&file.path);
+            if normalized.is_empty() {
+                continue;
+            }
+            self.dispatcher
+                .vfs
+                .insert(normalized.clone(), file.data.clone());
+            self.dispatcher.set_vfs_entry_finfo(
+                &normalized,
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+            );
+            self.dispatcher.touch_vfs_entry(&normalized);
+            if let Some(dir) = &self.dispatcher.output_dir {
+                let host_path = dir.join(&normalized);
+                if let Some(parent) = host_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(host_path, &file.data);
+            }
+        }
+
+        for fork in ppc_app.take_dirty_vfs_resource_forks() {
+            let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&fork.path);
+            if normalized.is_empty() {
+                continue;
+            }
+            self.dispatcher
+                .vfs_rsrc
+                .insert(normalized.clone(), fork.data.clone());
+            self.dispatcher.set_vfs_entry_finfo(
+                &normalized,
+                fork.file_type,
+                fork.creator,
+                fork.finder_flags,
+            );
+            self.dispatcher.touch_vfs_entry(&normalized);
+            if let Some(dir) = &self.dispatcher.output_dir {
+                if let Some((parent, file_name)) = ppc_resource_sidecar_parent(dir, &normalized) {
+                    let rsrc_dir = parent.join(".rsrc");
+                    if std::fs::create_dir_all(&rsrc_dir).is_ok() {
+                        let _ = std::fs::write(rsrc_dir.join(file_name), &fork.data);
+                    }
+                }
+            }
+        }
+    }
+
+    fn sync_ppc_front_buffer_to_host(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let Some(primary_buffer) = ppc_app.presented_front_buffer() else {
+            return;
+        };
+        let composition_surface = if primary_buffer.depth == 8
+            && ppc_app.draw_sprocket.active_context.is_none()
+            && ppc_app.draw_sprocket.swap_count == 0
+        {
+            Self::ppc_indexed_composition_surface(
+                &ppc_app.gworlds,
+                ppc_app.draw_sprocket.back_buffer_gworld,
+                primary_buffer,
+                &mut ppc_app.memory,
+            )
+        } else {
+            None
+        };
+        if primary_buffer.depth == 8 {
+            self.dispatcher.device_clut = ppc_app.screen_clut;
+            self.dispatcher.color_manager_clut = ppc_app.color_manager_clut;
+        }
+        let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(primary_buffer);
+        let bytes_per_pixel = match primary_buffer.depth {
+            8 => 1,
+            16 => 2,
+            _ => return,
+        };
+        let Some(canvas_row_bytes) = canvas_width.checked_mul(bytes_per_pixel) else {
+            return;
+        };
+        let canvas = PpcFrontBuffer {
+            base_addr: primary_buffer.base_addr,
+            row_bytes: canvas_row_bytes,
+            width: canvas_width,
+            height: canvas_height,
+            depth: primary_buffer.depth,
+        };
+        let Some(host_base) = self.ensure_ppc_host_screen_mode(canvas) else {
+            return;
+        };
+        let matte_byte = if primary_buffer.depth == 8 {
+            ppc_app
+                .screen_clut
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, color)| {
+                    u32::from(color[0]) + u32::from(color[1]) + u32::from(color[2])
+                })
+                .map_or(0, |(index, _)| index as u8)
+        } else {
+            0
+        };
+        let Some(canvas_size) = canvas_row_bytes.checked_mul(canvas_height) else {
+            return;
+        };
+        self.bus
+            .write_bytes(host_base, &vec![matte_byte; canvas_size as usize]);
+        let primary_destination_x = canvas_width.saturating_sub(primary_buffer.width) / 2;
+        let primary_destination_y = canvas_height.saturating_sub(primary_buffer.height) / 2;
+        if !Self::copy_ppc_front_buffer_rows_to_host(
+            &mut self.bus,
+            ppc_app,
+            primary_buffer,
+            host_base,
+            canvas_row_bytes,
+            primary_destination_x,
+            primary_destination_y,
+        ) {
+            return;
+        }
+        if let Some(surface) = composition_surface {
+            let destination_x = primary_destination_x
+                .saturating_add(primary_buffer.width.saturating_sub(surface.width) / 2);
+            let frame_height = surface
+                .width
+                .saturating_mul(3)
+                .checked_div(4)
+                .unwrap_or(surface.height)
+                .min(primary_buffer.height);
+            let is_gameplay_surface = surface.height <= frame_height.saturating_sub(64);
+            let surface_offset_y = if is_gameplay_surface {
+                primary_buffer.height.saturating_sub(frame_height) / 2
+            } else {
+                primary_buffer.height.saturating_sub(surface.height) / 2
+            };
+            let destination_y = primary_destination_y.saturating_add(surface_offset_y);
+            let _ = Self::copy_ppc_front_buffer_rows_to_host(
+                &mut self.bus,
+                ppc_app,
+                surface,
+                host_base,
+                canvas_row_bytes,
+                destination_x,
+                destination_y,
+            );
+        }
+    }
+
+    fn ppc_host_canvas_dimensions(front_buffer: PpcFrontBuffer) -> (u32, u32) {
+        if front_buffer.width >= 512 && front_buffer.height >= 342 {
+            (
+                front_buffer.width.max(u32::from(
+                    crate::machine_profile::REFERENCE_MACHINE_PROFILE.screen_width,
+                )),
+                front_buffer.height.max(u32::from(
+                    crate::machine_profile::REFERENCE_MACHINE_PROFILE.screen_height,
+                )),
+            )
+        } else {
+            (front_buffer.width, front_buffer.height)
+        }
+    }
+
+    fn ppc_indexed_composition_surface(
+        gworlds: &[PpcGWorldRecord],
+        back_buffer_gworld: u32,
+        main: PpcFrontBuffer,
+        memory: &mut PpcSectionMem,
+    ) -> Option<PpcFrontBuffer> {
+        if main.depth != 8 || main.width == 0 || main.height < 128 {
+            return None;
+        }
+        let candidates = gworlds
+            .iter()
+            .copied()
+            .filter(|record| {
+                record.port != back_buffer_gworld
+                    && record.base_addr != main.base_addr
+                    && record.depth == main.depth
+                    && record.width <= main.width
+            })
+            .filter(|record| Self::ppc_indexed_surface_has_rendered_pixels(memory, *record))
+            .collect::<Vec<_>>();
+        let gameplay_surface = candidates
+            .iter()
+            .copied()
+            .filter(|record| {
+                let frame_height = record
+                    .width
+                    .saturating_mul(3)
+                    .checked_div(4)
+                    .unwrap_or(record.height)
+                    .min(main.height);
+                record.height >= frame_height / 2
+                    && record.height <= frame_height.saturating_sub(64)
+            })
+            .max_by_key(|record| record.height);
+        let selected = gameplay_surface.or_else(|| {
+            candidates
+                .iter()
+                .copied()
+                .filter(|record| {
+                    let frame_height = record
+                        .width
+                        .saturating_mul(3)
+                        .checked_div(4)
+                        .unwrap_or(record.height)
+                        .min(main.height);
+                    record.height >= frame_height.saturating_sub(32)
+                        && record.height <= frame_height
+                })
+                .max_by_key(|record| record.height)
+        })?;
+        Some(PpcFrontBuffer {
+            base_addr: selected.base_addr,
+            row_bytes: selected.row_bytes,
+            width: selected.width,
+            height: selected.height,
+            depth: selected.depth,
+        })
+    }
+
+    fn ppc_indexed_surface_has_rendered_pixels(
+        memory: &mut PpcSectionMem,
+        surface: PpcGWorldRecord,
+    ) -> bool {
+        let row_len = surface.width.min(surface.row_bytes);
+        if row_len == 0 || surface.height == 0 {
+            return false;
+        }
+        let mut row = vec![0; row_len as usize];
+        let mut first_pixel = None;
+        for y in 0..surface.height {
+            let Some(row_addr) = surface
+                .base_addr
+                .checked_add(y.saturating_mul(surface.row_bytes))
+            else {
+                return false;
+            };
+            if memory.read_bytes_into(row_addr, &mut row).is_none() {
+                return false;
+            }
+            for pixel in &row {
+                match first_pixel {
+                    Some(first) if first != *pixel => return true,
+                    None => first_pixel = Some(*pixel),
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
+    fn copy_ppc_front_buffer_rows_to_host(
+        bus: &mut MacMemoryBus,
+        ppc_app: &mut PpcLoadedApp,
+        front_buffer: PpcFrontBuffer,
+        host_base: u32,
+        host_row_bytes: u32,
+        destination_x: u32,
+        destination_y: u32,
+    ) -> bool {
+        let bytes_per_pixel = match front_buffer.depth {
+            8 => 1,
+            16 => 2,
+            _ => return false,
+        };
+        let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
+            return false;
+        };
+        if destination_x_bytes.saturating_add(front_buffer.row_bytes) > host_row_bytes {
+            return false;
+        }
+        let mut row = vec![0u8; front_buffer.row_bytes as usize];
+        for y in 0..front_buffer.height {
+            if ppc_app
+                .read_front_buffer_row(front_buffer, y, &mut row)
+                .is_none()
+            {
+                return false;
+            }
+            Self::apply_ppc_draw_sprocket_gamma_fade(
+                &mut row,
+                front_buffer.depth,
+                ppc_app.draw_sprocket.last_fade_percent,
+                ppc_app.draw_sprocket.last_fade_zero_color,
+            );
+            let Some(destination_row) = destination_y.checked_add(y) else {
+                return false;
+            };
+            bus.write_bytes(
+                host_base + destination_row.saturating_mul(host_row_bytes) + destination_x_bytes,
+                &row,
+            );
+        }
+        true
+    }
+
+    fn apply_ppc_draw_sprocket_gamma_fade(
+        row: &mut [u8],
+        depth: u32,
+        percent: Option<i32>,
+        zero_color: Option<PpcRgbColor>,
+    ) {
+        let Some(percent) = percent else {
+            return;
+        };
+        if depth != 16 {
+            return;
+        }
+        let percent = percent.clamp(0, 100) as u32;
+        if percent == 100 && zero_color.is_none() {
+            return;
+        }
+        let zero = Self::ppc_rgb_color_to_rgb555_channels(zero_color.unwrap_or(PpcRgbColor {
+            red: 0,
+            green: 0,
+            blue: 0,
+        }));
+        for pixel in row.chunks_exact_mut(2) {
+            let value = u16::from_be_bytes([pixel[0], pixel[1]]);
+            let red = (value >> 10) & 0x1f;
+            let green = (value >> 5) & 0x1f;
+            let blue = value & 0x1f;
+            let faded = Self::rgb555_channels_to_pixel(
+                Self::ppc_draw_sprocket_fade_channel(red, zero.0, percent),
+                Self::ppc_draw_sprocket_fade_channel(green, zero.1, percent),
+                Self::ppc_draw_sprocket_fade_channel(blue, zero.2, percent),
+            );
+            pixel.copy_from_slice(&faded.to_be_bytes());
+        }
+    }
+
+    fn ppc_rgb_color_to_rgb555_channels(color: PpcRgbColor) -> (u16, u16, u16) {
+        (
+            Self::ppc_rgb_component_to_rgb555(color.red),
+            Self::ppc_rgb_component_to_rgb555(color.green),
+            Self::ppc_rgb_component_to_rgb555(color.blue),
+        )
+    }
+
+    fn ppc_rgb_component_to_rgb555(component: u16) -> u16 {
+        ((u32::from(component) * 31 + 32_767) / 65_535) as u16
+    }
+
+    fn ppc_draw_sprocket_fade_channel(channel: u16, zero: u16, percent: u32) -> u16 {
+        let channel = i32::from(channel);
+        let zero = i32::from(zero);
+        let blended = zero + ((channel - zero) * percent as i32 + 50) / 100;
+        blended.clamp(0, 31) as u16
+    }
+
+    fn rgb555_channels_to_pixel(red: u16, green: u16, blue: u16) -> u16 {
+        ((red & 0x1f) << 10) | ((green & 0x1f) << 5) | (blue & 0x1f)
+    }
+
+    fn ensure_ppc_host_screen_mode(&mut self, front_buffer: PpcFrontBuffer) -> Option<u32> {
+        let width = u16::try_from(front_buffer.width).ok()?;
+        let height = u16::try_from(front_buffer.height).ok()?;
+        let depth = u16::try_from(front_buffer.depth).ok()?;
+        let bytes_needed = front_buffer.row_bytes.checked_mul(front_buffer.height)?;
+        if bytes_needed == 0 || front_buffer.row_bytes > u32::from(u16::MAX) {
+            return None;
+        }
+
+        let (base, row_bytes, current_width, current_height, current_depth) =
+            self.dispatcher.screen_mode;
+        let base_valid = base != 0
+            && base
+                .checked_add(bytes_needed)
+                .is_some_and(|end| end <= self.bus.ram_size());
+        if base_valid
+            && row_bytes == front_buffer.row_bytes
+            && current_width == width
+            && current_height == height
+            && current_depth == depth
+        {
+            return Some(base);
+        }
+
+        let base = self.bus.alloc(bytes_needed);
+        if base == 0 {
+            return None;
+        }
+        self.dispatcher.screen_mode = (base, front_buffer.row_bytes, width, height, depth);
+        self.write_ppc_host_screen_lowmem(base, front_buffer.row_bytes, width, height, depth);
+        Some(base)
+    }
+
+    fn write_ppc_host_screen_lowmem(
+        &mut self,
+        base: u32,
+        row_bytes: u32,
+        width: u16,
+        height: u16,
+        depth: u16,
+    ) {
+        use crate::memory::globals::addr;
+
+        self.bus.write_long(addr::SCRN_BASE, base);
+        self.bus.write_long(addr::SCREEN_BITS, base);
+        self.bus.write_word(addr::SCREEN_BITS + 4, row_bytes as u16);
+        self.bus.write_word(addr::SCREEN_BITS + 6, 0);
+        self.bus.write_word(addr::SCREEN_BITS + 8, 0);
+        self.bus.write_word(addr::SCREEN_BITS + 10, height);
+        self.bus.write_word(addr::SCREEN_BITS + 12, width);
+
+        let gdevice_handle = self.dispatcher.ensure_main_gdevice(&mut self.bus);
+        self.bus.write_long(0x08A4, gdevice_handle);
+        self.bus.write_long(0x0CC8, gdevice_handle);
+        self.bus.write_long(0x08A8, gdevice_handle);
+        let gdevice = self.bus.read_long(gdevice_handle);
+        if gdevice == 0 {
+            return;
+        }
+        let pixmap_handle = self.bus.read_long(gdevice + 22);
+        let pixmap = self.bus.read_long(pixmap_handle);
+        if pixmap == 0 {
+            return;
+        }
+        self.bus.write_long(pixmap, base);
+        self.bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000);
+        self.bus.write_word(pixmap + 6, 0);
+        self.bus.write_word(pixmap + 8, 0);
+        self.bus.write_word(pixmap + 10, height);
+        self.bus.write_word(pixmap + 12, width);
+        self.bus.write_word(pixmap + 32, depth);
+        self.bus.write_word(pixmap + 36, depth);
+        self.bus.write_word(gdevice + 34, 0);
+        self.bus.write_word(gdevice + 36, 0);
+        self.bus.write_word(gdevice + 38, height);
+        self.bus.write_word(gdevice + 40, width);
+    }
+
+    fn advance_ticks_for_ppc_cycles(&mut self, cycles: u64, tick_cap: Option<u32>) -> bool {
+        let mut remaining = cycles;
+        while remaining > 0 {
+            if self.tick_budget > 0 && remaining < self.tick_budget as u64 {
+                self.tick_budget -= remaining as i32;
+                return false;
+            }
+
+            let consumed = self.tick_budget.max(1) as u64;
+            remaining = remaining.saturating_sub(consumed);
+            self.tick_budget = 0;
+            if self.frozen_ticks.is_none() {
+                if let Some(cap) = tick_cap {
+                    if self.bus.read_long(0x016A) >= cap {
+                        return true;
+                    }
+                }
+                self.advance_guest_tick();
+            }
+            self.tick_budget += self.instructions_per_tick as i32;
+        }
+        false
+    }
+
+    fn ppc_cycle_budget_for_tick_cap(&self, max_steps: usize, tick_cap: Option<u32>) -> usize {
+        let Some(cap) = tick_cap else {
+            return max_steps;
+        };
+        if self.frozen_ticks.is_some() || self.bus.read_long(0x016A) >= cap {
+            return 0;
+        }
+
+        let mut budget = u64::try_from(max_steps).unwrap_or(u64::MAX);
+        let mut ticks_remaining = u64::from(cap.wrapping_sub(self.bus.read_long(0x016A)));
+        if ticks_remaining == 0 {
+            return 0;
+        }
+
+        let current_tick_budget = self.tick_budget.max(1) as u64;
+        budget = budget.max(current_tick_budget);
+        ticks_remaining = ticks_remaining.saturating_sub(1);
+        budget = budget.saturating_add(
+            ticks_remaining.saturating_mul(u64::from(self.instructions_per_tick.max(1))),
+        );
+        usize::try_from(budget).unwrap_or(usize::MAX)
+    }
+
     /// Run for a specific number of steps and mix the supplied amount of host audio.
     /// Returns the number of instructions executed and whether the CPU is still running.
     ///
@@ -4562,6 +7549,19 @@ impl FixtureRunner {
         let pressed = self.dispatcher.mouse_button || has_pending_unmatched_down;
         let mb_state: u8 = if pressed { 0x00 } else { 0x80 };
         self.bus.write_byte(0x0172, mb_state);
+        if input_tick_trace_enabled() {
+            let (offset_v, offset_h) = self.ppc_viewport_offset();
+            eprintln!(
+                "{}",
+                format_input_tick_trace(
+                    new_tick,
+                    self.total_instructions,
+                    self.ppc_input_snapshot(offset_v, offset_h),
+                    self.dispatcher.event_queue.len(),
+                    mb_state,
+                )
+            );
+        }
 
         // Advance the real-time clock ($020C) once per second.
         // On a real Mac the IOP or VIA increments Time every second;
@@ -6085,6 +9085,7 @@ impl FixtureRunner {
             }
             return false;
         }
+
         // Allocate EventRecord scratch space on first use.
         // EventRecord = what(2), message(4), when(4), where(4), modifiers(2)
         if self.dialog_filter_event == 0 {
@@ -6481,12 +9482,18 @@ impl FixtureRunner {
 /// isn't set, so this is a no-op for normal runs (including tests).
 /// Investigate interactive-mode behavior with
 /// `SYSTEMLESS_TRACE_TRAP_COUNTS=1`, `SYSTEMLESS_TRACE_OPCODE_COUNTS=1`,
-/// `SYSTEMLESS_TRACE_HOT_PC=1`, or `SYSTEMLESS_TRACE_TRAP_TIMING=1`.
+/// `SYSTEMLESS_TRACE_HOT_PC=1`, `SYSTEMLESS_TRACE_PPC_FETCH_COUNTS=1`, or
+/// `SYSTEMLESS_PPC_IMPORT_HIST=1`, `SYSTEMLESS_PPC_UNIMPL_HIST=1`,
+/// `SYSTEMLESS_PPC_GWORLD_DUMP=1`, or `SYSTEMLESS_TRACE_TRAP_TIMING=1`.
 impl Drop for FixtureRunner {
     fn drop(&mut self) {
         self.dispatcher.print_trap_histogram(40);
         self.print_opcode_histogram(40);
         self.print_pc_histogram(40);
+        self.print_ppc_fetch_histogram(40);
+        self.print_ppc_import_histogram(usize::MAX);
+        self.print_ppc_unimpl_histogram(40);
+        self.print_ppc_gworld_dump(8);
         self.dispatcher.print_trap_timing_histogram(40);
     }
 }
@@ -6939,6 +9946,7 @@ fn load_app_generic<M: MemoryBus>(
     let stack_top = bus.ram_size() - 16;
 
     Some(LoadedApp {
+        ppc: None,
         code0_header: header,
         a5_base,
         jump_table,
@@ -6953,6 +9961,7 @@ fn load_app_generic<M: MemoryBus>(
 mod tests {
     use super::*;
     use crate::audio::AudioBackend;
+    use crate::loader::ppc::*;
     use crate::loader::{ApplicationSizeResource, Code0Header, LoadedApp};
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
@@ -6962,6 +9971,7 @@ mod tests {
         DialogItem, DialogTrackingState, PendingFileCompletion, PendingWaitNextEventReturn,
         QueuedEvent, TimerTask, VblTask,
     };
+    use ppc::PpcCpu;
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
@@ -7955,6 +10965,2095 @@ mod tests {
         }
     }
 
+    fn test_ppc_import_binding(symbol_index: u32, library: &str, symbol: &str) -> PpcImportBinding {
+        PpcImportBinding {
+            library_index: 0,
+            symbol_index,
+            library_name: library.to_string(),
+            symbol_name: symbol.to_string(),
+            class: 0,
+            weak: false,
+            address: 0,
+            tvector_address: None,
+            trap_pc: 0,
+            dispatcher_target: PpcImportDispatcherTarget::Unsupported,
+        }
+    }
+
+    #[test]
+    fn ppc_unimpl_histogram_key_names_unsupported_imports() {
+        let imports = vec![test_ppc_import_binding(7, "InterfaceLib", "MysteryCall")];
+
+        assert_eq!(
+            ppc_unimpl_histogram_key(&imports, PpcRunResult::CycleLimit { cycles: 0 }, Some(7)),
+            Some("import #7 InterfaceLib:MysteryCall".to_string())
+        );
+        assert_eq!(
+            ppc_unimpl_histogram_key(&imports, PpcRunResult::CycleLimit { cycles: 0 }, Some(8)),
+            Some("import #8 <unknown>".to_string())
+        );
+    }
+
+    #[test]
+    fn ppc_unimpl_histogram_key_records_instruction_decode_errors() {
+        assert_eq!(
+            ppc_unimpl_histogram_key(
+                &[],
+                PpcRunResult::Unimplemented {
+                    pc: 0x0100_0000,
+                    error: ppc::PpcDecodeError::UnsupportedPrimaryOpcode(1),
+                    cycles: 12,
+                },
+                None,
+            ),
+            Some("instruction pc=$01000000 UnsupportedPrimaryOpcode(1)".to_string())
+        );
+    }
+
+    #[test]
+    fn ppc_unimpl_histogram_formatter_sorts_by_count_then_key() {
+        let mut histogram = HashMap::new();
+        merge_ppc_unimpl_histogram(&mut histogram, "import #7 InterfaceLib:Foo".to_string());
+        merge_ppc_unimpl_histogram(&mut histogram, "import #7 InterfaceLib:Foo".to_string());
+        merge_ppc_unimpl_histogram(&mut histogram, "instruction pc=$01000000 Bar".to_string());
+
+        assert_eq!(
+            format_ppc_unimpl_histogram(&histogram, 2),
+            "[PPC-UNIMPL-HIST] top 2 of 2 unsupported stops (3 total)\n\
+             [PPC-UNIMPL-HIST]            2  import #7 InterfaceLib:Foo\n\
+             [PPC-UNIMPL-HIST]            1  instruction pc=$01000000 Bar\n"
+        );
+    }
+
+    fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_CODE_BASE, 0x4e80_0020u32.to_be_bytes().to_vec());
+        let mut cpu = PpcCpu::new();
+        cpu.pc = PPC_CODE_BASE;
+        cpu.lr = PPC_HALT_PC;
+        cpu.gpr[1] = PPC_STACK_TOP - 64;
+
+        LoadedApp::from_ppc(PpcLoadedApp {
+            cpu,
+            memory,
+            entry_pc: PPC_CODE_BASE,
+            rtoc: 0,
+            stack_base: PPC_STACK_BASE,
+            stack_size: PPC_STACK_SIZE,
+            stack_pointer: PPC_STACK_TOP - 64,
+            heap_base: PPC_HEAP_BASE,
+            heap_cursor: PPC_HEAP_BASE,
+            heap_limit: PPC_STACK_BASE,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+            tick_count: 0,
+            clock_cycles_per_tick: 1,
+            clock_cycle_phase: 0,
+            current_resource_refnum: 0,
+            last_resource_error: 0,
+            resource_load_enabled: true,
+            stdc_qsort_stack: Vec::new(),
+            dialog_callback_stack: Vec::new(),
+            apple_events: Default::default(),
+            cfm_connections: Vec::new(),
+            next_cfm_connection_id: 1,
+            ptrs: Vec::new(),
+            free_ptr_blocks: Vec::new(),
+            handles: Vec::new(),
+            free_handle_blocks: Vec::new(),
+            handle_states: Vec::new(),
+            controls: Vec::new(),
+            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            aliases: Vec::new(),
+            gworlds: Vec::new(),
+            q3_objects: Vec::new(),
+            q3_object_refs: Vec::new(),
+            next_q3_object: 0,
+            q3_error_state: Default::default(),
+            q3_lifecycle: Default::default(),
+            q3_memory_storages: Vec::new(),
+            q3_files: Vec::new(),
+            q3_group_memberships: Vec::new(),
+            q3_file_groups: Vec::new(),
+            q3_views: Vec::new(),
+            q3_submissions: Vec::new(),
+            q3_view_transforms: Vec::new(),
+            q3_submission_transforms: Vec::new(),
+            q3_view_materials: Vec::new(),
+            q3_submission_materials: Vec::new(),
+            q3_submission_lights: Vec::new(),
+            q3_view_state_stack: Vec::new(),
+            q3_completed_frames: Vec::new(),
+            q3_retained_frames: Vec::new(),
+            q3_state_only_completed_frame_batches: Vec::new(),
+            q3_fog_styles: Vec::new(),
+            q3_attributes: Vec::new(),
+            q3_shader_uv_transforms: Vec::new(),
+            q3_shader_boundaries: Vec::new(),
+            q3_mipmap_textures: Vec::new(),
+            q3_texture_shaders: Vec::new(),
+            q3_renderer_preferences: Vec::new(),
+            q3_draw_contexts: Vec::new(),
+            q3_trimeshes: Vec::new(),
+            q3_styles: Vec::new(),
+            q3_cameras: Vec::new(),
+            q3_lights: Vec::new(),
+            input_sprocket: Default::default(),
+            input_sprocket_virtual_elements: Vec::new(),
+            toolbox_startup: Default::default(),
+            quicktime: Default::default(),
+            sound,
+            timer_tasks: Vec::new(),
+            vbl_tasks: Vec::new(),
+            files: Vec::new(),
+            vfs_files: Vec::new(),
+            deleted_vfs_file_paths: Vec::new(),
+            resource_files: Vec::new(),
+            vfs_resource_files: Vec::new(),
+            vfs_resources: Vec::new(),
+            next_file_ref_num: 128,
+            current_gworld: PPC_MAIN_GWORLD,
+            current_gdevice: PPC_MAIN_GDEVICE,
+            quickdraw_fore_color: PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+            },
+            quickdraw_back_color: PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff,
+            },
+            quickdraw_pen_h: 0,
+            quickdraw_pen_v: 0,
+            quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
+            quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
+            quickdraw_cursor_level: 0,
+            vfs_directories: Vec::new(),
+            next_vfs_dir_id: 18,
+            default_dir_id: 2,
+            launched_app_path: None,
+            default_output_volume: 0,
+            param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            scrap: Default::default(),
+            list_manager: Default::default(),
+            halt_pc: PPC_HALT_PC,
+            import_trap_base: PPC_IMPORT_TRAP_BASE,
+            import_count: 0,
+            imports: Vec::new(),
+            section_bases: Vec::new(),
+            input: PpcInputSnapshot::default(),
+            event_queue: VecDeque::new(),
+            draw_sprocket: PpcDrawSprocketState::default(),
+        })
+    }
+
+    #[test]
+    fn ppc_loaded_app_runs_through_fixture_runner() {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_CODE_BASE, 0x4e80_0020u32.to_be_bytes().to_vec());
+        let mut cpu = PpcCpu::new();
+        cpu.pc = PPC_CODE_BASE;
+        cpu.lr = PPC_HALT_PC;
+        cpu.gpr[1] = PPC_STACK_TOP - 64;
+
+        let app = LoadedApp::from_ppc(PpcLoadedApp {
+            cpu,
+            memory,
+            entry_pc: PPC_CODE_BASE,
+            rtoc: 0,
+            stack_base: PPC_STACK_BASE,
+            stack_size: PPC_STACK_SIZE,
+            stack_pointer: PPC_STACK_TOP - 64,
+            heap_base: PPC_HEAP_BASE,
+            heap_cursor: PPC_HEAP_BASE,
+            heap_limit: PPC_STACK_BASE,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+            tick_count: 0,
+            clock_cycles_per_tick: 1,
+            clock_cycle_phase: 0,
+            current_resource_refnum: 0,
+            last_resource_error: 0,
+            resource_load_enabled: true,
+            stdc_qsort_stack: Vec::new(),
+            dialog_callback_stack: Vec::new(),
+            apple_events: Default::default(),
+            cfm_connections: Vec::new(),
+            next_cfm_connection_id: 1,
+            ptrs: Vec::new(),
+            free_ptr_blocks: Vec::new(),
+            handles: Vec::new(),
+            free_handle_blocks: Vec::new(),
+            handle_states: Vec::new(),
+            controls: Vec::new(),
+            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            aliases: Vec::new(),
+            gworlds: Vec::new(),
+            q3_objects: Vec::new(),
+            q3_object_refs: Vec::new(),
+            next_q3_object: 0,
+            q3_error_state: Default::default(),
+            q3_lifecycle: Default::default(),
+            q3_memory_storages: Vec::new(),
+            q3_files: Vec::new(),
+            q3_group_memberships: Vec::new(),
+            q3_file_groups: Vec::new(),
+            q3_views: Vec::new(),
+            q3_submissions: Vec::new(),
+            q3_view_transforms: Vec::new(),
+            q3_submission_transforms: Vec::new(),
+            q3_view_materials: Vec::new(),
+            q3_submission_materials: Vec::new(),
+            q3_submission_lights: Vec::new(),
+            q3_view_state_stack: Vec::new(),
+            q3_completed_frames: Vec::new(),
+            q3_retained_frames: Vec::new(),
+            q3_state_only_completed_frame_batches: Vec::new(),
+            q3_fog_styles: Vec::new(),
+            q3_attributes: Vec::new(),
+            q3_shader_uv_transforms: Vec::new(),
+            q3_shader_boundaries: Vec::new(),
+            q3_mipmap_textures: Vec::new(),
+            q3_texture_shaders: Vec::new(),
+            q3_renderer_preferences: Vec::new(),
+            q3_draw_contexts: Vec::new(),
+            q3_trimeshes: Vec::new(),
+            q3_styles: Vec::new(),
+            q3_cameras: Vec::new(),
+            q3_lights: Vec::new(),
+            input_sprocket: Default::default(),
+            input_sprocket_virtual_elements: Vec::new(),
+            toolbox_startup: Default::default(),
+            quicktime: Default::default(),
+            sound: Default::default(),
+            timer_tasks: Vec::new(),
+            vbl_tasks: Vec::new(),
+            files: Vec::new(),
+            vfs_files: vec![PpcVfsFileRecord {
+                path: "System Folder/Preferences/Test App Prefs".to_string(),
+                data: b"prefs".to_vec(),
+                creator: u32::from_be_bytes(*b"Nano"),
+                file_type: u32::from_be_bytes(*b"pref"),
+                finder_flags: 0x0200,
+                dirty: true,
+            }],
+            deleted_vfs_file_paths: vec!["System Folder/Preferences/Old Prefs".to_string()],
+            resource_files: Vec::new(),
+            vfs_resource_files: vec![PpcVfsResourceFileRecord {
+                path: "System Folder/Preferences/Test App HighScores".to_string(),
+                creator: u32::from_be_bytes(*b"Nano"),
+                file_type: u32::from_be_bytes(*b"pref"),
+                finder_flags: 0x0400,
+                resource_len: 0,
+                raw_data: None,
+                map_attrs: 0,
+                dirty: true,
+            }],
+            vfs_resources: vec![PpcVfsResourceRecord {
+                ref_num: 128,
+                path: "System Folder/Preferences/Test App HighScores".to_string(),
+                res_type: u32::from_be_bytes(*b"pref"),
+                res_id: 200,
+                name: b"Scores".to_vec(),
+                data: b"score".to_vec(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            }],
+            next_file_ref_num: 128,
+            current_gworld: PPC_MAIN_GWORLD,
+            current_gdevice: PPC_MAIN_GDEVICE,
+            quickdraw_fore_color: PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+            },
+            quickdraw_back_color: PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff,
+            },
+            quickdraw_pen_h: 0,
+            quickdraw_pen_v: 0,
+            quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
+            quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
+            quickdraw_cursor_level: 0,
+            vfs_directories: vec![PpcVfsDirectory {
+                dir_id: 18,
+                parent_dir_id: 17,
+                path: "System Folder/Preferences/Test App Saves".to_string(),
+                creator: u32::from_be_bytes(*b"Nano"),
+                file_type: u32::from_be_bytes(*b"dir "),
+                finder_flags: 0x0080,
+                dirty: true,
+            }],
+            next_vfs_dir_id: 18,
+            default_dir_id: 2,
+            launched_app_path: None,
+            default_output_volume: 0,
+            param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            scrap: Default::default(),
+            list_manager: Default::default(),
+            halt_pc: PPC_HALT_PC,
+            import_trap_base: PPC_IMPORT_TRAP_BASE,
+            import_count: 0,
+            imports: Vec::new(),
+            section_bases: Vec::new(),
+            input: PpcInputSnapshot::default(),
+            event_queue: VecDeque::new(),
+            draw_sprocket: PpcDrawSprocketState::default(),
+        });
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let output_dir = tempfile::tempdir().unwrap();
+        let old_host_path = output_dir
+            .path()
+            .join("System Folder/Preferences/Old Prefs");
+        std::fs::create_dir_all(old_host_path.parent().unwrap()).unwrap();
+        std::fs::write(&old_host_path, b"old").unwrap();
+        let old_rsrc_path = output_dir
+            .path()
+            .join("System Folder/Preferences/.rsrc/Old Prefs");
+        std::fs::create_dir_all(old_rsrc_path.parent().unwrap()).unwrap();
+        std::fs::write(&old_rsrc_path, b"old-rsrc").unwrap();
+        runner.dispatcher_mut().output_dir = Some(output_dir.path().to_path_buf());
+        runner.dispatcher_mut().vfs.insert(
+            "System Folder/Preferences/Old Prefs".to_string(),
+            b"old".to_vec(),
+        );
+        runner.dispatcher_mut().vfs_rsrc.insert(
+            "System Folder/Preferences/Old Prefs".to_string(),
+            b"old-rsrc".to_vec(),
+        );
+        runner.dispatcher_mut().set_vfs_entry_finfo(
+            "System Folder/Preferences/Old Prefs",
+            u32::from_be_bytes(*b"pref"),
+            u32::from_be_bytes(*b"Nano"),
+            0x4000,
+        );
+        runner
+            .dispatcher_mut()
+            .locked_files
+            .insert("System Folder/Preferences/Old Prefs".to_string());
+
+        let (steps, running) = runner.run_steps(8, None);
+
+        assert_eq!(steps, 1);
+        assert!(!running);
+        assert!(runner.is_halted());
+        assert_eq!(runner.halted_pc(), Some(PPC_HALT_PC));
+        assert_eq!(runner.halted_sp(), Some(PPC_STACK_TOP - 64));
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs
+                .get("System Folder/Preferences/Test App Prefs")
+                .map(Vec::as_slice),
+            Some(b"prefs".as_slice())
+        );
+        let prefs_metadata = runner
+            .dispatcher()
+            .vfs_metadata
+            .get("System Folder/Preferences/Test App Prefs")
+            .copied()
+            .expect("dirty PPC data fork should carry Finder metadata");
+        assert_eq!(prefs_metadata.creator, u32::from_be_bytes(*b"Nano"));
+        assert_eq!(prefs_metadata.file_type, u32::from_be_bytes(*b"pref"));
+        assert_eq!(prefs_metadata.finder_flags, 0x0200);
+        assert!(!runner
+            .dispatcher()
+            .vfs
+            .contains_key("System Folder/Preferences/Old Prefs"));
+        assert!(!runner
+            .dispatcher()
+            .vfs_rsrc
+            .contains_key("System Folder/Preferences/Old Prefs"));
+        assert!(!runner
+            .dispatcher()
+            .vfs_metadata
+            .contains_key("System Folder/Preferences/Old Prefs"));
+        assert!(!runner
+            .dispatcher()
+            .locked_files
+            .contains("System Folder/Preferences/Old Prefs"));
+        assert_eq!(
+            std::fs::read(
+                output_dir
+                    .path()
+                    .join("System Folder/Preferences/Test App Prefs")
+            )
+            .unwrap()
+            .as_slice(),
+            b"prefs".as_slice()
+        );
+        assert!(!old_host_path.exists());
+        assert!(!old_rsrc_path.exists());
+        let fork_bytes = runner
+            .dispatcher()
+            .vfs_rsrc
+            .get("System Folder/Preferences/Test App HighScores")
+            .expect("dirty PPC resource fork should sync to dispatcher VFS");
+        let fork = ResourceFork::parse(fork_bytes).unwrap();
+        assert_eq!(fork.get(*b"pref", 200).unwrap().data, b"score");
+        let scores_metadata = runner
+            .dispatcher()
+            .vfs_metadata
+            .get("System Folder/Preferences/Test App HighScores")
+            .copied()
+            .expect("dirty PPC resource fork should carry Finder metadata");
+        assert_eq!(scores_metadata.creator, u32::from_be_bytes(*b"Nano"));
+        assert_eq!(scores_metadata.file_type, u32::from_be_bytes(*b"pref"));
+        assert_eq!(scores_metadata.finder_flags, 0x0400);
+        let saves_directory = runner
+            .dispatcher()
+            .vfs_directories
+            .get("System Folder/Preferences/Test App Saves")
+            .expect("dirty PPC directory should sync to dispatcher catalog");
+        assert_eq!(saves_directory.name, "Test App Saves");
+        assert!(output_dir
+            .path()
+            .join("System Folder/Preferences/Test App Saves")
+            .is_dir());
+        assert_eq!(
+            std::fs::read(
+                output_dir
+                    .path()
+                    .join("System Folder/Preferences/.rsrc/Test App HighScores")
+            )
+            .unwrap()
+            .as_slice(),
+            fork_bytes.as_slice()
+        );
+        assert!(!runner.ppc_app.as_ref().unwrap().vfs_files[0].dirty);
+        assert!(!runner.ppc_app.as_ref().unwrap().vfs_directories[0].dirty);
+        assert!(runner
+            .ppc_app
+            .as_ref()
+            .unwrap()
+            .deleted_vfs_file_paths
+            .is_empty());
+        assert!(!runner.ppc_app.as_ref().unwrap().vfs_resource_files[0].dirty);
+    }
+
+    #[test]
+    fn ppc_double_buffer_playback_feeds_consecutive_host_audio_buffers() {
+        let channel = 0x0500_1000;
+        let header = PPC_DATA_BASE + 0x100;
+        let buffer0 = PPC_DATA_BASE + 0x200;
+        let buffer1 = PPC_DATA_BASE + 0x300;
+        let expected = vec![0x80, 0x90, 0x70, 0xa0];
+        let sound = PpcSoundState {
+            double_buffer_playbacks: vec![PpcSoundDoubleBufferPlaybackRecord {
+                channel,
+                header,
+                buffers: [buffer0, buffer1],
+                callback: 0,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                num_channels: 1,
+                sample_size: 8,
+                compression_id: 0,
+                packet_size: 0,
+                current_buffer_index: 0,
+                callback_pending_mask: 0,
+                active: true,
+                host_initialized: false,
+                host_buffer_loaded: false,
+            }],
+            ..PpcSoundState::default()
+        };
+        let mut app = halted_ppc_app_with_sound(sound);
+        {
+            let ppc_app = app.ppc.as_mut().expect("PPC app");
+            ppc_app.memory.add_region(PPC_DATA_BASE, vec![0; 0x400]);
+            ppc_app.memory.write_u32_be(buffer0, 2).unwrap();
+            ppc_app.memory.write_u32_be(buffer0 + 4, 0x01).unwrap();
+            ppc_app
+                .memory
+                .write_bytes(buffer0 + 16, &expected[..2])
+                .unwrap();
+            ppc_app.memory.write_u32_be(buffer1, 2).unwrap();
+            ppc_app.memory.write_u32_be(buffer1 + 4, 0x05).unwrap();
+            ppc_app
+                .memory
+                .write_bytes(buffer1 + 16, &expected[2..])
+                .unwrap();
+        }
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let (steps, running) = runner.run_steps_with_audio(8, None, expected.len());
+
+        assert_eq!(steps, 1);
+        assert!(!running);
+        assert_eq!(runner.drain_audio(), expected);
+        assert_eq!(
+            runner.dispatcher().sound_manager.debug_double_buffer_count,
+            1
+        );
+        assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
+        let playback = runner
+            .ppc_app
+            .as_ref()
+            .expect("PPC app should stay loaded")
+            .sound
+            .double_buffer_playbacks[0];
+        assert!(!playback.active);
+        assert!(!playback.host_buffer_loaded);
+        assert_eq!(playback.current_buffer_index, 1);
+    }
+
+    #[test]
+    fn ppc_decoded_buffer_command_feeds_host_audio_buffer() {
+        let channel = 0x0500_1000;
+        let samples = vec![0x80, 0x90, 0x70, 0xa0];
+        let sound = PpcSoundState {
+            decoded_buffer_commands: vec![PpcDecodedBufferCommandRecord {
+                channel,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                samples: samples.clone(),
+            }],
+            ..PpcSoundState::default()
+        };
+        let app = halted_ppc_app_with_sound(sound);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let (steps, running) = runner.run_steps_with_audio(8, None, samples.len());
+
+        assert_eq!(steps, 1);
+        assert!(!running);
+        assert_eq!(runner.drain_audio(), samples);
+        assert_eq!(runner.dispatcher().sound_manager.debug_cmd_count, 1);
+        assert_eq!(runner.dispatcher().sound_manager.debug_buffer_cmd_count, 1);
+        assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
+        assert!(runner
+            .ppc_app
+            .as_ref()
+            .expect("PPC app should stay loaded")
+            .sound
+            .decoded_buffer_commands
+            .is_empty());
+    }
+
+    #[test]
+    fn ppc_decoded_file_playback_feeds_host_audio_buffer() {
+        let channel = 0x0500_1000;
+        let callback_entry = PPC_CODE_BASE + 0x40;
+        let completion = PPC_DATA_BASE + 0x20;
+        let completion_tvector = PPC_DATA_BASE + 0x80;
+        let samples = vec![0x80, 0x90, 0x70, 0x80];
+        let mut preview = [0; 16];
+        preview[..samples.len()].copy_from_slice(&samples);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState {
+            queued_commands: Vec::new(),
+            immediate_commands: Vec::new(),
+            decoded_buffer_commands: Vec::new(),
+            double_buffer_playbacks: Vec::new(),
+            file_playbacks: vec![PpcSoundFilePlaybackRecord {
+                channel,
+                ref_num: 128,
+                resource_id: -1,
+                buffer_size: 20_480,
+                buffer: 0,
+                selection: 0,
+                completion,
+                async_play: true,
+                paused: false,
+                active: true,
+                quiet_now: false,
+                timing_valid: false,
+                start_tick: 0,
+                start_instruction_count: 0,
+                due_tick: 0,
+                due_instruction_count: 0,
+                pause_timing_valid: false,
+                pause_started_tick: 0,
+                pause_started_instruction_count: 0,
+                aiff: None,
+                decoded_aiff: Some(PpcDecodedAiffSamples {
+                    sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                    sample_count: samples.len() as u32,
+                    preview_len: samples.len() as u8,
+                    preview,
+                }),
+            }],
+            decoded_file_playbacks: vec![PpcDecodedAiffPlaybackRecord {
+                file_playback_index: 0,
+                channel,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                samples: samples.clone(),
+            }],
+            pending_completions: Vec::new(),
+            pending_doublebacks: Vec::new(),
+            completion_invocations: Vec::new(),
+            sys_beep_count: 0,
+            last_sys_beep_duration: 0,
+            start_count: 1,
+            pause_count: 0,
+            stop_count: 0,
+            double_buffer_play_count: 0,
+            last_double_buffer_channel: 0,
+            last_double_buffer_header: 0,
+        });
+        {
+            let ppc_app = app.ppc.as_mut().expect("PPC app");
+            let stw_r3_0_r2 = (36u32 << 26) | (3u32 << 21) | (2u32 << 16);
+            let mut callback_bytes = Vec::new();
+            callback_bytes.extend_from_slice(&stw_r3_0_r2.to_be_bytes());
+            callback_bytes.extend_from_slice(&0x4e80_0020u32.to_be_bytes());
+            ppc_app.memory.add_region(callback_entry, callback_bytes);
+            ppc_app.memory.add_region(PPC_DATA_BASE, vec![0; 0x100]);
+            ppc_app.rtoc = PPC_DATA_BASE;
+            ppc_app.cpu.gpr[2] = PPC_DATA_BASE;
+
+            ppc_app
+                .memory
+                .write_u16_be(completion, 0xAAFE)
+                .expect("write goMixedModeTrap");
+            ppc_app
+                .memory
+                .write_u8(completion + 2, 7)
+                .expect("write descriptor version");
+            ppc_app
+                .memory
+                .write_u16_be(completion + 10, 0)
+                .expect("write routine count");
+            let record = completion + 12;
+            ppc_app
+                .memory
+                .write_u8(record + 5, 1)
+                .expect("write PowerPC ISA");
+            ppc_app
+                .memory
+                .write_u16_be(record + 6, 0x0004)
+                .expect("write routine flags");
+            ppc_app
+                .memory
+                .write_u32_be(record + 8, completion_tvector)
+                .expect("write proc descriptor");
+            ppc_app
+                .memory
+                .write_u32_be(completion_tvector, callback_entry)
+                .expect("write callback TVector entry");
+            ppc_app
+                .memory
+                .write_u32_be(completion_tvector + 4, PPC_DATA_BASE)
+                .expect("write callback TVector RTOC");
+        }
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let (steps, running) = runner.run_steps_with_audio(8, None, samples.len());
+
+        assert_eq!(steps, 1);
+        assert!(!running);
+        assert_eq!(runner.drain_audio(), samples);
+        assert_eq!(runner.dispatcher().sound_manager.debug_file_play_count, 1);
+        assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        assert!(!ppc_app.sound.file_playbacks[0].active);
+        assert!(!ppc_app.sound.file_playbacks[0].paused);
+        assert!(ppc_app.sound.pending_completions.is_empty());
+        let mut memory = ppc_app.memory.clone();
+        assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
+        assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
+        let invocation = ppc_app.sound.completion_invocations[0];
+        assert_eq!(invocation.file_playback_index, 0);
+        assert_eq!(invocation.channel, channel);
+        assert_eq!(invocation.completion, completion);
+        assert_eq!(invocation.callback_entry, callback_entry);
+        assert_eq!(invocation.callback_rtoc, PPC_DATA_BASE);
+        assert_eq!(invocation.tick, 0);
+        assert_eq!(invocation.instruction_count, 1);
+        assert_eq!(invocation.scheduled_tick, 1);
+        assert_eq!(
+            invocation.scheduled_instruction_count,
+            1 + u64::from(INSTRUCTIONS_PER_TICK)
+        );
+        assert_eq!(invocation.cycles, 2);
+        assert_eq!(
+            invocation.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                cycles: 2
+            }
+        );
+        assert_eq!(invocation.unsupported_import_index, None);
+    }
+
+    #[test]
+    fn ppc_decoded_file_playback_completes_from_guest_ticks_without_audio_mix() {
+        let channel = 0x0500_1000;
+        let callback_entry = PPC_CODE_BASE + 0x40;
+        let samples = vec![0x80, 0x90, 0x70, 0x80];
+        let mut preview = [0; 16];
+        preview[..samples.len()].copy_from_slice(&samples);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState {
+            queued_commands: Vec::new(),
+            immediate_commands: Vec::new(),
+            decoded_buffer_commands: Vec::new(),
+            double_buffer_playbacks: Vec::new(),
+            file_playbacks: vec![PpcSoundFilePlaybackRecord {
+                channel,
+                ref_num: 128,
+                resource_id: -1,
+                buffer_size: 20_480,
+                buffer: 0,
+                selection: 0,
+                completion: callback_entry,
+                async_play: true,
+                paused: false,
+                active: true,
+                quiet_now: false,
+                timing_valid: false,
+                start_tick: 0,
+                start_instruction_count: 0,
+                due_tick: 0,
+                due_instruction_count: 0,
+                pause_timing_valid: false,
+                pause_started_tick: 0,
+                pause_started_instruction_count: 0,
+                aiff: None,
+                decoded_aiff: Some(PpcDecodedAiffSamples {
+                    sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                    sample_count: samples.len() as u32,
+                    preview_len: samples.len() as u8,
+                    preview,
+                }),
+            }],
+            decoded_file_playbacks: vec![PpcDecodedAiffPlaybackRecord {
+                file_playback_index: 0,
+                channel,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                samples,
+            }],
+            pending_completions: Vec::new(),
+            pending_doublebacks: Vec::new(),
+            completion_invocations: Vec::new(),
+            sys_beep_count: 0,
+            last_sys_beep_duration: 0,
+            start_count: 1,
+            pause_count: 0,
+            stop_count: 0,
+            double_buffer_play_count: 0,
+            last_double_buffer_channel: 0,
+            last_double_buffer_header: 0,
+        });
+        {
+            let ppc_app = app.ppc.as_mut().expect("PPC app");
+            ppc_app
+                .memory
+                .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
+                .expect("rewrite entry as infinite branch");
+            let stw_r3_0_r2 = (36u32 << 26) | (3u32 << 21) | (2u32 << 16);
+            let mut callback_bytes = Vec::new();
+            callback_bytes.extend_from_slice(&stw_r3_0_r2.to_be_bytes());
+            callback_bytes.extend_from_slice(&0x4e80_0020u32.to_be_bytes());
+            ppc_app.memory.add_region(callback_entry, callback_bytes);
+            ppc_app.memory.add_region(PPC_DATA_BASE, vec![0; 0x100]);
+            ppc_app.rtoc = PPC_DATA_BASE;
+            ppc_app.cpu.gpr[2] = PPC_DATA_BASE;
+        }
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let (steps, running) = runner.run_steps_with_audio(1, None, 0);
+        assert_eq!(steps, 1);
+        assert!(running);
+        {
+            let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+            let playback = &ppc_app.sound.file_playbacks[0];
+            assert!(playback.active);
+            assert!(playback.timing_valid);
+            assert_eq!(playback.start_tick, 0);
+            assert_eq!(playback.start_instruction_count, 1);
+            assert_eq!(playback.due_tick, 1);
+            assert_eq!(
+                playback.due_instruction_count,
+                1 + u64::from(INSTRUCTIONS_PER_TICK)
+            );
+            assert!(ppc_app.sound.completion_invocations.is_empty());
+        }
+
+        let (steps, running) = runner.run_steps_with_audio(INSTRUCTIONS_PER_TICK as usize, None, 0);
+
+        assert_eq!(steps, INSTRUCTIONS_PER_TICK as usize);
+        assert!(running);
+        assert!(runner.drain_audio().is_empty());
+        assert_eq!(runner.dispatcher().tick_count, 1);
+        assert_eq!(runner.dispatcher().sound_manager.debug_file_play_count, 1);
+        assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 0);
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        assert!(!ppc_app.sound.file_playbacks[0].active);
+        assert!(!ppc_app.sound.file_playbacks[0].paused);
+        assert!(ppc_app.sound.pending_completions.is_empty());
+        let mut memory = ppc_app.memory.clone();
+        assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
+        assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
+        let invocation = ppc_app.sound.completion_invocations[0];
+        assert_eq!(invocation.file_playback_index, 0);
+        assert_eq!(invocation.channel, channel);
+        assert_eq!(invocation.completion, callback_entry);
+        assert_eq!(invocation.callback_entry, callback_entry);
+        assert_eq!(invocation.callback_rtoc, PPC_DATA_BASE);
+        assert_eq!(invocation.tick, 1);
+        assert_eq!(
+            invocation.instruction_count,
+            1 + u64::from(INSTRUCTIONS_PER_TICK)
+        );
+        assert_eq!(invocation.scheduled_tick, 1);
+        assert_eq!(
+            invocation.scheduled_instruction_count,
+            1 + u64::from(INSTRUCTIONS_PER_TICK)
+        );
+        assert_eq!(invocation.cycles, 2);
+        assert_eq!(
+            invocation.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                cycles: 2
+            }
+        );
+        assert_eq!(invocation.unsupported_import_index, None);
+    }
+
+    #[test]
+    fn ppc_decoded_file_playback_pause_resume_shifts_guest_due_time() {
+        let channel = 0x0500_1000;
+        let callback_entry = PPC_CODE_BASE + 0x40;
+        let samples = vec![0x80, 0x90, 0x70, 0x80];
+        let mut preview = [0; 16];
+        preview[..samples.len()].copy_from_slice(&samples);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState {
+            queued_commands: Vec::new(),
+            immediate_commands: Vec::new(),
+            decoded_buffer_commands: Vec::new(),
+            double_buffer_playbacks: Vec::new(),
+            file_playbacks: vec![PpcSoundFilePlaybackRecord {
+                channel,
+                ref_num: 128,
+                resource_id: -1,
+                buffer_size: 20_480,
+                buffer: 0,
+                selection: 0,
+                completion: callback_entry,
+                async_play: true,
+                paused: false,
+                active: true,
+                quiet_now: false,
+                timing_valid: false,
+                start_tick: 0,
+                start_instruction_count: 0,
+                due_tick: 0,
+                due_instruction_count: 0,
+                pause_timing_valid: false,
+                pause_started_tick: 0,
+                pause_started_instruction_count: 0,
+                aiff: None,
+                decoded_aiff: Some(PpcDecodedAiffSamples {
+                    sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                    sample_count: samples.len() as u32,
+                    preview_len: samples.len() as u8,
+                    preview,
+                }),
+            }],
+            decoded_file_playbacks: vec![PpcDecodedAiffPlaybackRecord {
+                file_playback_index: 0,
+                channel,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                samples,
+            }],
+            pending_completions: Vec::new(),
+            pending_doublebacks: Vec::new(),
+            completion_invocations: Vec::new(),
+            sys_beep_count: 0,
+            last_sys_beep_duration: 0,
+            start_count: 1,
+            pause_count: 0,
+            stop_count: 0,
+            double_buffer_play_count: 0,
+            last_double_buffer_channel: 0,
+            last_double_buffer_header: 0,
+        });
+        {
+            let ppc_app = app.ppc.as_mut().expect("PPC app");
+            ppc_app
+                .memory
+                .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
+                .expect("rewrite entry as infinite branch");
+            let stw_r3_0_r2 = (36u32 << 26) | (3u32 << 21) | (2u32 << 16);
+            let mut callback_bytes = Vec::new();
+            callback_bytes.extend_from_slice(&stw_r3_0_r2.to_be_bytes());
+            callback_bytes.extend_from_slice(&0x4e80_0020u32.to_be_bytes());
+            ppc_app.memory.add_region(callback_entry, callback_bytes);
+            ppc_app.memory.add_region(PPC_DATA_BASE, vec![0; 0x100]);
+            ppc_app.rtoc = PPC_DATA_BASE;
+            ppc_app.cpu.gpr[2] = PPC_DATA_BASE;
+        }
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let (steps, running) = runner.run_steps_with_audio(1, None, 0);
+        assert_eq!(steps, 1);
+        assert!(running);
+        assert_eq!(
+            runner.ppc_app.as_ref().unwrap().sound.file_playbacks[0].due_tick,
+            1
+        );
+
+        runner.ppc_app.as_mut().unwrap().sound.file_playbacks[0].paused = true;
+        let (steps, running) = runner.run_steps_with_audio(1, None, 0);
+        assert_eq!(steps, 1);
+        assert!(running);
+        {
+            let playback = &runner.ppc_app.as_ref().unwrap().sound.file_playbacks[0];
+            assert!(playback.paused);
+            assert!(playback.active);
+            assert!(playback.pause_timing_valid);
+            assert_eq!(playback.pause_started_tick, 0);
+            assert_eq!(playback.pause_started_instruction_count, 2);
+        }
+
+        let (steps, running) = runner.run_steps_with_audio(INSTRUCTIONS_PER_TICK as usize, None, 0);
+        assert_eq!(steps, INSTRUCTIONS_PER_TICK as usize);
+        assert!(running);
+        assert_eq!(runner.dispatcher().tick_count, 1);
+        assert!(runner
+            .ppc_app
+            .as_ref()
+            .unwrap()
+            .sound
+            .completion_invocations
+            .is_empty());
+
+        runner.ppc_app.as_mut().unwrap().sound.file_playbacks[0].paused = false;
+        let (steps, running) = runner.run_steps_with_audio(1, None, 0);
+        assert_eq!(steps, 1);
+        assert!(running);
+        let shifted_due_instruction_count = {
+            let playback = &runner.ppc_app.as_ref().unwrap().sound.file_playbacks[0];
+            assert!(!playback.paused);
+            assert!(playback.active);
+            assert!(!playback.pause_timing_valid);
+            assert_eq!(playback.due_tick, 2);
+            assert!(
+                playback.due_instruction_count > 1 + u64::from(INSTRUCTIONS_PER_TICK),
+                "resume must shift due instructions past the original due time"
+            );
+            playback.due_instruction_count
+        };
+
+        let (steps, running) = runner.run_steps_with_audio(INSTRUCTIONS_PER_TICK as usize, None, 0);
+
+        assert_eq!(steps, INSTRUCTIONS_PER_TICK as usize);
+        assert!(running);
+        assert!(runner.dispatcher().tick_count >= 2);
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        assert!(!ppc_app.sound.file_playbacks[0].active);
+        assert!(ppc_app.sound.pending_completions.is_empty());
+        let mut memory = ppc_app.memory.clone();
+        assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
+        assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
+        let invocation = ppc_app.sound.completion_invocations[0];
+        assert!(invocation.tick >= 2);
+        assert!(invocation.instruction_count >= shifted_due_instruction_count);
+        assert_eq!(invocation.scheduled_tick, 2);
+        assert_eq!(
+            invocation.scheduled_instruction_count,
+            shifted_due_instruction_count
+        );
+        assert_eq!(invocation.unsupported_import_index, None);
+    }
+
+    #[test]
+    fn ppc_getkeys_reads_runner_key_map() {
+        let key_map_ptr = PPC_DATA_BASE;
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_CODE_BASE, 0x4800_0002u32.to_be_bytes().to_vec());
+        memory.add_region(PPC_DATA_BASE, vec![0; 32]);
+        let mut cpu = PpcCpu::new();
+        cpu.pc = PPC_IMPORT_TRAP_BASE;
+        cpu.lr = PPC_CODE_BASE;
+        cpu.gpr[1] = PPC_STACK_TOP - 64;
+        cpu.gpr[3] = key_map_ptr;
+
+        let app = LoadedApp::from_ppc(PpcLoadedApp {
+            cpu,
+            memory,
+            entry_pc: PPC_IMPORT_TRAP_BASE,
+            rtoc: 0,
+            stack_base: PPC_STACK_BASE,
+            stack_size: PPC_STACK_SIZE,
+            stack_pointer: PPC_STACK_TOP - 64,
+            heap_base: PPC_HEAP_BASE,
+            heap_cursor: PPC_HEAP_BASE,
+            heap_limit: PPC_STACK_BASE,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+            tick_count: 0,
+            clock_cycles_per_tick: 1,
+            clock_cycle_phase: 0,
+            current_resource_refnum: 0,
+            last_resource_error: 0,
+            resource_load_enabled: true,
+            stdc_qsort_stack: Vec::new(),
+            dialog_callback_stack: Vec::new(),
+            apple_events: Default::default(),
+            cfm_connections: Vec::new(),
+            next_cfm_connection_id: 1,
+            ptrs: Vec::new(),
+            free_ptr_blocks: Vec::new(),
+            handles: Vec::new(),
+            free_handle_blocks: Vec::new(),
+            handle_states: Vec::new(),
+            controls: Vec::new(),
+            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            aliases: Vec::new(),
+            gworlds: Vec::new(),
+            q3_objects: Vec::new(),
+            q3_object_refs: Vec::new(),
+            next_q3_object: 0,
+            q3_error_state: Default::default(),
+            q3_lifecycle: Default::default(),
+            q3_memory_storages: Vec::new(),
+            q3_files: Vec::new(),
+            q3_group_memberships: Vec::new(),
+            q3_file_groups: Vec::new(),
+            q3_views: Vec::new(),
+            q3_submissions: Vec::new(),
+            q3_view_transforms: Vec::new(),
+            q3_submission_transforms: Vec::new(),
+            q3_view_materials: Vec::new(),
+            q3_submission_materials: Vec::new(),
+            q3_submission_lights: Vec::new(),
+            q3_view_state_stack: Vec::new(),
+            q3_completed_frames: Vec::new(),
+            q3_retained_frames: Vec::new(),
+            q3_state_only_completed_frame_batches: Vec::new(),
+            q3_fog_styles: Vec::new(),
+            q3_attributes: Vec::new(),
+            q3_shader_uv_transforms: Vec::new(),
+            q3_shader_boundaries: Vec::new(),
+            q3_mipmap_textures: Vec::new(),
+            q3_texture_shaders: Vec::new(),
+            q3_renderer_preferences: Vec::new(),
+            q3_draw_contexts: Vec::new(),
+            q3_trimeshes: Vec::new(),
+            q3_styles: Vec::new(),
+            q3_cameras: Vec::new(),
+            q3_lights: Vec::new(),
+            input_sprocket: Default::default(),
+            input_sprocket_virtual_elements: Vec::new(),
+            toolbox_startup: Default::default(),
+            quicktime: Default::default(),
+            sound: Default::default(),
+            timer_tasks: Vec::new(),
+            vbl_tasks: Vec::new(),
+            files: Vec::new(),
+            vfs_files: Vec::new(),
+            deleted_vfs_file_paths: Vec::new(),
+            resource_files: Vec::new(),
+            vfs_resource_files: Vec::new(),
+            vfs_resources: Vec::new(),
+            next_file_ref_num: 128,
+            current_gworld: PPC_MAIN_GWORLD,
+            current_gdevice: PPC_MAIN_GDEVICE,
+            quickdraw_fore_color: PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+            },
+            quickdraw_back_color: PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff,
+            },
+            quickdraw_pen_h: 0,
+            quickdraw_pen_v: 0,
+            quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
+            quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
+            quickdraw_cursor_level: 0,
+            vfs_directories: Vec::new(),
+            next_vfs_dir_id: 18,
+            default_dir_id: 2,
+            launched_app_path: None,
+            default_output_volume: 0,
+            param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            scrap: Default::default(),
+            list_manager: Default::default(),
+            halt_pc: PPC_HALT_PC,
+            import_trap_base: PPC_IMPORT_TRAP_BASE,
+            import_count: 1,
+            imports: vec![PpcImportBinding {
+                library_index: 0,
+                symbol_index: 0,
+                library_name: "InterfaceLib".into(),
+                symbol_name: "GetKeys".into(),
+                class: 0,
+                weak: false,
+                address: PPC_IMPORT_TRAP_BASE,
+                tvector_address: None,
+                trap_pc: PPC_IMPORT_TRAP_BASE,
+                dispatcher_target: PpcImportDispatcherTarget::GetKeys,
+            }],
+            section_bases: Vec::new(),
+            input: PpcInputSnapshot::default(),
+            event_queue: VecDeque::new(),
+            draw_sprocket: PpcDrawSprocketState::default(),
+        });
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.push_key_down(0x7b, 28);
+
+        let (steps, running) = runner.run_steps(16, None);
+
+        assert!(!running);
+        assert_eq!(steps, 2);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app should stay loaded");
+        let left_key = 0x7bu8;
+        let left_byte = key_map_ptr + u32::from(left_key / 8);
+        let left_bit = 1u8 << (left_key % 8);
+        assert_ne!(ppc_app.memory.read_u8(left_byte).unwrap() & left_bit, 0);
+    }
+
+    #[test]
+    #[cfg(any())]
+    fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
+        let key_map_ptr = PPC_DATA_BASE;
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_CODE_BASE, 0x4800_0002u32.to_be_bytes().to_vec());
+        memory.add_region(PPC_DATA_BASE, vec![0; 32]);
+        let mut cpu = PpcCpu::new();
+        cpu.pc = PPC_IMPORT_TRAP_BASE;
+        cpu.lr = PPC_CODE_BASE;
+        cpu.gpr[1] = PPC_STACK_TOP - 64;
+        cpu.gpr[2] = 0x1234_5678;
+        cpu.gpr[3] = key_map_ptr;
+
+        let app = LoadedApp::from_ppc(PpcLoadedApp {
+            cpu,
+            memory,
+            entry_pc: PPC_IMPORT_TRAP_BASE,
+            rtoc: 0x1234_5678,
+            stack_base: PPC_STACK_BASE,
+            stack_size: PPC_STACK_SIZE,
+            stack_pointer: PPC_STACK_TOP - 64,
+            heap_base: PPC_HEAP_BASE,
+            heap_cursor: PPC_HEAP_BASE,
+            heap_limit: PPC_STACK_BASE,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+            tick_count: 0,
+            clock_cycles_per_tick: 1,
+            clock_cycle_phase: 0,
+            current_resource_refnum: 0,
+            last_resource_error: 0,
+            resource_load_enabled: true,
+            stdc_qsort_stack: Vec::new(),
+            dialog_callback_stack: Vec::new(),
+            apple_events: Default::default(),
+            cfm_connections: Vec::new(),
+            next_cfm_connection_id: 1,
+            ptrs: Vec::new(),
+            free_ptr_blocks: Vec::new(),
+            handles: Vec::new(),
+            free_handle_blocks: Vec::new(),
+            handle_states: Vec::new(),
+            controls: Vec::new(),
+            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            aliases: Vec::new(),
+            gworlds: Vec::new(),
+            q3_objects: Vec::new(),
+            q3_object_refs: Vec::new(),
+            next_q3_object: 0,
+            q3_error_state: Default::default(),
+            q3_lifecycle: Default::default(),
+            q3_memory_storages: Vec::new(),
+            q3_files: Vec::new(),
+            q3_group_memberships: Vec::new(),
+            q3_file_groups: Vec::new(),
+            q3_views: Vec::new(),
+            q3_submissions: Vec::new(),
+            q3_view_transforms: Vec::new(),
+            q3_submission_transforms: Vec::new(),
+            q3_view_materials: Vec::new(),
+            q3_submission_materials: Vec::new(),
+            q3_submission_lights: Vec::new(),
+            q3_view_state_stack: Vec::new(),
+            q3_completed_frames: Vec::new(),
+            q3_retained_frames: Vec::new(),
+            q3_state_only_completed_frame_batches: Vec::new(),
+            q3_fog_styles: Vec::new(),
+            q3_attributes: Vec::new(),
+            q3_shader_uv_transforms: Vec::new(),
+            q3_shader_boundaries: Vec::new(),
+            q3_mipmap_textures: Vec::new(),
+            q3_texture_shaders: Vec::new(),
+            q3_renderer_preferences: Vec::new(),
+            q3_draw_contexts: Vec::new(),
+            q3_trimeshes: Vec::new(),
+            q3_styles: Vec::new(),
+            q3_cameras: Vec::new(),
+            q3_lights: Vec::new(),
+            input_sprocket: Default::default(),
+            input_sprocket_virtual_elements: Vec::new(),
+            toolbox_startup: Default::default(),
+            quicktime: Default::default(),
+            sound: Default::default(),
+            timer_tasks: Vec::new(),
+            vbl_tasks: Vec::new(),
+            files: Vec::new(),
+            vfs_files: Vec::new(),
+            deleted_vfs_file_paths: Vec::new(),
+            resource_files: Vec::new(),
+            vfs_resource_files: Vec::new(),
+            vfs_resources: Vec::new(),
+            next_file_ref_num: 128,
+            current_gworld: PPC_MAIN_GWORLD,
+            current_gdevice: PPC_MAIN_GDEVICE,
+            quickdraw_fore_color: PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+            },
+            quickdraw_back_color: PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff,
+            },
+            quickdraw_pen_h: 0,
+            quickdraw_pen_v: 0,
+            quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
+            quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
+            quickdraw_cursor_level: 0,
+            vfs_directories: Vec::new(),
+            next_vfs_dir_id: 18,
+            default_dir_id: 2,
+            launched_app_path: None,
+            default_output_volume: 0,
+            param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            scrap: Default::default(),
+            list_manager: Default::default(),
+            halt_pc: PPC_HALT_PC,
+            import_trap_base: PPC_IMPORT_TRAP_BASE,
+            import_count: 1,
+            imports: vec![PpcImportBinding {
+                library_index: 0,
+                symbol_index: 0,
+                library_name: "InterfaceLib".into(),
+                symbol_name: "GetKeys".into(),
+                class: 0,
+                weak: false,
+                address: PPC_IMPORT_TRAP_BASE,
+                tvector_address: None,
+                trap_pc: PPC_IMPORT_TRAP_BASE,
+                dispatcher_target: PpcImportDispatcherTarget::GetKeys,
+            }],
+            section_bases: Vec::new(),
+            input: PpcInputSnapshot::default(),
+            event_queue: VecDeque::new(),
+            draw_sprocket: PpcDrawSprocketState::default(),
+        });
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let output_dir = tempfile::tempdir().unwrap();
+        runner
+            .enable_oracle_recording(output_dir.path(), crate::oracle::OracleSource::Systemless)
+            .unwrap();
+
+        let (_steps, _running) = runner.run_steps(16, None);
+
+        let events_path = output_dir.path().join(crate::oracle::ORACLE_EVENTS_FILE);
+        let events = std::fs::read_to_string(events_path).unwrap();
+        let ppc_event: serde_json::Value = events
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .find(|value: &serde_json::Value| value["event"] == "ppc_import")
+            .expect("oracle recording should include a PPC import event");
+        assert_eq!(ppc_event["pc"], PPC_IMPORT_TRAP_BASE);
+        assert_eq!(ppc_event["fields"]["import_index"], "0");
+        assert_eq!(ppc_event["fields"]["library"], "InterfaceLib");
+        assert_eq!(ppc_event["fields"]["symbol"], "GetKeys");
+        assert_eq!(ppc_event["fields"]["rtoc"], "12345678");
+        assert_eq!(ppc_event["fields"]["dispatcher_target"], "GetKeys");
+        assert_eq!(ppc_event["fields"]["repeat_count"], "1");
+    }
+
+    #[test]
+    #[cfg(any())]
+    fn oracle_script_input_event_records_fields_without_snapshot() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let output_dir = tempfile::tempdir().unwrap();
+        runner
+            .enable_oracle_recording(output_dir.path(), crate::oracle::OracleSource::Systemless)
+            .unwrap();
+
+        runner
+            .record_oracle_script_input(BTreeMap::from([
+                ("action".to_string(), "key_down".to_string()),
+                ("key".to_string(), "space".to_string()),
+                ("mac_key".to_string(), "31".to_string()),
+                ("char_code".to_string(), "20".to_string()),
+            ]))
+            .unwrap();
+
+        let events_path = output_dir.path().join(crate::oracle::ORACLE_EVENTS_FILE);
+        let events = std::fs::read_to_string(events_path).unwrap();
+        let script_input: serde_json::Value = events
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .find(|value: &serde_json::Value| value["event"] == "script_input")
+            .expect("oracle recording should include a script_input event");
+        assert_eq!(script_input["screen_event_count"], 0);
+        assert_eq!(script_input["fields"]["action"], "key_down");
+        assert_eq!(script_input["fields"]["key"], "space");
+        assert_eq!(script_input["fields"]["mac_key"], "31");
+        assert_eq!(script_input["fields"]["char_code"], "20");
+
+        let snapshots_path = output_dir.path().join(crate::oracle::ORACLE_SNAPSHOTS_FILE);
+        let snapshots = std::fs::read_to_string(snapshots_path).unwrap();
+        assert!(
+            snapshots.trim().is_empty(),
+            "script input events should not create screen snapshots"
+        );
+    }
+
+    #[test]
+    #[cfg(any())]
+    fn oracle_input_sprocket_event_records_simple_state_without_snapshot() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let output_dir = tempfile::tempdir().unwrap();
+        runner
+            .enable_oracle_recording(output_dir.path(), crate::oracle::OracleSource::Systemless)
+            .unwrap();
+
+        let mut input = PpcInputSnapshot::default();
+        input.key_map[0] = 0x01;
+        runner.record_input_sprocket_trace(&[PpcInputSprocketSimpleStateTraceEntry {
+            import_index: 7,
+            pc: 0x01f0_1234,
+            element: 0x0200_1000,
+            state_ptr: 0x0200_2000,
+            state: 0x0000_0001,
+            kind: 0x6275_746e,
+            kind_name: "button".to_string(),
+            fallback_state: 0,
+            need_name: "Fire".to_string(),
+            action_binding: "button/fire".to_string(),
+            input,
+            input_sprocket: PpcInputSprocketState {
+                initialized: true,
+                suspended: false,
+                keyboard_active: true,
+                mouse_active: true,
+                configure_count: 0,
+                virtual_element_count: 1,
+                last_virtual_need_count: 1,
+                last_virtual_needs_ptr: 0x0200_3000,
+                last_virtual_elements_out_ptr: 0x0200_4000,
+            },
+        }]);
+
+        let events_path = output_dir.path().join(crate::oracle::ORACLE_EVENTS_FILE);
+        let events = std::fs::read_to_string(events_path).unwrap();
+        let input_sprocket: serde_json::Value = events
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .find(|value: &serde_json::Value| value["event"] == "input_sprocket")
+            .expect("oracle recording should include an InputSprocket event");
+        assert_eq!(input_sprocket["pc"], 0x01f0_1234);
+        assert_eq!(input_sprocket["screen_event_count"], 0);
+        assert_eq!(input_sprocket["fields"]["import_index"], "7");
+        assert_eq!(input_sprocket["fields"]["element"], "02001000");
+        assert_eq!(input_sprocket["fields"]["state_ptr"], "02002000");
+        assert_eq!(input_sprocket["fields"]["state"], "00000001");
+        assert_eq!(input_sprocket["fields"]["kind"], "6275746E");
+        assert_eq!(input_sprocket["fields"]["kind_name"], "button");
+        assert_eq!(input_sprocket["fields"]["need_name"], "Fire");
+        assert_eq!(input_sprocket["fields"]["action_binding"], "button/fire");
+        assert_eq!(
+            input_sprocket["fields"]["key_map"],
+            "01000000000000000000000000000000"
+        );
+        assert_eq!(input_sprocket["fields"]["mouse_button"], "false");
+        assert_eq!(input_sprocket["fields"]["keyboard_active"], "true");
+
+        let snapshots_path = output_dir.path().join(crate::oracle::ORACLE_SNAPSHOTS_FILE);
+        let snapshots = std::fs::read_to_string(snapshots_path).unwrap();
+        assert!(
+            snapshots.trim().is_empty(),
+            "InputSprocket events should not create screen snapshots"
+        );
+    }
+
+    #[test]
+    #[cfg(any())]
+    fn oracle_draw_sprocket_event_records_swap_without_snapshot() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let output_dir = tempfile::tempdir().unwrap();
+        runner
+            .enable_oracle_recording(output_dir.path(), crate::oracle::OracleSource::Systemless)
+            .unwrap();
+
+        runner.record_draw_sprocket_trace(&[PpcDrawSprocketTraceEntry {
+            import_index: 12,
+            pc: 0x01f0_3456,
+            action: "swap_buffers".to_string(),
+            result: 0,
+            context: Some(0x0200_1000),
+            requested_state: None,
+            requested_frequency: None,
+            requested_width: None,
+            requested_height: None,
+            requested_context_options: None,
+            requested_display_depth_mask: None,
+            requested_back_buffer_depth_mask: None,
+            requested_display_depth: None,
+            requested_back_buffer_depth: None,
+            requested_page_count: None,
+            can_user_select: None,
+            fade_kind: None,
+            fade_percent: None,
+            fade_zero_red: None,
+            fade_zero_green: None,
+            fade_zero_blue: None,
+            reserved_context: Some(0x0200_1000),
+            active_context: Some(0x0200_1000),
+            context_state: "active".to_string(),
+            front_buffer_gworld: 0x00ab_cdef,
+            back_buffer_gworld: 0x0012_3456,
+            last_swap_context: Some(0x0200_1000),
+            swap_count: 3,
+            fade_count: 1,
+            frequency: 60 << 16,
+            width: 640,
+            height: 480,
+            context_options: 1,
+            display_depth_mask: 16,
+            back_buffer_depth_mask: 16,
+            display_depth: 16,
+            back_buffer_depth: 16,
+            page_count: 2,
+        }]);
+
+        let events_path = output_dir.path().join(crate::oracle::ORACLE_EVENTS_FILE);
+        let events = std::fs::read_to_string(events_path).unwrap();
+        let draw_sprocket: serde_json::Value = events
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .find(|value: &serde_json::Value| value["event"] == "draw_sprocket")
+            .expect("oracle recording should include a DrawSprocket event");
+        assert_eq!(draw_sprocket["pc"], 0x01f0_3456);
+        assert_eq!(draw_sprocket["screen_event_count"], 0);
+        assert_eq!(draw_sprocket["fields"]["import_index"], "12");
+        assert_eq!(draw_sprocket["fields"]["action"], "swap_buffers");
+        assert_eq!(draw_sprocket["fields"]["result"], "0");
+        assert_eq!(draw_sprocket["fields"]["result_hex"], "0000");
+        assert_eq!(draw_sprocket["fields"]["context"], "02001000");
+        assert_eq!(draw_sprocket["fields"]["requested_state"], "none");
+        assert_eq!(draw_sprocket["fields"]["requested_frequency"], "none");
+        assert_eq!(draw_sprocket["fields"]["requested_width"], "none");
+        assert_eq!(draw_sprocket["fields"]["requested_height"], "none");
+        assert_eq!(draw_sprocket["fields"]["requested_context_options"], "none");
+        assert_eq!(
+            draw_sprocket["fields"]["requested_display_depth_mask"],
+            "none"
+        );
+        assert_eq!(
+            draw_sprocket["fields"]["requested_back_buffer_depth_mask"],
+            "none"
+        );
+        assert_eq!(draw_sprocket["fields"]["requested_display_depth"], "none");
+        assert_eq!(
+            draw_sprocket["fields"]["requested_back_buffer_depth"],
+            "none"
+        );
+        assert_eq!(draw_sprocket["fields"]["requested_page_count"], "none");
+        assert_eq!(draw_sprocket["fields"]["can_user_select"], "none");
+        assert_eq!(draw_sprocket["fields"]["fade_kind"], "none");
+        assert_eq!(draw_sprocket["fields"]["fade_percent"], "none");
+        assert_eq!(draw_sprocket["fields"]["fade_zero_red"], "none");
+        assert_eq!(draw_sprocket["fields"]["fade_zero_green"], "none");
+        assert_eq!(draw_sprocket["fields"]["fade_zero_blue"], "none");
+        assert_eq!(draw_sprocket["fields"]["reserved_context"], "02001000");
+        assert_eq!(draw_sprocket["fields"]["active_context"], "02001000");
+        assert_eq!(draw_sprocket["fields"]["has_reserved_context"], "true");
+        assert_eq!(draw_sprocket["fields"]["has_active_context"], "true");
+        assert_eq!(draw_sprocket["fields"]["context_state"], "active");
+        assert_eq!(draw_sprocket["fields"]["front_gworld"], "00ABCDEF");
+        assert_eq!(draw_sprocket["fields"]["back_gworld"], "00123456");
+        assert_eq!(draw_sprocket["fields"]["last_swap_context"], "02001000");
+        assert_eq!(draw_sprocket["fields"]["swap_count"], "3");
+        assert_eq!(draw_sprocket["fields"]["fade_count"], "1");
+        assert_eq!(draw_sprocket["fields"]["frequency"], "3932160");
+        assert_eq!(draw_sprocket["fields"]["width"], "640");
+        assert_eq!(draw_sprocket["fields"]["height"], "480");
+        assert_eq!(draw_sprocket["fields"]["context_options"], "1");
+        assert_eq!(draw_sprocket["fields"]["display_depth_mask"], "16");
+        assert_eq!(draw_sprocket["fields"]["back_buffer_depth_mask"], "16");
+        assert_eq!(draw_sprocket["fields"]["display_depth"], "16");
+        assert_eq!(draw_sprocket["fields"]["back_buffer_depth"], "16");
+        assert_eq!(draw_sprocket["fields"]["page_count"], "2");
+
+        let snapshots_path = output_dir.path().join(crate::oracle::ORACLE_SNAPSHOTS_FILE);
+        let snapshots = std::fs::read_to_string(snapshots_path).unwrap();
+        assert!(
+            snapshots.trim().is_empty(),
+            "DrawSprocket events should not create screen snapshots"
+        );
+    }
+
+    #[test]
+    fn ppc_front_buffer_syncs_to_host_screen_buffer() {
+        let front_base = PPC_HEAP_BASE;
+        let presented_base = PPC_HEAP_BASE + 4;
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_CODE_BASE, 0x4800_0002u32.to_be_bytes().to_vec());
+        memory.add_region(front_base, vec![0x00, 0x1f, 0x00, 0x1f]);
+        memory.add_region(presented_base, vec![0x7c, 0x00, 0x03, 0xe0]);
+        let mut cpu = PpcCpu::new();
+        cpu.pc = PPC_CODE_BASE;
+        cpu.lr = PPC_HALT_PC;
+        cpu.gpr[1] = PPC_STACK_TOP - 64;
+
+        let app = LoadedApp::from_ppc(PpcLoadedApp {
+            cpu,
+            memory,
+            entry_pc: PPC_CODE_BASE,
+            rtoc: 0,
+            stack_base: PPC_STACK_BASE,
+            stack_size: PPC_STACK_SIZE,
+            stack_pointer: PPC_STACK_TOP - 64,
+            heap_base: PPC_HEAP_BASE,
+            heap_cursor: PPC_HEAP_BASE + 8,
+            heap_limit: PPC_STACK_BASE,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+            tick_count: 0,
+            clock_cycles_per_tick: 1,
+            clock_cycle_phase: 0,
+            current_resource_refnum: 0,
+            last_resource_error: 0,
+            resource_load_enabled: true,
+            stdc_qsort_stack: Vec::new(),
+            dialog_callback_stack: Vec::new(),
+            apple_events: Default::default(),
+            cfm_connections: Vec::new(),
+            next_cfm_connection_id: 1,
+            ptrs: Vec::new(),
+            free_ptr_blocks: Vec::new(),
+            handles: Vec::new(),
+            free_handle_blocks: Vec::new(),
+            handle_states: Vec::new(),
+            controls: Vec::new(),
+            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            aliases: Vec::new(),
+            gworlds: vec![
+                PpcGWorldRecord {
+                    port: PPC_MAIN_GWORLD,
+                    pixmap_handle: 0,
+                    pixmap: 0,
+                    base_addr: front_base,
+                    gdevice: PPC_MAIN_GDEVICE,
+                    width: 2,
+                    height: 1,
+                    depth: 16,
+                    row_bytes: 4,
+                    pixels_locked: false,
+                    pixels_no_purge: false,
+                },
+                PpcGWorldRecord {
+                    port: PPC_DSP_BACK_GWORLD,
+                    pixmap_handle: 0,
+                    pixmap: 0,
+                    base_addr: presented_base,
+                    gdevice: PPC_MAIN_GDEVICE,
+                    width: 2,
+                    height: 1,
+                    depth: 16,
+                    row_bytes: 4,
+                    pixels_locked: false,
+                    pixels_no_purge: false,
+                },
+            ],
+            q3_objects: Vec::new(),
+            q3_object_refs: Vec::new(),
+            next_q3_object: 0,
+            q3_error_state: Default::default(),
+            q3_lifecycle: Default::default(),
+            q3_memory_storages: Vec::new(),
+            q3_files: Vec::new(),
+            q3_group_memberships: Vec::new(),
+            q3_file_groups: Vec::new(),
+            q3_views: Vec::new(),
+            q3_submissions: Vec::new(),
+            q3_view_transforms: Vec::new(),
+            q3_submission_transforms: Vec::new(),
+            q3_view_materials: Vec::new(),
+            q3_submission_materials: Vec::new(),
+            q3_submission_lights: Vec::new(),
+            q3_view_state_stack: Vec::new(),
+            q3_completed_frames: Vec::new(),
+            q3_retained_frames: Vec::new(),
+            q3_state_only_completed_frame_batches: Vec::new(),
+            q3_fog_styles: Vec::new(),
+            q3_attributes: Vec::new(),
+            q3_shader_uv_transforms: Vec::new(),
+            q3_shader_boundaries: Vec::new(),
+            q3_mipmap_textures: Vec::new(),
+            q3_texture_shaders: Vec::new(),
+            q3_renderer_preferences: Vec::new(),
+            q3_draw_contexts: Vec::new(),
+            q3_trimeshes: Vec::new(),
+            q3_styles: Vec::new(),
+            q3_cameras: Vec::new(),
+            q3_lights: Vec::new(),
+            input_sprocket: Default::default(),
+            input_sprocket_virtual_elements: Vec::new(),
+            toolbox_startup: Default::default(),
+            quicktime: Default::default(),
+            sound: Default::default(),
+            timer_tasks: Vec::new(),
+            vbl_tasks: Vec::new(),
+            files: Vec::new(),
+            vfs_files: Vec::new(),
+            deleted_vfs_file_paths: Vec::new(),
+            resource_files: Vec::new(),
+            vfs_resource_files: Vec::new(),
+            vfs_resources: Vec::new(),
+            next_file_ref_num: 128,
+            current_gworld: PPC_MAIN_GWORLD,
+            current_gdevice: PPC_MAIN_GDEVICE,
+            quickdraw_fore_color: PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+            },
+            quickdraw_back_color: PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff,
+            },
+            quickdraw_pen_h: 0,
+            quickdraw_pen_v: 0,
+            quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
+            quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
+            quickdraw_cursor_level: 0,
+            vfs_directories: Vec::new(),
+            next_vfs_dir_id: 18,
+            default_dir_id: 2,
+            launched_app_path: None,
+            default_output_volume: 0,
+            param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            scrap: Default::default(),
+            list_manager: Default::default(),
+            halt_pc: PPC_HALT_PC,
+            import_trap_base: PPC_IMPORT_TRAP_BASE,
+            import_count: 0,
+            imports: Vec::new(),
+            section_bases: Vec::new(),
+            input: PpcInputSnapshot::default(),
+            event_queue: VecDeque::new(),
+            draw_sprocket: PpcDrawSprocketState {
+                front_buffer_gworld: PPC_DSP_BACK_GWORLD,
+                back_buffer_gworld: PPC_MAIN_GWORLD,
+                swap_count: 1,
+                ..PpcDrawSprocketState::default()
+            },
+        });
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let (steps, running) = runner.run_steps(8, None);
+
+        assert_eq!(steps, 1);
+        assert!(!running);
+        let (host_base, row_bytes, width, height, depth) = runner.dispatcher.screen_mode;
+        assert_eq!((row_bytes, width, height, depth), (4, 2, 1, 16));
+        assert_eq!(runner.bus.read_word(host_base), 0x7c00);
+        assert_eq!(runner.bus.read_word(host_base + 2), 0x03e0);
+        assert_eq!(
+            runner
+                .bus
+                .read_long(crate::memory::globals::addr::SCRN_BASE),
+            host_base
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_long(crate::memory::globals::addr::SCREEN_BITS),
+            host_base
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_word(crate::memory::globals::addr::SCREEN_BITS + 4),
+            row_bytes as u16
+        );
+
+        let main_gdevice_handle = runner.dispatcher.main_gdevice_handle;
+        assert_ne!(main_gdevice_handle, 0);
+        let main_gdevice = runner.bus.read_long(main_gdevice_handle);
+        let main_pixmap_handle = runner.bus.read_long(main_gdevice + 22);
+        let main_pixmap = runner.bus.read_long(main_pixmap_handle);
+        assert_eq!(runner.bus.read_long(main_pixmap), host_base);
+        assert_eq!(
+            runner.bus.read_word(main_pixmap + 4),
+            0x8000 | row_bytes as u16
+        );
+        assert_eq!(runner.bus.read_word(main_pixmap + 10), height);
+        assert_eq!(runner.bus.read_word(main_pixmap + 12), width);
+        assert_eq!(runner.bus.read_word(main_pixmap + 32), depth);
+        assert_eq!(runner.bus.read_word(main_pixmap + 36), depth);
+        assert_eq!(runner.bus.read_word(main_gdevice + 38), height);
+        assert_eq!(runner.bus.read_word(main_gdevice + 40), width);
+
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app should stay loaded");
+        ppc_app.draw_sprocket.last_fade_percent = Some(0);
+        ppc_app.draw_sprocket.last_fade_zero_color = None;
+        assert_eq!(ppc_app.memory.read_u16_be(presented_base), Some(0x7c00));
+        assert_eq!(ppc_app.memory.read_u16_be(presented_base + 2), Some(0x03e0));
+
+        runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
+
+        assert_eq!(runner.bus.read_word(host_base), 0x0000);
+        assert_eq!(runner.bus.read_word(host_base + 2), 0x0000);
+        assert_eq!(ppc_app.memory.read_u16_be(presented_base), Some(0x7c00));
+        assert_eq!(ppc_app.memory.read_u16_be(presented_base + 2), Some(0x03e0));
+        runner.ppc_app = Some(ppc_app);
+    }
+
+    #[test]
+    fn ppc_indexed_composition_prefers_gameplay_over_complete_menu_surface() {
+        const MAIN_SCREEN_BASE: u32 = 0x02f1_0000;
+        let record = |port, base_addr, height| PpcGWorldRecord {
+            port,
+            pixmap_handle: 0,
+            pixmap: 0,
+            base_addr,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: 640,
+            height,
+            depth: 8,
+            row_bytes: 640,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        };
+        let main = PpcFrontBuffer {
+            base_addr: MAIN_SCREEN_BASE,
+            row_bytes: 640,
+            width: 640,
+            height: 480,
+            depth: 8,
+        };
+        let mut gworlds = vec![
+            record(PPC_MAIN_GWORLD, MAIN_SCREEN_BASE, 480),
+            record(0x0300_1000, 0x0310_0000, 460),
+            record(0x0300_2000, 0x0320_0000, 461),
+        ];
+        let mut memory = PpcSectionMem::new();
+        let mut menu_460 = vec![0; 640 * 460];
+        menu_460[1] = 1;
+        memory.add_region(0x0310_0000, menu_460);
+        let mut menu_461 = vec![0; 640 * 461];
+        menu_461[1] = 1;
+        memory.add_region(0x0320_0000, menu_461);
+
+        let menu = FixtureRunner::ppc_indexed_composition_surface(
+            &gworlds,
+            PPC_DSP_BACK_GWORLD,
+            main,
+            &mut memory,
+        )
+        .unwrap();
+        assert_eq!((menu.base_addr, menu.height), (0x0320_0000, 461));
+
+        gworlds.push(record(0x0300_3000, 0x0330_0000, 325));
+        memory.add_region(0x0330_0000, vec![0; 640 * 325]);
+        let still_menu = FixtureRunner::ppc_indexed_composition_surface(
+            &gworlds,
+            PPC_DSP_BACK_GWORLD,
+            main,
+            &mut memory,
+        )
+        .unwrap();
+        assert_eq!(
+            (still_menu.base_addr, still_menu.height),
+            (0x0320_0000, 461)
+        );
+
+        let _ = memory.write_u8(0x0330_0001, 1);
+        let gameplay = FixtureRunner::ppc_indexed_composition_surface(
+            &gworlds,
+            PPC_DSP_BACK_GWORLD,
+            main,
+            &mut memory,
+        )
+        .unwrap();
+        assert_eq!((gameplay.base_addr, gameplay.height), (0x0330_0000, 325));
+    }
+
+    #[test]
+    fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
+        const TRIMESH_NUM_TRIANGLES_OFFSET: u32 = 4;
+        const TRIMESH_TRIANGLES_OFFSET: u32 = 8;
+        const TRIMESH_NUM_POINTS_OFFSET: u32 = 36;
+        const TRIMESH_POINTS_OFFSET: u32 = 40;
+
+        let front_base = PPC_HEAP_BASE;
+        let trimesh_data = PPC_DATA_BASE;
+        let triangles_ptr = PPC_DATA_BASE + 0x80;
+        let points_ptr = PPC_DATA_BASE + 0xc0;
+        let view = 0x0100_0000;
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_CODE_BASE, 0x4e80_0020u32.to_be_bytes().to_vec());
+        memory.add_region(front_base, vec![0; 8 * 16]);
+        memory.add_region(PPC_DATA_BASE, vec![0; 0x200]);
+        memory
+            .write_u32_be(trimesh_data + TRIMESH_NUM_TRIANGLES_OFFSET, 1)
+            .unwrap();
+        memory
+            .write_u32_be(trimesh_data + TRIMESH_TRIANGLES_OFFSET, triangles_ptr)
+            .unwrap();
+        memory
+            .write_u32_be(trimesh_data + TRIMESH_NUM_POINTS_OFFSET, 3)
+            .unwrap();
+        memory
+            .write_u32_be(trimesh_data + TRIMESH_POINTS_OFFSET, points_ptr)
+            .unwrap();
+        for (offset, value) in [
+            (0, 0.0f32),
+            (4, 0.0),
+            (8, 0.0),
+            (12, 0.0),
+            (16, 0.9),
+            (20, 0.0),
+            (24, 0.9),
+            (28, 0.0),
+            (32, 0.0),
+        ] {
+            memory
+                .write_u32_be(points_ptr + offset, value.to_bits())
+                .unwrap();
+        }
+        memory.write_u32_be(triangles_ptr, 0).unwrap();
+        memory.write_u32_be(triangles_ptr + 4, 1).unwrap();
+        memory.write_u32_be(triangles_ptr + 8, 2).unwrap();
+        let mut cpu = PpcCpu::new();
+        cpu.pc = PPC_CODE_BASE;
+        cpu.lr = PPC_HALT_PC;
+        cpu.gpr[1] = PPC_STACK_TOP - 64;
+
+        let app = LoadedApp::from_ppc(PpcLoadedApp {
+            cpu,
+            memory,
+            entry_pc: PPC_CODE_BASE,
+            rtoc: 0,
+            stack_base: PPC_STACK_BASE,
+            stack_size: PPC_STACK_SIZE,
+            stack_pointer: PPC_STACK_TOP - 64,
+            heap_base: PPC_HEAP_BASE,
+            heap_cursor: PPC_HEAP_BASE + 8 * 16,
+            heap_limit: PPC_STACK_BASE,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+            tick_count: 0,
+            clock_cycles_per_tick: 1,
+            clock_cycle_phase: 0,
+            current_resource_refnum: 0,
+            last_resource_error: 0,
+            resource_load_enabled: true,
+            stdc_qsort_stack: Vec::new(),
+            dialog_callback_stack: Vec::new(),
+            apple_events: Default::default(),
+            cfm_connections: Vec::new(),
+            next_cfm_connection_id: 1,
+            ptrs: Vec::new(),
+            free_ptr_blocks: Vec::new(),
+            handles: Vec::new(),
+            free_handle_blocks: Vec::new(),
+            handle_states: Vec::new(),
+            controls: Vec::new(),
+            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            aliases: Vec::new(),
+            gworlds: vec![PpcGWorldRecord {
+                port: PPC_MAIN_GWORLD,
+                pixmap_handle: 0,
+                pixmap: 0,
+                base_addr: front_base,
+                gdevice: PPC_MAIN_GDEVICE,
+                width: 8,
+                height: 8,
+                depth: 16,
+                row_bytes: 16,
+                pixels_locked: false,
+                pixels_no_purge: false,
+            }],
+            q3_objects: Vec::new(),
+            q3_object_refs: Vec::new(),
+            next_q3_object: 0,
+            q3_error_state: Default::default(),
+            q3_lifecycle: Default::default(),
+            q3_memory_storages: Vec::new(),
+            q3_files: Vec::new(),
+            q3_group_memberships: Vec::new(),
+            q3_file_groups: Vec::new(),
+            q3_views: vec![PpcQ3ViewStateRecord {
+                view,
+                renderer: 0,
+                light_group: 0,
+                draw_context: 0,
+                camera: 0,
+                rendering_depth: 0,
+                bounding_box_depth: 0,
+                cancelled: false,
+            }],
+            q3_submissions: Vec::new(),
+            q3_view_transforms: Vec::new(),
+            q3_submission_transforms: Vec::new(),
+            q3_view_materials: Vec::new(),
+            q3_submission_materials: Vec::new(),
+            q3_submission_lights: Vec::new(),
+            q3_view_state_stack: Vec::new(),
+            q3_completed_frames: vec![PpcQ3CompletedFrameRecord {
+                view,
+                submissions: vec![PpcQ3SubmissionRecord {
+                    view,
+                    kind: PpcQ3SubmissionKind::TriMesh,
+                    primary: trimesh_data,
+                    secondary: 0,
+                }],
+                submission_transforms: vec![PpcQ3SubmissionTransformRecord {
+                    view,
+                    kind: PpcQ3SubmissionKind::TriMesh,
+                    primary: trimesh_data,
+                    secondary: 0,
+                    local_to_world: identity,
+                }],
+                submission_materials: vec![PpcQ3SubmissionMaterialRecord {
+                    view,
+                    kind: PpcQ3SubmissionKind::TriMesh,
+                    primary: trimesh_data,
+                    secondary: 0,
+                    shader: 0,
+                    illumination_type: u32::from_be_bytes(*b"phil"),
+                    styles: Vec::new(),
+                    fog_style: None,
+                    attributes: Vec::new(),
+                    shader_uv_transform: None,
+                    shader_boundary: None,
+                    texture_shader: None,
+                    mipmap_texture: None,
+                }],
+                submission_lights: vec![PpcQ3SubmissionLightRecord {
+                    view,
+                    kind: PpcQ3SubmissionKind::TriMesh,
+                    primary: trimesh_data,
+                    secondary: 0,
+                    light_group: 0,
+                    lights: Vec::new(),
+                }],
+                retained_trimeshes: Vec::new(),
+            }],
+            q3_retained_frames: Vec::new(),
+            q3_state_only_completed_frame_batches: Vec::new(),
+            q3_fog_styles: Vec::new(),
+            q3_attributes: Vec::new(),
+            q3_shader_uv_transforms: Vec::new(),
+            q3_shader_boundaries: Vec::new(),
+            q3_mipmap_textures: Vec::new(),
+            q3_texture_shaders: Vec::new(),
+            q3_renderer_preferences: Vec::new(),
+            q3_draw_contexts: Vec::new(),
+            q3_trimeshes: Vec::new(),
+            q3_styles: Vec::new(),
+            q3_cameras: Vec::new(),
+            q3_lights: Vec::new(),
+            input_sprocket: Default::default(),
+            input_sprocket_virtual_elements: Vec::new(),
+            toolbox_startup: Default::default(),
+            quicktime: Default::default(),
+            sound: Default::default(),
+            timer_tasks: Vec::new(),
+            vbl_tasks: Vec::new(),
+            files: Vec::new(),
+            vfs_files: Vec::new(),
+            deleted_vfs_file_paths: Vec::new(),
+            resource_files: Vec::new(),
+            vfs_resource_files: Vec::new(),
+            vfs_resources: Vec::new(),
+            next_file_ref_num: 128,
+            current_gworld: PPC_MAIN_GWORLD,
+            current_gdevice: PPC_MAIN_GDEVICE,
+            quickdraw_fore_color: PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+            },
+            quickdraw_back_color: PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff,
+            },
+            quickdraw_pen_h: 0,
+            quickdraw_pen_v: 0,
+            quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
+            quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
+            quickdraw_cursor_level: 0,
+            vfs_directories: Vec::new(),
+            next_vfs_dir_id: 18,
+            default_dir_id: 2,
+            launched_app_path: None,
+            default_output_volume: 0,
+            param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            scrap: Default::default(),
+            list_manager: Default::default(),
+            halt_pc: PPC_HALT_PC,
+            import_trap_base: PPC_IMPORT_TRAP_BASE,
+            import_count: 0,
+            imports: Vec::new(),
+            section_bases: Vec::new(),
+            input: PpcInputSnapshot::default(),
+            event_queue: VecDeque::new(),
+            draw_sprocket: PpcDrawSprocketState::default(),
+        });
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let (steps, running) = runner.run_steps(8, None);
+
+        assert_eq!(steps, 1);
+        assert!(!running);
+        let (host_base, row_bytes, width, height, depth) = runner.dispatcher.screen_mode;
+        assert_eq!((row_bytes, width, height, depth), (16, 8, 8, 16));
+        assert_eq!(
+            runner.bus.read_word(host_base + 4 * row_bytes + 4 * 2),
+            0x7fff
+        );
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        assert!(ppc_app.q3_completed_frames.is_empty());
+        assert_eq!(runner.q3_completed_frame_index, 1);
+    }
+
     #[test]
     fn arrows_as_numpad_remaps_key_and_char_together() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -8060,6 +13159,7 @@ mod tests {
     fn init_app_seeds_top_of_stack_with_nonzero_bytes() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8090,6 +13190,7 @@ mod tests {
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8126,6 +13227,7 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let preferred_partition = 3 * 1024 * 1024;
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8171,6 +13273,7 @@ mod tests {
         let override_partition = 4 * 1024 * 1024;
         runner.set_application_partition_size(Some(override_partition));
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8207,6 +13310,7 @@ mod tests {
         runner.set_application_partition_size(Some(64 * 1024));
         assert_eq!(runner.application_partition_size(), None);
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8239,6 +13343,7 @@ mod tests {
             .dispatcher_mut()
             .set_launched_app_path("Games/Armor Alley");
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8298,6 +13403,7 @@ mod tests {
             .dispatcher_mut()
             .set_launched_app_path("Games/Armor Alley");
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8368,6 +13474,7 @@ mod tests {
     fn init_app_sets_legacy_sound_driver_low_memory_defaults() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8416,6 +13523,7 @@ mod tests {
     fn init_app_seeds_mmu32bit_low_memory_flag() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8445,6 +13553,7 @@ mod tests {
     fn init_app_seeds_callable_swap_mmu_mode_trap_table_entry() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8504,6 +13613,7 @@ mod tests {
     fn init_app_seeds_cursor_task_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8538,6 +13648,7 @@ mod tests {
     fn init_app_seeds_callable_show_cursor_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8588,6 +13699,7 @@ mod tests {
     fn init_app_seeds_callable_init_cursor_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8638,6 +13750,7 @@ mod tests {
     fn init_app_seeds_callable_swap_font_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8702,6 +13815,7 @@ mod tests {
     fn init_app_seeds_callable_shield_cursor_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8757,6 +13871,7 @@ mod tests {
     fn init_app_seeds_callable_hide_cursor_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
+            ppc: None,
             code0_header: Code0Header {
                 above_a5: 0,
                 below_a5: 0x2000,
@@ -8789,7 +13904,7 @@ mod tests {
         let call_sp = 0x007F_FE00u32;
         let return_pc = 0x0002_0000u32;
         runner.bus.write_long(call_sp - 4, return_pc);
-        runner.bus.write_word(return_pc, 0x4E71); // NOP
+        runner.bus.write_word(return_pc, 0x4E71);
         runner.cpu.write_reg(Register::PC, hide_cursor_trampoline);
         runner.cpu.write_reg(Register::A7, call_sp - 4);
 
@@ -8798,11 +13913,7 @@ mod tests {
         assert!(running);
         assert_eq!(steps, 3);
         assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
-        assert_eq!(
-            runner.cpu.read_reg(Register::A7),
-            call_sp,
-            "JHideCursor takes no arguments and must restore the caller stack"
-        );
+        assert_eq!(runner.cpu.read_reg(Register::A7), call_sp);
         assert_eq!(runner.dispatcher().cursor_level(), -1);
     }
 

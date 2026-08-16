@@ -177,6 +177,7 @@ pub fn render_screen_with_rgba_palette_into(
     let fb = bus.ram_slice(scrn_base, row_bytes * h);
 
     match pixel_size {
+        16 => render_16bpp_rgba_rows(fb, row_bytes, w, h, pixels),
         8 => render_8bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
         4 => render_4bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
         _ => render_1bpp_rgba_rows(fb, row_bytes, w, h, pixels),
@@ -512,6 +513,19 @@ fn render_8bpp_rgba_rows(
     }
 }
 
+fn render_16bpp_rgba_rows(fb: &[u8], row_bytes: u32, w: u32, h: u32, pixels: &mut [u8]) {
+    for gy in 0..h as usize {
+        let row_start = gy * row_bytes as usize;
+        let dst_row = &mut pixels[gy * w as usize * 4..(gy + 1) * w as usize * 4];
+        for gx in 0..w as usize {
+            let src = row_start + gx * 2;
+            let [r, g, b] = rgb555_to_rgb888(u16::from_be_bytes([fb[src], fb[src + 1]]));
+            let dst = gx * 4;
+            dst_row[dst..dst + 4].copy_from_slice(&[r, g, b, 0xff]);
+        }
+    }
+}
+
 #[inline]
 fn render_4bpp_rgba_rows(
     fb: &[u8],
@@ -602,6 +616,10 @@ pub fn screen_pixel_rgb_with_gamma(
     }
 
     match pixel_size {
+        16 => {
+            let addr = scrn_base + y * row_bytes + x * 2;
+            Some(rgb555_to_rgb888(bus.read_word(addr)))
+        }
         8 => {
             let addr = scrn_base + y * row_bytes + x;
             let pixel = bus.read_byte(addr);
@@ -674,6 +692,18 @@ pub fn render_screen_argb_with_gamma(
 
     let palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
     match pixel_size {
+        16 => {
+            for gy in 0..h {
+                let row_start = gy * row_bytes as usize;
+                let dst_row = &mut pixels[gy * w..(gy + 1) * w];
+                for gx in 0..w {
+                    let src = row_start + gx * 2;
+                    let [r, g, b] = rgb555_to_rgb888(u16::from_be_bytes([fb[src], fb[src + 1]]));
+                    dst_row[gx] =
+                        0xff00_0000 | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+                }
+            }
+        }
         8 => {
             for gy in 0..h {
                 let row_start = gy * row_bytes as usize;
@@ -1463,6 +1493,14 @@ fn rgba_word(r: u8, g: u8, b: u8) -> u32 {
     u32::from_le_bytes([r, g, b, 0xFF])
 }
 
+fn rgb555_to_rgb888(pixel: u16) -> [u8; 3] {
+    let expand = |value: u16| -> u8 {
+        let five_bit = value & 0x1f;
+        ((five_bit << 3) | (five_bit >> 2)) as u8
+    };
+    [expand(pixel >> 10), expand(pixel >> 5), expand(pixel)]
+}
+
 #[cfg(test)]
 fn clut_component_to_u8(component: u16) -> u8 {
     clut_component_to_u8_with_gamma(component, &MAC_ROM_GAMMA_LUT)
@@ -1767,6 +1805,32 @@ mod tests {
         assert_eq!(
             screen_pixel_rgb_with_gamma(&bus, (base, 4, 2, 1, 8), &clut, &gamma, 1, 0),
             Some([0x11, 0x22, 0x33])
+        );
+    }
+
+    #[test]
+    fn render_screen_into_16bpp_decodes_rgb555_pixels() {
+        let mut bus = MacMemoryBus::new(4096);
+        let base = 0x100;
+        bus.write_word(base, 0x7c00);
+        bus.write_word(base + 2, 0x03e0);
+        let mut pixels = Vec::new();
+
+        render_screen_into(&bus, (base, 4, 2, 1, 16), &[[0; 3]; 256], &mut pixels);
+
+        assert_eq!(&pixels[0..4], &[0xff, 0x00, 0x00, 0xff]);
+        assert_eq!(&pixels[4..8], &[0x00, 0xff, 0x00, 0xff]);
+    }
+
+    #[test]
+    fn screen_pixel_rgb_samples_16bpp() {
+        let mut bus = MacMemoryBus::new(4096);
+        let base = 0x100;
+        bus.write_word(base, 0x001f);
+
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 2, 1, 1, 16), &[[0; 3]; 256], 0, 0),
+            Some([0x00, 0x00, 0xff])
         );
     }
 

@@ -18,6 +18,7 @@ default-run = "systemless"
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 m68k = { version = "0.7.1", features = ["jit"] }
+ppc = "0.3.0"
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
@@ -31,6 +32,7 @@ cpal = { version = "0.15", optional = true }
 stuffit = "0.1.5"
 hfs-reader = "0.1.1"
 hfsplus = "0.2.4"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"

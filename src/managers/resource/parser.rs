@@ -9,7 +9,7 @@
 //!
 //! Reference: Inside Macintosh Volume I, I-126
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Four-character resource type code
 pub type ResourceType = [u8; 4];
@@ -29,8 +29,14 @@ pub struct Resource {
     pub reference_offset: usize,
     /// Resource name (optional)
     pub name: Option<String>,
+    /// Original resource-name bytes before host string conversion.
+    pub name_bytes: Option<Vec<u8>>,
     /// Resource data
     pub data: Vec<u8>,
+    /// Original compressed on-disk payload when decoding changed the data.
+    pub raw_data: Option<Vec<u8>>,
+    /// Original attributes paired with `raw_data`.
+    pub raw_attrs: Option<u8>,
     /// Resource attributes
     pub attrs: u8,
 }
@@ -40,6 +46,16 @@ pub struct Resource {
 pub struct ResourceFork {
     /// All resources indexed by (type, id)
     resources: HashMap<(ResourceType, i16), Resource>,
+    pub map_attrs: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceForkEntry {
+    pub res_type: ResourceType,
+    pub id: i16,
+    pub name: Vec<u8>,
+    pub data: Vec<u8>,
+    pub attrs: u8,
 }
 
 impl ResourceFork {
@@ -48,9 +64,14 @@ impl ResourceFork {
         &self.resources
     }
 
+    pub fn map_attrs(&self) -> u16 {
+        self.map_attrs
+    }
+
     #[cfg(test)]
     pub(crate) fn from_test_resources(resources: Vec<(ResourceType, i16, Vec<u8>)>) -> Self {
         Self {
+            map_attrs: 0,
             resources: resources
                 .into_iter()
                 .map(|(res_type, id, data)| {
@@ -61,7 +82,10 @@ impl ResourceFork {
                             id,
                             reference_offset: 0,
                             name: None,
+                            name_bytes: None,
                             data,
+                            raw_data: None,
+                            raw_attrs: None,
                             attrs: 0,
                         },
                     )
@@ -208,7 +232,10 @@ impl ResourceFork {
             name_list_offset
         );
 
-        let mut fork = ResourceFork::default();
+        let mut fork = ResourceFork {
+            map_attrs: u16::from_be_bytes([map[22], map[23]]),
+            ..ResourceFork::default()
+        };
 
         // Parse type list
         // Each entry is 8 bytes: type (4), count-1 (2), offset to ref list (2)
@@ -262,17 +289,12 @@ impl ResourceFork {
                 let reference_offset = type_list_offset + ref_list_offset + ref_offset;
 
                 // Get resource name if present
-                let name = if name_offset != 0xFFFF {
+                let name_bytes = if name_offset != 0xFFFF {
                     let name_pos = name_list_offset + name_offset as usize;
                     if name_pos < map.len() {
                         let name_len = map[name_pos] as usize;
                         if name_pos + 1 + name_len <= map.len() {
-                            Some(
-                                String::from_utf8_lossy(
-                                    &map[name_pos + 1..name_pos + 1 + name_len],
-                                )
-                                .into_owned(),
-                            )
+                            Some(map[name_pos + 1..name_pos + 1 + name_len].to_vec())
                         } else {
                             None
                         }
@@ -282,6 +304,9 @@ impl ResourceFork {
                 } else {
                     None
                 };
+                let name = name_bytes
+                    .as_deref()
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
 
                 // Get resource data
                 let abs_data_offset = data_offset + res_data_offset;
@@ -303,19 +328,28 @@ impl ResourceFork {
                 }
 
                 let raw_res_data = &data[res_data_start..res_data_start + res_len];
+                let mut stored_attrs = attrs;
+                let mut stored_raw_data = None;
+                let mut stored_raw_attrs = None;
                 let res_data = match super::compressed::decompress_if_needed(attrs, raw_res_data) {
                     Ok(Some(decompressed)) => {
+                        stored_raw_data = Some(raw_res_data.to_vec());
+                        stored_raw_attrs = Some(attrs);
+                        stored_attrs &= !super::compressed::COMPRESSED_RESOURCE_ATTR;
                         tracing::debug!(
-                            "    ID {}: decompressed {} -> {} bytes, attrs=0x{:02X}",
+                            "    ID {}: decompressed {} -> {} bytes, attrs=0x{:02X}->0x{:02X}",
                             id,
                             res_len,
                             decompressed.len(),
-                            attrs
+                            attrs,
+                            stored_attrs
                         );
                         decompressed
                     }
                     Ok(None) => raw_res_data.to_vec(),
                     Err(err) => {
+                        stored_raw_data = Some(raw_res_data.to_vec());
+                        stored_raw_attrs = Some(attrs);
                         tracing::warn!(
                                 "    ID {}: failed to decompress compressed resource ({} bytes, attrs=0x{:02X}): {:?}",
                                 id,
@@ -328,6 +362,8 @@ impl ResourceFork {
                 };
                 let res_data = match super::ajcp::decompress_if_needed(&res_data) {
                     Ok(Some(decompressed)) => {
+                        stored_raw_data.get_or_insert_with(|| raw_res_data.to_vec());
+                        stored_raw_attrs.get_or_insert(attrs);
                         tracing::debug!(
                             "    ID {}: ajcp decompressed {} -> {} bytes",
                             id,
@@ -355,8 +391,11 @@ impl ResourceFork {
                     id,
                     reference_offset,
                     name,
+                    name_bytes,
                     data: res_data,
-                    attrs,
+                    raw_data: stored_raw_data,
+                    raw_attrs: stored_raw_attrs,
+                    attrs: stored_attrs,
                 };
 
                 fork.resources.insert((res_type, id), resource);
@@ -469,6 +508,142 @@ fn resource_data_block_in_bounds(data: &[u8], data_offset: usize, res_data_offse
         return false;
     };
     res_data_end <= data.len()
+}
+
+pub fn serialize_resource_fork(entries: &[ResourceForkEntry]) -> Option<Vec<u8>> {
+    serialize_resource_fork_with_attrs(entries, 0)
+}
+
+/// Serialize resources with explicit resource-map attributes.
+pub fn serialize_resource_fork_with_attrs(
+    entries: &[ResourceForkEntry],
+    map_attrs: u16,
+) -> Option<Vec<u8>> {
+    if entries.is_empty() {
+        return Some(empty_resource_fork_bytes_with_attrs(map_attrs));
+    }
+
+    let mut sorted = entries.to_vec();
+    sorted.sort_by_key(|entry| (entry.res_type, entry.id));
+
+    let data_offset = 16usize;
+    let mut data_area = Vec::new();
+    let mut data_offsets = Vec::with_capacity(sorted.len());
+    for entry in &sorted {
+        if data_area.len() > 0x00ff_ffff {
+            return None;
+        }
+        data_offsets.push(data_area.len());
+        let len = u32::try_from(entry.data.len()).ok()?;
+        data_area.extend_from_slice(&len.to_be_bytes());
+        data_area.extend_from_slice(&entry.data);
+    }
+
+    let mut groups: BTreeMap<ResourceType, Vec<usize>> = BTreeMap::new();
+    for (index, entry) in sorted.iter().enumerate() {
+        groups.entry(entry.res_type).or_default().push(index);
+    }
+
+    let type_count = groups.len();
+    let resource_count = sorted.len();
+    let type_list_offset = 28usize;
+    let ref_lists_start = 2usize.checked_add(type_count.checked_mul(8)?)?;
+    let name_list_offset = type_list_offset
+        .checked_add(ref_lists_start)?
+        .checked_add(resource_count.checked_mul(12)?)?;
+
+    let mut name_area = Vec::new();
+    let mut name_offsets = vec![None; sorted.len()];
+    for (index, entry) in sorted.iter().enumerate() {
+        if !entry.name.is_empty() {
+            let offset = u16::try_from(name_area.len()).ok()?;
+            let name_len = entry.name.len().min(255);
+            name_area.push(name_len as u8);
+            name_area.extend_from_slice(&entry.name[..name_len]);
+            name_offsets[index] = Some(offset);
+        }
+    }
+
+    let map_length = name_list_offset.checked_add(name_area.len())?;
+    let map_offset = data_offset.checked_add(data_area.len())?;
+    let total_len = map_offset.checked_add(map_length)?;
+    let data_length = u32::try_from(data_area.len()).ok()?;
+    let map_offset_u32 = u32::try_from(map_offset).ok()?;
+    let map_length_u32 = u32::try_from(map_length).ok()?;
+    let name_list_offset_u16 = u16::try_from(name_list_offset).ok()?;
+
+    let mut bytes = vec![0u8; total_len];
+    let mut header = [0u8; 16];
+    header[0..4].copy_from_slice(&(data_offset as u32).to_be_bytes());
+    header[4..8].copy_from_slice(&map_offset_u32.to_be_bytes());
+    header[8..12].copy_from_slice(&data_length.to_be_bytes());
+    header[12..16].copy_from_slice(&map_length_u32.to_be_bytes());
+    bytes[0..16].copy_from_slice(&header);
+    bytes[data_offset..data_offset + data_area.len()].copy_from_slice(&data_area);
+
+    let map_start = map_offset;
+    bytes[map_start..map_start + 16].copy_from_slice(&header);
+    bytes[map_start + 22..map_start + 24].copy_from_slice(&map_attrs.to_be_bytes());
+    bytes[map_start + 24..map_start + 26].copy_from_slice(&(type_list_offset as u16).to_be_bytes());
+    bytes[map_start + 26..map_start + 28].copy_from_slice(&name_list_offset_u16.to_be_bytes());
+    bytes[map_start + 28..map_start + 30]
+        .copy_from_slice(&u16::try_from(type_count - 1).ok()?.to_be_bytes());
+
+    let type_list_start = map_start + type_list_offset;
+    let mut ref_cursor = ref_lists_start;
+    for (type_index, (res_type, indexes)) in groups.iter().enumerate() {
+        let entry_offset = type_list_start + 2 + type_index * 8;
+        bytes[entry_offset..entry_offset + 4].copy_from_slice(res_type);
+        bytes[entry_offset + 4..entry_offset + 6]
+            .copy_from_slice(&u16::try_from(indexes.len() - 1).ok()?.to_be_bytes());
+        bytes[entry_offset + 6..entry_offset + 8]
+            .copy_from_slice(&u16::try_from(ref_cursor).ok()?.to_be_bytes());
+
+        for index in indexes {
+            let ref_offset = type_list_start + ref_cursor;
+            let entry = &sorted[*index];
+            bytes[ref_offset..ref_offset + 2].copy_from_slice(&(entry.id as u16).to_be_bytes());
+            let name_offset = name_offsets[*index].unwrap_or(0xffff);
+            bytes[ref_offset + 2..ref_offset + 4].copy_from_slice(&name_offset.to_be_bytes());
+            bytes[ref_offset + 4] = entry.attrs;
+            let data_offset = u32::try_from(data_offsets[*index]).ok()?;
+            if data_offset > 0x00ff_ffff {
+                return None;
+            }
+            let data_offset_bytes = data_offset.to_be_bytes();
+            bytes[ref_offset + 5..ref_offset + 8].copy_from_slice(&data_offset_bytes[1..4]);
+            ref_cursor += 12;
+        }
+    }
+
+    let name_list_start = map_start + name_list_offset;
+    bytes[name_list_start..name_list_start + name_area.len()].copy_from_slice(&name_area);
+
+    Some(bytes)
+}
+
+fn empty_resource_fork_bytes_with_attrs(map_attrs: u16) -> Vec<u8> {
+    let data_offset = 16u32;
+    let data_length = 0u32;
+    let map_offset = 16u32;
+    let map_length = 30u32;
+
+    let mut bytes = vec![0u8; (map_offset + map_length) as usize];
+    let mut header = [0u8; 16];
+    header[0..4].copy_from_slice(&data_offset.to_be_bytes());
+    header[4..8].copy_from_slice(&map_offset.to_be_bytes());
+    header[8..12].copy_from_slice(&data_length.to_be_bytes());
+    header[12..16].copy_from_slice(&map_length.to_be_bytes());
+    bytes[0..16].copy_from_slice(&header);
+
+    let map_start = map_offset as usize;
+    bytes[map_start..map_start + 16].copy_from_slice(&header);
+    bytes[map_start + 22..map_start + 24].copy_from_slice(&map_attrs.to_be_bytes());
+    bytes[map_start + 24..map_start + 26].copy_from_slice(&28u16.to_be_bytes());
+    bytes[map_start + 26..map_start + 28].copy_from_slice(&30u16.to_be_bytes());
+    bytes[map_start + 28..map_start + 30].copy_from_slice(&0xffffu16.to_be_bytes());
+
+    bytes
 }
 
 #[cfg(test)]
