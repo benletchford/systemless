@@ -1773,7 +1773,9 @@ dependencies = [
 
 [[package]]
 name = "ppc"
-version = "0.1.0"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87d40ae627917451c3933cce67f6c8e0bc7f93fcabedd528f97acfbb965271b8"
 
 [[package]]
 name = "prettyplease"
