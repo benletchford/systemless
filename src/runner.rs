@@ -907,6 +907,66 @@ fn trace_hot_pc_enabled() -> bool {
 static SPIN_WAIT_FASTFWD_FORCE_ON: OnceLock<bool> = OnceLock::new();
 static SPIN_WAIT_FASTFWD_FORCE_OFF: OnceLock<bool> = OnceLock::new();
 
+// Wait-elision diagnosis counters (SYSTEMLESS_WAIT_STATS=1): why exact
+// idle-cycle proofs fail. Zero cost when the env is unset beyond one
+// cached boolean test per event.
+static WAIT_STATS_ON: OnceLock<bool> = OnceLock::new();
+fn wait_stats_enabled() -> bool {
+    *WAIT_STATS_ON.get_or_init(|| std::env::var_os("SYSTEMLESS_WAIT_STATS").is_some())
+}
+static WS_ANCHOR_CALLS: AtomicU64 = AtomicU64::new(0);
+static WS_PROBE_STARTS: AtomicU64 = AtomicU64::new(0);
+static WS_EXACT_REPEATS: AtomicU64 = AtomicU64::new(0);
+static WS_FAIL_TICK: AtomicU64 = AtomicU64::new(0);
+static WS_FAIL_CPU: AtomicU64 = AtomicU64::new(0);
+static WS_FAIL_MEM: AtomicU64 = AtomicU64::new(0);
+static WS_CANCEL_TRAP: AtomicU64 = AtomicU64::new(0);
+static WS_PARKED: AtomicU64 = AtomicU64::new(0);
+static WS_PERIOD_STEPS: AtomicU64 = AtomicU64::new(0);
+static WS_CANCEL_TRAP_WORDS: std::sync::Mutex<Option<std::collections::BTreeMap<u16, u64>>> =
+    std::sync::Mutex::new(None);
+
+fn ws_note_cancel_trap(opcode: u16) {
+    if !wait_stats_enabled() {
+        return;
+    }
+    WS_CANCEL_TRAP.fetch_add(1, AtomicOrdering::Relaxed);
+    if let Ok(mut guard) = WS_CANCEL_TRAP_WORDS.lock() {
+        *guard
+            .get_or_insert_with(Default::default)
+            .entry(opcode)
+            .or_insert(0) += 1;
+    }
+}
+
+/// Print the wait-elision diagnosis counters (no-op when env unset).
+pub fn dump_wait_stats() {
+    if !wait_stats_enabled() {
+        return;
+    }
+    eprintln!(
+        "[WAIT-STATS] anchor_calls={} probe_starts={} exact_repeats={} parked={} period_steps={} fail_tick={} fail_cpu={} fail_mem={} cancel_trap={}",
+        WS_ANCHOR_CALLS.load(AtomicOrdering::Relaxed),
+        WS_PROBE_STARTS.load(AtomicOrdering::Relaxed),
+        WS_EXACT_REPEATS.load(AtomicOrdering::Relaxed),
+        WS_PARKED.load(AtomicOrdering::Relaxed),
+        WS_PERIOD_STEPS.load(AtomicOrdering::Relaxed),
+        WS_FAIL_TICK.load(AtomicOrdering::Relaxed),
+        WS_FAIL_CPU.load(AtomicOrdering::Relaxed),
+        WS_FAIL_MEM.load(AtomicOrdering::Relaxed),
+        WS_CANCEL_TRAP.load(AtomicOrdering::Relaxed),
+    );
+    if let Ok(guard) = WS_CANCEL_TRAP_WORDS.lock() {
+        if let Some(map) = guard.as_ref() {
+            let mut rows: Vec<_> = map.iter().collect();
+            rows.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+            for (word, n) in rows.iter().take(12) {
+                eprintln!("[WAIT-STATS]   cancel trap {word:04X}: {n}");
+            }
+        }
+    }
+}
+
 fn spin_wait_fastfwd_force_on() -> bool {
     *SPIN_WAIT_FASTFWD_FORCE_ON
         .get_or_init(|| std::env::var_os("SYSTEMLESS_SPIN_WAIT_FASTFWD").is_some())
@@ -1199,7 +1259,19 @@ struct IdleCycleProbe {
     trap_pc: u32,
     tick: u32,
     cpu: CpuArchitecturalSnapshot,
+    /// Same-site arrivals observed since the probe began without matching
+    /// the starting CPU state. A wait cycle may have a small period (EV
+    /// Override's crawl alternates two polled keycodes through D5, a
+    /// strict period-2 cycle); the proof closes when an arrival matches
+    /// the probe's origin with the write journal -- kept open across the
+    /// whole period -- restored, and aborts past `IDLE_CYCLE_MAX_PERIOD`.
+    arrivals: u8,
 }
+
+/// Longest wait-cycle period the exact-state prover will chase. Period-2
+/// covers the measured EV Override crawl; 4 leaves headroom without
+/// letting genuinely progressing loops hold a write journal open long.
+const IDLE_CYCLE_MAX_PERIOD: u8 = 4;
 
 /// Host-side Event Manager inputs that are not stored in guest RAM. A proven
 /// idle cycle may remain parked across frontend calls only while these inputs
@@ -3913,12 +3985,23 @@ impl FixtureRunner {
     }
 
     fn begin_idle_cycle_probe(&mut self, trap_pc: u32, tick: u32, cpu: CpuArchitecturalSnapshot) {
+        if wait_stats_enabled() {
+            WS_PROBE_STARTS.fetch_add(1, AtomicOrdering::Relaxed);
+        }
         self.bus.begin_write_probe();
-        self.idle_cycle_probe = Some(IdleCycleProbe { trap_pc, tick, cpu });
+        self.idle_cycle_probe = Some(IdleCycleProbe {
+            trap_pc,
+            tick,
+            cpu,
+            arrivals: 0,
+        });
         self.idle_cycle_last_seen = Some((trap_pc, tick));
     }
 
     fn park_proven_idle_cycle(&mut self, trap_pc: u32, wake_tick: u32) {
+        if wait_stats_enabled() {
+            WS_PARKED.fetch_add(1, AtomicOrdering::Relaxed);
+        }
         self.bus.cancel_write_probe();
         self.idle_cycle_probe = None;
         self.idle_cycle_last_seen = None;
@@ -4028,6 +4111,7 @@ impl FixtureRunner {
             _ => false,
         };
         if !quiescent {
+            ws_note_cancel_trap(opcode);
             self.cancel_idle_cycle_detector();
         }
         null_event
@@ -4053,37 +4137,85 @@ impl FixtureRunner {
         let cpu = CpuArchitecturalSnapshot::capture(&self.cpu.core);
 
         if let Some(probe) = self.idle_cycle_probe.take() {
-            let memory_unchanged = self.bus.finish_write_probe_unchanged();
-            let exact_repeat = probe.trap_pc == trap_pc
-                && probe.tick == tick
-                && probe.cpu == cpu
-                && memory_unchanged;
-            if exact_repeat {
-                self.idle_cycle_last_seen = Some((trap_pc, tick));
-                if tick_cap.is_some_and(|cap| tick >= cap) {
-                    self.park_proven_idle_cycle(trap_pc, wake_tick);
-                    return true;
+            let same_site_tick = probe.trap_pc == trap_pc && probe.tick == tick;
+            if same_site_tick && probe.cpu == cpu {
+                // A cycle of whatever small period closed on its origin
+                // state; the journal -- held open across every arrival
+                // since the probe began -- decides whether it was a wait.
+                let memory_unchanged = self.bus.finish_write_probe_unchanged();
+                if wait_stats_enabled() {
+                    if memory_unchanged {
+                        WS_EXACT_REPEATS.fetch_add(1, AtomicOrdering::Relaxed);
+                    } else {
+                        WS_FAIL_MEM.fetch_add(1, AtomicOrdering::Relaxed);
+                    }
                 }
-                match self.advance_until_tick(wake_tick, tick_cap) {
-                    AdvanceResult::CapHit => {
+                if memory_unchanged {
+                    self.idle_cycle_last_seen = Some((trap_pc, tick));
+                    if tick_cap.is_some_and(|cap| tick >= cap) {
                         self.park_proven_idle_cycle(trap_pc, wake_tick);
                         return true;
                     }
-                    AdvanceResult::Advanced => {
-                        self.cancel_idle_cycle_detector();
-                        return false;
+                    match self.advance_until_tick(wake_tick, tick_cap) {
+                        AdvanceResult::CapHit => {
+                            self.park_proven_idle_cycle(trap_pc, wake_tick);
+                            return true;
+                        }
+                        AdvanceResult::Advanced => {
+                            self.cancel_idle_cycle_detector();
+                            return false;
+                        }
+                        AdvanceResult::Interrupted | AdvanceResult::TooFar => {
+                            self.cancel_idle_cycle_detector();
+                            return false;
+                        }
                     }
-                    AdvanceResult::Interrupted | AdvanceResult::TooFar => {
-                        self.cancel_idle_cycle_detector();
-                        return false;
+                }
+                // Writes did not restore: real progress, not a wait.
+                // Re-prove from the current state.
+                self.begin_idle_cycle_probe(trap_pc, tick, cpu);
+                return false;
+            }
+
+            if same_site_tick && probe.arrivals < IDLE_CYCLE_MAX_PERIOD {
+                // Mid-period arrival (EV Override's crawl alternates two
+                // polled keycodes, a strict period-2 cycle): keep both the
+                // probe and its write journal open and wait for the origin
+                // state to come around.
+                if wait_stats_enabled() {
+                    WS_PERIOD_STEPS.fetch_add(1, AtomicOrdering::Relaxed);
+                }
+                self.idle_cycle_probe = Some(IdleCycleProbe {
+                    arrivals: probe.arrivals + 1,
+                    ..probe
+                });
+                return false;
+            }
+
+            // Period cap exceeded, tick changed, or a different site: this
+            // observation is dead. Close the journal before rebaselining.
+            if wait_stats_enabled() {
+                if !same_site_tick && probe.tick != tick {
+                    WS_FAIL_TICK.fetch_add(1, AtomicOrdering::Relaxed);
+                } else if same_site_tick {
+                    let n = WS_FAIL_CPU.fetch_add(1, AtomicOrdering::Relaxed);
+                    if n < 8 {
+                        for i in 0..16 {
+                            if probe.cpu.dar[i] != cpu.dar[i] {
+                                eprintln!(
+                                    "[WAIT-STATS] cpu-diff sample {n} pc={trap_pc:08X}: {}{} {:08X} -> {:08X}",
+                                    if i < 8 { "D" } else { "A" },
+                                    i & 7,
+                                    probe.cpu.dar[i],
+                                    cpu.dar[i]
+                                );
+                            }
+                        }
                     }
                 }
             }
-
-            if probe.trap_pc == trap_pc && probe.tick == tick {
-                // The loop may still be converging (for example, it updated a
-                // cached mouse position on the prior pass). Prove the next
-                // complete iteration from this new state.
+            self.bus.cancel_write_probe();
+            if same_site_tick {
                 self.begin_idle_cycle_probe(trap_pc, tick, cpu);
             } else {
                 self.idle_cycle_last_seen = Some((trap_pc, tick));
@@ -4107,6 +4239,9 @@ impl FixtureRunner {
     /// unlike a decoded timeout predicate, arbitrary guest code may begin
     /// tick-dependent work then.
     fn try_exact_null_event_cycle_fastfwd(&mut self, trap_pc: u32, tick_cap: Option<u32>) -> bool {
+        if wait_stats_enabled() {
+            WS_ANCHOR_CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+        }
         if let Some(probe) = self.idle_cycle_probe.as_ref() {
             // Avoid switching between multiple event sites while a complete
             // cycle is being measured.
@@ -5021,11 +5156,18 @@ impl FixtureRunner {
                     // past it).
                     let pc = self.cpu.core.ppc;
 
-                    // An exact-cycle probe permits only event polling, the
-                    // periodic-work-free SystemTask call, and the TickCount
-                    // observation that closes the cycle. Any other HLE trap
+                    // An exact-cycle probe permits only traps whose every
+                    // consequence the exact-state journal observes: event
+                    // polling, the input-poll family (GetMouse/StillDown/
+                    // Button/TickCount/GetKeys -- host input state reported
+                    // entirely through registers and guest RAM), the SANE
+                    // packs (pure transforms), GlobalToLocal, and the
+                    // periodic-work-free SystemTask call. Any other HLE trap
                     // may have host-side state not represented by the guest
                     // CPU/RAM snapshot, so reject the proof before dispatch.
+                    // This list MUST stay in sync with the quiescence match
+                    // in `note_idle_cycle_trap_result`; it burned a day as
+                    // two half-updated copies once already.
                     if self.idle_cycle_probe.is_some()
                         && !matches!(
                             canonical_trap_number(opcode),
@@ -5033,9 +5175,12 @@ impl FixtureRunner {
                                 | (true, 0x0171) // EventAvail
                                 | (true, 0x0071) // GlobalToLocal (pure guest-state transform)
                                 | (true, 0x01B4) // SystemTask
-                                | (true, 0x0175) // TickCount
+                                | (true, 0x0172..=0x0176) // input polls + TickCount
+                                | (true, 0x01EB) // SANE Pack4
+                                | (true, 0x01EC) // SANE Pack5
                         )
                     {
+                        ws_note_cancel_trap(opcode);
                         self.cancel_idle_cycle_detector();
                     }
 
@@ -15868,6 +16013,65 @@ mod tests {
         assert!(runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
         assert_eq!(runner.dispatcher.tick_count, 100);
         assert!(runner.idle_cycle_sleep.is_some());
+    }
+
+    #[test]
+    fn period_two_poll_cycle_proves_and_advances() {
+        // The measured EV Override crawl shape: the wait loop alternates
+        // two polled keycodes through D5, so consecutive same-site
+        // arrivals never match -- only every second one does. The proof
+        // must hold its journal across the period and close on the
+        // origin state.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+
+        let set_d5 = |runner: &mut FixtureRunner, v: u32| runner.cpu.core.set_d(5, v);
+
+        set_d5(&mut runner, 0x39);
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
+        assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
+        assert!(runner.idle_cycle_probe.is_some(), "probe armed at 0x39 state");
+
+        set_d5(&mut runner, 0x2C);
+        assert!(
+            !runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)),
+            "mid-period arrival must not prove"
+        );
+        assert!(
+            runner.idle_cycle_probe.is_some(),
+            "mid-period arrival must keep the probe alive"
+        );
+
+        set_d5(&mut runner, 0x39);
+        assert!(
+            runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)),
+            "origin state closes the period-2 proof and parks at the cap"
+        );
+        assert!(runner.idle_cycle_sleep.is_some());
+    }
+
+    #[test]
+    fn aperiodic_state_walk_never_proves() {
+        // A register marching through fresh values every pass is real
+        // progress: the period tolerance must give up at the cap, not
+        // fabricate a proof.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.dispatcher.tick_count = 100;
+
+        for step in 0..24u32 {
+            runner.cpu.core.set_d(5, 0x1000 + step);
+            assert!(
+                !runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)),
+                "step {step} must not prove"
+            );
+        }
+        assert!(runner.idle_cycle_sleep.is_none());
     }
 
     #[test]
