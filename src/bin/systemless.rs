@@ -1880,6 +1880,7 @@ impl ApplicationHandler for App {
                     "[SYSTEMLESS] Window closed. Total instructions: {}",
                     self.total_instructions
                 );
+                systemless::runner::dump_wait_stats();
                 event_loop.exit();
             }
 
