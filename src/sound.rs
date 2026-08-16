@@ -231,6 +231,9 @@ pub struct SndChannel {
 }
 
 impl SndChannel {
+    pub(crate) fn set_file_paused(&mut self, paused: bool) {
+        self.file_paused = paused;
+    }
     pub fn new(guest_ptr: u32, allocated: bool) -> Self {
         Self {
             guest_ptr,

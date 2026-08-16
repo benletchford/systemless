@@ -1,0 +1,13 @@
+[package]
+name = "ppc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "From-scratch 32-bit PowerPC user-mode interpreter (decoder + state + run loop + memory bus). Architecture-only — no Mac, no PEF, no Toolbox; consumers (e.g. systemless) layer their own loader and HLE dispatcher on top."
+readme = "README.md"
+keywords = ["powerpc", "ppc", "interpreter", "emulator"]
+categories = ["emulators"]
+repository = "https://github.com/benletchford/systemless-mono"
+documentation = "https://docs.rs/ppc"
+
+[dependencies]

@@ -2256,7 +2256,7 @@ const MACE_TAB4: &[[i32; 2]] = &[
     [16615, 32767],
 ];
 
-fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
+pub(crate) fn parse_aiff_samples(file_data: &[u8]) -> Option<(Vec<u8>, u32)> {
     if file_data.len() < 12 || &file_data[0..4] != b"FORM" {
         return None;
     }
@@ -2406,14 +2406,34 @@ fn decode_double_buffer_samples(
         return Some(Vec::new());
     }
 
+    let bytes_per_sample = match sample_size {
+        8 => 1usize,
+        16 => 2usize,
+        _ => return None,
+    };
+    let frame_bytes = num_channels.checked_mul(bytes_per_sample)?;
+    let total_bytes = num_frames.checked_mul(frame_bytes)?;
+    let mut raw = vec![0u8; total_bytes];
+    for (offset, byte) in raw.iter_mut().enumerate() {
+        *byte = bus.read_byte(data_addr + offset as u32);
+    }
+    decode_interleaved_stereo_samples(&raw, num_frames, num_channels, sample_size)
+}
+
+pub(crate) fn decode_interleaved_stereo_samples(
+    raw: &[u8],
+    num_frames: usize,
+    num_channels: usize,
+    sample_size: usize,
+) -> Option<Vec<StereoSample>> {
+    if num_frames == 0 || num_channels == 0 {
+        return Some(Vec::new());
+    }
     match sample_size {
         8 => {
             let frame_bytes = num_channels;
             let total_bytes = num_frames.checked_mul(frame_bytes)?;
-            let mut raw = vec![0u8; total_bytes];
-            for (offset, byte) in raw.iter_mut().enumerate() {
-                *byte = bus.read_byte(data_addr + offset as u32);
-            }
+            let raw = raw.get(..total_bytes)?;
 
             let mut out = Vec::with_capacity(num_frames);
             for frame in 0..num_frames {
@@ -2427,10 +2447,7 @@ fn decode_double_buffer_samples(
         16 => {
             let frame_bytes = num_channels.checked_mul(2)?;
             let total_bytes = num_frames.checked_mul(frame_bytes)?;
-            let mut raw = vec![0u8; total_bytes];
-            for (offset, byte) in raw.iter_mut().enumerate() {
-                *byte = bus.read_byte(data_addr + offset as u32);
-            }
+            let raw = raw.get(..total_bytes)?;
 
             let mut out = Vec::with_capacity(num_frames);
             for frame in 0..num_frames {
@@ -2540,7 +2557,7 @@ fn trace_double_buffer_sample_stats(chan_ptr: u32, buf_ptr: u32, samples: &[Ster
     );
 }
 
-fn decode_mace3_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
+pub(crate) fn decode_mace3_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
     let usable_len = compressed.len() & !1;
     let mut state = MaceChannelState::default();
     let mut out = Vec::with_capacity(usable_len * 3);
@@ -2555,7 +2572,7 @@ fn decode_mace3_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
     out
 }
 
-fn decode_mace6_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
+pub(crate) fn decode_mace6_mono_to_u8(compressed: &[u8]) -> Vec<u8> {
     let mut state = MaceChannelState::default();
     let mut out = Vec::with_capacity(compressed.len() * 6);
 

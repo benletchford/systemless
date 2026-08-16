@@ -4,6 +4,12 @@
 
 use std::collections::HashMap;
 
+use crate::loader::ppc::PpcLoadedApp;
+
+pub mod cfrg;
+pub mod pef;
+pub mod ppc;
+
 /// Application `'SIZE'` resource data used by the Process Manager to
 /// choose the app's launch partition. The standard application resource
 /// is ID -1 and stores a 16-bit mode flag word followed by preferred
@@ -428,6 +434,9 @@ mod tests {
 /// [`FixtureRunner::init_app`](crate::runner::FixtureRunner::init_app).
 #[derive(Default)]
 pub struct LoadedApp {
+    /// Loaded PowerPC PEF application state, when the selected executable
+    /// is a native CFM/PEF app instead of a classic 68k CODE app.
+    pub ppc: Option<PpcLoadedApp>,
     /// Parsed CODE 0 header bytes (above_a5 / below_a5 / jt_size / jt_offset).
     pub code0_header: Code0Header,
     /// Guest address chosen for A5; A5-relative globals + jump table
@@ -451,6 +460,17 @@ pub struct LoadedApp {
 }
 
 impl LoadedApp {
+    pub fn from_ppc(ppc: PpcLoadedApp) -> Self {
+        Self {
+            ppc: Some(ppc),
+            ..Self::default()
+        }
+    }
+
+    pub fn is_powerpc(&self) -> bool {
+        self.ppc.is_some()
+    }
+
     pub fn entry_point(&self, a5_base: u32) -> u32 {
         a5_base + self.code0_header.jump_table_offset + 2
     }

@@ -1,0 +1,2303 @@
+{
+  "size": 205683,
+  "tag1": "Joy!",
+  "tag2": "peff",
+  "architecture": "pwpc",
+  "format_version": 1,
+  "section_count": 3,
+  "instantiated_section_count": 2,
+  "sections": [
+    {
+      "index": 0,
+      "name_offset": -1,
+      "default_address": 0,
+      "total_size": 180880,
+      "unpacked_size": 180880,
+      "packed_size": 180880,
+      "container_offset": 6512,
+      "kind": 0,
+      "kind_name": "code",
+      "share_kind": 4,
+      "alignment": 4
+    },
+    {
+      "index": 1,
+      "name_offset": -1,
+      "default_address": 0,
+      "total_size": 292568,
+      "unpacked_size": 22916,
+      "packed_size": 18291,
+      "container_offset": 187392,
+      "kind": 2,
+      "kind_name": "pattern_data",
+      "share_kind": 1,
+      "alignment": 4
+    },
+    {
+      "index": 2,
+      "name_offset": -1,
+      "default_address": 0,
+      "total_size": 0,
+      "unpacked_size": 0,
+      "packed_size": 6384,
+      "container_offset": 128,
+      "kind": 4,
+      "kind_name": "loader",
+      "share_kind": 4,
+      "alignment": 4
+    }
+  ],
+  "loader": {
+    "main_section": 1,
+    "main_offset": 8120,
+    "init_section": -1,
+    "init_offset": 0,
+    "term_section": -1,
+    "term_offset": 0,
+    "imported_library_count": 7,
+    "total_imported_symbol_count": 283,
+    "reloc_section_count": 1,
+    "reloc_instr_offset": 1368,
+    "loader_strings_offset": 1508,
+    "export_hash_offset": 6376,
+    "export_hash_table_power": 1,
+    "exported_symbol_count": 0,
+    "imported_libraries": [
+      {
+        "name": "MathLib",
+        "old_imp_version": 0,
+        "current_version": 0,
+        "imported_symbol_count": 4,
+        "first_imported_symbol": 0,
+        "options": 0,
+        "symbols": [
+          {
+            "index": 0,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "sqrt"
+          },
+          {
+            "index": 1,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "cos"
+          },
+          {
+            "index": 2,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "atan2"
+          },
+          {
+            "index": 3,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "sin"
+          }
+        ]
+      },
+      {
+        "name": "InterfaceLib",
+        "old_imp_version": 0,
+        "current_version": 0,
+        "imported_symbol_count": 120,
+        "first_imported_symbol": 4,
+        "options": 0,
+        "symbols": [
+          {
+            "index": 4,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetPort"
+          },
+          {
+            "index": 5,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSClose"
+          },
+          {
+            "index": 6,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NoPurgePixels"
+          },
+          {
+            "index": 7,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SndPauseFilePlay"
+          },
+          {
+            "index": 8,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ResolveAlias"
+          },
+          {
+            "index": 9,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FindFolder"
+          },
+          {
+            "index": 10,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DisposeHandle"
+          },
+          {
+            "index": 11,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetSoundHeaderOffset"
+          },
+          {
+            "index": 12,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "InitGraf"
+          },
+          {
+            "index": 13,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "LineTo"
+          },
+          {
+            "index": 14,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "KillPicture"
+          },
+          {
+            "index": 15,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "RemoveResource"
+          },
+          {
+            "index": 16,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ModalDialog"
+          },
+          {
+            "index": 17,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "CompactMemSys"
+          },
+          {
+            "index": 18,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "MaxApplZone"
+          },
+          {
+            "index": 19,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "InitFonts"
+          },
+          {
+            "index": 20,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DisposeCTable"
+          },
+          {
+            "index": 21,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SndChannelStatus"
+          },
+          {
+            "index": 22,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "CloseComponent"
+          },
+          {
+            "index": 23,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSpCreate"
+          },
+          {
+            "index": 24,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DMGetGDeviceByDisplayID"
+          },
+          {
+            "index": 25,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SysBeep"
+          },
+          {
+            "index": 26,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "TextMode"
+          },
+          {
+            "index": 27,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "UnlockPixels"
+          },
+          {
+            "index": 28,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewGWorld"
+          },
+          {
+            "index": 29,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "PurgeMemSys"
+          },
+          {
+            "index": 30,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "TEInit"
+          },
+          {
+            "index": 31,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FlushEvents"
+          },
+          {
+            "index": 32,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetDialogItem"
+          },
+          {
+            "index": 33,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "InitDialogs"
+          },
+          {
+            "index": 34,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewHandleClear"
+          },
+          {
+            "index": 35,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ResError"
+          },
+          {
+            "index": 36,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NumToString"
+          },
+          {
+            "index": 37,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "InitMenus"
+          },
+          {
+            "index": 38,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "TextSize"
+          },
+          {
+            "index": 39,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "HLockHi"
+          },
+          {
+            "index": 40,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "MoveTo"
+          },
+          {
+            "index": 41,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "TempNewHandle"
+          },
+          {
+            "index": 42,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ReleaseResource"
+          },
+          {
+            "index": 43,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DrawPicture"
+          },
+          {
+            "index": 44,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "UseResFile"
+          },
+          {
+            "index": 45,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DrawChar"
+          },
+          {
+            "index": 46,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "CompactMem"
+          },
+          {
+            "index": 47,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetNextEvent"
+          },
+          {
+            "index": 48,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetMainDevice"
+          },
+          {
+            "index": 49,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DisposeGWorld"
+          },
+          {
+            "index": 50,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Button"
+          },
+          {
+            "index": 51,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "InitWindows"
+          },
+          {
+            "index": 52,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetKeys"
+          },
+          {
+            "index": 53,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetDateTime"
+          },
+          {
+            "index": 54,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NoteAlert"
+          },
+          {
+            "index": 55,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "MaxMem"
+          },
+          {
+            "index": 56,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "CopyBits"
+          },
+          {
+            "index": 57,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewPtrSys"
+          },
+          {
+            "index": 58,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "HideCursor"
+          },
+          {
+            "index": 59,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ShowCursor"
+          },
+          {
+            "index": 60,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewPtr"
+          },
+          {
+            "index": 61,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetDefaultOutputVolume"
+          },
+          {
+            "index": 62,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Alert"
+          },
+          {
+            "index": 63,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "OffsetRect"
+          },
+          {
+            "index": 64,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "BlockMove"
+          },
+          {
+            "index": 65,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetPort"
+          },
+          {
+            "index": 66,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetPixBaseAddr"
+          },
+          {
+            "index": 67,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewCWindow"
+          },
+          {
+            "index": 68,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetRect"
+          },
+          {
+            "index": 69,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewRoutineDescriptor"
+          },
+          {
+            "index": 70,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "InitCursor"
+          },
+          {
+            "index": 71,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DetachResource"
+          },
+          {
+            "index": 72,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetDialogItemText"
+          },
+          {
+            "index": 73,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SndDoImmediate"
+          },
+          {
+            "index": 74,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SndStopFilePlay"
+          },
+          {
+            "index": 75,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetNewDialog"
+          },
+          {
+            "index": 76,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "LockPixels"
+          },
+          {
+            "index": 77,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ForeColor"
+          },
+          {
+            "index": 78,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "PaintRect"
+          },
+          {
+            "index": 79,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "CurResFile"
+          },
+          {
+            "index": 80,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Gestalt"
+          },
+          {
+            "index": 81,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSRead"
+          },
+          {
+            "index": 82,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetSharedLibrary"
+          },
+          {
+            "index": 83,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ExitToShell"
+          },
+          {
+            "index": 84,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DisposeDialog"
+          },
+          {
+            "index": 85,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "EraseRect"
+          },
+          {
+            "index": 86,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "HLock"
+          },
+          {
+            "index": 87,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSpOpenResFile"
+          },
+          {
+            "index": 88,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SndStartFilePlay"
+          },
+          {
+            "index": 89,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSpOpenDF"
+          },
+          {
+            "index": 90,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DrawString"
+          },
+          {
+            "index": 91,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetPicture"
+          },
+          {
+            "index": 92,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Microseconds"
+          },
+          {
+            "index": 93,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "TextWidth"
+          },
+          {
+            "index": 94,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSMakeFSSpec"
+          },
+          {
+            "index": 95,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSpDelete"
+          },
+          {
+            "index": 96,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Count1Resources"
+          },
+          {
+            "index": 97,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetGWorld"
+          },
+          {
+            "index": 98,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FSWrite"
+          },
+          {
+            "index": 99,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "CloseResFile"
+          },
+          {
+            "index": 100,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "MoreMasters"
+          },
+          {
+            "index": 101,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetDefaultOutputVolume"
+          },
+          {
+            "index": 102,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetGWorld"
+          },
+          {
+            "index": 103,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "FrameRect"
+          },
+          {
+            "index": 104,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "HNoPurge"
+          },
+          {
+            "index": 105,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SndNewChannel"
+          },
+          {
+            "index": 106,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetGWorldPixMap"
+          },
+          {
+            "index": 107,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "RGBForeColor"
+          },
+          {
+            "index": 108,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DisposePtr"
+          },
+          {
+            "index": 109,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "BackColor"
+          },
+          {
+            "index": 110,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetControlValue"
+          },
+          {
+            "index": 111,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DirCreate"
+          },
+          {
+            "index": 112,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "PurgeMem"
+          },
+          {
+            "index": 113,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SndSoundManagerVersion"
+          },
+          {
+            "index": 114,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetHandleSize"
+          },
+          {
+            "index": 115,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetEOF"
+          },
+          {
+            "index": 116,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "AddResource"
+          },
+          {
+            "index": 117,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetResource"
+          },
+          {
+            "index": 118,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetForeColor"
+          },
+          {
+            "index": 119,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewPtrClear"
+          },
+          {
+            "index": 120,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetHandleSize"
+          },
+          {
+            "index": 121,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ParamText"
+          },
+          {
+            "index": 122,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "WriteResource"
+          },
+          {
+            "index": 123,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetPictInfo"
+          }
+        ]
+      },
+      {
+        "name": "QuickDraw™ 3D",
+        "old_imp_version": 0,
+        "current_version": 0,
+        "imported_symbol_count": 114,
+        "first_imported_symbol": 124,
+        "options": 0,
+        "symbols": [
+          {
+            "index": 124,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3DisplayGroup_New"
+          },
+          {
+            "index": 125,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3File_SetStorage"
+          },
+          {
+            "index": 126,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_Transpose"
+          },
+          {
+            "index": 127,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_AddObject"
+          },
+          {
+            "index": 128,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Error_Get"
+          },
+          {
+            "index": 129,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Camera_GetViewToFrustum"
+          },
+          {
+            "index": 130,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Shader_Submit"
+          },
+          {
+            "index": 131,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3File_OpenRead"
+          },
+          {
+            "index": 132,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_SetRenderer"
+          },
+          {
+            "index": 133,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Vector3D_Normalize"
+          },
+          {
+            "index": 134,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MipmapTexture_New"
+          },
+          {
+            "index": 135,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Style_Submit"
+          },
+          {
+            "index": 136,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MipmapTexture_GetMipmap"
+          },
+          {
+            "index": 137,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3TextureShader_GetTexture"
+          },
+          {
+            "index": 138,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_EndBoundingBox"
+          },
+          {
+            "index": 139,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix3x3_SetTranslate"
+          },
+          {
+            "index": 140,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3AttributeSet_Get"
+          },
+          {
+            "index": 141,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_Cancel"
+          },
+          {
+            "index": 142,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_SetIdentity"
+          },
+          {
+            "index": 143,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3FogStyle_Submit"
+          },
+          {
+            "index": 144,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Storage_GetSize"
+          },
+          {
+            "index": 145,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Object_IsDrawable"
+          },
+          {
+            "index": 146,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Camera_GetPlacement"
+          },
+          {
+            "index": 147,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3InteractiveRenderer_SetDoubleBufferBypass"
+          },
+          {
+            "index": 148,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_SetLightGroup"
+          },
+          {
+            "index": 149,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3DrawContext_GetPane"
+          },
+          {
+            "index": 150,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3ViewAngleAspectCamera_New"
+          },
+          {
+            "index": 151,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Point3D_Transform"
+          },
+          {
+            "index": 152,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_GetPositionObject"
+          },
+          {
+            "index": 153,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3TriMesh_New"
+          },
+          {
+            "index": 154,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Object_IsType"
+          },
+          {
+            "index": 155,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Vector2D_Normalize"
+          },
+          {
+            "index": 156,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_AddObjectBefore"
+          },
+          {
+            "index": 157,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3LambertIllumination_New"
+          },
+          {
+            "index": 158,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Point2D_Distance"
+          },
+          {
+            "index": 159,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3File_ReadObject"
+          },
+          {
+            "index": 160,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3TriMesh_EmptyData"
+          },
+          {
+            "index": 161,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3TriMesh_SetData"
+          },
+          {
+            "index": 162,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3NULLIllumination_New"
+          },
+          {
+            "index": 163,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Camera_GetWorldToView"
+          },
+          {
+            "index": 164,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3InteractiveRenderer_GetRAVEContextHints"
+          },
+          {
+            "index": 165,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Initialize"
+          },
+          {
+            "index": 166,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_EndRendering"
+          },
+          {
+            "index": 167,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_CountObjects"
+          },
+          {
+            "index": 168,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3PixmapDrawContext_New"
+          },
+          {
+            "index": 169,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3TriMesh_GetData"
+          },
+          {
+            "index": 170,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MemoryStorage_SetBuffer"
+          },
+          {
+            "index": 171,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3File_New"
+          },
+          {
+            "index": 172,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3TriMesh_Submit"
+          },
+          {
+            "index": 173,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_GetRenderer"
+          },
+          {
+            "index": 174,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_RemovePosition"
+          },
+          {
+            "index": 175,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_SetDrawContext"
+          },
+          {
+            "index": 176,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Transform_GetMatrix"
+          },
+          {
+            "index": 177,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Vector3D_Transform"
+          },
+          {
+            "index": 178,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MacDrawContext_New"
+          },
+          {
+            "index": 179,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_GetFirstPosition"
+          },
+          {
+            "index": 180,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Point3D_Distance"
+          },
+          {
+            "index": 181,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_GetNextPosition"
+          },
+          {
+            "index": 182,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Vector3D_Cross"
+          },
+          {
+            "index": 183,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_New"
+          },
+          {
+            "index": 184,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Shader_GetType"
+          },
+          {
+            "index": 185,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3File_IsEndOfFile"
+          },
+          {
+            "index": 186,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3InteractiveRenderer_SetRAVEContextHints"
+          },
+          {
+            "index": 187,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3BackfacingStyle_New"
+          },
+          {
+            "index": 188,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_Multiply"
+          },
+          {
+            "index": 189,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3AmbientLight_New"
+          },
+          {
+            "index": 190,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_SetRotate_XYZ"
+          },
+          {
+            "index": 191,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MemoryStorage_New"
+          },
+          {
+            "index": 192,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_SetRotate_Y"
+          },
+          {
+            "index": 193,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MemoryStorage_GetBuffer"
+          },
+          {
+            "index": 194,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_SetRotate_X"
+          },
+          {
+            "index": 195,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_SetRotate_Z"
+          },
+          {
+            "index": 196,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Geometry_GetType"
+          },
+          {
+            "index": 197,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_StartRendering"
+          },
+          {
+            "index": 198,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3File_Close"
+          },
+          {
+            "index": 199,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Point3D_To4DTransformArray"
+          },
+          {
+            "index": 200,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3InterpolationStyle_New"
+          },
+          {
+            "index": 201,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Shader_SetUVTransform"
+          },
+          {
+            "index": 202,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3InteractiveRenderer_SetPreferences"
+          },
+          {
+            "index": 203,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_SetTranslate"
+          },
+          {
+            "index": 204,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MatrixTransform_Submit"
+          },
+          {
+            "index": 205,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_SetScale"
+          },
+          {
+            "index": 206,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_GetFirstPositionOfType"
+          },
+          {
+            "index": 207,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3ResetTransform_Submit"
+          },
+          {
+            "index": 208,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_SetCamera"
+          },
+          {
+            "index": 209,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Camera_SetPlacement"
+          },
+          {
+            "index": 210,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3FillStyle_New"
+          },
+          {
+            "index": 211,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3View_StartBoundingBox"
+          },
+          {
+            "index": 212,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MatrixTransform_New"
+          },
+          {
+            "index": 213,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3AttributeSet_Add"
+          },
+          {
+            "index": 214,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3TextureShader_New"
+          },
+          {
+            "index": 215,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MemoryStorage_NewBuffer"
+          },
+          {
+            "index": 216,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3InteractiveRenderer_SetRAVETextureFilter"
+          },
+          {
+            "index": 217,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3MatrixTransform_Set"
+          },
+          {
+            "index": 218,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Point3D_CrossProductTri"
+          },
+          {
+            "index": 219,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Exit"
+          },
+          {
+            "index": 220,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3LightGroup_New"
+          },
+          {
+            "index": 221,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3PhongIllumination_New"
+          },
+          {
+            "index": 222,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3AttributeSet_New"
+          },
+          {
+            "index": 223,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3AttributeSet_Clear"
+          },
+          {
+            "index": 224,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3InteractiveRenderer_GetRAVEDrawContexts"
+          },
+          {
+            "index": 225,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Group_GetType"
+          },
+          {
+            "index": 226,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3FSSpecStorage_New"
+          },
+          {
+            "index": 227,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Matrix4x4_Invert"
+          },
+          {
+            "index": 228,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Push_Submit"
+          },
+          {
+            "index": 229,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Storage_GetData"
+          },
+          {
+            "index": 230,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Point3D_To3DTransformArray"
+          },
+          {
+            "index": 231,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Object_Submit"
+          },
+          {
+            "index": 232,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Object_Dispose"
+          },
+          {
+            "index": 233,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3AttributeSet_GetNextAttributeType"
+          },
+          {
+            "index": 234,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3DirectionalLight_New"
+          },
+          {
+            "index": 235,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Storage_SetData"
+          },
+          {
+            "index": 236,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3Renderer_NewFromType"
+          },
+          {
+            "index": 237,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "Q3AttributeSet_Contains"
+          }
+        ]
+      },
+      {
+        "name": "QuickDraw™ 3D Accelerator",
+        "old_imp_version": 0,
+        "current_version": 0,
+        "imported_symbol_count": 3,
+        "first_imported_symbol": 238,
+        "options": 0,
+        "symbols": [
+          {
+            "index": 238,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "QADeviceGetFirstEngine"
+          },
+          {
+            "index": 239,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "QADeviceGetNextEngine"
+          },
+          {
+            "index": 240,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "QAEngineGestalt"
+          }
+        ]
+      },
+      {
+        "name": "DrawSprocketLib",
+        "old_imp_version": 0,
+        "current_version": 0,
+        "imported_symbol_count": 14,
+        "first_imported_symbol": 241,
+        "options": 0,
+        "symbols": [
+          {
+            "index": 241,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpCanUserSelectContext"
+          },
+          {
+            "index": 242,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_SetState"
+          },
+          {
+            "index": 243,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_FadeGammaOut"
+          },
+          {
+            "index": 244,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpShutdown"
+          },
+          {
+            "index": 245,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpUserSelectContext"
+          },
+          {
+            "index": 246,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpStartup"
+          },
+          {
+            "index": 247,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_Release"
+          },
+          {
+            "index": 248,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_GetFrontBuffer"
+          },
+          {
+            "index": 249,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_Reserve"
+          },
+          {
+            "index": 250,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_FadeGamma"
+          },
+          {
+            "index": 251,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpFindBestContext"
+          },
+          {
+            "index": 252,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_GetDisplayID"
+          },
+          {
+            "index": 253,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_GetAttributes"
+          },
+          {
+            "index": 254,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DSpContext_FadeGammaIn"
+          }
+        ]
+      },
+      {
+        "name": "QuickTimeLib",
+        "old_imp_version": 0,
+        "current_version": 0,
+        "imported_symbol_count": 18,
+        "first_imported_symbol": 255,
+        "options": 0,
+        "symbols": [
+          {
+            "index": 255,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetMovieBox"
+          },
+          {
+            "index": 256,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "OpenMovieFile"
+          },
+          {
+            "index": 257,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "DisposeMovie"
+          },
+          {
+            "index": 258,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GetGraphicsImporterForFile"
+          },
+          {
+            "index": 259,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetMovieBox"
+          },
+          {
+            "index": 260,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GraphicsImportGetBoundsRect"
+          },
+          {
+            "index": 261,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "EnterMovies"
+          },
+          {
+            "index": 262,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GoToBeginningOfMovie"
+          },
+          {
+            "index": 263,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "SetMovieGWorld"
+          },
+          {
+            "index": 264,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "StopMovie"
+          },
+          {
+            "index": 265,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GraphicsImportDraw"
+          },
+          {
+            "index": 266,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "CloseMovieFile"
+          },
+          {
+            "index": 267,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "MoviesTask"
+          },
+          {
+            "index": 268,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ExitMovies"
+          },
+          {
+            "index": 269,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "StartMovie"
+          },
+          {
+            "index": 270,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "GraphicsImportSetGWorld"
+          },
+          {
+            "index": 271,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "NewMovieFromFile"
+          },
+          {
+            "index": 272,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "IsMovieDone"
+          }
+        ]
+      },
+      {
+        "name": "InputSprocketLib",
+        "old_imp_version": 0,
+        "current_version": 0,
+        "imported_symbol_count": 10,
+        "first_imported_symbol": 273,
+        "options": 0,
+        "symbols": [
+          {
+            "index": 273,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpDevices_Activate"
+          },
+          {
+            "index": 274,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpInit"
+          },
+          {
+            "index": 275,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpSuspend"
+          },
+          {
+            "index": 276,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpDevices_Extract"
+          },
+          {
+            "index": 277,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpElement_GetSimpleState"
+          },
+          {
+            "index": 278,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpStop"
+          },
+          {
+            "index": 279,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpDevices_Deactivate"
+          },
+          {
+            "index": 280,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpResume"
+          },
+          {
+            "index": 281,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpConfigure"
+          },
+          {
+            "index": 282,
+            "class": 2,
+            "class_name": "tvector",
+            "weak": false,
+            "name": "ISpElement_NewVirtualFromNeeds"
+          }
+        ]
+      }
+    ]
+  },
+  "code_histograms": [
+    {
+      "section_index": 0,
+      "decode": {
+        "total_words": 45220,
+        "decoded_words": 43065,
+        "unsupported_words": 2155,
+        "unsupported_primary": {
+          "0": 2069,
+          "2": 2,
+          "4": 1,
+          "9": 1,
+          "30": 45
+        },
+        "unsupported_secondary": [
+          { "primary": 19, "secondary": 38, "count": 1 },
+          { "primary": 19, "secondary": 306, "count": 6 },
+          { "primary": 19, "secondary": 311, "count": 2 },
+          { "primary": 19, "secondary": 434, "count": 1 },
+          { "primary": 19, "secondary": 436, "count": 7 },
+          { "primary": 19, "secondary": 442, "count": 1 },
+          { "primary": 19, "secondary": 512, "count": 1 },
+          { "primary": 19, "secondary": 562, "count": 2 },
+          { "primary": 19, "secondary": 569, "count": 2 },
+          { "primary": 19, "secondary": 689, "count": 1 },
+          { "primary": 19, "secondary": 692, "count": 1 },
+          { "primary": 19, "secondary": 695, "count": 2 },
+          { "primary": 19, "secondary": 816, "count": 2 },
+          { "primary": 19, "secondary": 818, "count": 2 },
+          { "primary": 19, "secondary": 820, "count": 2 },
+          { "primary": 19, "secondary": 825, "count": 1 },
+          { "primary": 19, "secondary": 826, "count": 1 },
+          { "primary": 19, "secondary": 937, "count": 1 },
+          { "primary": 19, "secondary": 939, "count": 1 }
+        ]
+      },
+      "primary": {
+        "0": 2069,
+        "2": 2,
+        "3": 1,
+        "4": 1,
+        "7": 222,
+        "8": 33,
+        "9": 1,
+        "10": 522,
+        "11": 439,
+        "12": 2,
+        "13": 6,
+        "14": 5680,
+        "15": 262,
+        "16": 2238,
+        "17": 92,
+        "18": 3550,
+        "19": 926,
+        "20": 65,
+        "21": 680,
+        "23": 12,
+        "24": 1795,
+        "25": 350,
+        "26": 162,
+        "27": 632,
+        "28": 246,
+        "29": 174,
+        "30": 45,
+        "31": 3778,
+        "32": 6735,
+        "33": 32,
+        "34": 380,
+        "35": 12,
+        "36": 3555,
+        "37": 409,
+        "38": 441,
+        "40": 378,
+        "42": 375,
+        "43": 5,
+        "44": 636,
+        "46": 121,
+        "47": 130,
+        "48": 2629,
+        "49": 3,
+        "50": 940,
+        "52": 1355,
+        "54": 594,
+        "59": 1345,
+        "63": 1160
+      },
+      "op19_secondary": {
+        "0": 2,
+        "16": 544,
+        "38": 1,
+        "306": 6,
+        "311": 2,
+        "434": 1,
+        "436": 7,
+        "442": 1,
+        "449": 53,
+        "512": 1,
+        "528": 290,
+        "562": 2,
+        "569": 2,
+        "689": 1,
+        "692": 1,
+        "695": 2,
+        "816": 2,
+        "818": 2,
+        "820": 2,
+        "825": 1,
+        "826": 1,
+        "937": 1,
+        "939": 1
+      },
+      "op31_secondary": {
+        "0": 235,
+        "8": 1,
+        "11": 9,
+        "23": 100,
+        "24": 1,
+        "26": 13,
+        "28": 21,
+        "32": 31,
+        "40": 69,
+        "75": 23,
+        "87": 31,
+        "104": 10,
+        "151": 39,
+        "202": 4,
+        "215": 57,
+        "235": 16,
+        "266": 398,
+        "279": 19,
+        "284": 1,
+        "316": 14,
+        "339": 399,
+        "343": 13,
+        "407": 14,
+        "444": 1050,
+        "467": 740,
+        "535": 3,
+        "663": 18,
+        "792": 4,
+        "824": 31,
+        "922": 362,
+        "954": 52
+      },
+      "op59_secondary": {
+        "18": 29,
+        "20": 423,
+        "21": 224,
+        "24": 1,
+        "25": 327,
+        "28": 8,
+        "29": 286,
+        "30": 47
+      },
+      "op63_secondary": {
+        "0": 51,
+        "12": 156,
+        "15": 133,
+        "18": 3,
+        "20": 36,
+        "21": 17,
+        "25": 39,
+        "26": 1,
+        "32": 328,
+        "40": 46,
+        "57": 24,
+        "60": 3,
+        "61": 38,
+        "62": 2,
+        "72": 232,
+        "89": 3,
+        "93": 7,
+        "126": 1,
+        "157": 3,
+        "158": 2,
+        "264": 25,
+        "825": 2,
+        "1017": 2,
+        "1021": 1,
+        "1022": 5
+      }
+    }
+  ]
+
+}

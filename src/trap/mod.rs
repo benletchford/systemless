@@ -23,7 +23,7 @@ mod framebuffer;
 mod memory;
 mod menu;
 mod movie_media;
-mod pict;
+pub(crate) mod pict;
 mod qtrle;
 mod quickdraw;
 mod resource;
@@ -33,10 +33,14 @@ mod smc;
 mod sound;
 mod text_render;
 mod toolbox;
-mod types;
+pub(crate) mod types;
 mod window;
 
 pub use dispatch::TrapDispatcher;
+pub(crate) use sound::{
+    decode_interleaved_stereo_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
+    parse_aiff_samples,
+};
 
 /// Test helpers for inline trap unit tests within this crate.
 /// Gated behind #[cfg(test)] so it does NOT ship in the production library.

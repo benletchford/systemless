@@ -5,7 +5,9 @@
 //! and post-load initialization.
 
 mod application_icon;
+pub mod installer_maker;
 pub mod launch;
+pub(crate) mod vise;
 
 pub use application_icon::{
     application_icon_from_fork, loaded_application_identity, ApplicationIcon,

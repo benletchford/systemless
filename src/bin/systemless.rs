@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -- [--headless] [--max-instructions N] \
-//!     [--arrows-as-numpad] <game>
+//!     [--arrows-as-numpad] [--prefer-powerpc] <game>
 //! ```
 //!
 //! Disable the GUI deps with `--no-default-features` to build a
@@ -82,6 +82,15 @@ const CONTENT_RECT_CONFIRMATIONS: u16 = 5;
 /// After rejecting a crop, require a longer quiet-margin period before
 /// shrinking again so startup phases cannot make the native window oscillate.
 const CONTENT_RECT_RELEARN_CONFIRMATIONS: u16 = 120;
+
+fn foreground_cpu_batch_instructions(powerpc: bool, instructions_per_tick: u32) -> usize {
+    if powerpc {
+        instructions_per_tick.max(1) as usize
+    } else {
+        CPU_BATCH_INSTRUCTIONS
+    }
+}
+
 /// A learned crop is discarded when substantial drawing persists in the area
 /// it excludes. This catches apps whose large offscreen playfield is only one
 /// part of a full-screen layout without reacting to a cursor or brief overlay.
@@ -117,6 +126,10 @@ struct Cli {
     /// Stop a headless run after this many instructions
     #[arg(long, value_name = "N")]
     max_instructions: Option<usize>,
+
+    /// Prefer a native PowerPC slice when a classic 68K slice is also available
+    #[arg(long)]
+    prefer_powerpc: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -525,14 +538,11 @@ impl App {
         game::init_game(&mut runner, &app);
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
-        // Configure realtime instructions/tick budget so the wall-clock-paced
-        // GUI can actually make progress per frame. Without this the runner
-        // uses INSTRUCTIONS_PER_TICK = 12_000 (intended for scripted harnesses/tests)
-        // and the deadline_tick cap throttles EV's boot to ~700K IPS — far
-        // too slow to ever reach the menu. The realtime target is 25 MHz at
-        // 60.15 Hz VBL ≈ 415_628 instructions per tick.
-        let ipt = (systemless::runner::DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND
-            / systemless::runner::DEFAULT_VBL_HZ) as u32;
+        // Configure the wall-clock-paced GUI from the loaded architecture's
+        // machine profile. Scripted harnesses retain their smaller default
+        // unless they explicitly opt into realtime pacing.
+        let ipt =
+            systemless::runner::default_realtime_instructions_per_tick(runner.is_powerpc_app());
         runner.set_instructions_per_tick(ipt);
         eprintln!("[SYSTEMLESS] Instructions per tick: {}", ipt);
 
@@ -751,6 +761,14 @@ impl App {
         }
 
         let runner = self.runner.as_mut().expect("runner checked above");
+        // A PPC HLE slice currently borrows its large mutable state by moving
+        // collections into a dispatch closure and restoring them afterward.
+        // Yield once per guest VBL rather than paying that boundary thousands
+        // of times per second. The interpreter still stops at the tick cap.
+        let foreground_batch_instructions = foreground_cpu_batch_instructions(
+            runner.is_powerpc_app(),
+            runner.instructions_per_tick(),
+        );
 
         // Mix one host frame of audio per GUI frame. Sound Manager doubleback
         // callbacks run at interrupt time, including while menu/control
@@ -777,9 +795,9 @@ impl App {
                 break;
             }
 
-            let batch_size = remaining.min(CPU_BATCH_INSTRUCTIONS);
+            let batch_size = remaining.min(foreground_batch_instructions);
             let remaining_audio = audio_samples.saturating_sub(audio_mixed);
-            let batches_left = remaining.div_ceil(CPU_BATCH_INSTRUCTIONS).max(1);
+            let batches_left = remaining.div_ceil(foreground_batch_instructions).max(1);
             let batch_audio = if remaining_audio == 0 {
                 0
             } else {
@@ -2069,6 +2087,11 @@ fn run_headless(game_path: &std::path::Path, max_instructions: usize) {
 
 fn main() {
     let cli = Cli::parse();
+    if cli.prefer_powerpc {
+        // SAFETY: the runner has not started and no worker threads exist yet.
+        unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "1") };
+        eprintln!("[SYSTEMLESS] Native PowerPC slice preferred");
+    }
     let game_path = cli.game;
     let arrows_as_numpad = if cli.literal_arrows {
         false
@@ -2378,6 +2401,7 @@ mod tests {
             "systemless",
             "--headless",
             "--arrows-as-numpad",
+            "--prefer-powerpc",
             "--max-instructions",
             "1234",
             "game.sit",
@@ -2388,6 +2412,7 @@ mod tests {
         assert!(cli.headless);
         assert!(cli.arrows_as_numpad);
         assert!(!cli.literal_arrows);
+        assert!(cli.prefer_powerpc);
         assert_eq!(cli.max_instructions, Some(1234));
     }
 
@@ -3139,16 +3164,26 @@ mod tests {
     }
 
     #[test]
-    fn gui_foreground_batches_stay_well_below_one_realtime_vbl() {
-        let realtime_instructions_per_tick =
-            (systemless::runner::DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND
-                / systemless::runner::DEFAULT_VBL_HZ) as usize;
+    fn gui_foreground_batches_match_guest_architecture_costs() {
+        let m68k_instructions_per_tick =
+            systemless::runner::default_realtime_instructions_per_tick(false) as usize;
+        let ppc_instructions_per_tick =
+            systemless::runner::default_realtime_instructions_per_tick(true) as usize;
 
         assert!(
-            CPU_BATCH_INSTRUCTIONS <= realtime_instructions_per_tick / 32,
+            CPU_BATCH_INSTRUCTIONS <= m68k_instructions_per_tick / 32,
             "GUI batches should yield frequently during heavy drawing and slow HLE startup paths; batch={} vbl_budget={}",
             CPU_BATCH_INSTRUCTIONS,
-            realtime_instructions_per_tick
+            m68k_instructions_per_tick
+        );
+        assert_eq!(
+            foreground_cpu_batch_instructions(false, m68k_instructions_per_tick as u32),
+            CPU_BATCH_INSTRUCTIONS
+        );
+        assert_eq!(
+            foreground_cpu_batch_instructions(true, ppc_instructions_per_tick as u32),
+            ppc_instructions_per_tick,
+            "PPC should cross the expensive HLE state boundary once per guest VBL"
         );
         assert_eq!(
             SOUND_CALLBACK_SLICE_INSTRUCTIONS, CPU_BATCH_INSTRUCTIONS,
