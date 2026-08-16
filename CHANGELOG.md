@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.2](https://github.com/benletchford/systemless/compare/v0.13.1...v0.13.2) (2026-08-16)
+
+
+### Performance Improvements
+
+* adopt cached PowerPC basic blocks ([#640](https://github.com/benletchford/systemless/issues/640)) ([c71f9f3](https://github.com/benletchford/systemless/commit/c71f9f3026a2372be6107255b77ffe6f228cae34))
+* reuse PowerPC HLE state between execution slices ([#637](https://github.com/benletchford/systemless/issues/637)) ([d07da75](https://github.com/benletchford/systemless/commit/d07da75ae15e88ffc0f1444364264f6ffdeb7769))
+
 ## [0.13.1](https://github.com/benletchford/systemless/compare/v0.13.0...v0.13.1) (2026-08-16)
 
 
