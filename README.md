@@ -7,7 +7,7 @@
 <h1 align="center">systemless</h1>
 
 <p align="center">
-  <strong>A high-level runtime for classic 68k Macintosh applications and games.</strong><br>
+  <strong>A high-level runtime for classic Macintosh applications and games.</strong><br>
   Run original Mac software without a ROM image, System installation, or hardware emulation.
 </p>
 
@@ -18,11 +18,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/crates/l/systemless.svg" alt="License"></a>
 </p>
 
-Written in Rust, Systemless executes guest 68k code with the [`m68k`](https://crates.io/crates/m68k)
-crate and handles Mac OS A-line traps in native Rust. Native builds explicitly
-enable m68k's Cranelift JIT for eligible hot traces; WebAssembly uses its
-portable trace executor. That lets packaged Mac applications run without a Mac
-ROM image, a full System install, or hardware emulation.
+Written in Rust, Systemless executes classic 68K code with the
+[`m68k`](https://crates.io/crates/m68k) crate and native 32-bit PowerPC code
+with the [`ppc`](https://crates.io/crates/ppc) crate. Both CPU runtimes call the
+same Mac OS Toolbox and operating-system HLE implemented in native Rust. Native
+builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
+uses its portable trace executor. That lets packaged Mac applications run
+without a Mac ROM image, a full System install, or hardware emulation.
 
 ## See it in action
 
@@ -35,8 +37,10 @@ Play these and more classic Macintosh games in your browser at
 
 ## Status
 
-Systemless is focused on real 68k applications that use the classic Mac Toolbox.
-The HLE now covers the major runtime surfaces needed by interactive software:
+Systemless is focused on real classic Macintosh applications that use the Mac
+Toolbox, whether they contain 68K CODE resources or native PowerPC PEF/CFM
+fragments. The HLE covers the major runtime surfaces needed by interactive
+software:
 
 - Memory Manager handles, pointers, zones, low-memory globals, and common
   exception paths.
@@ -166,7 +170,7 @@ launched archive under `.systemless/saves/<archive-name>/`.
 | `quickdraw` | Public QuickDraw data helpers and font routing. |
 | `display` | Host framebuffer and cursor rendering helpers. |
 | `sound` | Sound Manager state and PCM mixing engine. |
-| `loader` | 68k CODE resource loading and jump-table setup. |
+| `loader` | 68K CODE resource and PowerPC PEF/CFM loading, relocation, and launch setup. |
 | `trace` | Runtime trace hook (event/snapshot types + `TraceSink`) for cross-runtime parity comparison. |
 
 ## Build And Test
