@@ -8734,9 +8734,8 @@ fn ppc_q3_software_texture_pixel_at(
     }
     let pixel_ptr = texture.image_base.checked_add(storage_offset)?;
     let mut pixel = [0u8; 4];
-    for offset in 0..texture.pixel_bytes {
-        pixel[offset as usize] = memory.read_u8(pixel_ptr.checked_add(offset)?)?;
-    }
+    let pixel_bytes = usize::try_from(texture.pixel_bytes).ok()?;
+    memory.read_bytes_into(pixel_ptr, pixel.get_mut(..pixel_bytes)?)?;
     ppc_q3_software_texture_pixel_color(texture.pixel_type, texture.byte_order, &pixel)
 }
 
@@ -10601,28 +10600,15 @@ fn ppc_q3_draw_software_triangle(
 
     let mut pixels = 0usize;
     let area_f = area as f32;
+    let (mut row_edge_weights, edge_x_steps, edge_y_steps) =
+        ppc_q3_software_triangle_edge_walker(vertices, min_x, min_y);
     for y in min_y..=max_y {
+        let mut edge_weights = row_edge_weights;
         for x in min_x..=max_x {
-            let point = PpcQ3SoftwareProjectedPoint {
-                x,
-                y,
-                z: 0.0,
-                reciprocal_w: 1.0,
-                world: (0.0, 0.0, 0.0),
-                view_direction: None,
-                fog_depth: 0.0,
-                uv: None,
-                diffuse: None,
-                ambient_coefficient: None,
-                normal: None,
-                specular_color: None,
-                specular_control: None,
-                highlight_state: None,
-                vertex_alpha: None,
-            };
-            let w0 = ppc_q3_software_edge_value(b, c, point);
-            let w1 = ppc_q3_software_edge_value(c, a, point);
-            let w2 = ppc_q3_software_edge_value(a, b, point);
+            let [w0, w1, w2] = edge_weights;
+            edge_weights[0] += edge_x_steps[0];
+            edge_weights[1] += edge_x_steps[1];
+            edge_weights[2] += edge_x_steps[2];
             if !ppc_q3_software_weights_inside(area, w0, w1, w2) {
                 continue;
             }
@@ -10631,9 +10617,10 @@ fn ppc_q3_draw_software_triangle(
             let weight2 = w2 as f32 / area_f;
             let perspective_weights =
                 ppc_q3_software_perspective_weights(&vertices, [weight0, weight1, weight2]);
-            let point = ppc_q3_software_interpolate_projected_point(
+            let point = ppc_q3_software_interpolate_projected_point_with_weights(
                 &vertices,
                 [weight0, weight1, weight2],
+                perspective_weights,
                 x,
                 y,
             );
@@ -10710,6 +10697,9 @@ fn ppc_q3_draw_software_triangle(
                 pixels = pixels.saturating_add(1);
             }
         }
+        row_edge_weights[0] += edge_y_steps[0];
+        row_edge_weights[1] += edge_y_steps[1];
+        row_edge_weights[2] += edge_y_steps[2];
     }
     pixels
 }
@@ -10759,9 +10749,26 @@ fn ppc_q3_software_interpolate_projected_point(
     x: i32,
     y: i32,
 ) -> PpcQ3SoftwareProjectedPoint {
+    let perspective_weights = ppc_q3_software_perspective_weights(vertices, weights);
+    ppc_q3_software_interpolate_projected_point_with_weights(
+        vertices,
+        weights,
+        perspective_weights,
+        x,
+        y,
+    )
+}
+
+fn ppc_q3_software_interpolate_projected_point_with_weights(
+    vertices: &[PpcQ3SoftwareProjectedPoint; 3],
+    weights: [f32; 3],
+    perspective_weights: [f32; 3],
+    x: i32,
+    y: i32,
+) -> PpcQ3SoftwareProjectedPoint {
     let [a, b, c] = vertices;
     let [affine_weight0, affine_weight1, affine_weight2] = weights;
-    let [weight0, weight1, weight2] = ppc_q3_software_perspective_weights(vertices, weights);
+    let [weight0, weight1, weight2] = perspective_weights;
     PpcQ3SoftwareProjectedPoint {
         x,
         y,
@@ -10916,6 +10923,47 @@ fn ppc_q3_software_edge_value(
     c: PpcQ3SoftwareProjectedPoint,
 ) -> i64 {
     i64::from(c.x - a.x) * i64::from(b.y - a.y) - i64::from(c.y - a.y) * i64::from(b.x - a.x)
+}
+
+fn ppc_q3_software_triangle_edge_walker(
+    [a, b, c]: [PpcQ3SoftwareProjectedPoint; 3],
+    x: i32,
+    y: i32,
+) -> ([i64; 3], [i64; 3], [i64; 3]) {
+    let point = PpcQ3SoftwareProjectedPoint {
+        x,
+        y,
+        z: 0.0,
+        reciprocal_w: 1.0,
+        world: (0.0, 0.0, 0.0),
+        view_direction: None,
+        fog_depth: 0.0,
+        uv: None,
+        diffuse: None,
+        ambient_coefficient: None,
+        normal: None,
+        specular_color: None,
+        specular_control: None,
+        highlight_state: None,
+        vertex_alpha: None,
+    };
+    (
+        [
+            ppc_q3_software_edge_value(b, c, point),
+            ppc_q3_software_edge_value(c, a, point),
+            ppc_q3_software_edge_value(a, b, point),
+        ],
+        [
+            i64::from(c.y - b.y),
+            i64::from(a.y - c.y),
+            i64::from(b.y - a.y),
+        ],
+        [
+            -i64::from(c.x - b.x),
+            -i64::from(a.x - c.x),
+            -i64::from(b.x - a.x),
+        ],
+    )
 }
 
 fn ppc_q3_software_is_backfacing(
@@ -92569,6 +92617,56 @@ mod tests {
         }
         assert_eq!(red_pixels, 0);
         assert!(green_pixels > 0);
+    }
+
+    #[test]
+    fn q3_software_triangle_edge_walker_matches_direct_edge_equations() {
+        fn point(x: i32, y: i32) -> PpcQ3SoftwareProjectedPoint {
+            PpcQ3SoftwareProjectedPoint {
+                x,
+                y,
+                z: 0.0,
+                reciprocal_w: 1.0,
+                world: (0.0, 0.0, 0.0),
+                view_direction: None,
+                fog_depth: 0.0,
+                uv: None,
+                diffuse: None,
+                ambient_coefficient: None,
+                normal: None,
+                specular_color: None,
+                specular_control: None,
+                highlight_state: None,
+                vertex_alpha: None,
+            }
+        }
+
+        let vertices = [point(3, 2), point(19, 7), point(8, 23)];
+        let start_x = -4;
+        let start_y = -3;
+        let (mut row_weights, x_steps, y_steps) =
+            ppc_q3_software_triangle_edge_walker(vertices, start_x, start_y);
+
+        for y in start_y..=28 {
+            let mut weights = row_weights;
+            for x in start_x..=25 {
+                let sample = point(x, y);
+                assert_eq!(
+                    weights,
+                    [
+                        ppc_q3_software_edge_value(vertices[1], vertices[2], sample),
+                        ppc_q3_software_edge_value(vertices[2], vertices[0], sample),
+                        ppc_q3_software_edge_value(vertices[0], vertices[1], sample),
+                    ]
+                );
+                for index in 0..3 {
+                    weights[index] += x_steps[index];
+                }
+            }
+            for index in 0..3 {
+                row_weights[index] += y_steps[index];
+            }
+        }
     }
 
     #[test]
