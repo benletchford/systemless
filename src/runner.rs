@@ -2288,9 +2288,10 @@ impl FixtureRunner {
             .unwrap_or_else(|| self.cpu.read_reg(Register::PC))
     }
 
-    /// Composite chrome/dialog overlays onto the framebuffer.
+    /// Synchronize deferred PPC visual/VFS state and composite chrome/dialog overlays.
     /// Call before reading raw pixels for screenshots.
     pub fn composite_frame(&mut self) {
+        self.sync_ppc_deferred_host_state();
         self.dispatcher.redraw_chrome(&mut self.bus);
     }
 
@@ -4449,6 +4450,7 @@ impl FixtureRunner {
                 }
             }
             if finish_frame {
+                self.sync_ppc_deferred_host_state();
                 self.finish_host_frame(audio_samples, false);
             }
             return (count, running);
@@ -5582,42 +5584,20 @@ impl FixtureRunner {
                 self.ppc_fetch_histogram.merge_from(histogram);
             }
         }
-        let qd3d_dump_frame = qd3d_dump_frame_index();
         let q3_frame_start = self.q3_completed_frame_index;
-        let mut next_q3_frame_index = self.q3_completed_frame_index;
         let profile_render_start = profile_ppc.then(Instant::now);
-        let render_stats = if qd3d_dump_frame.is_some() {
-            ppc_app.render_completed_q3_frames_to_front_buffer_with_observer(|_, replay| {
-                if qd3d_dump_frame == Some(next_q3_frame_index) {
-                    eprint!("{}", format_qd3d_frame_dump(next_q3_frame_index, replay));
-                    if let Some(output_dir) = qd3d_dump_replay_dir() {
-                        match write_qd3d_frame_replay_dump(output_dir, next_q3_frame_index, replay)
-                        {
-                            Ok(path) => eprintln!(
-                                "[QD3D-FRAME] frame={} replay_json={}",
-                                next_q3_frame_index,
-                                path.display()
-                            ),
-                            Err(err) => eprintln!(
-                                "[QD3D-FRAME] frame={} replay_json_error={}",
-                                next_q3_frame_index, err
-                            ),
-                        }
-                    }
-                }
-                next_q3_frame_index = next_q3_frame_index.saturating_add(1);
-            })
+        let render_stats = if finish_frame {
+            self.render_ppc_completed_frames(&mut ppc_app, pc)
         } else {
-            let stats = ppc_app.render_completed_q3_frames_to_front_buffer_fast();
-            next_q3_frame_index = next_q3_frame_index.saturating_add(stats.frames);
-            stats
+            PpcQ3SoftwareRenderStats::default()
         };
         let profile_render_us = elapsed_profile_micros(profile_render_start);
-        self.q3_completed_frame_index = next_q3_frame_index;
-        self.record_q3_frame_trace(pc, q3_frame_start, next_q3_frame_index, render_stats);
+        let next_q3_frame_index = self.q3_completed_frame_index;
         let profile_sync_start = profile_ppc.then(Instant::now);
-        self.sync_ppc_front_buffer_to_host(&mut ppc_app);
-        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        if finish_frame {
+            self.sync_ppc_front_buffer_to_host(&mut ppc_app);
+            self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        }
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
         self.dispatcher.event_queue = ppc_app
             .event_queue()
@@ -5734,6 +5714,56 @@ impl FixtureRunner {
             .unwrap_or(usize::MAX),
             still_running,
         )
+    }
+
+    fn render_ppc_completed_frames(
+        &mut self,
+        ppc_app: &mut PpcLoadedApp,
+        pc: u32,
+    ) -> PpcQ3SoftwareRenderStats {
+        let qd3d_dump_frame = qd3d_dump_frame_index();
+        let q3_frame_start = self.q3_completed_frame_index;
+        let mut next_q3_frame_index = self.q3_completed_frame_index;
+        let render_stats = if qd3d_dump_frame.is_some() {
+            ppc_app.render_completed_q3_frames_to_front_buffer_with_observer(|_, replay| {
+                if qd3d_dump_frame == Some(next_q3_frame_index) {
+                    eprint!("{}", format_qd3d_frame_dump(next_q3_frame_index, replay));
+                    if let Some(output_dir) = qd3d_dump_replay_dir() {
+                        match write_qd3d_frame_replay_dump(output_dir, next_q3_frame_index, replay)
+                        {
+                            Ok(path) => eprintln!(
+                                "[QD3D-FRAME] frame={} replay_json={}",
+                                next_q3_frame_index,
+                                path.display()
+                            ),
+                            Err(err) => eprintln!(
+                                "[QD3D-FRAME] frame={} replay_json_error={}",
+                                next_q3_frame_index, err
+                            ),
+                        }
+                    }
+                }
+                next_q3_frame_index = next_q3_frame_index.saturating_add(1);
+            })
+        } else {
+            let stats = ppc_app.render_completed_q3_frames_to_front_buffer_fast();
+            next_q3_frame_index = next_q3_frame_index.saturating_add(stats.frames);
+            stats
+        };
+        self.q3_completed_frame_index = next_q3_frame_index;
+        self.record_q3_frame_trace(pc, q3_frame_start, next_q3_frame_index, render_stats);
+        render_stats
+    }
+
+    fn sync_ppc_deferred_host_state(&mut self) {
+        let Some(mut ppc_app) = self.ppc_app.take() else {
+            return;
+        };
+        let pc = ppc_app.cpu.pc;
+        self.render_ppc_completed_frames(&mut ppc_app, pc);
+        self.sync_ppc_front_buffer_to_host(&mut ppc_app);
+        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.ppc_app = Some(ppc_app);
     }
 
     fn record_ppc_import_trace(&mut self, trace: &[PpcHleImportTraceEntry]) {
@@ -12514,7 +12544,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_front_buffer_syncs_to_host_screen_buffer() {
+    fn ppc_gui_cpu_slice_defers_front_buffer_sync_until_composite() {
         let front_base = PPC_HEAP_BASE;
         let presented_base = PPC_HEAP_BASE + 4;
         let mut memory = PpcSectionMem::new();
@@ -12675,11 +12705,19 @@ mod tests {
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
+        let initial_screen_mode = runner.dispatcher.screen_mode;
 
-        let (steps, running) = runner.run_steps(8, None);
+        let (steps, running) = runner.run_gui_cpu_slice(8, u32::MAX);
 
         assert_eq!(steps, 1);
         assert!(!running);
+        assert_eq!(
+            runner.dispatcher.screen_mode, initial_screen_mode,
+            "CPU-only slices must not copy or resize the host framebuffer"
+        );
+
+        runner.composite_frame();
+
         let (host_base, row_bytes, width, height, depth) = runner.dispatcher.screen_mode;
         assert_eq!((row_bytes, width, height, depth), (4, 2, 1, 16));
         assert_eq!(runner.bus.read_word(host_base), 0x7c00);
