@@ -7089,7 +7089,7 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
     ) -> PpcHleRunProbe {
-        let mut imports = self.imports.clone();
+        let mut imports = std::mem::take(&mut self.imports);
         let mut import_count = self.import_count;
         let mut import_binding_indices = ppc_import_binding_indices(&imports, import_count);
         let q3_start_rendering_import_index = imports
@@ -7105,7 +7105,7 @@ impl PpcLoadedApp {
             })
             .map(|binding| binding.symbol_index);
         let input = self.input;
-        let mut event_queue = self.event_queue.clone();
+        let mut event_queue = std::mem::take(&mut self.event_queue);
         let mut heap_cursor = self.heap_cursor;
         let mut heap_limit = self.heap_limit;
         let mut last_mem_error = self.last_mem_error;
@@ -7117,65 +7117,66 @@ impl PpcLoadedApp {
         let mut current_resource_refnum = self.current_resource_refnum;
         let mut last_resource_error = self.last_resource_error;
         let mut resource_load_enabled = self.resource_load_enabled;
-        let mut stdc_qsort_stack = self.stdc_qsort_stack.clone();
-        let mut dialog_callback_stack = self.dialog_callback_stack.clone();
-        let mut apple_events = self.apple_events.clone();
-        let mut cfm_connections = self.cfm_connections.clone();
+        let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
+        let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
+        let mut apple_events = std::mem::take(&mut self.apple_events);
+        let mut cfm_connections = std::mem::take(&mut self.cfm_connections);
         let mut next_cfm_connection_id = self.next_cfm_connection_id;
-        let mut ptrs = self.ptrs.clone();
-        let mut free_ptr_blocks = self.free_ptr_blocks.clone();
-        let mut handles = self.handles.clone();
-        let mut free_handle_blocks = self.free_handle_blocks.clone();
-        let mut handle_states = self.handle_states.clone();
-        let mut controls = self.controls.clone();
-        let mut aliases = self.aliases.clone();
-        let mut gworlds = self.gworlds.clone();
-        let mut q3_objects = self.q3_objects.clone();
-        let mut q3_object_refs = self.q3_object_refs.clone();
+        let mut ptrs = std::mem::take(&mut self.ptrs);
+        let mut free_ptr_blocks = std::mem::take(&mut self.free_ptr_blocks);
+        let mut handles = std::mem::take(&mut self.handles);
+        let mut free_handle_blocks = std::mem::take(&mut self.free_handle_blocks);
+        let mut handle_states = std::mem::take(&mut self.handle_states);
+        let mut controls = std::mem::take(&mut self.controls);
+        let mut aliases = std::mem::take(&mut self.aliases);
+        let mut gworlds = std::mem::take(&mut self.gworlds);
+        let mut q3_objects = std::mem::take(&mut self.q3_objects);
+        let mut q3_object_refs = std::mem::take(&mut self.q3_object_refs);
         let mut next_q3_object = self.next_q3_object;
         let mut q3_error_state = self.q3_error_state;
         let mut q3_lifecycle = self.q3_lifecycle;
-        let mut q3_memory_storages = self.q3_memory_storages.clone();
-        let mut q3_files = self.q3_files.clone();
-        let mut q3_group_memberships = self.q3_group_memberships.clone();
-        let mut q3_file_groups = self.q3_file_groups.clone();
-        let mut q3_views = self.q3_views.clone();
-        let mut q3_submissions = self.q3_submissions.clone();
-        let mut q3_view_transforms = self.q3_view_transforms.clone();
-        let mut q3_submission_transforms = self.q3_submission_transforms.clone();
-        let mut q3_view_materials = self.q3_view_materials.clone();
-        let mut q3_submission_materials = self.q3_submission_materials.clone();
-        let mut q3_submission_lights = self.q3_submission_lights.clone();
-        let mut q3_view_state_stack = self.q3_view_state_stack.clone();
-        let mut q3_completed_frames = self.q3_completed_frames.clone();
-        let mut q3_retained_frames = self.q3_retained_frames.clone();
+        let mut q3_memory_storages = std::mem::take(&mut self.q3_memory_storages);
+        let mut q3_files = std::mem::take(&mut self.q3_files);
+        let mut q3_group_memberships = std::mem::take(&mut self.q3_group_memberships);
+        let mut q3_file_groups = std::mem::take(&mut self.q3_file_groups);
+        let mut q3_views = std::mem::take(&mut self.q3_views);
+        let mut q3_submissions = std::mem::take(&mut self.q3_submissions);
+        let mut q3_view_transforms = std::mem::take(&mut self.q3_view_transforms);
+        let mut q3_submission_transforms = std::mem::take(&mut self.q3_submission_transforms);
+        let mut q3_view_materials = std::mem::take(&mut self.q3_view_materials);
+        let mut q3_submission_materials = std::mem::take(&mut self.q3_submission_materials);
+        let mut q3_submission_lights = std::mem::take(&mut self.q3_submission_lights);
+        let mut q3_view_state_stack = std::mem::take(&mut self.q3_view_state_stack);
+        let mut q3_completed_frames = std::mem::take(&mut self.q3_completed_frames);
+        let mut q3_retained_frames = std::mem::take(&mut self.q3_retained_frames);
         let mut q3_state_only_completed_frame_batches =
-            self.q3_state_only_completed_frame_batches.clone();
-        let mut q3_fog_styles = self.q3_fog_styles.clone();
-        let mut q3_attributes = self.q3_attributes.clone();
-        let mut q3_shader_uv_transforms = self.q3_shader_uv_transforms.clone();
-        let mut q3_shader_boundaries = self.q3_shader_boundaries.clone();
-        let mut q3_mipmap_textures = self.q3_mipmap_textures.clone();
-        let mut q3_texture_shaders = self.q3_texture_shaders.clone();
-        let mut q3_renderer_preferences = self.q3_renderer_preferences.clone();
-        let mut q3_draw_contexts = self.q3_draw_contexts.clone();
-        let mut q3_trimeshes = self.q3_trimeshes.clone();
-        let mut q3_styles = self.q3_styles.clone();
-        let mut q3_cameras = self.q3_cameras.clone();
-        let mut q3_lights = self.q3_lights.clone();
+            std::mem::take(&mut self.q3_state_only_completed_frame_batches);
+        let mut q3_fog_styles = std::mem::take(&mut self.q3_fog_styles);
+        let mut q3_attributes = std::mem::take(&mut self.q3_attributes);
+        let mut q3_shader_uv_transforms = std::mem::take(&mut self.q3_shader_uv_transforms);
+        let mut q3_shader_boundaries = std::mem::take(&mut self.q3_shader_boundaries);
+        let mut q3_mipmap_textures = std::mem::take(&mut self.q3_mipmap_textures);
+        let mut q3_texture_shaders = std::mem::take(&mut self.q3_texture_shaders);
+        let mut q3_renderer_preferences = std::mem::take(&mut self.q3_renderer_preferences);
+        let mut q3_draw_contexts = std::mem::take(&mut self.q3_draw_contexts);
+        let mut q3_trimeshes = std::mem::take(&mut self.q3_trimeshes);
+        let mut q3_styles = std::mem::take(&mut self.q3_styles);
+        let mut q3_cameras = std::mem::take(&mut self.q3_cameras);
+        let mut q3_lights = std::mem::take(&mut self.q3_lights);
         let mut input_sprocket = self.input_sprocket;
-        let mut input_sprocket_virtual_elements = self.input_sprocket_virtual_elements.clone();
+        let mut input_sprocket_virtual_elements =
+            std::mem::take(&mut self.input_sprocket_virtual_elements);
         let mut toolbox_startup = self.toolbox_startup;
-        let mut quicktime = self.quicktime.clone();
+        let mut quicktime = std::mem::take(&mut self.quicktime);
         let mut sound = std::mem::take(&mut self.sound);
-        let mut timer_tasks = self.timer_tasks.clone();
-        let mut vbl_tasks = self.vbl_tasks.clone();
-        let mut files = self.files.clone();
-        let mut vfs_files = self.vfs_files.clone();
-        let mut deleted_vfs_file_paths = self.deleted_vfs_file_paths.clone();
-        let mut resource_files = self.resource_files.clone();
-        let mut vfs_resource_files = self.vfs_resource_files.clone();
-        let mut vfs_resources = self.vfs_resources.clone();
+        let mut timer_tasks = std::mem::take(&mut self.timer_tasks);
+        let mut vbl_tasks = std::mem::take(&mut self.vbl_tasks);
+        let mut files = std::mem::take(&mut self.files);
+        let mut vfs_files = std::mem::take(&mut self.vfs_files);
+        let mut deleted_vfs_file_paths = std::mem::take(&mut self.deleted_vfs_file_paths);
+        let mut resource_files = std::mem::take(&mut self.resource_files);
+        let mut vfs_resource_files = std::mem::take(&mut self.vfs_resource_files);
+        let mut vfs_resources = std::mem::take(&mut self.vfs_resources);
         let mut next_file_ref_num = self.next_file_ref_num;
         let mut current_gworld = self.current_gworld;
         let mut current_gdevice = self.current_gdevice;
@@ -7188,13 +7189,13 @@ impl PpcLoadedApp {
         let mut quickdraw_text_mode = self.quickdraw_text_mode;
         let mut quickdraw_text_size = self.quickdraw_text_size;
         let mut quickdraw_cursor_level = self.quickdraw_cursor_level;
-        let mut vfs_directories = self.vfs_directories.clone();
+        let mut vfs_directories = std::mem::take(&mut self.vfs_directories);
         let mut next_vfs_dir_id = self.next_vfs_dir_id;
         let default_dir_id = self.default_dir_id;
         let mut default_output_volume = self.default_output_volume;
-        let mut param_text = self.param_text.clone();
-        let mut scrap = self.scrap.clone();
-        let mut list_manager = self.list_manager.clone();
+        let mut param_text = std::mem::take(&mut self.param_text);
+        let mut scrap = std::mem::take(&mut self.scrap);
+        let mut list_manager = std::mem::take(&mut self.list_manager);
         let mut draw_sprocket = self.draw_sprocket;
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
@@ -66386,6 +66387,27 @@ mod tests {
             }
         );
         assert_eq!(loaded.heap_cursor, PPC_HEAP_BASE);
+    }
+
+    #[test]
+    fn hle_import_runner_reuses_retained_state_allocations_between_slices() {
+        let pef = synthetic_pef_with_import(b"TickCount");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.q3_objects.reserve(8);
+        loaded.q3_objects.push(test_q3_object(0x1000, 0x2000));
+        let imports_ptr = loaded.imports.as_ptr();
+        let imports_capacity = loaded.imports.capacity();
+        let q3_objects_ptr = loaded.q3_objects.as_ptr();
+        let q3_objects_capacity = loaded.q3_objects.capacity();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.imports.as_ptr(), imports_ptr);
+        assert_eq!(loaded.imports.capacity(), imports_capacity);
+        assert_eq!(loaded.q3_objects.as_ptr(), q3_objects_ptr);
+        assert_eq!(loaded.q3_objects.capacity(), q3_objects_capacity);
+        assert_eq!(loaded.q3_objects.len(), 1);
     }
 
     #[test]
