@@ -5236,6 +5236,18 @@ impl FixtureRunner {
                             let post_trap_pc = pc.wrapping_add(2);
                             let hit_cap =
                                 self.try_tickcount_spin_fastfwd(post_trap_pc, tick_cap, &mut count);
+                            // Loops the decoded templates cannot match --
+                            // EV Override's crawl polls TickCount from a
+                            // cycle that interleaves scans and SANE math,
+                            // 26M times a session -- still prove out via
+                            // the general exact-cycle machinery. Anchor it
+                            // here because this inline path bypasses the
+                            // dispatch-site anchor entirely.
+                            if !hit_cap
+                                && self.try_exact_null_event_cycle_fastfwd(pc, tick_cap)
+                            {
+                                break;
+                            }
                             if hit_cap {
                                 break;
                             }
