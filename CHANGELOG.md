@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.3](https://github.com/benletchford/systemless/compare/v0.13.2...v0.13.3) (2026-08-16)
+
+
+### Performance Improvements
+
+* accelerate QD3D triangle rasterization ([767279e](https://github.com/benletchford/systemless/commit/767279e9ef6795f26c38bf371f671002ec1bdde6))
+
 ## [0.13.2](https://github.com/benletchford/systemless/compare/v0.13.1...v0.13.2) (2026-08-16)
 
 
