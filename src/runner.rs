@@ -1274,7 +1274,7 @@ pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
 /// PowerPC clock exposed by the native 604 machine profile. The Power
 /// Macintosh 9500/120 paired a 120 MHz clock with the same 604 processor
 /// reported by the PPC Gestalt implementation.
-/// https://support.apple.com/en-hk/112050
+/// <https://support.apple.com/en-hk/112050>
 pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 = 120.0;
 /// Default 68K realtime CPU budget used by scripted realtime mode and by GUI
 /// sessions that do not load a PowerPC executable.
