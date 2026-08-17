@@ -1590,6 +1590,9 @@ pub struct FixtureRunnerConfig {
     /// Use the full 32-bit guest address, or mask memory accesses to the low
     /// 24 bits as on classic Macs running in 24-bit addressing mode.
     pub addressing_32_bit: bool,
+    /// Guest-visible indexed screen depth. Supported values are 4 and 8;
+    /// the default remains 8-bit/256-color mode.
+    pub screen_depth: u16,
 }
 
 impl Default for FixtureRunnerConfig {
@@ -1602,6 +1605,7 @@ impl Default for FixtureRunnerConfig {
             ui_theme: UiThemeId::ClassicSystem7,
             theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
             addressing_32_bit: true,
+            screen_depth: 8,
         }
     }
 }
@@ -1616,6 +1620,20 @@ struct PpcDecodedDoubleBuffer {
     buffer_ptr: u32,
     flags: u32,
     samples: Vec<crate::sound::StereoSample>,
+}
+
+impl FixtureRunnerConfig {
+    /// Validate and select one of the indexed display depths supported by the
+    /// main framebuffer.
+    pub fn with_screen_depth(mut self, screen_depth: u16) -> std::result::Result<Self, String> {
+        if !matches!(screen_depth, 4 | 8) {
+            return Err(format!(
+                "unsupported screen depth {screen_depth}; expected 4 or 8"
+            ));
+        }
+        self.screen_depth = screen_depth;
+        Ok(self)
+    }
 }
 
 /// Canonical entry point of the systemless library.
@@ -1831,12 +1849,33 @@ impl FixtureRunner {
         } else {
             ram_size.min(0x0100_0000)
         };
+        assert!(
+            matches!(config.screen_depth, 4 | 8),
+            "screen_depth must be 4 or 8"
+        );
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
         dispatcher.set_ui_theme_id(config.ui_theme);
         let mut bus = MacMemoryBus::new(ram_size);
         bus.set_addressing_32_bit(config.addressing_32_bit);
+        bus.configure_screen_depth(config.screen_depth);
+        let profile = crate::machine_profile::reference_machine_profile();
+        let row_bytes =
+            ((u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8) + 1)
+                & !1;
+        dispatcher.screen_mode = (
+            bus.read_long(crate::memory::globals::addr::SCRN_BASE),
+            row_bytes,
+            profile.screen_width,
+            profile.screen_height,
+            config.screen_depth,
+        );
+        let (clut, _) = TrapDispatcher::standard_mac_indexed_clut(config.screen_depth)
+            .expect("validated indexed screen depth");
+        dispatcher.device_clut = clut;
+        dispatcher.color_manager_clut = clut;
+        dispatcher.seeded_picture_palette = clut;
         let standard_adb_service = bus.alloc_synthetic(2);
         bus.write_word(standard_adb_service, 0x4E75); // RTS
         dispatcher
@@ -3017,6 +3056,7 @@ impl FixtureRunner {
             ui_theme: self.config.ui_theme,
             theme_metrics_mode: self.config.theme_metrics_mode,
             addressing_32_bit: self.bus.addressing_32_bit(),
+            screen_depth: self.config.screen_depth,
         };
         let menu_bar_policy = self.dispatcher.menu_bar_policy;
         let menu_bar_hidden = self.dispatcher.menu_bar_hidden;
@@ -10282,6 +10322,41 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
+
+    #[test]
+    fn four_bit_runner_publishes_consistent_screen_metadata() {
+        use crate::memory::globals::addr;
+
+        let config = FixtureRunnerConfig {
+            addressing_32_bit: false,
+            ..FixtureRunnerConfig::default()
+        }
+            .with_screen_depth(4)
+            .expect("4-bit indexed mode should be supported");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+        let gdevice_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+        let gdevice = runner.bus.read_long(gdevice_handle);
+        let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
+        let ctab = runner.bus.read_long(runner.bus.read_long(pixmap + 42));
+
+        assert_eq!(runner.dispatcher.screen_mode.1, 400);
+        assert_eq!(runner.dispatcher.screen_mode.4, 4);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_ROW), 400);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_BITS + 4), 400);
+        assert_eq!(runner.bus.read_word(pixmap + 4), 0x8000 | 400);
+        assert_eq!(runner.bus.read_word(pixmap + 32), 4);
+        assert_eq!(runner.bus.read_word(pixmap + 36), 4);
+        assert_eq!(runner.bus.read_word(ctab + 6), 15);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 4);
+        assert!(!runner.bus.addressing_32_bit());
+        assert_eq!(runner.dispatcher.mmu_mode, 0);
+    }
+
+    #[test]
+    fn runner_config_rejects_nonselectable_screen_depths() {
+        assert!(FixtureRunnerConfig::default().with_screen_depth(1).is_err());
+        assert!(FixtureRunnerConfig::default().with_screen_depth(5).is_err());
+    }
 
     #[derive(Clone, Default)]
     struct CapturingAudioBackend {

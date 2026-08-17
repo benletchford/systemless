@@ -73,12 +73,10 @@ impl MachineProfile {
         self.gestalt_fpu_type != 0
     }
 
-    /// Bytes per scanline for an 8bpp screen of this profile's
-    /// geometry. Equal to `screen_width` in this trivial mapping
-    /// (1 byte/pixel at depth 8); kept as a method so deeper
-    /// pixel formats can override later without ripple changes.
+    /// Bytes per scanline for this profile's packed indexed screen.
     pub const fn screen_row_bytes(self) -> u32 {
-        self.screen_width as u32
+        let bytes = (self.screen_width as u32 * self.screen_depth as u32).div_ceil(8);
+        (bytes + 1) & !1
     }
 }
 

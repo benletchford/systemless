@@ -15688,10 +15688,14 @@ impl super::TrapDispatcher {
             return self.main_gdevice_handle;
         }
 
-        // Allocate ColorTable for 8-bit (256 entries)
-        // ColorTable record: ctSeed(4) + ctFlags(2) + ctSize(2) + ctTable(256*8)
+        let (screen_base, row_bytes, screen_width, screen_height, screen_depth) = self.screen_mode;
+        let (screen_clut, color_count) = Self::standard_mac_indexed_clut(screen_depth)
+            .expect("main screen uses a supported indexed depth");
+
+        // Allocate the screen's indexed ColorTable.
+        // ColorTable record: ctSeed(4) + ctFlags(2) + ctSize(2) + ctTable(n*8)
         // Inside Macintosh Volume V, V-48, V-135
-        let ct_size: u32 = 8 + 256 * 8; // 2056 bytes
+        let ct_size: u32 = 8 + color_count as u32 * 8;
         let ctab = bus.alloc(ct_size);
         // Executor's C_NewGWorld (qGWorld.cpp:217) initialises the
         // GDevice-backing CTab with `CTAB_SEED(ctab) = (int32_t)depth`
@@ -15701,57 +15705,47 @@ impl super::TrapDispatcher {
         // ship with ctSeed=8 (depth). Initialising here with 8 lets the
         // PICT seed-match identity gate fire without remap on
         // those authored-for-standard PICTs.
-        bus.write_long(ctab, 8); // ctSeed (+0, 4 bytes): depth convention
+        bus.write_long(ctab, u32::from(screen_depth)); // ctSeed: depth convention
         bus.write_word(ctab + 4, 0x8000); // ctFlags (+4, 2 bytes): bit 15 = device color table
-        bus.write_word(ctab + 6, 255); // ctSize (+6, 2 bytes): number of entries - 1
-                                       // Fill with the standard Mac 8bpp color table
-                                       // (matches device_clut initialization).
-        {
-            let std_clut = Self::standard_mac_8bpp_clut();
-            for i in 0u32..256 {
-                let entry = ctab + 8 + i * 8;
-                // The standard 8-bit device table's auxiliary primary and
-                // gray ramps are explicit device-index colors. Palette
-                // Manager explicit colors retain the color already assigned
-                // to their device index when logical palettes are installed.
-                // Inside Macintosh Volume V (1986), pp. V-157..V-160;
-                // Imaging With QuickDraw (1994), Table 4-6, p. 4-93.
-                let usage = if (215..=254).contains(&i) {
-                    (PM_EXPLICIT as u16) << 8
-                } else {
-                    0
-                };
-                bus.write_word(entry, usage); // client ID plus Palette Manager usage
-                bus.write_word(entry + 2, std_clut[i as usize][0]); // red
-                bus.write_word(entry + 4, std_clut[i as usize][1]); // green
-                bus.write_word(entry + 6, std_clut[i as usize][2]); // blue
-            }
+        bus.write_word(ctab + 6, color_count as u16 - 1); // ctSize: entries - 1
+        for i in 0..color_count as u32 {
+            let entry = ctab + 8 + i * 8;
+            // The standard 8-bit device table's auxiliary primary and gray
+            // ramps are explicit device-index colors. Lower-depth standard
+            // tables contain no auxiliary explicit range.
+            // Inside Macintosh Volume V (1986), pp. V-157..V-160;
+            // Imaging With QuickDraw (1994), Table 4-6, p. 4-93.
+            let usage = if screen_depth == 8 && (215..=254).contains(&i) {
+                (PM_EXPLICIT as u16) << 8
+            } else {
+                0
+            };
+            bus.write_word(entry, usage); // client ID plus Palette Manager usage
+            bus.write_word(entry + 2, screen_clut[i as usize][0]);
+            bus.write_word(entry + 4, screen_clut[i as usize][1]);
+            bus.write_word(entry + 6, screen_clut[i as usize][2]);
         }
         let ctab_handle = bus.alloc(4);
         bus.write_long(ctab_handle, ctab);
 
-        // Allocate PixMap for the main screen (800x600 @ 8bpp)
+        // Allocate the main screen PixMap.
         // PixMap record: Imaging With QuickDraw 1994, p.4-5
         let pixmap = bus.alloc(50);
-        let screen_base = bus.ram_size() - 0x80000; // 512KB for 800x600x8bpp
         bus.write_long(pixmap, screen_base); // baseAddr (+0)
-        bus.write_word(
-            pixmap + 4,
-            (REFERENCE_MACHINE_PROFILE.screen_row_bytes() as u16) | 0x8000,
-        ); // rowBytes (+4) with pixmap flag
+        bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000);
         bus.write_word(pixmap + 6, 0); // bounds.top (+6)
         bus.write_word(pixmap + 8, 0); // bounds.left (+8)
-        bus.write_word(pixmap + 10, REFERENCE_MACHINE_PROFILE.screen_height); // bounds.bottom (+10)
-        bus.write_word(pixmap + 12, REFERENCE_MACHINE_PROFILE.screen_width); // bounds.right (+12)
+        bus.write_word(pixmap + 10, screen_height);
+        bus.write_word(pixmap + 12, screen_width);
         bus.write_word(pixmap + 14, 0); // pmVersion (+14)
         bus.write_word(pixmap + 16, 0); // packType (+16)
         bus.write_long(pixmap + 18, 0); // packSize (+18)
         bus.write_long(pixmap + 22, 0x00480000); // hRes (+22) = 72.0 fixed
         bus.write_long(pixmap + 26, 0x00480000); // vRes (+26) = 72.0 fixed
         bus.write_word(pixmap + 30, 0); // pixelType (+30) (chunky)
-        bus.write_word(pixmap + 32, 8); // pixelSize (+32) (8bpp)
+        bus.write_word(pixmap + 32, screen_depth);
         bus.write_word(pixmap + 34, 1); // cmpCount (+34)
-        bus.write_word(pixmap + 36, 8); // cmpSize (+36)
+        bus.write_word(pixmap + 36, screen_depth);
         bus.write_long(pixmap + 38, 0); // planeBytes (+38)
         bus.write_long(pixmap + 42, ctab_handle); // pmTable (+42) = CTabHandle
         bus.write_long(pixmap + 46, 0); // pmReserved (+46)
@@ -15778,9 +15772,17 @@ impl super::TrapDispatcher {
         bus.write_long(gd + 30, 0); // gdNextGD = NULL (end of chain)
         bus.write_word(gd + 34, 0); // gdRect.top
         bus.write_word(gd + 36, 0); // gdRect.left
-        bus.write_word(gd + 38, REFERENCE_MACHINE_PROFILE.screen_height); // gdRect.bottom
-        bus.write_word(gd + 40, REFERENCE_MACHINE_PROFILE.screen_width); // gdRect.right
-        bus.write_long(gd + 42, 0x0000_0085); // gdMode (current display mode token)
+        bus.write_word(gd + 38, screen_height);
+        bus.write_word(gd + 40, screen_width);
+        // Keep the legacy 800x600 token for the default 8-bit mode. For a
+        // frontend-selected packed depth, expose that depth as the active
+        // Graphics Devices mode identifier so gdMode agrees with pixelSize.
+        let display_mode = if screen_depth == 8 {
+            0x0000_0085
+        } else {
+            u32::from(screen_depth)
+        };
+        bus.write_long(gd + 42, display_mode);
 
         let gd_handle = bus.alloc(4);
         bus.write_long(gd_handle, gd);

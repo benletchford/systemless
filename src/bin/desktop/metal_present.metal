@@ -82,6 +82,10 @@ fragment float4 guest_raster_fragment(
     if (frame.pixel_size == 8) {
         uint index = framebuffer[y * frame.row_bytes + x];
         argb = palette[index];
+    } else if (frame.pixel_size == 4) {
+        uchar packed = framebuffer[y * frame.row_bytes + x / 2];
+        uint index = (x & 1) == 0 ? packed >> 4 : packed & 0x0F;
+        argb = palette[index];
     } else {
         uchar packed = framebuffer[y * frame.row_bytes + x / 8];
         bool black = (packed & (0x80 >> (x & 7))) != 0;
