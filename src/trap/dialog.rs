@@ -3490,11 +3490,11 @@ impl super::TrapDispatcher {
         let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
         for item in removed_items {
             let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, item.rect);
-            self.fill_rect_clipped_to_dialog(
+            self.fill_dialog_content_rect(
                 bus,
+                dialog_ptr,
                 bounds,
                 (top - 2, left - 2, bottom + 2, right + 2),
-                false,
             );
         }
         if self.dialog_visible_snapshots.contains_key(&dialog_ptr) {
@@ -3914,6 +3914,7 @@ impl super::TrapDispatcher {
             alert_id as u32,
             items_handle,
             items.clone(),
+            None,
         );
         if dialog_ptr == 0 {
             return false;
@@ -4939,6 +4940,7 @@ impl super::TrapDispatcher {
         ref_con: u32,
         items_handle: u32,
         items: Vec<DialogItem>,
+        dialog_color_table: Option<u32>,
     ) -> u32 {
         let previous_port = self.current_port;
         let previous_gdevice = self.current_gdevice;
@@ -4978,6 +4980,15 @@ impl super::TrapDispatcher {
             ref_con,
         );
         self.set_current_port_state(bus, cpu, dlg_ptr, None);
+
+        // GetNewDialog associates a matching DCTab before the first visible
+        // shell is drawn. This also updates the AuxWin record returned by
+        // GetAuxWin and makes the content color the port background color.
+        // Macintosh Toolbox Essentials 1992, pp. 6-120 to 6-121.
+        if let Some(color_table) = dialog_color_table {
+            self.ensure_window_aux_record(bus, dlg_ptr, color_table);
+            self.apply_window_color_table(bus, dlg_ptr, color_table);
+        }
 
         // DialogRecord starts with a WindowRecord; +108 is windowKind,
         // not the WDEF procID. Dialog boxes and alerts must use
@@ -5636,6 +5647,44 @@ impl super::TrapDispatcher {
         );
     }
 
+    fn fill_dialog_content_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        rect: (i16, i16, i16, i16),
+    ) {
+        let top = rect.0.max(bounds.0);
+        let left = rect.1.max(bounds.1);
+        let bottom = rect.2.min(bounds.2);
+        let right = rect.3.min(bounds.3);
+        if top >= bottom || left >= right {
+            return;
+        }
+
+        if let Some((red, green, blue)) = self.window_semantic_color(bus, dialog_ptr, 0) {
+            let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+                self.get_screen_params();
+            let pixel_index =
+                super::pict::closest_clut_index(red, green, blue, &self.device_clut);
+            Self::fb_fill_rect_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                pixel_index,
+            );
+        } else {
+            self.fill_rect_clipped_to_dialog(bus, bounds, rect, false);
+        }
+    }
+
     fn dialog_item_enclosing_local_rect(
         item_type: u8,
         rect: (i16, i16, i16, i16),
@@ -5661,7 +5710,7 @@ impl super::TrapDispatcher {
             bounds.0 + local_rect.2,
             bounds.1 + local_rect.3,
         );
-        self.fill_rect_clipped_to_dialog(bus, bounds, screen_rect, false);
+        self.fill_dialog_content_rect(bus, dialog_ptr, bounds, screen_rect);
     }
 
     /// Restore framebuffer pixels to an exact rectangle (no margin).
@@ -5754,6 +5803,30 @@ impl super::TrapDispatcher {
         // dialogs whose in-bounds items are userItems, since the game draws
         // its own background and the white fill would overwrite that content.
         let game_managed = Self::dialog_is_game_managed(bounds, items);
+        let content_color = self.window_semantic_color(bus, dialog_ptr, 0);
+        if !game_managed {
+            if let Some((red, green, blue)) = content_color {
+                let pixel_index = super::pict::closest_clut_index(
+                    red,
+                    green,
+                    blue,
+                    &self.device_clut,
+                );
+                Self::fb_fill_rect_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    pixel_index,
+                );
+            }
+        }
         if game_managed {
             eprintln!(
                 "[DIALOG] Skipping white fill for game-managed dialog at ({},{},{},{}), {} items",
@@ -5781,9 +5854,9 @@ impl super::TrapDispatcher {
             themed_frame,
             proc_id,
             true,
-            !game_managed,
+            !game_managed && content_color.is_none(),
         ) {
-            if !game_managed {
+            if !game_managed && content_color.is_none() {
                 Self::fb_fill_rect(
                     bus,
                     screen_base,
@@ -6441,11 +6514,11 @@ impl super::TrapDispatcher {
                         .copied()
                         .unwrap_or(0)
                         != 0;
-                    self.fill_rect_clipped_to_dialog(
+                    self.fill_dialog_content_rect(
                         bus,
+                        dialog_ptr,
                         bounds,
                         (abs_top, abs_left, abs_bottom, abs_right),
-                        false,
                     );
                     self.draw_checkbox_with_enabled_and_inactive(
                         bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
@@ -6454,11 +6527,11 @@ impl super::TrapDispatcher {
                 }
                 6 => {
                     let inactive = self.dialog_control_inactive(bus, dialog_ptr, item_num);
-                    self.fill_rect_clipped_to_dialog(
+                    self.fill_dialog_content_rect(
                         bus,
+                        dialog_ptr,
                         bounds,
                         (abs_top, abs_left, abs_bottom, abs_right),
-                        false,
                     );
                     self.draw_radio_with_enabled_and_inactive(
                         bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, enabled,
@@ -6494,11 +6567,11 @@ impl super::TrapDispatcher {
                                 enabled,
                             ),
                             1 => {
-                                self.fill_rect_clipped_to_dialog(
+                                self.fill_dialog_content_rect(
                                     bus,
+                                    dialog_ptr,
                                     bounds,
                                     (abs_top, abs_left, abs_bottom, abs_right),
-                                    false,
                                 );
                                 self.draw_checkbox_with_enabled_and_inactive(
                                     bus,
@@ -6513,11 +6586,11 @@ impl super::TrapDispatcher {
                                 )
                             }
                             2 => {
-                                self.fill_rect_clipped_to_dialog(
+                                self.fill_dialog_content_rect(
                                     bus,
+                                    dialog_ptr,
                                     bounds,
                                     (abs_top, abs_left, abs_bottom, abs_right),
-                                    false,
                                 );
                                 self.draw_radio_with_enabled_and_inactive(
                                     bus,
@@ -6589,11 +6662,11 @@ impl super::TrapDispatcher {
                     }
                 }
                 8 => {
-                    self.fill_rect_clipped_to_dialog(
+                    self.fill_dialog_content_rect(
                         bus,
+                        dialog_ptr,
                         bounds,
                         (abs_top, abs_left, abs_bottom, abs_right),
-                        false,
                     );
                     self.draw_static_text(bus, abs_top, abs_left, abs_bottom, abs_right, &item.text)
                 }
@@ -10179,6 +10252,10 @@ impl super::TrapDispatcher {
                     } else {
                         0
                     };
+                    // A matching DCTab is copied and associated before the
+                    // dialog's initial visible shell is drawn.
+                    let dialog_color_table =
+                        self.copy_dialog_color_table_resource(bus, dialog_id);
                     // Honor the DLOG resource's visible flag per IM:I I-424.
                     let dlg_ptr = self.finish_dialog_creation(
                         bus,
@@ -10192,6 +10269,7 @@ impl super::TrapDispatcher {
                         0,
                         items_handle,
                         items,
+                        dialog_color_table,
                     );
                     // Install any 'pltt' resource whose id matches the
                     // dialog id onto the freshly-created window. This
@@ -15478,6 +15556,7 @@ impl super::TrapDispatcher {
                     ref_con,
                     items_handle,
                     items,
+                    None,
                 );
                 // Honor Pascal `behind` param at SP+10 per IM:I I-412.
                 self.apply_behind_parameter(bus, dlg_ptr, behind);
@@ -16044,6 +16123,7 @@ impl super::TrapDispatcher {
                             ref_con,
                             items_handle,
                             items,
+                            None,
                         );
                         self.apply_behind_parameter(bus, dlg_ptr, behind);
                         bus.write_long(sp + param_bytes, dlg_ptr);
@@ -17620,6 +17700,99 @@ mod tests {
             bus.read_byte(probe_addr),
             0x77,
             "visible GetNewDialog should draw the standard dialog background immediately"
+        );
+    }
+
+    #[test]
+    fn get_new_dialog_applies_matching_dctb_before_initial_draw() {
+        // A DCTab uses the WCTab layout: seed, flags, ctSize, then semantic
+        // part/RGB entries. GetNewDialog must copy and associate a matching
+        // resource before drawing or saving the initial visible shell.
+        // Macintosh Toolbox Essentials 1992, pp. 6-120 to 6-121.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((320 * 240) as u32);
+        bus.write_bytes(screen_base, &vec![0xEE; 320 * 240]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 320, 320, 240, 8);
+
+        let content_rgb = (0x4567, 0x5678, 0x6789);
+        disp.device_clut.fill([0, 0, 0]);
+        disp.device_clut[42] = [content_rgb.0, content_rgb.1, content_rgb.2];
+
+        let mut dlog = build_test_dlog((40, 50, 120, 250), 1921, 0);
+        dlog[10] = 1; // visible
+        let ditl = build_test_ditl_item(8, (8, 8, 24, 80), b"Color");
+        let mut dctb = Vec::with_capacity(48);
+        dctb.extend_from_slice(&0u32.to_be_bytes()); // ctSeed
+        dctb.extend_from_slice(&0u16.to_be_bytes()); // ctFlags
+        dctb.extend_from_slice(&4u16.to_be_bytes()); // five entries
+        for (part, rgb) in [
+            (0u16, content_rgb),
+            (1, (0, 0, 0)),
+            (2, (0, 0, 0)),
+            (3, (0xFFFF, 0xFFFF, 0xFFFF)),
+            (4, (0xAAAA, 0xAAAA, 0xAAAA)),
+        ] {
+            dctb.extend_from_slice(&part.to_be_bytes());
+            dctb.extend_from_slice(&rgb.0.to_be_bytes());
+            dctb.extend_from_slice(&rgb.1.to_be_bytes());
+            dctb.extend_from_slice(&rgb.2.to_be_bytes());
+        }
+
+        disp.install_test_resource(&mut bus, *b"DLOG", 1920, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1921, &ditl);
+        let resource_ptr = disp.install_test_resource(&mut bus, *b"dctb", 1920, &dctb);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1920); // dialogID
+
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        let aux_handle = disp.window_aux_records[&dialog_ptr];
+        let aux_ptr = bus.read_long(aux_handle);
+        let table_handle = bus.read_long(aux_ptr + TrapDispatcher::AUX_WIN_CTABLE_OFFSET);
+        let table_ptr = bus.read_long(table_handle);
+        assert_ne!(table_ptr, resource_ptr, "GetNewDialog must copy the DCTab");
+        assert_ne!(bus.read_long(table_ptr), 0, "the copied table gets a fresh seed");
+        assert_eq!(bus.read_word(table_ptr + 6), 4);
+        assert_eq!(
+            (
+                bus.read_word(dialog_ptr + 42),
+                bus.read_word(dialog_ptr + 44),
+                bus.read_word(dialog_ptr + 46),
+            ),
+            content_rgb,
+            "the DCTab content role must become the dialog port background"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 100 * 320 + 200),
+            42,
+            "the first visible shell must use the DCTab content color"
+        );
+        assert!(disp.dialog_visible_snapshots.contains_key(&dialog_ptr));
+
+        // Retained-dialog item redraws erase statText/control rectangles
+        // before repainting them. Those erasures must use the same content
+        // role instead of reintroducing white patches.
+        let item_probe = screen_base + 60 * 320 + 120;
+        bus.write_byte(item_probe, 0xEE);
+        let items = disp.dialog_items[&dialog_ptr].clone();
+        disp.redraw_standard_dialog_items(
+            &mut bus,
+            (40, 50, 120, 250),
+            &items,
+            1,
+            "",
+            -1,
+            dialog_ptr,
+        );
+        assert_eq!(
+            bus.read_byte(item_probe),
+            42,
+            "retained statText redraws must erase with the DCTab content color"
         );
     }
 
