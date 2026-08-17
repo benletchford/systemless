@@ -142,6 +142,11 @@ fn align_pict_pos(pos: u32) -> u32 {
     }
 }
 
+fn checked_skip_pict_data(pos: u32, length_field_size: u32, data_len: u32) -> Option<u32> {
+    let next = pos.checked_add(length_field_size)?.checked_add(data_len)?;
+    next.checked_add(next & 1)
+}
+
 fn skip_reserved_v1_opcode(bus: &MacMemoryBus, opcode: u16, pos: u32) -> Option<u32> {
     match opcode {
         0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => Some(pos + 8),
@@ -1178,31 +1183,62 @@ pub fn draw_picture(
             }
             0x88..=0x8C => {}
             0x90 | 0x91 => {
-                // BitsRect / BitsRgn - 1bpp bitmap
-                pos = parse_bits_rect(
-                    bus,
-                    pos,
-                    opcode == 0x91,
-                    dst_top,
-                    dst_left,
-                    frame_top,
-                    frame_left,
-                    scale_x,
-                    scale_y,
-                    screen_mode,
-                    device_clut,
-                    fg_idx,
-                    bg_idx,
-                    clip_region.as_ref(),
-                    dst_clip,
-                );
+                // BitsRect / BitsRgn. The rowBytes high bit selects an
+                // indexed PixMap instead of a 1-bit BitMap; unlike the
+                // $0098/$0099 forms, its pixel data is unpacked.
+                // Imaging With QuickDraw 1994, Appendix A, pp. A-13 and A-17.
+                if bus.read_word(pos) & 0x8000 != 0 {
+                    let (new_pos, clut16) = parse_indexed_bits_rect(
+                        bus,
+                        pos,
+                        opcode == 0x91,
+                        false,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        device_clut,
+                        device_ct_seed,
+                        fg_idx,
+                        bg_idx,
+                        clip_region.as_ref(),
+                        dst_clip,
+                    );
+                    pos = new_pos;
+                    if preferred_clut.is_none() {
+                        preferred_clut = clut16.clone();
+                    }
+                    last_clut = clut16.or(last_clut);
+                } else {
+                    pos = parse_bits_rect(
+                        bus,
+                        pos,
+                        opcode == 0x91,
+                        dst_top,
+                        dst_left,
+                        frame_top,
+                        frame_left,
+                        scale_x,
+                        scale_y,
+                        screen_mode,
+                        device_clut,
+                        fg_idx,
+                        bg_idx,
+                        clip_region.as_ref(),
+                        dst_clip,
+                    );
+                }
             }
             0x98 | 0x99 => {
                 // PackBitsRect / PackBitsRgn - packed bitmap
-                let (new_pos, clut16) = parse_pack_bits_rect(
+                let (new_pos, clut16) = parse_indexed_bits_rect(
                     bus,
                     pos,
                     opcode == 0x99,
+                    true,
                     dst_top,
                     dst_left,
                     frame_top,
@@ -1318,16 +1354,26 @@ pub fn draw_picture(
                     // v2 reserved opcode skip rules
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        let Some(next) = checked_skip_pict_data(pos, 2, data_len) else {
+                            eprintln!(
+                                "[PICT] Reserved v2 opcode 0x{opcode:04X} length overflow - stopping"
+                            );
+                            break;
+                        };
+                        pos = next;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                         // 0 bytes — both reserved-range blocks have no payload
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        pos += 4 + data_len;
-                        pos = align_pict_pos(pos);
+                        let Some(next) = checked_skip_pict_data(pos, 4, data_len) else {
+                            eprintln!(
+                                "[PICT] Reserved v2 opcode 0x{opcode:04X} length overflow - stopping"
+                            );
+                            break;
+                        };
+                        pos = next;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -1585,6 +1631,9 @@ pub(crate) fn peek_initial_packbits_clut(
                 pos += 2 + data_len;
                 pos = align_pict_pos(pos);
             }
+            0x90 | 0x91 if bus.read_word(pos) & 0x8000 != 0 => {
+                return peek_pack_bits_rect_clut(bus, pos);
+            }
             0x98 | 0x99 => return peek_pack_bits_rect_clut(bus, pos),
             0xA1 => {
                 pos += 2;
@@ -1600,15 +1649,13 @@ pub(crate) fn peek_initial_packbits_clut(
                 if is_v2 {
                     if (0x00A2..=0x00AF).contains(&opcode) {
                         let data_len = bus.read_word(pos) as u32;
-                        pos += 2 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos = checked_skip_pict_data(pos, 2, data_len)?;
                     } else if (0x00B0..=0x00CF).contains(&opcode)
                         || (0x8000..=0x80FF).contains(&opcode)
                     {
                     } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                         let data_len = bus.read_long(pos);
-                        pos += 4 + data_len;
-                        pos = align_pict_pos(pos);
+                        pos = checked_skip_pict_data(pos, 4, data_len)?;
                     } else if (0x0100..=0x7FFF).contains(&opcode) {
                         pos += u32::from(opcode >> 8) * 2;
                     } else {
@@ -1894,6 +1941,9 @@ fn skip_pixdata_bytes(bytes: &[u8], mut pos: usize, pm: &PixMapInfo) -> Option<u
 }
 
 fn skip_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
+    if read_pict_u16(bytes, pos)? & 0x8000 != 0 {
+        return skip_indexed_bits_rect_bytes(bytes, pos, has_rgn, false);
+    }
     let row_bytes = usize::from(read_pict_u16(bytes, pos)? & 0x3FFF);
     let bounds_top = read_pict_u16(bytes, pos + 2)? as i16;
     let bounds_bottom = read_pict_u16(bytes, pos + 6)? as i16;
@@ -1906,7 +1956,16 @@ fn skip_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<u
     pict_add(pos, row_bytes.checked_mul(height)?, bytes.len())
 }
 
-fn skip_pack_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
+fn skip_pack_bits_rect_bytes(bytes: &[u8], pos: usize, has_rgn: bool) -> Option<usize> {
+    skip_indexed_bits_rect_bytes(bytes, pos, has_rgn, true)
+}
+
+fn skip_indexed_bits_rect_bytes(
+    bytes: &[u8],
+    mut pos: usize,
+    has_rgn: bool,
+    packed: bool,
+) -> Option<usize> {
     let row_bytes_raw = read_pict_u16(bytes, pos)?;
     let is_pixmap = (row_bytes_raw & 0x8000) != 0;
     let pm = if is_pixmap {
@@ -1937,7 +1996,16 @@ fn skip_pack_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Opt
         let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
         pos = pict_add(pos, rgn_size, bytes.len())?;
     }
-    skip_pixdata_bytes(bytes, pos, &pm)
+    if packed {
+        skip_pixdata_bytes(bytes, pos, &pm)
+    } else {
+        let height = usize::try_from((pm.bounds_bottom - pm.bounds_top).max(0)).ok()?;
+        pict_add(
+            pos,
+            usize::from(pm.row_bytes).checked_mul(height)?,
+            bytes.len(),
+        )
+    }
 }
 
 fn skip_direct_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
@@ -4422,11 +4490,12 @@ fn parse_bits_rect(
     pos
 }
 
-/// Parse PackBitsRect / PackBitsRgn (opcode 0x0098/0x0099)
-fn parse_pack_bits_rect(
+/// Parse indexed PixMap forms of BitsRect/BitsRgn and PackBitsRect/PackBitsRgn.
+fn parse_indexed_bits_rect(
     bus: &mut MacMemoryBus,
     mut pos: u32,
     has_rgn: bool,
+    packed: bool,
     dst_top: i16,
     dst_left: i16,
     frame_top: i16,
@@ -4441,7 +4510,7 @@ fn parse_pack_bits_rect(
     clip_region: Option<&PictureRegion>,
     dst_clip: Option<&DstClip>,
 ) -> (u32, Option<Vec<[u16; 3]>>) {
-    // In PICT data, PackBitsRect starts with rowBytes directly (no baseAddr)
+    // These PICT opcodes start with rowBytes directly (no baseAddr).
     // Check if this is a PixMap (row_bytes high bit set) or BitMap
     let row_bytes_raw = bus.read_word(pos); // peek at rowBytes field (first word)
     let is_pixmap = (row_bytes_raw & 0x8000) != 0;
@@ -4477,11 +4546,13 @@ fn parse_pack_bits_rect(
     pos = new_pos;
 
     if trace_pict_enabled() {
+        let kind = if packed { "PackBits" } else { "Bits" };
         // Include destination base + rowBytes so each PackBitsRect decode
         // can be correlated to the specific offscreen GWorld buffer it
         // writes into.
         eprintln!(
-            "[PICT] PackBits{} pixelSize={} cmpCount={} rowBytes={} bounds=({}, {}, {}, {}) dstBase=${:08X} dstRowBytes={}",
+            "[PICT] {}{} pixelSize={} cmpCount={} rowBytes={} bounds=({}, {}, {}, {}) dstBase=${:08X} dstRowBytes={}",
+            kind,
             if has_rgn { "Rgn" } else { "Rect" },
             pm.pixel_size,
             pm.cmp_count,
@@ -4519,8 +4590,10 @@ fn parse_pack_bits_rect(
     let mode_base = mode & 0x003F;
 
     if trace_pict_enabled() {
+        let kind = if packed { "PackBits" } else { "Bits" };
         eprintln!(
-            "[PICT] PackBits{} mode={} src=({},{}..{},{} ) dst=({},{}..{},{} )",
+            "[PICT] {}{} mode={} src=({},{}..{},{} ) dst=({},{}..{},{} )",
+            kind,
             if has_rgn { "Rgn" } else { "Rect" },
             mode,
             src_top,
@@ -4627,8 +4700,9 @@ fn parse_pack_bits_rect(
     let mut row_data = Vec::with_capacity(pm.row_bytes as usize);
     let mut blit_scratch = Vec::new();
 
-    if pm.row_bytes < 8 {
-        // Small rowBytes: data is unpacked (not PackBits compressed)
+    if !packed || pm.row_bytes < 8 {
+        // BitsRect/BitsRgn data is always unpacked. PackBits forms also
+        // store small rows unpacked. Imaging With QuickDraw 1994, A-13.
         for row in 0..height {
             row_data.resize(pm.row_bytes as usize, 0);
             bus.read_bytes_into(pos, &mut row_data);
@@ -6222,7 +6296,7 @@ mod tests {
     use super::{
         blit_row, build_device_itable, build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
-        dst_clip_row_spans, peek_initial_packbits_clut, read_color_table,
+        dst_clip_row_spans, peek_initial_packbits_clut, picture_stream_len, read_color_table,
         try_blit_packbits_8bpp_src_copy_fast, try_blit_row_8bpp_src_copy_fast, DstClip,
         DstClipRegion, PictIndexedTransfer, PixMapInfo,
     };
@@ -7871,5 +7945,145 @@ mod tests {
         }
         assert!(saw_fg, "striped fillOval must produce some fg_idx pixels");
         assert!(saw_bg, "striped fillOval must produce some bg_idx pixels");
+    }
+
+    #[test]
+    fn pict_bitsrect_decodes_unpacked_four_bit_pixmap() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+
+        bus.write_byte(p, 0x00); // NOP, aligns the version opcode.
+        p += 1;
+        bus.write_byte(p, 0x11); // VersionOp.
+        p += 1;
+        bus.write_byte(p, 0x02);
+        p += 1;
+        bus.write_byte(p, 0xFF);
+        p += 1;
+        bus.write_word(p, 0x0090); // BitsRect with unpacked PixMap data.
+        p += 2;
+        bus.write_word(p, 0x8002); // PixMap flag and two bytes per row.
+        p += 2;
+        for value in [0i16, 0, 1, 4] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+        bus.write_word(p, 0); // pmVersion.
+        p += 2;
+        bus.write_word(p, 1); // packType: unpacked.
+        p += 2;
+        bus.write_long(p, 0); // packSize.
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // hRes.
+        p += 4;
+        bus.write_long(p, 0x0048_0000); // vRes.
+        p += 4;
+        bus.write_word(p, 0); // indexed pixel type.
+        p += 2;
+        bus.write_word(p, 4); // pixelSize.
+        p += 2;
+        bus.write_word(p, 1); // cmpCount.
+        p += 2;
+        bus.write_word(p, 4); // cmpSize.
+        p += 2;
+        for _ in 0..3 {
+            bus.write_long(p, 0); // planeBytes, pmTable, pmReserved.
+            p += 4;
+        }
+
+        bus.write_long(p, 0); // ctSeed.
+        p += 4;
+        bus.write_word(p, 0); // explicit ColorSpec indexes.
+        p += 2;
+        bus.write_word(p, 1); // two entries.
+        p += 2;
+        for (index, component) in [(0u16, 0u16), (1, 0xFFFF)] {
+            bus.write_word(p, index);
+            p += 2;
+            for _ in 0..3 {
+                bus.write_word(p, component);
+                p += 2;
+            }
+        }
+        for _ in 0..2 {
+            for value in [0i16, 0, 1, 4] {
+                bus.write_word(p, value as u16);
+                p += 2;
+            }
+        }
+        bus.write_word(p, 0); // srcCopy.
+        p += 2;
+        bus.write_bytes(p, &[0x01, 0x10]);
+        p += 2;
+        bus.write_word(p, 0x00FF); // EndOfPicture.
+        p += 2;
+
+        bus.write_word(pic, (p - pic) as u16);
+        for (offset, value) in [(2, 0u16), (4, 0), (6, 1), (8, 4)] {
+            bus.write_word(pic + offset, value);
+        }
+        let mut clut = [[0u16; 3]; 256];
+        clut[7] = [0xFFFF; 3];
+
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            1,
+            4,
+            (screen_base, 4, 4, 1, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok);
+        assert_eq!(bus.read_bytes(screen_base, 4), vec![0, 7, 7, 0]);
+        assert_eq!(
+            picture_stream_len(&bus.read_bytes(pic, (p - pic) as usize)),
+            Some((p - pic) as usize)
+        );
+    }
+
+    #[test]
+    fn pict_reserved_opcode_length_overflow_stops_without_panicking() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pic = 0x10_0000u32;
+        for (offset, value) in [(2, 0u16), (4, 0), (6, 1), (8, 1)] {
+            bus.write_word(pic + offset, value);
+        }
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x00);
+        p += 1;
+        bus.write_byte(p, 0x11);
+        p += 1;
+        bus.write_byte(p, 0x02);
+        p += 1;
+        bus.write_byte(p, 0xFF);
+        p += 1;
+        bus.write_word(p, 0x8100);
+        p += 2;
+        bus.write_long(p, u32::MAX);
+        p += 4;
+        bus.write_word(pic, (p - pic) as u16);
+
+        let clut = [[0u16; 3]; 256];
+        let result = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            1,
+            1,
+            (0x08_0000, 1, 1, 1, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(result.0);
     }
 }
