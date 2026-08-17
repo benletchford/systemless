@@ -3759,7 +3759,7 @@ impl super::TrapDispatcher {
                     // addressing read this and ExitToShell with a
                     // "needs 32-bit addressing" alert if bit 0 is clear.
                     b"addr" => {
-                        cpu.write_reg(Register::A0, 0b111);
+                        cpu.write_reg(Register::A0, 0b110 | u32::from(self.mmu_mode != 0));
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltHardwareAttr ('hdwr') -> low-level hardware attrs.
@@ -13698,6 +13698,21 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A0), 4);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_addressing_attributes_follow_current_mmu_mode() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"addr"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 0b111);
+
+        disp.mmu_mode = 0;
+        bus.set_addressing_32_bit(false);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"addr"));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 0b110);
     }
 
     #[test]
