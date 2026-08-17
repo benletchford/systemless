@@ -14,6 +14,16 @@ static TRACE_DRAGWINDOW: OnceLock<bool> = OnceLock::new();
 type WindowRect = (i16, i16, i16, i16);
 type HiddenWindowLocalRegions = (WindowRect, Option<WindowRect>);
 
+struct WindTemplate {
+    bounds: WindowRect,
+    proc_id: i16,
+    visible: bool,
+    go_away: bool,
+    ref_con: u32,
+    title: String,
+    position: u16,
+}
+
 fn trace_inval_enabled() -> bool {
     *TRACE_INVAL.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some())
 }
@@ -60,6 +70,39 @@ impl super::TrapDispatcher {
     const AUX_WIN_RESERVED_OFFSET: u32 = 20;
     const AUX_WIN_REFCON_OFFSET: u32 = 24;
     const AUX_WIN_RECORD_SIZE: u32 = 28;
+
+    fn parse_wind_template(bus: &MacMemoryBus, ptr: u32, data_len: u32) -> Option<WindTemplate> {
+        // A classic WIND ends after its Pascal title. System 7 optionally
+        // appends a word-aligned positioning specification after that title.
+        if data_len < 19 {
+            return None;
+        }
+        let title_len = bus.read_byte(ptr + 18) as u32;
+        let title_end = 19u32.checked_add(title_len)?;
+        if title_end > data_len {
+            return None;
+        }
+        let padded_title_end = title_end.checked_add(1)? & !1;
+        let position = if padded_title_end
+            .checked_add(2)
+            .is_some_and(|end| end <= data_len)
+        {
+            bus.read_word(ptr + padded_title_end)
+        } else {
+            0
+        };
+        let title =
+            String::from_utf8_lossy(&bus.read_bytes(ptr + 19, title_len as usize)).into_owned();
+        Some(WindTemplate {
+            bounds: Self::read_rect(bus, ptr),
+            proc_id: bus.read_word(ptr + 8) as i16,
+            visible: bus.read_byte(ptr + 10) != 0,
+            go_away: bus.read_byte(ptr + 12) != 0,
+            ref_con: bus.read_long(ptr + 14),
+            title,
+            position,
+        })
+    }
 
     pub(crate) fn finish_drag_result<C: CpuOps>(
         cpu: &mut C,
@@ -3003,18 +3046,25 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
                 };
-                let top = bus.read_word(wind_ptr) as i16;
-                let left = bus.read_word(wind_ptr + 2) as i16;
-                let bottom = bus.read_word(wind_ptr + 4) as i16;
-                let right = bus.read_word(wind_ptr + 6) as i16;
-                let proc_id = bus.read_word(wind_ptr + 8) as i16;
-                let visible = bus.read_byte(wind_ptr + 10) != 0;
-                let go_away = bus.read_byte(wind_ptr + 12) != 0;
-                let ref_con = bus.read_long(wind_ptr + 14);
-                let title = String::from_utf8_lossy(&bus.read_pstring(wind_ptr + 18)).into_owned();
+                let wind_len = bus.get_alloc_size(wind_ptr).unwrap_or(0);
+                let Some(template) = Self::parse_wind_template(bus, wind_ptr, wind_len) else {
+                    eprintln!(
+                        "[WINDOW] GetNewWindow: WIND {} is malformed, returning NIL",
+                        window_id
+                    );
+                    bus.write_long(sp + 10, 0);
+                    cpu.write_reg(Register::A7, sp + 10);
+                    return Some(Ok(()));
+                };
+                let (top, left, bottom, right) = self.positioned_window_bounds(
+                    bus,
+                    template.bounds,
+                    template.position,
+                    template.proc_id,
+                );
                 eprintln!(
-                    "[WINDOW] GetNewWindow: WIND {} bounds=({},{},{},{}) procID={} title=\"{}\"",
-                    window_id, top, left, bottom, right, proc_id, title
+                    "[WINDOW] GetNewWindow: WIND {} bounds=({},{},{},{}) procID={} position=${:04X} title=\"{}\"",
+                    window_id, top, left, bottom, right, template.proc_id, template.position, template.title
                 );
 
                 let storage_ptr = bus.read_long(sp + 4);
@@ -3036,12 +3086,12 @@ impl super::TrapDispatcher {
                     left,
                     bottom,
                     right,
-                    &title,
-                    proc_id,
-                    visible,
+                    &template.title,
+                    template.proc_id,
+                    template.visible,
                     true,
-                    go_away,
-                    ref_con,
+                    template.go_away,
+                    template.ref_con,
                 );
                 self.port_draw_states
                     .insert(window_ptr, PortDrawState::default());
@@ -3062,13 +3112,24 @@ impl super::TrapDispatcher {
                 let behind = bus.read_long(sp);
                 self.apply_behind_parameter(bus, window_ptr, behind);
                 self.activate_frontmost_created_window_if_needed(
-                    bus, window_ptr, visible, behind, old_front,
+                    bus,
+                    window_ptr,
+                    template.visible,
+                    behind,
+                    old_front,
                 );
-                self.paint_new_window_content(bus, cpu, window_ptr, visible);
+                self.paint_new_window_content(bus, cpu, window_ptr, template.visible);
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
-                self.arm_window_def_on_create(cpu, bus, window_ptr, proc_id, true, visible);
+                self.arm_window_def_on_create(
+                    cpu,
+                    bus,
+                    window_ptr,
+                    template.proc_id,
+                    true,
+                    template.visible,
+                );
                 Ok(())
             }
 
@@ -3181,18 +3242,25 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
                 };
-                let top = bus.read_word(wind_ptr) as i16;
-                let left = bus.read_word(wind_ptr + 2) as i16;
-                let bottom = bus.read_word(wind_ptr + 4) as i16;
-                let right = bus.read_word(wind_ptr + 6) as i16;
-                let proc_id = bus.read_word(wind_ptr + 8) as i16;
-                let visible = bus.read_byte(wind_ptr + 10) != 0;
-                let go_away = bus.read_byte(wind_ptr + 12) != 0;
-                let ref_con = bus.read_long(wind_ptr + 14);
-                let title = String::from_utf8_lossy(&bus.read_pstring(wind_ptr + 18)).into_owned();
+                let wind_len = bus.get_alloc_size(wind_ptr).unwrap_or(0);
+                let Some(template) = Self::parse_wind_template(bus, wind_ptr, wind_len) else {
+                    eprintln!(
+                        "[WINDOW] GetNewCWindow: WIND {} is malformed, returning NIL",
+                        window_id
+                    );
+                    bus.write_long(sp + 10, 0);
+                    cpu.write_reg(Register::A7, sp + 10);
+                    return Some(Ok(()));
+                };
+                let (top, left, bottom, right) = self.positioned_window_bounds(
+                    bus,
+                    template.bounds,
+                    template.position,
+                    template.proc_id,
+                );
                 eprintln!(
-                    "[WINDOW] GetNewCWindow: WIND {} bounds=({},{},{},{}) procID={} title=\"{}\"",
-                    window_id, top, left, bottom, right, proc_id, title
+                    "[WINDOW] GetNewCWindow: WIND {} bounds=({},{},{},{}) procID={} position=${:04X} title=\"{}\"",
+                    window_id, top, left, bottom, right, template.proc_id, template.position, template.title
                 );
 
                 // Honor wStorage at SP+4 (same layout as GetNewWindow).
@@ -3213,12 +3281,12 @@ impl super::TrapDispatcher {
                     left,
                     bottom,
                     right,
-                    &title,
-                    proc_id,
-                    visible,
+                    &template.title,
+                    template.proc_id,
+                    template.visible,
                     true,
-                    go_away,
-                    ref_con,
+                    template.go_away,
+                    template.ref_con,
                 );
                 let wctab = self.copy_window_color_table_resource(bus, window_id);
                 if wctab != 0 {
@@ -3235,13 +3303,24 @@ impl super::TrapDispatcher {
                 let behind = bus.read_long(sp);
                 self.apply_behind_parameter(bus, window_ptr, behind);
                 self.activate_frontmost_created_window_if_needed(
-                    bus, window_ptr, visible, behind, old_front,
+                    bus,
+                    window_ptr,
+                    template.visible,
+                    behind,
+                    old_front,
                 );
-                self.paint_new_window_content(bus, cpu, window_ptr, visible);
+                self.paint_new_window_content(bus, cpu, window_ptr, template.visible);
 
                 bus.write_long(sp + 10, window_ptr);
                 cpu.write_reg(Register::A7, sp + 10);
-                self.arm_window_def_on_create(cpu, bus, window_ptr, proc_id, true, visible);
+                self.arm_window_def_on_create(
+                    cpu,
+                    bus,
+                    window_ptr,
+                    template.proc_id,
+                    true,
+                    template.visible,
+                );
                 Ok(())
             }
 
@@ -4960,6 +5039,23 @@ mod tests {
         ref_con: u32,
         title: &[u8],
     ) {
+        install_positioned_wind_resource(
+            disp, bus, window_id, bounds, proc_id, visible, go_away, ref_con, title, None,
+        );
+    }
+
+    fn install_positioned_wind_resource(
+        disp: &mut super::super::TrapDispatcher,
+        bus: &mut crate::memory::MacMemoryBus,
+        window_id: i16,
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        visible: bool,
+        go_away: bool,
+        ref_con: u32,
+        title: &[u8],
+        position: Option<u16>,
+    ) {
         let title_len = title.len().min(255) as u8;
         let mut wind_data = vec![0; 18 + 1 + title_len as usize];
         wind_data[0..2].copy_from_slice(&bounds.0.to_be_bytes());
@@ -4972,6 +5068,12 @@ mod tests {
         wind_data[14..18].copy_from_slice(&ref_con.to_be_bytes());
         wind_data[18] = title_len;
         wind_data[19..].copy_from_slice(&title[..title_len as usize]);
+        if let Some(position) = position {
+            if wind_data.len() % 2 != 0 {
+                wind_data.push(0);
+            }
+            wind_data.extend_from_slice(&position.to_be_bytes());
+        }
 
         let wind_ptr = bus.alloc(wind_data.len() as u32);
         bus.write_bytes(wind_ptr, &wind_data);
@@ -6666,6 +6768,64 @@ mod tests {
             "GetNewWindow should return a non-zero window pointer"
         );
         assert_eq!(disp.front_window, window_ptr);
+    }
+
+    #[test]
+    fn classic_wind_template_does_not_read_a_position_word_past_its_length() {
+        let (_disp, _cpu, mut bus) = setup();
+        let wind_ptr = bus.alloc(22);
+        bus.write_word(wind_ptr + 4, 100);
+        bus.write_word(wind_ptr + 6, 200);
+        bus.write_byte(wind_ptr + 18, 0);
+        bus.write_word(wind_ptr + 20, 0x280A);
+
+        let template = super::super::TrapDispatcher::parse_wind_template(&bus, wind_ptr, 19)
+            .expect("classic WIND template");
+        assert_eq!(template.bounds, (0, 0, 100, 200));
+        assert_eq!(template.title, "");
+        assert_eq!(
+            template.position, 0,
+            "bytes beyond the classic resource length must not be parsed"
+        );
+    }
+
+    #[test]
+    fn get_new_window_constructors_apply_center_main_screen_positioning() {
+        for trap_num in [0x1BD, 0x246] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let screen_base = bus.alloc((800 * 600) as u32);
+            bus.write_long(0x0824, screen_base);
+            disp.screen_mode = (screen_base, 800, 800, 600, 8);
+            install_positioned_wind_resource(
+                &mut disp,
+                &mut bus,
+                128,
+                (42, 7, 436, 502),
+                5,
+                true,
+                false,
+                0,
+                b"",
+                Some(0x280A),
+            );
+
+            let sp = TEST_SP - 10;
+            cpu.write_reg(Register::A7, sp);
+            for i in 0..10u32 {
+                bus.write_byte(sp + i, 0);
+            }
+            bus.write_word(sp + 8, 128);
+
+            let result = dispatch(&mut disp, trap_num, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            let window_ptr = bus.read_long(TEST_SP);
+            assert_ne!(window_ptr, 0);
+            assert_eq!(
+                disp.window_global_port_rect(&bus, window_ptr),
+                (103, 152, 497, 647),
+                "trap ${trap_num:03X} should center the WIND content bounds"
+            );
+        }
     }
 
     /// GetNewWindow creates an old-style GrafPort even when Color QuickDraw

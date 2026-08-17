@@ -3788,7 +3788,7 @@ impl super::TrapDispatcher {
         (bounds, items_id, stages, position)
     }
 
-    fn positioned_dialog_bounds(
+    pub(crate) fn positioned_window_bounds(
         &self,
         bus: &MacMemoryBus,
         mut bounds: (i16, i16, i16, i16),
@@ -3901,7 +3901,7 @@ impl super::TrapDispatcher {
             bus.write_long(handle, ditl_data);
             Self::duplicate_handle_data(bus, handle)
         };
-        let bounds = self.positioned_dialog_bounds(bus, bounds, position, 1);
+        let bounds = self.positioned_window_bounds(bus, bounds, position, 1);
         let dialog_ptr = self.finish_dialog_creation(
             bus,
             cpu,
@@ -10192,7 +10192,7 @@ impl super::TrapDispatcher {
 
                     // Apply System 7 DLOG positioning constants.
                     // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126.
-                    bounds = self.positioned_dialog_bounds(bus, bounds, position, proc_id);
+                    bounds = self.positioned_window_bounds(bus, bounds, position, proc_id);
 
                     eprintln!(
                         "[TRAP] GetNewDialog({}) bounds=({},{},{},{}) raw_bounds=({},{},{},{}) position=${:04X} len={} procID={} items={} title=\"{}\"",
