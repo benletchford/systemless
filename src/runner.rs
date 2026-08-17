@@ -5,7 +5,7 @@ use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::loader::ppc::{
     PpcDecodedAiffPlaybackRecord, PpcDecodedBufferCommandRecord, PpcDrawSprocketTraceEntry,
     PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding, PpcInputSnapshot,
-    PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3SceneReplay,
+    PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay,
     PpcQ3SoftwareRenderStats, PpcQueuedEvent, PpcRgbColor, PpcSoundCompletionRecord,
     PpcSoundDoubleBackRecord, PpcSoundDoubleBufferPlaybackRecord,
 };
@@ -1669,6 +1669,10 @@ pub struct FixtureRunner {
     /// Incremented only for non-empty completed-frame snapshots, matching
     /// the renderer's frame accounting.
     q3_completed_frame_index: usize,
+    /// When enabled, supported completed QD3D frames are prepared for a host
+    /// GPU instead of being rasterized into guest memory.
+    external_q3_renderer_enabled: bool,
+    pending_q3_gpu_frame: Option<PpcQ3GpuFrame>,
 }
 
 impl FixtureRunner {
@@ -1746,7 +1750,20 @@ impl FixtureRunner {
             ppc_import_histogram: HashMap::new(),
             ppc_unimpl_histogram: HashMap::new(),
             q3_completed_frame_index: 0,
+            external_q3_renderer_enabled: false,
+            pending_q3_gpu_frame: None,
         }
+    }
+
+    pub fn set_external_q3_renderer_enabled(&mut self, enabled: bool) {
+        self.external_q3_renderer_enabled = enabled;
+        if !enabled {
+            self.pending_q3_gpu_frame = None;
+        }
+    }
+
+    pub fn take_q3_gpu_frame(&mut self) -> Option<PpcQ3GpuFrame> {
+        self.pending_q3_gpu_frame.take()
     }
 
     /// Returns true once guest execution has stopped.
@@ -5721,6 +5738,13 @@ impl FixtureRunner {
         ppc_app: &mut PpcLoadedApp,
         pc: u32,
     ) -> PpcQ3SoftwareRenderStats {
+        if self.external_q3_renderer_enabled {
+            if let Some(frame) = ppc_app.take_completed_q3_gpu_frame() {
+                self.pending_q3_gpu_frame = Some(frame);
+                self.q3_completed_frame_index = self.q3_completed_frame_index.saturating_add(1);
+                return PpcQ3SoftwareRenderStats::default();
+            }
+        }
         let qd3d_dump_frame = qd3d_dump_frame_index();
         let q3_frame_start = self.q3_completed_frame_index;
         let mut next_q3_frame_index = self.q3_completed_frame_index;
