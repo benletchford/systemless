@@ -5025,6 +5025,10 @@ impl super::TrapDispatcher {
         if !self.window_visible(bus, dialog_ptr) {
             return;
         }
+        let vis_handle = bus.read_long(dialog_ptr + 24);
+        if vis_handle != 0 && Self::region_handle_rect(bus, vis_handle).is_none() {
+            return;
+        }
         let Some(items) = self.dialog_items.get(&dialog_ptr).cloned() else {
             return;
         };
@@ -5971,6 +5975,18 @@ impl super::TrapDispatcher {
         skip_pictures: bool,
         dialog_ptr: u32,
     ) {
+        // DrawDialog renders through the dialog window's port, so QuickDraw
+        // clips every item to that port's visRgn. HLE dialog primitives write
+        // directly to the framebuffer; bail out when the Window Manager has
+        // made the dialog fully occluded rather than letting a background
+        // dialog overwrite the windows in front of it.
+        if dialog_ptr != 0 {
+            let vis_handle = bus.read_long(dialog_ptr + 24);
+            if vis_handle != 0 && Self::region_handle_rect(bus, vis_handle).is_none() {
+                self.dialog_initial_draw_deferred.remove(&dialog_ptr);
+                return;
+            }
+        }
         self.ensure_dialog_background_saved(bus, dialog_ptr, bounds);
         self.dialog_initial_draw_deferred.remove(&dialog_ptr);
 
@@ -24806,6 +24822,65 @@ mod tests {
             assert_eq!(bus.read_byte(probe_addr), 0); // white in 8bpp CLUT
         } else {
             assert_eq!(bus.read_byte(probe_addr) & probe_bit, 0);
+        }
+    }
+
+    #[test]
+    fn draw_dialog_does_not_paint_a_fully_occluded_dialog() {
+        // Dialog items draw through the dialog port and are clipped by its
+        // visRgn (Inside Macintosh Volume I, I-309). An empty visRgn means a
+        // window in front completely covers this dialog.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 30);
+        bus.write_word(dialog_ptr + 22, 40);
+        let empty_vis_data = bus.alloc(10);
+        bus.write_word(empty_vis_data, 10);
+        bus.write_long(empty_vis_data + 2, 0);
+        bus.write_long(empty_vis_data + 6, 0);
+        let empty_vis = bus.alloc(4);
+        bus.write_long(empty_vis, empty_vis_data);
+        bus.write_long(dialog_ptr + 24, empty_vis);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 8,
+                rect: (0, 0, 16, 32),
+                text: "Hidden".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let probe_x = 4u32;
+        let probe_y = 4u32;
+        let probe_addr = if pixel_size == 8 {
+            screen_base + probe_y * row_bytes + probe_x
+        } else {
+            screen_base + probe_y * row_bytes + (probe_x / 8)
+        };
+        let probe_bit = 1 << (7 - (probe_x % 8));
+        if pixel_size == 8 {
+            bus.write_byte(probe_addr, 0xFF);
+        } else {
+            bus.write_byte(probe_addr, bus.read_byte(probe_addr) | probe_bit);
+        }
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        let result = disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        if pixel_size == 8 {
+            assert_eq!(bus.read_byte(probe_addr), 0xFF);
+        } else {
+            assert_ne!(bus.read_byte(probe_addr) & probe_bit, 0);
         }
     }
 

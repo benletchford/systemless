@@ -4315,6 +4315,10 @@ impl super::TrapDispatcher {
             .dialog_visible_snapshots
             .iter()
             .filter_map(|(&dialog_ptr, snapshot)| {
+                let vis_handle = bus.read_long(dialog_ptr + 24);
+                if vis_handle != 0 && Self::region_handle_rect(bus, vis_handle).is_none() {
+                    return None;
+                }
                 // A dialog the application painted itself owns its pixels;
                 // replaying the snapshot the HLE captured before the app drew
                 // would repaint the stale contents.
@@ -6009,6 +6013,48 @@ mod redraw_chrome_tests {
             bus.read_byte(screen_base + 12 * 64 + 12),
             0x77,
             "the exposed part of a retained background dialog should still be restored"
+        );
+    }
+
+    #[test]
+    fn restore_visible_dialog_snapshots_skips_fully_occluded_dialogs() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let bounds = (10, 10, 30, 30);
+        for y in 10..30u32 {
+            for x in 10..30u32 {
+                bus.write_byte(screen_base + y * 64 + x, 0x22);
+            }
+        }
+        let stale_pixels = disp.save_dialog_pixels(&bus, bounds);
+
+        let dialog_ptr = bus.alloc(170);
+        let vis_data = bus.alloc(10);
+        bus.write_word(vis_data, 10);
+        bus.write_long(vis_data + 2, 0);
+        bus.write_long(vis_data + 6, 0);
+        let vis_handle = bus.alloc(4);
+        bus.write_long(vis_handle, vis_data);
+        bus.write_long(dialog_ptr + 24, vis_handle);
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            super::super::dispatch::PersistentDialogSnapshot {
+                bounds,
+                pixels: stale_pixels,
+            },
+        );
+
+        let probe = screen_base + 18 * 64 + 18;
+        bus.write_byte(probe, 0x77);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(probe),
+            0x77,
+            "a fully occluded dialog snapshot must not overwrite its front window"
         );
     }
 
