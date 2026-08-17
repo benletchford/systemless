@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/benletchford/systemless/compare/v0.14.0...v0.14.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* support HyperCard fonts, menus, and window scaling ([#649](https://github.com/benletchford/systemless/issues/649)) ([3ab7c05](https://github.com/benletchford/systemless/commit/3ab7c05bf759cfca657d6569edf28fad69105886))
+
 ## [0.14.0](https://github.com/benletchford/systemless/compare/v0.13.3...v0.14.0) (2026-08-17)
 
 
