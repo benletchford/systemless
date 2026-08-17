@@ -75,6 +75,9 @@ const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 const DEFAULT_LOAD_ADDRESS: u32 = 0x0001_0000;
+const APP_QD_GLOBALS_RESERVE: u32 = 48 * 1024;
+const APP_LOADER_CLEAR_RESERVE: u32 = 0x40000;
+const APP_HIGH_MEMORY_RESERVE: u32 = 2 * 1024 * 1024;
 const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
@@ -1507,7 +1510,7 @@ fn load_address_for_size_partition(
     configured_load_address: u32,
     header: &Code0Header,
     size_resource: Option<ApplicationSizeResource>,
-    ram_size: u32,
+    application_memory_limit: u32,
 ) -> u32 {
     if configured_load_address != DEFAULT_LOAD_ADDRESS {
         return configured_load_address;
@@ -1532,16 +1535,18 @@ fn load_address_for_size_partition(
         return configured_load_address;
     }
 
-    // Leave space above the relocated image for stack/screen buffers in
-    // small synthetic runners. The standard frontends use 32 MB, so large
-    // SIZE-partition apps still get the Mac-like high A5 placement.
-    let max_reasonable_load = ram_size.saturating_sub(2 * 1024 * 1024);
     let relocated_load = align4(desired_a5.saturating_sub(header.below_a5));
-    if relocated_load < max_reasonable_load {
-        relocated_load
-    } else {
-        configured_load_address
-    }
+    let loader_headroom = header
+        .below_a5
+        .saturating_add(header.above_a5)
+        .saturating_add(APP_QD_GLOBALS_RESERVE)
+        .saturating_add(APP_LOADER_CLEAR_RESERVE)
+        .saturating_add(APP_HIGH_MEMORY_RESERVE);
+    let max_safe_load = application_memory_limit.saturating_sub(loader_headroom) & !3;
+
+    relocated_load
+        .min(max_safe_load)
+        .max(configured_load_address)
 }
 
 /// Host presentation policy for the classic Mac menu bar.
@@ -9938,7 +9943,7 @@ fn load_app_generic<M: MemoryBus>(
         configured_load_address,
         &header,
         size_resource,
-        bus.ram_size(),
+        bus.application_memory_limit(),
     );
     if trace_load_enabled() {
         eprintln!(
@@ -9972,11 +9977,10 @@ fn load_app_generic<M: MemoryBus>(
     // For classic Mac apps, above_a5 defines the space needed above A5.
     // However, some apps place QuickDraw globals at higher offsets (e.g., A5+39KB).
     // Add 48KB reserve to accommodate most classic apps.
-    let qd_globals_reserve = 48 * 1024; // 48KB reserve for QD globals
-    let globals_end = a5_base + header.above_a5 + qd_globals_reserve;
+    let globals_end = a5_base + header.above_a5 + APP_QD_GLOBALS_RESERVE;
 
     // Clear A5 world
-    let globals_zero_end = globals_end + 0x40000;
+    let globals_zero_end = globals_end + APP_LOADER_CLEAR_RESERVE;
     bus.fill_zeros(load_address, globals_zero_end.saturating_sub(load_address));
     bus.write_long(0x0904, a5_base); // CurrentA5
     bus.write_word(0x0934, header.jump_table_offset as u16); // CurJTOffset - Inside Macintosh Volume II, II-62
@@ -10289,8 +10293,9 @@ fn load_app_generic<M: MemoryBus>(
         eprintln!("[LOAD] Loaded image end=${:08X}", loaded_image_end);
     }
 
-    // Stack at top of RAM
-    let stack_top = bus.ram_size() - 16;
+    // Keep the application stack below Systemless-owned callback code and
+    // the framebuffer reservation at the top of RAM.
+    let stack_top = bus.application_memory_limit() - 16;
 
     Some(LoadedApp {
         ppc: None,
@@ -10836,6 +10841,28 @@ mod tests {
             app.a5_base - APP_HEAP_FLOOR >= 750 * 1024,
             "Spectre-style startup gates compare A5 - GetZone against a 750K floor"
         );
+    }
+
+    #[test]
+    fn large_size_partition_does_not_overwrite_synthetic_callbacks() {
+        let below_a5 = 0x7AF4;
+        let code0 = minimal_code0(0x11F8, below_a5, 0, 0);
+        let partition = 63 * 1024 * 1024;
+        let size = size_resource_bytes(0x5880, partition, partition);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+        let callback = runner.bus.alloc_synthetic(2);
+        runner.bus.write_word(callback, 0x4E75);
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert_eq!(runner.bus.read_word(callback), 0x4E75);
+        assert!(
+            app.loaded_image_end + APP_HIGH_MEMORY_RESERVE <= runner.bus.application_memory_limit(),
+            "the loaded image must leave room for the application heap and stack"
+        );
+        assert!(app.initial_sp < callback);
     }
 
     #[test]
