@@ -11,8 +11,8 @@ use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 const RELAUNCH_ENV: &str = "SYSTEMLESS_NATIVE_APP_BUNDLE";
-const CACHE_DIRECTORY: &str = "systemless-native-apps-v1";
-const BUNDLE_DIRECTORY: &str = "Systemless Guest.app";
+const CACHE_DIRECTORY: &str = "systemless-native-apps-v2";
+const CACHE_RECORD: &str = "bundle-name";
 const BUNDLE_EXECUTABLE: &str = "systemless";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,7 +31,14 @@ fn relaunch_marker_present(value: Option<&OsStr>) -> bool {
 
 /// Return a complete cached bundle for this archive and runner executable.
 pub fn cached_bundle(game_path: &Path) -> io::Result<Option<NativeBundle>> {
-    let layout = bundle_layout(game_path)?;
+    let source = bundle_source(game_path)?;
+    let bundle_directory = match fs::read_to_string(source.cache_root.join(CACHE_RECORD)) {
+        Ok(name) if valid_bundle_directory(&name) => name,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let layout = bundle_layout(source, &bundle_directory);
     let plist = match fs::read_to_string(&layout.info_plist) {
         Ok(plist) => plist,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -53,15 +60,17 @@ pub fn cached_bundle(game_path: &Path) -> io::Result<Option<NativeBundle>> {
 
 /// Create or refresh the tiny bundle that gives Launch Services the guest name.
 pub fn prepare_bundle(game_path: &Path, guest_name: &str) -> io::Result<NativeBundle> {
-    let layout = bundle_layout(game_path)?;
+    let display_name = normalize_display_name(guest_name);
+    let bundle_directory = bundle_directory(&display_name);
+    let layout = bundle_layout(bundle_source(game_path)?, &bundle_directory);
     let contents = layout.bundle.bundle_path.join("Contents");
     let macos = contents.join("MacOS");
     fs::create_dir_all(&macos)?;
 
-    let display_name = normalize_display_name(guest_name);
     let plist = info_plist(&display_name, &layout.bundle_identifier);
     write_atomic_if_changed(&layout.info_plist, plist.as_bytes())?;
     replace_symlink(&layout.bundle.executable_path, &layout.current_exe)?;
+    write_atomic_if_changed(&layout.cache_record, bundle_directory.as_bytes())?;
 
     Ok(layout.bundle)
 }
@@ -83,29 +92,52 @@ struct BundleLayout {
     info_plist: PathBuf,
     current_exe: PathBuf,
     bundle_identifier: String,
+    cache_record: PathBuf,
 }
 
-fn bundle_layout(game_path: &Path) -> io::Result<BundleLayout> {
+struct BundleSource {
+    cache_root: PathBuf,
+    current_exe: PathBuf,
+    bundle_identifier: String,
+}
+
+fn bundle_source(game_path: &Path) -> io::Result<BundleSource> {
     let current_exe = std::env::current_exe()?;
     let fingerprint = source_fingerprint(game_path, &current_exe)?;
-    let bundle_path = std::env::temp_dir()
-        .join(CACHE_DIRECTORY)
-        .join(format!("{fingerprint:016x}"))
-        .join(BUNDLE_DIRECTORY);
+    Ok(BundleSource {
+        cache_root: std::env::temp_dir()
+            .join(CACHE_DIRECTORY)
+            .join(format!("{fingerprint:016x}")),
+        current_exe,
+        bundle_identifier: format!("org.systemless.guest.{fingerprint:016x}"),
+    })
+}
+
+fn bundle_layout(source: BundleSource, bundle_directory: &str) -> BundleLayout {
+    let bundle_path = source.cache_root.join(bundle_directory);
     let executable_path = bundle_path
         .join("Contents")
         .join("MacOS")
         .join(BUNDLE_EXECUTABLE);
     let info_plist = bundle_path.join("Contents").join("Info.plist");
-    Ok(BundleLayout {
+    BundleLayout {
         bundle: NativeBundle {
             bundle_path,
             executable_path,
         },
         info_plist,
-        current_exe,
-        bundle_identifier: format!("org.systemless.guest.{fingerprint:016x}"),
-    })
+        current_exe: source.current_exe,
+        bundle_identifier: source.bundle_identifier,
+        cache_record: source.cache_root.join(CACHE_RECORD),
+    }
+}
+
+fn bundle_directory(display_name: &str) -> String {
+    format!("{}.app", display_name.replace('/', "∕"))
+}
+
+fn valid_bundle_directory(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && name.ends_with(".app")
 }
 
 fn source_fingerprint(game_path: &Path, current_exe: &Path) -> io::Result<u64> {
@@ -268,6 +300,17 @@ mod tests {
     }
 
     #[test]
+    fn bundle_directory_uses_the_guest_name() {
+        assert_eq!(
+            bundle_directory("Tomb Raider I Demo"),
+            "Tomb Raider I Demo.app"
+        );
+        assert_eq!(bundle_directory("A/B"), "A∕B.app");
+        assert!(valid_bundle_directory("Tomb Raider I Demo.app"));
+        assert!(!valid_bundle_directory("../Tomb Raider I Demo.app"));
+    }
+
+    #[test]
     fn plist_escapes_guest_name_and_declares_application_bundle() {
         let plist = info_plist("Myst & Riven <Demo>", "org.systemless.guest.0123");
         assert!(plist.contains("<string>Myst &amp; Riven &lt;Demo&gt;</string>"));
@@ -305,6 +348,10 @@ mod tests {
         let bundle = prepare_bundle(&game_path, "Tomb Raider I Demo").unwrap();
         let plist = fs::read_to_string(bundle.bundle_path.join("Contents/Info.plist")).unwrap();
 
+        assert_eq!(
+            bundle.bundle_path.file_name().unwrap(),
+            "Tomb Raider I Demo.app"
+        );
         assert!(plist.contains("<string>Tomb Raider I Demo</string>"));
         assert_eq!(
             fs::read_link(&bundle.executable_path).unwrap(),
