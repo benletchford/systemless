@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.16.0](https://github.com/benletchford/systemless/compare/v0.15.0...v0.16.0) (2026-08-17)
+
+
+### Features
+
+* **display:** support configurable 4-bit mode ([#568](https://github.com/benletchford/systemless/issues/568)) ([b6608f2](https://github.com/benletchford/systemless/commit/b6608f2c71e24ec539ee9179ad2eff1429835782))
+* **display:** support selectable one-bit mode ([#594](https://github.com/benletchford/systemless/issues/594)) ([75e4311](https://github.com/benletchford/systemless/commit/75e431103c8d33a82862e52f269912e34480dfed))
+* **files:** expose extracted read-only volumes ([#536](https://github.com/benletchford/systemless/issues/536)) ([4922f8b](https://github.com/benletchford/systemless/commit/4922f8bdb5c087d37be9577b257ca96af30bd6ac))
+* **files:** implement read-only catalog search ([#548](https://github.com/benletchford/systemless/issues/548)) ([d374de8](https://github.com/benletchford/systemless/commit/d374de8309364957a5df907f040cde3e1957e648))
+* load multi-file Macintosh ZIP game archives ([#551](https://github.com/benletchford/systemless/issues/551)) ([4756d72](https://github.com/benletchford/systemless/commit/4756d72adaffe22b31fb1cc297113c98714b8f6e))
+* **memory:** support 24-bit address translation ([#571](https://github.com/benletchford/systemless/issues/571)) ([b75135a](https://github.com/benletchford/systemless/commit/b75135a700eb6c359126754d1557b77a0182fe44))
+
+
+### Bug Fixes
+
+* clip fully occluded background dialogs ([#609](https://github.com/benletchford/systemless/issues/609)) ([a15c7c5](https://github.com/benletchford/systemless/commit/a15c7c525e2882e0b5b252d1ab2282024506b6be))
+* coalesce window activation events through classic pending slots ([#599](https://github.com/benletchford/systemless/issues/599)) ([c54a962](https://github.com/benletchford/systemless/commit/c54a962d792dba3b5f80cc981bf8b44bcd5b3622))
+* **control:** preserve disabled popup titles ([#506](https://github.com/benletchford/systemless/issues/506)) ([27e0924](https://github.com/benletchford/systemless/commit/27e0924466f3e6b0826c73db8e39f2b3db7d4b92))
+* decode unpacked indexed PICT pixmaps ([#607](https://github.com/benletchford/systemless/issues/607)) ([0102d56](https://github.com/benletchford/systemless/commit/0102d567744efc9dfe5d7d11df3cfb44c51bc0ba))
+* **dialog:** apply matching dialog color tables ([#520](https://github.com/benletchford/systemless/issues/520)) ([f41d1f3](https://github.com/benletchford/systemless/commit/f41d1f3e64dfb2cb5197f77b1b7b12a88223d0f7))
+* **dialog:** leave Command-A to applications ([#512](https://github.com/benletchford/systemless/issues/512)) ([fd88719](https://github.com/benletchford/systemless/commit/fd887198a18a006cf34e8f751d93ed3046af9da4))
+* **dialog:** preserve premodal application drawing ([#527](https://github.com/benletchford/systemless/issues/527)) ([74c78e1](https://github.com/benletchford/systemless/commit/74c78e15c9d25c99d54a3103a5372c6992fc41a0))
+* **dialog:** preserve standard dialog control state ([#521](https://github.com/benletchford/systemless/issues/521)) ([8719fb7](https://github.com/benletchford/systemless/commit/8719fb74c28f6684474fb5933d340cc010c0641c))
+* **dialog:** preserve user-item GrafPort state ([#573](https://github.com/benletchford/systemless/issues/573)) ([197a647](https://github.com/benletchford/systemless/commit/197a647ceb63d8b994055c4e527487e890b99414))
+* **dialog:** protect retained save-under pixels ([#510](https://github.com/benletchford/systemless/issues/510)) ([0426f03](https://github.com/benletchford/systemless/commit/0426f0386b132f644091a45e65ff98e29e29b39e))
+* **dialog:** release buttons before nested modals ([#525](https://github.com/benletchford/systemless/issues/525)) ([5c06acd](https://github.com/benletchford/systemless/commit/5c06acdf1afbecf054f7efeca2e1fed2c36db04c))
+* **dialog:** retain filtered alerts ([#588](https://github.com/benletchford/systemless/issues/588)) ([fd38330](https://github.com/benletchford/systemless/commit/fd3833057e1e505285dfc761ba6d139ea6259db4))
+* **dialog:** translate color icon palettes ([#526](https://github.com/benletchford/systemless/issues/526)) ([7f6152f](https://github.com/benletchford/systemless/commit/7f6152f2439c1381880c8a7268611d283432a156))
+* **display:** preserve direct driver palette values ([#558](https://github.com/benletchford/systemless/issues/558)) ([0c0a615](https://github.com/benletchford/systemless/commit/0c0a6154d84c5733f301c356abf7be0d6ada0207))
+* fence disposed modal dialog presses ([#508](https://github.com/benletchford/systemless/issues/508)) ([66b1dea](https://github.com/benletchford/systemless/commit/66b1dea8fee1454215d6151a8f260a3587745165))
+* honor small classic application partitions ([#605](https://github.com/benletchford/systemless/issues/605)) ([33db22a](https://github.com/benletchford/systemless/commit/33db22a466d13b52e6953422a74674a160b7cec2))
+* **list:** preserve offset cell rendering ([#519](https://github.com/benletchford/systemless/issues/519)) ([cebc186](https://github.com/benletchford/systemless/commit/cebc186c7d62807e763f182bbfe646641b7942d3))
+* load runtime CODE resources on segment faults ([#593](https://github.com/benletchford/systemless/issues/593)) ([af347ca](https://github.com/benletchford/systemless/commit/af347ca3e38f00a87bf6b47e41261b75b7e034ce))
+* match indexed PICT colors through device inverse table ([#533](https://github.com/benletchford/systemless/issues/533)) ([b9239cd](https://github.com/benletchford/systemless/commit/b9239cd55c21262807fcdb655f80740ee764953f))
+* **memory:** reserve callback code below framebuffer ([#626](https://github.com/benletchford/systemless/issues/626)) ([323ecee](https://github.com/benletchford/systemless/commit/323ecee9d8ff359c70de64a74e5efc2b91021cdd))
+* **menu:** preserve long menu records ([#514](https://github.com/benletchford/systemless/issues/514)) ([1cabca1](https://github.com/benletchford/systemless/commit/1cabca167dfdb87304b13d97d336ec07ae9356cd))
+* **menu:** preserve themed highlighted content ([#532](https://github.com/benletchford/systemless/issues/532)) ([754c1c3](https://github.com/benletchford/systemless/commit/754c1c3ab43c4fc9574aecd343d97570cf236450))
+* **menu:** search installed command-only menus ([#511](https://github.com/benletchford/systemless/issues/511)) ([03ff656](https://github.com/benletchford/systemless/commit/03ff656472ff5cb74db2855be769e350ae654dfa))
+* **palette:** preserve indexed window colors ([#553](https://github.com/benletchford/systemless/issues/553)) ([cb29de6](https://github.com/benletchford/systemless/commit/cb29de64a4d6a438c6ea44046e32165f018ae0eb))
+* preserve device colors for explicit palette entries ([#610](https://github.com/benletchford/systemless/issues/610)) ([6ea9fb4](https://github.com/benletchford/systemless/commit/6ea9fb47029ce498aa96ac6be63495f055bbdce9))
+* preserve explicit colors across client-ID palette installs ([#509](https://github.com/benletchford/systemless/issues/509)) ([2fa865a](https://github.com/benletchford/systemless/commit/2fa865ab9dfde3e277f3bf4f97f05294242c5463))
+* preserve indexed Boolean CopyBits semantics ([#601](https://github.com/benletchford/systemless/issues/601)) ([98acaf0](https://github.com/benletchford/systemless/commit/98acaf09cd43a67bc12a6e7dd5a5f3b9ee2bf801))
+* preserve nonvolatile registers across native LoadSeg handoff ([#603](https://github.com/benletchford/systemless/issues/603)) ([de24fda](https://github.com/benletchford/systemless/commit/de24fda92a4cb8216e681978eca3c43aba9dd8d4))
+* preserve resource references and map enumeration order ([#596](https://github.com/benletchford/systemless/issues/596)) ([f027e42](https://github.com/benletchford/systemless/commit/f027e42c88700ecea13ebbe49b9fe904b1064fed))
+* **resource:** expose application resource map ([#587](https://github.com/benletchford/systemless/issues/587)) ([53c01e2](https://github.com/benletchford/systemless/commit/53c01e2684ded34e1f393d77cc5df48218dc0e8c))
+* **runner:** advance callback-gated headless audio ([#535](https://github.com/benletchford/systemless/issues/535)) ([9c34379](https://github.com/benletchford/systemless/commit/9c3437943995dde29aeecd93c1df344b81d25163))
+* **runner:** pace Standard File refires ([#518](https://github.com/benletchford/systemless/issues/518)) ([fc2c936](https://github.com/benletchford/systemless/commit/fc2c9367fa89743cdda0f18ba6face23e0d91112))
+* **script:** implement script-aware ReplaceText ([#537](https://github.com/benletchford/systemless/issues/537)) ([a447789](https://github.com/benletchford/systemless/commit/a447789aae3c386bfbd2762a8c5c9ba642c978ae))
+* **sound:** consume Director dispatch argument ([#586](https://github.com/benletchford/systemless/issues/586)) ([efa23da](https://github.com/benletchford/systemless/commit/efa23da2c2a4235c19700f70dc42fe4336f8d8fd))
+* **sound:** dispatch legacy Sound Driver writes ([#505](https://github.com/benletchford/systemless/issues/505)) ([4a1a069](https://github.com/benletchford/systemless/commit/4a1a069b5fa3ab36aede895b94317937ba61c8e3))
+* **standard-file:** restore classic Open dialog ([#574](https://github.com/benletchford/systemless/issues/574)) ([88e769d](https://github.com/benletchford/systemless/commit/88e769d7924e66f36691c467993a32068c343941))
+* support legacy Launch parameter records ([#590](https://github.com/benletchford/systemless/issues/590)) ([7dd7b58](https://github.com/benletchford/systemless/commit/7dd7b582d948fbf9f8782536b9bbf207e724faf6))
+* **textedit:** render delayed selected styles ([#554](https://github.com/benletchford/systemless/issues/554)) ([f99b987](https://github.com/benletchford/systemless/commit/f99b9870d1d93282bcd6e045f8fe600290c14378))
+* use 16-bit midpoint for monochrome CopyBits ([#570](https://github.com/benletchford/systemless/issues/570)) ([4558b0c](https://github.com/benletchford/systemless/commit/4558b0ca6539c868b6785449ba1862c3c7af5dd0))
+* **window:** apply WIND positioning specifications ([#523](https://github.com/benletchford/systemless/issues/523)) ([9dd84ae](https://github.com/benletchford/systemless/commit/9dd84aee86261ebe8bf212b2bea86809c4e22ec2))
+* **window:** draw active movable dialog chrome ([#524](https://github.com/benletchford/systemless/issues/524)) ([4c78811](https://github.com/benletchford/systemless/commit/4c788110d19a419b8a42b54ab7d17e0b478d8be3))
+* **window:** repaint content exposed by window changes ([#560](https://github.com/benletchford/systemless/issues/560)) ([4a01362](https://github.com/benletchford/systemless/commit/4a013624a8cfb29b1f294dc964a4388dfdd4b789))
+* **window:** repaint exposed content after moves ([#522](https://github.com/benletchford/systemless/issues/522)) ([b0830c1](https://github.com/benletchford/systemless/commit/b0830c1cd010c7c477afbf5b55a1809d28745397))
+
+
+### Performance Improvements
+
+* prove bounded journal-complete poll cycles ([#644](https://github.com/benletchford/systemless/issues/644)) ([6425f35](https://github.com/benletchford/systemless/commit/6425f3512a37e4f5e80639006c4b97785134e274))
+
 ## [0.15.0](https://github.com/benletchford/systemless/compare/v0.14.1...v0.15.0) (2026-08-17)
 
 
