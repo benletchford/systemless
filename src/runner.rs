@@ -990,6 +990,23 @@ fn tracking_refire_should_freeze_ticks(opcode: u16) -> bool {
         || trap_no_autopop == 0xA968 // TrackControl
 }
 
+/// Only Dialog Manager-owned retained loops may schedule dialog draw and
+/// filter callbacks before their next presentation boundary. Other retained
+/// managers can coexist with modeless dialogs, but do not own those callbacks.
+fn tracking_refire_uses_dialog_callbacks(opcode: u16) -> bool {
+    matches!(
+        opcode & !0x0400,
+        0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988
+    )
+}
+
+/// Retained managers with their own event loops must keep guest ticks moving
+/// while waiting for input. MenuSelect and TrackControl instead freeze time
+/// while their transient tracking state is presented.
+fn tracking_refire_advances_gui_idle_tick(opcode: u16) -> bool {
+    matches!(opcode & !0x0400, 0xA991 | 0xA9EA)
+}
+
 fn canonical_trap_number(opcode: u16) -> (bool, u16) {
     let is_tool = (opcode & 0x0800) != 0;
     let trap_num = if is_tool {
@@ -5286,13 +5303,15 @@ impl FixtureRunner {
                                 // The trampoline redirects PC to execute the
                                 // 68K draw proc; when it RTS's, PC returns to
                                 // the ModalDialog A-line for the next re-fire.
-                                let fired_draw_proc = if fired_menu_hook {
+                                let uses_dialog_callbacks =
+                                    tracking_refire_uses_dialog_callbacks(opcode);
+                                let fired_draw_proc = if fired_menu_hook || !uses_dialog_callbacks {
                                     false
                                 } else {
                                     self.fire_dialog_draw_procs()
                                 };
                                 let mut fired_filter_proc = false;
-                                if !fired_menu_hook && !fired_draw_proc {
+                                if uses_dialog_callbacks && !fired_menu_hook && !fired_draw_proc {
                                     // Fire the filter proc for any dialog that has one,
                                     // once draw procs are complete. On a real Mac,
                                     // ModalDialog calls the filter for every event
@@ -5314,8 +5333,8 @@ impl FixtureRunner {
                                     && !fired_draw_proc
                                     && !fired_filter_proc
                                 {
-                                    if (opcode & !0x0400) == 0xA991
-                                        && !self.service_gui_modal_dialog_idle_tick(tick_cap)
+                                    if tracking_refire_advances_gui_idle_tick(opcode)
+                                        && !self.service_gui_retained_idle_tick(tick_cap)
                                     {
                                         continue;
                                     }
@@ -7882,7 +7901,7 @@ impl FixtureRunner {
         false
     }
 
-    fn service_gui_modal_dialog_idle_tick(&mut self, tick_cap: Option<u32>) -> bool {
+    fn service_gui_retained_idle_tick(&mut self, tick_cap: Option<u32>) -> bool {
         if self.active_interrupt_callback.is_some() || self.frozen_ticks.is_some() {
             return true;
         }
@@ -16747,6 +16766,107 @@ mod tests {
         // dialog flow plays music through this path.
         assert!(!tracking_refire_should_freeze_ticks(0xA991));
         assert!(!tracking_refire_should_freeze_ticks(0xAD91));
+
+        assert!(tracking_refire_uses_dialog_callbacks(0xA991));
+        assert!(!tracking_refire_uses_dialog_callbacks(0xA9EA));
+        assert!(tracking_refire_advances_gui_idle_tick(0xA991));
+        assert!(tracking_refire_advances_gui_idle_tick(0xA9EA));
+    }
+
+    #[test]
+    fn standard_file_refires_yield_before_unrelated_modeless_callbacks() {
+        for (selector, pop_total) in [(0x0002u16, 28u32), (0x0006, 16)] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            let base = 0x0001_0000u32;
+            let sp = 0x0010_0000u32;
+            let reply_ptr = runner.bus.alloc(80);
+            let proc_addr = 0x0001_1000u32;
+
+            runner.bus.write_word(base, 0xA9EA); // _Pack3
+            runner.cpu.write_reg(Register::PC, base);
+            runner.cpu.write_reg(Register::A7, sp);
+            runner.bus.write_word(sp, selector);
+            runner.bus.write_long(sp + 2, reply_ptr);
+            if selector == 0x0002 {
+                runner.bus.write_long(sp + 10, 0); // typeList
+                runner.bus.write_word(sp + 14, 0); // numTypes
+            } else {
+                runner.bus.write_long(sp + 6, 0); // typeList
+                runner.bus.write_word(sp + 10, 0); // numTypes
+            }
+            runner.bus.write_word(proc_addr, 0x4E56); // plausible modeless draw proc
+            runner
+                .dispatcher
+                .modeless_dialog_draw_proc_queue
+                .push_back((0, proc_addr, 1));
+
+            let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
+
+            assert!(running);
+            assert_eq!(steps, 1);
+            assert!(runner.dispatcher.is_standard_file_get_tracking());
+            assert_eq!(runner.cpu.read_reg(Register::PC), base);
+            assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+            assert!(runner.active_interrupt_callback.is_none());
+            assert_eq!(
+                runner.dispatcher.modeless_dialog_draw_proc_queue.len(),
+                1,
+                "selector ${selector:04X} must not consume another manager's callback"
+            );
+
+            let (idle_steps, idle_running) = runner.run_gui_slice_with_audio(16, 3, 0);
+            assert!(idle_running);
+            assert_eq!(idle_steps, 3);
+            assert_eq!(runner.guest_tick(), 3);
+            assert_eq!(runner.cpu.read_reg(Register::PC), base);
+
+            runner.dispatcher.modeless_dialog_draw_proc_queue.clear();
+            runner.dispatcher.event_queue.push_back(QueuedEvent {
+                what: 3,
+                message: 0x0000_351B, // Escape
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
+            let (cancel_steps, cancel_running) = runner.run_gui_slice_with_audio(1, 3, 0);
+
+            assert!(cancel_running);
+            assert_eq!(cancel_steps, 1);
+            assert!(!runner.dispatcher.is_standard_file_get_tracking());
+            assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
+            assert_eq!(runner.cpu.read_reg(Register::A7), sp + pop_total);
+            assert_eq!(runner.bus.read_byte(reply_ptr), 0);
+        }
+    }
+
+    #[test]
+    fn modal_dialog_refire_still_schedules_its_draw_callback() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let proc_addr = 0x0001_1000u32;
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.bus.write_word(proc_addr, 0x4E56); // plausible userItem draw proc
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, sp);
+        let mut tracking = dialog_tracking_for_test(0, 0);
+        tracking.draw_proc_queue.push_back((proc_addr, 1));
+        tracking.draw_procs_done = false;
+        tracking.rendered_pixels_final = false;
+        runner.dispatcher.dialog_tracking = Some(tracking);
+
+        let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert!(matches!(
+            runner.active_interrupt_callback,
+            Some(ActiveInterruptCallback {
+                source: ActiveInterruptCallbackSource::DialogDrawProc,
+                ..
+            })
+        ));
+        assert_ne!(runner.cpu.read_reg(Register::PC), base);
     }
 
     #[test]
