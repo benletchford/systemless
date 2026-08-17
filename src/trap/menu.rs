@@ -4461,7 +4461,8 @@ impl super::TrapDispatcher {
         if old_item == new_item {
             return;
         }
-        if old_item > 0 {
+        let classic_highlight = self.ui_theme_id() == UiThemeId::ClassicSystem7;
+        if classic_highlight && old_item > 0 {
             self.invert_dropdown_item_rect(bus, menu_idx, rect, old_item);
         }
         if let Some(submenu) = self
@@ -4471,8 +4472,10 @@ impl super::TrapDispatcher {
         {
             submenu.highlighted_item = new_item;
         }
-        if new_item > 0 {
+        if classic_highlight && new_item > 0 {
             self.invert_dropdown_item_rect(bus, menu_idx, rect, new_item);
+        } else if !classic_highlight {
+            self.draw_menu_dropdown(bus, menu_idx, rect);
         }
     }
 
@@ -4487,14 +4490,24 @@ impl super::TrapDispatcher {
 
         if old_item != new_item {
             self.close_submenu(bus);
-            if old_item > 0 {
+            let classic_highlight = self.ui_theme_id() == UiThemeId::ClassicSystem7;
+            if classic_highlight && old_item > 0 {
                 self.invert_menu_item(bus, old_item);
             }
             if let Some(tracking) = self.menu_tracking.as_mut() {
                 tracking.highlighted_item = new_item;
             }
-            if new_item > 0 {
+            if classic_highlight && new_item > 0 {
                 self.invert_menu_item(bus, new_item);
+            } else if !classic_highlight {
+                let Some((active_menu, dropdown_rect)) = self
+                    .menu_tracking
+                    .as_ref()
+                    .map(|tracking| (tracking.active_menu, tracking.dropdown_rect))
+                else {
+                    return;
+                };
+                self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
             }
         }
 
@@ -4729,8 +4742,19 @@ impl super::TrapDispatcher {
         let highlighted_item = self
             .menu_tracking
             .as_ref()
-            .filter(|tracking| tracking.active_menu == menu_idx && tracking.dropdown_rect == rect)
-            .map(|tracking| tracking.highlighted_item)
+            .and_then(|tracking| {
+                if tracking.active_menu == menu_idx && tracking.dropdown_rect == rect {
+                    Some(tracking.highlighted_item)
+                } else {
+                    tracking
+                        .submenu
+                        .as_ref()
+                        .filter(|submenu| {
+                            submenu.menu == menu_idx && submenu.dropdown_rect == rect
+                        })
+                        .map(|submenu| submenu.highlighted_item)
+                }
+            })
             .or_else(|| {
                 self.control_tracking
                     .as_ref()
@@ -4738,6 +4762,15 @@ impl super::TrapDispatcher {
                         tracking.active_menu == menu_idx && tracking.dropdown_rect == rect
                     })
                     .map(|tracking| tracking.highlighted_item)
+            })
+            .or_else(|| {
+                self.dialog_tracking
+                    .as_ref()
+                    .and_then(|tracking| tracking.active_popup.as_ref())
+                    .filter(|popup| {
+                        popup.active_menu == menu_idx && popup.dropdown_rect == rect
+                    })
+                    .map(|popup| popup.highlighted_item)
             })
             .unwrap_or(0);
 
@@ -9653,7 +9686,7 @@ mod tests {
             0x302B40,
             "Open/1",
         );
-        classic.menus[0].items[0].mark = b'W';
+        classic.menus[0].items[0].mark = 0x12;
         classic.draw_menu_dropdown(&mut classic_bus, 0, rect);
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
@@ -9678,7 +9711,7 @@ mod tests {
             0x302B40,
             "Open/1",
         );
-        themed.menus[0].items[0].mark = b'W';
+        themed.menus[0].items[0].mark = 0x12;
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
         let provider_mark_pixel = |x: i16, y: i16| {
@@ -9722,6 +9755,12 @@ mod tests {
                 screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, *x, *y)
             })
             .expect("classic command-key equivalent should draw the Command symbol itself");
+        let label_pixel = (row_top..row_bottom)
+            .flat_map(|y| ((rect.1 + 15)..(rect.1 + 60)).map(move |x| (x, y)))
+            .find(|(x, y)| {
+                screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, *x, *y)
+            })
+            .expect("classic item label should draw");
 
         assert!(
             screen_pixel_is_set(
@@ -9798,6 +9837,73 @@ mod tests {
             ),
             "highlighted systemless-default row chrome should preserve the Command symbol itself"
         );
+
+        themed.redraw_chrome(&mut themed_bus);
+
+        for (pixel, label) in [
+            (mark_pixel, "checkmark"),
+            (label_pixel, "item label"),
+            (command_symbol_pixel, "Command symbol"),
+            (command_pixel, "command key"),
+        ] {
+            assert!(
+                screen_pixel_is_set(
+                    &themed_bus,
+                    themed_base,
+                    themed_row_bytes,
+                    pixel.0,
+                    pixel.1
+                ),
+                "final themed chrome composition should preserve the highlighted {label}"
+            );
+        }
+
+        clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
+        themed.menu_tracking = None;
+        themed.dialog_tracking = Some(super::super::dispatch::DialogTrackingState {
+            active_popup: Some(super::super::dispatch::DialogPopupTrackingState {
+                item_no: 1,
+                ctrl_handle: 0,
+                ctrl_ptr: 0,
+                active_menu: 0,
+                highlighted_item: 1,
+                saved_pixels: Vec::new(),
+                dropdown_rect: rect,
+            }),
+            ..Default::default()
+        });
+        themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
+
+        assert!(
+            screen_pixel_is_set(
+                &themed_bus,
+                themed_base,
+                themed_row_bytes,
+                rect.1 + 2,
+                row_top + 1
+            ),
+            "dialog popup tracking should route the highlighted row through themed chrome"
+        );
+
+        themed.redraw_chrome(&mut themed_bus);
+
+        for (pixel, label) in [
+            (mark_pixel, "popup checkmark"),
+            (label_pixel, "popup item label"),
+            (command_symbol_pixel, "popup Command symbol"),
+            (command_pixel, "popup command key"),
+        ] {
+            assert!(
+                screen_pixel_is_set(
+                    &themed_bus,
+                    themed_base,
+                    themed_row_bytes,
+                    pixel.0,
+                    pixel.1
+                ),
+                "final themed popup composition should preserve the highlighted {label}"
+            );
+        }
     }
 
     #[test]

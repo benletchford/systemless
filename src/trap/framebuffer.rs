@@ -4642,7 +4642,9 @@ impl super::TrapDispatcher {
 
                 if let Some(ref popup) = tracking.active_popup {
                     self.draw_menu_dropdown(bus, popup.active_menu, popup.dropdown_rect);
-                    if popup.highlighted_item > 0 {
+                    if self.ui_theme_id() == UiThemeId::ClassicSystem7
+                        && popup.highlighted_item > 0
+                    {
                         self.invert_dropdown_item_rect(
                             bus,
                             popup.active_menu,
@@ -4669,7 +4671,10 @@ impl super::TrapDispatcher {
             } else {
                 true
             };
-            if tracking.highlighted_item > 0 && show_highlight {
+            if self.ui_theme_id() == UiThemeId::ClassicSystem7
+                && tracking.highlighted_item > 0
+                && show_highlight
+            {
                 self.invert_menu_item(bus, tracking.highlighted_item);
             }
         }
