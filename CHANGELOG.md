@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/benletchford/systemless/compare/v0.14.1...v0.15.0) (2026-08-17)
+
+
+### Features
+
+* add a flag to disable native integrations ([#654](https://github.com/benletchford/systemless/issues/654)) ([1947cf4](https://github.com/benletchford/systemless/commit/1947cf47f384e89a0320438dc4f9ec1efd31f493))
+* show guest application names in the macOS Dock ([#652](https://github.com/benletchford/systemless/issues/652)) ([2ae6541](https://github.com/benletchford/systemless/commit/2ae6541188406996502386538866733344068cfb))
+
 ## [0.14.1](https://github.com/benletchford/systemless/compare/v0.14.0...v0.14.1) (2026-08-17)
 
 
