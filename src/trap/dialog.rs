@@ -6121,14 +6121,10 @@ impl super::TrapDispatcher {
             );
         }
 
-        // IM:I I-407 and MTE 1992 p. 6-56: aDefItem/first-item default
-        // controls Return/Enter semantics for modal dialogs, but ordinary
-        // dialogs draw any bold default-button outline with an application
-        // userItem. MTE 1992 glossary confirms Dialog Manager auto-draws
-        // the bold outline for alerts, while applications draw it for
-        // dialogs. DrawDialog therefore draws standard buttons without
-        // synthesizing default-button chrome.
-        let auto_default_outline = false;
+        // aDefItem is authoritative for both Return/Enter semantics and the
+        // standard button's default chrome. Drawing that chrome here keeps
+        // the initial dialog shell coherent before application userItems run.
+        let auto_default_outline = true;
 
         // Draw each item
         for (i, item) in items.iter().enumerate() {
@@ -6652,10 +6648,10 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
     ) {
         let (top, left, bottom, right) = bounds;
-        // Ordinary dialog default outlines are application-owned userItem
-        // drawing, not synthesized by DrawDialog. See the DrawDialog path
-        // above for the IM:I/MTE references.
-        let auto_default_outline = false;
+        // Apply default chrome after restoring guest-owned pixels and
+        // redrawing live standard controls so retained composition cannot
+        // drop the aDefItem outline.
+        let auto_default_outline = true;
         for (i, item) in items.iter().enumerate() {
             let item_num = (i + 1) as i16;
             let (it, il, ib, ir) = item.rect;
@@ -6705,6 +6701,12 @@ impl super::TrapDispatcher {
                 }
                 6 => {
                     let inactive = self.dialog_control_inactive(bus, dialog_ptr, item_num);
+                    let selected = self
+                        .dialog_control_values
+                        .get(&(dialog_ptr, item_num))
+                        .copied()
+                        .unwrap_or(0)
+                        != 0;
                     self.fill_dialog_content_rect(
                         bus,
                         dialog_ptr,
@@ -6712,8 +6714,8 @@ impl super::TrapDispatcher {
                         (abs_top, abs_left, abs_bottom, abs_right),
                     );
                     self.draw_radio_with_enabled_and_inactive(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, false, enabled,
-                        inactive,
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, selected,
+                        enabled, inactive,
                     );
                 }
                 7 => {
@@ -24814,6 +24816,99 @@ mod tests {
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 67, 69),
             "selected radio item should draw the central dot"
+        );
+    }
+
+    #[test]
+    fn setctlvalue_reaches_drawdialog_and_retained_radio_composition() {
+        // ModalDialog refreshes its retained framebuffer by erasing and
+        // redrawing standard controls. The live ControlRecord value remains
+        // authoritative across that composition, just as it is in DrawDialog.
+        // Inside Macintosh Volume I, I-317, I-328, I-417.
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 120, 220);
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items = vec![DialogItem {
+            item_type: 6,
+            rect: (20, 20, 40, 160),
+            text: "Selected".to_string(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        let ctrl_ptr = bus.alloc(296);
+        let ctrl_handle = bus.alloc(4);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        bus.write_long(ctrl_ptr + 4, dialog_ptr);
+        bus.write_byte(ctrl_ptr + 16, 0xFF);
+        bus.write_word(ctrl_ptr + 18, 0);
+        bus.write_word(ctrl_ptr + 20, 0);
+        bus.write_word(ctrl_ptr + 22, 1);
+        disp.control_proc_ids.insert(ctrl_ptr, 2);
+        disp.dialog_control_handles
+            .insert(ctrl_handle, (dialog_ptr, 1));
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, ctrl_handle);
+        disp.dispatch_control(true, 0x163, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        disp.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, dialog_ptr);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 67, 69),
+            "DrawDialog should render the SetCtlValue-selected radio dot"
+        );
+
+        for offset in 0..row_bytes * 342 {
+            bus.write_byte(screen_base + offset, 0);
+        }
+
+        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 0, "", 0, dialog_ptr);
+
+        assert_eq!(disp.dialog_control_values[&(dialog_ptr, 1)], 1);
+        assert_eq!(bus.read_word(ctrl_ptr + 18), 1);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 67, 69),
+            "retained redraw should preserve the selected radio dot"
+        );
+    }
+
+    #[test]
+    fn draw_dialog_and_retained_redraw_outline_default_button() {
+        // DialogRecord.aDefItem identifies the standard push button that
+        // receives Return/Enter. Initial and retained composition must render
+        // its default outline after the standard button itself.
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 120, 220);
+        let dialog_ptr = 0x2000;
+        let items = vec![DialogItem {
+            item_type: 4,
+            rect: (20, 20, 40, 100),
+            text: "OK".to_string(),
+            ..Default::default()
+        }];
+        let (mut disp, _cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+
+        disp.draw_dialog(&mut bus, bounds, 1, "", &items, 1, "", 0, false, dialog_ptr);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 56, 70),
+            "DrawDialog should outline the aDefItem button"
+        );
+
+        for offset in 0..row_bytes * 342 {
+            bus.write_byte(screen_base + offset, 0);
+        }
+        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 1, "", 0, dialog_ptr);
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 56, 70),
+            "retained redraw should restore the aDefItem outline"
         );
     }
 
