@@ -3933,8 +3933,22 @@ impl super::TrapDispatcher {
                 let pos_offset = bus.read_long(pb + 46) as i32;
                 eprintln!(
                     "[TRAP] FSWrite ref={} buf=${:08X} count={} posMode={} posOff={}",
-                    ref_num, buffer, request_count, pos_mode, pos_offset
+                    ref_num as i16, buffer, request_count, pos_mode, pos_offset
                 );
+
+                let signed_ref_num = ref_num as i16;
+                if signed_ref_num < 0 {
+                    let result =
+                        self.write_device_driver(bus, signed_ref_num, buffer, request_count);
+                    let (err, actual_count) = match result {
+                        Ok(actual_count) => (0i16, actual_count),
+                        Err(err) => (err, 0),
+                    };
+                    bus.write_long(pb + 40, actual_count as u32);
+                    bus.write_word(pb + 16, err as u16);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
 
                 let Some(filename) = self.open_files.get(&ref_num).cloned() else {
                     if self.synthetic_drivers.contains_key(&ref_num) {
@@ -13506,6 +13520,52 @@ mod tests {
         assert_eq!(bus.read_long(pb + 40), 4);
         let file_data = disp.vfs.get("WriteMe").unwrap();
         assert_eq!(file_data, &[0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn fs_write_dispatches_signed_sound_driver_refnum_to_audio() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let synth = 0x310000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, (-4i16) as u16); // .Sound driver
+        bus.write_long(pb + 32, synth);
+        bus.write_long(pb + 36, 5_024);
+        bus.write_byte(crate::memory::globals::addr::SD_VOLUME, 7);
+
+        bus.write_word(synth, 0); // ffMode
+        bus.write_long(synth + 2, 0x0000_8000); // half-rate sampling factor
+        for offset in 0..5_018u32 {
+            bus.write_byte(synth + 6 + offset, (offset & 0xFF) as u8);
+        }
+
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 40), 5_024);
+        assert_eq!(disp.sound_manager.channels.len(), 1);
+        let mixed = disp.sound_manager.mix_frame(512);
+        assert!(!mixed.is_empty());
+        assert!(mixed.iter().any(|sample| *sample != 0x80));
+    }
+
+    #[test]
+    fn fs_write_routes_unknown_negative_refnum_through_device_manager() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 24, (-7i16) as u16);
+        bus.write_long(pb + 32, 0x310000);
+        bus.write_long(pb + 36, 4);
+        bus.write_long(pb + 40, 0xFFFF_FFFF);
+
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-21i32) as u32); // badUnitErr
+        assert_eq!(bus.read_word(pb + 16), (-21i16) as u16);
+        assert_eq!(bus.read_long(pb + 40), 0);
+        assert!(disp.sound_manager.channels.is_empty());
     }
 
     #[test]

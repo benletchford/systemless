@@ -25,6 +25,15 @@ const SQUARE_WAVE_SYNTH_ID: i16 = 1;
 const WAVE_TABLE_SYNTH_ID: i16 = 3;
 const SAMPLED_SYNTH_ID: i16 = 5;
 const SOUND_MANAGER_3_SYNTH_VERSION: u32 = 0x0003_0000;
+const SOUND_DRIVER_REF_NUM: i16 = -4;
+const LEGACY_SOUND_SAMPLE_RATE: u32 = 22_257;
+/// Maximum mono PCM retained for one decoded legacy Sound Driver request.
+/// Compact tone records can otherwise expand to hours of host-side audio.
+const LEGACY_SOUND_DECODE_LIMIT_SAMPLES: usize = sound::OUTPUT_RATE as usize * 60;
+const BAD_UNIT_ERR: i16 = -21;
+const WRITE_ERR: i16 = -20;
+const PARAM_ERR: i16 = -50;
+const MEM_FULL_ERR: i16 = -108;
 
 use std::sync::OnceLock;
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
@@ -72,6 +81,263 @@ fn synth_sys_beep_samples() -> Vec<u8> {
 }
 
 impl super::TrapDispatcher {
+    /// Dispatch a Device Manager write selected by a signed driver refnum.
+    /// Negative refnums identify unit-table drivers; the ROM Sound Driver is
+    /// unit 3/refnum -4. Unknown negative units are not File Manager paths.
+    pub(crate) fn write_device_driver(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ref_num: i16,
+        buffer: u32,
+        request_count: usize,
+    ) -> std::result::Result<usize, i16> {
+        match ref_num {
+            SOUND_DRIVER_REF_NUM => {
+                self.write_legacy_sound_driver(bus, buffer, request_count)?;
+                Ok(request_count)
+            }
+            _ => Err(BAD_UNIT_ERR),
+        }
+    }
+
+    /// Decode a Sound Driver synthesizer buffer and submit it to the existing
+    /// PCM mixer. StartSound is defined as a Device Manager Write with
+    /// ioRefNum=-4, ioBuffer=synthRec, and ioReqCount=numBytes.
+    /// Inside Macintosh Volume II (1985), pp. II-228 to II-232.
+    fn write_legacy_sound_driver(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        buffer: u32,
+        request_count: usize,
+    ) -> std::result::Result<(), i16> {
+        let request_count_u32 = u32::try_from(request_count).map_err(|_| PARAM_ERR)?;
+        if buffer == 0
+            || request_count < 2
+            || buffer
+                .checked_add(request_count_u32)
+                .is_none_or(|end| end > bus.ram_size())
+        {
+            return Err(PARAM_ERR);
+        }
+
+        let mode = bus.read_word(buffer) as i16;
+        let (samples, sample_rate_fixed) = match mode {
+            0 => Self::decode_free_form_synth(bus, buffer, request_count)?,
+            -1 => Self::decode_square_wave_synth(bus, buffer, request_count)?,
+            1 => Self::decode_four_tone_synth(bus, buffer, request_count)?,
+            _ => return Err(WRITE_ERR),
+        };
+
+        let channel_ptr = if let Some(ptr) = self.legacy_sound_driver_channel {
+            ptr
+        } else {
+            let ptr = bus.alloc_synthetic(GUEST_SND_CHANNEL_SIZE);
+            if ptr == 0 {
+                return Err(MEM_FULL_ERR);
+            }
+            self.clear_guest_sound_channel_state(bus, ptr);
+            self.sound_manager
+                .channels
+                .push(SndChannel::new(ptr, false));
+            self.legacy_sound_driver_channel = Some(ptr);
+            ptr
+        };
+
+        let level = u32::from(bus.read_byte(crate::memory::globals::addr::SD_VOLUME) & 7);
+        let gain = level * 0x0100 / 7;
+        let packed_gain = gain | (gain << 16);
+        let channel = self
+            .sound_manager
+            .find_channel_mut(channel_ptr)
+            .ok_or(WRITE_ERR)?;
+        channel.set_volume(packed_gain);
+        channel.play_buffer(samples, sample_rate_fixed, sound::PlaybackKind::Buffer, 0);
+
+        if trace_sound_enabled() {
+            eprintln!(
+                "[SOUND] Sound Driver write mode={} bytes={} rate=${:08X} channel=${:08X}",
+                mode, request_count, sample_rate_fixed, channel_ptr
+            );
+        }
+        Ok(())
+    }
+
+    fn decode_free_form_synth(
+        bus: &MacMemoryBus,
+        buffer: u32,
+        request_count: usize,
+    ) -> std::result::Result<(Vec<u8>, u32), i16> {
+        if request_count <= 6 {
+            return Err(PARAM_ERR);
+        }
+        let sampling_factor = bus.read_long(buffer + 2);
+        if sampling_factor == 0 {
+            return Err(PARAM_ERR);
+        }
+        let sample_count = request_count.checked_sub(6).ok_or(PARAM_ERR)?;
+        let mut samples = Self::reserve_legacy_sound_samples(sample_count)?;
+        samples.resize(sample_count, 0);
+        bus.read_bytes_into(buffer + 6, &mut samples);
+        let sample_rate_fixed = (u64::from(LEGACY_SOUND_SAMPLE_RATE)
+            .saturating_mul(u64::from(sampling_factor)))
+        .min(u64::from(u32::MAX)) as u32;
+        Ok((samples, sample_rate_fixed))
+    }
+
+    fn decode_square_wave_synth(
+        bus: &MacMemoryBus,
+        buffer: u32,
+        request_count: usize,
+    ) -> std::result::Result<(Vec<u8>, u32), i16> {
+        if request_count < 8 {
+            return Err(PARAM_ERR);
+        }
+        let triplet_count = (request_count - 2) / 6;
+        let mut total_sample_count = 0usize;
+        for index in 0..triplet_count {
+            let tone = buffer + 2 + index as u32 * 6;
+            let count = bus.read_word(tone);
+            let amplitude = bus.read_word(tone + 2);
+            let duration = bus.read_word(tone + 4);
+            if count == 0 && amplitude == 0 && duration == 0 {
+                break;
+            }
+
+            let sample_count = (sound::OUTPUT_RATE as usize)
+                .checked_mul(usize::from(duration))
+                .ok_or(MEM_FULL_ERR)?
+                / 60;
+            total_sample_count = total_sample_count
+                .checked_add(sample_count)
+                .filter(|total| *total <= LEGACY_SOUND_DECODE_LIMIT_SAMPLES)
+                .ok_or(MEM_FULL_ERR)?;
+        }
+        if total_sample_count == 0 {
+            return Err(PARAM_ERR);
+        }
+
+        let mut samples = Self::reserve_legacy_sound_samples(total_sample_count)?;
+        for index in 0..triplet_count {
+            let tone = buffer + 2 + index as u32 * 6;
+            let count = bus.read_word(tone);
+            let amplitude = bus.read_word(tone + 2);
+            let duration = bus.read_word(tone + 4);
+            if count == 0 && amplitude == 0 && duration == 0 {
+                break;
+            }
+
+            let sample_count = (sound::OUTPUT_RATE as usize)
+                .checked_mul(usize::from(duration))
+                .ok_or(MEM_FULL_ERR)?
+                / 60;
+            let half_period = if count == 0 {
+                usize::MAX
+            } else {
+                ((u64::from(sound::OUTPUT_RATE) * u64::from(count)) / (2 * 783_360)).max(1) as usize
+            };
+            let magnitude = i32::from(amplitude.min(255)) / 2;
+            for sample in 0..sample_count {
+                let polarity = if (sample / half_period) & 1 == 0 {
+                    1
+                } else {
+                    -1
+                };
+                samples.push((0x80 + polarity * magnitude).clamp(0, 255) as u8);
+            }
+        }
+        debug_assert_eq!(samples.len(), total_sample_count);
+        Ok((samples, sound::OUTPUT_RATE << 16))
+    }
+
+    fn decode_four_tone_synth(
+        bus: &MacMemoryBus,
+        buffer: u32,
+        request_count: usize,
+    ) -> std::result::Result<(Vec<u8>, u32), i16> {
+        if request_count < 6 {
+            return Err(PARAM_ERR);
+        }
+        let record = bus.read_long(buffer + 2);
+        if record == 0
+            || record
+                .checked_add(50)
+                .is_none_or(|end| end > bus.ram_size())
+        {
+            return Err(PARAM_ERR);
+        }
+        let duration = bus.read_word(record);
+        let sample_count = (sound::OUTPUT_RATE as usize)
+            .checked_mul(usize::from(duration))
+            .ok_or(MEM_FULL_ERR)?
+            / 60;
+        if sample_count == 0 {
+            return Err(PARAM_ERR);
+        }
+        let mut samples = Self::reserve_legacy_sound_samples(sample_count)?;
+
+        // FTSoundRec phases are byte offsets into their 256-byte waveforms,
+        // while rates are 16.16 fixed-point increments (Inside Macintosh
+        // Volume II, II-227). Normalize both into the same accumulator scale.
+        let mut phases = [
+            u64::from(bus.read_long(record + 6)) << 16,
+            u64::from(bus.read_long(record + 14)) << 16,
+            u64::from(bus.read_long(record + 22)) << 16,
+            u64::from(bus.read_long(record + 30)) << 16,
+        ];
+        let rates = [
+            u64::from(bus.read_long(record + 2)),
+            u64::from(bus.read_long(record + 10)),
+            u64::from(bus.read_long(record + 18)),
+            u64::from(bus.read_long(record + 26)),
+        ];
+        let waves = [
+            bus.read_long(record + 34),
+            bus.read_long(record + 38),
+            bus.read_long(record + 42),
+            bus.read_long(record + 46),
+        ];
+        if waves.iter().all(|wave| *wave == 0) {
+            return Err(PARAM_ERR);
+        }
+        if waves
+            .iter()
+            .any(|wave| *wave != 0 && wave.checked_add(256).is_none_or(|end| end > bus.ram_size()))
+        {
+            return Err(PARAM_ERR);
+        }
+
+        let hardware_to_output =
+            ((u64::from(LEGACY_SOUND_SAMPLE_RATE)) << 16) / u64::from(sound::OUTPUT_RATE);
+        for _ in 0..sample_count {
+            let mut sum = 0i32;
+            let mut voices = 0i32;
+            for voice in 0..4 {
+                if waves[voice] == 0 {
+                    continue;
+                }
+                let index = ((phases[voice] >> 16) & 0xFF) as u32;
+                sum += i32::from(bus.read_byte(waves[voice] + index)) - 0x80;
+                voices += 1;
+                phases[voice] =
+                    phases[voice].wrapping_add((rates[voice] * hardware_to_output) >> 16);
+            }
+            let mixed = if voices == 0 { 0 } else { sum / voices };
+            samples.push((mixed + 0x80).clamp(0, 255) as u8);
+        }
+        Ok((samples, sound::OUTPUT_RATE << 16))
+    }
+
+    fn reserve_legacy_sound_samples(sample_count: usize) -> std::result::Result<Vec<u8>, i16> {
+        if sample_count > LEGACY_SOUND_DECODE_LIMIT_SAMPLES {
+            return Err(MEM_FULL_ERR);
+        }
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(sample_count)
+            .map_err(|_| MEM_FULL_ERR)?;
+        Ok(samples)
+    }
+
     fn clear_guest_sound_channel_state(&self, bus: &mut MacMemoryBus, chan_ptr: u32) {
         if chan_ptr == 0 {
             return;
@@ -93,6 +359,9 @@ impl super::TrapDispatcher {
     }
 
     fn release_sound_channel(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32) {
+        if self.legacy_sound_driver_channel == Some(chan_ptr) {
+            self.legacy_sound_driver_channel = None;
+        }
         self.sound_manager
             .pending_callbacks
             .retain(|pending| pending.chan_ptr != chan_ptr);
@@ -2664,7 +2933,7 @@ mod tests {
         decode_double_buffer_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
         extended80_to_f64, parse_aiff_samples, synth_sys_beep_samples,
         GUEST_SND_CHANNEL_Q_HEAD_OFFSET, GUEST_SND_CHANNEL_Q_LENGTH_OFFSET,
-        GUEST_SND_CHANNEL_Q_TAIL_OFFSET, GUEST_SND_CHANNEL_SIZE, SAMPLED_SYNTH_ID,
+        GUEST_SND_CHANNEL_Q_TAIL_OFFSET, GUEST_SND_CHANNEL_SIZE, MEM_FULL_ERR, SAMPLED_SYNTH_ID,
         SOUND_MANAGER_3_SYNTH_VERSION,
     };
     use crate::cpu::{CpuOps, Register};
@@ -2743,6 +3012,110 @@ mod tests {
         assert_ne!(snd_ptr, 0, "sound data allocation must succeed");
         write_minimal_format2_snd_handle(bus, snd_handle, snd_ptr, format_word);
         (snd_handle, snd_ptr)
+    }
+
+    #[test]
+    fn legacy_sound_driver_decodes_supported_synths() {
+        let (mut disp, _cpu, mut bus) = setup();
+        bus.write_byte(crate::memory::globals::addr::SD_VOLUME, 7);
+
+        let free_form = 0x2F0000;
+        bus.write_word(free_form, 0);
+        bus.write_long(free_form + 2, 0x0001_0000);
+        bus.write_bytes(free_form + 6, &[0x20, 0xE0, 0x20, 0xE0]);
+
+        assert_eq!(
+            disp.write_device_driver(&mut bus, -4, free_form, 10),
+            Ok(10)
+        );
+        let free_form_mix = disp.sound_manager.mix_frame(4);
+        assert!(free_form_mix.iter().any(|sample| *sample != 0x80));
+
+        let square = 0x300000;
+        bus.write_word(square, (-1i16) as u16);
+        bus.write_word(square + 2, 14_243); // pitch period
+        bus.write_word(square + 4, 255); // amplitude
+        bus.write_word(square + 6, 1); // one tick
+        bus.write_word(square + 8, 0); // terminating triplet
+        bus.write_word(square + 10, 0);
+        bus.write_word(square + 12, 0);
+
+        assert_eq!(disp.write_device_driver(&mut bus, -4, square, 14), Ok(14));
+        let square_mix = disp.sound_manager.mix_frame(128);
+        assert!(square_mix.iter().any(|sample| *sample != 0x80));
+
+        let synth = 0x310000;
+        let record = 0x311000;
+        let wave = 0x312000;
+        bus.write_word(synth, 1);
+        bus.write_long(synth + 2, record);
+        bus.write_word(record, 1); // one tick
+        bus.write_long(record + 2, 0x0001_0000); // voice 1 rate
+        bus.write_long(record + 6, 0); // voice 1 phase
+        for voice in 1..4u32 {
+            bus.write_long(record + 2 + voice * 8, 0);
+            bus.write_long(record + 6 + voice * 8, 0);
+        }
+        bus.write_long(record + 34, wave);
+        bus.write_long(record + 38, 0);
+        bus.write_long(record + 42, 0);
+        bus.write_long(record + 46, 0);
+        for offset in 0..256u32 {
+            bus.write_byte(wave + offset, 0xE0);
+        }
+
+        assert_eq!(disp.write_device_driver(&mut bus, -4, synth, 6), Ok(6));
+        let four_tone_mix = disp.sound_manager.mix_frame(128);
+        assert!(four_tone_mix.iter().any(|sample| *sample != 0x80));
+        assert_eq!(disp.sound_manager.channels.len(), 1);
+    }
+
+    #[test]
+    fn square_wave_synth_rejects_oversized_decoded_output() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let square = 0x300000;
+        bus.write_word(square, (-1i16) as u16);
+        for index in 0..2u32 {
+            let tone = square + 2 + index * 6;
+            bus.write_word(tone, 14_243);
+            bus.write_word(tone + 2, 255);
+            bus.write_word(tone + 4, u16::MAX);
+        }
+
+        assert_eq!(
+            disp.write_device_driver(&mut bus, -4, square, 14),
+            Err(MEM_FULL_ERR)
+        );
+        assert!(disp.sound_manager.channels.is_empty());
+        assert_eq!(disp.legacy_sound_driver_channel, None);
+    }
+
+    #[test]
+    fn four_tone_phase_is_a_waveform_byte_offset() {
+        let (_disp, _cpu, mut bus) = setup();
+        let synth = 0x310000;
+        let record = 0x311000;
+        let wave = 0x312000;
+        bus.write_word(synth, 1);
+        bus.write_long(synth + 2, record);
+        bus.write_word(record, 1);
+        bus.write_long(record + 2, 0);
+        bus.write_long(record + 6, 1);
+        for voice in 1..4u32 {
+            bus.write_long(record + 2 + voice * 8, 0);
+            bus.write_long(record + 6 + voice * 8, 0);
+        }
+        bus.write_long(record + 34, wave);
+        bus.write_long(record + 38, 0);
+        bus.write_long(record + 42, 0);
+        bus.write_long(record + 46, 0);
+        bus.write_byte(wave, 0x20);
+        bus.write_byte(wave + 1, 0xE0);
+
+        let (samples, _) =
+            super::super::TrapDispatcher::decode_four_tone_synth(&bus, synth, 6).unwrap();
+
+        assert_eq!(samples[0], 0xE0);
     }
 
     /// Locks in `parse_aiff_samples` end-to-end decoding — the entry

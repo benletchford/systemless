@@ -1351,6 +1351,9 @@ pub struct TrapDispatcher {
     pub(crate) open_files: HashMap<u16, String>,
     /// Synthetic Device Manager drivers opened by name via PBOpen/OpenDriver.
     pub(crate) synthetic_drivers: HashMap<u16, String>,
+    /// Guest SndChannel storage used by writes to the ROM Sound Driver
+    /// reference number (-4). Allocated lazily on the first StartSound write.
+    pub(crate) legacy_sound_driver_channel: Option<u32>,
     /// Refnums opened with write permission (fsRdWrPerm=3 or fsWrPerm=2).
     /// Used to enforce opWrErr (-49) per IM:Files 9578.
     pub(crate) write_refnums: std::collections::HashSet<u16>,
@@ -2972,6 +2975,7 @@ impl TrapDispatcher {
             working_directories: HashMap::new(),
             open_files: HashMap::new(),
             synthetic_drivers: HashMap::new(),
+            legacy_sound_driver_channel: None,
             write_refnums: HashSet::new(),
             file_positions: HashMap::new(),
             recent_file_read: None,
