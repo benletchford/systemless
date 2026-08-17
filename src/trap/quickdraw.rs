@@ -3464,6 +3464,7 @@ impl super::TrapDispatcher {
                         self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                             bus,
                             self.current_port,
+                            (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
                         );
                     }
                     return Some(Ok(()));
@@ -4158,6 +4159,7 @@ impl super::TrapDispatcher {
                     self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                         bus,
                         self.current_port,
+                        (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
                     );
                 }
                 Ok(())
@@ -5593,7 +5595,16 @@ impl super::TrapDispatcher {
                             right.saturating_sub(port_left),
                         ),
                     );
-                    self.refresh_visible_dialog_snapshot_after_bulk_port_draw(bus, the_port);
+                    self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+                        bus,
+                        the_port,
+                        (
+                            top.saturating_sub(port_top),
+                            left.saturating_sub(port_left),
+                            bottom.saturating_sub(port_top),
+                            right.saturating_sub(port_left),
+                        ),
+                    );
                 }
 
                 Ok(())
@@ -8603,6 +8614,12 @@ impl super::TrapDispatcher {
                         self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                             bus,
                             self.current_port,
+                            (
+                                use_top.saturating_sub(port_bounds_top),
+                                use_left.saturating_sub(port_bounds_left),
+                                use_bottom.saturating_sub(port_bounds_top),
+                                use_right.saturating_sub(port_bounds_left),
+                            ),
                         );
                     }
 
@@ -19574,7 +19591,16 @@ impl super::TrapDispatcher {
                     clip_r.saturating_sub(dst_info.bounds_left),
                 ),
             );
-            self.refresh_visible_dialog_snapshot_after_bulk_port_draw(bus, self.current_port);
+            self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+                bus,
+                self.current_port,
+                (
+                    clip_t.saturating_sub(dst_info.bounds_top),
+                    clip_l.saturating_sub(dst_info.bounds_left),
+                    clip_b.saturating_sub(dst_info.bounds_top),
+                    clip_r.saturating_sub(dst_info.bounds_left),
+                ),
+            );
         }
 
         Ok(())
