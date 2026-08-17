@@ -15,7 +15,7 @@ use crate::memory::MemoryBus;
 use crate::runner::{FixtureRunner, FixtureRunnerConfig};
 use std::io::{Cursor, Read};
 use std::path::Component;
-use stuffit::SitArchive;
+use stuffit::{SitArchive, SitEntry};
 
 const LEGACY_WEB_PACK_MAGIC: &[u8; 4] = b"KPK1";
 const WEB_PACK_MAGIC: &[u8; 4] = b"KPK2";
@@ -268,9 +268,71 @@ pub fn init_game(runner: &mut FixtureRunner, app: &LoadedApp) {
     }
 }
 
+/// Decompress the forks of every file entry, in archive order.
+///
+/// Fork decompression dominates a desktop launch -- EV Override's 10.8 MB
+/// SIT-5 archive costs ~1.5 s of arithmetic decoding on one core, 29% of the
+/// whole boot (Instruments, from first instruction) -- and every entry is
+/// independent: `SitEntry::decompressed_forks` takes `&self` and is
+/// documented for parallel use. Decode with one worker per available core,
+/// handing out entries through a shared counter so a few large forks cannot
+/// strand the other workers. Results (and the first error, if any) come back
+/// in entry order, so callers behave exactly as the sequential loop did. On
+/// wasm32 (no threads) and for single-entry archives this is the plain
+/// sequential loop.
+type DecodedForks = Vec<Result<(Vec<u8>, Vec<u8>), stuffit::SitError>>;
+fn decompress_file_entries(entries: &[&SitEntry]) -> DecodedForks {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let workers = std::thread::available_parallelism()
+            .map(|cores| cores.get())
+            .unwrap_or(1)
+            .min(entries.len());
+        if workers > 1 {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let mut decoded: DecodedForks = Vec::with_capacity(entries.len());
+            decoded.resize_with(entries.len(), || Ok((Vec::new(), Vec::new())));
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..workers)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let mut local = Vec::new();
+                            loop {
+                                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let Some(entry) = entries.get(index) else {
+                                    break;
+                                };
+                                local.push((index, entry.decompressed_forks()));
+                            }
+                            local
+                        })
+                    })
+                    .collect();
+                for handle in handles {
+                    for (index, result) in handle.join().expect("fork-decode worker panicked") {
+                        decoded[index] = result;
+                    }
+                }
+            });
+            return decoded;
+        }
+    }
+    entries
+        .iter()
+        .map(|entry| entry.decompressed_forks())
+        .collect()
+}
+
 fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
     let archive =
         SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+
+    let file_entries: Vec<&SitEntry> = archive
+        .entries
+        .iter()
+        .filter(|entry| !entry.is_folder)
+        .collect();
+    let mut decoded = decompress_file_entries(&file_entries).into_iter();
 
     let mut executable_entry: Option<ExecutableCandidate> = None;
     let mut skipped_disk_image_errors = Vec::new();
@@ -283,8 +345,9 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             continue;
         }
 
-        let (data, rsrc) = entry
-            .decompressed_forks()
+        let (data, rsrc) = decoded
+            .next()
+            .expect("one decoded fork pair per file entry")
             .map_err(|e| format!("Decompress error: {:?}", e))?;
 
         let payload = payload_from_forks(
@@ -2724,6 +2787,61 @@ fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn parallel_fork_decode_matches_the_sequential_loop() {
+        // Build a real SIT-5 archive whose forks exercise compressed and
+        // stored entries of assorted sizes; the parallel decode must return
+        // exactly what per-entry sequential decompression returns, in entry
+        // order, for every worker count the machine picks.
+        let mut archive = SitArchive::new();
+        for index in 0..17u32 {
+            let data: Vec<u8> = (0..(index * 977))
+                .map(|byte| (byte * 31 + index) as u8)
+                .collect();
+            let rsrc: Vec<u8> = (0..(index * 61)).map(|byte| (byte ^ index) as u8).collect();
+            archive.add_entry(SitEntry {
+                name: format!("file-{index}"),
+                data_fork: data,
+                resource_fork: rsrc,
+                file_type: *b"TEXT",
+                creator: *b"ttxt",
+                is_folder: false,
+                data_method: 0,
+                rsrc_method: 0,
+                data_ulen: 0,
+                rsrc_ulen: 0,
+                finder_flags: 0,
+                is_compressed: false,
+                format: stuffit::ArchiveFormat::Sit5,
+            });
+        }
+        let bytes = archive
+            .serialize_compressed()
+            .expect("serialize SIT-13 test archive");
+        let parsed = SitArchive::parse(&bytes).expect("re-parse test archive");
+        let entries: Vec<&SitEntry> = parsed
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_folder)
+            .collect();
+        assert_eq!(entries.len(), 17);
+        assert!(
+            entries.iter().any(|entry| entry.is_compressed),
+            "test archive must exercise real decompression"
+        );
+
+        let parallel = decompress_file_entries(&entries);
+        for (entry, decoded) in entries.iter().zip(parallel) {
+            let sequential = entry.decompressed_forks().expect("sequential decode");
+            assert_eq!(
+                decoded.expect("parallel decode"),
+                sequential,
+                "entry {} must decode identically",
+                entry.name
+            );
+        }
+    }
 
     #[test]
     fn disk_image_payload_registers_a_read_only_file_manager_volume() {
