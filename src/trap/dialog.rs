@@ -31,6 +31,8 @@ struct DialogCIconLayout {
     pixel_size: u16,
     mask_data_ptr: u32,
     bmap_data_ptr: u32,
+    ctab_ptr: u32,
+    ct_size: u16,
     pixel_data_ptr: u32,
 }
 
@@ -8515,8 +8517,8 @@ impl super::TrapDispatcher {
             }
         }
 
-        let ct_size = bus.read_word(ctab_ptr + 6) as u32;
-        let ctab_total_bytes = 8u32.checked_add((ct_size + 1).checked_mul(8)?)?;
+        let ct_size = bus.read_word(ctab_ptr + 6);
+        let ctab_total_bytes = 8u32.checked_add((u32::from(ct_size) + 1).checked_mul(8)?)?;
         let pixel_data_ptr = ctab_ptr.checked_add(ctab_total_bytes)?;
 
         if let Some(resource_size) = bus.get_alloc_size(icon_ptr) {
@@ -8536,8 +8538,36 @@ impl super::TrapDispatcher {
             pixel_size,
             mask_data_ptr,
             bmap_data_ptr,
+            ctab_ptr,
+            ct_size,
             pixel_data_ptr,
         })
+    }
+
+    fn dialog_cicn_rgb_for_index(
+        bus: &MacMemoryBus,
+        layout: &DialogCIconLayout,
+        source_index: u8,
+    ) -> Option<[u16; 3]> {
+        // ColorSpec.value supplies sparse source indices unless ctFlags marks
+        // the table as sequential, in which case the entry ordinal is used.
+        let ct_flags = bus.read_word(layout.ctab_ptr + 4);
+        for ordinal in 0..=u32::from(layout.ct_size) {
+            let entry = layout.ctab_ptr + 8 + ordinal * 8;
+            let value = if ct_flags & 0x8000 != 0 {
+                ordinal as u16
+            } else {
+                bus.read_word(entry)
+            };
+            if value == u16::from(source_index) {
+                return Some([
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ]);
+            }
+        }
+        None
     }
 
     fn dialog_cicn_pixel_index(
@@ -8594,6 +8624,9 @@ impl super::TrapDispatcher {
         if dst_w <= 0 || dst_h <= 0 {
             return false;
         }
+        // Color-table indices belong to the icon PixMap, not the destination
+        // device. Resolve each distinct source index through RGB only once.
+        let mut palette_translation = [None; 256];
 
         for dy in 0..dst_h {
             let sy = (dy as i32 * i32::from(layout.height) / i32::from(dst_h)) as u32;
@@ -8608,7 +8641,7 @@ impl super::TrapDispatcher {
                 }
 
                 if screen_pixel_size == 8 && layout.pixel_size >= 2 {
-                    let Some(pixel_index) = Self::dialog_cicn_pixel_index(
+                    let Some(source_index) = Self::dialog_cicn_pixel_index(
                         bus,
                         layout.pixel_data_ptr,
                         layout.pm_row_bytes,
@@ -8617,6 +8650,17 @@ impl super::TrapDispatcher {
                         sy,
                     ) else {
                         continue;
+                    };
+                    let pixel_index = if let Some(mapped) =
+                        palette_translation[usize::from(source_index)]
+                    {
+                        mapped
+                    } else {
+                        let mapped = Self::dialog_cicn_rgb_for_index(bus, &layout, source_index)
+                            .and_then(|rgb| Self::fb_pixel_index_for_rgb(bus, rgb))
+                            .unwrap_or(source_index);
+                        palette_translation[usize::from(source_index)] = Some(mapped);
+                        mapped
                     };
                     if dst_x >= 0 && dst_y >= 0 && dst_x < screen_width && dst_y < screen_height {
                         bus.write_byte(
@@ -22070,31 +22114,47 @@ mod tests {
     }
 
     fn cicn_resource_with_points(width: u16, height: u16, points: &[(u8, u8, u8)]) -> Vec<u8> {
+        cicn_resource_with_palette(width, height, 0, &[(0, [0; 3])], points)
+    }
+
+    fn cicn_resource_with_palette(
+        width: u16,
+        height: u16,
+        ct_flags: u16,
+        palette: &[(u16, [u16; 3])],
+        points: &[(u8, u8, u8)],
+    ) -> Vec<u8> {
+        assert!(!palette.is_empty());
         let pixel_row_bytes = u32::from(width);
         let mask_row_bytes = u32::from(width).div_ceil(8);
         let mask_size = mask_row_bytes * u32::from(height);
         let bmap_size = mask_row_bytes * u32::from(height);
-        let ctab_size = 16u32;
+        let ctab_size = 8 + palette.len() * 8;
         let pixel_size = pixel_row_bytes * u32::from(height);
         let bmap_offset = 82 + mask_size as usize;
         let ctab_offset = bmap_offset + bmap_size as usize;
-        let pixel_offset = ctab_offset + ctab_size as usize;
+        let pixel_offset = ctab_offset + ctab_size;
         let mut data = vec![0u8; pixel_offset + pixel_size as usize];
 
         write_be_word(&mut data, 4, pixel_row_bytes as u16);
         write_be_word(&mut data, 10, height);
         write_be_word(&mut data, 12, width);
         write_be_word(&mut data, 32, 8);
-
         write_be_word(&mut data, 54, mask_row_bytes as u16);
         write_be_word(&mut data, 60, height);
         write_be_word(&mut data, 62, width);
-
         write_be_word(&mut data, 68, mask_row_bytes as u16);
         write_be_word(&mut data, 74, height);
         write_be_word(&mut data, 76, width);
-
-        write_be_word(&mut data, ctab_offset + 6, 0);
+        write_be_word(&mut data, ctab_offset + 4, ct_flags);
+        write_be_word(&mut data, ctab_offset + 6, palette.len() as u16 - 1);
+        for (ordinal, &(value, rgb)) in palette.iter().enumerate() {
+            let entry = ctab_offset + 8 + ordinal * 8;
+            write_be_word(&mut data, entry, value);
+            write_be_word(&mut data, entry + 2, rgb[0]);
+            write_be_word(&mut data, entry + 4, rgb[1]);
+            write_be_word(&mut data, entry + 6, rgb[2]);
+        }
 
         for &(x, y, pixel) in points {
             let mask_row = 82 + y as usize * mask_row_bytes as usize;
@@ -23964,6 +24024,82 @@ mod tests {
         assert_eq!(
             themed, classic,
             "systemless-default must not change DrawDialog cicn item pixels"
+        );
+    }
+
+    #[test]
+    fn dialog_cicn_maps_embedded_colors_into_the_active_device_palette() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let (screen_base, row_bytes, _width, _height, pixel_size) = disp.screen_mode;
+        assert_eq!(pixel_size, 8);
+
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+        let gdevice = bus.read_long(gdevice_handle);
+        let pixmap_handle = bus.read_long(gdevice + 22);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+        for index in 0u32..256 {
+            let entry = ctab + 8 + index * 8;
+            bus.write_word(entry, index as u16);
+            bus.write_word(entry + 2, 0);
+            bus.write_word(entry + 4, 0);
+            bus.write_word(entry + 6, 0);
+        }
+        for (index, rgb) in [
+            (41u32, [0xFFFF, 0, 0]),
+            (77, [0, 0xFFFF, 0]),
+            (9, [0, 0, 0xF000]),
+        ] {
+            let entry = ctab + 8 + index * 8;
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
+
+        let explicit = cicn_resource_with_palette(
+            4,
+            1,
+            0,
+            &[
+                (2, [0xFFFF, 0, 0]),
+                (7, [0, 0xFFFF, 0]),
+                (200, [0, 0, 0xF800]),
+            ],
+            &[(0, 0, 2), (1, 0, 7), (2, 0, 200)],
+        );
+        let explicit_ptr = bus.alloc(explicit.len() as u32);
+        bus.write_bytes(explicit_ptr, &explicit);
+        bus.write_byte(screen_base + 3, 0xAA);
+
+        assert!(disp.draw_cicn_icon(&mut bus, 0, 0, 1, 4, explicit_ptr));
+        assert_eq!(
+            [
+                bus.read_byte(screen_base),
+                bus.read_byte(screen_base + 1),
+                bus.read_byte(screen_base + 2),
+                bus.read_byte(screen_base + 3),
+            ],
+            [41, 77, 9, 0xAA],
+            "explicit sparse source values must map by RGB, use nearest destination color, and honor the mask"
+        );
+
+        let indexed = cicn_resource_with_palette(
+            1,
+            1,
+            0x8000,
+            &[(200, [0xFFFF, 0, 0]), (201, [0, 0xFFFF, 0])],
+            &[(0, 0, 1)],
+        );
+        let indexed_ptr = bus.alloc(indexed.len() as u32);
+        bus.write_bytes(indexed_ptr, &indexed);
+        assert!(disp.draw_cicn_icon(&mut bus, 1, 0, 2, 1, indexed_ptr));
+        assert_eq!(
+            bus.read_byte(screen_base + row_bytes),
+            77,
+            "ctFlags $8000 must use ColorSpec ordinals instead of explicit values"
         );
     }
 
