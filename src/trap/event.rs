@@ -404,6 +404,7 @@ impl super::TrapDispatcher {
             let event = self.event_queue[idx].clone();
             if self.consume_retained_modal_dialog_event(cpu, bus, &event) {
                 self.event_queue.remove(idx);
+                self.acknowledge_window_activation_event(bus, &event);
                 if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                     eprintln!(
                         "[INPUT] consumed retained-modal what={} where=({}, {}) mask=${:04X}",
@@ -420,6 +421,7 @@ impl super::TrapDispatcher {
                 );
             }
             let event = self.event_queue.remove(idx).unwrap();
+            self.acknowledge_window_activation_event(bus, &event);
             if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
                     "[INPUT] dequeue what={} message=${:08X} where=({}, {}) mask=${:04X}",

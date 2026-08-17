@@ -9489,14 +9489,7 @@ impl super::TrapDispatcher {
                             && event.message == prev_window
                             && (event.modifiers & 1) != 0
                     }) {
-                        self.event_queue
-                            .push_back(crate::trap::dispatch::QueuedEvent {
-                                what: 8,
-                                message: prev_window,
-                                where_v: 0,
-                                where_h: 0,
-                                modifiers: 1,
-                            });
+                        self.queue_window_activation_event(bus, prev_window, true);
                     }
                     self.draw_single_window_chrome_inline(bus, prev_window, true);
                     let exposed_local = (

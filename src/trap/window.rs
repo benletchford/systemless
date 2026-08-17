@@ -55,6 +55,8 @@ impl super::TrapDispatcher {
     const WINDOW_PIC_OFFSET: u32 = 148;
     const WINDOW_REFCON_OFFSET: u32 = 152;
     const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
+    const LOWMEM_CUR_ACTIVATE: u32 = 0x0A64;
+    const LOWMEM_CUR_DEACTIVATE: u32 = 0x0A68;
     const LOWMEM_WMGR_PORT: u32 = 0x09DE;
     const LOWMEM_GRAY_RGN: u32 = 0x09EE;
     const WDEF_WDRAW_MSG: i16 = 0;
@@ -2051,25 +2053,13 @@ impl super::TrapDispatcher {
         let old_front = self.front_window;
         if old_front != 0 {
             bus.write_byte(old_front + Self::WINDOW_HILITED_OFFSET, 0x00);
-            self.event_queue.push_back(QueuedEvent {
-                what: 8,
-                message: old_front,
-                where_v: 0,
-                where_h: 0,
-                modifiers: 0, // activeFlag clear → deactivate
-            });
+            self.queue_window_activation_event(bus, old_front, false);
         }
         self.track_window_front(bus, the_window);
         self.front_window = the_window;
         self.sync_cached_front_window_render_state(bus);
         bus.write_byte(the_window + Self::WINDOW_HILITED_OFFSET, 0xFF);
-        self.event_queue.push_back(QueuedEvent {
-            what: 8,
-            message: the_window,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 1, // activeFlag set → activate
-        });
+        self.queue_window_activation_event(bus, the_window, true);
         self.activate_palette_for_window(bus, the_window);
     }
 
@@ -2084,24 +2074,12 @@ impl super::TrapDispatcher {
         }
         if old_front != 0 {
             bus.write_byte(old_front + Self::WINDOW_HILITED_OFFSET, 0x00);
-            self.event_queue.push_back(QueuedEvent {
-                what: 8,
-                message: old_front,
-                where_v: 0,
-                where_h: 0,
-                modifiers: 0,
-            });
+            self.queue_window_activation_event(bus, old_front, false);
         }
         self.front_window = window_ptr;
         self.sync_cached_front_window_render_state(bus);
         bus.write_byte(window_ptr + Self::WINDOW_HILITED_OFFSET, 0xFF);
-        self.event_queue.push_back(QueuedEvent {
-            what: 8,
-            message: window_ptr,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 1,
-        });
+        self.queue_window_activation_event(bus, window_ptr, true);
         self.activate_palette_for_window(bus, window_ptr);
     }
 
@@ -2109,13 +2087,17 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         window_ptr: u32,
-        visible: bool,
+        _visible: bool,
         behind: u32,
         old_front: u32,
     ) {
-        if visible && behind == 0xFFFF_FFFF {
-            // Inside Macintosh Volume I, I-299: NewWindow with behind=-1
-            // highlights the created window and generates activate events.
+        if behind == 0xFFFF_FFFF {
+            // A frontmost NewWindow/GetNewWindow activates even when created
+            // invisible. In that case its frame is not seen until ShowWindow,
+            // but its activation still replaces the Window Manager's pending
+            // CurActivate/CurDeactive pair.
+            // Inside Macintosh: Macintosh Toolbox Essentials (1992),
+            // pp. 4-76, 4-78, 4-81, and 4-84.
             self.activate_created_front_window(bus, window_ptr, old_front);
         }
     }
@@ -2127,14 +2109,67 @@ impl super::TrapDispatcher {
         self.front_window = the_window;
         self.sync_cached_front_window_render_state(bus);
         bus.write_byte(the_window + Self::WINDOW_HILITED_OFFSET, 0xFF);
+        self.queue_window_activation_event(bus, the_window, true);
+        self.activate_palette_for_window(bus, the_window);
+    }
+
+    /// Record one of the Window Manager's two pending activation events.
+    ///
+    /// Activate events bypass the Operating System event queue. The classic
+    /// Window Manager instead exposes one pending activation and one pending
+    /// deactivation through the `CurActivate` and `CurDeactive` low-memory
+    /// globals ($0A64/$0A68). Replacing an occupied slot is important when an
+    /// application changes front windows repeatedly before polling events: an
+    /// unbounded FIFO can later name a window whose application-owned refCon
+    /// storage has already been released.
+    ///
+    /// Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 2-51 and
+    /// 4-51; A/UX Toolbox: Macintosh ROM Interface (1990), Appendix D.
+    pub(crate) fn queue_window_activation_event(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        activating: bool,
+    ) {
+        if window_ptr == 0 {
+            return;
+        }
+        let active_flag = u16::from(activating);
+        self.event_queue
+            .retain(|event| event.what != 8 || (event.modifiers & 1) != active_flag);
+        bus.write_long(
+            if activating {
+                Self::LOWMEM_CUR_ACTIVATE
+            } else {
+                Self::LOWMEM_CUR_DEACTIVATE
+            },
+            window_ptr,
+        );
         self.event_queue.push_back(QueuedEvent {
             what: 8,
-            message: the_window,
+            message: window_ptr,
             where_v: 0,
             where_h: 0,
-            modifiers: 1,
+            modifiers: active_flag,
         });
-        self.activate_palette_for_window(bus, the_window);
+    }
+
+    pub(crate) fn acknowledge_window_activation_event(
+        &self,
+        bus: &mut MacMemoryBus,
+        event: &QueuedEvent,
+    ) {
+        if event.what != 8 {
+            return;
+        }
+        let global = if (event.modifiers & 1) != 0 {
+            Self::LOWMEM_CUR_ACTIVATE
+        } else {
+            Self::LOWMEM_CUR_DEACTIVATE
+        };
+        if bus.read_long(global) == event.message {
+            bus.write_long(global, 0);
+        }
     }
 
     /// Apply the Pascal `behind` parameter from NewWindow / NewCWindow /
@@ -2393,13 +2428,7 @@ impl super::TrapDispatcher {
         let new_front = self.front_window;
         if new_front != 0 {
             bus.write_byte(new_front + Self::WINDOW_HILITED_OFFSET, 0xFF);
-            self.event_queue.push_back(QueuedEvent {
-                what: 8,
-                message: new_front,
-                where_v: 0,
-                where_h: 0,
-                modifiers: 1, // activeFlag set → activate
-            });
+            self.queue_window_activation_event(bus, new_front, true);
             self.draw_single_window_chrome_inline(bus, new_front, true);
         }
     }
@@ -7559,6 +7588,95 @@ mod tests {
         assert_eq!(events[1].what, 8);
         assert_eq!(events[1].message, win_b);
         assert_eq!(events[1].modifiers & 1, 1, "B's event is activate");
+    }
+
+    #[test]
+    fn pending_activation_slots_replace_superseded_window_transitions() {
+        // Activate events go directly to the Event Manager rather than the
+        // Operating System event queue, and the Window Manager exposes only
+        // CurActivate and CurDeactive slots. Rapid front-window changes before
+        // the next event poll must therefore replace, not accumulate, each
+        // class of pending event.
+        // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-51;
+        // A/UX Toolbox: Macintosh ROM Interface (1990), Appendix D.
+        let (mut disp, _cpu, mut bus) = setup();
+        let first = 0x200040u32;
+        let middle = 0x200140u32;
+        let last = 0x200240u32;
+
+        disp.queue_window_activation_event(&mut bus, first, false);
+        disp.queue_window_activation_event(&mut bus, middle, true);
+        disp.queue_window_activation_event(&mut bus, middle, false);
+        disp.queue_window_activation_event(&mut bus, last, true);
+
+        let events: Vec<_> = disp
+            .event_queue
+            .iter()
+            .filter(|event| event.what == 8)
+            .cloned()
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].message, middle);
+        assert_eq!(events[0].modifiers & 1, 0);
+        assert_eq!(events[1].message, last);
+        assert_eq!(events[1].modifiers & 1, 1);
+        assert_eq!(
+            bus.read_long(super::super::TrapDispatcher::LOWMEM_CUR_DEACTIVATE),
+            middle
+        );
+        assert_eq!(
+            bus.read_long(super::super::TrapDispatcher::LOWMEM_CUR_ACTIVATE),
+            last
+        );
+
+        disp.acknowledge_window_activation_event(&mut bus, &events[0]);
+        assert_eq!(
+            bus.read_long(super::super::TrapDispatcher::LOWMEM_CUR_DEACTIVATE),
+            0
+        );
+        assert_eq!(
+            bus.read_long(super::super::TrapDispatcher::LOWMEM_CUR_ACTIVATE),
+            last
+        );
+    }
+
+    #[test]
+    fn invisible_frontmost_new_window_replaces_pending_activation_pair() {
+        // A window created at the front is active even when initially
+        // invisible; ShowWindow controls only when it becomes visible.
+        // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-84.
+        let (mut disp, _cpu, mut bus) = setup();
+        let old_front = 0x200040u32;
+        let new_front = 0x200140u32;
+        disp.window_list = vec![new_front, old_front];
+        disp.front_window = old_front;
+        bus.write_byte(old_front + 110, 0xFF);
+        bus.write_byte(old_front + 111, 0xFF);
+        bus.write_byte(new_front + 110, 0x00);
+        bus.write_byte(new_front + 111, 0x00);
+
+        disp.activate_frontmost_created_window_if_needed(
+            &mut bus,
+            new_front,
+            false,
+            0xFFFF_FFFF,
+            old_front,
+        );
+
+        assert_eq!(disp.front_window, new_front);
+        assert_eq!(bus.read_byte(old_front + 111), 0x00);
+        assert_eq!(bus.read_byte(new_front + 111), 0xFF);
+        let events: Vec<_> = disp
+            .event_queue
+            .iter()
+            .filter(|event| event.what == 8)
+            .cloned()
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].message, old_front);
+        assert_eq!(events[0].modifiers & 1, 0);
+        assert_eq!(events[1].message, new_front);
+        assert_eq!(events[1].modifiers & 1, 1);
     }
 
     #[test]
