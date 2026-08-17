@@ -91,7 +91,9 @@ impl MachineProfile {
 pub const BASILISK_II_PLAY_PROFILE: MachineProfile = MachineProfile {
     model_id: 14,
     gestalt_machine_type: 20,
-    system_version_bcd: 0x0753,
+    // Mac OS 8.1 is the last release supported on 68040 Macs and provides
+    // the late-classic Toolbox surface exposed by this HLE profile.
+    system_version_bcd: 0x0810,
     gestalt_native_cpu_type: 4,
     gestalt_processor_type: 5,
     gestalt_fpu_type: 3,

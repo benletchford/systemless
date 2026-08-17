@@ -50,6 +50,12 @@ impl CfrgFragment {
             && self.location == LOCATION_ON_DISK_FLAT
     }
 
+    pub fn is_powerpc_library_data_fork(&self) -> bool {
+        self.architecture == ARCH_POWERPC
+            && self.usage == USAGE_LIB
+            && self.location == LOCATION_ON_DISK_FLAT
+    }
+
     pub fn data_fork_range(&self, data_fork_len: usize) -> Option<Range<usize>> {
         if self.location != LOCATION_ON_DISK_FLAT {
             return None;

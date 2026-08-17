@@ -3426,7 +3426,7 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A0, 0x0001);
                         cpu.write_reg(Register::D0, 0);
                     }
-                    // gestaltSystemVersion ('sysv') -> System 7.5.3
+                    // gestaltSystemVersion ('sysv') -> the canonical profile version.
                     b"sysv" => {
                         cpu.write_reg(
                             Register::A0,
@@ -4228,6 +4228,12 @@ impl super::TrapDispatcher {
                 let volume_index = bus.read_word(pb + 28) as i16;
                 let requested_vref = bus.read_word(pb + 22) as i16;
                 let requested_name = Self::read_pb_filename(bus, bus.read_long(pb + 18));
+                if super::dispatch::trace_resfile_enabled() {
+                    eprintln!(
+                        "[TRAP] PBHGetVInfo index={} vref={} name={:?}",
+                        volume_index, requested_vref, requested_name
+                    );
+                }
                 let boot_volume = || {
                     Some((
                         super::TrapDispatcher::boot_volume_name().to_string(),
@@ -4240,7 +4246,27 @@ impl super::TrapDispatcher {
                     // ioNamePtr or ioVRefNum instead of enumerating the VCB
                     // queue. Do not silently turn an unknown vRefNum into the
                     // boot volume; callers use nsvErr to detect a bad volume.
-                    if !requested_name.is_empty() {
+                    if requested_vref != 0 {
+                        let volume_ref_num = if requested_vref
+                            == super::TrapDispatcher::boot_volume_ref_num()
+                            || self.vfs_volumes.contains_key(&requested_vref)
+                        {
+                            Some(requested_vref)
+                        } else {
+                            self.working_directories
+                                .get(&requested_vref)
+                                .map(|working_directory| working_directory.volume_ref_num)
+                        };
+                        volume_ref_num.and_then(|volume_ref_num| {
+                            if volume_ref_num == super::TrapDispatcher::boot_volume_ref_num() {
+                                boot_volume()
+                            } else {
+                                self.vfs_volume_for_ref_num(volume_ref_num).map(|volume| {
+                                    (volume.name.clone(), volume.ref_num, volume.attributes)
+                                })
+                            }
+                        })
+                    } else if !requested_name.is_empty() {
                         if requested_name
                             .eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name())
                         {
@@ -4251,17 +4277,7 @@ impl super::TrapDispatcher {
                             })
                         }
                     } else {
-                        let volume_ref_num = if requested_vref == 0 {
-                            Some(self.resolve_volume_ref_num(self.app_wd_refnum))
-                        } else if requested_vref == super::TrapDispatcher::boot_volume_ref_num()
-                            || self.vfs_volumes.contains_key(&requested_vref)
-                        {
-                            Some(requested_vref)
-                        } else {
-                            self.working_directories
-                                .get(&requested_vref)
-                                .map(|working_directory| working_directory.volume_ref_num)
-                        };
+                        let volume_ref_num = Some(self.resolve_volume_ref_num(self.app_wd_refnum));
                         volume_ref_num.and_then(|volume_ref_num| {
                             if volume_ref_num == super::TrapDispatcher::boot_volume_ref_num() {
                                 boot_volume()
@@ -15015,7 +15031,7 @@ mod tests {
         cpu.write_reg(Register::A0, pb);
         bus.write_long(pb + 18, name_buf);
         bus.write_pstring(name_buf, b"Legend CD");
-        bus.write_word(pb + 22, 0x1234);
+        bus.write_word(pb + 22, 0);
         bus.write_word(pb + 28, 0); // ioVolIndex: lookup by name
 
         call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
@@ -15080,6 +15096,12 @@ mod tests {
         call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
         assert_eq!(bus.read_word(pb + 22), volume_ref as u16);
+        assert_eq!(bus.read_pstring(name_buf), b"Reference Disk");
+
+        bus.write_pstring(name_buf, b"stale output buffer");
+        bus.write_word(pb + 22, volume_ref as u16);
+        call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
         assert_eq!(bus.read_pstring(name_buf), b"Reference Disk");
 
         bus.write_pstring(name_buf, b"Missing Disk");

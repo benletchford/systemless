@@ -14728,6 +14728,172 @@ impl super::TrapDispatcher {
                         bus.write_long(sp + 6, 0);
                         cpu.write_reg(Register::A7, sp + 6);
                     }
+                    // DMGetDisplayIDByGDevice(GDHandle, DisplayIDType *, Boolean)
+                    // -> OSErr. Display IDs remain stable while a device is
+                    // attached; the single-display model uses ID 1, matching
+                    // the native PowerPC Display Manager path.
+                    // Apple's Optimizing Display Modes and Window Buffers
+                    // (2007), p. 26.
+                    0x051F => {
+                        let fail_to_main = bus.read_word(sp) != 0;
+                        let display_id_ptr = bus.read_long(sp + 2);
+                        let requested_gdh = bus.read_long(sp + 6);
+                        let main_gdh = self.ensure_main_gdevice(bus);
+                        let result =
+                            if display_id_ptr != 0 && (requested_gdh == main_gdh || fail_to_main) {
+                                bus.write_long(display_id_ptr, 1);
+                                0
+                            } else {
+                                -50i16
+                            };
+                        bus.write_word(sp + 10, result as u16);
+                        cpu.write_reg(Register::A7, sp + 10);
+                        cpu.write_reg(Register::D0, result as i32 as u32);
+                    }
+                    // DMNewDisplayModeList(DisplayIDType, UInt32, UInt32,
+                    //                      DMListIndexType *, DMListType *)
+                    // -> OSErr. Universal Interfaces 3.4.1 Displays.h models
+                    // the list as opaque and exposes entries through selector
+                    // $37; advertise the active single-screen indexed mode.
+                    0x0A36 => {
+                        let list_out = bus.read_long(sp);
+                        let count_out = bus.read_long(sp + 4);
+                        let display_id = bus.read_long(sp + 16);
+                        let result = if display_id != 1 || list_out == 0 || count_out == 0 {
+                            -50i16
+                        } else {
+                            const LIST_SIZE: u32 = 256;
+                            const ENTRY_OFFSET: u32 = 0x10;
+                            const SWITCH_INFO_OFFSET: u32 = 0x30;
+                            const RESOLUTION_INFO_OFFSET: u32 = 0x40;
+                            const TIMING_INFO_OFFSET: u32 = 0x60;
+                            const DEPTH_BLOCK_OFFSET: u32 = 0x78;
+                            const DEPTH_INFO_OFFSET: u32 = 0x90;
+                            const VP_BLOCK_OFFSET: u32 = 0xA8;
+                            const NAME_OFFSET: u32 = 0xD8;
+
+                            let list = bus.alloc(LIST_SIZE);
+                            if list == 0 {
+                                -108i16 // memFullErr
+                            } else {
+                                bus.fill_zeros(list, LIST_SIZE);
+                                let entry = list + ENTRY_OFFSET;
+                                let switch_info = list + SWITCH_INFO_OFFSET;
+                                let resolution = list + RESOLUTION_INFO_OFFSET;
+                                let timing = list + TIMING_INFO_OFFSET;
+                                let depth_block = list + DEPTH_BLOCK_OFFSET;
+                                let depth_info = list + DEPTH_INFO_OFFSET;
+                                let vp_block = list + VP_BLOCK_OFFSET;
+                                let name = list + NAME_OFFSET;
+                                let (_, row_bytes, width, height, pixel_size) = self.screen_mode;
+
+                                bus.write_long(list, u32::from_be_bytes(*b"DML1"));
+                                bus.write_long(list + 4, display_id);
+                                bus.write_long(entry + 4, switch_info);
+                                bus.write_long(entry + 8, resolution);
+                                bus.write_long(entry + 12, timing);
+                                bus.write_long(entry + 16, depth_block);
+                                bus.write_long(entry + 20, 1);
+                                bus.write_long(entry + 24, name);
+
+                                bus.write_word(switch_info, 0x85);
+                                bus.write_long(switch_info + 2, 0x80);
+                                bus.write_long(switch_info + 8, self.screen_mode.0);
+
+                                bus.write_long(resolution + 4, 0x80);
+                                bus.write_long(resolution + 8, u32::from(width));
+                                bus.write_long(resolution + 12, u32::from(height));
+                                bus.write_long(resolution + 16, 60 << 16);
+                                bus.write_long(resolution + 20, 0x85);
+                                bus.write_long(timing, 0x80);
+
+                                bus.write_long(depth_block, 1);
+                                bus.write_long(depth_block + 4, depth_info);
+                                bus.write_long(depth_info, switch_info);
+                                bus.write_long(depth_info + 4, vp_block);
+                                bus.write_word(vp_block + 4, row_bytes as u16);
+                                bus.write_word(vp_block + 6, 0);
+                                bus.write_word(vp_block + 8, 0);
+                                bus.write_word(vp_block + 10, height);
+                                bus.write_word(vp_block + 12, width);
+                                bus.write_long(vp_block + 22, 72 << 16);
+                                bus.write_long(vp_block + 26, 72 << 16);
+                                bus.write_word(vp_block + 32, u16::from(pixel_size));
+                                bus.write_word(vp_block + 34, 1);
+                                bus.write_word(vp_block + 36, u16::from(pixel_size));
+                                let mode_name = if pixel_size <= 8 {
+                                    format!("{} x {}, {} Colors", width, height, 1u32 << pixel_size)
+                                } else {
+                                    format!("{} x {}, {}-bit Color", width, height, pixel_size)
+                                };
+                                let mode_name = mode_name.as_bytes();
+                                let name_len = mode_name.len().min(31);
+                                bus.write_byte(name, name_len as u8);
+                                bus.write_bytes(name + 1, &mode_name[..name_len]);
+
+                                bus.write_long(count_out, 1);
+                                bus.write_long(list_out, list);
+                                0
+                            }
+                        };
+                        bus.write_word(sp + 20, result as u16);
+                        cpu.write_reg(Register::A7, sp + 20);
+                        cpu.write_reg(Register::D0, result as i32 as u32);
+                    }
+                    // DMDisposeList(DMListType) -> OSErr.
+                    0x022C => {
+                        let list = bus.read_long(sp);
+                        let result = if bus.read_long(list) == u32::from_be_bytes(*b"DML1") {
+                            bus.free(list);
+                            0
+                        } else {
+                            -50i16
+                        };
+                        bus.write_word(sp + 4, result as u16);
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, result as i32 as u32);
+                    }
+                    0x0A37 => {
+                        let user_data = bus.read_long(sp);
+                        let callback = bus.read_long(sp + 4);
+                        let item_index = bus.read_long(sp + 12);
+                        let list = bus.read_long(sp + 16);
+                        if callback == 0
+                            || bus.read_long(list) != u32::from_be_bytes(*b"DML1")
+                            || !matches!(item_index, 0 | 1)
+                        {
+                            bus.write_word(sp + 20, (-50i16) as u16);
+                            cpu.write_reg(Register::A7, sp + 20);
+                            cpu.write_reg(Register::D0, (-50i32) as u32);
+                        } else {
+                            // DMGetIndexedDisplayModeFromList calls the iterator
+                            // as (userData, itemIndex, entry). Return through a
+                            // tiny cleanup thunk so both RTS and RTD-style UPPs
+                            // resume with the DisplayDispatch result slot atop
+                            // the caller's stack.
+                            let resume_sp = sp + 20;
+                            let return_pc = cpu.read_reg(Register::PC);
+                            let cleanup = bus.alloc(12);
+                            if cleanup == 0 {
+                                bus.write_word(resume_sp, (-108i16) as u16);
+                                cpu.write_reg(Register::A7, resume_sp);
+                                cpu.write_reg(Register::D0, (-108i32) as u32);
+                            } else {
+                                bus.write_word(cleanup, 0x2E7C); // MOVEA.L #resume_sp,A7
+                                bus.write_long(cleanup + 2, resume_sp);
+                                bus.write_word(cleanup + 6, 0x4EF9); // JMP return_pc
+                                bus.write_long(cleanup + 8, return_pc);
+                                bus.write_word(resume_sp, 0);
+                                bus.write_long(sp + 16, user_data);
+                                bus.write_long(sp + 12, item_index);
+                                bus.write_long(sp + 8, list + 0x10);
+                                bus.write_long(sp + 4, cleanup);
+                                cpu.write_reg(Register::A7, sp + 4);
+                                cpu.write_reg(Register::PC, callback);
+                                cpu.write_reg(Register::D0, 0);
+                            }
+                        }
+                    }
                     // DMBeginConfigureDisplays(Handle *displayState) -> OSErr.
                     // BasiliskII returns the main GDevice handle as the begin
                     // token and stores the same handle through *displayState.
@@ -36363,6 +36529,26 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
         assert_eq!(bus.read_long(TEST_SP + 6), 0);
+    }
+
+    #[test]
+    fn displaydispatch_maps_main_gdevice_to_stable_display_id() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+        let display_id_ptr = 0x0031_0F00u32;
+
+        cpu.write_reg(Register::D0, 0x051F);
+        bus.write_word(TEST_SP, 0); // failToMain
+        bus.write_long(TEST_SP + 2, display_id_ptr);
+        bus.write_long(TEST_SP + 6, main_gdh);
+        bus.write_word(TEST_SP + 10, 0xA55A);
+        let result = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(display_id_ptr), 1);
     }
 
     #[test]

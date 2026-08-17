@@ -476,6 +476,11 @@ pub struct MacMemoryBus {
     free_blocks: HashMap<u32, Vec<u32>>,
     /// Tracks the aligned size of each allocation (address → aligned_size)
     alloc_sizes: HashMap<u32, u32>,
+    /// Direct-loaded application image spans that guest heap allocations must
+    /// skip. A relocated A5 world can leave usable heap both below and above
+    /// the image, so advancing the bump pointer past it would discard most of
+    /// the application partition.
+    reserved_heap_ranges: Vec<(u32, u32)>,
     /// For best-fit allocations, the bucket capacity the block came from
     /// (always >= `alloc_sizes[addr]`). On free, the block returns to this
     /// bucket so its full capacity is recovered. Absent for blocks
@@ -872,6 +877,7 @@ impl MacMemoryBus {
             readonly_code_span: None,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
+            reserved_heap_ranges: Vec::new(),
             alloc_bucket_sizes: HashMap::new(),
             write_probe_original: None,
             write_probe_invalid: false,
@@ -963,6 +969,7 @@ impl MacMemoryBus {
             readonly_code_span: None,
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
+            reserved_heap_ranges: Vec::new(),
             alloc_bucket_sizes: HashMap::new(),
             write_probe_original: None,
             write_probe_invalid: false,
@@ -1036,6 +1043,34 @@ impl MacMemoryBus {
         self.heap_ptr = self.heap_ptr.max(aligned);
     }
 
+    /// Prevent heap allocations from overlapping a direct-loaded guest range
+    /// while preserving usable partition space before it.
+    pub(crate) fn reserve_heap_range(&mut self, start_addr: u32, end_addr: u32) {
+        let start = start_addr & !3;
+        let end = (end_addr.saturating_add(3)) & !3;
+        if start >= end {
+            return;
+        }
+        self.reserved_heap_ranges.push((start, end));
+        self.reserved_heap_ranges.sort_unstable();
+    }
+
+    fn bump_allocation_address(&self, size: u32, alignment: u32) -> Option<(u32, u32)> {
+        let mut ptr = (self.heap_ptr + alignment - 1) & !(alignment - 1);
+        loop {
+            let new_ptr = ptr.checked_add(size)?;
+            let overlap = self
+                .reserved_heap_ranges
+                .iter()
+                .find(|&&(start, end)| ptr < end && new_ptr > start);
+            if let Some(&(_, end)) = overlap {
+                ptr = (end + alignment - 1) & !(alignment - 1);
+                continue;
+            }
+            return Some((ptr, new_ptr));
+        }
+    }
+
     pub fn alloc(&mut self, size: u32) -> u32 {
         let aligned = Self::allocation_bucket_size(size); // 4-byte align, unique zero-size blocks
 
@@ -1082,8 +1117,9 @@ impl MacMemoryBus {
         }
 
         // Bump allocate
-        let ptr = self.heap_ptr;
-        let new_ptr = ptr + aligned;
+        let Some((ptr, new_ptr)) = self.bump_allocation_address(aligned, 4) else {
+            return 0;
+        };
 
         if new_ptr >= self.synthetic_floor {
             eprintln!(
@@ -1201,8 +1237,9 @@ impl MacMemoryBus {
             return addr;
         }
 
-        let ptr = (self.heap_ptr + alignment - 1) & !(alignment - 1);
-        let new_ptr = ptr + aligned;
+        let Some((ptr, new_ptr)) = self.bump_allocation_address(aligned, alignment) else {
+            return 0;
+        };
 
         if new_ptr >= self.synthetic_floor {
             eprintln!(
@@ -2131,6 +2168,22 @@ mod tests {
             first + 12,
             "re-reserving the same zone-header range must not create a second gap"
         );
+    }
+
+    #[test]
+    fn reserved_heap_range_preserves_space_before_direct_loaded_image() {
+        let mut bus = MacMemoryBus::new(16 * 1024 * 1024);
+        let image_start = 0x0080_0000;
+        let image_end = 0x0090_0000;
+        bus.reserve_heap(64);
+        bus.reserve_heap_range(image_start, image_end);
+
+        let lower_start = bus.alloc(image_start - (0x0020_0000 + 64));
+        assert_eq!(lower_start, 0x0020_0000 + 64);
+        let above_image = bus.alloc(4);
+
+        assert_eq!(above_image, image_end);
+        assert_eq!(bus.get_alloc_size(above_image), Some(4));
     }
 
     #[test]
