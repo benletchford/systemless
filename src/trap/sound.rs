@@ -63,6 +63,11 @@ fn sound_dispatch_param_bytes(selector: u32) -> u32 {
         0x0018_0008 => 4,  // SndGetSysBeepState(VAR state)
         0x001C_0008 => 2,  // SndSetSysBeepState(state)
         0x0020_0008 => 8,  // SndPlayDoubleBuffer(chan, theParams)
+        // MacroMind Director 3's sound extension uses this private
+        // SoundDispatch procedure with one INTEGER argument. Like the
+        // documented zero-size selectors above, its literal omits the
+        // parameter count even though the Pascal callee consumes a word.
+        0x0064_0004 => 2,
         _ => 0,
     }
 }
@@ -555,6 +560,15 @@ impl super::TrapDispatcher {
                         "[SOUND] SoundDispatch selector=${:08X} routine=${:02X} param_bytes={}",
                         selector, routine, param_bytes
                     );
+                }
+                if selector == 0x0064_0004 {
+                    // Private Director 3 procedure. The caller pushes one
+                    // INTEGER and does not reserve a function-result slot, so
+                    // consume only that argument and preserve the return
+                    // address immediately above it.
+                    cpu.write_reg(Register::A7, sp + param_bytes);
+                    cpu.write_reg(Register::D0, 0);
+                    return Some(Ok(()));
                 }
                 match routine {
                     // SndSoundManagerVersion and UnsignedFixedMulDiv share
@@ -3847,6 +3861,26 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
         assert_eq!(bus.read_word(sp + 2), 0);
+    }
+
+    #[test]
+    fn sounddispatch_director_private_procedure_consumes_its_word_argument() {
+        // Director 3 emits selector $00640004 after pushing one INTEGER.
+        // The selector's encoded parameter-size byte is zero, but this is a
+        // Pascal procedure: no result slot is present above the argument.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        bus.write_word(sp, 0x003B);
+        bus.write_long(sp + 2, 0x003B_2E3C); // caller's return address
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0064_0004);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(bus.read_long(sp + 2), 0x003B_2E3C);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
     #[test]
