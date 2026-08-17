@@ -138,7 +138,7 @@ pub fn render_screen_into_with_gamma(
     device_gamma: &DisplayGamma,
     pixels: &mut Vec<u8>,
 ) {
-    if matches!(screen_mode.4, 4 | 8) {
+    if matches!(screen_mode.4, 1 | 4 | 8) {
         let palette = rgba_palette_from_clut_with_gamma(device_clut, device_gamma);
         render_screen_with_rgba_palette_into(bus, screen_mode, &palette, pixels);
     } else {

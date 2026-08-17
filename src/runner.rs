@@ -1595,7 +1595,7 @@ pub struct FixtureRunnerConfig {
     /// Use the full 32-bit guest address, or mask memory accesses to the low
     /// 24 bits as on classic Macs running in 24-bit addressing mode.
     pub addressing_32_bit: bool,
-    /// Guest-visible indexed screen depth. Supported values are 4 and 8;
+    /// Guest-visible indexed screen depth. Supported values are 1, 4, and 8;
     /// the default remains 8-bit/256-color mode.
     pub screen_depth: u16,
 }
@@ -1631,9 +1631,9 @@ impl FixtureRunnerConfig {
     /// Validate and select one of the indexed display depths supported by the
     /// main framebuffer.
     pub fn with_screen_depth(mut self, screen_depth: u16) -> std::result::Result<Self, String> {
-        if !matches!(screen_depth, 4 | 8) {
+        if !matches!(screen_depth, 1 | 4 | 8) {
             return Err(format!(
-                "unsupported screen depth {screen_depth}; expected 4 or 8"
+                "unsupported screen depth {screen_depth}; expected 1, 4, or 8"
             ));
         }
         self.screen_depth = screen_depth;
@@ -1855,8 +1855,8 @@ impl FixtureRunner {
             ram_size.min(0x0100_0000)
         };
         assert!(
-            matches!(config.screen_depth, 4 | 8),
-            "screen_depth must be 4 or 8"
+            matches!(config.screen_depth, 1 | 4 | 8),
+            "screen_depth must be 1, 4, or 8"
         );
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
@@ -10358,8 +10358,32 @@ mod tests {
     }
 
     #[test]
+    fn one_bit_runner_publishes_consistent_screen_metadata() {
+        use crate::memory::globals::addr;
+
+        let config = FixtureRunnerConfig::default()
+            .with_screen_depth(1)
+            .expect("1-bit monochrome mode should be supported");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+        let gdevice_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+        let gdevice = runner.bus.read_long(gdevice_handle);
+        let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
+        let ctab = runner.bus.read_long(runner.bus.read_long(pixmap + 42));
+
+        assert_eq!(runner.dispatcher.screen_mode.1, 100);
+        assert_eq!(runner.dispatcher.screen_mode.4, 1);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_ROW), 100);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_BITS + 4), 100);
+        assert_eq!(runner.bus.read_word(pixmap + 4), 0x8000 | 100);
+        assert_eq!(runner.bus.read_word(pixmap + 32), 1);
+        assert_eq!(runner.bus.read_word(pixmap + 36), 1);
+        assert_eq!(runner.bus.read_word(ctab + 6), 1);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 1);
+    }
+
+    #[test]
     fn runner_config_rejects_nonselectable_screen_depths() {
-        assert!(FixtureRunnerConfig::default().with_screen_depth(1).is_err());
+        assert!(FixtureRunnerConfig::default().with_screen_depth(2).is_err());
         assert!(FixtureRunnerConfig::default().with_screen_depth(5).is_err());
     }
 

@@ -149,9 +149,10 @@ struct Cli {
 
 fn parse_screen_depth(value: &str) -> Result<u16, String> {
     match value {
+        "1" => Ok(1),
         "4" => Ok(4),
         "8" => Ok(8),
-        _ => Err("screen depth must be 4 or 8".to_string()),
+        _ => Err("screen depth must be 1, 4, or 8".to_string()),
     }
 }
 
@@ -2609,6 +2610,14 @@ mod tests {
         assert!(cli.addressing_24_bit);
         assert_eq!(cli.screen_depth, 4);
         assert_eq!(cli.max_instructions, Some(1234));
+    }
+
+    #[test]
+    fn cli_accepts_one_bit_screen_depth() {
+        let cli = Cli::try_parse_from(["systemless", "--screen-depth", "1", "game.sit"])
+            .expect("one-bit display depth should parse");
+
+        assert_eq!(cli.screen_depth, 1);
     }
 
     #[test]
