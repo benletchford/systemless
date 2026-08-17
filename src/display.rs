@@ -29,6 +29,14 @@ pub type DisplayGamma = [[u8; 256]; 3];
 pub fn default_display_gamma() -> DisplayGamma {
     [MAC_ROM_GAMMA_LUT; 3]
 }
+
+/// Return the linear transfer used for palettes written directly to the video
+/// driver. Those values have already passed through the guest's palette
+/// preparation and must not receive the Color Manager compatibility curve.
+pub fn linear_display_gamma() -> DisplayGamma {
+    let identity = std::array::from_fn(|index| index as u8);
+    [identity; 3]
+}
 const UNUSED_RGBA_PALETTE: RgbaPalette = [0; 256];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1510,9 +1518,8 @@ fn clut_component_to_u8_with_gamma(component: u16, gamma: &[u8; 256]) -> u8 {
     gamma[(component >> 8) as usize]
 }
 
-/// Modeled default display transfer table, applied after truncating 16-bit
-/// Color QuickDraw components to their most-significant byte. Runtime
-/// `cscSetGamma` tables replace this default in device state.
+/// Compatibility transfer for high-level Color Manager palette values. Direct
+/// video-driver palettes select a linear transfer in device state instead.
 const MAC_ROM_GAMMA_LUT: [u8; 256] = [
     0x00, 0x02, 0x05, 0x07, 0x09, 0x0B, 0x0E, 0x10, 0x12, 0x15, 0x17, 0x19, 0x1C, 0x1E, 0x20, 0x22,
     0x25, 0x27, 0x28, 0x2A, 0x2B, 0x2D, 0x2E, 0x2F, 0x31, 0x32, 0x34, 0x35, 0x37, 0x38, 0x39, 0x3B,

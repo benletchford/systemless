@@ -358,8 +358,8 @@ impl super::TrapDispatcher {
 
         let gamma_ptr = bus.read_long(vd_gamma_ptr);
         if gamma_ptr == 0 {
-            let identity = std::array::from_fn(|index| index as u8);
-            self.device_gamma = [identity; 3];
+            self.device_gamma = crate::display::linear_display_gamma();
+            self.device_gamma_explicit = true;
             return NO_ERR;
         }
 
@@ -420,6 +420,7 @@ impl super::TrapDispatcher {
             }
         }
         self.device_gamma = installed;
+        self.device_gamma_explicit = true;
         NO_ERR
     }
 
@@ -2206,6 +2207,13 @@ impl super::TrapDispatcher {
                             }
                         }
                         // Apply palette BEFORE logging so screenshots see updated CLUT.
+                        // A direct driver palette contains presentation-ready
+                        // values. Keep explicit guest gamma authoritative, but
+                        // otherwise stop applying the compatibility transfer
+                        // used by the emulated high-level Color Manager path.
+                        if !self.device_gamma_explicit {
+                            self.device_gamma = crate::display::linear_display_gamma();
+                        }
                         self.apply_set_entries(bus, cs_table, cs_start, safe_count);
                         if let Err(err) = self.record_trace_event(
                             bus,
@@ -9437,6 +9445,65 @@ mod tests {
             0x00ABCDEF,
             "SetMode should not write csBaseAddr past a short stack parameter block"
         );
+    }
+
+    #[test]
+    fn control_set_entries_selects_linear_transfer_for_direct_driver_palette() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = bus.alloc(8);
+        let table = bus.alloc(8);
+
+        bus.write_word(table, 7);
+        bus.write_word(table + 2, 0x4444);
+        bus.write_word(table + 4, 0x8888);
+        bus.write_word(table + 6, 0xCCCC);
+        bus.write_long(record, table);
+        bus.write_word(record + 4, (-1i16) as u16);
+        bus.write_word(record + 6, 0);
+        bus.write_word(pb + 26, 3);
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(dispatcher.device_clut[7], [0x4444, 0x8888, 0xCCCC]);
+        assert_eq!(dispatcher.device_gamma[0][0x44], 0x44);
+        assert_eq!(dispatcher.device_gamma[1][0x88], 0x88);
+        assert_eq!(dispatcher.device_gamma[2][0xCC], 0xCC);
+        assert!(!dispatcher.device_gamma_explicit);
+    }
+
+    #[test]
+    fn control_set_entries_preserves_explicit_gamma() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = bus.alloc(8);
+        let table = bus.alloc(8);
+        dispatcher.device_gamma = [[0x42; 256]; 3];
+        dispatcher.device_gamma_explicit = true;
+
+        bus.write_word(table, 7);
+        bus.write_word(table + 2, 0x4444);
+        bus.write_word(table + 4, 0x8888);
+        bus.write_word(table + 6, 0xCCCC);
+        bus.write_long(record, table);
+        bus.write_word(record + 4, (-1i16) as u16);
+        bus.write_word(record + 6, 0);
+        bus.write_word(pb + 26, 3);
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(dispatcher.device_gamma, [[0x42; 256]; 3]);
+        assert!(dispatcher.device_gamma_explicit);
     }
 
     #[test]
